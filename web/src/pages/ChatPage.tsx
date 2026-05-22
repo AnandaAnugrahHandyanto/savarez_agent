@@ -35,6 +35,12 @@ import { ChatSidebar } from "@/components/ChatSidebar";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
+import {
+  consumeChatRecoveryAfterAuthReload,
+  getRememberedChatSessionId,
+  rememberChatSessionId,
+  scheduleDashboardAuthReload,
+} from "@/lib/chatRecovery";
 import { PluginSlot } from "@/plugins";
 
 function buildWsUrl(
@@ -49,14 +55,27 @@ function buildWsUrl(
 }
 
 // Channel id ties this chat tab's PTY child (publisher) to its sidebar
-// (subscriber).  Generated once per mount so a tab refresh starts a fresh
-// channel — the previous PTY child terminates with the old WS, and its
-// channel auto-evicts when no subscribers remain.
+// (subscriber). Persist it per resume target so a reload or transient browser
+// disconnect can reattach to the same server-side PTY while it is still alive.
 function generateChannelId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
   }
   return `chat-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
+}
+
+function getOrCreateChannelId(resume: string | null): string {
+  if (typeof window === "undefined") return generateChannelId();
+  const key = `hermes.chat.channel.${resume || "new"}`;
+  try {
+    const existing = window.sessionStorage.getItem(key);
+    if (existing && /^[A-Za-z0-9._-]{1,128}$/.test(existing)) return existing;
+    const next = generateChannelId();
+    window.sessionStorage.setItem(key, next);
+    return next;
+  } catch {
+    return generateChannelId();
+  }
 }
 
 // Colors for the terminal body.  Matches the dashboard's dark teal canvas
@@ -151,37 +170,124 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
   // The dashboard keeps ChatPage mounted persistently so the PTY survives tab
   // switches. That is great for ordinary /chat navigation, but it means query
-  // param changes do NOT remount the component. Resume-in-chat from the
+  // changes do NOT remount the component. Resume-in-chat from the
   // Sessions page relies on `/chat?resume=<id>` changing at runtime, so we must
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
-  const channel = useMemo(() => generateChannelId(), [resumeParam]);
+  const [recoveryPending, setRecoveryPending] = useState(() => {
+    const pending = consumeChatRecoveryAfterAuthReload();
+    return !resumeParam && pending;
+  });
+  const [resolvedResume, setResolvedResume] = useState<{
+    source: string | null;
+    target: string | null;
+  }>({ source: null, target: null });
+  const resumeResolutionPending = !!resumeParam && resolvedResume.source !== resumeParam;
+  const activeResumeParam = resumeParam
+    ? resumeResolutionPending
+      ? null
+      : (resolvedResume.target ?? resumeParam)
+    : null;
+  const channel = useMemo(
+    () => getOrCreateChannelId(activeResumeParam),
+    [activeResumeParam],
+  );
 
   useEffect(() => {
-    if (!resumeParam) return;
+    if (!recoveryPending || resumeParam) return;
+
+    let cancelled = false;
+
+    const resumeTo = (sessionId: string) => {
+      if (cancelled) return;
+      rememberChatSessionId(sessionId);
+      const next = new URLSearchParams(searchParams);
+      next.set("resume", sessionId);
+      setSearchParams(next, { replace: true });
+      setRecoveryPending(false);
+    };
+
+    const recoverFromMostRecent = () => {
+      api
+        .getMostRecentSession()
+        .then((res) => {
+          if (cancelled) return;
+          if (res.session_id) {
+            resumeTo(res.session_id);
+          } else {
+            setRecoveryPending(false);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setRecoveryPending(false);
+          }
+        });
+    };
+
+    const remembered = getRememberedChatSessionId();
+    if (remembered) {
+      api
+        .getSessionLatestDescendant(remembered)
+        .then((res) => {
+          if (cancelled) return;
+          resumeTo(res.session_id || remembered);
+        })
+        .catch(() => {
+          // Older dashboard builds could save the ephemeral gateway sid in
+          // sessionStorage. If it is not a real DB session, do not resume that
+          // invalid id; fall back to the latest resumable server-side session.
+          recoverFromMostRecent();
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    recoverFromMostRecent();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [recoveryPending, resumeParam, searchParams, setSearchParams]);
+
+  useEffect(() => {
+    if (!resumeParam) {
+      return;
+    }
+
+    if (resolvedResume.source === resumeParam) {
+      return;
+    }
 
     let cancelled = false;
 
     api
       .getSessionLatestDescendant(resumeParam)
       .then((res) => {
-        if (cancelled || !res.session_id || res.session_id === resumeParam) {
-          return;
-        }
+        if (cancelled) return;
+        const target = res.session_id || resumeParam;
+        rememberChatSessionId(target);
+        setResolvedResume({ source: resumeParam, target });
 
-        const next = new URLSearchParams(searchParams);
-        next.set("resume", res.session_id);
-        setSearchParams(next, { replace: true });
+        if (target !== resumeParam) {
+          const next = new URLSearchParams(searchParams);
+          next.set("resume", target);
+          setSearchParams(next, { replace: true });
+        }
       })
       .catch(() => {
+        if (cancelled) return;
         // Best-effort: old servers or missing sessions should not block chat.
+        rememberChatSessionId(resumeParam);
+        setResolvedResume({ source: resumeParam, target: resumeParam });
       });
 
     return () => {
       cancelled = true;
     };
-  }, [resumeParam, searchParams, setSearchParams]);
+  }, [resumeParam, resolvedResume.source, searchParams, setSearchParams]);
 
   useEffect(() => {
     const mql = window.matchMedia("(max-width: 1023px)");
@@ -272,6 +378,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const token = window.__HERMES_SESSION_TOKEN__;
     // Banner already initialised above; just bail before wiring xterm/WS.
     if (!token) {
+      return;
+    }
+    if ((recoveryPending && !resumeParam) || resumeResolutionPending) {
       return;
     }
 
@@ -544,52 +653,62 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       });
     });
 
-    // WebSocket
-    const url = buildWsUrl(token, resumeParam, channel);
-    const ws = new WebSocket(url);
-    ws.binaryType = "arraybuffer";
-    wsRef.current = ws;
-    // Suppress banner/terminal side-effects when cleanup() calls `ws.close()`
-    // (React StrictMode remount, route change) so we never write to a
-    // disposed xterm or setState on an unmounted tree.
+    // WebSocket. Keep reconnect state inside this effect so a transient
+    // browser/network close reattaches to the same channel instead of ending
+    // the PTY session immediately.
     let unmounting = false;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-    ws.onopen = () => {
-      setBanner(null);
-      // Send the initial RESIZE immediately so Ink has *a* size to lay
-      // out against on its first paint.  The double-rAF block above will
-      // follow up with the authoritative measurement — at worst Ink
-      // reflows once after the PTY boots, which is imperceptible.
-      ws.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
+    const connectWebSocket = (attempt = 0) => {
+      if (unmounting) return;
+      const url = buildWsUrl(token, activeResumeParam, channel);
+      const ws = new WebSocket(url);
+      ws.binaryType = "arraybuffer";
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        if (unmounting) return;
+        setBanner(null);
+        ws.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
+      };
+
+      ws.onmessage = (ev) => {
+        if (typeof ev.data === "string") {
+          term.write(ev.data);
+        } else {
+          term.write(new Uint8Array(ev.data as ArrayBuffer));
+        }
+      };
+
+      ws.onclose = (ev) => {
+        if (wsRef.current === ws) wsRef.current = null;
+        if (unmounting) return;
+        if (ev.code === 4401) {
+          const reloadQueued = scheduleDashboardAuthReload({
+            sessionId: activeResumeParam ?? resumeParam ?? getRememberedChatSessionId(),
+          });
+          setBanner(
+            reloadQueued
+              ? "Dashboard restarted or token expired. Reloading and resuming chat…"
+              : "Auth failed after reload. Refresh the page to get a new dashboard token.",
+          );
+          return;
+        }
+        if (ev.code === 4403) {
+          setBanner("Chat is only reachable from localhost.");
+          return;
+        }
+        if (ev.code === 1011) {
+          // Server already wrote an ANSI error frame.
+          return;
+        }
+        const delay = Math.min(1000 * 2 ** attempt, 10_000);
+        setBanner(`Connection lost. Reconnecting in ${Math.round(delay / 1000)}s…`);
+        reconnectTimer = setTimeout(() => connectWebSocket(attempt + 1), delay);
+      };
     };
 
-    ws.onmessage = (ev) => {
-      if (typeof ev.data === "string") {
-        term.write(ev.data);
-      } else {
-        term.write(new Uint8Array(ev.data as ArrayBuffer));
-      }
-    };
-
-    ws.onclose = (ev) => {
-      wsRef.current = null;
-      if (unmounting) {
-        return;
-      }
-      if (ev.code === 4401) {
-        setBanner("Auth failed. Reload the page to refresh the session token.");
-        return;
-      }
-      if (ev.code === 4403) {
-        setBanner("Chat is only reachable from localhost.");
-        return;
-      }
-      if (ev.code === 1011) {
-        // Server already wrote an ANSI error frame.
-        return;
-      }
-      term.write("\r\n\x1b[90m[session ended]\x1b[0m\r\n");
-    };
+    connectWebSocket();
 
     // Keystrokes → PTY.
     //
@@ -608,7 +727,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // eslint-disable-next-line no-control-regex -- intentional ESC byte in xterm SGR mouse report parser
     const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
     const onDataDisposable = term.onData((data) => {
-      if (ws.readyState !== WebSocket.OPEN) return;
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
       if (SGR_MOUSE_RE.test(data)) {
         return;
@@ -618,7 +738,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     });
 
     const onResizeDisposable = term.onResize(({ cols, rows }) => {
-      if (ws.readyState === WebSocket.OPEN) {
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) {
         ws.send(`\x1b[RESIZE:${cols};${rows}]`);
       }
     });
@@ -631,6 +752,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       onDataDisposable.dispose();
       onResizeDisposable.dispose();
       if (metricsDebounce) clearTimeout(metricsDebounce);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       window.visualViewport?.removeEventListener(
         "resize",
@@ -640,7 +762,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (hostSyncRaf) cancelAnimationFrame(hostSyncRaf);
       if (settleRaf1) cancelAnimationFrame(settleRaf1);
       if (settleRaf2) cancelAnimationFrame(settleRaf2);
-      ws.close();
+      wsRef.current?.close();
       wsRef.current = null;
       term.dispose();
       termRef.current = null;
@@ -650,7 +772,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, resumeParam]);
+  }, [channel, activeResumeParam, recoveryPending, resumeParam, resumeResolutionPending]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
@@ -715,6 +837,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // above the app sidebar (`z-50`) and mobile chrome (`z-40`).  The main
   // dashboard column uses `relative z-2`, which traps `position:fixed`
   // descendants below those layers (see Toast.tsx).
+  const statusBanner = banner ?? (recoveryPending && !resumeParam
+    ? "Recovering previous chat session…"
+    : resumeResolutionPending
+      ? "Resolving chat session…"
+      : null);
+
   const mobileModelToolsPortal =
     isActive &&
     narrow &&
@@ -793,9 +921,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       <PluginSlot name="chat:top" />
       {mobileModelToolsPortal}
 
-      {banner && (
+      {statusBanner && (
         <div className="border border-warning/50 bg-warning/10 text-warning px-3 py-2 text-xs tracking-wide">
-          {banner}
+          {statusBanner}
         </div>
       )}
 

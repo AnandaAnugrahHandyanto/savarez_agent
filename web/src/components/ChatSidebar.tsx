@@ -29,8 +29,12 @@ import { Card } from "@/components/ui/card";
 
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ToolCall, type ToolEntry } from "@/components/ToolCall";
-import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
 import { HERMES_BASE_PATH } from "@/lib/api";
+import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
+import {
+  rememberChatSessionId,
+  scheduleDashboardAuthReload,
+} from "@/lib/chatRecovery";
 
 import { cn } from "@/lib/utils";
 import { AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
@@ -40,12 +44,13 @@ interface SessionInfo {
   cwd?: string;
   model?: string;
   provider?: string;
+  session_id?: string;
   credential_warning?: string;
 }
 
 interface RpcEnvelope {
   method?: string;
-  params?: { type?: string; payload?: unknown };
+  params?: { type?: string; session_id?: string; payload?: unknown };
 }
 
 const TOOL_LIMIT = 20;
@@ -174,8 +179,15 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
     ws.addEventListener("error", () => surface(DISCONNECTED));
 
     ws.addEventListener("close", (ev) => {
-      if (ev.code === 4401 || ev.code === 4403) {
-        surface(`events feed rejected (${ev.code}) — reload the page`);
+      if (ev.code === 4401) {
+        const reloadQueued = scheduleDashboardAuthReload();
+        surface(
+          reloadQueued
+            ? "events feed token expired — reloading dashboard"
+            : "events feed rejected (4401) — reload the page",
+        );
+      } else if (ev.code === 4403) {
+        surface("events feed rejected (4403) — reload the page");
       } else if (ev.code !== 1000) {
         surface(DISCONNECTED);
       }
@@ -194,7 +206,21 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
         return;
       }
 
-      const { type, payload } = frame.params;
+      const { type, payload, session_id: eventSessionId } = frame.params;
+
+      if (type === "session.info") {
+        const infoPayload = payload as SessionInfo | undefined;
+        // eventSessionId is the short, in-process TUI gateway id. It is useful
+        // for routing live events, but it is not a durable SessionDB id and
+        // cannot be used with /resume after a dashboard reload. Prefer the
+        // persistent id included in the session.info payload; only older
+        // backends without that field fall back to the event envelope.
+        rememberChatSessionId(infoPayload?.session_id ?? eventSessionId);
+        if (payload) {
+          setInfo((prev) => ({ ...prev, ...infoPayload }));
+        }
+        return;
+      }
 
       if (type === "tool.start") {
         const p = payload as

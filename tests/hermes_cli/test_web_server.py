@@ -125,6 +125,128 @@ class TestWebServerEndpoints:
         assert "hermes_home" in data
         assert "active_sessions" in data
 
+    def test_get_sessions_defaults_hide_cron_and_empty_sessions(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="visible-cli",
+                source="cli",
+                model="test-model",
+            )
+            db.set_session_title("visible-cli", "Visible CLI")
+            db.append_message("visible-cli", role="user", content="hello dashboard")
+            db.end_session("visible-cli", "test")
+
+            db.create_session(
+                session_id="cron-with-message",
+                source="cron",
+                model="test-model",
+            )
+            db.set_session_title("cron-with-message", "Cron Should Hide")
+            db.append_message("cron-with-message", role="user", content="cron output")
+            db.end_session("cron-with-message", "test")
+
+            db.create_session(
+                session_id="empty-cli",
+                source="cli",
+                model="test-model",
+            )
+            db.set_session_title("empty-cli", "Empty Should Hide")
+            db.end_session("empty-cli", "test")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions?limit=20&offset=0")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        ids = [s["id"] for s in data["sessions"]]
+
+        assert ids == ["visible-cli"]
+        assert data["total"] == 1
+        assert data["limit"] == 20
+        assert data["offset"] == 0
+
+        session = data["sessions"][0]
+        assert session["source"] == "cli"
+        assert session["message_count"] == 1
+        assert session["title"] == "Visible CLI"
+
+    def test_get_most_recent_session_filters_internal_and_empty_rows(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="older-cli",
+                source="cli",
+                model="test-model",
+            )
+            db.append_message("older-cli", role="user", content="older user work")
+            db.end_session("older-cli", "test")
+
+            db.create_session(
+                session_id="newer-cron",
+                source="cron",
+                model="test-model",
+            )
+            db.append_message("newer-cron", role="user", content="cron output")
+            db.end_session("newer-cron", "test")
+
+            db.create_session(
+                session_id="newer-empty-cli",
+                source="cli",
+                model="test-model",
+            )
+            db.end_session("newer-empty-cli", "test")
+
+            db.create_session(
+                session_id="latest-cli",
+                source="cli",
+                model="test-model",
+            )
+            db.append_message("latest-cli", role="user", content="latest user work")
+            db.end_session("latest-cli", "test")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/most-recent")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["session_id"] == "latest-cli"
+        assert data["source"] == "cli"
+        assert data["title"] == ""
+
+    def test_get_most_recent_session_returns_null_without_resumable_rows(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="cron-only",
+                source="cron",
+                model="test-model",
+            )
+            db.append_message("cron-only", role="user", content="cron output")
+            db.end_session("cron-only", "test")
+
+            db.create_session(
+                session_id="empty-cli-only",
+                source="cli",
+                model="test-model",
+            )
+            db.end_session("empty-cli-only", "test")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/most-recent")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"session_id": None}
+
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config
         import hermes_cli.web_server as web_server
@@ -2082,6 +2204,13 @@ class TestPtyWebSocket:
         monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
         self.token = ws._SESSION_TOKEN
         self.client = TestClient(ws.app)
+        yield
+        for session in list(getattr(ws, "_dashboard_pty_sessions", {}).values()):
+            try:
+                session.bridge.close()
+            except Exception:
+                pass
+        getattr(ws, "_dashboard_pty_sessions", {}).clear()
 
     def _url(self, token: str | None = None, **params: str) -> str:
         tok = token if token is not None else self.token
@@ -2295,6 +2424,85 @@ class TestPtyWebSocket:
         assert url.startswith("ws://127.0.0.1:9119/api/pub?")
         assert "channel=abc-123" in url
         assert "token=" in url
+
+    def test_attach_failure_detaches_dead_websocket(self, monkeypatch):
+        """A client drop during buffered replay must not leave session.ws stuck.
+
+        The next reconnect relies on session.ws being clear; otherwise the PTY
+        session can sit attached to a dead socket until a later writer failure.
+        """
+        class FakeBridge:
+            def close(self):
+                pass
+
+        session = self.ws_module._DashboardPtySession(FakeBridge())
+
+        async def fake_get_session(**_kwargs):
+            return session
+
+        async def fake_attach(sess, ws):
+            sess.ws = ws
+            raise RuntimeError("client dropped during replay")
+
+        monkeypatch.setattr(
+            self.ws_module, "_get_dashboard_pty_session", fake_get_session
+        )
+        monkeypatch.setattr(
+            self.ws_module, "_attach_dashboard_pty_session", fake_attach
+        )
+
+        with self.client.websocket_connect(self._url(channel="attach-fail")) as conn:
+            msg = conn.receive_text()
+
+        assert "Chat connection failed" in msg
+        assert session.ws is None
+
+    def test_channel_disconnect_keeps_pty_alive_for_reconnect(self, monkeypatch):
+        import time
+
+        class FakeBridge:
+            def __init__(self):
+                self.closed = 0
+                self.writes: list[bytes] = []
+                self.resizes: list[tuple[int, int]] = []
+
+            def read(self, timeout):
+                time.sleep(min(float(timeout or 0), 0.01))
+                return b""
+
+            def write(self, raw):
+                self.writes.append(raw)
+
+            def resize(self, cols, rows):
+                self.resizes.append((cols, rows))
+
+            def close(self):
+                self.closed += 1
+
+        fake = FakeBridge()
+        spawns: list[FakeBridge] = []
+        monkeypatch.setattr(
+            self.ws_module,
+            "_resolve_chat_argv",
+            lambda resume=None, sidecar_url=None: (["/bin/cat"], None, None),
+        )
+        monkeypatch.setattr(
+            self.ws_module.PtyBridge,
+            "spawn",
+            classmethod(lambda cls, *a, **k: spawns.append(fake) or fake),
+        )
+
+        with self.client.websocket_connect(self._url(channel="persist-test")) as conn:
+            conn.send_bytes(b"first\n")
+
+        time.sleep(0.05)
+        assert fake.closed == 0
+
+        with self.client.websocket_connect(self._url(channel="persist-test")) as conn:
+            conn.send_bytes(b"second\n")
+
+        assert len(spawns) == 1
+        assert fake.writes == [b"first\n", b"second\n"]
 
     def test_pub_broadcasts_to_events_subscribers(self, monkeypatch):
         """Frame written to /api/pub is rebroadcast verbatim to every
