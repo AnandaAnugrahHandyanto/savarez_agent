@@ -838,6 +838,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
                 if "mention_patterns" in platform_cfg:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
+                if plat == Platform.WHATSAPP and "voice_bypass_mention" in platform_cfg:
+                    bridged["voice_bypass_mention"] = platform_cfg["voice_bypass_mention"]
                 if "exclusive_bot_mentions" in platform_cfg:
                     bridged["exclusive_bot_mentions"] = platform_cfg["exclusive_bot_mentions"]
                 if plat == Platform.TELEGRAM and "observe_unmentioned_group_messages" in platform_cfg:
@@ -1104,6 +1106,8 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["WHATSAPP_REQUIRE_MENTION"] = str(whatsapp_cfg["require_mention"]).lower()
                 if "mention_patterns" in whatsapp_cfg and not os.getenv("WHATSAPP_MENTION_PATTERNS"):
                     os.environ["WHATSAPP_MENTION_PATTERNS"] = json.dumps(whatsapp_cfg["mention_patterns"])
+                if "voice_bypass_mention" in whatsapp_cfg and not os.getenv("WHATSAPP_VOICE_BYPASS_MENTION"):
+                    os.environ["WHATSAPP_VOICE_BYPASS_MENTION"] = str(whatsapp_cfg["voice_bypass_mention"]).lower()
                 frc = whatsapp_cfg.get("free_response_chats")
                 if frc is not None and not os.getenv("WHATSAPP_FREE_RESPONSE_CHATS"):
                     if isinstance(frc, list):

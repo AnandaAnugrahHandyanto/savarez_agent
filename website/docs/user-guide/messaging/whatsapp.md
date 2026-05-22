@@ -115,10 +115,17 @@ unauthorized_dm_behavior: pair
 
 whatsapp:
   unauthorized_dm_behavior: ignore
+  require_mention: true
+  mention_patterns:
+    - "(^|\\W)@?hermes(\\W|$)"
+  voice_bypass_mention: true
 ```
 
 - `unauthorized_dm_behavior: pair` is the global default. Unknown DM senders get a pairing code.
 - `whatsapp.unauthorized_dm_behavior: ignore` makes WhatsApp stay silent for unauthorized DMs, which is usually the better choice for a private number.
+- `whatsapp.require_mention: true` keeps group chats quiet unless the message explicitly addresses Hermes.
+- `whatsapp.mention_patterns` accepts regex wake words for group messages, for example `hey hermes`.
+- `whatsapp.voice_bypass_mention: true` lets group voice notes that pass the group policy reach Hermes even when the transcript does not include the wake word.
 
 Then start the gateway:
 

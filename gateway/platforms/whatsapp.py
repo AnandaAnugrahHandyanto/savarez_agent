@@ -237,6 +237,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
     - allow_from: List of sender IDs allowed in DMs (when dm_policy="allowlist")
     - group_policy: "open" | "allowlist" | "disabled" — which groups are processed (default: "open")
     - group_allow_from: List of group JIDs allowed (when group_policy="allowlist")
+    - voice_bypass_mention: If true, group voice/audio messages that pass
+      group policy are processed even when require_mention is true.
     """
     
     # WhatsApp message limits — practical UX limit, not protocol max.
@@ -305,6 +307,14 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("WHATSAPP_REQUIRE_MENTION", "false").lower() in {"true", "1", "yes", "on"}
 
+    def _whatsapp_voice_bypass_mention(self) -> bool:
+        configured = self.config.extra.get("voice_bypass_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("WHATSAPP_VOICE_BYPASS_MENTION", "false").lower() in {"true", "1", "yes", "on"}
+
     def _whatsapp_free_response_chats(self) -> set[str]:
         raw = self.config.extra.get("free_response_chats")
         if raw is None:
@@ -341,6 +351,14 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if cid.endswith("@broadcast") or cid.endswith("@newsletter"):
             return True
         return False
+
+    @staticmethod
+    def _is_voice_message(data: Dict[str, Any]) -> bool:
+        """True for inbound WhatsApp voice/audio media messages."""
+        if not data.get("hasMedia"):
+            return False
+        media_type = str(data.get("mediaType") or "").strip().lower()
+        return "audio" in media_type or "ptt" in media_type
 
     def _is_dm_allowed(self, sender_id: str) -> bool:
         """Check whether a DM from the given sender should be processed."""
@@ -475,6 +493,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if chat_id in self._whatsapp_free_response_chats():
             return True
         if not self._whatsapp_require_mention():
+            return True
+        if self._whatsapp_voice_bypass_mention() and self._is_voice_message(data):
             return True
         body = str(data.get("body") or "").strip()
         if body.startswith("/"):

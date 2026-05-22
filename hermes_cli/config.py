@@ -1386,6 +1386,7 @@ DEFAULT_CONFIG = {
 
     # WhatsApp platform settings (gateway mode)
     "whatsapp": {
+        "voice_bypass_mention": False,   # If true, group voice messages bypass require_mention after group allowlist checks
         # Reply prefix prepended to every outgoing WhatsApp message.
         # Default (None) uses the built-in "⚕ *Hermes Agent*" header.
         # Set to "" (empty string) to disable the header entirely.
