@@ -285,23 +285,27 @@ async function startSocket() {
       }
 
       // Handle !fromMe messages (from other people) based on mode.
-      // Self-chat mode only responds to the user's own messages to
-      // themselves — stranger DMs / group pings must never reach the
-      // Python gateway, otherwise a pairing-code reply fires in response
-      // to arbitrary incoming messages (#8389).
+      // Self-chat mode: block stranger DMs to prevent replying to
+      // random people with pairing-code replies (#8389).
+      // Group messages from other people ARE forwarded — the Python
+      // gateway handles require_mention / group_policy filtering.
       if (!msg.key.fromMe) {
         if (WHATSAPP_MODE === 'self-chat') {
-          try {
-            console.log(JSON.stringify({
-              event: 'ignored',
-              reason: 'self_chat_mode_rejects_non_self',
-              chatId,
-              senderId,
-            }));
-          } catch {}
-          continue;
+          if (!isGroup) {
+            try {
+              console.log(JSON.stringify({
+                event: 'ignored',
+                reason: 'self_chat_mode_rejects_non_self_dm',
+                chatId,
+                senderId,
+              }));
+            } catch {}
+            continue;
+          }
         }
-        if (!matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+        // Allow group messages from anyone — the Python gateway
+        // handles group_policy + require_mention filtering.
+        if (!isGroup && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
           try {
             console.log(JSON.stringify({
               event: 'ignored',

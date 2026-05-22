@@ -261,9 +261,15 @@ class WhatsAppAdapter(BasePlatformAdapter):
         ))
         self._reply_prefix: Optional[str] = config.extra.get("reply_prefix")
         self._dm_policy = str(config.extra.get("dm_policy") or os.getenv("WHATSAPP_DM_POLICY", "open")).strip().lower()
-        self._allow_from = self._coerce_allow_list(config.extra.get("allow_from") or config.extra.get("allowFrom"))
+        allow_from = config.extra.get("allow_from") or config.extra.get("allowFrom")
+        if allow_from is None:
+            allow_from = os.getenv("WHATSAPP_ALLOWED_USERS", "")
+        self._allow_from = self._coerce_allow_list(allow_from)
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "open")).strip().lower()
-        self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
+        group_allow_from = config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom")
+        if group_allow_from is None:
+            group_allow_from = os.getenv("WHATSAPP_GROUP_ALLOWED_USERS", "")
+        self._group_allow_from = self._coerce_allow_list(group_allow_from)
         self._mention_patterns = self._compile_mention_patterns()
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None
@@ -342,12 +348,16 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return True
         return False
 
+    @staticmethod
+    def _allow_list_contains(allowed: set[str], value: str) -> bool:
+        return "*" in allowed or value in allowed
+
     def _is_dm_allowed(self, sender_id: str) -> bool:
         """Check whether a DM from the given sender should be processed."""
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
-            return sender_id in self._allow_from
+            return self._allow_list_contains(self._allow_from, sender_id)
         # "open" — all DMs allowed
         return True
 
@@ -356,7 +366,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if self._group_policy == "disabled":
             return False
         if self._group_policy == "allowlist":
-            return chat_id in self._group_allow_from
+            return self._allow_list_contains(self._group_allow_from, chat_id)
         # "open" — all groups allowed
         return True
 

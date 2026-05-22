@@ -298,6 +298,57 @@ def test_config_bridges_whatsapp_allow_from(monkeypatch, tmp_path):
     assert __import__("os").environ["WHATSAPP_ALLOWED_USERS"] == "6281234567890@s.whatsapp.net"
 
 
+# --- Environment variable parity for adapter-level policy gates ---
+
+
+def test_env_whatsapp_allowed_users_feeds_dm_policy_allowlist(monkeypatch):
+    """WHATSAPP_ALLOWED_USERS must gate Python-side DM policy, not only the Node bridge."""
+    monkeypatch.setenv("WHATSAPP_DM_POLICY", "allowlist")
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "6281234567890@s.whatsapp.net")
+
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+
+    adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={}))
+
+    assert adapter._should_process_message(_dm_message("hello")) is True
+    assert adapter._should_process_message(
+        _dm_message("hello", senderId="6280000000000@s.whatsapp.net")
+    ) is False
+
+
+def test_env_whatsapp_group_allowed_users_feeds_group_policy_allowlist(monkeypatch):
+    """WHATSAPP_GROUP_ALLOWED_USERS must gate Python-side group policy."""
+    monkeypatch.setenv("WHATSAPP_GROUP_POLICY", "allowlist")
+    monkeypatch.setenv("WHATSAPP_GROUP_ALLOWED_USERS", "120363001234567890@g.us")
+
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+
+    adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={}))
+
+    assert adapter._should_process_message(_group_message("/status")) is True
+    assert adapter._should_process_message(
+        _group_message("/status", chatId="999999999999@g.us")
+    ) is False
+
+
+def test_whatsapp_wildcard_allowlist_matches_legacy_allow_all(monkeypatch):
+    monkeypatch.setenv("WHATSAPP_DM_POLICY", "allowlist")
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
+    monkeypatch.setenv("WHATSAPP_GROUP_POLICY", "allowlist")
+    monkeypatch.setenv("WHATSAPP_GROUP_ALLOWED_USERS", "*")
+
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+
+    adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={}))
+
+    assert adapter._should_process_message(
+        _dm_message("hello", senderId="6280000000000@s.whatsapp.net")
+    ) is True
+    assert adapter._should_process_message(
+        _group_message("/status", chatId="999999999999@g.us")
+    ) is True
+
+
 # --- Broadcast / status / newsletter pseudo-chats are always dropped ---
 
 

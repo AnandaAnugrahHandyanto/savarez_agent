@@ -115,10 +115,47 @@ unauthorized_dm_behavior: pair
 
 whatsapp:
   unauthorized_dm_behavior: ignore
+  dm_policy: open              # open | allowlist | disabled
+  group_policy: allowlist      # open | allowlist | disabled
+  group_allow_from:
+    - "123456789@g.us"
+  require_mention: true
+  mention_patterns:
+    - "hermes:"
+    - "/hermes"
 ```
 
 - `unauthorized_dm_behavior: pair` is the global default. Unknown DM senders get a pairing code.
 - `whatsapp.unauthorized_dm_behavior: ignore` makes WhatsApp stay silent for unauthorized DMs, which is usually the better choice for a private number.
+- `dm_policy` controls direct messages. Use `open` to accept DMs, `allowlist` to require `allow_from`, or `disabled` to drop DMs at the adapter level.
+- `allow_from` is the config-file equivalent of `WHATSAPP_ALLOWED_USERS` when `dm_policy: allowlist` is used.
+- `group_policy` controls group chats. Use `open` for all groups, `allowlist` to require `group_allow_from`, or `disabled` to ignore all group messages.
+- `group_allow_from` contains WhatsApp group JIDs such as `123456789@g.us`. It is only required when `group_policy: allowlist` is used.
+- `require_mention: true` makes groups quiet unless the message mentions the bot, replies to the bot, starts with `/`, or matches `mention_patterns`.
+- `free_response_chats` can be used for group JIDs that should bypass mention-only gating.
+
+### Group behavior examples
+
+Ignore all WhatsApp groups and keep DMs available:
+
+```yaml
+whatsapp:
+  dm_policy: open
+  group_policy: disabled
+```
+
+Only answer in selected groups, and only when explicitly invoked:
+
+```yaml
+whatsapp:
+  group_policy: allowlist
+  group_allow_from:
+    - "123456789@g.us"
+  require_mention: true
+  mention_patterns:
+    - "hermes:"
+    - "/hermes"
+```
 
 Then start the gateway:
 
@@ -213,6 +250,7 @@ When the agent calls tools (web search, file operations, etc.), WhatsApp display
 | **Bot stops working after WhatsApp update** | Update Hermes to get the latest bridge version, then re-pair. |
 | **macOS: "Node.js not installed" but node works in terminal** | launchd services don't inherit your shell PATH. Run `hermes gateway install` to re-snapshot your current PATH into the plist, then `hermes gateway start`. See the [Gateway Service docs](./index.md#macos-launchd) for details. |
 | **Messages not being received** | Verify `WHATSAPP_ALLOWED_USERS` includes the sender's number (with country code, no `+` or spaces), or set it to `*` to allow everyone. Set `WHATSAPP_DEBUG=true` in `.env` and restart the gateway to see raw message events in `bridge.log`. |
+| **Bot ignores group messages** | Check `whatsapp.group_policy`. If it is `allowlist`, make sure the group JID is listed in `whatsapp.group_allow_from` or `WHATSAPP_GROUP_ALLOWED_USERS`. If `require_mention` is enabled, mention the bot, reply to a bot message, start with `/`, or match one of the configured `mention_patterns`. |
 | **Bot replies to strangers with a pairing code** | Set `whatsapp.unauthorized_dm_behavior: ignore` in `~/.hermes/config.yaml` if you want unauthorized DMs to be silently ignored instead. |
 
 ---
