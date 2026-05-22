@@ -4,16 +4,20 @@ Covers:
 - POST /v1/runs — start a run (202)
 - GET /v1/runs/{run_id} — poll run status
 - GET /v1/runs/{run_id}/events — SSE event stream
+- POST /v1/runs/{run_id}/events — ingest external run events
+- GET /v1/runs/{run_id}/events/ws — WebSocket event stream
 - POST /v1/runs/{run_id}/stop — interrupt a running agent
 - Auth, error handling, and cleanup
 """
 
 import asyncio
+import json
+import time as _time
 import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
-from aiohttp import web
+from aiohttp import WSMsgType, web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
@@ -47,6 +51,8 @@ def _create_runs_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/v1/runs", adapter._handle_runs)
     app.router.add_get("/v1/runs/{run_id}", adapter._handle_get_run)
     app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
+    app.router.add_post("/v1/runs/{run_id}/events", adapter._handle_post_run_event)
+    app.router.add_get("/v1/runs/{run_id}/events/ws", adapter._handle_run_events_ws)
     app.router.add_post("/v1/runs/{run_id}/approval", adapter._handle_run_approval)
     app.router.add_post("/v1/runs/{run_id}/stop", adapter._handle_stop_run)
     return app
@@ -224,6 +230,9 @@ class TestRunStatus:
                 assert status["output"] == "done"
                 assert status["usage"]["total_tokens"] == 6
                 assert status["last_event"] == "run.completed"
+                assert status["event_count"] >= 1
+                assert status["events"][-1]["event"] == "run.completed"
+                assert status["events"][-1]["output"] == "done"
 
     @pytest.mark.asyncio
     async def test_status_reflects_explicit_session_id(self, adapter):
@@ -368,6 +377,188 @@ class TestRunEvents:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.get("/v1/runs/run_any/events")
         assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_run_events_record_tool_call_ids_and_redact_args(self, adapter):
+        app = _create_runs_app(adapter)
+
+        def _create_agent(**kwargs):
+            mock_agent = MagicMock()
+            mock_agent.session_prompt_tokens = 0
+            mock_agent.session_completion_tokens = 0
+            mock_agent.session_total_tokens = 0
+
+            def _run_conversation(**_run_kwargs):
+                kwargs["tool_progress_callback"](
+                    "tool.started",
+                    "web_search",
+                    "web_search query",
+                    {"query": "hermes", "api_key": "secret"},
+                    tool_call_id="call_tool_1",
+                )
+                kwargs["tool_progress_callback"](
+                    "tool.completed",
+                    "web_search",
+                    None,
+                    None,
+                    duration=0.2,
+                    is_error=False,
+                    tool_call_id="call_tool_1",
+                )
+                return {"final_response": "done"}
+
+            mock_agent.run_conversation.side_effect = _run_conversation
+            return mock_agent
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=_create_agent):
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                data = await resp.json()
+                run_id = data["run_id"]
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/events")
+                assert events_resp.status == 200
+                events_body = await events_resp.text()
+                assert "tool.started" in events_body
+                assert "tool.completed" in events_body
+                assert "call_tool_1" in events_body
+                assert "secret" not in events_body
+
+                status_resp = await cli.get(f"/v1/runs/{run_id}")
+                status = await status_resp.json()
+                assert any(event.get("tool_call_id") == "call_tool_1" for event in status["events"])
+                started = next(event for event in status["events"] if event["event"] == "tool.started")
+                assert started["args"]["api_key"] == "[redacted]"
+
+    @pytest.mark.asyncio
+    async def test_post_run_event_ingests_status_and_replays_websocket(self, adapter):
+        app = _create_runs_app(adapter)
+        adapter._set_run_status("run_external", "running", created_at=_time.time())
+
+        async with TestClient(TestServer(app)) as cli:
+            started_resp = await cli.post(
+                "/v1/runs/run_external/events",
+                json={
+                    "event": "tool.started",
+                    "tool": "terminal",
+                    "tool_call_id": "call_external_1",
+                    "args": {"command": "echo ok", "token": "secret"},
+                },
+            )
+            assert started_resp.status == 200
+
+            completed_resp = await cli.post(
+                "/v1/runs/run_external/events",
+                json={"event": "run.completed", "output": "external done"},
+            )
+            assert completed_resp.status == 200
+
+            status_resp = await cli.get("/v1/runs/run_external")
+            status = await status_resp.json()
+            assert status["status"] == "completed"
+            assert status["output"] == "external done"
+            assert status["events"][0]["args"]["token"] == "[redacted]"
+
+            async with cli.ws_connect("/v1/runs/run_external/events/ws") as ws:
+                first = await ws.receive(timeout=5)
+                second = await ws.receive(timeout=5)
+                assert first.type == WSMsgType.TEXT
+                assert second.type == WSMsgType.TEXT
+                replayed = [json.loads(first.data), json.loads(second.data)]
+                assert [event["event"] for event in replayed] == ["tool.started", "run.completed"]
+                assert [event["sequence"] for event in replayed] == [1, 2]
+
+    @pytest.mark.asyncio
+    async def test_post_run_event_dedupes_retried_sequence_for_status_and_replay(self, adapter):
+        app = _create_runs_app(adapter)
+        adapter._set_run_status("run_retry", "running", created_at=_time.time())
+
+        async with TestClient(TestServer(app)) as cli:
+            first_resp = await cli.post(
+                "/v1/runs/run_retry/events",
+                json={
+                    "event": "tool.started",
+                    "sequence": 7,
+                    "tool": "terminal",
+                    "tool_call_id": "call_retry_1",
+                },
+            )
+            assert first_resp.status == 200
+
+            retry_resp = await cli.post(
+                "/v1/runs/run_retry/events",
+                json={
+                    "event": "tool.started",
+                    "sequence": 7,
+                    "tool": "terminal",
+                    "tool_call_id": "call_retry_1",
+                    "preview": "duplicate retry",
+                },
+            )
+            assert retry_resp.status == 200
+            retry_data = await retry_resp.json()
+            assert retry_data["duplicate"] is True
+
+            completed_resp = await cli.post(
+                "/v1/runs/run_retry/events",
+                json={"event": "run.completed", "sequence": 8, "output": "done"},
+            )
+            assert completed_resp.status == 200
+
+            status_resp = await cli.get("/v1/runs/run_retry")
+            status = await status_resp.json()
+            assert status["tool_call_count"] == 1
+            assert [event["sequence"] for event in status["events"]] == [7, 8]
+
+            async with cli.ws_connect("/v1/runs/run_retry/events/ws") as ws:
+                first = await ws.receive(timeout=5)
+                second = await ws.receive(timeout=5)
+                replayed = [json.loads(first.data), json.loads(second.data)]
+                assert [event["sequence"] for event in replayed] == [7, 8]
+
+    @pytest.mark.asyncio
+    async def test_post_run_event_requires_auth(self, auth_adapter):
+        app = _create_runs_app(auth_adapter)
+        auth_adapter._set_run_status("run_auth_post", "running", created_at=_time.time())
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs/run_auth_post/events",
+                json={"event": "run.completed", "output": "done"},
+            )
+
+        assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_run_event_websocket_accepts_query_token(self, auth_adapter):
+        app = _create_runs_app(auth_adapter)
+        auth_adapter._set_run_status("run_auth", "completed", created_at=_time.time(), last_event="run.completed")
+        auth_adapter._push_run_event(
+            "run_auth",
+            {"event": "run.completed", "run_id": "run_auth", "timestamp": _time.time(), "output": "done"},
+        )
+
+        async with TestClient(TestServer(app)) as cli:
+            async with cli.ws_connect("/v1/runs/run_auth/events/ws?token=sk-secret") as ws:
+                msg = await ws.receive(timeout=5)
+                assert msg.type == WSMsgType.TEXT
+                event = json.loads(msg.data)
+                assert event["event"] == "run.completed"
+                assert event["sequence"] == 1
+
+    @pytest.mark.asyncio
+    async def test_run_event_websocket_rejects_disallowed_origin(self, auth_adapter):
+        app = _create_runs_app(auth_adapter)
+        auth_adapter._set_run_status("run_origin", "running", created_at=_time.time())
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(
+                "/v1/runs/run_origin/events/ws?token=sk-secret",
+                headers={"Origin": "http://evil.example"},
+            )
+
+        assert resp.status == 403
 
 
 # ---------------------------------------------------------------------------
