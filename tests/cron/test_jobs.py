@@ -994,3 +994,13 @@ class TestGetActiveSkillRefs:
         create_job(prompt="Job B", schedule="every 2h", skills=["shared-skill"])
         refs = get_active_skill_refs()
         assert refs == {"shared-skill"}
+
+    def test_non_iterable_skills_falls_back_to_legacy_skill(self, caplog):
+        """Corrupted 'skills' field (non-iterable) must not drop the legacy 'skill' value."""
+        import logging
+        bad_job = {"skill": "fallback-skill", "skills": 42}
+        with patch("cron.jobs.list_jobs", return_value=[bad_job]), \
+             caplog.at_level(logging.WARNING, logger="cron.jobs"):
+            refs = get_active_skill_refs()
+        assert "fallback-skill" in refs
+        assert any("non-iterable" in r.message for r in caplog.records)
