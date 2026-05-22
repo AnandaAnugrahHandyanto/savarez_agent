@@ -32,14 +32,29 @@ logger = logging.getLogger(__name__)
 # them as class attributes (``_MEMORY_REVIEW_PROMPT`` etc.) for back-compat;
 # the actual text lives here so future edits are one-place.
 _MEMORY_REVIEW_PROMPT = (
-    "Review the conversation above and consider saving to memory if appropriate.\n\n"
-    "Focus on:\n"
-    "1. Has the user revealed things about themselves — their persona, desires, "
-    "preferences, or personal details worth remembering?\n"
-    "2. Has the user expressed expectations about how you should behave, their work "
-    "style, or ways they want you to operate?\n\n"
-    "If something stands out, save it using the memory tool. "
-    "If nothing is worth saving, just say 'Nothing to save.' and stop."
+    "Review the conversation above and consider saving to memory if "
+    "appropriate.\n\n"
+    "Memory has TWO distinct stores — pick the right one for each fact "
+    "(#30220):\n"
+    "  • USER.md  (memory tool, target='user'): who the user is. "
+    "Communication style, preferences for tone/format/verbosity, work "
+    "style, expectations about how you should behave, personal details "
+    "the user revealed (location, role, projects they care about, "
+    "languages they prefer to operate in).\n"
+    "  • MEMORY.md (memory tool, target='memory'): facts about the "
+    "ENVIRONMENT and current state of operations. Tool quirks, project "
+    "conventions, recurring config gotchas, paths and endpoints that "
+    "matter, things learned about the system you are operating in.\n\n"
+    "One fact goes to ONE store. A user-preference lesson belongs in "
+    "USER.md (or in a skill — but that is the combined/skill review's "
+    "job, not this prompt's). Never duplicate the same fact across "
+    "USER.md and MEMORY.md.\n\n"
+    "If something stands out, save it once, in the right store, using "
+    "the memory tool with the matching target. If nothing durable "
+    "stands out, say 'Nothing to save.' and stop. 'Nothing to save.' "
+    "is a valid and frequent outcome — many sessions don't reveal "
+    "anything new about the user or the environment, and saving "
+    "low-signal entries just clutters the system prompt."
 )
 
 _SKILL_REVIEW_PROMPT = (
