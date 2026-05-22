@@ -287,6 +287,8 @@ _CREDENTIAL_PATTERN = re.compile(
 # Supports any non-} characters in the variable name (hyphens, dots, etc.)
 # so providers like MY-VAR or my.var work correctly.
 _ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
+_PATH_ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+_MCP_REQUIRED_PATH_DIRS = ("/usr/bin", "/bin")
 
 
 # ---------------------------------------------------------------------------
@@ -309,7 +311,44 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
             env[key] = value
     if user_env:
         env.update(user_env)
+    env["PATH"] = _sanitize_mcp_path(env.get("PATH", ""), env)
     return env
+
+
+def _sanitize_mcp_path(path_value: Any, env: Optional[dict] = None) -> str:
+    """Return a robust PATH for stdio MCP subprocesses.
+
+    MCP subprocesses inherit a deliberately filtered environment, so a malformed
+    parent PATH such as ``$HOME/.local/bin:$PATH`` can otherwise leave literal
+    variable references in the child environment and omit basic system tools.
+    Expand simple variable references, drop empty/duplicate entries, and ensure
+    core POSIX command locations are available.
+    """
+    env = env or {}
+    raw_path = str(path_value or "")
+    fallback_path = os.defpath or os.pathsep.join(_MCP_REQUIRED_PATH_DIRS)
+    parts: list[str] = []
+
+    def replacement(match: re.Match) -> str:
+        name = match.group(1) or match.group(2) or ""
+        if name == "PATH":
+            return fallback_path
+        value = env.get(name, "")
+        return str(value) if value is not None else ""
+
+    source = raw_path if raw_path else fallback_path
+    for entry in source.split(os.pathsep):
+        expanded = _PATH_ENV_VAR_PATTERN.sub(replacement, entry.strip())
+        expanded = os.path.expanduser(expanded)
+        for subentry in expanded.split(os.pathsep):
+            subentry = subentry.strip()
+            if subentry and subentry not in parts:
+                parts.append(subentry)
+
+    for directory in _MCP_REQUIRED_PATH_DIRS:
+        if directory not in parts:
+            parts.append(directory)
+    return os.pathsep.join(parts)
 
 
 def _sanitize_error(text: str) -> str:

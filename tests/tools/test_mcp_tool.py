@@ -1318,7 +1318,7 @@ class TestBuildSafeEnv:
             result = _build_safe_env(None)
 
         # Safe vars present
-        assert result["PATH"] == "/usr/bin"
+        assert result["PATH"] == os.pathsep.join(["/usr/bin", "/bin"])
         assert result["HOME"] == "/home/test"
         assert result["USER"] == "test"
         assert result["LANG"] == "en_US.UTF-8"
@@ -1334,7 +1334,7 @@ class TestBuildSafeEnv:
         with patch.dict("os.environ", {"PATH": "/usr/bin"}, clear=True):
             result = _build_safe_env({"MY_CUSTOM_VAR": "hello"})
 
-        assert result["PATH"] == "/usr/bin"
+        assert result["PATH"] == os.pathsep.join(["/usr/bin", "/bin"])
         assert result["MY_CUSTOM_VAR"] == "hello"
 
     def test_user_env_overrides_safe(self):
@@ -1344,7 +1344,60 @@ class TestBuildSafeEnv:
         with patch.dict("os.environ", {"PATH": "/usr/bin"}, clear=True):
             result = _build_safe_env({"PATH": "/custom/bin"})
 
-        assert result["PATH"] == "/custom/bin"
+        assert result["PATH"] == os.pathsep.join(["/custom/bin", "/usr/bin", "/bin"])
+
+    def test_sanitizes_literal_path_token_and_ensures_system_bins(self):
+        """Literal $PATH entries are expanded to safe defaults for MCP subprocesses."""
+        from tools.mcp_tool import _build_safe_env
+
+        fake_path = os.pathsep.join([
+            "/home/test/.local/bin",
+            "$PATH",
+            "/home/test/.local/bin",
+            "",
+            "/opt/homebrew/bin",
+        ])
+        with patch.dict("os.environ", {"PATH": fake_path, "HOME": "/home/test"}, clear=True):
+            result = _build_safe_env(None)
+
+        path_parts = result["PATH"].split(os.pathsep)
+        assert "$PATH" not in path_parts
+        assert "${PATH}" not in path_parts
+        assert path_parts.count("/home/test/.local/bin") == 1
+        assert "/usr/bin" in path_parts
+        assert "/bin" in path_parts
+        assert "" not in path_parts
+
+    def test_sanitizes_configured_path_with_home_expansion(self):
+        """User-configured PATH overrides are sanitized too."""
+        from tools.mcp_tool import _build_safe_env
+
+        with patch.dict("os.environ", {"PATH": "/bad/bin", "HOME": "/home/test"}, clear=True):
+            result = _build_safe_env({"PATH": "$HOME/bin:${PATH}:/usr/bin"})
+
+        path_parts = result["PATH"].split(os.pathsep)
+        assert "$HOME/bin" not in path_parts
+        assert "${PATH}" not in path_parts
+        assert "/home/test/bin" in path_parts
+        assert "/usr/bin" in path_parts
+        assert "/bin" in path_parts
+        assert path_parts.count("/usr/bin") == 1
+
+    def test_sanitized_path_does_not_expand_filtered_parent_secrets(self):
+        """PATH expansion must not smuggle filtered parent env vars to MCP servers."""
+        from tools.mcp_tool import _build_safe_env
+
+        with patch.dict(
+            "os.environ",
+            {"PATH": "/usr/bin", "HOME": "/home/test", "SECRET_TOKEN": "super-secret"},
+            clear=True,
+        ):
+            result = _build_safe_env({"PATH": "$SECRET_TOKEN/bin:$HOME/bin"})
+
+        path_parts = result["PATH"].split(os.pathsep)
+        assert "super-secret/bin" not in path_parts
+        assert "/home/test/bin" in path_parts
+        assert all("SECRET_TOKEN" not in part for part in path_parts)
 
     def test_none_user_env(self):
         """None user_env still returns safe vars from os.environ."""
@@ -1354,7 +1407,7 @@ class TestBuildSafeEnv:
             result = _build_safe_env(None)
 
         assert isinstance(result, dict)
-        assert result["PATH"] == "/usr/bin"
+        assert result["PATH"] == os.pathsep.join(["/usr/bin", "/bin"])
         assert result["HOME"] == "/root"
 
     def test_secret_vars_excluded(self):
