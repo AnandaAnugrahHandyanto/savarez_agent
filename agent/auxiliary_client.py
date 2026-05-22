@@ -2867,12 +2867,14 @@ def _resolve_single_provider(
 
     Uses the existing provider resolution infrastructure where possible.
     """
-    # Reuse resolve_provider_client which handles provider→client mapping
-    client, resolved_model = resolve_provider_client(
+    # Reuse resolve_provider_client which handles provider→client mapping.
+    # Fallback-chain entries use base_url/api_key field names, but this
+    # resolver's endpoint override contract is explicit_*.
+    client, _resolved_model = resolve_provider_client(
         provider=provider,
-        model=model,
-        base_url=base_url,
-        api_key=api_key,
+        model=model or "",
+        explicit_base_url=base_url or "",
+        explicit_api_key=api_key or "",
     )
     return client
 
