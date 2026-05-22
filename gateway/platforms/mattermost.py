@@ -787,7 +787,16 @@ class MattermostAdapter(BasePlatformAdapter):
         sender_name = data.get("sender_name", "").lstrip("@") or sender_id
 
         # Thread support: if the post is in a thread, use root_id.
-        thread_id = post.get("root_id") or None
+        # When root_id is empty but CRT mode is enabled, the post itself IS
+        # the thread root — use post_id so progress/notification messages
+        # stay in the Thread instead of leaking to the channel.
+        _raw_root = post.get("root_id")
+        if _raw_root:
+            thread_id = _raw_root
+        elif self._reply_mode == "thread":
+            thread_id = post_id
+        else:
+            thread_id = None
 
         # Determine message type.
         file_ids = post.get("file_ids") or []
