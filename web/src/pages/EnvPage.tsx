@@ -35,6 +35,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useI18n } from "@/i18n";
+import type { Translations } from "@/i18n/types";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 
@@ -65,6 +66,30 @@ const PROVIDER_GROUPS: { prefix: string; name: string; priority: number }[] = [
   { prefix: "OPENROUTER_", name: "OpenRouter", priority: 12 },
   { prefix: "XIAOMI_", name: "Xiaomi MiMo", priority: 13 },
 ];
+
+/** Map provider display names to i18n keys under t.env */
+const PROVIDER_GROUP_I18N_KEYS: Record<string, keyof Translations["env"]> = {
+  "Nous Portal": "providerGroupNous",
+  Anthropic: "providerGroupAnthropic",
+  "DashScope (Qwen)": "providerGroupDashscope",
+  DeepSeek: "providerGroupDeepseek",
+  Gemini: "providerGroupGemini",
+  "GLM / Z.AI": "providerGroupZai",
+  "Hugging Face": "providerGroupHuggingface",
+  "Kimi / Moonshot": "providerGroupKimi",
+  "MiniMax (China)": "providerGroupMinimaxCn",
+  MiniMax: "providerGroupMinimax",
+  "OpenCode Go": "providerGroupOpenCodeGo",
+  "OpenCode Zen": "providerGroupOpenCodeZen",
+  OpenRouter: "providerGroupOpenrouter",
+  "Xiaomi MiMo": "providerGroupXiaomi",
+};
+
+function providerGroupLabel(groupName: string, t: Translations): string {
+  const key = PROVIDER_GROUP_I18N_KEYS[groupName];
+  if (key) return t.env[key];
+  return groupName;
+}
 
 function getProviderGroup(key: string): string {
   for (const g of PROVIDER_GROUPS) {
@@ -258,7 +283,7 @@ function EnvVarRow({
               size="icon"
               onClick={() => onReveal(varKey)}
               title={isRevealed ? t.env.hideValue : t.env.showValue}
-              aria-label={isRevealed ? `Hide ${varKey}` : `Reveal ${varKey}`}
+              aria-label={isRevealed ? `${t.env.ariaHide} ${varKey}` : `${t.env.ariaReveal} ${varKey}`}
             >
               {isRevealed ? <EyeOff /> : <Eye />}
             </Button>
@@ -393,7 +418,7 @@ function ProviderGroupCard({
             <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
           )}
           <span className="font-semibold text-sm tracking-wide">
-            {group.name === "Other" ? t.common.other : group.name}
+            {group.name === "Other" ? t.common.other : providerGroupLabel(group.name, t)}
           </span>
           {hasAnyConfigured && (
             <Badge tone="success" className="text-[0.6rem]">
@@ -506,15 +531,15 @@ export default function EnvPage() {
   // Scroll-to sub-nav in the page header
   const sections = useMemo(() => {
     const items: { id: string; label: string }[] = [
-      { id: "section-oauth", label: "OAuth" },
-      { id: "section-providers", label: "Providers" },
+      { id: "section-oauth", label: t.env.navOauth },
+      { id: "section-providers", label: t.env.navProviders },
     ];
     if (vars) {
       const categories = ["tool", "messaging", "setting"];
       const CATEGORY_LABELS: Record<string, string> = {
-        tool: "Tools",
-        messaging: "Messaging",
-        setting: "Settings",
+        tool: t.env.navTools,
+        messaging: t.env.navMessaging,
+        setting: t.env.navSettings,
       };
       for (const cat of categories) {
         const hasEntries = Object.values(vars).some(
@@ -526,7 +551,7 @@ export default function EnvPage() {
       }
     }
     return items;
-  }, [vars]);
+  }, [vars, t]);
 
   useLayoutEffect(() => {
     if (!vars) {
@@ -539,7 +564,7 @@ export default function EnvPage() {
     setAfterTitle(
       <nav
         className="flex shrink-0 flex-nowrap items-center gap-1"
-        aria-label="Jump to section"
+        aria-label={t.env.navAria}
       >
         {sections.map((s) => (
           <button

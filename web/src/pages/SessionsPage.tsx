@@ -351,7 +351,7 @@ function SessionRow({
           {snippet && <SnippetHighlight snippet={snippet} />}
           <div className="flex flex-wrap items-center gap-2">
             <Badge tone="outline" className="text-[10px]">
-              {session.source ?? "local"}
+              {session.source ?? t.sessions.sourceLocal}
             </Badge>
             {resumeInChatEnabled && (
               <Button

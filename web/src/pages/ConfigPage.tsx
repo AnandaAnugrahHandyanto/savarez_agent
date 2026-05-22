@@ -480,7 +480,7 @@ export default function ConfigPage() {
             onClick={() => setYamlMode(!yamlMode)}
             prefix={yamlMode ? <FormInput /> : <Code />}
           >
-            {yamlMode ? t.common.form : "YAML"}
+            {yamlMode ? t.common.form : t.config.rawYamlTab}
           </Button>
 
           {yamlMode ? (
@@ -650,9 +650,7 @@ export default function ConfigPage() {
             ? t.config.searchResults
             : prettyCategoryName(activeCategory),
         )}
-        description={`This will reset ${
-          (isSearching ? searchMatchedFields : activeFields).length
-        } field(s) to their default values.`}
+        description={t.config.confirmResetDescription}
         destructive
         confirmLabel={t.config.resetDefaults}
       />

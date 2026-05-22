@@ -62,6 +62,12 @@ export interface Translations {
     messaging: string;
     pluginLoadFailed: string;
     pluginNotRegistered: string;
+    copied: string;
+    installSuccess: string;
+    installFailed: string;
+    rescanFailed: string;
+    saveFailed: string;
+    removeSuccess: string;
   };
 
   // ── App shell ──
@@ -159,6 +165,7 @@ export interface Translations {
     resumeInChat: string;
     previousPage: string;
     nextPage: string;
+    sourceLocal: string;
     roles: {
       user: string;
       assistant: string;
@@ -192,6 +199,11 @@ export interface Translations {
     perDayAvg: string;
     acrossModels: string;
     inOut: string;
+    tokenAnalyticsHidden: string;
+    tokenAnalyticsDesc1: string;
+    tokenAnalyticsDesc2: string;
+    tokenAnalyticsDesc3: string;
+    tokenAnalyticsConfigure: string;
   };
 
   // ── Models page ──
@@ -205,6 +217,42 @@ export interface Translations {
     toolCalls: string;
     noModelsData: string;
     startSession: string;
+    modelSettings: string;
+    appliesToNewSessions: string;
+    mainModel: string;
+    unset: string;
+    change: string;
+    auxiliaryTasks: string;
+    overrideCount: string;
+    allAuto: string;
+    configure: string;
+    setMainModel: string;
+    tokenBarCacheRead: string;
+    tokenBarReasoning: string;
+    tokenBarInput: string;
+    tokenBarOutput: string;
+    badgeTools: string;
+    badgeVision: string;
+    badgeReasoning: string;
+    useAs: string;
+    current: string;
+    auxiliaryTask: string;
+    allAuxiliaryTasks: string;
+    mainBadge: string;
+    auxBadge: string;
+    ctxLabel: string;
+    outLabel: string;
+    auxTasksModalTitle: string;
+    resetAllToAuto: string;
+    auxTasksDesc: string;
+    autoUseMain: string;
+    providerDefault: string;
+    setAuxiliary: string;
+    resetAuxTitle: string;
+    resetAuxDesc: string;
+    resetAll: string;
+    auxTasksSummary: string;
+    sessionTokenUnavailable: string;
   };
 
   // ── Logs page ──
@@ -272,6 +320,7 @@ export interface Translations {
     refreshDashboard: string;
     removeConfirm: string;
     removeHint: string;
+    removeConfirmDesc: string;
     rescanHeading: string;
     rescanHint: string;
     runtimeHeading: string;
@@ -284,6 +333,15 @@ export interface Translations {
     versionBadge: string;
     showInSidebar: string;
     hideFromSidebar: string;
+    placeholderOwnerRepo: string;
+    orphanSeparator: string;
+    compressorLabel: string;
+    installSuccess: string;
+    installFailed: string;
+    rescanFailed: string;
+    saveFailed: string;
+    failed: string;
+    removeSuccess: string;
   };
 
   // ── Profiles page ──
@@ -336,6 +394,20 @@ export interface Translations {
     setupNeeded: string;
     disabledForCli: string;
     more: string;
+    categoryMlops: string;
+    categoryMlopsCloud: string;
+    categoryMlopsEval: string;
+    categoryMlopsInference: string;
+    categoryMlopsModels: string;
+    categoryMlopsTraining: string;
+    categoryMlopsVdb: string;
+    categoryMcp: string;
+    categoryRedTeaming: string;
+    categoryOcr: string;
+    categoryP5js: string;
+    categoryAi: string;
+    categoryUx: string;
+    categoryUi: string;
   };
 
   // ── Config page ──
@@ -350,6 +422,7 @@ export interface Translations {
     confirmResetScope: string;
     resetScopeToast: string;
     rawYaml: string;
+    rawYamlTab: string;
     searchResults: string;
     fields: string;
     noFieldsMatch: string;
@@ -360,6 +433,7 @@ export interface Translations {
     failedToLoadRaw: string;
     configImported: string;
     invalidJson: string;
+    confirmResetDescription: string;
     categories: {
       general: string;
       agent: string;
@@ -397,6 +471,28 @@ export interface Translations {
     replaceCurrentValue: string;
     showAdvanced: string;
     showValue: string;
+    providerGroupNous: string;
+    providerGroupAnthropic: string;
+    providerGroupDashscope: string;
+    providerGroupDeepseek: string;
+    providerGroupGemini: string;
+    providerGroupZai: string;
+    providerGroupHuggingface: string;
+    providerGroupKimi: string;
+    providerGroupMinimaxCn: string;
+    providerGroupMinimax: string;
+    providerGroupOpenCodeGo: string;
+    providerGroupOpenCodeZen: string;
+    providerGroupOpenrouter: string;
+    providerGroupXiaomi: string;
+    navOauth: string;
+    navProviders: string;
+    navTools: string;
+    navMessaging: string;
+    navSettings: string;
+    navAria: string;
+    ariaReveal: string;
+    ariaHide: string;
   };
 
   // ── OAuth ──
@@ -450,7 +546,18 @@ export interface Translations {
     switchTheme: string;
   };
 
-  // ── Achievements plugin (plugins/hermes-achievements) ──
+  // ── Chat page ──
+  chat: {
+    authFailed: string;
+    localhostOnly: string;
+    sessionEnded: string;
+    copyTooltip: string;
+    copyAria: string;
+    copyText: string;
+    copiedText: string;
+  };
+
+  // ── Chat page ──
   achievements: {
     hero: {
       kicker: string;
@@ -520,185 +627,7 @@ export interface Translations {
     empty: {
       no_secrets_header: string;
       no_secrets_body: string;
+      check_guide: string;
     };
-    filters: {
-      all_categories: string;
-      visibility_all: string;
-      visibility_unlocked: string;
-      visibility_discovered: string;
-      visibility_secret: string;
-    };
-    share: {
-      dialog_label: string;
-      header: string;
-      close: string;
-      rendering: string;
-      card_alt: string;
-      error_generic: string;
-      x_title: string;
-      x_button: string;
-      copy_title: string;
-      copy_button: string;
-      copied: string;
-      download_button: string;
-      hint: string;
-      clipboard_unsupported: string;
-      tweet_text: string;
-    };
-  };
-
-  // ── Kanban ──
-  kanban: {
-    loading: string;
-    loadFailed: string;
-    loadFailedHint: string;
-    board: string;
-    newBoard: string;
-    newBoardTitle: string;
-    newBoardDescription: string;
-    slug: string;
-    slugHint: string;
-    displayName: string;
-    displayNameHint: string;
-    description: string;
-    descriptionHint: string;
-    icon: string;
-    iconHint: string;
-    switchAfterCreate: string;
-    cancel: string;
-    creating: string;
-    createBoard: string;
-    search: string;
-    filterCards: string;
-    tenant: string;
-    allTenants: string;
-    assignee: string;
-    allProfiles: string;
-    showArchived: string;
-    lanesByProfile: string;
-    nudgeDispatcher: string;
-    refresh: string;
-    selected: string;
-    complete: string;
-    archive: string;
-    apply: string;
-    clear: string;
-    createTask: string;
-    noTasks: string;
-    unassigned: string;
-    needsAssignee?: string;
-    needsAssigneeHint?: string;
-    untitled: string;
-    loadingDetail: string;
-    addComment: string;
-    comment: string;
-    status: string;
-    workspace: string;
-    skills: string;
-    createdBy: string;
-    result: string;
-    comments: string;
-    events: string;
-    runHistory: string;
-    workerLog: string;
-    loadingLog: string;
-    noWorkerLog: string;
-    noDescription: string;
-    noComments: string;
-    edit: string;
-    save: string;
-    dependencies: string;
-    parents: string;
-    children: string;
-    none: string;
-    addParent: string;
-    addChild: string;
-    removeDependency: string;
-    block: string;
-    unblock: string;
-    notifyHomeChannels: string;
-    diagnostics: string;
-    hide: string;
-    show: string;
-    attention: string;
-    tasksNeedAttention: string;
-    taskNeedsAttention: string;
-    diagnostic: string;
-    open: string;
-    close: string;
-    reassignTo: string;
-    copied: string;
-    copyCommand: string;
-    reclaim: string;
-    reassign: string;
-    renderingError: string;
-    reloadView: string;
-    wsAuthFailed: string;
-    markDone: string;
-    markArchived: string;
-    warning: string;
-    phantomIds: string;
-    active: string;
-    ended: string;
-    noProfile: string;
-    showAllAttempts: string;
-    sendingUpdates: string;
-    sendNotifications: string;
-    archiveBoardConfirm: string;
-    archiveBoardTitle: string;
-    boardSwitcherHint: string;
-    taskCreatedWarning: string;
-    moveFailed: string;
-    bulkFailed: string;
-    completionBlockedHallucination: string;
-    suspectedHallucinatedReferences: string;
-    pickProfileFirst: string;
-    unblockedMessage: string;
-    unblockFailed: string;
-    reclaimedMessage: string;
-    reclaimFailed: string;
-    reassignedMessage: string;
-    reassignFailed: string;
-    selectForBulk: string;
-    clickToEdit: string;
-    clickToEditAssignee: string;
-    emptyAssignee: string;
-    columnLabels: {
-      triage: string;
-      todo: string;
-      scheduled: string;
-      ready: string;
-      running: string;
-      blocked: string;
-      done: string;
-      archived: string;
-    };
-    columnHelp: {
-      triage: string;
-      todo: string;
-      scheduled: string;
-      ready: string;
-      running: string;
-      blocked: string;
-      done: string;
-      archived: string;
-    };
-    confirmDone: string;
-    confirmArchive: string;
-    confirmBlocked: string;
-    confirmScheduled?: string;
-    completionSummary: string;
-    completionSummaryRequired: string;
-    triagePlaceholder: string;
-    taskTitlePlaceholder: string;
-    specifier: string;
-    assigneePlaceholder: string;
-    priority: string;
-    skillsPlaceholder: string;
-    noParent: string;
-    workspacePathDir: string;
-    workspacePathOptional: string;
-    logTruncated: string;
-    logAt: string;
   };
 }
