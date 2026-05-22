@@ -109,6 +109,7 @@ _IS_WINDOWS = sys.platform == "win32"
 DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
 ACCEPTANCE_CHECK_OUTPUT_TAIL_BYTES = 16 * 1024
 REQUEST_CHANGES_FEEDBACK_BYTES = 12 * 1024
+AUTO_REQUEST_CHANGES_DEFAULT_LIMIT = 2
 ACCEPTANCE_CHECK_DEFAULT_TIMEOUT_SECONDS = 300
 ACCEPTANCE_CHECK_MAX_TIMEOUT_SECONDS = 3600
 _ACCEPTANCE_CHECK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -2634,6 +2635,57 @@ def _followup_verdict_accepts_purpose(
     return verdict in {"approve", "approved", "pass", "passed"}
 
 
+def _effective_auto_request_changes_limit(task: Task) -> tuple[int, str]:
+    if task.max_retries is not None:
+        return max(1, int(task.max_retries)), "task"
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        raw = ((cfg or {}).get("kanban") or {}).get("failure_limit")
+        if raw is not None:
+            return max(1, int(raw)), "config"
+    except Exception:
+        pass
+    return AUTO_REQUEST_CHANGES_DEFAULT_LIMIT, "default"
+
+
+def _auto_request_changes_count(conn: sqlite3.Connection, task_id: str) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM task_events "
+        "WHERE task_id = ? AND kind = ?",
+        (task_id, "worker_review_auto_request_changes"),
+    ).fetchone()
+    return int(row["n"] if row else 0)
+
+
+def _auto_request_changes_guard(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> Optional[dict[str, Any]]:
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    limit, limit_source = _effective_auto_request_changes_limit(task)
+    used = _auto_request_changes_count(conn, task_id)
+    if used < limit:
+        return None
+    payload = {
+        "limit": limit,
+        "limit_source": limit_source,
+        "used": used,
+        "reason": "automatic request-changes retry limit reached",
+    }
+    existing = conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? AND kind = ? LIMIT 1",
+        (task_id, "worker_review_auto_retry_exhausted"),
+    ).fetchone()
+    if existing is None:
+        with write_txn(conn):
+            _append_event(conn, task_id, "worker_review_auto_retry_exhausted", payload)
+    return payload
+
+
 def _bounded_text(value: Any, *, max_bytes: int) -> str:
     if value is None:
         return ""
@@ -3316,6 +3368,15 @@ def advance_acceptance_workflow(
         gate: dict[str, Any],
         comment: str,
     ) -> dict[str, Any]:
+        guard = _auto_request_changes_guard(conn, task_id)
+        if guard is not None:
+            steps.append({
+                "kind": "blocked",
+                "reason": "automatic request-changes retry limit reached",
+                "auto_request_changes": guard,
+                gate_key: gate,
+            })
+            return _current()
         reviewed = review_worker_evidence(
             conn,
             task_id,
@@ -3323,6 +3384,19 @@ def advance_acceptance_workflow(
             reviewer=reviewer or "hermes-controller",
             comment=comment,
         )
+        with write_txn(conn):
+            _append_event(
+                conn,
+                task_id,
+                "worker_review_auto_request_changes",
+                {
+                    "reviewer": reviewer or "hermes-controller",
+                    "reason": reason,
+                    "gate_key": gate_key,
+                    "source_run_id": reviewed.run.id if reviewed.run else None,
+                },
+                run_id=reviewed.run.id if reviewed.run else None,
+            )
         steps.append({
             "kind": "request_changes",
             "reason": reason,

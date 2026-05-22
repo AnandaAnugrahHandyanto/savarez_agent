@@ -1152,6 +1152,115 @@ def test_advance_acceptance_workflow_requests_changes_on_failed_followup(
     assert payload["final"]["recommended_action"] == "wait_for_implementation"
 
 
+def test_advance_acceptance_workflow_stops_auto_request_changes_at_retry_limit(
+    kanban_home,
+    tmp_path,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="advance stops after one automatic request changes",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+            max_retries=1,
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: first run",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+        plan = kb.plan_review_followups(conn, tid)
+        _finish_followup_with_worker_evidence(
+            conn,
+            plan.review_task_id,
+            lane="codex-review",
+            verdict="request_changes",
+        )
+        _finish_followup_with_worker_evidence(
+            conn,
+            plan.test_task_id,
+            lane="codex-test",
+            verdict="pass",
+        )
+
+        first = kb.advance_acceptance_workflow(
+            conn,
+            tid,
+            reviewer="controller",
+            dispatch=False,
+        )
+        first_after = kb.get_task(conn, tid)
+
+        retry = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert retry is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: second run",
+            expected_run_id=retry.current_run_id,
+            metadata=metadata,
+        )
+        second_plan = kb.plan_review_followups(conn, tid)
+        _finish_followup_with_worker_evidence(
+            conn,
+            second_plan.review_task_id,
+            lane="codex-review",
+            verdict="request_changes",
+        )
+        _finish_followup_with_worker_evidence(
+            conn,
+            second_plan.test_task_id,
+            lane="codex-test",
+            verdict="pass",
+        )
+
+        second = kb.advance_acceptance_workflow(
+            conn,
+            tid,
+            reviewer="controller",
+            dispatch=False,
+        )
+        second_after = kb.get_task(conn, tid)
+        repeated = kb.advance_acceptance_workflow(
+            conn,
+            tid,
+            reviewer="controller",
+            dispatch=False,
+        )
+        repeated_after = kb.get_task(conn, tid)
+        comments = kb.list_comments(conn, tid)
+        events = kb.list_events(conn, tid)
+
+    assert first["steps"][0]["kind"] == "request_changes"
+    assert first_after.status == "ready"
+    assert second["steps"][0]["kind"] == "blocked"
+    assert second["steps"][0]["auto_request_changes"] == {
+        "limit": 1,
+        "limit_source": "task",
+        "used": 1,
+        "reason": "automatic request-changes retry limit reached",
+    }
+    assert second_after.status == "blocked"
+    assert second_after.current_run_id is None
+    assert repeated["steps"][0]["kind"] == "blocked"
+    assert repeated_after.status == "blocked"
+    assert len(comments) == 1
+    assert comments[0].body.startswith("Review/test follow-up gate failed")
+    assert len([e for e in events if e.kind == "worker_review_changes_requested"]) == 1
+    assert len([e for e in events if e.kind == "worker_review_auto_request_changes"]) == 1
+    assert len([e for e in events if e.kind == "worker_review_auto_retry_exhausted"]) == 1
+
+
 def test_advance_acceptance_workflow_can_leave_failed_followup_blocked(
     kanban_home,
     tmp_path,
@@ -1592,6 +1701,127 @@ def test_advance_goal_acceptance_reruns_child_after_failed_followup(
     assert any(step["kind"] == "complete_goal" for step in final["steps"])
     assert any(event.kind == "goal_acceptance_advanced" for event in root_events)
     assert any(event.kind == "worker_review_changes_requested" for event in child_events)
+
+
+def test_advance_goal_acceptance_stops_child_auto_request_changes_at_retry_limit(
+    kanban_home,
+    tmp_path,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "needs review"},
+    }
+    with kb.connect() as conn:
+        root = kb.create_task(
+            conn,
+            title="goal root bounded rerun child",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+            triage=True,
+            max_retries=1,
+        )
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[{"title": "implement", "assignee": "codex-deep"}],
+            author="planner",
+        )
+        assert child_ids is not None
+        child = child_ids[0]
+
+        first_claim = kb.claim_task(conn, child, claimer="worker:codex-deep")
+        assert first_claim is not None
+        assert kb.block_task(
+            conn,
+            child,
+            reason="review-required: first run",
+            expected_run_id=first_claim.current_run_id,
+            metadata=metadata,
+        )
+        first_advance = kb.advance_goal_acceptance_workflow(
+            conn,
+            root,
+            reviewer="controller",
+            dispatch=False,
+        )
+        first_plan = first_advance["child_advances"][0]["advance"]["steps"][0]["plan"]
+        _finish_followup_with_worker_evidence(
+            conn,
+            first_plan["review_task_id"],
+            lane="codex-review",
+            verdict="request_changes",
+        )
+        _finish_followup_with_worker_evidence(
+            conn,
+            first_plan["test_task_id"],
+            lane="codex-test",
+            verdict="pass",
+        )
+        first_request = kb.advance_goal_acceptance_workflow(
+            conn,
+            root,
+            reviewer="controller",
+            dispatch=False,
+        )
+
+        retry_claim = kb.claim_task(conn, child, claimer="worker:codex-deep")
+        assert retry_claim is not None
+        assert kb.block_task(
+            conn,
+            child,
+            reason="review-required: second run",
+            expected_run_id=retry_claim.current_run_id,
+            metadata=metadata,
+        )
+        second_advance = kb.advance_goal_acceptance_workflow(
+            conn,
+            root,
+            reviewer="controller",
+            dispatch=False,
+        )
+        second_plan = second_advance["child_advances"][0]["advance"]["steps"][0]["plan"]
+        _finish_followup_with_worker_evidence(
+            conn,
+            second_plan["review_task_id"],
+            lane="codex-review",
+            verdict="request_changes",
+        )
+        _finish_followup_with_worker_evidence(
+            conn,
+            second_plan["test_task_id"],
+            lane="codex-test",
+            verdict="pass",
+        )
+        stopped = kb.advance_goal_acceptance_workflow(
+            conn,
+            root,
+            reviewer="controller",
+            dispatch=False,
+        )
+        root_task = kb.get_task(conn, root)
+        child_task = kb.get_task(conn, child)
+        child_events = kb.list_events(conn, child)
+
+    assert first_request["child_advances"][0]["advance"]["steps"][0]["kind"] == "request_changes"
+    stopped_step = stopped["child_advances"][0]["advance"]["steps"][0]
+    assert stopped_step["kind"] == "blocked"
+    assert stopped_step["auto_request_changes"]["limit"] == 1
+    assert stopped_step["auto_request_changes"]["used"] == 1
+    assert root_task.status == "todo"
+    assert child_task.status == "blocked"
+    assert stopped["incomplete_children"] == [
+        {
+            "task_id": child,
+            "status": "blocked",
+            "relationship": "decomposed_child",
+            "review_required": True,
+        }
+    ]
+    assert len([e for e in child_events if e.kind == "worker_review_changes_requested"]) == 1
+    assert len([e for e in child_events if e.kind == "worker_review_auto_request_changes"]) == 1
+    assert any(e.kind == "worker_review_auto_retry_exhausted" for e in child_events)
 
 
 def test_task_acceptance_snapshot_summarizes_followup_evidence(

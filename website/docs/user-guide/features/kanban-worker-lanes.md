@@ -276,7 +276,12 @@ On the next claim, the worker context includes a dedicated
 `Requested changes to address before finishing` section with the latest
 reviewer, source run id, timestamp, and bounded comment, so an implementation
 Codex lane can fix the failure without the main agent replaying the full
-session or manually restating the failure.
+session or manually restating the failure. Automatic request-changes feedback
+is bounded by the task's `max_retries` value, or by `kanban.failure_limit` when
+the task has no override. Once that limit is reached, the controller leaves the
+implementation task blocked and records `worker_review_auto_retry_exhausted`
+instead of dispatching another coding run; a human or higher-level planner can
+still decide what to do next.
 Use `--no-request-changes` or API/tool
 `request_changes_on_failure=false` when a controller wants to inspect the
 failed gate without mutating task state. The Python tool equivalent is
