@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import type { GatewayClient } from "@/lib/gatewayClient";
 import { Check, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useI18n } from "@/i18n";
 import { createPortal } from "react-dom";
 
 /**
@@ -73,10 +74,12 @@ export function ModelPickerDialog(props: Props) {
     loader,
     onApply,
     onClose,
-    title = "Switch Model",
+    title,
     alwaysGlobal = false,
   } = props;
+  const { t } = useI18n();
   const standalone = !!loader && !!onApply;
+  const dialogTitle = title ?? t.modelPicker.switchModel;
 
   const [providers, setProviders] = useState<ModelOptionProvider[]>([]);
   const [currentModel, setCurrentModel] = useState("");
@@ -218,7 +221,7 @@ export function ModelPickerDialog(props: Props) {
           size="icon"
           onClick={onClose}
           className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-          aria-label="Close"
+          aria-label={t.modelPicker.close}
         >
           <X />
         </Button>
@@ -228,10 +231,10 @@ export function ModelPickerDialog(props: Props) {
             id="model-picker-title"
             className="font-display text-base tracking-wider uppercase"
           >
-            {title}
+            {dialogTitle}
           </h2>
           <p className="text-xs text-muted-foreground mt-1 font-mono">
-            current: {currentModel || "(unknown)"}
+            {t.modelPicker.current}: {currentModel || t.modelPicker.unknown}
             {currentProviderSlug && ` · ${currentProviderSlug}`}
           </p>
         </header>
@@ -241,7 +244,7 @@ export function ModelPickerDialog(props: Props) {
             <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
             <Input
               autoFocus
-              placeholder="Filter providers and models…"
+              placeholder={t.modelPicker.filterPlaceholder}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               className="pl-7 h-8 text-sm"
@@ -282,7 +285,7 @@ export function ModelPickerDialog(props: Props) {
         <footer className="border-t border-border p-3 flex items-center justify-between gap-3 flex-wrap">
           {alwaysGlobal ? (
             <span className="text-xs text-muted-foreground">
-              Saves to config.yaml — applies to new sessions.
+              {t.modelPicker.savesToConfig}
             </span>
           ) : (
             <div className="flex items-center gap-2">
@@ -298,17 +301,17 @@ export function ModelPickerDialog(props: Props) {
                 className="font-sans normal-case tracking-normal text-xs text-muted-foreground cursor-pointer"
                 htmlFor="model-picker-persist-global"
               >
-                Persist globally (otherwise this session only)
+                {t.modelPicker.persistGlobally}
               </Label>
             </div>
           )}
 
           <div className="flex items-center gap-2 ml-auto">
             <Button outlined onClick={onClose} disabled={applying}>
-              Cancel
+              {t.modelPicker.cancel}
             </Button>
             <Button onClick={confirm} disabled={!canConfirm}>
-              {applying ? <Spinner /> : "Switch"}
+              {applying ? <Spinner /> : t.modelPicker.switch}
             </Button>
           </div>
         </footer>
@@ -339,11 +342,12 @@ function ProviderColumn({
   query: string;
   onSelect(slug: string): void;
 }) {
+  const { t } = useI18n();
   return (
     <div className="border-r border-border overflow-y-auto">
       {loading && (
         <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground">
-          <Spinner className="text-xs" /> loading…
+          <Spinner className="text-xs" /> {t.modelPicker.loading}
         </div>
       )}
 
@@ -352,10 +356,10 @@ function ProviderColumn({
       {!loading && !error && providers.length === 0 && (
         <div className="p-4 text-xs text-muted-foreground italic">
           {query
-            ? "no matches"
+            ? t.modelPicker.noMatches
             : total === 0
-              ? "no authenticated providers"
-              : "no matches"}
+              ? t.modelPicker.noAuthenticatedProviders
+              : t.modelPicker.noMatches}
         </div>
       )}
 
@@ -376,7 +380,11 @@ function ProviderColumn({
                 {p.is_current && <CurrentTag />}
               </div>
               <div className="text-[0.65rem] text-muted-foreground/80 font-mono truncate">
-                {p.slug} · {p.total_models ?? p.models?.length ?? 0} models
+                {p.slug} ·{" "}
+                {t.modelPicker.modelsCount.replace(
+                  "{count}",
+                  String(p.total_models ?? p.models?.length ?? 0),
+                )}
               </div>
             </div>
           </ListItem>
@@ -409,11 +417,12 @@ function ModelColumn({
   onSelect(model: string): void;
   onConfirm(model: string): void;
 }) {
+  const { t } = useI18n();
   if (!provider) {
     return (
       <div className="overflow-y-auto">
         <div className="p-4 text-xs text-muted-foreground italic">
-          pick a provider →
+          {t.modelPicker.pickProvider}
         </div>
       </div>
     );
@@ -430,8 +439,8 @@ function ModelColumn({
       {models.length === 0 ? (
         <div className="p-4 text-xs text-muted-foreground italic">
           {allModels.length
-            ? "no models match your filter"
-            : "no models listed for this provider"}
+            ? t.modelPicker.noModelsMatch
+            : t.modelPicker.noModelsForProvider}
         </div>
       ) : (
         models.map((m) => {
@@ -461,9 +470,10 @@ function ModelColumn({
 }
 
 function CurrentTag() {
+  const { t } = useI18n();
   return (
     <span className="text-[0.6rem] uppercase tracking-wider text-primary/80 shrink-0">
-      current
+      {t.modelPicker.currentTag}
     </span>
   );
 }

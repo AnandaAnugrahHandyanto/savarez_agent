@@ -53,6 +53,7 @@ export const zh: Translations = {
     brandShort: "HA",
     closeNavigation: "关闭导航",
     closeModelTools: "关闭模型与工具",
+    loadingChat: "Loading chat…",
     footer: {
       org: "Nous Research",
     },
@@ -172,6 +173,16 @@ export const zh: Translations = {
     perDayAvg: "/天 平均",
     acrossModels: "共 {count} 个模型",
     inOut: "输入 {input} / 输出 {output}",
+    tokenAnalyticsHiddenTitle: "Token analytics hidden",
+    tokenAnalyticsHiddenIntroBeforeUsage:
+      "The token, cost, and per-day analytics on this page are a local debug estimate. They only count successful main-agent responses with a usable",
+    tokenAnalyticsHiddenIntroAfterUsage:
+      "block, and silently exclude auxiliary calls (context compression, title generation, vision, session search, web extract, smart approvals, MCP routing, plugin LLM access) plus provider-side retries and fallback attempts. Cache writes are missing entirely.",
+    tokenAnalyticsHiddenWarning:
+      "On models with heavy auxiliary traffic (Kimi K2.6, MiniMax M2.7) the local total can be 10x-100x lower than what your provider bills. Hiding these numbers is safer than letting them look authoritative.",
+    tokenAnalyticsHiddenConfigBeforeSetting:
+      "Check your provider dashboard (OpenRouter, Anthropic, etc.) for actual usage and billing. To re-enable the local debug estimate anyway, set",
+    tokenAnalyticsHiddenConfigAfterSetting: "in {configLink}.",
   },
 
   models: {
@@ -184,6 +195,61 @@ export const zh: Translations = {
     toolCalls: "工具调用",
     noModelsData: "该时间段暂无模型使用数据",
     startSession: "开始会话后将在此显示模型数据",
+    capabilityTools: "Tools",
+    capabilityVision: "Vision",
+    capabilityReasoning: "Reasoning",
+    cacheRead: "Cache Read",
+    useAs: "Use as",
+    main: "Main",
+    current: "current",
+    missingProviderModel: "Missing provider/model",
+    settingsTitle: "Model Settings",
+    settingsAppliesToNewSessions: "applies to new sessions",
+    mainModel: "Main model",
+    unset: "(unset)",
+    change: "Change",
+    auxiliaryTasks: "Auxiliary tasks",
+    overrideCount: "{count} override{plural}",
+    autoCount: "{count} auto",
+    taskCount: "{count} tasks",
+    allAuto: "all auto",
+    configure: "Configure",
+    setMainModel: "Set Main Model",
+    auxiliaryModels: "Auxiliary Models",
+    auxiliaryModelsSubtitle:
+      "Auxiliary tasks handle side-jobs like vision, session search, and compression. auto means \"use the main model\". Override per-task when you want a cheap/fast model for a specific job.",
+    autoUsesMainModel: "auto (use main model)",
+    providerDefault: "(provider default)",
+    setAuxiliary: "Set Auxiliary: {task}",
+    resetAuxiliaryModels: "Reset auxiliary models",
+    resetAuxiliaryDescription:
+      "Reset every auxiliary task to 'auto'? This overrides any per-task overrides you've set.",
+    resetAllToAuto: "Reset all to auto",
+    resetAll: "Reset all",
+    tokenAnalyticsHidden:
+      "Token & cost analytics are hidden because the local counts exclude auxiliary calls (compression, vision, web extract, …) and provider retries, so they diverge from your provider bill. Enable {setting} in {configLink} to show the local debug estimate anyway.",
+    auxiliaryTaskLabels: {
+      vision: "Vision",
+      webExtract: "Web Extract",
+      compression: "Compression",
+      sessionSearch: "Session Search",
+      skillsHub: "Skills Hub",
+      approval: "Approval",
+      mcp: "MCP",
+      titleGeneration: "Title Gen",
+      curator: "Curator",
+    },
+    auxiliaryTaskHints: {
+      vision: "Image analysis",
+      webExtract: "Page summarization",
+      compression: "Context compaction",
+      sessionSearch: "Recall queries",
+      skillsHub: "Skill search",
+      approval: "Smart auto-approve",
+      mcp: "MCP tool routing",
+      titleGeneration: "Session titles",
+      curator: "Skill-usage review",
+    },
   },
 
   logs: {
@@ -214,6 +280,17 @@ export const zh: Translations = {
     pause: "暂停",
     resume: "恢复",
     triggerNow: "立即触发",
+    requiredFields: "{fields} required",
+    fallbackJobTitle: "Cron job",
+    states: {
+          "enabled": "enabled",
+          "scheduled": "scheduled",
+          "paused": "paused",
+          "disabled": "disabled",
+          "running": "running",
+          "active": "active",
+          "inactive": "inactive"
+    },
     delivery: {
       local: "本地",
       telegram: "Telegram",
@@ -276,10 +353,10 @@ export const zh: Translations = {
     pluginListHeading: "已安装插件",
     providerDefaults: "内置 / 默认",
     providersHeading: "运行时提供方插件",
-    providersHint:
-      "写入 config.yaml：memory.provider（留空为内置）、context.engine。下次会话生效。",
+    providersHint: "写入 config.yaml：memory.provider（留空为内置）、context.engine。下次会话生效。",
     refreshDashboard: "重新扫描仪表盘扩展",
     removeConfirm: "从 ~/.hermes/plugins/ 删除此插件？",
+    removeDescription: "This will remove the \"{name}\" plugin from your agent.",
     removeHint: "仅可移除用户安装在 ~/.hermes/plugins 下的插件。",
     rescanHeading: "SPA 插件注册表",
     rescanHint: "在磁盘新增文件后扫描，使侧边栏载入新 manifest。",
@@ -293,6 +370,18 @@ export const zh: Translations = {
     versionBadge: "版本",
     showInSidebar: "在侧边栏显示",
     hideFromSidebar: "从侧边栏隐藏",
+    runtimeStatus: {
+      "enabled": "enabled",
+      "disabled": "disabled",
+      "inactive": "inactive",
+    },
+    sourceLabels: {
+      "bundled": "bundled",
+      "user": "user",
+      "local": "local",
+      "git": "git",
+    },
+    descriptions: {},
   },
 
   skills: {
@@ -313,6 +402,8 @@ export const zh: Translations = {
     setupNeeded: "需要配置",
     disabledForCli: "CLI 已禁用",
     more: "还有 {count} 个",
+    descriptions: {},
+    toolsetDescriptions: {},
   },
 
   config: {
@@ -324,6 +415,7 @@ export const zh: Translations = {
     resetDefaults: "恢复默认值",
     resetScopeTooltip: "将{scope}恢复为默认值",
     confirmResetScope: "确定要将{scope}的所有设置恢复为默认值吗？此操作仅更新表单，在按下「保存」按钮前不会写入 config.yaml。",
+    resetScopeDescription: "This will reset {count} field(s) to their default values.",
     resetScopeToast: "{scope}已恢复为默认值 — 请检查并保存以生效",
     rawYaml: "原始 YAML 配置",
     searchResults: "搜索结果",
@@ -352,7 +444,24 @@ export const zh: Translations = {
       logging: "日志",
       discord: "Discord",
       auxiliary: "辅助",
+      web: "Web",
+      tool_output: "Tool Output",
+      tool_loop_guardrails: "Tool Loop Guardrails",
+      openrouter: "OpenRouter",
+      bedrock: "Bedrock",
+      curator: "Curator",
+      slack: "Slack",
+      mattermost: "Mattermost",
+      matrix: "Matrix",
+      kanban: "Kanban",
+      model_catalog: "Model Catalog",
+      sessions: "Sessions",
+      updates: "Updates",
+      lsp: "LSP",
+      x_search: "X Search",
     },
+    fieldLabels: {},
+    fieldDescriptions: {},
   },
 
   env: {
@@ -370,9 +479,18 @@ export const zh: Translations = {
     keysCount: "{count} 个密钥",
     enterValue: "输入值...",
     replaceCurrentValue: "替换当前值（{preview}）",
+    savedKey: "{key} saved",
     showValue: "显示实际值",
+    showValueFor: "Reveal {key}",
     hideValue: "隐藏值",
-  },
+    hideValueFor: "Hide {key}",
+    jumpToSection: "Jump to section",
+    oauth: "OAuth",
+    providers: "Providers",
+    tools: "Tools",
+    settings: "Settings",
+      descriptions: {},
+},
 
   oauth: {
     title: "提供商登录（OAuth）",
@@ -390,6 +508,10 @@ export const zh: Translations = {
     cli: "CLI",
     copyCliCommand: "复制 CLI 命令（用于外部/备用方式）",
     connect: "连接",
+    openDocs: "Open {provider} docs",
+    disconnectDescription:
+      "This will remove the stored OAuth tokens for {provider}. You will need to re-authenticate to use it again.",
+    tokenExchangeFailed: "Token exchange failed",
     sessionExpires: "会话将在 {time} 后过期",
     initiatingLogin: "正在启动登录流程…",
     exchangingCode: "正在交换令牌…",
@@ -413,6 +535,89 @@ export const zh: Translations = {
     expiresIn: "{time}后过期",
   },
 
+  time: {
+    justNow: "now",
+    minutesAgo: "{count}m ago",
+    hoursAgo: "{count}h ago",
+    yesterday: "yesterday",
+    daysAgo: "{count}d ago",
+    unknown: "unknown",
+  },
+
+  autoField: {
+    noneOption: "(none)",
+    commaSeparatedValues: "comma-separated values",
+  },
+
+  modelInfo: {
+    loading: "Loading model info…",
+    contextWindow: "Context Window",
+    overrideAuto: "(override — auto: {value})",
+    autoDetected: "auto-detected",
+    maxOutput: "Max Output",
+    tools: "Tools",
+    vision: "Vision",
+    reasoning: "Reasoning",
+  },
+
+  modelPicker: {
+    switchModel: "Switch Model",
+    close: "Close",
+    current: "current",
+    unknown: "(unknown)",
+    filterPlaceholder: "Filter providers and models…",
+    savesToConfig: "Saves to config.yaml — applies to new sessions.",
+    persistGlobally: "Persist globally (otherwise this session only)",
+    cancel: "Cancel",
+    switch: "Switch",
+    loading: "loading…",
+    noMatches: "no matches",
+    noAuthenticatedProviders: "no authenticated providers",
+    modelsCount: "{count} models",
+    pickProvider: "pick a provider →",
+    noModelsMatch: "no models match your filter",
+    noModelsForProvider: "no models listed for this provider",
+    currentTag: "current",
+  },
+
+  chat: {
+    sessionTokenUnavailable:
+      "Session token unavailable. Open this page through `hermes dashboard`, not directly.",
+    authFailedReload: "Auth failed. Reload the page to refresh the session token.",
+    localhostOnly: "Chat is only reachable from localhost.",
+    copyLastAssistantMarkdown: "Copy last assistant response as raw markdown",
+    copyLastAssistant: "Copy last assistant response",
+    copyLastResponse: "copy last response",
+    copied: "copied",
+    sidebar: {
+      model: "model",
+      tools: "tools",
+      reconnect: "reconnect",
+      noToolCallsYet: "no tool calls yet",
+      switchModel: "switch model",
+      eventsDisconnected: "events feed disconnected -- tool calls may not appear",
+      eventsRejected: "events feed rejected ({code}) -- reload the page",
+      states: {
+        idle: "idle",
+        connecting: "connecting",
+        live: "live",
+        closed: "closed",
+        error: "error",
+      },
+    },
+  },
+
+  toolCall: {
+    tool: "tool",
+    running: "running",
+    done: "done",
+    error: "error",
+    context: "context",
+    streaming: "streaming",
+    diff: "diff",
+    result: "result",
+  },
+
   language: {
     switchTo: "切换到英文",
   },
@@ -420,6 +625,36 @@ export const zh: Translations = {
   theme: {
     title: "主题",
     switchTheme: "切换主题",
+    presets: {
+      default: {
+        label: "Hermes Teal",
+        description: "Classic dark teal -- the canonical Hermes look",
+      },
+      midnight: {
+        label: "Midnight",
+        description: "Deep blue-violet with cool accents",
+      },
+      ember: {
+        label: "Ember",
+        description: "Warm crimson and bronze -- forge vibes",
+      },
+      mono: {
+        label: "Mono",
+        description: "Clean grayscale -- minimal and focused",
+      },
+      cyberpunk: {
+        label: "Cyberpunk",
+        description: "Neon green on black -- matrix terminal",
+      },
+      rose: {
+        label: "Rose",
+        description: "Soft pink and warm ivory -- easy on the eyes",
+      },
+      "default-large": {
+        label: "Hermes Teal (Large)",
+        description: "Hermes Teal with bigger fonts and roomier spacing",
+      },
+    },
   },
 
   achievements: {

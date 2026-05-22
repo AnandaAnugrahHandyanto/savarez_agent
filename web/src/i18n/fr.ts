@@ -54,6 +54,7 @@ export const fr: Translations = {
     brandShort: "HA",
     closeNavigation: "Fermer la navigation",
     closeModelTools: "Fermer modèle et outils",
+    loadingChat: "Loading chat…",
     footer: {
       org: "Nous Research",
     },
@@ -174,6 +175,16 @@ export const fr: Translations = {
     perDayAvg: "/jour moy",
     acrossModels: "sur {count} modèles",
     inOut: "{input} entrée / {output} sortie",
+    tokenAnalyticsHiddenTitle: "Token analytics hidden",
+    tokenAnalyticsHiddenIntroBeforeUsage:
+      "The token, cost, and per-day analytics on this page are a local debug estimate. They only count successful main-agent responses with a usable",
+    tokenAnalyticsHiddenIntroAfterUsage:
+      "block, and silently exclude auxiliary calls (context compression, title generation, vision, session search, web extract, smart approvals, MCP routing, plugin LLM access) plus provider-side retries and fallback attempts. Cache writes are missing entirely.",
+    tokenAnalyticsHiddenWarning:
+      "On models with heavy auxiliary traffic (Kimi K2.6, MiniMax M2.7) the local total can be 10x-100x lower than what your provider bills. Hiding these numbers is safer than letting them look authoritative.",
+    tokenAnalyticsHiddenConfigBeforeSetting:
+      "Check your provider dashboard (OpenRouter, Anthropic, etc.) for actual usage and billing. To re-enable the local debug estimate anyway, set",
+    tokenAnalyticsHiddenConfigAfterSetting: "in {configLink}.",
   },
 
   models: {
@@ -186,6 +197,61 @@ export const fr: Translations = {
     toolCalls: "appels d'outil",
     noModelsData: "Aucune donnée de modèle pour cette période",
     startSession: "Démarrez une session pour voir les données de modèle ici",
+    capabilityTools: "Tools",
+    capabilityVision: "Vision",
+    capabilityReasoning: "Reasoning",
+    cacheRead: "Cache Read",
+    useAs: "Use as",
+    main: "Main",
+    current: "current",
+    missingProviderModel: "Missing provider/model",
+    settingsTitle: "Model Settings",
+    settingsAppliesToNewSessions: "applies to new sessions",
+    mainModel: "Main model",
+    unset: "(unset)",
+    change: "Change",
+    auxiliaryTasks: "Auxiliary tasks",
+    overrideCount: "{count} override{plural}",
+    autoCount: "{count} auto",
+    taskCount: "{count} tasks",
+    allAuto: "all auto",
+    configure: "Configure",
+    setMainModel: "Set Main Model",
+    auxiliaryModels: "Auxiliary Models",
+    auxiliaryModelsSubtitle:
+      "Auxiliary tasks handle side-jobs like vision, session search, and compression. auto means \"use the main model\". Override per-task when you want a cheap/fast model for a specific job.",
+    autoUsesMainModel: "auto (use main model)",
+    providerDefault: "(provider default)",
+    setAuxiliary: "Set Auxiliary: {task}",
+    resetAuxiliaryModels: "Reset auxiliary models",
+    resetAuxiliaryDescription:
+      "Reset every auxiliary task to 'auto'? This overrides any per-task overrides you've set.",
+    resetAllToAuto: "Reset all to auto",
+    resetAll: "Reset all",
+    tokenAnalyticsHidden:
+      "Token & cost analytics are hidden because the local counts exclude auxiliary calls (compression, vision, web extract, …) and provider retries, so they diverge from your provider bill. Enable {setting} in {configLink} to show the local debug estimate anyway.",
+    auxiliaryTaskLabels: {
+      vision: "Vision",
+      webExtract: "Web Extract",
+      compression: "Compression",
+      sessionSearch: "Session Search",
+      skillsHub: "Skills Hub",
+      approval: "Approval",
+      mcp: "MCP",
+      titleGeneration: "Title Gen",
+      curator: "Curator",
+    },
+    auxiliaryTaskHints: {
+      vision: "Image analysis",
+      webExtract: "Page summarization",
+      compression: "Context compaction",
+      sessionSearch: "Recall queries",
+      skillsHub: "Skill search",
+      approval: "Smart auto-approve",
+      mcp: "MCP tool routing",
+      titleGeneration: "Session titles",
+      curator: "Skill-usage review",
+    },
   },
 
   logs: {
@@ -217,6 +283,17 @@ export const fr: Translations = {
     pause: "Pause",
     resume: "Reprendre",
     triggerNow: "Déclencher maintenant",
+    requiredFields: "{fields} required",
+    fallbackJobTitle: "Cron job",
+    states: {
+          "enabled": "enabled",
+          "scheduled": "scheduled",
+          "paused": "paused",
+          "disabled": "disabled",
+          "running": "running",
+          "active": "active",
+          "inactive": "inactive"
+    },
     delivery: {
       local: "Local",
       telegram: "Telegram",
@@ -265,8 +342,7 @@ export const fr: Translations = {
     enableAfterInstall: "Activer après l'installation",
     enableRuntime: "Activer",
     forceReinstall: "Forcer la réinstallation (supprimer d'abord le dossier existant)",
-    headline:
-      "Découvrez, installez, activez et mettez à jour les plugins Hermes (parité avec `hermes plugins`).",
+    headline: "Découvrez, installez, activez et mettez à jour les plugins Hermes (parité avec `hermes plugins`).",
     identifierLabel: "URL Git ou owner/repo",
     inactive: "inactif",
     installBtn: "Installer depuis Git",
@@ -280,10 +356,10 @@ export const fr: Translations = {
     pluginListHeading: "Plugins installés",
     providerDefaults: "intégré / par défaut",
     providersHeading: "Plugins fournisseurs d'exécution",
-    providersHint:
-      "Écrit memory.provider (vide = intégré) et context.engine dans config.yaml. Prend effet à la prochaine session.",
+    providersHint: "Écrit memory.provider (vide = intégré) et context.engine dans config.yaml. Prend effet à la prochaine session.",
     refreshDashboard: "Re-scanner les extensions du tableau de bord",
     removeConfirm: "Retirer ce plugin de ~/.hermes/plugins/ ?",
+    removeDescription: "This will remove the \"{name}\" plugin from your agent.",
     removeHint: "Seuls les plugins installés par l'utilisateur sous ~/.hermes/plugins peuvent être supprimés.",
     rescanHeading: "Registre des plugins SPA",
     rescanHint: "Re-scannez après avoir ajouté des fichiers sur le disque pour que la barre latérale prenne en compte les nouveaux manifestes.",
@@ -297,6 +373,18 @@ export const fr: Translations = {
     versionBadge: "Version",
     showInSidebar: "Afficher dans la barre latérale",
     hideFromSidebar: "Masquer de la barre latérale",
+    runtimeStatus: {
+      "enabled": "enabled",
+      "disabled": "disabled",
+      "inactive": "inactive",
+    },
+    sourceLabels: {
+      "bundled": "bundled",
+      "user": "user",
+      "local": "local",
+      "git": "git",
+    },
+    descriptions: {},
   },
 
   skills: {
@@ -317,6 +405,8 @@ export const fr: Translations = {
     setupNeeded: "Configuration nécessaire",
     disabledForCli: "Désactivé pour CLI",
     more: "+{count} de plus",
+    descriptions: {},
+    toolsetDescriptions: {},
   },
 
   config: {
@@ -328,6 +418,7 @@ export const fr: Translations = {
     resetDefaults: "Réinitialiser aux valeurs par défaut",
     resetScopeTooltip: "Réinitialiser {scope} aux valeurs par défaut",
     confirmResetScope: "Réinitialiser tous les paramètres de {scope} aux valeurs par défaut ? Cela ne met à jour que le formulaire — les modifications ne sont écrites dans config.yaml qu'après avoir appuyé sur Enregistrer.",
+    resetScopeDescription: "This will reset {count} field(s) to their default values.",
     resetScopeToast: "{scope} réinitialisé aux valeurs par défaut — vérifiez et enregistrez pour conserver",
     rawYaml: "Configuration YAML brute",
     searchResults: "Résultats de recherche",
@@ -356,7 +447,24 @@ export const fr: Translations = {
       logging: "Journalisation",
       discord: "Discord",
       auxiliary: "Auxiliaire",
+      web: "Web",
+      tool_output: "Tool Output",
+      tool_loop_guardrails: "Tool Loop Guardrails",
+      openrouter: "OpenRouter",
+      bedrock: "Bedrock",
+      curator: "Curator",
+      slack: "Slack",
+      mattermost: "Mattermost",
+      matrix: "Matrix",
+      kanban: "Kanban",
+      model_catalog: "Model Catalog",
+      sessions: "Sessions",
+      updates: "Updates",
+      lsp: "LSP",
+      x_search: "X Search",
     },
+    fieldLabels: {},
+    fieldDescriptions: {},
   },
 
   env: {
@@ -375,9 +483,18 @@ export const fr: Translations = {
     keysCount: "{count} clé{s}",
     enterValue: "Saisir une valeur...",
     replaceCurrentValue: "Remplacer la valeur actuelle ({preview})",
+    savedKey: "{key} saved",
     showValue: "Afficher la valeur réelle",
+    showValueFor: "Reveal {key}",
     hideValue: "Masquer la valeur",
-  },
+    hideValueFor: "Hide {key}",
+    jumpToSection: "Jump to section",
+    oauth: "OAuth",
+    providers: "Providers",
+    tools: "Tools",
+    settings: "Settings",
+      descriptions: {},
+},
 
   oauth: {
     title: "Connexions fournisseurs (OAuth)",
@@ -395,6 +512,10 @@ export const fr: Translations = {
     cli: "CLI",
     copyCliCommand: "Copier la commande CLI (pour externe / repli)",
     connect: "Connecter",
+    openDocs: "Open {provider} docs",
+    disconnectDescription:
+      "This will remove the stored OAuth tokens for {provider}. You will need to re-authenticate to use it again.",
+    tokenExchangeFailed: "Token exchange failed",
     sessionExpires: "La session expire dans {time}",
     initiatingLogin: "Lancement du flux de connexion…",
     exchangingCode: "Échange du code contre des jetons…",
@@ -418,6 +539,89 @@ export const fr: Translations = {
     expiresIn: "expire dans {time}",
   },
 
+  time: {
+    justNow: "now",
+    minutesAgo: "{count}m ago",
+    hoursAgo: "{count}h ago",
+    yesterday: "yesterday",
+    daysAgo: "{count}d ago",
+    unknown: "unknown",
+  },
+
+  autoField: {
+    noneOption: "(none)",
+    commaSeparatedValues: "comma-separated values",
+  },
+
+  modelInfo: {
+    loading: "Loading model info…",
+    contextWindow: "Context Window",
+    overrideAuto: "(override — auto: {value})",
+    autoDetected: "auto-detected",
+    maxOutput: "Max Output",
+    tools: "Tools",
+    vision: "Vision",
+    reasoning: "Reasoning",
+  },
+
+  modelPicker: {
+    switchModel: "Switch Model",
+    close: "Close",
+    current: "current",
+    unknown: "(unknown)",
+    filterPlaceholder: "Filter providers and models…",
+    savesToConfig: "Saves to config.yaml — applies to new sessions.",
+    persistGlobally: "Persist globally (otherwise this session only)",
+    cancel: "Cancel",
+    switch: "Switch",
+    loading: "loading…",
+    noMatches: "no matches",
+    noAuthenticatedProviders: "no authenticated providers",
+    modelsCount: "{count} models",
+    pickProvider: "pick a provider →",
+    noModelsMatch: "no models match your filter",
+    noModelsForProvider: "no models listed for this provider",
+    currentTag: "current",
+  },
+
+  chat: {
+    sessionTokenUnavailable:
+      "Session token unavailable. Open this page through `hermes dashboard`, not directly.",
+    authFailedReload: "Auth failed. Reload the page to refresh the session token.",
+    localhostOnly: "Chat is only reachable from localhost.",
+    copyLastAssistantMarkdown: "Copy last assistant response as raw markdown",
+    copyLastAssistant: "Copy last assistant response",
+    copyLastResponse: "copy last response",
+    copied: "copied",
+    sidebar: {
+      model: "model",
+      tools: "tools",
+      reconnect: "reconnect",
+      noToolCallsYet: "no tool calls yet",
+      switchModel: "switch model",
+      eventsDisconnected: "events feed disconnected -- tool calls may not appear",
+      eventsRejected: "events feed rejected ({code}) -- reload the page",
+      states: {
+        idle: "idle",
+        connecting: "connecting",
+        live: "live",
+        closed: "closed",
+        error: "error",
+      },
+    },
+  },
+
+  toolCall: {
+    tool: "tool",
+    running: "running",
+    done: "done",
+    error: "error",
+    context: "context",
+    streaming: "streaming",
+    diff: "diff",
+    result: "result",
+  },
+
   language: {
     switchTo: "Passer à l'anglais",
   },
@@ -425,6 +629,36 @@ export const fr: Translations = {
   theme: {
     title: "Thème",
     switchTheme: "Changer de thème",
+    presets: {
+      default: {
+        label: "Hermes Teal",
+        description: "Classic dark teal -- the canonical Hermes look",
+      },
+      midnight: {
+        label: "Midnight",
+        description: "Deep blue-violet with cool accents",
+      },
+      ember: {
+        label: "Ember",
+        description: "Warm crimson and bronze -- forge vibes",
+      },
+      mono: {
+        label: "Mono",
+        description: "Clean grayscale -- minimal and focused",
+      },
+      cyberpunk: {
+        label: "Cyberpunk",
+        description: "Neon green on black -- matrix terminal",
+      },
+      rose: {
+        label: "Rose",
+        description: "Soft pink and warm ivory -- easy on the eyes",
+      },
+      "default-large": {
+        label: "Hermes Teal (Large)",
+        description: "Hermes Teal with bigger fonts and roomier spacing",
+      },
+    },
   },
   achievements: {
     hero: {

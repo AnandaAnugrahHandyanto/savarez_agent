@@ -69,7 +69,7 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
 
                   {info.updated_at && (
                     <span className="text-xs text-muted-foreground">
-                      {t.status.lastUpdate}: {isoTimeAgo(info.updated_at)}
+                      {t.status.lastUpdate}: {isoTimeAgo(info.updated_at, t.time)}
                     </span>
                   )}
                 </div>

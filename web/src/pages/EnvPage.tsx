@@ -35,6 +35,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useI18n } from "@/i18n";
+import type { Translations } from "@/i18n/types";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 
@@ -76,6 +77,14 @@ function getProviderGroup(key: string): string {
 function getProviderPriority(groupName: string): number {
   const entry = PROVIDER_GROUPS.find((g) => g.name === groupName);
   return entry?.priority ?? 99;
+}
+
+function getEnvDescription(varKey: string, info: EnvVarInfo, t: Translations): string {
+  return t.env.descriptions[varKey] ?? info.description;
+}
+
+function formatEnvActionLabel(template: string, varKey: string): string {
+  return template.replace("{key}", varKey);
 }
 
 interface ProviderGroup {
@@ -139,7 +148,7 @@ function EnvVarRow({
             {varKey}
           </span>
           <span className="text-[0.65rem] text-muted-foreground/60 truncate hidden sm:block">
-            {info.description}
+            {getEnvDescription(varKey, info, t)}
           </span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -175,7 +184,7 @@ function EnvVarRow({
             {varKey}
           </Label>
           <span className="text-[0.65rem] text-muted-foreground/60 truncate hidden sm:block">
-            {info.description}
+            {getEnvDescription(varKey, info, t)}
           </span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -224,7 +233,7 @@ function EnvVarRow({
         )}
       </div>
 
-      <p className="text-xs text-muted-foreground">{info.description}</p>
+      <p className="text-xs text-muted-foreground">{getEnvDescription(varKey, info, t)}</p>
 
       {info.tools.length > 0 && (
         <div className="flex flex-wrap gap-1">
@@ -258,7 +267,10 @@ function EnvVarRow({
               size="icon"
               onClick={() => onReveal(varKey)}
               title={isRevealed ? t.env.hideValue : t.env.showValue}
-              aria-label={isRevealed ? `Hide ${varKey}` : `Reveal ${varKey}`}
+              aria-label={formatEnvActionLabel(
+                isRevealed ? t.env.hideValueFor : t.env.showValueFor,
+                varKey,
+              )}
             >
               {isRevealed ? <EyeOff /> : <Eye />}
             </Button>
@@ -506,15 +518,15 @@ export default function EnvPage() {
   // Scroll-to sub-nav in the page header
   const sections = useMemo(() => {
     const items: { id: string; label: string }[] = [
-      { id: "section-oauth", label: "OAuth" },
-      { id: "section-providers", label: "Providers" },
+      { id: "section-oauth", label: t.env.oauth },
+      { id: "section-providers", label: t.env.providers },
     ];
     if (vars) {
       const categories = ["tool", "messaging", "setting"];
       const CATEGORY_LABELS: Record<string, string> = {
-        tool: "Tools",
-        messaging: "Messaging",
-        setting: "Settings",
+        tool: t.env.tools,
+        messaging: t.common.messaging,
+        setting: t.env.settings,
       };
       for (const cat of categories) {
         const hasEntries = Object.values(vars).some(
@@ -526,7 +538,7 @@ export default function EnvPage() {
       }
     }
     return items;
-  }, [vars]);
+  }, [t, vars]);
 
   useLayoutEffect(() => {
     if (!vars) {
@@ -539,7 +551,7 @@ export default function EnvPage() {
     setAfterTitle(
       <nav
         className="flex shrink-0 flex-nowrap items-center gap-1"
-        aria-label="Jump to section"
+        aria-label={t.env.jumpToSection}
       >
         {sections.map((s) => (
           <button
@@ -556,7 +568,7 @@ export default function EnvPage() {
     return () => {
       setAfterTitle(null);
     };
-  }, [vars, sections, setAfterTitle]);
+  }, [vars, sections, setAfterTitle, t.env.jumpToSection]);
 
   const handleSave = async (key: string) => {
     const value = edits[key];
@@ -586,7 +598,7 @@ export default function EnvPage() {
         delete n[key];
         return n;
       });
-      showToast(`${key} ${t.common.save.toLowerCase()}d`, "success");
+      showToast(t.env.savedKey.replace("{key}", key), "success");
     } catch (e) {
       showToast(`${t.config.failedToSave} ${key}: ${e}`, "error");
     } finally {
@@ -720,7 +732,9 @@ export default function EnvPage() {
 
   const pendingClearKey = keyClear.pendingId;
   const pendingKeyDescription =
-    pendingClearKey && vars ? vars[pendingClearKey]?.description : undefined;
+    pendingClearKey && vars && vars[pendingClearKey]
+      ? getEnvDescription(pendingClearKey, vars[pendingClearKey], t)
+      : undefined;
 
   return (
     <div className="flex flex-col gap-6">

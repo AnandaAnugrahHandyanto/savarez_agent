@@ -92,7 +92,6 @@ function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
 const CHAT_NAV_ITEM: NavItem = {
   path: "/chat",
   labelKey: "chat",
-  label: "Chat",
   icon: Terminal,
 };
 
@@ -132,32 +131,28 @@ const BUILTIN_NAV_REST: NavItem[] = [
   {
     path: "/sessions",
     labelKey: "sessions",
-    label: "Sessions",
     icon: MessageSquare,
   },
   {
     path: "/analytics",
     labelKey: "analytics",
-    label: "Analytics",
     icon: BarChart3,
   },
   {
     path: "/models",
     labelKey: "models",
-    label: "Models",
     icon: Cpu,
   },
-  { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
-  { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
-  { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
-  { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
-  { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
-  { path: "/config", labelKey: "config", label: "Config", icon: Settings },
-  { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
+  { path: "/logs", labelKey: "logs", icon: FileText },
+  { path: "/cron", labelKey: "cron", icon: Clock },
+  { path: "/skills", labelKey: "skills", icon: Package },
+  { path: "/plugins", labelKey: "plugins", icon: Puzzle },
+  { path: "/profiles", labelKey: "profiles", icon: Users },
+  { path: "/config", labelKey: "config", icon: Settings },
+  { path: "/env", labelKey: "keys", icon: KeyRound },
   {
     path: "/docs",
     labelKey: "documentation",
-    label: "Documentation",
     icon: BookOpen,
   },
 ];
@@ -626,7 +621,7 @@ export default function App() {
                       >
                         <div className="flex items-center gap-2 text-sm text-muted-foreground">
                           <Spinner />
-                          <span>Loading chat…</span>
+                          <span>{t.app.loadingChat}</span>
                         </div>
                       </div>
                     ) : null
@@ -659,7 +654,7 @@ function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
 
   const navLabel = labelKey
     ? ((t.app.nav as Record<string, string>)[labelKey] ?? label)
-    : label;
+    : (label ?? path);
 
   return (
     <li>
@@ -818,7 +813,7 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
 
 interface NavItem {
   icon: ComponentType<{ className?: string }>;
-  label: string;
+  label?: string;
   labelKey?: string;
   path: string;
 }

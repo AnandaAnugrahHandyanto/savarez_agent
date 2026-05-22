@@ -16,6 +16,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
+import type { Translations } from "@/i18n/types";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 
@@ -43,7 +45,7 @@ function getJobName(job: CronJob): string {
   return asText(job.name).trim();
 }
 
-function getJobTitle(job: CronJob): string {
+function getJobTitle(job: CronJob, t: Translations): string {
   const name = getJobName(job);
   if (name) return name;
 
@@ -53,20 +55,62 @@ function getJobTitle(job: CronJob): string {
   const script = asText(job.script);
   if (script) return truncateText(script, 60);
 
-  return job.id || "Cron job";
+  return job.id || t.cron.fallbackJobTitle;
 }
 
-function getJobScheduleDisplay(job: CronJob): string {
-  return (
+function formatIntervalSchedule(count: number, unit: string, t: Translations): string | null {
+  if (!Number.isFinite(count) || count <= 0) return null;
+  const normalized = unit.toLowerCase();
+  if (normalized === "m" || normalized === "minute" || normalized === "minutes") {
+    return (count === 1 ? (t.cron.everyMinute ?? en.cron.everyMinute!) : (t.cron.everyMinutes ?? en.cron.everyMinutes!)).replace("{count}", String(count));
+  }
+  if (normalized === "h" || normalized === "hour" || normalized === "hours") {
+    return (count === 1 ? (t.cron.everyHour ?? en.cron.everyHour!) : (t.cron.everyHours ?? en.cron.everyHours!)).replace("{count}", String(count));
+  }
+  if (normalized === "d" || normalized === "day" || normalized === "days") {
+    return (count === 1 ? (t.cron.everyDay ?? en.cron.everyDay!) : (t.cron.everyDays ?? en.cron.everyDays!)).replace("{count}", String(count));
+  }
+  return null;
+}
+
+function getJobScheduleDisplay(job: CronJob, t: Translations): string {
+  const schedule = job.schedule as Record<string, unknown> | undefined;
+  if (schedule?.kind === "interval") {
+    const minutes = Number(schedule.minutes);
+    const hours = Number(schedule.hours);
+    const days = Number(schedule.days);
+    if (Number.isFinite(minutes)) {
+      const formatted = formatIntervalSchedule(minutes, "m", t);
+      if (formatted) return formatted;
+    }
+    if (Number.isFinite(hours)) {
+      const formatted = formatIntervalSchedule(hours, "h", t);
+      if (formatted) return formatted;
+    }
+    if (Number.isFinite(days)) {
+      const formatted = formatIntervalSchedule(days, "d", t);
+      if (formatted) return formatted;
+    }
+  }
+
+  const rawDisplay =
     asText(job.schedule_display) ||
     asText(job.schedule?.display) ||
-    asText(job.schedule?.expr) ||
-    "—"
-  );
+    asText(job.schedule?.expr);
+  const intervalMatch = rawDisplay.match(/^every\s+(\d+)\s*([mhd])$/i);
+  if (intervalMatch) {
+    const formatted = formatIntervalSchedule(Number(intervalMatch[1]), intervalMatch[2], t);
+    if (formatted) return formatted;
+  }
+  return rawDisplay || "—";
 }
 
 function getJobState(job: CronJob): string {
   return asText(job.state) || (job.enabled === false ? "disabled" : "scheduled");
+}
+
+function getJobStateLabel(state: string, t: Translations): string {
+  return t.cron.states[state] ?? state;
 }
 
 function getJobProfile(job: CronJob): string {
@@ -139,7 +183,13 @@ export default function CronPage() {
 
   const handleCreate = async () => {
     if (!prompt.trim() || !schedule.trim()) {
-      showToast(`${t.cron.prompt} & ${t.cron.schedule} required`, "error");
+      showToast(
+        t.cron.requiredFields.replace(
+          "{fields}",
+          `${t.cron.prompt} & ${t.cron.schedule}`,
+        ),
+        "error",
+      );
       return;
     }
     setCreating(true);
@@ -174,13 +224,13 @@ export default function CronPage() {
       if (isPaused) {
         await api.resumeCronJob(job.id, profile);
         showToast(
-          `${t.cron.resume}: "${truncateText(getJobTitle(job), 30)}"`,
+          `${t.cron.resume}: "${truncateText(getJobTitle(job, t), 30)}"`,
           "success",
         );
       } else {
         await api.pauseCronJob(job.id, profile);
         showToast(
-          `${t.cron.pause}: "${truncateText(getJobTitle(job), 30)}"`,
+          `${t.cron.pause}: "${truncateText(getJobTitle(job, t), 30)}"`,
           "success",
         );
       }
@@ -194,7 +244,7 @@ export default function CronPage() {
     try {
       await api.triggerCronJob(job.id, getJobProfile(job));
       showToast(
-        `${t.cron.triggerNow}: "${truncateText(getJobTitle(job), 30)}"`,
+        `${t.cron.triggerNow}: "${truncateText(getJobTitle(job, t), 30)}"`,
         "success",
       );
       loadJobs();
@@ -211,7 +261,7 @@ export default function CronPage() {
         try {
           await api.deleteCronJob(id, profile);
           showToast(
-            `${t.common.delete}: "${job ? truncateText(getJobTitle(job), 30) : id}"`,
+            `${t.common.delete}: "${job ? truncateText(getJobTitle(job, t), 30) : id}"`,
             "success",
           );
           loadJobs();
@@ -220,7 +270,7 @@ export default function CronPage() {
           throw e;
         }
       },
-      [jobs, loadJobs, showToast, t.common.delete, t.status.error],
+      [jobs, loadJobs, showToast, t.common.delete, t.cron.fallbackJobTitle, t.status.error],
     ),
   });
 
@@ -264,7 +314,7 @@ export default function CronPage() {
         title={t.cron.confirmDeleteTitle}
         description={
           pendingJob
-            ? `"${truncateText(getJobTitle(pendingJob), 40)}" — ${
+            ? `"${truncateText(getJobTitle(pendingJob, t), 40)}" — ${
                 t.cron.confirmDeleteMessage
               }`
             : t.cron.confirmDeleteMessage
@@ -288,7 +338,7 @@ export default function CronPage() {
               size="icon"
               onClick={() => setCreateModalOpen(false)}
               className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              aria-label={t.common.close}
             >
               <X />
             </Button>
@@ -430,7 +480,7 @@ export default function CronPage() {
         {jobs.map((job) => {
           const state = getJobState(job);
           const promptText = getJobPrompt(job);
-          const title = getJobTitle(job);
+          const title = getJobTitle(job, t);
           const hasName = Boolean(getJobName(job));
           const deliver = asText(job.deliver);
           const profile = getJobProfile(job);
@@ -445,7 +495,7 @@ export default function CronPage() {
                       {title}
                     </span>
                     <Badge tone={STATUS_TONE[state] ?? "secondary"}>
-                      {state}
+                      {getJobStateLabel(state, t)}
                     </Badge>
                     <Badge tone="outline">{profileLabel(profile)}</Badge>
                     {deliver && deliver !== "local" && (
@@ -458,7 +508,7 @@ export default function CronPage() {
                     </p>
                   )}
                   <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                    <span className="font-mono">{getJobScheduleDisplay(job)}</span>
+                    <span className="font-mono">{getJobScheduleDisplay(job, t)}</span>
                     <span>
                       {t.cron.last}: {formatTime(job.last_run_at)}
                     </span>

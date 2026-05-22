@@ -57,8 +57,9 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
   }, [open, close, useMobileSheet]);
 
   const current = availableThemes.find((th) => th.name === themeName);
-  const label = current?.label ?? themeName;
-  const sheetTitle = t.theme?.title ?? "Theme";
+  const currentPreset = current ? t.theme.presets[current.name] : undefined;
+  const label = currentPreset?.label ?? current?.label ?? themeName;
+  const sheetTitle = t.theme.title;
 
   return (
     <div ref={wrapperRef} className="relative">
@@ -66,8 +67,8 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
         ghost
         onClick={() => setOpen((o) => !o)}
         className="px-2 py-1 normal-case tracking-normal font-normal text-xs text-muted-foreground hover:text-foreground"
-        title={t.theme?.switchTheme ?? "Switch theme"}
-        aria-label={t.theme?.switchTheme ?? "Switch theme"}
+        title={t.theme.switchTheme}
+        aria-label={t.theme.switchTheme}
         aria-expanded={open}
         aria-haspopup="listbox"
       >
@@ -139,11 +140,15 @@ function ThemeSwitcherOptions({
   setTheme,
   themeName,
 }: ThemeSwitcherOptionsProps) {
+  const { t } = useI18n();
   return (
     <>
       {availableThemes.map((th) => {
         const isActive = th.name === themeName;
         const paletteTheme = BUILTIN_THEMES[th.name] ?? th.definition;
+        const preset = t.theme.presets[th.name];
+        const label = preset?.label ?? th.label;
+        const description = preset?.description ?? th.description;
 
         return (
           <ListItem
@@ -168,11 +173,11 @@ function ThemeSwitcherOptions({
                 mondwest
                 className="truncate text-[0.75rem] tracking-wide uppercase"
               >
-                {th.label}
+                {label}
               </Typography>
-              {th.description && (
+              {description && (
                 <Typography className="truncate text-[0.65rem] normal-case tracking-normal text-midground/50">
-                  {th.description}
+                  {description}
                 </Typography>
               )}
             </div>

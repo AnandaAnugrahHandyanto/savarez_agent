@@ -70,6 +70,7 @@ export interface Translations {
     brandShort: string;
     closeNavigation: string;
     closeModelTools: string;
+    loadingChat: string;
     footer: {
       org: string;
     };
@@ -192,6 +193,12 @@ export interface Translations {
     perDayAvg: string;
     acrossModels: string;
     inOut: string;
+    tokenAnalyticsHiddenTitle: string;
+    tokenAnalyticsHiddenIntroBeforeUsage: string;
+    tokenAnalyticsHiddenIntroAfterUsage: string;
+    tokenAnalyticsHiddenWarning: string;
+    tokenAnalyticsHiddenConfigBeforeSetting: string;
+    tokenAnalyticsHiddenConfigAfterSetting: string;
   };
 
   // ── Models page ──
@@ -205,6 +212,58 @@ export interface Translations {
     toolCalls: string;
     noModelsData: string;
     startSession: string;
+    capabilityTools: string;
+    capabilityVision: string;
+    capabilityReasoning: string;
+    cacheRead: string;
+    useAs: string;
+    main: string;
+    current: string;
+    missingProviderModel: string;
+    settingsTitle: string;
+    settingsAppliesToNewSessions: string;
+    mainModel: string;
+    unset: string;
+    change: string;
+    auxiliaryTasks: string;
+    overrideCount: string;
+    autoCount: string;
+    taskCount: string;
+    allAuto: string;
+    configure: string;
+    setMainModel: string;
+    auxiliaryModels: string;
+    auxiliaryModelsSubtitle: string;
+    autoUsesMainModel: string;
+    providerDefault: string;
+    setAuxiliary: string;
+    resetAuxiliaryModels: string;
+    resetAuxiliaryDescription: string;
+    resetAllToAuto: string;
+    resetAll: string;
+    tokenAnalyticsHidden: string;
+    auxiliaryTaskLabels: {
+      vision: string;
+      webExtract: string;
+      compression: string;
+      sessionSearch: string;
+      skillsHub: string;
+      approval: string;
+      mcp: string;
+      titleGeneration: string;
+      curator: string;
+    };
+    auxiliaryTaskHints: {
+      vision: string;
+      webExtract: string;
+      compression: string;
+      sessionSearch: string;
+      skillsHub: string;
+      approval: string;
+      mcp: string;
+      titleGeneration: string;
+      curator: string;
+    };
   };
 
   // ── Logs page ──
@@ -237,6 +296,15 @@ export interface Translations {
     pause: string;
     resume: string;
     triggerNow: string;
+    requiredFields: string;
+    fallbackJobTitle: string;
+    everyMinute?: string;
+    everyMinutes?: string;
+    everyHour?: string;
+    everyHours?: string;
+    everyDay?: string;
+    everyDays?: string;
+    states: Record<string, string>;
     delivery: {
       local: string;
       telegram: string;
@@ -256,10 +324,13 @@ export interface Translations {
     forceReinstall: string;
     headline: string;
     identifierLabel: string;
+    identifierPlaceholder?: string;
     inactive: string;
     installBtn: string;
+    installFailed?: string;
     installHeading: string;
     installHint: string;
+    installSuccess?: string;
     memoryProviderLabel: string;
     missingEnvWarn: string;
     noDashboardTab: string;
@@ -271,12 +342,16 @@ export interface Translations {
     providersHint: string;
     refreshDashboard: string;
     removeConfirm: string;
+    removeDescription: string;
     removeHint: string;
     rescanHeading: string;
     rescanHint: string;
     runtimeHeading: string;
     saveProviders: string;
+    saveFailed?: string;
     savedProviders: string;
+    actionFailed?: string;
+    rescanFailed?: string;
     sourceBadge: string;
     authRequired: string;
     authRequiredHint: string;
@@ -284,6 +359,9 @@ export interface Translations {
     versionBadge: string;
     showInSidebar: string;
     hideFromSidebar: string;
+    runtimeStatus: Record<string, string>;
+    sourceLabels: Record<string, string>;
+    descriptions: Record<string, string>;
   };
 
   // ── Profiles page ──
@@ -336,6 +414,8 @@ export interface Translations {
     setupNeeded: string;
     disabledForCli: string;
     more: string;
+    descriptions: Record<string, string>;
+    toolsetDescriptions: Record<string, string>;
   };
 
   // ── Config page ──
@@ -348,6 +428,7 @@ export interface Translations {
     resetDefaults: string;
     resetScopeTooltip: string;
     confirmResetScope: string;
+    resetScopeDescription: string;
     resetScopeToast: string;
     rawYaml: string;
     searchResults: string;
@@ -364,19 +445,36 @@ export interface Translations {
       general: string;
       agent: string;
       terminal: string;
+      web: string;
       display: string;
       delegation: string;
       memory: string;
       compression: string;
       security: string;
       browser: string;
+      tool_output: string;
+      tool_loop_guardrails: string;
+      openrouter: string;
+      bedrock: string;
       voice: string;
       tts: string;
       stt: string;
       logging: string;
       discord: string;
       auxiliary: string;
+      curator: string;
+      slack: string;
+      mattermost: string;
+      matrix: string;
+      kanban: string;
+      model_catalog: string;
+      sessions: string;
+      updates: string;
+      lsp: string;
+      x_search: string;
     };
+    fieldLabels: Record<string, string>;
+    fieldDescriptions: Record<string, string>;
   };
 
   // ── Env / Keys page ──
@@ -389,14 +487,107 @@ export interface Translations {
     getKey: string;
     hideAdvanced: string;
     hideValue: string;
+    hideValueFor: string;
     keysCount: string;
     llmProviders: string;
     notConfigured: string;
     notSet: string;
     providersConfigured: string;
     replaceCurrentValue: string;
+    savedKey: string;
     showAdvanced: string;
     showValue: string;
+    showValueFor: string;
+    jumpToSection: string;
+    oauth: string;
+    providers: string;
+    tools: string;
+    settings: string;
+    descriptions: Record<string, string>;
+  };
+
+  // ── Shared time formatting ──
+  time: {
+    justNow: string;
+    minutesAgo: string;
+    hoursAgo: string;
+    yesterday: string;
+    daysAgo: string;
+    unknown: string;
+  };
+
+  // ── Shared field / model components ──
+  autoField: {
+    noneOption: string;
+    commaSeparatedValues: string;
+  };
+
+  modelInfo: {
+    loading: string;
+    contextWindow: string;
+    overrideAuto: string;
+    autoDetected: string;
+    maxOutput: string;
+    tools: string;
+    vision: string;
+    reasoning: string;
+  };
+
+  modelPicker: {
+    switchModel: string;
+    close: string;
+    current: string;
+    unknown: string;
+    filterPlaceholder: string;
+    savesToConfig: string;
+    persistGlobally: string;
+    cancel: string;
+    switch: string;
+    loading: string;
+    noMatches: string;
+    noAuthenticatedProviders: string;
+    modelsCount: string;
+    pickProvider: string;
+    noModelsMatch: string;
+    noModelsForProvider: string;
+    currentTag: string;
+  };
+
+  chat: {
+    sessionTokenUnavailable: string;
+    authFailedReload: string;
+    localhostOnly: string;
+    copyLastAssistantMarkdown: string;
+    copyLastAssistant: string;
+    copyLastResponse: string;
+    copied: string;
+    sidebar: {
+      model: string;
+      tools: string;
+      reconnect: string;
+      noToolCallsYet: string;
+      switchModel: string;
+      eventsDisconnected: string;
+      eventsRejected: string;
+      states: {
+        idle: string;
+        connecting: string;
+        live: string;
+        closed: string;
+        error: string;
+      };
+    };
+  };
+
+  toolCall: {
+    tool: string;
+    running: string;
+    done: string;
+    error: string;
+    context: string;
+    streaming: string;
+    diff: string;
+    result: string;
   };
 
   // ── OAuth ──
@@ -416,6 +607,9 @@ export interface Translations {
     cli: string;
     copyCliCommand: string;
     connect: string;
+    openDocs: string;
+    disconnectDescription: string;
+    tokenExchangeFailed: string;
     sessionExpires: string;
     initiatingLogin: string;
     exchangingCode: string;
@@ -448,6 +642,7 @@ export interface Translations {
   theme: {
     title: string;
     switchTheme: string;
+    presets: Record<string, { label: string; description: string }>;
   };
 
   // ── Achievements plugin (plugins/hermes-achievements) ──

@@ -28,6 +28,7 @@ import { Switch } from "@nous-research/ui/ui/components/switch";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { useI18n } from "@/i18n";
+import type { Translations } from "@/i18n/types";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 
@@ -62,6 +63,14 @@ function prettyCategory(
     .split(/[-_/]/)
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(" ");
+}
+
+function getSkillDescription(skill: SkillInfo, t: Translations): string {
+  return t.skills.descriptions[skill.name] ?? skill.description;
+}
+
+function getToolsetDescription(toolset: ToolsetInfo, t: Translations): string {
+  return t.skills.toolsetDescriptions[toolset.name] ?? toolset.description;
 }
 
 const TOOLSET_ICONS: Record<
@@ -149,10 +158,10 @@ export default function SkillsPage() {
     return skills.filter(
       (s) =>
         s.name.toLowerCase().includes(lowerSearch) ||
-        s.description.toLowerCase().includes(lowerSearch) ||
+        getSkillDescription(s, t).toLowerCase().includes(lowerSearch) ||
         (s.category ?? "").toLowerCase().includes(lowerSearch),
     );
-  }, [skills, isSearching, lowerSearch]);
+  }, [skills, isSearching, lowerSearch, t]);
 
   const activeSkills = useMemo(() => {
     if (isSearching) return [];
@@ -235,9 +244,9 @@ export default function SkillsPage() {
         !search ||
         ts.name.toLowerCase().includes(lowerSearch) ||
         ts.label.toLowerCase().includes(lowerSearch) ||
-        ts.description.toLowerCase().includes(lowerSearch),
+        getToolsetDescription(ts, t).toLowerCase().includes(lowerSearch),
     );
-  }, [toolsets, search, lowerSearch]);
+  }, [toolsets, search, lowerSearch, t]);
 
   /* ---- Loading ---- */
   if (loading) {
@@ -356,6 +365,7 @@ export default function SkillsPage() {
                       <SkillRow
                         key={skill.name}
                         skill={skill}
+                        description={getSkillDescription(skill, t)}
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
                         noDescriptionLabel={t.skills.noDescription}
@@ -399,6 +409,7 @@ export default function SkillsPage() {
                       <SkillRow
                         key={skill.name}
                         skill={skill}
+                        description={getSkillDescription(skill, t)}
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
                         noDescriptionLabel={t.skills.noDescription}
@@ -445,7 +456,7 @@ export default function SkillsPage() {
                                 </Badge>
                               </div>
                               <p className="text-xs text-muted-foreground mb-2">
-                                {ts.description}
+                                {getToolsetDescription(ts, t)}
                               </p>
                               {ts.enabled && !ts.configured && (
                                 <p className="text-[10px] text-amber-300/80 mb-2">
@@ -494,6 +505,7 @@ export default function SkillsPage() {
 
 function SkillRow({
   skill,
+  description,
   toggling,
   onToggle,
   noDescriptionLabel,
@@ -518,7 +530,7 @@ function SkillRow({
           </span>
         </div>
         <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2">
-          {skill.description || noDescriptionLabel}
+          {description || noDescriptionLabel}
         </p>
       </div>
     </div>
@@ -550,6 +562,7 @@ interface PanelItemProps {
 }
 
 interface SkillRowProps {
+  description: string;
   noDescriptionLabel: string;
   onToggle: () => void;
   skill: SkillInfo;
