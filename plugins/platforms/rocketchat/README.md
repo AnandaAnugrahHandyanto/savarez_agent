@@ -1,68 +1,71 @@
-# Rocket.Chat Plugin für Hermes Agent
+# Rocket.Chat Plugin for Hermes Agent
 
-Dieses Plugin verbindet Hermes Agent mit einem selbst-gehosteten Rocket.Chat-Server.
-Es nutzt die REST API v1 für ausgehende Nachrichten und das DDP WebSocket für eingehende.
+Connects Hermes Agent to a self-hosted Rocket.Chat instance via REST API v1 (outbound) and DDP WebSocket (inbound). Ships as a self-contained plugin — zero changes to Hermes core files.
 
-> **Plugin-Pfad:** `plugins/platforms/rocketchat/`
-> **Basiert auf:** PR #14869 von @cyb0rgk1tty, umgestellt auf das moderne Plugin-Format (IRC-Referenz)
+> **Plugin path:** `plugins/platforms/rocketchat/`
+> **Based on:** PR #14869 by @cyb0rgk1tty, refactored into the modern plugin format (IRC reference)
+> **Plugin-structure reference:** PR #4637 by @meron1122
 
 ---
 
 ## Quick Start
 
-### 1. Bot auf Rocket.Chat erstellen
+### 1. Create a Bot on Rocket.Chat
 
-1. Als Admin in Rocket.Chat einloggen
-2. **Admin** → **Users** → **New**
-3. Username: `hermes-bot`, Rolle: `bot`
-4. Speichern
+1. Log into Rocket.Chat as admin
+2. Go to **Admin** → **Users** → **New**
+3. Set username to `hermes-bot`, role: `bot`
+4. Save
 
-### 2. Personal Access Token generieren
+### 2. Generate a Personal Access Token
 
-1. Als Bot-User einloggen
-2. **Account** → **Personal Access Tokens**
-3. Name eingeben (z.B. `hermes-gateway`)
-4. **☑ Ignore Two Factor Authentication** anhaken (wichtig!)
-5. **Token** und **User ID** sofort kopieren
+1. Log in as the bot user
+2. Go to **Account** → **Personal Access Tokens**
+3. Give it a name (e.g. `hermes-gateway`)
+4. **Check ☑ Ignore Two Factor Authentication** — this is critical
+5. Copy the **Token** and **User ID** right away — you won't see them again
 
-### 3. Konfigurieren
+### 3. Configure
 
-Entweder per Wizard:
+Either use the setup wizard:
+
 ```bash
 hermes gateway setup
 ```
-→ Rocket.Chat auswählen → URL, Token, User ID eingeben
 
-Oder manuell in `~/.hermes/.env`:
+Select Rocket.Chat → enter URL, Token, and User ID when prompted.
+
+Or configure manually in `~/.hermes/.env`:
+
 ```bash
 ROCKETCHAT_URL=https://rc.example.com
-ROCKETCHAT_TOKEN=dein_pat_token
-ROCKETCHAT_USER_ID=deine_bot_user_id
-ROCKETCHAT_ALLOWED_USERS=deine_user_id
+ROCKETCHAT_TOKEN=your_pat_token
+ROCKETCHAT_USER_ID=your_bot_user_id
+ROCKETCHAT_ALLOWED_USERS=your_user_id
 ```
 
-### 4. Gateway neustarten
+### 4. Restart the Gateway
 
 ```bash
 systemctl restart hermes-gateway
-# oder per Telegram: /restart
+# or via Telegram: /restart
 ```
 
 ---
 
 ## Environment Variables
 
-| Variable | Pflicht | Default | Beschreibung |
-|----------|---------|---------|--------------|
-| `ROCKETCHAT_URL` | ✅ | — | Server-URL (z.B. https://rc.example.com) |
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `ROCKETCHAT_URL` | ✅ | — | Server URL (e.g. `https://rc.example.com`) |
 | `ROCKETCHAT_TOKEN` | ✅ | — | Personal Access Token (PAT) |
-| `ROCKETCHAT_USER_ID` | ✅ | — | Bot-User-ID (`_id`) |
-| `ROCKETCHAT_ALLOWED_USERS` | — | `""` | Erlaubte User-IDs (komma-getrennt) |
-| `ROCKETCHAT_ALLOW_ALL_USERS` | — | `false` | Alle User erlauben (dev only) |
-| `ROCKETCHAT_HOME_CHANNEL` | — | — | Room-ID für Cron-Benachrichtigungen |
-| `ROCKETCHAT_REQUIRE_MENTION` | — | `true` | @mention-Pflicht in Channels |
-| `ROCKETCHAT_FREE_RESPONSE_CHANNELS` | — | — | Rooms ohne @mention-Pflicht |
-| `ROCKETCHAT_REPLY_MODE` | — | `off` | `thread` für verschachtelte Replies |
+| `ROCKETCHAT_USER_ID` | ✅ | — | Bot user `_id` |
+| `ROCKETCHAT_ALLOWED_USERS` | — | `""` | Comma-separated list of allowed user IDs |
+| `ROCKETCHAT_ALLOW_ALL_USERS` | — | `false` | Allow all users (dev only) |
+| `ROCKETCHAT_HOME_CHANNEL` | — | — | Room ID for cron / notification delivery |
+| `ROCKETCHAT_REQUIRE_MENTION` | — | `true` | Require @mention to trigger in channels |
+| `ROCKETCHAT_FREE_RESPONSE_CHANNELS` | — | — | Room IDs where @mention is not required |
+| `ROCKETCHAT_REPLY_MODE` | — | `off` | `thread` for threaded replies, `off` for flat |
 
 ---
 
@@ -70,51 +73,58 @@ systemctl restart hermes-gateway
 
 | Feature | Status |
 |---------|--------|
-| DDP WebSocket (Inbound) | ✅ `__my_messages__` Subscription |
-| REST API (Outbound) | ✅ `chat.postMessage` |
-| File Upload | ✅ Zwei-Step `rooms.media` |
-| Attachment Download | ✅ Inkl. Image/Audio/Document-Cache |
-| Thread Support | ✅ Via `tmid` |
-| Mention Gating | ✅ Konfigurierbar pro Room |
-| Typing Indicator | ✅ Rocket.Chat 8.x-kompatibel |
-| Reconnect | ✅ Exponential Backoff (2s–60s) |
-| Cron Delivery | ✅ REST-only One-Shot Sender |
-| Setup Wizard | ✅ `hermes gateway setup` |
-| Plugin Discovery | ✅ Auto-discover als `kind: platform` |
-| Emoji Reactions | ❌ (PR #14869 hatte keine) |
+| DDP WebSocket (inbound) | ✅ `__my_messages__` subscription |
+| REST API (outbound) | ✅ `chat.postMessage` |
+| File upload | ✅ Two-step `rooms.media` + `rooms.mediaConfirm` |
+| Attachment download | ✅ With image/audio/document cache |
+| Thread support | ✅ Via `tmid` |
+| Mention gating | ✅ Configurable per room |
+| Typing indicator | ✅ Rocket.Chat 8.x compatible |
+| Reconnect | ✅ Exponential backoff (2s–60s) |
+| Voice message → STT | ✅ ffmpeg MP3 conversion pipeline |
+| Emoji reactions | ✅ 👀✅❌ on channel messages |
+| Topic sync | ✅ Bidirectional (Hermes session title ↔ RC room topic) |
+| Slash command routing | ✅ Position-0 only, gated via `is_gateway_known_command()` |
+| Deferred attachments | ✅ File-only uploads merged with next text message |
+| Cron delivery | ✅ Standalone REST-only sender |
+| Setup wizard | ✅ `hermes gateway setup` |
+| Plugin discovery | ✅ Auto-discover via `kind: platform` |
 
 ---
 
 ## Troubleshooting
 
-| Problem | Lösung |
-|---------|--------|
-| `totp-required` | PAT ohne "Ignore Two Factor" erstellt → neu generieren |
-| "Failed to authenticate" | `curl -H "X-Auth-Token: TOKEN" -H "X-User-Id: ID" https://rc/api/v1/me` prüfen |
-| Bot antwortet nicht | Bot in den Channel einladen + `ROCKETCHAT_ALLOWED_USERS` prüfen |
-| WS disconnects | nginx `proxy_read_timeout 600s` setzen, Mongo Replica Set prüfen |
-| Rate-limited (429) | Rocket.Chat Rate Limiter für Bot-IP entschärfen |
+| Problem | Fix |
+|---------|-----|
+| `totp-required` | PAT was created without "Ignore Two Factor" — generate a new one with the checkbox checked |
+| "Failed to authenticate" | Verify with: `curl -H "X-Auth-Token: TOKEN" -H "X-User-Id: ID" https://rc/api/v1/me` |
+| Bot doesn't respond | Make sure the bot has been invited to the channel and check `ROCKETCHAT_ALLOWED_USERS` |
+| WebSocket keeps disconnecting | Set `proxy_read_timeout 600s` in nginx; also check your Mongo Replica Set status |
+| Rate-limited (429) | Tune the Rocket.Chat rate limiter for the bot's IP |
+| Unrecognized slash commands on desktop | RC Desktop intercepts unknown `/` commands client-side. Set `Message_AllowUnrecognizedSlashCommand=true` in RC Admin (Settings → Message) or via env: `OVERWRITE_SETTING_Message_AllowUnrecognizedSlashCommand=true` |
 
 ---
 
-## Verifikation
+## Verification
 
-Nach Konfiguration sollte `hermes status` zeigen:
+Once configured, `hermes status` should show:
+
 ```
 Rocket.Chat 🚀 ✓ configured (plugin)
 ```
 
-Test per DM an den Bot in Rocket.Chat.
+Send a DM to the bot in Rocket.Chat to test the connection end-to-end.
 
 ---
 
-## Architektur
+## Architecture
 
 ```
 Rocket.Chat ←── REST /api/v1/chat.postMessage ──→ Hermes Agent
-           ←── DDP WebSocket stream-room-messages ──→ (Inbound)
+           ←── DDP WebSocket stream-room-messages ──→ (inbound)
 ```
 
-- **Auth:** Personal Access Token (funktioniert für REST + DDP)
-- **Room-Detection:** `rooms.info` + Lazy Cache
-- **System Messages:** Gefiltert via `t`-Feld (join/leave/role etc.)
+- **Auth:** Personal Access Token (works for both REST and DDP)
+- **Room detection:** `rooms.info` + lazy cache
+- **System messages:** Filtered out by the `t` field (join/leave/role changes, etc.)
+- **Desktop note:** RC Desktop/Browser may intercept unknown `/` commands. Mobile clients work out of the box.
