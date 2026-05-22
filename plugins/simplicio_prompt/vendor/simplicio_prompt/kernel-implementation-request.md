@@ -16,7 +16,7 @@ PRIMITIVAS OBRIGATÓRIAS:
 - Subagents: são criados via yool "spawn_agent" dentro de uma tuple. Podem ser recursivos e hierárquicos.
 
 Regras de execução:
-- Quando eu disser "implemente X", você deve:
+- Quando eu enviar qualquer prompt ou mensagem X, sem exigir "implemente X", você deve:
   1. Decompor X em um grafo de tuplas.
   2. Criar o agente raiz (tuple de nível 0).
   3. Usar yool "spawn_agent" para gerar quantos subagents forem necessários (milhares se preciso).

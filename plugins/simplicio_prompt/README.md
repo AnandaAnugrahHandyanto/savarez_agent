@@ -36,7 +36,7 @@ hermes plugins enable SIMPLICIO_PROMPT
 
 | Item | Behaviour |
 |---|---|
-| Automatic prompt pass-through | Every enabled main-agent turn receives the overlay before the model call; the user does not need to type "Implement", "Fix", "Build", or any other trigger word. |
+| Automatic prompt pass-through | Every enabled main-agent turn receives the overlay before the model call; any prompt/message is eligible, including questions, commands, code snippets, layout edits, refactors, and normal chat. The user does not need to type "Implement", "Fix", "Build", or any other trigger word. |
 | Tuple-space planning | Requests are framed as root tuple plus explicit work graph, lane, authority, receipts, and source pointers. |
 | Massive-agent abstraction | `batch_spawn(depth, branching, compression_threshold)` is used as a summarized hierarchy for 1,000,000+ subagents without enumerating them. |
 | Safe speed policy | Cache by receipt/input hash, batch small tasks, compress context, route deterministic work to local tools, and use speculative work only when idempotent. |
@@ -51,7 +51,7 @@ when enabled.
 ## Bundled Runtime Files
 
 The plugin vendors the SIMPLICIO_PROMPT runtime files from source commit
-`917fb15bf3b918fa43836623f611bc846a4eeb21`, including:
+`c1df48534a6e23cacee94c8894cc4ca382aa3459`, including:
 
 | Local file | Purpose |
 |---|---|
@@ -74,11 +74,11 @@ After `SIMPLICIO_PROMPT=true`, `HERMES_SIMPLICIO_PROMPT=true`,
 `simplicio_prompt.enabled: true`, or `hermes plugins enable SIMPLICIO_PROMPT`,
 the plugin injects the overlay into every main-agent `pre_llm_call` hook.
 
-This means normal chat, questions, layout edits, refactors, bug fixes,
-documentation work, benchmark requests, and implementation tasks all receive the
-same SIMPLICIO_PROMPT V2 execution policy automatically. The hook intentionally
-ignores the message body, so the user never has to write "Implement" to
-activate it.
+This means every prompt or message receives the same SIMPLICIO_PROMPT V2
+execution policy automatically: normal chat, questions, commands, pasted code,
+single-word requests, layout edits, refactors, bug fixes, documentation work,
+benchmark requests, and implementation tasks. The hook intentionally ignores the
+message body, so the user never has to write "Implement" to activate it.
 
 ## Bundled SIMPLICIO_PROMPT V2 Reference Data
 

@@ -37,7 +37,7 @@ Leia antes de editar: YOOL_TUPLE_HAMT.md, kernel/yool_tuple_kernel.py,
 guardrails/cpu_throttle.py, guardrails/disk_gc.py, examples/python/receipts.py
 e scripts/build_hamt.py.
 
-Ao receber "Implement X": decomponha em grafo Hilbert-indexed, crie tuple raiz,
+Ao receber qualquer prompt ou mensagem X, sem exigir "Implement X": decomponha em grafo Hilbert-indexed, crie tuple raiz,
 use batch_spawn(depth, branching, compression_threshold) para 1.000.000+
 subagents sem enumerar, execute work ativo com spawn_agent, roteie por out/in/rd,
 route_packet e scan_index, aplique hookwall, compress_token e prune_idle, e use
@@ -54,7 +54,7 @@ Responda SEMPRE exatamente neste formato (sem variações):
 [Resultado parcial]"""
 
 NORMAL_INSTRUCTION = (
-    "Implement X quickly. Use agents if useful. Report the result when finished."
+    "Handle any prompt quickly. Use agents if useful. Report the result when finished."
 )
 NORMAL_REPEATED_CONTEXT = (
     NORMAL_INSTRUCTION

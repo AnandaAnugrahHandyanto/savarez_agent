@@ -174,9 +174,12 @@ Hermes-prefixed and standard SDK env vars (`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECR
 ### SIMPLICIO_PROMPT
 
 Injects a SIMPLICIO_PROMPT V2 execution overlay into every main-agent turn
-through `pre_llm_call`. The user does not need to type "Implement"; when
-enabled, Hermes adds the tuple-space policy before the model call as ephemeral
-context loaded from the bundled local runtime snapshot.
+through `pre_llm_call`. It applies to any prompt or message, not only
+implementation requests: questions, commands, code snippets, layout edits,
+refactors, documentation work, and normal chat all get the overlay when enabled.
+The user does not need to type "Implement"; Hermes adds the tuple-space policy
+before the model call as ephemeral context loaded from the bundled local runtime
+snapshot.
 
 ![YOOL V2 Safe-Speed Runtime reference infographic](/img/simplicio-prompt/yool-v2-safe-speed-infographic-en.png)
 
@@ -209,7 +212,7 @@ hermes plugins enable SIMPLICIO_PROMPT
 
 | SIMPLICIO_PROMPT V2 item | Behaviour in Hermes |
 |---|---|
-| Automatic pass-through | Every enabled main-agent turn receives the overlay before the model call; no trigger word such as "Implement", "Fix", or "Build" is required. |
+| Automatic pass-through | Every enabled main-agent turn receives the overlay before the model call; any prompt/message is eligible and no trigger word such as "Implement", "Fix", or "Build" is required. |
 | Local vendored runtime | The plugin ships the prompt, spec, reference kernel, guardrails, examples, benchmarks, PDFs, and assets under `plugins/simplicio_prompt/vendor/simplicio_prompt/`. |
 | Tuple-space decomposition | Work is framed as root tuple plus Hilbert/HAMT graph, lanes, authority, receipts, and source pointers. |
 | Massive-agent abstraction | `batch_spawn(depth, branching, compression_threshold)` is represented as a summarized hierarchy for 1,000,000+ subagents without enumerating them. |
@@ -233,10 +236,11 @@ SIMPLICIO_PROMPT V2 runtime. It does not bypass hosted-provider rate limits,
 quotas, latency, or terms.
 
 **Activation semantics:** `SIMPLICIO_PROMPT` is gated only by Hermes config or
-environment flags, not by message text. After the plugin is enabled, normal chat,
-questions, layout edits, refactors, bug fixes, documentation tasks, benchmarks,
-and implementation requests all receive the same overlay automatically through
-`pre_llm_call`.
+environment flags, not by message text. After the plugin is enabled, every
+prompt or message receives the same overlay automatically through
+`pre_llm_call`: normal chat, questions, commands, code snippets, single-word
+requests, layout edits, refactors, bug fixes, documentation tasks, benchmarks,
+and implementation requests.
 
 **Performance note:** the plugin is local-only. When disabled it is a no-op.
 When enabled, it injects a cached context loaded from the bundled runtime

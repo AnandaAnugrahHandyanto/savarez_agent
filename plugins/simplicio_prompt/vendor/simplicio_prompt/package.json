@@ -1,7 +1,7 @@
 {
   "name": "simplicio-prompt",
-  "version": "1.0.0",
-  "description": "Tuple-Space + Yool runtime execution prompt for coding agents (Claude, Codex, Hermes, Cursor, Cline). Any user input triggers the runtime — no 'Implement' keyword required.",
+  "version": "1.1.0",
+  "description": "Tuple-Space + Yool runtime execution prompt for coding agents (Claude, Codex, Hermes, Cursor, Cline). Any user input triggers the runtime — no 'Implement' keyword required. Status output is opt-in via YOOL_TUPLE_STATUS.",
   "type": "module",
   "main": "./index.mjs",
   "exports": {
@@ -20,6 +20,7 @@
     "guardrails/",
     "examples/",
     "scripts/",
+    "docs/",
     "YOOL_TUPLE_HAMT.md",
     "README.md",
     "LICENSE"

@@ -361,7 +361,7 @@ def circuit_breaker_workload(profile: str, tasks: int) -> ProfileResult:
 
 def context_compression_workload(profile: str, chars: int) -> ProfileResult:
     raw_context = "A" * chars
-    payload = {"provider": "claude", "context": raw_context, "prompt": "Implement X"}
+    payload = {"provider": "claude", "context": raw_context, "prompt": "Any prompt X"}
 
     def run() -> ProfileResult:
         tup = YoolTuple("llm_call", (0,), "root", "llm", "benchmark", dict(payload))

@@ -61,15 +61,24 @@ For every user input X (no keyword required), execute this process:
    `YOOL_TUPLE_API_BACKOFF_MAX_MS`, `YOOL_TUPLE_CIRCUIT_FAILURE_THRESHOLD`,
    `YOOL_TUPLE_CIRCUIT_COOLDOWN_S`, `YOOL_TUPLE_BATCH_SMALL_TASK_SIZE`, and
    `YOOL_TUPLE_CONTEXT_COMPRESSION_CHARS`.
-12. Return exactly this status shape:
+12. Status output is **opt-in**. Default: silent (return only final result).
+   Enable by setting env `YOOL_TUPLE_STATUS=true` (or passing
+   `status_output=true` to the runtime). When enabled, return exactly this
+   shape:
 
-```text
-[Tuple Space Snapshot]
-[Active Agents/Subagents]
-[Total Agents/Subagents]
-[Proximo Yool a executar]
-[Resultado parcial]
-```
+   ```text
+   [Tuple Space Snapshot]
+   [Active Agents/Subagents]
+   [Total Agents/Subagents]
+   [Proximo Yool a executar]
+   [Resultado parcial]
+   ```
+
+   Per-field toggles (all default `false`):
+   `YOOL_TUPLE_STATUS_SNAPSHOT`, `YOOL_TUPLE_STATUS_ACTIVE`,
+   `YOOL_TUPLE_STATUS_TOTAL`, `YOOL_TUPLE_STATUS_NEXT`,
+   `YOOL_TUPLE_STATUS_PARTIAL`. Setting `YOOL_TUPLE_STATUS=true` turns all on;
+   per-field vars override.
 
 Commands to run in this repository:
 

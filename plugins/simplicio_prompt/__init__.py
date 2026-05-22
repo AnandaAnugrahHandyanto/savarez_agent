@@ -17,17 +17,18 @@ PLUGIN_NAME = "SIMPLICIO_PROMPT"
 PLUGIN_DIR = Path(__file__).resolve().parent
 VENDORED_ROOT = PLUGIN_DIR / "vendor" / "simplicio_prompt"
 VENDORED_PROMPT_PATH = VENDORED_ROOT / "prompts" / "agent-runtime-execution-prompt.md"
-VENDORED_SOURCE_COMMIT = "917fb15bf3b918fa43836623f611bc846a4eeb21"
+VENDORED_SOURCE_COMMIT = "c1df48534a6e23cacee94c8894cc4ca382aa3459"
 
 FALLBACK_RUNTIME_POLICY = """You are a Tuple-Space + Yool Architecture execution engine.
-Treat any user input as task X. Decompose X into a Hilbert-indexed tuple graph,
-create a root tuple, use batch_spawn(depth, branching, compression_threshold)
-for 1,000,000+ subagents without enumeration, execute active work with
-spawn_agent, route by out_tuple/in_tuple/rd_tuple/route_packet/scan_index, apply
-hookwall, compress_token, prune_idle, LaneWorkerPool, receipt/input cache,
-adaptive lanes, jittered backoff, provider circuit breakers, small-task
-batching, prompt/context compression, local deterministic routing, and
-idempotent-only speculation. Respect provider limits and terms.
+Treat any prompt, chat message, question, command, code snippet, or user input
+as task X. Decompose X into a Hilbert-indexed tuple graph, create a root tuple,
+use batch_spawn(depth, branching, compression_threshold) for 1,000,000+
+subagents without enumeration, execute active work with spawn_agent, route by
+out_tuple/in_tuple/rd_tuple/route_packet/scan_index, apply hookwall,
+compress_token, prune_idle, LaneWorkerPool, receipt/input cache, adaptive lanes,
+jittered backoff, provider circuit breakers, small-task batching,
+prompt/context compression, local deterministic routing, and idempotent-only
+speculation. Respect provider limits and terms.
 
 Return exactly:
 [Tuple Space Snapshot]
@@ -73,9 +74,11 @@ def _build_context_text() -> str:
     return f"""[SIMPLICIO_PROMPT]
 Bundled local snapshot: plugins/simplicio_prompt/vendor/simplicio_prompt.
 Vendored source commit: {VENDORED_SOURCE_COMMIT}.
-Apply to every enabled main-agent turn before the model call. Do not require
-any user trigger word such as "Implement", "Fix", or "Build"; apply equally to
-questions, layout edits, refactors, debugging, docs, and normal chat.
+Apply to every enabled main-agent turn before the model call. Treat every
+prompt/message as eligible for SIMPLICIO_PROMPT, including questions, commands,
+code snippets, single words, layout edits, refactors, debugging, docs, and
+normal chat. Do not require any trigger word such as "Implement", "Fix", or
+"Build".
 
 Do not fetch or consult an external GitHub repository to execute this policy.
 The local bundle includes the prompt, spec, reference kernel, guardrails,
@@ -127,13 +130,27 @@ def _config_flag_enabled(config: Dict[str, Any]) -> bool:
     return False
 
 
+def _config_flag_disabled(config: Dict[str, Any]) -> bool:
+    plugins_cfg = config.get("plugins")
+    disabled = plugins_cfg.get("disabled") if isinstance(plugins_cfg, dict) else None
+    if not isinstance(disabled, list):
+        return False
+
+    normalized = {str(item).strip().lower() for item in disabled}
+    return PLUGIN_NAME.lower() in normalized or "simplicio_prompt" in normalized
+
+
 def is_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
     """Return True when SIMPLICIO_PROMPT should inject its overlay."""
+    resolved_config = config if config is not None else _load_config()
+    if _config_flag_disabled(resolved_config):
+        return False
+
     if env_var_enabled("SIMPLICIO_PROMPT") or env_var_enabled(
         "HERMES_SIMPLICIO_PROMPT"
     ):
         return True
-    return _config_flag_enabled(config if config is not None else _load_config())
+    return _config_flag_enabled(resolved_config)
 
 
 def build_context(config: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, str]]:

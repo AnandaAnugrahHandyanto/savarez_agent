@@ -147,7 +147,9 @@ instructions.
    task into a Hilbert-indexed tuple graph, create a root tuple, route active
    work through tuple-space primitives, and use `LaneWorkerPool` plus the V2
    safe-speed controls.
-4. Keep the output shape stable so progress is easy to audit:
+4. Status output is **opt-in** (default: silent). Enable with
+   `YOOL_TUPLE_STATUS=true` (or `status_output=true` runtime flag). When on,
+   the agent returns this shape:
 
 ```text
 [Tuple Space Snapshot]
@@ -156,6 +158,10 @@ instructions.
 [Next Yool to Execute]
 [Partial Result]
 ```
+
+   Per-field toggles (default `false`): `YOOL_TUPLE_STATUS_SNAPSHOT`,
+   `YOOL_TUPLE_STATUS_ACTIVE`, `YOOL_TUPLE_STATUS_TOTAL`,
+   `YOOL_TUPLE_STATUS_NEXT`, `YOOL_TUPLE_STATUS_PARTIAL`.
 
 For high-throughput local runs, set the runtime environment variables before
 starting the agent or scripts:

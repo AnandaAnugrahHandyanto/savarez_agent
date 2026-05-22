@@ -5,8 +5,9 @@ This benchmark intentionally does not call a hosted model. It measures the
 local pre-LLM message preparation cost and rough token footprint for:
 
 1. a normal/V1 instruction baseline with no overlay,
-2. a manually pasted SIMPLICIO_PROMPT V2 prompt with local file paths,
-3. the automatic SIMPLICIO_PROMPT V2 plugin overlay loaded from the vendored
+2. the earlier per-message manual SIMPLICIO_PROMPT adoption path with local file
+   paths,
+3. the automatic always-on SIMPLICIO_PROMPT plugin overlay loaded from the vendored
    runtime snapshot.
 """
 
@@ -30,7 +31,7 @@ USER_MESSAGE = (
     "Refactor the dashboard layout, update tests, and report the benchmark difference."
 )
 
-MANUAL_V2_PROMPT = """Use the bundled local SIMPLICIO_PROMPT snapshot under
+MANUAL_SIMPLICIO_PROMPT = """Use the bundled local SIMPLICIO_PROMPT snapshot under
 plugins/simplicio_prompt/vendor/simplicio_prompt. Do not fetch an external
 repository at runtime.
 Read before editing:
@@ -41,12 +42,12 @@ plugins/simplicio_prompt/vendor/simplicio_prompt/guardrails/disk_gc.py,
 plugins/simplicio_prompt/vendor/simplicio_prompt/examples/python/receipts.py,
 and plugins/simplicio_prompt/vendor/simplicio_prompt/scripts/build_hamt.py.
 
-When receiving any task, decompose it into a Hilbert-indexed graph, create a
-root tuple, use batch_spawn(depth, branching, compression_threshold) for
-1,000,000+ subagents without enumeration, execute active work with spawn_agent,
-route by out/in/rd, route_packet and scan_index, apply hookwall,
-compress_token and prune_idle, and use LaneWorkerPool respecting YOOL_TUPLE_*
-environment variables.
+For any prompt or message, not only "Implement X", decompose the user's intent
+into a Hilbert-indexed graph, create a root tuple, use batch_spawn(depth,
+branching, compression_threshold) for 1,000,000+ subagents without enumeration,
+execute active work with spawn_agent, route by out/in/rd, route_packet and
+scan_index, apply hookwall, compress_token and prune_idle, and use
+LaneWorkerPool respecting YOOL_TUPLE_* environment variables.
 
 SIMPLICIO_PROMPT V2 safe-speed policy: cache aggressively by receipt/input hash,
 use adaptive lane pools, apply backoff with jitter, maintain circuit breakers per
@@ -73,7 +74,9 @@ def _normal_messages() -> List[Dict[str, str]]:
 
 
 def _manual_prompt_messages() -> List[Dict[str, str]]:
-    return [{"role": "user", "content": MANUAL_V2_PROMPT + "\n\n" + USER_MESSAGE}]
+    return [
+        {"role": "user", "content": MANUAL_SIMPLICIO_PROMPT + "\n\n" + USER_MESSAGE}
+    ]
 
 
 def _plugin_prompt_messages() -> List[Dict[str, str]]:
@@ -111,16 +114,16 @@ def main() -> int:
 
     cases = {
         "normal_instruction": _normal_messages,
-        "manual_v2_prompt": _manual_prompt_messages,
-        "simplicio_prompt_plugin": _plugin_prompt_messages,
+        "manual_simplicio_prompt_per_message": _manual_prompt_messages,
+        "simplicio_prompt_plugin_always_on": _plugin_prompt_messages,
     }
     results = {
         name: _measure(builder, args.iterations) for name, builder in cases.items()
     }
 
     normal = results["normal_instruction"]["rough_tokens"]
-    manual = results["manual_v2_prompt"]["rough_tokens"]
-    plugin = results["simplicio_prompt_plugin"]["rough_tokens"]
+    manual = results["manual_simplicio_prompt_per_message"]["rough_tokens"]
+    plugin = results["simplicio_prompt_plugin_always_on"]["rough_tokens"]
     savings_vs_manual = ((manual - plugin) / manual * 100.0) if manual else 0.0
     overhead_vs_normal = ((plugin - normal) / normal * 100.0) if normal else 0.0
 
@@ -128,7 +131,7 @@ def main() -> int:
     print(f"iterations: {args.iterations}")
     print(
         "baseline_note: V2 means the bundled SIMPLICIO_PROMPT runtime snapshot; "
-        "comparisons are against normal/V1 baselines."
+        "local comparisons use normal instruction and manual per-message adoption paths."
     )
     print("")
     print("| case | median ms/build | p95 ms/build | rough input tokens | chars |")
@@ -139,7 +142,7 @@ def main() -> int:
             f"{int(data['rough_tokens'])} | {int(data['chars'])} |"
         )
     print("")
-    print(f"plugin_token_savings_vs_manual_v2_pct: {savings_vs_manual:.2f}")
+    print(f"plugin_token_delta_vs_manual_simplicio_pct: {savings_vs_manual:.2f}")
     print(f"plugin_token_overhead_vs_normal_pct: {overhead_vs_normal:.2f}")
     print(
         "note: hosted model latency, output quality, and tool success rate are not measured here."
