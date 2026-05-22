@@ -4395,6 +4395,43 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
         return await cache_image_from_url(att.url, ext=ext)
 
+    def _maybe_forward_feed_image(self, image_path: str, message_text: str, source) -> None:
+        """Forward cached Discord image attachments to Fanhearts asynchronously.
+
+        This is an opt-in integration: set FANHEARTS_FEED_IMAGES_ENABLED=true
+        and FANHEARTS_FEED_IMAGES_JWT. Failures are logged but never block the
+        normal Hermes Discord message flow.
+        """
+        try:
+            from gateway import feed_images
+
+            if not feed_images.env_enabled():
+                return
+
+            source_payload = {
+                "platform": "discord",
+                "chat_id": getattr(source, "chat_id", None),
+                "thread_id": getattr(source, "thread_id", None),
+                "message_id": getattr(source, "message_id", None),
+                "user_id": getattr(source, "user_id", None),
+                "user_name": getattr(source, "user_name", None),
+            }
+
+            async def _send() -> None:
+                try:
+                    result = await feed_images.post_discord_feed_image(
+                        image_path=image_path,
+                        message_text=message_text,
+                        source=source_payload,
+                    )
+                    logger.info("[Discord] Fanhearts feed_image queued: %s", result)
+                except Exception as exc:
+                    logger.warning("[Discord] Fanhearts feed_image forward failed: %s", exc)
+
+            asyncio.create_task(_send())
+        except Exception as exc:
+            logger.warning("[Discord] Fanhearts feed_image integration error: %s", exc)
+
     async def _cache_discord_audio(self, att, ext: str) -> str:
         """Cache a Discord audio attachment to local disk.
 
@@ -4650,6 +4687,11 @@ class DiscordAdapter(BasePlatformAdapter):
                     cached_path = await self._cache_discord_image(att, ext)
                     media_urls.append(cached_path)
                     media_types.append(content_type)
+                    self._maybe_forward_feed_image(
+                        cached_path,
+                        normalized_content,
+                        source,
+                    )
                     print(f"[Discord] Cached user image: {cached_path}", flush=True)
                 except Exception as e:
                     print(f"[Discord] Failed to cache image attachment: {e}", flush=True)
