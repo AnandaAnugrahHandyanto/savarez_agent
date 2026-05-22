@@ -38,6 +38,10 @@ class TestUserSystemdPrivateSocketPreflight:
 
 
 class TestSystemdServiceRefresh:
+    @pytest.fixture(autouse=True)
+    def _skip_user_systemd_preflight(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
+
     def test_systemd_install_repairs_outdated_unit_without_force(self, tmp_path, monkeypatch):
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")
@@ -560,6 +564,11 @@ class TestLaunchdServiceRecovery:
 
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
         monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_graceful_restart_via_sigusr1",
+            lambda pid, timeout: calls.append(("graceful", pid, timeout)) or False,
+        )
         monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
         monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: calls.append(("term", pid, force)))
         monkeypatch.setattr(
@@ -576,6 +585,7 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_restart()
 
         assert calls == [
+            ("graceful", 321, 17.0),
             ("term", 321, False),
             ["launchctl", "kickstart", "-k", target],
         ]
@@ -602,6 +612,32 @@ class TestLaunchdServiceRecovery:
 
         assert calls == [("self", 321)]
         assert "restart requested" in capsys.readouterr().out.lower()
+
+    def test_launchd_restart_uses_sigusr1_before_kickstart(self, monkeypatch, capsys):
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_request_gateway_self_restart",
+            lambda pid: calls.append(("self", pid)) or False,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_graceful_restart_via_sigusr1",
+            lambda pid, timeout: calls.append(("graceful", pid, timeout)) or True,
+        )
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("launchctl should not run")),
+        )
+
+        gateway_cli.launchd_restart()
+
+        assert calls == [("self", 321), ("graceful", 321, 17.0)]
+        assert "restarting gracefully" in capsys.readouterr().out.lower()
 
     def test_launchd_stop_uses_bootout_not_kill(self, monkeypatch):
         """launchd_stop must bootout the service so KeepAlive doesn't respawn it."""
@@ -678,6 +714,36 @@ class TestLaunchdServiceRecovery:
         assert "stale" in output.lower()
         assert "not loaded" in output.lower()
 
+    def test_launchd_status_uses_print_for_gui_domain_job(self, tmp_path, monkeypatch, capsys):
+        plist_path = tmp_path / "ai.hermes.gateway-devops.plist"
+        plist_path.write_text("<plist>current content</plist>", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: True)
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway-devops")
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd == ["launchctl", "print", "gui/501/ai.hermes.gateway-devops"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="state = running\npid = 35002\n",
+                    stderr="",
+                )
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_status()
+
+        output = capsys.readouterr().out
+        assert "Gateway service is loaded" in output
+        assert "pid = 35002" in output
+        assert calls == [["launchctl", "print", "gui/501/ai.hermes.gateway-devops"]]
+
 
 class TestGatewayServiceDetection:
     def test_supports_systemd_services_requires_systemctl_binary(self, monkeypatch):
@@ -736,7 +802,30 @@ class TestGatewayServiceDetection:
 
         assert gateway_cli._is_service_running() is False
 
+    def test_get_service_pids_parses_launchctl_print_output(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway-devops")
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+
+        def fake_run(cmd, **kwargs):
+            if cmd == ["launchctl", "print", "gui/501/ai.hermes.gateway-devops"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="state = running\npid = 35002\n",
+                    stderr="",
+                )
+            raise AssertionError(f"Unexpected command: {cmd}")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._get_service_pids() == {35002}
+
 class TestGatewaySystemServiceRouting:
+    @pytest.fixture(autouse=True)
+    def _skip_user_systemd_preflight(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
+
     def test_systemd_restart_gracefully_restarts_running_service_and_waits(self, monkeypatch, capsys):
         calls = []
 
@@ -1136,6 +1225,70 @@ class TestGatewaySystemServiceRouting:
             raise AssertionError("Expected gateway_command to exit when service restart fails")
 
         assert run_calls == []
+
+    def test_gateway_restart_reports_launchd_permission_denied(self, tmp_path, monkeypatch, capsys):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("plist\n", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli,
+            "launchd_restart",
+            lambda: (_ for _ in ()).throw(
+                gateway_cli.subprocess.CalledProcessError(
+                    1,
+                    ["launchctl", "kickstart", "-k", "gui/501/ai.hermes.gateway"],
+                    stderr='Could not kickstart service "ai.hermes.gateway": 1: Operation not permitted',
+                )
+            ),
+        )
+        monkeypatch.setattr(gateway_cli, "run_gateway", lambda *args, **kwargs: None)
+        monkeypatch.setattr(gateway_cli, "kill_gateway_processes", lambda force=False: 0)
+
+        try:
+            gateway_cli.gateway_command(SimpleNamespace(gateway_command="restart", system=False))
+        except SystemExit as exc:
+            assert exc.code == 1
+        else:
+            raise AssertionError("Expected gateway_command to exit when launchd denies restart")
+
+        out = capsys.readouterr().out.lower()
+        assert "launchd denied the restart request" in out
+        assert "operation not permitted" in out
+        assert "launchctl kickstart" in out
+
+    def test_gateway_restart_reports_uncaptured_launchd_permission_denied(self, tmp_path, monkeypatch, capsys):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("plist\n", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli,
+            "launchd_restart",
+            lambda: (_ for _ in ()).throw(
+                gateway_cli.subprocess.CalledProcessError(
+                    1,
+                    ["launchctl", "kickstart", "-k", "gui/501/ai.hermes.gateway"],
+                )
+            ),
+        )
+        monkeypatch.setattr(gateway_cli, "run_gateway", lambda *args, **kwargs: None)
+        monkeypatch.setattr(gateway_cli, "kill_gateway_processes", lambda force=False: 0)
+
+        try:
+            gateway_cli.gateway_command(SimpleNamespace(gateway_command="restart", system=False))
+        except SystemExit as exc:
+            assert exc.code == 1
+        else:
+            raise AssertionError("Expected gateway_command to exit when launchd denies restart")
+
+        out = capsys.readouterr().out.lower()
+        assert "launchd denied the restart request" in out
+        assert "launchctl kickstart" in out
 
 
 class TestDetectVenvDir:

@@ -244,6 +244,36 @@ class TestGatewayPidState:
         finally:
             status.release_gateway_runtime_lock()
 
+    def test_get_running_pid_treats_unopenable_runtime_lock_as_active(self, tmp_path, monkeypatch):
+        """Permission-denied lock probes must not crash restart/status commands."""
+        import builtins
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        lock_path = tmp_path / "gateway.lock"
+        record = {
+            "pid": os.getpid(),
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "start_time": 123,
+        }
+        pid_path.write_text(json.dumps(record))
+        lock_path.write_text(json.dumps(record))
+
+        real_open = builtins.open
+
+        def deny_runtime_lock_open(path, *args, **kwargs):
+            if Path(path) == lock_path:
+                raise PermissionError("operation not permitted")
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(status, "open", deny_runtime_lock_open, raising=False)
+        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
+
+        assert status.get_running_pid() == os.getpid()
+
 
 class TestGatewayRuntimeStatus:
     def test_write_json_file_uses_atomic_json_write(self, tmp_path, monkeypatch):

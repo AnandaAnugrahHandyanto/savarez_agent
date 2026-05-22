@@ -462,7 +462,7 @@ def test_detect_crashed_workers_isolated_failure_normal_retry(
             )
 
 
-def test_max_runtime_uses_current_run_start_after_retry(kanban_home):
+def test_max_runtime_uses_current_run_start_after_retry(kanban_home, monkeypatch):
     """A retry should get a fresh max-runtime window.
 
     ``tasks.started_at`` intentionally records the first time the task ever
@@ -470,6 +470,8 @@ def test_max_runtime_uses_current_run_start_after_retry(kanban_home):
     ``task_runs.started_at`` row; otherwise every retry of an old task is
     immediately timed out again.
     """
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+
     with kb.connect() as conn:
         host = kb._claimer_id().split(":", 1)[0]
         t = kb.create_task(
@@ -1479,6 +1481,62 @@ def test_session_id_index_exists(kanban_home):
         ).fetchall()
     names = {r["name"] for r in rows}
     assert "idx_tasks_session_id" in names
+
+
+def test_connect_migrates_legacy_tasks_before_session_id_index(tmp_path):
+    """Opening a DB that predates session_id must add the column before indexing it."""
+    db_path = tmp_path / "legacy-kanban.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT,
+            assignee TEXT,
+            status TEXT NOT NULL,
+            priority INTEGER DEFAULT 0,
+            created_by TEXT,
+            created_at INTEGER NOT NULL DEFAULT 0,
+            started_at INTEGER,
+            completed_at INTEGER,
+            workspace_kind TEXT NOT NULL DEFAULT 'scratch',
+            workspace_path TEXT,
+            branch_name TEXT,
+            claim_lock TEXT,
+            claim_expires INTEGER,
+            tenant TEXT,
+            result TEXT,
+            idempotency_key TEXT,
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            worker_pid INTEGER,
+            last_failure_error TEXT,
+            max_runtime_seconds INTEGER,
+            last_heartbeat_at INTEGER,
+            current_run_id INTEGER,
+            workflow_template_id TEXT,
+            current_step_key TEXT,
+            skills TEXT,
+            model_override TEXT,
+            max_retries INTEGER
+        )
+        """
+    )
+    conn.close()
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    with kb.connect(db_path) as migrated:
+        cols = {row["name"] for row in migrated.execute("PRAGMA table_info(tasks)")}
+        indexes = {
+            row["name"]
+            for row in migrated.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' "
+                "AND tbl_name='tasks'"
+            )
+        }
+
+    assert "session_id" in cols
+    assert "idx_tasks_session_id" in indexes
 
 
 def test_session_id_compose_with_tenant_filter(kanban_home):

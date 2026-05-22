@@ -792,6 +792,9 @@ class AIAgent:
 
     def _emit_auxiliary_failure(self, task: str, exc: BaseException) -> None:
         """Surface a compact warning for failed auxiliary work."""
+        if (task or "").strip().lower().replace("_", " ") == "title generation":
+            logger.warning("Auxiliary title generation failed: %s", exc)
+            return
         try:
             detail = self._summarize_api_error(exc)
         except Exception:

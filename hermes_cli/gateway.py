@@ -111,25 +111,74 @@ def _get_service_pids() -> set:
     if is_macos():
         try:
             label = get_launchd_label()
-            result = subprocess.run(
-                ["launchctl", "list", label],
-                capture_output=True, text=True, timeout=5,
-            )
-            if result.returncode == 0:
-                # Output: "PID\tStatus\tLabel" header, then one data line
-                for line in result.stdout.strip().splitlines():
-                    parts = line.split()
-                    if len(parts) >= 3 and parts[2] == label:
-                        try:
-                            pid = int(parts[0])
-                            if pid > 0:
-                                pids.add(pid)
-                        except ValueError:
-                            pass
+            _, output = _launchd_service_loaded(timeout=5)
+            pids.update(_launchd_pids_from_output(output, label))
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 
     return pids
+
+
+def _launchd_pids_from_output(output: str, label: str) -> set[int]:
+    """Extract running gateway PIDs from launchctl output."""
+    pids: set[int] = set()
+    for line in output.strip().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("pid ="):
+            try:
+                pid = int(stripped.split("=", 1)[1].strip())
+            except ValueError:
+                continue
+            if pid > 0:
+                pids.add(pid)
+            continue
+
+        # Legacy `launchctl list <label>` output:
+        # "PID\tStatus\tLabel" header, then one data line.
+        parts = stripped.split()
+        if len(parts) >= 3 and parts[2] == label:
+            try:
+                pid = int(parts[0])
+            except ValueError:
+                continue
+            if pid > 0:
+                pids.add(pid)
+    return pids
+
+
+def _launchd_service_loaded(timeout: float = 10) -> tuple[bool, str]:
+    """Return whether the current launchd job is loaded and its status text."""
+    label = get_launchd_label()
+    target = f"{_launchd_domain()}/{label}"
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", target],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if result.returncode == 0:
+            return True, result.stdout
+        print_output = result.stdout or result.stderr or ""
+    except subprocess.TimeoutExpired:
+        raise
+    except FileNotFoundError:
+        raise
+
+    try:
+        result = subprocess.run(
+            ["launchctl", "list", label],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if result.returncode == 0:
+            return True, result.stdout
+        return False, result.stdout or result.stderr or print_output
+    except subprocess.TimeoutExpired:
+        raise
+    except FileNotFoundError:
+        raise
 
 
 def _get_parent_pid(pid: int) -> int | None:
@@ -958,15 +1007,10 @@ def _probe_launchd_service_running() -> bool:
     if not get_launchd_plist_path().exists():
         return False
     try:
-        result = subprocess.run(
-            ["launchctl", "list", get_launchd_label()],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except subprocess.TimeoutExpired:
+        loaded, _ = _launchd_service_loaded(timeout=10)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
-    return result.returncode == 0
+    return loaded
 
 
 def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot:
@@ -3030,6 +3074,11 @@ def launchd_restart():
             print("✓ Service restart requested")
             return
         if pid is not None:
+            print(f"⏳ Launchd service restarting gracefully (PID {pid})...")
+            if _graceful_restart_via_sigusr1(pid, drain_timeout + 5):
+                print("✓ Service restart requested")
+                return
+        if pid is not None:
             try:
                 terminate_pid(pid, force=False)
             except (ProcessLookupError, PermissionError, OSError):
@@ -3052,17 +3101,9 @@ def launchd_restart():
 
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
-    label = get_launchd_label()
     try:
-        result = subprocess.run(
-            ["launchctl", "list", label],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        loaded = result.returncode == 0
-        loaded_output = result.stdout
-    except subprocess.TimeoutExpired:
+        loaded, loaded_output = _launchd_service_loaded(timeout=10)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
         loaded = False
         loaded_output = ""
 
@@ -4187,12 +4228,9 @@ def _is_service_running() -> bool:
         return False
     elif is_macos() and get_launchd_plist_path().exists():
         try:
-            result = subprocess.run(
-                ["launchctl", "list", get_launchd_label()],
-                capture_output=True, text=True, timeout=10,
-            )
-            return result.returncode == 0
-        except subprocess.TimeoutExpired:
+            loaded, _ = _launchd_service_loaded(timeout=10)
+            return loaded
+        except (FileNotFoundError, subprocess.TimeoutExpired):
             return False
     elif is_windows():
         from hermes_cli import gateway_windows
@@ -5237,6 +5275,7 @@ def _gateway_command_inner(args):
         system = getattr(args, 'system', False)
         restart_all = getattr(args, 'all', False)
         service_configured = False
+        service_error = None
 
         if restart_all:
             # --all: stop every gateway process across all profiles, then start fresh
@@ -5291,15 +5330,15 @@ def _gateway_command_inner(args):
             try:
                 systemd_restart(system=system)
                 service_available = True
-            except subprocess.CalledProcessError:
-                pass
+            except subprocess.CalledProcessError as exc:
+                service_error = exc
         elif is_macos() and get_launchd_plist_path().exists():
             service_configured = True
             try:
                 launchd_restart()
                 service_available = True
-            except subprocess.CalledProcessError:
-                pass
+            except subprocess.CalledProcessError as exc:
+                service_error = exc
         elif is_windows():
             from hermes_cli import gateway_windows
             # Prefer the Windows-specific restart path: it supports both
@@ -5334,6 +5373,37 @@ def _gateway_command_inner(args):
                     return
 
             if service_configured:
+                err_text = ""
+                if service_error is not None:
+                    err_text = " ".join(
+                        str(part)
+                        for part in (
+                            getattr(service_error, "stderr", None),
+                            getattr(service_error, "stdout", None),
+                        )
+                        if part
+                    )
+                cmd = getattr(service_error, "cmd", None) if service_error is not None else None
+                cmd_parts = [str(part) for part in cmd] if isinstance(cmd, (list, tuple)) else []
+                launchctl_denied = (
+                    service_error is not None
+                    and getattr(service_error, "returncode", None) == 1
+                    and cmd_parts[:1] == ["launchctl"]
+                )
+                if is_macos() and (
+                    "operation not permitted" in err_text.lower() or launchctl_denied
+                ):
+                    cmd_text = " ".join(cmd_parts) if cmd_parts else str(cmd or "launchctl")
+                    print()
+                    print("✗ launchd denied the restart request.")
+                    if err_text.strip():
+                        print(f"  {err_text.strip()}")
+                    else:
+                        print("  launchctl exited with code 1; macOS usually reports this as Operation not permitted.")
+                    print("  Run the restart from an interactive user terminal that can control launchd:")
+                    print(f"    {cmd_text}")
+                    sys.exit(1)
+
                 print()
                 print("✗ Gateway service restart failed.")
                 print("  The service definition exists, but the service manager did not recover it.")

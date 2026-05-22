@@ -463,7 +463,13 @@ def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
     if not resolved_lock_path.exists():
         return False
 
-    handle = open(resolved_lock_path, "a+", encoding="utf-8")
+    try:
+        handle = open(resolved_lock_path, "a+", encoding="utf-8")
+    except (OSError, PermissionError):
+        # If the lock file exists but this process cannot open it, avoid
+        # treating it as stale.  Service managers may still be able to restart
+        # the gateway even when this CLI cannot inspect the lock directly.
+        return True
     try:
         if _try_acquire_file_lock(handle):
             _release_file_lock(handle)
