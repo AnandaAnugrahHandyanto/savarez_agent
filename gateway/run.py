@@ -15673,6 +15673,11 @@ class GatewayRunner:
             if _progress_thread_id == source.thread_id
             else {"thread_id": _progress_thread_id}
         ) if _progress_thread_id else None
+        # WeCom: tool progress uses streaming bubbles so edits update the same
+        # bubble instead of creating new ones. streaming_preview: True makes
+        # WeCom adapter.send() open a native streaming reply.
+        if source.platform == Platform.WECOM:
+            _progress_metadata = {"streaming_preview": True}
         _progress_reply_to = (
             event_message_id
             if source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id
@@ -15736,7 +15741,7 @@ class GatewayRunner:
                 except (TypeError, ValueError):
                     _edit_accepts_metadata = False
 
-            async def _edit_progress_message(message_id: str, content: str):
+            async def _edit_progress_message(message_id: str, content: str, *, finalize: bool = False):
                 kwargs = {
                     "chat_id": source.chat_id,
                     "message_id": message_id,
@@ -15744,6 +15749,12 @@ class GatewayRunner:
                 }
                 if _edit_accepts_metadata:
                     kwargs["metadata"] = _progress_metadata
+                # Pass finalize kwarg only to adapters that accept it (e.g. WeCom).
+                _edit_params = inspect.signature(adapter.edit_message).parameters
+                if "finalize" in _edit_params or any(
+                    p.kind is inspect.Parameter.VAR_KEYWORD for p in _edit_params.values()
+                ):
+                    kwargs["finalize"] = finalize
                 return await adapter.edit_message(**kwargs)
 
             def _progress_text(lines: list) -> str:
@@ -15861,6 +15872,18 @@ class GatewayRunner:
                         # order. Mirrors GatewayStreamConsumer.on_segment_break
                         # on the content side. (Issue: tool + content
                         # linearization regression after PR #7885.)
+                        if progress_msg_id and can_edit and source.platform == Platform.WECOM:
+                            # WeCom streaming bubbles must be explicitly closed
+                            # (finish=True) or they hang in typing state. Finalize
+                            # before the content bubble is visible.
+                            try:
+                                await _edit_progress_message(
+                                    progress_msg_id,
+                                    _progress_text(progress_lines),
+                                    finalize=True,
+                                )
+                            except Exception:
+                                pass
                         progress_msg_id = None
                         progress_lines = []
                         last_progress_msg[0] = None
@@ -15979,10 +16002,14 @@ class GatewayRunner:
                                 # the current progress bubble and start a fresh
                                 # one for any tool lines that arrived after.
                                 await _roll_progress_overflow_if_needed()
-                                if can_edit and progress_lines and progress_msg_id:
+                                if can_edit and progress_msg_id:
                                     _pending_text = _progress_text(progress_lines)
                                     try:
-                                        await _edit_progress_message(progress_msg_id, _pending_text)
+                                        await _edit_progress_message(
+                                            progress_msg_id,
+                                            _pending_text,
+                                            finalize=source.platform == Platform.WECOM,
+                                        )
                                     except Exception:
                                         pass
                                 progress_msg_id = None
@@ -16000,7 +16027,11 @@ class GatewayRunner:
                     if can_edit and progress_lines and progress_msg_id:
                         full_text = _progress_text(progress_lines)
                         try:
-                            await _edit_progress_message(progress_msg_id, full_text)
+                            await _edit_progress_message(
+                                progress_msg_id,
+                                full_text,
+                                finalize=source.platform == Platform.WECOM,
+                            )
                         except Exception:
                             pass
                     return
