@@ -275,6 +275,25 @@
         h(Stat, { label: "Dry-runs", value: data?.summary?.dry_run_publish_events })
       ),
 
+      (() => {
+        const poll = data?.summary?.poll || {};
+        const lastPolledAt = poll.last_poll_at ? new Date(poll.last_poll_at).toLocaleString() : "never";
+        const lastFired = poll.last_poll_fired ?? 0;
+        const totalPolls = poll.total_polls ?? 0;
+        return card("border-midground/15",
+          h("div", { className: "flex flex-wrap items-center justify-between gap-2" },
+            h("div", null,
+              h("div", { className: "text-xs uppercase tracking-[0.18em] text-midground/60" }, "Scheduled poller"),
+              h("div", { className: "mt-1 text-sm text-midground" }, `Last tick: ${lastPolledAt} · fired ${lastFired} on last tick · ${totalPolls} ticks total`)
+            ),
+            h("div", { className: "flex flex-wrap gap-2" },
+              smallButton("Run poll now", () => run("poll", () => fetchJSON(`${API}/poll`, { method: "POST" })), !!busy),
+              h("code", { className: "rounded-lg border border-midground/15 bg-background/60 px-2 py-1 text-[10px] text-midground/70" }, 'hermes cron create --schedule "every 5m" --command "hermes marketing-factory poll"')
+            )
+          )
+        );
+      })(),
+
       card("border-cyan-300/20 bg-cyan-300/5",
         h("div", { className: "flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between" },
           h("div", null,

@@ -210,6 +210,18 @@ async def publish_scheduled_with_channel_modes(app_slug: Optional[str] = None):
     return {"result": result, "overview": _overview(store)}
 
 
+@router.post("/poll")
+async def run_poll():
+    """One scheduled-poller tick across all apps. Safe to call any time.
+    Idempotent for not-yet-due drafts (skipped) and for already-published drafts
+    (skipped). Designed for cron:
+        hermes cron create --schedule "every 5m" --command "hermes marketing-factory poll"
+    """
+    store = _store()
+    result = _pipe(store).poll()
+    return {"result": result, "overview": _overview(store)}
+
+
 @router.post("/apps/{app_slug}/channels/{channel}/mode")
 async def set_channel_mode(app_slug: str, channel: str, body: ChannelModeBody):
     store = _store()

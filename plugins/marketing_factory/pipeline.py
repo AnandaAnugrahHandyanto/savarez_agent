@@ -320,7 +320,13 @@ class PublisherAgent:
                 events.append(store.dry_run_publish(draft["id"]))
         return events
 
-    def publish_scheduled(self, store: MarketingFactoryStore, app_slug: Optional[str] = None) -> List[Dict[str, Any]]:
+    def publish_scheduled(
+        self,
+        store: MarketingFactoryStore,
+        app_slug: Optional[str] = None,
+        due_only: bool = False,
+        now: Optional[datetime] = None,
+    ) -> List[Dict[str, Any]]:
         """Respect each draft's `channel_modes[channel]`:
           - mode == "live" + a real connector registered → call connector.publish(draft)
           - mode == "live" + no connector → dry_run + audit fallback("no_live_connector")
@@ -328,12 +334,28 @@ class PublisherAgent:
           - mode == "dry_run" (default) → DryRunConnector
 
         Idempotent: drafts already in `posted` or `dry_run_posted` are skipped.
+
+        When `due_only=True`, only schedules whose `scheduled_for` is <= `now`
+        (default `datetime.now(utc)`) are published. This is the cron-poller path.
         """
         events: List[Dict[str, Any]] = []
+        cutoff = now or datetime.now(timezone.utc)
         for schedule in store.list_schedules(app_slug=app_slug):
             draft = store.get_draft(schedule["draft_id"], app_slug=schedule["app_slug"])
             if draft["status"] != "scheduled":
                 continue
+            if due_only:
+                scheduled_for_str = schedule.get("scheduled_for") or draft.get("scheduled_for")
+                if not scheduled_for_str:
+                    continue
+                try:
+                    scheduled_dt = datetime.fromisoformat(scheduled_for_str.replace("Z", "+00:00"))
+                except (TypeError, ValueError):
+                    continue
+                if scheduled_dt.tzinfo is None:
+                    scheduled_dt = scheduled_dt.replace(tzinfo=timezone.utc)
+                if scheduled_dt > cutoff:
+                    continue
             app = store.require_app(draft["app_slug"])
             channel = draft["channel"]
             mode = (app.get("channel_modes") or {}).get(channel, "dry_run")
@@ -541,6 +563,43 @@ class MarketingFactoryPipeline:
             if draft.get("safety", {}).get("passed"):
                 approvals.append(self.store.set_approval(draft["id"], "approved", reviewer=reviewer, reason="approved for dry-run scheduling"))
         return approvals
+
+    def poll(self, now: Optional[datetime] = None) -> Dict[str, Any]:
+        """One tick of the scheduled poller. Walks every app, fires
+        `publish_scheduled(due_only=True)`, records the result on
+        `state.poll`. Designed to be called from a cron job:
+            hermes cron create --schedule "every 5m" --command "hermes marketing-factory poll"
+
+        Returns: {polled_apps, due_count, fired_count, events, last_poll}
+        """
+        cutoff = now or datetime.now(timezone.utc)
+        apps = self.store.list_apps()
+        all_events: List[Dict[str, Any]] = []
+        # Count drafts that are due across all apps (for reporting, includes
+        # ones we did not fire because they were already non-scheduled).
+        due_count = 0
+        for app in apps:
+            schedules = self.store.list_schedules(app_slug=app["slug"])
+            for schedule in schedules:
+                scheduled_for_str = schedule.get("scheduled_for") or ""
+                try:
+                    sched_dt = datetime.fromisoformat(scheduled_for_str.replace("Z", "+00:00"))
+                except (TypeError, ValueError):
+                    continue
+                if sched_dt.tzinfo is None:
+                    sched_dt = sched_dt.replace(tzinfo=timezone.utc)
+                if sched_dt <= cutoff:
+                    due_count += 1
+            events = self.publisher.publish_scheduled(self.store, app_slug=app["slug"], due_only=True, now=cutoff)
+            all_events.extend(events)
+        last_poll = self.store.record_poll(fired=len(all_events), due=due_count, polled_apps=len(apps))
+        return {
+            "polled_apps": len(apps),
+            "due_count": due_count,
+            "fired_count": len(all_events),
+            "events": all_events,
+            "last_poll": last_poll,
+        }
 
     def run_full_dry_run(self, app_slug: str, days: int = 7, reviewer: str = "human") -> Dict[str, Any]:
         generated = self.generate_campaign(app_slug, days=days, auto_approve=False)

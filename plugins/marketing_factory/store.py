@@ -39,6 +39,7 @@ DEFAULT_STATE: Dict[str, Any] = {
     "publish_events": {},
     "analytics": {},
     "brand_memories": {},
+    "poll": {"last_poll_at": None, "last_poll_fired": 0, "last_poll_due": 0, "total_polls": 0},
     "model_routing_policy": {
         "cheap": {"provider": "local", "model": "qwen-or-llama-small", "tasks": ["classification", "summarization", "duplicate_check", "scraping_cleanup"]},
         "mid": {"provider": "cloud", "model": "mid-tier-router", "tasks": ["rewrites", "repurposing", "channel_variants"]},
@@ -436,6 +437,20 @@ class MarketingFactoryStore:
         })
         return event
 
+    def record_poll(self, *, fired: int, due: int, polled_apps: int) -> Dict[str, Any]:
+        """Record one tick of the scheduled poller. Used by the dashboard's
+        "last poll" indicator and audited as `poll.tick`."""
+        state = self.load()
+        poll = state.setdefault("poll", {"last_poll_at": None, "last_poll_fired": 0, "last_poll_due": 0, "total_polls": 0})
+        poll["last_poll_at"] = utc_now()
+        poll["last_poll_fired"] = fired
+        poll["last_poll_due"] = due
+        poll["last_polled_apps"] = polled_apps
+        poll["total_polls"] = (poll.get("total_polls") or 0) + 1
+        self._write_state(state)
+        self.audit("poll.tick", None, {"fired": fired, "due": due, "polled_apps": polled_apps})
+        return poll
+
     def write_steering(self, app_slug: str, steering: Dict[str, Any]) -> Dict[str, Any]:
         """Persist a per-app steering blob into `brand_memories[slug].steering`."""
         self.require_app(app_slug)
@@ -533,6 +548,7 @@ class MarketingFactoryStore:
             "dry_run_publish_events": len(state["publish_events"]),
             "budgets": state["budgets"],
             "model_routing_policy": state["model_routing_policy"],
+            "poll": state.get("poll", {}),
         }
 
 

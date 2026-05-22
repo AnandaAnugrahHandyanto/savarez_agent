@@ -414,6 +414,98 @@ def test_publish_scheduled_uses_registered_live_connector_when_present(isolate_h
     assert final_draft["status"] == "posted"
 
 
+def test_poll_skips_drafts_scheduled_in_the_future(isolate_home):
+    """Phase 5: poll(due_only=True) must NOT publish drafts whose scheduled_for is in the future."""
+    from datetime import datetime, timedelta, timezone
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+
+    generated = pipe.generate_campaign("pupular", days=1)
+    draft = generated["drafts"][0]
+    store.set_approval(draft["id"], "approved", reviewer="tester")
+    pipe.scheduler.schedule_approved(store, app_slug="pupular")
+
+    # Pin the schedule into the future relative to our fake `now`.
+    future_dt = datetime.now(timezone.utc) + timedelta(hours=2)
+    state = store.load()
+    sched_record = next(iter(state["schedules"].values()))
+    sched_record["scheduled_for"] = future_dt.isoformat()
+    store._write_state(state)
+
+    result = pipe.poll(now=datetime.now(timezone.utc))
+    assert result["due_count"] == 0
+    assert result["fired_count"] == 0
+    assert len(result["events"]) == 0
+
+    # last_poll_at gets updated even when nothing fires
+    assert result["last_poll"]["last_poll_at"] is not None
+    assert result["last_poll"]["total_polls"] == 1
+
+
+def test_poll_fires_drafts_scheduled_in_the_past(isolate_home):
+    """Phase 5: poll() fires publish on drafts whose scheduled_for has passed."""
+    from datetime import datetime, timedelta, timezone
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+
+    generated = pipe.generate_campaign("pupular", days=2)
+    for draft in generated["drafts"]:
+        store.set_approval(draft["id"], "approved", reviewer="tester")
+    pipe.scheduler.schedule_approved(store, app_slug="pupular")
+
+    # Pin the schedules into the past relative to `now`.
+    past_dt = datetime.now(timezone.utc) - timedelta(hours=1)
+    state = store.load()
+    for sched in state["schedules"].values():
+        sched["scheduled_for"] = past_dt.isoformat()
+    store._write_state(state)
+
+    result = pipe.poll(now=datetime.now(timezone.utc))
+    assert result["fired_count"] == 2
+    assert all(e["mode"] == "dry_run" for e in result["events"])
+
+    # Idempotent: polling again fires nothing — drafts are already published.
+    second = pipe.poll(now=datetime.now(timezone.utc))
+    assert second["fired_count"] == 0
+    assert second["last_poll"]["total_polls"] == 2
+
+
+def test_poll_walks_every_app(isolate_home):
+    """Phase 5: poll() iterates all apps, not just one."""
+    from datetime import datetime, timedelta, timezone
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+
+    past_dt = datetime.now(timezone.utc) - timedelta(hours=1)
+    for slug in ("pupular", "setvenue"):
+        gen = pipe.generate_campaign(slug, days=1)
+        store.set_approval(gen["drafts"][0]["id"], "approved", reviewer="tester")
+        pipe.scheduler.schedule_approved(store, app_slug=slug)
+
+    state = store.load()
+    for sched in state["schedules"].values():
+        sched["scheduled_for"] = past_dt.isoformat()
+    store._write_state(state)
+
+    result = pipe.poll(now=datetime.now(timezone.utc))
+    assert result["polled_apps"] == 2
+    assert result["fired_count"] == 2
+    app_slugs = {event["app_slug"] for event in result["events"]}
+    assert app_slugs == {"pupular", "setvenue"}
+
+
 def test_dashboard_bulk_approve_and_reject_endpoints(isolate_home):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient

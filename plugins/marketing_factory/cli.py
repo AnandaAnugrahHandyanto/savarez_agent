@@ -65,6 +65,9 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     publish.add_argument("--draft-id", default=None)
     publish.add_argument("--json", action="store_true")
 
+    poll = subs.add_parser("poll", help="One scheduled-poller tick: fire publish on all due drafts across all apps")
+    poll.add_argument("--json", action="store_true")
+
     audit = subs.add_parser("audit", help="Show audit trail")
     audit.add_argument("--app", default=None)
     audit.add_argument("--limit", type=int, default=20)
@@ -79,7 +82,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
 def marketing_command(args: argparse.Namespace) -> int:
     sub = getattr(args, "marketing_command", None)
     if not sub:
-        print("usage: hermes marketing-factory {init,status,apps,campaigns,drafts,approvals,approve,reject,schedule,publish-dry-run,audit,export,generate,full-dry-run}")
+        print("usage: hermes marketing-factory {init,status,apps,campaigns,drafts,approvals,approve,reject,schedule,publish-dry-run,poll,audit,export,generate,full-dry-run}")
         return 2
     store = MarketingFactoryStore(getattr(args, "store_path", None))
     pipe = MarketingFactoryPipeline(store)
@@ -129,6 +132,19 @@ def marketing_command(args: argparse.Namespace) -> int:
             else:
                 result = pipe.publisher.dry_run_publish_scheduled(store, app_slug=args.app)
             _print_records(result, as_json=args.json, title="Dry-run publish events")
+            return 0
+        if sub == "poll":
+            result = pipe.poll()
+            summary = {
+                "polled_apps": result["polled_apps"],
+                "due_count": result["due_count"],
+                "fired_count": result["fired_count"],
+                "last_poll_at": result["last_poll"].get("last_poll_at"),
+            }
+            if args.json:
+                _print_json(result)
+            else:
+                _print_json(summary)
             return 0
         if sub == "audit":
             _print_records(store.list_audit(app_slug=args.app, limit=args.limit), as_json=args.json, title="Audit")
