@@ -642,6 +642,20 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if platform == Platform.WEIXIN:
         return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
 
+    # --- WeCom: native media attachment support via adapter ---
+    if platform == Platform.WECOM and media_files:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_wecom(
+                pconfig.extra, chat_id, chunk,
+                media_files=media_files if is_last else None,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Discord: special handling for media attachments ---
     if platform == Platform.DISCORD:
         last_result = None
@@ -728,7 +742,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, wecom, signal, yuanbao and feishu; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -736,7 +750,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, wecom, signal, yuanbao and feishu"
         )
 
     last_result = None
@@ -1751,8 +1765,12 @@ async def _send_dingtalk(extra, chat_id, message):
         return _error(f"DingTalk send failed: {e}")
 
 
-async def _send_wecom(extra, chat_id, message):
-    """Send via WeCom using the adapter's WebSocket send pipeline."""
+async def _send_wecom(extra, chat_id, message, media_files=None):
+    """Send via WeCom using the adapter's WebSocket send pipeline.
+
+    When *media_files* is provided, each file is uploaded via the adapter's
+    ``_send_media_source`` helper and delivered as a native WeCom attachment.
+    """
     try:
         from gateway.platforms.wecom import WeComAdapter, check_wecom_requirements
         if not check_wecom_requirements():
@@ -1768,6 +1786,23 @@ async def _send_wecom(extra, chat_id, message):
         if not connected:
             return _error(f"WeCom: failed to connect - {adapter.fatal_error_message or 'unknown error'}")
         try:
+            # Send media files as native attachments
+            if media_files:
+                for mf in media_files:
+                    file_path = mf if isinstance(mf, str) else getattr(mf, "name", str(mf))
+                    media_result = await adapter._send_media_source(
+                        chat_id, file_path,
+                    )
+                    if not media_result.success:
+                        return _error(f"WeCom media send failed: {media_result.error}")
+                # Send text after media
+                if message and message.strip():
+                    result = await adapter.send(chat_id, message)
+                    if not result.success:
+                        return _error(f"WeCom send failed: {result.error}")
+                    return {"success": True, "platform": "wecom", "chat_id": chat_id, "message_id": result.message_id}
+                return {"success": True, "platform": "wecom", "chat_id": chat_id}
+            # Text-only path
             result = await adapter.send(chat_id, message)
             if not result.success:
                 return _error(f"WeCom send failed: {result.error}")
