@@ -2158,14 +2158,23 @@ class FeishuAdapter(BasePlatformAdapter):
         )
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
 
+        # Extract original message creation time from Feishu event
+        create_time_raw = getattr(message, "create_time", None)
+        if create_time_raw:
+            # Feishu create_time is in milliseconds
+            msg_timestamp = datetime.fromtimestamp(int(create_time_raw) / 1000)
+        else:
+            msg_timestamp = datetime.now()
+
         logger.info(
-            "[Feishu] Inbound %s message received: id=%s type=%s chat_id=%s text=%r media=%d",
+            "[Feishu] Inbound %s message received: id=%s type=%s chat_id=%s text=%r media=%d create_time=%s",
             "dm" if chat_type == "p2p" else "group",
             message_id,
             inbound_type.value,
             getattr(message, "chat_id", "") or "",
             text[:120],
             len(media_urls),
+            msg_timestamp.isoformat() if create_time_raw else "N/A",
         )
 
         chat_id = getattr(message, "chat_id", "") or ""
@@ -2190,7 +2199,7 @@ class FeishuAdapter(BasePlatformAdapter):
             media_types=media_types,
             reply_to_message_id=reply_to_message_id,
             reply_to_text=reply_to_text,
-            timestamp=datetime.now(),
+            timestamp=msg_timestamp,
         )
         await self._dispatch_inbound_event(normalized)
 
