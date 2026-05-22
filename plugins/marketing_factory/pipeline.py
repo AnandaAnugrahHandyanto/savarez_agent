@@ -670,6 +670,83 @@ class MarketingFactoryPipeline:
                 approvals.append(self.store.set_approval(draft["id"], "approved", reviewer=reviewer, reason="approved for dry-run scheduling"))
         return approvals
 
+    def app_analytics(self, app_slug: str, days: int = 30, now: Optional[datetime] = None) -> Dict[str, Any]:
+        """Per-app performance rollup over the last `days` days.
+
+        Returns approval_rate, by-channel stats, average freshness, average
+        body length, draft status counts, tokens spent on this app. Counts
+        only drafts created within the window so old activity doesn't drown
+        out current trends.
+        """
+        app = self.store.require_app(app_slug)
+        cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=days)
+        state = self.store.load()
+
+        def _within(record: Dict[str, Any]) -> bool:
+            try:
+                dt = datetime.fromisoformat(str(record.get("created_at") or "").replace("Z", "+00:00"))
+            except ValueError:
+                return False
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt >= cutoff
+
+        drafts = [d for d in state.get("drafts", {}).values() if d.get("app_slug") == app["slug"] and _within(d)]
+        approved = [d for d in drafts if d.get("status") == "approved"]
+        rejected = [d for d in drafts if d.get("status") == "rejected"]
+        posted = [d for d in drafts if d.get("status") in {"posted", "dry_run_posted"}]
+        needs_review = [d for d in drafts if d.get("status") == "needs_review"]
+        scheduled = [d for d in drafts if d.get("status") == "scheduled"]
+
+        decided = len(approved) + len(rejected)
+        approval_rate = round(len(approved) / decided, 3) if decided else None
+
+        freshness_scores = [d["freshness_score"] for d in drafts if isinstance(d.get("freshness_score"), (int, float))]
+        avg_freshness = round(sum(freshness_scores) / len(freshness_scores), 3) if freshness_scores else None
+        body_lengths = [len(d.get("body") or "") for d in drafts]
+        avg_body_length = round(sum(body_lengths) / len(body_lengths), 1) if body_lengths else None
+
+        by_channel: Dict[str, Dict[str, Any]] = {}
+        for channel in app.get("channels") or []:
+            ch_drafts = [d for d in drafts if d.get("channel") == channel]
+            ch_approved = [d for d in ch_drafts if d.get("status") == "approved"]
+            ch_rejected = [d for d in ch_drafts if d.get("status") == "rejected"]
+            ch_decided = len(ch_approved) + len(ch_rejected)
+            ch_fresh = [d["freshness_score"] for d in ch_drafts if isinstance(d.get("freshness_score"), (int, float))]
+            by_channel[channel] = {
+                "total": len(ch_drafts),
+                "approved": len(ch_approved),
+                "rejected": len(ch_rejected),
+                "needs_review": sum(1 for d in ch_drafts if d.get("status") == "needs_review"),
+                "posted": sum(1 for d in ch_drafts if d.get("status") in {"posted", "dry_run_posted"}),
+                "approval_rate": round(len(ch_approved) / ch_decided, 3) if ch_decided else None,
+                "avg_freshness": round(sum(ch_fresh) / len(ch_fresh), 3) if ch_fresh else None,
+                "mode": (app.get("channel_modes") or {}).get(channel, "dry_run"),
+            }
+
+        tokens_for_app = (state.get("budgets") or {}).get("per_app_tokens", {}).get(app["slug"], 0)
+
+        return {
+            "app_slug": app["slug"],
+            "period_days": days,
+            "checked_at": (now or datetime.now(timezone.utc)).isoformat(),
+            "total_drafts": len(drafts),
+            "by_status": {
+                "needs_review": len(needs_review),
+                "approved": len(approved),
+                "rejected": len(rejected),
+                "scheduled": len(scheduled),
+                "posted_or_dry_run": len(posted),
+            },
+            "approval_rate": approval_rate,
+            "avg_freshness": avg_freshness,
+            "avg_body_length": avg_body_length,
+            "by_channel": by_channel,
+            "tokens_spent_per_app_today": tokens_for_app,
+            "auto_generate": bool(app.get("auto_generate")),
+            "auto_generate_threshold": int(app.get("auto_generate_threshold") or 3),
+        }
+
     def weekly_digest(self, app_slug: str, days: int = 7, now: Optional[datetime] = None) -> str:
         """Markdown digest of one app's activity over the last `days` days.
 

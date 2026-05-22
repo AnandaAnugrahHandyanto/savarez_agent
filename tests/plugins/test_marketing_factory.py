@@ -582,6 +582,64 @@ def test_weekly_digest_via_api_endpoint(isolate_home):
     assert response_404.status_code == 404
 
 
+def test_app_analytics_returns_expected_shape_on_fresh_init(isolate_home):
+    """Phase 17: fresh init has no drafts → analytics returns zero counts and null rates."""
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    result = pipe.app_analytics("pupular", days=30)
+    assert result["app_slug"] == "pupular"
+    assert result["total_drafts"] == 0
+    assert result["approval_rate"] is None
+    assert result["avg_freshness"] is None
+    assert set(result["by_channel"].keys()) == set(store.require_app("pupular")["channels"])
+    assert result["auto_generate"] is False
+
+
+def test_app_analytics_computes_approval_rate_correctly(isolate_home):
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    gen = pipe.generate_campaign("pupular", days=4)
+    # Approve 3, reject 1, leave 0 in needs_review (pupular generates 4 drafts here)
+    for i, draft in enumerate(gen["drafts"][:4]):
+        if i < 3:
+            store.set_approval(draft["id"], "approved", reviewer="tester", reason=f"good {i}")
+        else:
+            store.set_approval(draft["id"], "rejected", reviewer="tester", reason="bad")
+
+    result = pipe.app_analytics("pupular", days=30)
+    assert result["approval_rate"] == 0.75
+    assert result["by_status"]["approved"] == 3
+    assert result["by_status"]["rejected"] == 1
+
+
+def test_app_analytics_via_api_endpoint(isolate_home):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from plugins.marketing_factory.dashboard.plugin_api import router
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/plugins/marketing_factory")
+    client = TestClient(app)
+    client.post("/api/plugins/marketing_factory/init")
+    response = client.get("/api/plugins/marketing_factory/apps/pupular/analytics?days=14")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["app_slug"] == "pupular"
+    assert payload["period_days"] == 14
+    assert "by_channel" in payload
+    # 404 on unknown
+    bad = client.get("/api/plugins/marketing_factory/apps/bogus/analytics")
+    assert bad.status_code == 404
+
+
 def test_draft_checklist_x_channel_signals(isolate_home):
     """Phase 16: per-channel checklist computes correct passed/failed for X drafts."""
     from plugins.marketing_factory.pipeline import draft_checklist

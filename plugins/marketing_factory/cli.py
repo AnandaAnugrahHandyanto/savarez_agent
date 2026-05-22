@@ -72,6 +72,10 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     digest.add_argument("--app", required=True)
     digest.add_argument("--days", type=int, default=7)
 
+    analytics = subs.add_parser("analytics", help="Per-app performance rollup over the last N days (approval rate, by-channel, freshness)")
+    analytics.add_argument("--app", required=True)
+    analytics.add_argument("--days", type=int, default=30)
+
     regen = subs.add_parser("regenerate", help="Re-roll a single draft with the latest steering applied (keeps the old draft)")
     regen.add_argument("draft_id")
 
@@ -151,7 +155,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
 def marketing_command(args: argparse.Namespace) -> int:
     sub = getattr(args, "marketing_command", None)
     if not sub:
-        print("usage: hermes marketing-factory {init,status,apps,add-app,update-app,remove-app,enable-auto-generate,disable-auto-generate,campaigns,drafts,approvals,approve,reject,regenerate,variants,edit,reschedule,schedule,publish-dry-run,poll,enable-poller,disable-poller,advise,digest,audit,export,generate,full-dry-run}")
+        print("usage: hermes marketing-factory {init,status,apps,add-app,update-app,remove-app,enable-auto-generate,disable-auto-generate,campaigns,drafts,approvals,approve,reject,regenerate,variants,edit,reschedule,schedule,publish-dry-run,poll,enable-poller,disable-poller,advise,digest,analytics,audit,export,generate,full-dry-run}")
         return 2
     store = MarketingFactoryStore(getattr(args, "store_path", None))
     pipe = MarketingFactoryPipeline(store)
@@ -221,6 +225,9 @@ def marketing_command(args: argparse.Namespace) -> int:
         if sub == "remove-app":
             result = store.remove_app(args.slug, cascade=not args.no_cascade)
             _print_json(result)
+            return 0
+        if sub == "analytics":
+            _print_json(pipe.app_analytics(args.app, days=args.days))
             return 0
         if sub == "digest":
             print(pipe.weekly_digest(args.app, days=args.days))

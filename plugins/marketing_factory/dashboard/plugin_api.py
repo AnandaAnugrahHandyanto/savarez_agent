@@ -356,6 +356,16 @@ async def regenerate_draft(draft_id: str):
     return {"result": result, "overview": _overview(store)}
 
 
+@router.get("/apps/{app_slug}/analytics")
+async def app_analytics(app_slug: str, days: int = 30):
+    store = _store()
+    try:
+        result = _pipe(store).app_analytics(app_slug, days=days)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return result
+
+
 @router.get("/apps/{app_slug}/digest")
 async def app_digest(app_slug: str, days: int = 7):
     store = _store()
