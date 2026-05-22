@@ -45,6 +45,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from tools.onebot_client import (
+    onebot_base_url as _onebot_base_url,
+    onebot_call as _onebot_call,
+)
 from tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
@@ -76,82 +80,18 @@ _MAX_IMAGE_BYTES = 20 * 1024 * 1024  # 20 MiB
 # images best near-square, so this differs from image_generate's own default.
 _DEFAULT_GEN_ASPECT = "square"
 
-_ONEBOT_TIMEOUT = 15
 _QZONE_TIMEOUT = 20
 _QZONE_UPLOAD_TIMEOUT = 60
 
 
 # ---------------------------------------------------------------------------
-# Configuration
+# OneBot credentials
+#
+# The OneBot v11 HTTP client (``_onebot_call`` / ``_onebot_base_url``) is
+# imported from ``tools.onebot_client`` so it is shared with the qq_voice tool
+# rather than duplicated. The helpers below borrow the QZone-specific login
+# state (uin + cookies) from that connection.
 # ---------------------------------------------------------------------------
-
-def _onebot_base_url() -> str:
-    """Return the configured OneBot HTTP base URL (no trailing slash)."""
-    return os.getenv("ONEBOT_HTTP_URL", "").strip().rstrip("/")
-
-
-def _onebot_access_token() -> str:
-    """Return the optional OneBot HTTP access token."""
-    return os.getenv("ONEBOT_ACCESS_TOKEN", "").strip()
-
-
-# ---------------------------------------------------------------------------
-# OneBot HTTP client
-# ---------------------------------------------------------------------------
-
-def _onebot_call(action: str, params: dict | None = None) -> dict:
-    """Invoke a OneBot v11 HTTP action and return its ``data`` object.
-
-    Raises ``RuntimeError`` on transport errors, a ``failed`` status, or a
-    missing ``data`` field so callers can surface one clear message.
-    """
-    base = _onebot_base_url()
-    if not base:
-        raise RuntimeError("ONEBOT_HTTP_URL is not configured.")
-
-    url = f"{base}/{action}"
-    body = json.dumps(params or {}).encode("utf-8")
-    headers = {"Content-Type": "application/json"}
-    token = _onebot_access_token()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
-    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=_ONEBOT_TIMEOUT) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as e:
-        detail = ""
-        try:
-            detail = e.read().decode("utf-8", errors="replace")[:200]
-        except Exception:  # noqa: BLE001 — best-effort detail only
-            pass
-        raise RuntimeError(
-            f"OneBot HTTP {e.code} for action '{action}'. {detail}".strip()
-        ) from e
-    except urllib.error.URLError as e:
-        raise RuntimeError(
-            f"Cannot reach OneBot at {base} — is NapCat/Lagrange running? ({e.reason})"
-        ) from e
-
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(
-            f"OneBot action '{action}' returned non-JSON: {raw[:200]}"
-        ) from e
-
-    if payload.get("status") == "failed":
-        msg = payload.get("message") or payload.get("wording") or "unknown error"
-        raise RuntimeError(
-            f"OneBot action '{action}' failed: {msg} "
-            f"(retcode={payload.get('retcode')})"
-        )
-
-    data = payload.get("data")
-    if data is None:
-        raise RuntimeError(f"OneBot action '{action}' returned no data.")
-    return data
 
 
 def _get_login_uin() -> str:
