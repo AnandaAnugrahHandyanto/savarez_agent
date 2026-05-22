@@ -343,7 +343,7 @@
       const tierPart = achievement.tier ? (achievement.tier + " tier ") : "";
       const tmpl = tx(t, "share.tweet_text", "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤", {
         tier_part: tierPart,
-        name: achievement.name,
+        name: tx(t, "achievements.achievementData." + achievement.id + ".name", achievement.name),
       });
       return tmpl + "\n\n@NousResearch · https://hermes-agent.nousresearch.com";
     }
@@ -526,7 +526,7 @@
         React.createElement("div", { className: "ha-card-head" },
           React.createElement("div", { className: "ha-icon" }, React.createElement(AchievementIcon, { icon: achievement.icon || "secret" })),
           React.createElement("div", { className: "ha-card-title-wrap" },
-            React.createElement("div", { className: "ha-card-title" }, achievement.name),
+            React.createElement("div", { className: "ha-card-title" }, tx(t, "achievements.achievementData." + achievement.id + ".name", achievement.name)),
             React.createElement("div", { className: "ha-card-category" }, achievement.category)
           ),
           React.createElement("div", { className: "ha-badges" },
@@ -540,7 +540,7 @@
             }, tx(t, "card.share_text", "Share"))
           )
         ),
-        React.createElement("p", { className: "ha-description" }, achievement.description),
+        React.createElement("p", { className: "ha-description" }, tx(t, "achievements.achievementData." + achievement.id + ".description", achievement.description)),
         achievement.criteria && React.createElement("details", { className: "ha-criteria" },
           React.createElement("summary", null, state === "secret"
             ? tx(t, "card.how_to_reveal", "How to reveal")
@@ -712,7 +712,7 @@
         React.createElement("div", { className: "ha-latest-row" }, latest.map(function (a) {
           return React.createElement("div", { key: a.id, className: cn("ha-chip", tierClass(a.tier)) },
             React.createElement("span", { className: "ha-chip-icon" }, React.createElement(AchievementIcon, { icon: a.icon || "secret" })),
-            a.name
+            tx(t, "achievements.achievementData." + a.id + ".name", a.name)
           );
         }))
       ),

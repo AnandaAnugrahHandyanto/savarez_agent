@@ -89,14 +89,14 @@ export default function PluginsPage() {
         force: installForce,
         enable: installEnable,
       });
-      showToast(`${r.plugin_name ?? id} installed`, "success");
+      showToast(t.pluginsPage.installSuccess.replace("{name}", r.plugin_name ?? id), "success");
       if ((r.warnings?.length ?? 0) > 0) showToast(r.warnings!.join(" "), "error");
       if ((r.missing_env?.length ?? 0) > 0)
         showToast(`${t.pluginsPage.missingEnvWarn} ${r.missing_env!.join(", ")}`, "error");
       setInstallId("");
       await loadHub();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Install failed", "error");
+      showToast(e instanceof Error ? e.message : t.pluginsPage.installFailed, "error");
     } finally {
       setInstallBusy(false);
     }
@@ -112,7 +112,7 @@ export default function PluginsPage() {
       );
       await loadHub();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Rescan failed", "error");
+      showToast(e instanceof Error ? e.message : t.pluginsPage.rescanFailed, "error");
     } finally {
       setRescanBusy(false);
     }
@@ -129,7 +129,7 @@ export default function PluginsPage() {
       showToast(t.pluginsPage.savedProviders, "success");
       await loadHub();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Save failed", "error");
+      showToast(e instanceof Error ? e.message : t.pluginsPage.saveFailed, "error");
     } finally {
       setProviderBusy(false);
     }
@@ -141,7 +141,7 @@ export default function PluginsPage() {
       await fn();
       await loadHub();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Failed", "error");
+      showToast(e instanceof Error ? e.message : t.pluginsPage.failed, "error");
     } finally {
       setRowBusy(null);
     }
@@ -198,7 +198,7 @@ export default function PluginsPage() {
                   value={contextSel}
                   onValueChange={setContextSel}
                 >
-                  <SelectOption value="compressor">compressor</SelectOption>
+                  <SelectOption value="compressor">{t.pluginsPage.compressorLabel}</SelectOption>
 
                   {providers.context_options
                     .filter((o) => o.name !== "compressor")
@@ -242,7 +242,7 @@ export default function PluginsPage() {
               <Input
                 className="normal-case font-sans lowercase"
                 id="install-url"
-                placeholder="owner/repo or https://..."
+                placeholder={t.pluginsPage.placeholderOwnerRepo}
                 spellCheck={false}
                 value={installId}
                 onChange={(e) => setInstallId(e.target.value)}
@@ -342,7 +342,7 @@ export default function PluginsPage() {
                 <li className="text-[0.7rem] normal-case opacity-85" key={m.name}>
 
 
-                  {m.label ?? m.name} — {m.description || m.tab?.path}
+                  {m.label ?? m.name}{t.pluginsPage.orphanSeparator}{m.description || m.tab?.path}
 
 
                   {!m.tab?.hidden ? (
@@ -570,11 +570,11 @@ function PluginRowCard(props: PluginRowCardProps) {
           setConfirmRemove(false);
           void setRuntimeLoading(row.name, async () => {
             await api.removeAgentPlugin(row.name);
-            showToast(`${row.name} removed`, "success");
+            showToast(t.pluginsPage.removeSuccess.replace("{name}", row.name), "success");
           });
         }}
         title={t.pluginsPage.removeConfirm}
-        description={`This will remove the "${row.name}" plugin from your agent.`}
+        description={t.pluginsPage.removeConfirmDesc}
         destructive
         confirmLabel={t.common.delete}
       />

@@ -577,18 +577,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         return;
       }
       if (ev.code === 4401) {
-        setBanner("Auth failed. Reload the page to refresh the session token.");
+        setBanner(t.chat.authFailed);
         return;
       }
       if (ev.code === 4403) {
-        setBanner("Chat is only reachable from localhost.");
+        setBanner(t.chat.localhostOnly);
         return;
       }
       if (ev.code === 1011) {
         // Server already wrote an ANSI error frame.
         return;
       }
-      term.write("\r\n\x1b[90m[session ended]\x1b[0m\r\n");
+      term.write(`\r\n\x1b[90m${t.chat.sessionEnded}\x1b[0m\r\n`);
     };
 
     // Keystrokes → PTY.
@@ -818,8 +818,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           <Button
             ghost
             onClick={handleCopyLast}
-            title="Copy last assistant response as raw markdown"
-            aria-label="Copy last assistant response"
+            title={t.chat.copyTooltip}
+            aria-label={t.chat.copyAria}
             className={cn(
               "absolute z-10",
               "rounded border border-current/30",
@@ -834,7 +834,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             <span className="inline-flex items-center gap-1.5">
               <Copy className="h-3 w-3 shrink-0" />
               <span className="hidden min-[400px]:inline tracking-wide">
-                {copyState === "copied" ? "copied" : "copy last response"}
+                {copyState === "copied" ? t.chat.copiedText : t.chat.copyText}
               </span>
             </span>
           </Button>

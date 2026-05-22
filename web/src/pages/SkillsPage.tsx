@@ -28,6 +28,7 @@ import { Switch } from "@nous-research/ui/ui/components/switch";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { useI18n } from "@/i18n";
+import type { Translations } from "@/i18n/types";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 
@@ -52,11 +53,31 @@ const CATEGORY_LABELS: Record<string, string> = {
   ui: "UI",
 };
 
+/** Map raw category keys to i18n keys under t.skills */
+const CATEGORY_I18N_KEYS: Record<string, keyof Translations["skills"]> = {
+  mlops: "categoryMlops",
+  "mlops/cloud": "categoryMlopsCloud",
+  "mlops/evaluation": "categoryMlopsEval",
+  "mlops/inference": "categoryMlopsInference",
+  "mlops/models": "categoryMlopsModels",
+  "mlops/training": "categoryMlopsTraining",
+  "mlops/vector-databases": "categoryMlopsVdb",
+  mcp: "categoryMcp",
+  "red-teaming": "categoryRedTeaming",
+  ocr: "categoryOcr",
+  p5js: "categoryP5js",
+  ai: "categoryAi",
+  ux: "categoryUx",
+  ui: "categoryUi",
+};
+
 function prettyCategory(
   raw: string | null | undefined,
   generalLabel: string,
+  t?: Translations,
 ): string {
   if (!raw) return generalLabel;
+  if (t && CATEGORY_I18N_KEYS[raw]) return t.skills[CATEGORY_I18N_KEYS[raw]];
   if (CATEGORY_LABELS[raw]) return CATEGORY_LABELS[raw];
   return raw
     .split(/[-_/]/)
@@ -181,7 +202,7 @@ export default function SkillsPage() {
       })
       .map(([key, count]) => ({
         key,
-        name: prettyCategory(key === "__none__" ? null : key, t.common.general),
+        name: prettyCategory(key === "__none__" ? null : key, t.common.general, t),
         count,
       }));
   }, [skills, t]);
@@ -373,9 +394,10 @@ export default function SkillsPage() {
                   <CardTitle className="text-sm flex items-center gap-2">
                     <Package className="h-4 w-4" />
                     {activeCategory
-                      ? prettyCategory(
+                    ? prettyCategory(
                           activeCategory === "__none__" ? null : activeCategory,
                           t.common.general,
+                          t,
                         )
                       : t.skills.all}
                   </CardTitle>
