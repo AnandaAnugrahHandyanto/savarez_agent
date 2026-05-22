@@ -120,11 +120,11 @@ def _read_config_key(*path: str) -> Optional[str]:
 # a free tier on upgrade). Filtered by ``is_available()`` at walk time so
 # we don't surface a provider the user has no credentials for.
 _LEGACY_PREFERENCE = (
+    "jina",
     "firecrawl",
     "parallel",
     "tavily",
     "exa",
-    "jina",
     "searxng",
     "brave-free",
     "ddgs",
@@ -148,8 +148,8 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
        supports *capability* AND ``is_available()`` reports True, return it.
 
     3. **Legacy preference walk, filtered by availability.** Walk the
-       :data:`_LEGACY_PREFERENCE` order (firecrawl → parallel → tavily →
-       exa → searxng → brave-free → ddgs) looking for a provider whose
+       :data:`_LEGACY_PREFERENCE` order (jina → firecrawl → parallel →
+       tavily → exa → searxng → brave-free → ddgs) looking for a provider whose
        ``supports_<capability>()`` is True AND whose ``is_available()`` is
        True. Matches the historic ``tools.web_tools._get_backend()``
        candidate order so users with credentials but no explicit config

@@ -122,6 +122,12 @@ logger = logging.getLogger(__name__)
 
 def _has_env(name: str) -> bool:
     val = os.getenv(name)
+    if val and val.strip():
+        return True
+    # Also check .env file — gateway/cronjob processes may not have
+    # all API keys in os.environ, but they're still in ~/.hermes/.env
+    from hermes_cli.config import get_env_value
+    val = get_env_value(name)
     return bool(val and val.strip())
 
 def _load_web_config() -> dict:
@@ -149,11 +155,11 @@ def _get_backend() -> str:
     # Free-tier backends (searxng / brave-free / ddgs) trail the paid ones so
     # existing paid setups are unaffected.
     backend_candidates = (
+        ("jina", _has_env("JINA_API_KEY")),
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
-        ("jina", _has_env("JINA_API_KEY")),
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
         ("ddgs", _ddgs_package_importable()),
