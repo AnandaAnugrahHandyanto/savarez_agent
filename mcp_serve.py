@@ -856,6 +856,18 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         result = bridge.respond_to_approval(id, decision)
         return json.dumps(result, indent=2)
 
+    # -- Skills / Knowledge Layer tools ------------------------------------
+    # Registers: skills_list, skills_read, agents_list, agents_get,
+    #            knowledge_read, learnings_read, artifacts_list
+    try:
+        from hermes_skills_mcp import register_skills_tools
+        register_skills_tools(mcp)
+        logger.debug("Skills/knowledge MCP tools registered")
+    except ImportError:
+        logger.debug("hermes_skills_mcp not available — skills tools disabled")
+    except Exception as e:
+        logger.warning("Failed to register skills MCP tools: %s", e)
+
     return mcp
 
 
