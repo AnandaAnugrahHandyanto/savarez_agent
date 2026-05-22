@@ -4065,6 +4065,7 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
             msg = await channel.send(embed=embed, view=view)
+            view.message = msg
             return SendResult(success=True, message_id=str(msg.id))
 
         except Exception as e:
@@ -4104,6 +4105,7 @@ class DiscordAdapter(BasePlatformAdapter):
             )
 
             msg = await channel.send(embed=embed, view=view)
+            view.message = msg
             return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:
             return SendResult(success=False, error=str(e))
@@ -4989,6 +4991,56 @@ def _component_check_auth(
     return False
 
 
+def _get_discord_approval_view_timeout() -> int:
+    """Return the Discord approval-component timeout in seconds.
+
+    Keep the button lifetime aligned with the synchronous gateway approval
+    wait loop in ``tools.approval``. That loop reads
+    ``approvals.gateway_timeout`` from ``config.yaml`` and defaults to five
+    minutes; Discord views must use the same value so users do not see buttons
+    expire before the agent-side approval window does.
+    """
+    try:
+        from hermes_cli.config import load_config
+        config = load_config() or {}
+        approvals = config.get("approvals", {}) or {}
+        timeout = int(approvals.get("gateway_timeout", 300))
+    except Exception as exc:
+        logger.warning("Failed to load Discord approval view timeout: %s", exc)
+        timeout = 300
+    return max(timeout, 0)
+
+
+async def _mark_discord_view_timed_out(view, *, footer: str) -> None:
+    """Disable a timed-out Discord component view and edit its message.
+
+    ``discord.ui.View.on_timeout`` is not passed the interaction/message, so
+    senders attach the returned message to ``view.message`` after ``send``.
+    Tests and unusual call paths may construct a view without a message; in
+    that case disabling the children is still enough and the edit is skipped.
+    """
+    for child in getattr(view, "children", []):
+        child.disabled = True
+
+    message = getattr(view, "message", None)
+    if message is None:
+        return
+
+    try:
+        embed = message.embeds[0] if getattr(message, "embeds", None) else None
+        if embed:
+            try:
+                color_factory = getattr(getattr(discord, "Color", None), "greyple", None)
+                if color_factory is not None:
+                    embed.color = color_factory()
+            except Exception:
+                pass
+            embed.set_footer(text=footer)
+        await message.edit(embed=embed, view=view)
+    except Exception as exc:
+        logger.debug("Failed to mark Discord component view timed out: %s", exc)
+
+
 def _define_discord_view_classes() -> None:
     """Register Discord UI view classes as module globals.
 
@@ -5008,7 +5060,8 @@ def _define_discord_view_classes() -> None:
         Shows four buttons: Allow Once, Allow Session, Always Allow, Deny.
         Clicking a button calls ``resolve_gateway_approval()`` to unblock the
         waiting agent thread — the same mechanism as the text ``/approve`` flow.
-        Only users in the allowed list can click.  Times out after 5 minutes.
+        Only users in the allowed list can click. Times out after the
+        configured ``approvals.gateway_timeout`` window.
         """
 
         def __init__(
@@ -5016,12 +5069,18 @@ def _define_discord_view_classes() -> None:
             session_key: str,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            timeout_seconds: Optional[int] = None,
         ):
-            super().__init__(timeout=300)  # 5-minute timeout
+            super().__init__(timeout=(
+                _get_discord_approval_view_timeout()
+                if timeout_seconds is None
+                else max(int(timeout_seconds), 0)
+            ))
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
+            self.message = None
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             """Verify the user clicking is authorized."""
@@ -5097,26 +5156,22 @@ def _define_discord_view_classes() -> None:
 
         async def on_timeout(self):
             """Handle view timeout -- disable buttons and mark as expired."""
+            if self.resolved:
+                return
             self.resolved = True
-            for child in self.children:
-                child.disabled = True
+            await _mark_discord_view_timed_out(
+                self,
+                footer="Expired — approval timed out",
+            )
 
     class SlashConfirmView(discord.ui.View):
         """Three-button view for generic slash-command confirmations.
 
         Used by ``/reload-mcp`` and any future slash command routed through
-        ``GatewayRunner._request_slash_confirm``.  Buttons map to the
-        gateway's three choices:
-
-          * "Approve Once"   → ``choice="once"``
-          * "Always Approve" → ``choice="always"``
-          * "Cancel"         → ``choice="cancel"``
-
-        Clicking calls the module-level
-        ``tools.slash_confirm.resolve(session_key, confirm_id, choice)``
-        which runs the handler the runner stored for this ``session_key``.
-        Only users in the adapter's allowlist can click.  Times out after
-        5 minutes (matches the gateway primitive's timeout).
+        ``GatewayRunner._request_slash_confirm``. Buttons map to the gateway's
+        three choices: approve once, always approve, or cancel.
+        Only users in the adapter's allowlist can click. Times out after the
+        slash-confirm backend's five-minute pending-entry window.
         """
 
         def __init__(
@@ -5125,13 +5180,15 @@ def _define_discord_view_classes() -> None:
             confirm_id: str,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            timeout_seconds: Optional[int] = None,
         ):
-            super().__init__(timeout=300)
+            super().__init__(timeout=300 if timeout_seconds is None else max(int(timeout_seconds), 0))
             self.session_key = session_key
             self.confirm_id = confirm_id
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
+            self.message = None
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             return _component_check_auth(
@@ -5201,9 +5258,13 @@ def _define_discord_view_classes() -> None:
             await self._resolve(interaction, "cancel", discord.Color.greyple(), "Cancelled")
 
         async def on_timeout(self):
+            if self.resolved:
+                return
             self.resolved = True
-            for child in self.children:
-                child.disabled = True
+            await _mark_discord_view_timed_out(
+                self,
+                footer="Expired — prompt timed out",
+            )
 
     class UpdatePromptView(discord.ui.View):
         """Interactive Yes/No buttons for ``hermes update`` prompts.

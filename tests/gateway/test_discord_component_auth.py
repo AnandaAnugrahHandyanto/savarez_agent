@@ -13,6 +13,7 @@ behavior on missing role data so the parity cannot regress.
 """
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -228,3 +229,76 @@ def test_model_picker_view_empty_allowlists_allow_everyone():
     )
     assert view.allowed_role_ids == set()
     assert view._check_auth(_interaction(99999)) is True
+
+
+# ---------------------------------------------------------------------------
+# Approval view timeout: Discord buttons must match approvals.gateway_timeout
+# ---------------------------------------------------------------------------
+
+
+def test_exec_approval_view_uses_configured_gateway_timeout(monkeypatch):
+    """Regression for #30371: Discord approval buttons must not hardcode 300s."""
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda: {"approvals": {"gateway_timeout": 1800}},
+    )
+
+    view = ExecApprovalView(session_key="s", allowed_user_ids=set())
+
+    assert view.timeout == 1800
+
+
+def test_slash_confirm_view_keeps_backend_timeout(monkeypatch):
+    """Slash confirmations still match tools.slash_confirm's 300s backend TTL."""
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda: {"approvals": {"gateway_timeout": 1800}},
+    )
+
+    view = SlashConfirmView(session_key="s", confirm_id="c", allowed_user_ids=set())
+
+    assert view.timeout == 300
+
+
+@pytest.mark.parametrize(
+    ("view", "footer"),
+    [
+        (ExecApprovalView(session_key="s", allowed_user_ids=set(), timeout_seconds=1), "Expired — approval timed out"),
+        (
+            SlashConfirmView(
+                session_key="s",
+                confirm_id="c",
+                allowed_user_ids=set(),
+                timeout_seconds=1,
+            ),
+            "Expired — prompt timed out",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_approval_view_timeout_updates_expired_message(view, footer):
+    """Timed-out Discord approval prompts are visibly marked expired."""
+    child = SimpleNamespace(disabled=False)
+    embed = SimpleNamespace(color=None, footer=None)
+
+    def set_footer(*, text=None, **_):
+        embed.footer = {"text": text}
+
+    embed.set_footer = set_footer
+    message = SimpleNamespace(embeds=[embed], edit=AsyncMock())
+
+    view.children.append(child)
+    view.message = message
+
+    await view.on_timeout()
+
+    assert view.resolved is True
+    assert child.disabled is True
+    assert embed.footer == {"text": footer}
+    message.edit.assert_awaited_once_with(embed=embed, view=view)
