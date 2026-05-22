@@ -30,6 +30,27 @@ If `$HERMES_TENANT` is set, the task belongs to a tenant namespace. When reading
 - Good: `business-a: Acme is our biggest customer`
 - Bad (leaks): `Acme is our biggest customer`
 
+## Repository code-change workflow
+
+For repository code or documentation changes, the implementation worker owns the
+branch and PR, not the merge:
+
+1. Work in `$HERMES_KANBAN_WORKSPACE` on the assigned branch.
+2. Commit, push, and open a PR against the correct base branch.
+3. Do **not** merge, squash, rebase-merge, delete the branch, or enable
+   auto-merge.
+4. After the PR exists, create a separate reviewer Kanban task assigned to the
+   reviewer profile. Include the PR URL/number, implementation task id, changed
+   files, and verification performed. If this task is the implementation parent,
+   pass `parents=[os.environ["HERMES_KANBAN_TASK"]]` so review cannot start
+   before the implementation handoff exists.
+5. Block the implementation task with `review-required: ...` after commenting a
+   structured handoff containing `pr_url`, `pr_number`, `changed_files`, and
+   `verification`.
+6. The final merge decision belongs to the user. A reviewer may approve or
+   request changes, but neither reviewer nor implementer should merge without an
+   explicit user merge instruction.
+
 ## Good summary + metadata shapes
 
 The `kanban_complete(summary=..., metadata=...)` handoff is how downstream workers read what you did. Patterns that work:

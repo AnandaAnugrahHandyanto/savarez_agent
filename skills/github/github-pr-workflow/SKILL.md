@@ -276,6 +276,14 @@ When asked to auto-fix CI, follow this loop:
 
 ## 6. Merging
 
+### Kanban-gated agent work
+
+If this PR came from a Kanban implementation worker, stop after opening the PR
+and creating the reviewer Kanban task. Do **not** merge and do **not** enable
+auto-merge from the implementation or reviewer task. The final merge decision
+belongs to the user/maintainer; the only valid merge trigger is an explicit
+instruction to merge that specific PR.
+
 **With gh:**
 
 ```bash

@@ -845,6 +845,19 @@ After the [litellm supply chain compromise](https://github.com/BerriAI/litellm/i
 
 ## Pull Request Process
 
+### Kanban implementation and review gate
+
+For agent-driven repository work, the expected sequence is:
+
+1. User request → implementation Kanban task assigned to the project worker
+   profile.
+2. Implementation worker creates a branch, commits, pushes, and opens a PR.
+   Implementation workers must not merge and must not enable auto-merge.
+3. After the PR exists, a separate reviewer Kanban task reviews that PR and
+   completes with a verdict or blocks with required changes.
+4. The user decides whether and when to merge. Do not merge, squash, rebase, or
+   enable auto-merge without an explicit user merge instruction.
+
 ### Branch naming
 
 ```

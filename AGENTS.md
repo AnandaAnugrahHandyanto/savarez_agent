@@ -13,6 +13,26 @@ source .venv/bin/activate   # or: source venv/bin/activate
 `$HOME/.hermes/hermes-agent/venv` (for worktrees that share a venv with the
 main checkout).
 
+## Repository Change Workflow
+
+For this repository, user-requested code or documentation changes must move
+through the Kanban/PR/review gate rather than being implemented directly in the
+main/default profile:
+
+1. The main/default profile scopes the request and creates an implementation
+   Kanban task assigned to the project worker profile.
+2. The implementation worker works in its assigned workspace, creates a branch,
+   commits, pushes, and opens a PR. It must not merge the PR or enable
+   auto-merge.
+3. After the PR exists, create a separate reviewer Kanban task assigned to the
+   reviewer profile. The reviewer task must reference the PR URL/number and be
+   dependent on, or explicitly reference, the implementation task handoff.
+4. The reviewer reviews the PR and either completes with an approval/verdict or
+   blocks with required changes. Required changes become new implementation
+   work; do not silently rerun the same task.
+5. The final merge decision belongs to the user. Do not merge, squash, rebase,
+   or enable auto-merge unless the user explicitly says to merge that PR.
+
 ## Project Structure
 
 File counts shift constantly — don't treat the tree below as exhaustive.
