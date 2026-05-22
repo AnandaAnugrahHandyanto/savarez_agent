@@ -5,7 +5,7 @@ interface JsonLdProps {
   data: unknown;
 }
 
-export default function JsonLd({data}: JsonLdProps): JSX.Element {
+export default function JsonLd({data}: JsonLdProps): React.ReactElement {
   return (
     <script
       type="application/ld+json"
