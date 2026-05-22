@@ -726,10 +726,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             ghost
             aria-label={t.app.closeModelTools}
             onClick={closeMobilePanel}
-            className={cn(
-              "fixed inset-0 z-[55] p-0 block",
-              "bg-black/60 backdrop-blur-sm",
-            )}
+          className={cn(
+            "fixed inset-0 z-[55] p-0 block",
+            "bg-background-base/72 backdrop-blur-sm",
+          )}
           />
         )}
 
@@ -739,8 +739,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           aria-label={modelToolsLabel}
           className={cn(
             "font-mondwest fixed top-0 right-0 z-[60] flex h-dvh max-h-dvh w-64 min-w-0 flex-col antialiased",
-            "border-l border-current/20 text-midground",
-            "bg-background-base/95 backdrop-blur-sm",
+            "border-l border-border/70 text-midground",
+            "bg-background-base/92 backdrop-blur-sm",
             "transition-transform duration-200 ease-out",
             "[background:var(--component-sidebar-background)]",
             "[clip-path:var(--component-sidebar-clip-path)]",
@@ -752,7 +752,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         >
           <div
             className={cn(
-              "flex h-14 shrink-0 items-center justify-between gap-2 border-b border-current/20 px-5",
+              "flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border/60 px-5",
             )}
           >
             <Typography
@@ -801,14 +801,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 lg:flex-row lg:gap-3">
         <div
-          className={cn(
-            "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg",
-            "p-2 sm:p-3",
-          )}
-          style={{
-            backgroundColor: TERMINAL_THEME.background,
-            boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
-          }}
+            className={cn(
+              "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg",
+              "p-2 sm:p-3",
+            )}
+            style={{
+              backgroundColor: TERMINAL_THEME.background,
+              boxShadow: "var(--surface-glass-shadow)",
+            }}
         >
           <div
             ref={hostRef}
@@ -822,9 +822,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             aria-label="Copy last assistant response"
             className={cn(
               "absolute z-10",
-              "rounded border border-current/30",
-              "bg-black/20 backdrop-blur-sm",
-              "opacity-60 hover:opacity-100 hover:border-current/60",
+              "rounded border border-border/60",
+              "bg-background-base/40 backdrop-blur-sm",
+              "opacity-60 hover:opacity-100 hover:border-midground/50",
               "transition-opacity duration-150 normal-case font-normal tracking-normal",
               "bottom-2 right-2 px-2 py-1 text-[0.65rem] sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5 sm:text-xs",
               "lg:bottom-4 lg:right-4",

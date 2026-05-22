@@ -279,7 +279,7 @@ export default function ProfilesPage() {
       {createModalOpen && (
         <div
           ref={createModalRef}
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 backdrop-blur-sm p-4"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-md p-4"
           onClick={(e) =>
             e.target === e.currentTarget && setCreateModalOpen(false)
           }
@@ -287,21 +287,21 @@ export default function ProfilesPage() {
           aria-modal="true"
           aria-labelledby="create-profile-title"
         >
-          <div className="relative w-full max-w-md border border-border bg-card shadow-2xl flex flex-col">
+          <Card className="relative w-full max-w-md border-border/40 shadow-2xl flex flex-col overflow-hidden">
             <Button
               ghost
               size="icon"
               onClick={() => setCreateModalOpen(false)}
-              className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+              className="absolute right-2 top-2 text-muted-foreground hover:text-foreground z-10"
               aria-label="Close"
             >
-              <X />
+              <X className="size-4" />
             </Button>
 
-            <header className="p-5 pb-3 border-b border-border">
+            <header className="p-5 pb-3 border-b border-border/40">
               <h2
                 id="create-profile-title"
-                className="font-display text-base tracking-wider uppercase"
+                className="font-expanded text-sm font-bold tracking-wider uppercase blend-lighter"
               >
                 {t.profiles.newProfile}
               </h2>
@@ -309,7 +309,7 @@ export default function ProfilesPage() {
 
             <div className="p-5 grid gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="profile-name">{t.profiles.name}</Label>
+                <Label htmlFor="profile-name" className="text-xs uppercase tracking-widest text-muted-foreground/70">{t.profiles.name}</Label>
                 <Input
                   id="profile-name"
                   autoFocus
@@ -319,12 +319,13 @@ export default function ProfilesPage() {
                   onKeyDown={(e) => {
                     if (e.key === "Enter") handleCreate();
                   }}
+                  className="bg-background/20 border-border/40 focus:border-primary/50 transition-colors"
                   aria-invalid={
                     newName.trim() !== "" &&
                     !PROFILE_NAME_RE.test(newName.trim())
                   }
                 />
-                <p className="text-xs text-muted-foreground">
+                <p className="text-[10px] text-muted-foreground/60 uppercase tracking-tight">
                   {t.profiles.nameRule}
                 </p>
               </div>
@@ -339,21 +340,27 @@ export default function ProfilesPage() {
                 />
 
                 <Label
-                  className="font-sans normal-case tracking-normal text-sm cursor-pointer"
+                  className="font-sans normal-case tracking-normal text-xs cursor-pointer text-muted-foreground"
                   htmlFor="clone-from-default"
                 >
                   {t.profiles.cloneFromDefault}
                 </Label>
               </div>
 
-              <div className="flex justify-end">
-                <Button size="sm" onClick={handleCreate} disabled={creating}>
-                  <Plus className="h-3 w-3" />
-                  {creating ? t.common.creating : t.common.create}
+              <div className="flex justify-end pt-2">
+                <Button size="sm" onClick={handleCreate} disabled={creating} className="min-w-24">
+                  {creating ? (
+                    <ProfilesLoadingSpinner />
+                  ) : (
+                    <>
+                      <Plus className="h-3 w-3" />
+                      {t.common.create}
+                    </>
+                  )}
                 </Button>
               </div>
             </div>
-          </div>
+          </Card>
         </div>
       )}
 

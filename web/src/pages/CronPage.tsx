@@ -276,13 +276,13 @@ export default function CronPage() {
       {createModalOpen && (
         <div
           ref={createModalRef}
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 backdrop-blur-sm p-4"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/40 backdrop-blur-md p-4"
           onClick={(e) => e.target === e.currentTarget && setCreateModalOpen(false)}
           role="dialog"
           aria-modal="true"
           aria-labelledby="create-cron-title"
         >
-          <div className="relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col">
+          <div className="relative w-full max-w-lg border border-border/60 [background:var(--surface-glass)] backdrop-blur-xl shadow-[var(--surface-glass-shadow)] flex flex-col rounded-xl overflow-hidden">
             <Button
               ghost
               size="icon"
@@ -293,7 +293,7 @@ export default function CronPage() {
               <X />
             </Button>
 
-            <header className="p-5 pb-3 border-b border-border">
+            <header className="p-5 pb-3 border-b border-border/60">
               <h2
                 id="create-cron-title"
                 className="font-display text-base tracking-wider uppercase"
@@ -333,7 +333,7 @@ export default function CronPage() {
                 <Label htmlFor="cron-prompt">{t.cron.prompt}</Label>
                 <textarea
                   id="cron-prompt"
-                  className="flex min-h-[80px] w-full border border-border bg-background/40 px-3 py-2 text-sm font-courier shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25"
+                  className="flex min-h-[80px] w-full border border-border/60 bg-background/20 backdrop-blur-sm px-3 py-2 text-sm font-courier shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25 rounded-md"
                   placeholder={t.cron.promptPlaceholder}
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
@@ -420,7 +420,7 @@ export default function CronPage() {
         </div>
 
         {jobs.length === 0 && (
-          <Card>
+          <Card className="[background:var(--surface-glass)] border-border/60 backdrop-blur-xl">
             <CardContent className="py-8 text-center text-sm text-muted-foreground">
               {t.cron.noJobs}
             </CardContent>
@@ -437,19 +437,24 @@ export default function CronPage() {
           const jobKey = getJobKey(job);
 
           return (
-            <Card key={jobKey}>
+            <Card key={jobKey} className="[background:var(--surface-glass)] border-border/60 backdrop-blur-xl rounded-2xl transition-all hover:bg-card/20 shadow-[var(--surface-glass-shadow)]">
               <CardContent className="flex items-start gap-4 py-4">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
                     <span className="font-medium text-sm truncate">
                       {title}
                     </span>
-                    <Badge tone={STATUS_TONE[state] ?? "secondary"}>
+                    <Badge
+                      tone={STATUS_TONE[state] ?? "secondary"}
+                      className="rounded-full px-2 py-0 text-[10px] font-bold uppercase tracking-wider shadow-[0_0_8px_rgba(var(--tone-color),0.2)]"
+                    >
                       {state}
                     </Badge>
-                    <Badge tone="outline">{profileLabel(profile)}</Badge>
+                    <Badge tone="outline" className="rounded-full px-2 py-0 text-[10px] uppercase tracking-wider border-border/40 text-muted-foreground">
+                      {profileLabel(profile)}
+                    </Badge>
                     {deliver && deliver !== "local" && (
-                      <Badge tone="outline">{deliver}</Badge>
+                      <Badge tone="outline" className="rounded-full px-2 py-0 text-[10px] uppercase tracking-wider">{deliver}</Badge>
                     )}
                   </div>
                   {hasName && promptText && (

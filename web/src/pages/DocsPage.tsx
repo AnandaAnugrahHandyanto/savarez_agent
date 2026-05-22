@@ -5,14 +5,16 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn } from "@/lib/utils";
 import { PluginSlot } from "@/plugins";
 
+import { Card } from "@/components/ui/card";
+
 export const HERMES_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/";
 
 const DS_BUTTON_OUTLINED_LINK_CN = cn(
   "group relative inline-grid grid-cols-[auto_1fr_auto] items-center",
-  "px-[.9em_.75em] py-[1.25em] gap-2",
-  "leading-0 font-bold tracking-[0.2em] uppercase",
-  "text-midground bg-transparent shadow-midground",
-  "shadow-[inset_-1px_-1px_0_0_#00000080,inset_1px_1px_0_0_#ffffff80]",
+  "px-3.5 py-2 gap-2",
+  "leading-0 font-bold tracking-[0.15em] uppercase text-[10px]",
+  "text-midground bg-background/40 backdrop-blur-md border border-border/50",
+  "hover:bg-background/60 transition-colors",
 );
 
 export default function DocsPage() {
@@ -27,7 +29,7 @@ export default function DocsPage() {
         rel="noopener noreferrer"
         className={DS_BUTTON_OUTLINED_LINK_CN}
       >
-        <ExternalLink className="size-3.5" />
+        <ExternalLink className="size-3" />
         {t.app.openDocumentation}
       </a>,
     );
@@ -40,29 +42,35 @@ export default function DocsPage() {
     <div
       className={cn(
         "flex min-h-0 w-full min-w-0 flex-1 flex-col",
-        "pt-1 sm:pt-2",
+        "p-1 sm:p-4 lg:p-6",
       )}
     >
       <PluginSlot name="docs:top" />
-      <iframe
-        title={t.app.nav.documentation}
-        src={HERMES_DOCS_URL}
+      <Card
         className={cn(
-          "min-h-0 w-full min-w-0 flex-1",
-          "rounded-sm border border-current/20",
-          // Docusaurus paints over a transparent <html> / <body> and
-          // relies on the browser's canvas color (light by default) to
-          // fill the viewport. Inheriting the dashboard's dark color
-          // scheme makes that canvas dark, so the docs body text — which
-          // is tuned for a light canvas — becomes near-invisible. Force a
-          // light color scheme + white background on the iframe element so
-          // the docs render cleanly regardless of the active dashboard
-          // theme or the user's prefers-color-scheme.
-          "[color-scheme:light] bg-white",
+          "min-h-0 w-full min-w-0 flex-1 overflow-hidden flex flex-col",
+          "border-border/40 shadow-2xl",
         )}
-        sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
-        referrerPolicy="no-referrer-when-downgrade"
-      />
+      >
+        <iframe
+          title={t.app.nav.documentation}
+          src={HERMES_DOCS_URL}
+          className={cn(
+            "min-h-0 w-full min-w-0 flex-1",
+            // Docusaurus paints over a transparent <html> / <body> and
+            // relies on the browser's canvas color (light by default) to
+            // fill the viewport. Inheriting the dashboard's dark color
+            // scheme makes that canvas dark, so the docs body text — which
+            // is tuned for a light canvas — becomes near-invisible. Force a
+            // light color scheme + white background on the iframe element so
+            // the docs render cleanly regardless of the active dashboard
+            // theme or the user's prefers-color-scheme.
+            "[color-scheme:light] bg-white",
+          )}
+          sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
+          referrerPolicy="no-referrer-when-downgrade"
+        />
+      </Card>
       <PluginSlot name="docs:bottom" />
     </div>
   );

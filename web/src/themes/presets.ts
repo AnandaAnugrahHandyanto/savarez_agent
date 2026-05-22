@@ -40,17 +40,49 @@ const DEFAULT_LAYOUT: ThemeLayout = {
 
 export const defaultTheme: DashboardTheme = {
   name: "default",
-  label: "Hermes Teal",
-  description: "Classic dark teal — the canonical Hermes look",
+  label: "Nebula Frost",
+  description: "Cool glass over a midnight nebula — calm, bright, and original",
   palette: {
-    background: { hex: "#041c1c", alpha: 1 },
-    midground: { hex: "#ffe6cb", alpha: 1 },
+    background: { hex: "#08111c", alpha: 1 },
+    midground: { hex: "#d9ecff", alpha: 1 },
     foreground: { hex: "#ffffff", alpha: 0 },
-    warmGlow: "rgba(255, 189, 56, 0.35)",
-    noiseOpacity: 1,
+    warmGlow: "rgba(115, 169, 255, 0.28)",
+    noiseOpacity: 0.82,
   },
   typography: DEFAULT_TYPOGRAPHY,
   layout: DEFAULT_LAYOUT,
+  componentStyles: {
+    header: {
+      background:
+        "linear-gradient(180deg, color-mix(in srgb, var(--background-base) 88%, transparent) 0%, color-mix(in srgb, var(--midground-base) 8%, var(--background-base)) 100%)",
+      borderImage:
+        "linear-gradient(90deg, color-mix(in srgb, var(--midground-base) 28%, transparent) 0%, color-mix(in srgb, var(--midground-base) 8%, transparent) 100%) 1",
+      clipPath: "inset(0 round 1.5rem)",
+    },
+    sidebar: {
+      background:
+        "linear-gradient(180deg, color-mix(in srgb, var(--background-base) 84%, transparent) 0%, color-mix(in srgb, var(--midground-base) 6%, var(--background-base)) 100%)",
+      borderImage:
+        "linear-gradient(180deg, color-mix(in srgb, var(--midground-base) 22%, transparent) 0%, color-mix(in srgb, var(--midground-base) 6%, transparent) 100%) 1",
+      clipPath: "inset(0 round 1.5rem)",
+    },
+    card: {
+      background:
+        "linear-gradient(180deg, color-mix(in srgb, var(--midground-base) 9%, var(--background-base)) 0%, color-mix(in srgb, var(--midground-base) 4%, var(--background-base)) 100%)",
+      borderImage:
+        "linear-gradient(180deg, color-mix(in srgb, var(--midground-base) 20%, transparent) 0%, color-mix(in srgb, var(--midground-base) 8%, transparent) 100%) 1",
+      boxShadow:
+        "0 0 0 1px color-mix(in srgb, var(--midground-base) 12%, transparent) inset, 0 22px 70px rgba(3, 11, 22, 0.28)",
+    },
+    tab: {
+      clipPath: "inset(0 round 999px)",
+    },
+    backdrop: {
+      backgroundSize: "cover",
+      backgroundPosition: "center top",
+      opacity: "calc(0.03 * var(--noise-opacity-mul, 1))",
+    },
+  },
 };
 
 export const midnightTheme: DashboardTheme = {
@@ -190,8 +222,8 @@ export const roseTheme: DashboardTheme = {
  */
 export const defaultLargeTheme: DashboardTheme = {
   name: "default-large",
-  label: "Hermes Teal (Large)",
-  description: "Hermes Teal with bigger fonts and roomier spacing",
+  label: "Nebula Frost (Large)",
+  description: "Nebula Frost with bigger fonts and roomier spacing",
   palette: defaultTheme.palette,
   typography: {
     ...DEFAULT_TYPOGRAPHY,

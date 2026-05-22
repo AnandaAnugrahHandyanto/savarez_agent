@@ -105,7 +105,7 @@ function ToolCallBlock({
   }
 
   return (
-    <div className="mt-2 border border-warning/20 bg-warning/5">
+    <div className="mt-2 border border-warning/30 bg-warning/5 backdrop-blur-sm">
       <ListItem
         onClick={() => setOpen(!open)}
         aria-label={`${open ? t.common.collapse : t.common.expand} tool call ${toolCall.function.name}`}
@@ -145,22 +145,22 @@ function MessageBubble({
     { bg: string; text: string; label: string }
   > = {
     user: {
-      bg: "bg-primary/10",
+      bg: "bg-primary/5",
       text: "text-primary",
       label: t.sessions.roles.user,
     },
     assistant: {
-      bg: "bg-success/10",
+      bg: "bg-success/5",
       text: "text-success",
       label: t.sessions.roles.assistant,
     },
     system: {
-      bg: "bg-muted",
+      bg: "bg-muted/30",
       text: "text-muted-foreground",
       label: t.sessions.roles.system,
     },
     tool: {
-      bg: "bg-warning/10",
+      bg: "bg-warning/5",
       text: "text-warning",
       label: t.sessions.roles.tool,
     },
@@ -185,7 +185,7 @@ function MessageBubble({
 
   return (
     <div
-      className={`${style.bg} p-3 ${isHit ? "ring-1 ring-warning/40" : ""}`}
+      className={`${style.bg} p-3 backdrop-blur-sm ${isHit ? "ring-1 ring-warning/40" : ""}`}
       data-search-hit={isHit || undefined}
     >
       <div className="flex items-center gap-2 mb-1">
@@ -296,10 +296,10 @@ function SessionRow({
 
   return (
     <div
-      className={`max-w-full min-w-0 overflow-hidden border transition-colors ${
+      className={`max-w-full min-w-0 overflow-hidden border backdrop-blur-xl transition-colors ${
         session.is_active
-          ? "border-success/30 bg-success/[0.03]"
-          : "border-border"
+          ? "border-success/40 bg-success/[0.04]"
+          : "border-border/60 [background:var(--surface-glass)]"
       }`}
     >
       <div
@@ -385,7 +385,7 @@ function SessionRow({
       </div>
 
       {isExpanded && (
-        <div className="min-w-0 border-t border-border bg-background/50 p-4">
+        <div className="min-w-0 border-t border-border/60 bg-white/5 p-4">
           {loading && (
             <div className="flex items-center justify-center py-8">
               <Spinner className="text-xl text-primary" />
@@ -641,7 +641,7 @@ export default function SessionsPage() {
       />
 
       {alerts.length > 0 && (
-        <div className="border border-destructive/30 bg-destructive/[0.06] p-4">
+        <div className="border border-destructive/40 bg-destructive/[0.08] backdrop-blur-xl p-4">
           <div className="flex items-start gap-3">
             <AlertTriangle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
             <div className="flex flex-col gap-2 min-w-0">
@@ -663,8 +663,8 @@ export default function SessionsPage() {
       )}
 
       {activeAction && (
-        <div className="border border-border bg-background-base/50">
-          <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
+        <div className="border border-border/60 [background:var(--surface-glass)] backdrop-blur-xl">
+          <div className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-2">
             <div className="flex items-center gap-2 min-w-0">
               {actionStatus?.running ? (
                 <Spinner className="shrink-0 text-[0.875rem] text-warning" />
@@ -731,7 +731,7 @@ export default function SessionsPage() {
       )}
 
       {recentSessions.length > 0 && (
-        <Card className="min-w-0 max-w-full overflow-hidden">
+        <Card className="min-w-0 max-w-full overflow-hidden border-border/60 [background:var(--surface-glass)] backdrop-blur-xl">
           <CardHeader className="min-w-0">
             <div className="flex min-w-0 items-center gap-2">
               <Clock className="h-5 w-5 shrink-0 text-muted-foreground" />
@@ -745,7 +745,7 @@ export default function SessionsPage() {
             {recentSessions.map((s) => (
               <div
                 key={s.id}
-                className="flex min-w-0 max-w-full flex-col gap-2 border border-border p-3 sm:flex-row sm:items-center sm:justify-between"
+                className="flex min-w-0 max-w-full flex-col gap-2 border border-border/60 bg-white/5 p-3 sm:flex-row sm:items-center sm:justify-between"
               >
                 <div className="flex min-w-0 flex-1 flex-col gap-1">
                   <span className="min-w-0 truncate text-sm font-medium">

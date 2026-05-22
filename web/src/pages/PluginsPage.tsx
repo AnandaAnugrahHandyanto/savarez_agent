@@ -330,35 +330,25 @@ export default function PluginsPage() {
 
 
           <div className="flex flex-col gap-3 opacity-95">
-
             <h3 className="font-mondwest text-[0.75rem] tracking-[0.12em] text-midforeground/85">
               {t.pluginsPage.orphanHeading}
             </h3>
 
-            <ul className="flex flex-col gap-2 rounded border border-current/15 p-4">
-
-              {hub!.orphan_dashboard_plugins.map((m) => (
-
-                <li className="text-[0.7rem] normal-case opacity-85" key={m.name}>
-
-
-                  {m.label ?? m.name} — {m.description || m.tab?.path}
-
-
-                  {!m.tab?.hidden ? (
-
-
-                    <Link className="ml-3 inline-flex items-center gap-1 underline" to={m.tab.path}>
-
-
-                      <ExternalLink className="h-3 w-3 opacity-65" />
-
-                      {t.pluginsPage.openTab}
-                    </Link>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
+            <Card className="p-4">
+              <ul className="flex flex-col gap-2">
+                {hub!.orphan_dashboard_plugins.map((m) => (
+                  <li className="text-[0.7rem] normal-case opacity-85" key={m.name}>
+                    {m.label ?? m.name} — {m.description || m.tab?.path}
+                    {!m.tab?.hidden ? (
+                      <Link className="ml-3 inline-flex items-center gap-1 underline" to={m.tab.path}>
+                        <ExternalLink className="h-3 w-3 opacity-65" />
+                        {t.pluginsPage.openTab}
+                      </Link>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </Card>
           </div>
         ) : null}
       </div>

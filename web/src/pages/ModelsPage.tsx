@@ -165,7 +165,7 @@ function CapabilityBadges({
         </span>
       )}
       {capabilities.model_family && (
-        <span className="inline-flex items-center bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+        <span className="inline-flex items-center bg-background-base/20 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
           {capabilities.model_family}
         </span>
       )}
@@ -241,12 +241,12 @@ function UseAsMenu({
         Use as <ChevronDown className="h-3 w-3" />
       </Button>
       {open && (
-        <div className="absolute right-0 top-full mt-1 z-50 min-w-[220px] border border-border bg-card shadow-lg">
+        <div className="absolute right-0 top-full mt-1 z-50 min-w-[220px] border border-border/60 [background:var(--surface-glass)] backdrop-blur-xl shadow-[var(--surface-glass-shadow)]">
           <button
             type="button"
             onClick={() => assign("main", "")}
             disabled={busy}
-            className="flex w-full items-center justify-between px-3 py-2 text-xs hover:bg-muted/50 disabled:opacity-40"
+            className="flex w-full items-center justify-between px-3 py-2 text-xs hover:bg-background-base/50 disabled:opacity-40"
           >
             <span className="flex items-center gap-2">
               <Star className="h-3 w-3" />
@@ -259,7 +259,7 @@ function UseAsMenu({
             )}
           </button>
 
-          <div className="border-t border-border/50 px-3 py-1.5 text-[9px] uppercase tracking-wider text-muted-foreground">
+          <div className="border-t border-border/60 px-3 py-1.5 text-[9px] uppercase tracking-wider text-muted-foreground">
             Auxiliary task
           </div>
 
@@ -267,7 +267,7 @@ function UseAsMenu({
             type="button"
             onClick={() => assign("auxiliary", "")}
             disabled={busy}
-            className="flex w-full items-center justify-between px-3 py-1.5 text-xs hover:bg-muted/50 disabled:opacity-40"
+            className="flex w-full items-center justify-between px-3 py-1.5 text-xs hover:bg-background-base/50 disabled:opacity-40"
           >
             <span>All auxiliary tasks</span>
           </button>
@@ -278,7 +278,7 @@ function UseAsMenu({
               type="button"
               onClick={() => assign("auxiliary", t.key)}
               disabled={busy}
-              className="flex w-full items-center justify-between px-3 py-1.5 text-xs hover:bg-muted/50 disabled:opacity-40"
+              className="flex w-full items-center justify-between px-3 py-1.5 text-xs hover:bg-background-base/50 disabled:opacity-40"
             >
               <span>{t.label}</span>
               {mainAuxTask === t.key && (
@@ -290,7 +290,7 @@ function UseAsMenu({
           ))}
 
           {error && (
-            <div className="px-3 py-2 text-[10px] text-destructive border-t border-border/50">
+            <div className="px-3 py-2 text-[10px] text-destructive border-t border-border/60">
               {error}
             </div>
           )}
@@ -447,7 +447,7 @@ function ModelCard({
           </>
         )}
 
-        <div className="flex items-center justify-between text-[10px] text-muted-foreground border-t border-border/30 pt-2">
+        <div className="flex items-center justify-between text-[10px] text-muted-foreground border-t border-border/60 pt-2">
           <div className="flex items-center gap-3">
             {showTokens && entry.estimated_cost > 0 && (
               <span className="flex items-center gap-0.5">
@@ -516,13 +516,13 @@ function AuxiliaryTasksModal({
   return (
     <div
       ref={modalRef}
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 backdrop-blur-sm p-4"
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-background-base/85 backdrop-blur-md p-4"
       onClick={(e) => e.target === e.currentTarget && onClose()}
       role="dialog"
       aria-modal="true"
       aria-labelledby="aux-modal-title"
     >
-      <div className="relative w-full max-w-2xl max-h-[80vh] border border-border bg-card shadow-2xl flex flex-col">
+      <div className="relative w-full max-w-2xl max-h-[80vh] border border-border/60 [background:var(--surface-glass)] backdrop-blur-xl shadow-[var(--surface-glass-shadow)] flex flex-col">
         <Button
           ghost
           size="icon"
@@ -533,7 +533,7 @@ function AuxiliaryTasksModal({
           <X />
         </Button>
 
-        <header className="p-5 pb-3 border-b border-border">
+        <header className="p-5 pb-3 border-b border-border/60">
           <div className="flex items-center justify-between gap-3 pr-8">
             <h2
               id="aux-modal-title"
@@ -568,7 +568,7 @@ function AuxiliaryTasksModal({
             return (
               <div
                 key={t.key}
-                className="flex items-center justify-between gap-3 px-3 py-2 border border-border/30 bg-card/50 hover:bg-muted/20 transition-colors"
+                className="flex items-center justify-between gap-3 px-3 py-2 border border-border/60 bg-background-base/20 hover:bg-background-base/40 transition-colors"
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-2">
@@ -681,7 +681,7 @@ function ModelSettingsPanel({
 
       <CardContent className="min-w-0 space-y-3 pt-3">
         {/* Main row */}
-        <div className="flex min-w-0 flex-col gap-2 bg-muted/20 border border-border/50 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+        <div className="flex min-w-0 flex-col gap-2 bg-background-base/20 backdrop-blur-xl border border-border/60 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 mb-0.5">
               <Star className="h-3 w-3 text-primary" />
@@ -705,7 +705,7 @@ function ModelSettingsPanel({
         </div>
 
         {/* Auxiliary tasks summary + open modal */}
-        <div className="flex min-w-0 flex-col gap-2 bg-muted/20 border border-border/50 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+        <div className="flex min-w-0 flex-col gap-2 bg-background-base/20 backdrop-blur-xl border border-border/60 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 mb-0.5">
               <Cpu className="h-3 w-3 text-muted-foreground" />

@@ -200,11 +200,11 @@ export default function LogsPage() {
         </FilterGroup>
       </div>
 
-      <Card className="min-w-0 max-w-full overflow-hidden">
-        <CardHeader className="py-3 px-4">
-          <CardTitle className="text-sm flex items-center gap-2">
+      <Card className="min-w-0 max-w-full overflow-hidden rounded-2xl border-border/60 [background:var(--surface-glass)] backdrop-blur-xl shadow-2xl">
+        <CardHeader className="py-3 px-4 border-b border-border/60 bg-muted/10">
+          <CardTitle className="text-sm flex items-center gap-2 blend-lighter">
             <FileText className="h-4 w-4" />
-            {file}.log
+            <span className="tracking-widest uppercase opacity-80">{file}.log</span>
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">
@@ -216,7 +216,7 @@ export default function LogsPage() {
 
           <div
             ref={scrollRef}
-            className="max-w-full min-h-[400px] max-h-[calc(100vh-220px)] overflow-auto p-4 font-mono-ui text-xs leading-5 break-words"
+            className="max-w-full min-h-[400px] max-h-[calc(100vh-220px)] overflow-auto p-4 font-mono-ui text-[11px] leading-5 break-words"
           >
             {lines.length === 0 && !loading && (
               <p className="text-muted-foreground text-center py-8">

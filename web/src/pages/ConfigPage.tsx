@@ -388,7 +388,7 @@ export default function ConfigPage() {
               <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                 {prettyCategoryName(cat)}
               </span>
-              <div className="flex-1 border-t border-border" />
+              <div className="flex-1 border-t border-border/60" />
             </div>
           )}
           {showSection && (
@@ -396,7 +396,7 @@ export default function ConfigPage() {
               <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                 {section.replace(/_/g, " ")}
               </span>
-              <div className="flex-1 border-t border-border" />
+              <div className="flex-1 border-t border-border/60" />
             </div>
           )}
           <div className="py-1">
@@ -420,7 +420,7 @@ export default function ConfigPage() {
       <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
         <div className="flex min-w-0 items-center gap-2 sm:flex-1">
           <Settings2 className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <code className="min-w-0 flex-1 break-words text-xs text-muted-foreground bg-muted/50 px-2 py-0.5">
+          <code className="min-w-0 flex-1 break-words text-xs text-muted-foreground bg-background-base/50 px-2 py-0.5">
             {configPath ?? t.config.configPath}
           </code>
         </div>
@@ -472,7 +472,7 @@ export default function ConfigPage() {
               );
             })()}
 
-          <div className="w-px h-5 bg-border mx-1" />
+          <div className="w-px h-5 bg-border/60 mx-1" />
 
           <Button
             size="sm"
@@ -520,7 +520,7 @@ export default function ConfigPage() {
               </div>
             ) : (
               <textarea
-                className="flex min-h-[600px] w-full bg-transparent px-4 py-3 text-sm font-mono leading-relaxed placeholder:text-muted-foreground focus-visible:outline-none border-t border-border"
+                className="flex min-h-[600px] w-full bg-transparent px-4 py-3 text-sm font-mono leading-relaxed placeholder:text-muted-foreground focus-visible:outline-none border-t border-border/60"
                 value={yamlText}
                 onChange={(e) => setYamlText(e.target.value)}
                 spellCheck={false}
@@ -532,8 +532,8 @@ export default function ConfigPage() {
         <div className="flex flex-col sm:flex-row gap-4">
           <aside aria-label={t.config.filters} className="sm:w-56 sm:shrink-0">
             <div className="sm:sticky sm:top-4">
-              <div className="flex flex-col border border-border bg-muted/20">
-                <div className="hidden sm:flex items-center gap-2 px-3 py-2 border-b border-border">
+              <div className="flex flex-col border border-border/60 bg-background-base/20 backdrop-blur-xl">
+                <div className="hidden sm:flex items-center gap-2 px-3 py-2 border-b border-border/60">
                   <Filter className="h-3 w-3 text-muted-foreground" />
                   <span className="font-mondwest text-[0.65rem] tracking-[0.12em] uppercase text-muted-foreground">
                     {t.config.filters}

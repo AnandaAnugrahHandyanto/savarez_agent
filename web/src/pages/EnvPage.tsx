@@ -169,7 +169,7 @@ function EnvVarRow({
   // Non-compact unset row
   if (!info.is_set && !isEditing) {
     return (
-      <div className="flex items-center justify-between gap-3 border border-border/50 px-4 py-2.5 min-w-0 overflow-hidden opacity-60 hover:opacity-100 transition-opacity">
+      <div className="flex items-center justify-between gap-3 border border-border/60 px-4 py-2.5 min-w-0 overflow-hidden opacity-60 hover:opacity-100 transition-opacity">
         <div className="flex items-center gap-3 min-w-0">
           <Label className="font-mono-ui text-[0.7rem] text-muted-foreground">
             {varKey}
@@ -204,7 +204,7 @@ function EnvVarRow({
 
   // Full expanded row for set keys or keys being edited
   return (
-    <div className="grid gap-2 border border-border p-4 min-w-0 overflow-hidden">
+    <div className="grid gap-2 border border-border/60 p-4 min-w-0 overflow-hidden">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2">
           <Label className="font-mono-ui text-[0.7rem]">{varKey}</Label>
@@ -243,10 +243,10 @@ function EnvVarRow({
       {!isEditing && (
         <div className="flex items-center gap-2">
           <div
-            className={`flex-1 border border-border px-3 py-2 font-mono-ui text-xs ${
+            className={`flex-1 border border-border/60 px-3 py-2 font-mono-ui text-xs ${
               isRevealed
                 ? "bg-background text-foreground select-all"
-                : "bg-muted/30 text-muted-foreground"
+                : "bg-background-base/30 text-muted-foreground"
             }`}
           >
             {info.is_set ? displayValue : "---"}
@@ -379,7 +379,7 @@ function ProviderGroupCard({
   const keyUrl = apiKeys.find(([, info]) => info.url)?.[1]?.url ?? null;
 
   return (
-    <div className="border border-border">
+    <div className="border border-border/60">
       {/* Header — always visible */}
       <ListItem
         onClick={() => setExpanded(!expanded)}
@@ -422,7 +422,7 @@ function ProviderGroupCard({
       </ListItem>
 
       {expanded && (
-        <div className="border-t border-border px-4 py-3 grid gap-2">
+        <div className="border-t border-border/60 px-4 py-3 grid gap-2">
           {apiKeys.map(([key, info]) => (
             <EnvVarRow
               key={key}
@@ -546,7 +546,7 @@ export default function EnvPage() {
             key={s.id}
             type="button"
             onClick={() => scrollTo(s.id)}
-            className="shrink-0 cursor-pointer px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground hover:text-foreground border border-border/50 hover:border-foreground/30 transition-colors"
+            className="shrink-0 cursor-pointer px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground hover:text-foreground border border-border/60 hover:border-foreground/30 transition-colors"
           >
             {s.label}
           </button>
@@ -766,7 +766,7 @@ export default function EnvPage() {
       </div>
 
       <Card id="section-providers">
-        <CardHeader className="border-b border-border bg-card">
+        <CardHeader className="border-b border-border/60 [background:var(--surface-glass)]">
           <div className="flex items-center gap-2">
             <Zap className="h-5 w-5 text-muted-foreground" />
             <CardTitle className="text-base">{t.env.llmProviders}</CardTitle>
@@ -810,7 +810,7 @@ export default function EnvPage() {
 
           return (
             <Card key={category} id={`section-${category}`}>
-              <CardHeader className="border-b border-border bg-card">
+              <CardHeader className="border-b border-border/60 [background:var(--surface-glass)]">
                 <div className="flex items-center gap-2">
                   <Icon className="h-5 w-5 text-muted-foreground" />
                   <CardTitle className="text-base">{label}</CardTitle>

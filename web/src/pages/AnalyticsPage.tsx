@@ -110,7 +110,7 @@ function SortHeader({
       onClick={() => toggle(col)}
       className={`cursor-pointer select-none ${className ?? ""}`}
     >
-      <span className="inline-flex items-center gap-1.5 rounded px-1 -mx-1 py-0.5 hover:bg-muted/40 transition-colors">
+      <span className="inline-flex items-center gap-1.5 rounded px-1 -mx-1 py-0.5 hover:bg-background-base/40 transition-colors">
         {label}
         {active ? (
           sortDir === "asc" ? (
@@ -177,7 +177,7 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
                 style={{ height: CHART_HEIGHT_PX }}
               >
                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-10 pointer-events-none">
-                  <div className="bg-card border border-border px-2.5 py-1.5 text-[10px] text-foreground shadow-lg whitespace-nowrap">
+                  <div className="[background:var(--surface-glass)] border border-border/60 backdrop-blur-xl px-2.5 py-1.5 text-[10px] text-foreground shadow-[var(--surface-glass-shadow)] whitespace-nowrap">
                     <div className="font-medium">{formatDate(d.day)}</div>
                     <div>
                       {t.analytics.input}: {formatTokens(d.input_tokens)}
@@ -241,7 +241,7 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border text-muted-foreground text-xs">
+              <tr className="border-b border-border/60 text-muted-foreground text-xs">
                 <SortHeader label={t.analytics.date} col="day" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
                 <SortHeader label={t.sessions.title} col="sessions" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
                 <SortHeader label={t.analytics.input} col="input_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
@@ -252,7 +252,7 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
               {sorted.map((d) => (
                 <tr
                     key={d.day}
-                    className="border-b border-border/50 hover:bg-secondary/20 transition-colors"
+                    className="border-b border-border/60 hover:bg-background-base/20 transition-colors"
                   >
                   <td className="py-2 pr-4 font-medium">
                       {formatDate(d.day)}
@@ -300,7 +300,7 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border text-muted-foreground text-xs">
+              <tr className="border-b border-border/60 text-muted-foreground text-xs">
                 <SortHeader label={t.analytics.model} col="model" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
                 <SortHeader label={t.sessions.title} col="sessions" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
                 <SortHeader label={t.analytics.tokens} col="input_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
@@ -310,7 +310,7 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
               {sorted.map((m) => (
                 <tr
                   key={m.model}
-                  className="border-b border-border/50 hover:bg-secondary/20 transition-colors"
+                  className="border-b border-border/60 hover:bg-background-base/20 transition-colors"
                 >
                   <td className="py-2 pr-4">
                     <span className="font-mono-ui text-xs">{m.model}</span>
@@ -355,7 +355,7 @@ function SkillTable({ skills }: { skills: AnalyticsSkillEntry[] }) {
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border text-muted-foreground text-xs">
+              <tr className="border-b border-border/60 text-muted-foreground text-xs">
                 <SortHeader label={t.analytics.skill} col="skill" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
                 <SortHeader label={t.analytics.loads} col="view_count" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
                 <SortHeader label={t.analytics.edits} col="manage_count" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
@@ -367,7 +367,7 @@ function SkillTable({ skills }: { skills: AnalyticsSkillEntry[] }) {
               {sorted.map((skill) => (
                 <tr
                   key={skill.skill}
-                  className="border-b border-border/50 hover:bg-secondary/20 transition-colors"
+                  className="border-b border-border/60 hover:bg-background-base/20 transition-colors"
                 >
                   <td className="py-2 pr-4">
                     <span className="font-mono-ui text-xs">{skill.skill}</span>

@@ -43,7 +43,7 @@ const INITIAL_MESSAGES: ChatMessage[] = [
     id: "welcome",
     role: "assistant",
     text:
-      "I can help you make this page feel clean, calm, and shiny — like frosted glass floating on top of the screen.",
+      "I can help you make this page feel clean, calm, and original — like polished glass sitting over a deep night sky.",
     note: "Ready to answer questions and show how the layout works.",
   },
   {
@@ -55,7 +55,7 @@ const INITIAL_MESSAGES: ChatMessage[] = [
     id: "assistant-2",
     role: "assistant",
     text:
-      "Perfect. We’ll keep the left side for old chats, the middle for the conversation, and the right side for simple settings.",
+      "Perfect. We’ll keep the left rail for recent sessions, the center stage for the conversation, and the right rail for quick controls.",
   },
 ];
 
@@ -122,9 +122,11 @@ const SPACING: Record<MessageSpacing, { gap: string; padding: string }> = {
 };
 
 const BUBBLES: Record<BubbleStyle, string> = {
-  glass: "backdrop-blur-xl border border-white/12 shadow-[inset_0_1px_0_rgba(255,255,255,0.16)]",
-  soft: "border border-black/5 shadow-[0_10px_40px_rgba(0,0,0,0.06)]",
-  solid: "border border-transparent shadow-none",
+  glass:
+    "backdrop-blur-xl border border-border/60 bg-background-base/25 shadow-[inset_0_1px_0_rgba(255,255,255,0.16)]",
+  soft:
+    "border border-border/55 bg-background-base/18 shadow-[0_12px_44px_rgba(3,11,22,0.16)]",
+  solid: "border border-border/30 bg-background-base/12 shadow-none",
 };
 
 function makeReply(prompt: string) {
@@ -147,7 +149,7 @@ export default function GlassChatPage() {
   const [fontSize, setFontSize] = useState<FontSize>("medium");
   const [spacing, setSpacing] = useState<MessageSpacing>("balanced");
   const [draft, setDraft] = useState(
-    "Can you make the glass look softer and more Apple-like?",
+    "Can you make the glass look softer, calmer, and more like our own brand?",
   );
   const [messages, setMessages] = useState<ChatMessage[]>(INITIAL_MESSAGES);
   const [selectedChat, setSelectedChat] = useState(0);
@@ -382,12 +384,12 @@ export default function GlassChatPage() {
           >
             <div className="flex items-center gap-2 text-sm font-medium" style={{ color: "var(--glass-text)" }}>
               <MessageSquareText className="h-4 w-4" style={{ color: "var(--glass-accent)" }} />
-              Quick notes
+              Layout notes
             </div>
             <ul className="mt-3 space-y-2 text-sm" style={{ color: "var(--glass-muted)" }}>
-              <li>• big friendly chat box</li>
-              <li>• old chats on the left</li>
-              <li>• settings on the right</li>
+              <li>• one clear conversation stage</li>
+              <li>• a session rail for recent history</li>
+              <li>• a control rail for theme and spacing</li>
             </ul>
           </div>
         </aside>
@@ -402,10 +404,10 @@ export default function GlassChatPage() {
           >
             <div className="min-w-0">
               <div className="text-xs uppercase tracking-[0.2em]" style={{ color: "var(--glass-muted)" }}>
-                Chat room
+                Conversation deck
               </div>
               <h1 className="truncate text-lg font-semibold sm:text-xl" style={{ color: "var(--glass-text)" }}>
-                Hermes can answer here
+                Hermes answers in this space
               </h1>
             </div>
 
@@ -415,13 +417,13 @@ export default function GlassChatPage() {
                 style={{ background: "var(--glass-chip)", borderColor: "var(--glass-border)", color: "var(--glass-muted)" }}
               >
                 <span className="mr-2 inline-block h-2 w-2 rounded-full bg-emerald-400 align-middle" />
-                ready
+                online
               </div>
               <div
                 className="rounded-full border px-3 py-2 text-xs font-medium"
                 style={{ background: "var(--glass-chip)", borderColor: "var(--glass-border)", color: "var(--glass-muted)" }}
               >
-                {themeMode === "dark" ? "dark glass" : "light glass"}
+                {themeMode === "dark" ? "night glass" : "day glass"}
               </div>
             </div>
           </div>
