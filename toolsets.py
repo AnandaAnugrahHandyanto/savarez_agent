@@ -70,6 +70,8 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Vault — local development-ideas vault search (gated on vault dir existing)
+    "vault_search", "ask_vault",
 ]
 
 
@@ -203,6 +205,12 @@ TOOLSETS = {
     "memory": {
         "description": "Persistent memory across sessions (personal notes + user profile)",
         "tools": ["memory"],
+        "includes": []
+    },
+
+    "vault": {
+        "description": "Local development-ideas vault search (README.md, ideas.jsonl, sources/*.md)",
+        "tools": ["vault_search", "ask_vault"],
         "includes": []
     },
     
