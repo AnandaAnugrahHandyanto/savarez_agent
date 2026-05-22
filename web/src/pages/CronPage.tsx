@@ -1383,96 +1383,155 @@ export default function CronPage() {
           const profile = getJobProfile(job);
           const runProfile = getJobRunProfile(job);
           const jobKey = getJobKey(job);
+          const renderActions = (mobile = false) => (
+            <div
+              className={
+                mobile
+                  ? "flex shrink-0 items-center gap-1"
+                  : "hidden shrink-0 items-center gap-1 sm:flex"
+              }
+            >
+              <Button
+                ghost
+                size="icon"
+                title={t.cron.edit}
+                aria-label={t.cron.edit}
+                onClick={() => setEditingJob(job)}
+              >
+                <Pencil />
+              </Button>
+
+              <Button
+                ghost
+                size="icon"
+                title={state === "paused" ? t.cron.resume : t.cron.pause}
+                aria-label={
+                  state === "paused" ? t.cron.resume : t.cron.pause
+                }
+                onClick={() => handlePauseResume(job)}
+                className={
+                  state === "paused" ? "text-success" : "text-warning"
+                }
+              >
+                {state === "paused" ? <Play /> : <Pause />}
+              </Button>
+
+              <Button
+                ghost
+                size="icon"
+                title={t.cron.triggerNow}
+                aria-label={t.cron.triggerNow}
+                onClick={() => handleTrigger(job)}
+              >
+                <Zap />
+              </Button>
+
+              <Button
+                ghost
+                destructive
+                size="icon"
+                title={t.common.delete}
+                aria-label={t.common.delete}
+                onClick={() => jobDelete.requestDelete(jobKey)}
+              >
+                <Trash2 />
+              </Button>
+            </div>
+          );
+          const badgeClass =
+            "max-w-full whitespace-normal break-words text-[11px] leading-tight tracking-normal normal-case";
+          const badgeStyle: CSSProperties = {
+            fontFamily: "inherit",
+            letterSpacing: 0,
+            textTransform: "none",
+          };
+          const timeItemClass = "min-w-0";
+          const timeLabelClass =
+            "mb-0.5 block text-[10px] uppercase tracking-wider text-muted-foreground/75";
+          const timeValueClass = "block break-words font-mono text-foreground/75";
 
           return (
             <Card key={jobKey}>
-              <CardContent className="flex items-start gap-4 py-4">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="font-medium text-sm truncate">
-                      {title}
-                    </span>
-                    <Badge tone={STATUS_TONE[state] ?? "secondary"}>
+              <CardContent className="grid gap-3 py-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+                <div className="min-w-0 grid gap-3">
+                  <div className="flex items-start justify-between gap-3 sm:block">
+                    <div className="min-w-0">
+                      <h3 className="text-sm font-medium leading-snug break-words text-foreground">
+                        {title}
+                      </h3>
+                      {hasName && promptText && (
+                        <p className="mt-1 text-xs text-muted-foreground break-words sm:truncate">
+                          {truncateText(promptText, 100)}
+                        </p>
+                      )}
+                    </div>
+                    <div className="sm:hidden">{renderActions(true)}</div>
+                  </div>
+
+                  <div className="flex flex-wrap items-start gap-1.5">
+                    <Badge
+                      tone={STATUS_TONE[state] ?? "secondary"}
+                      className={badgeClass}
+                      style={badgeStyle}
+                    >
                       {state}
                     </Badge>
-                    <Badge tone="outline">{profileLabel(profile)}</Badge>
+                    <Badge
+                      tone="outline"
+                      className={badgeClass}
+                      style={badgeStyle}
+                    >
+                      {profileLabel(profile)}
+                    </Badge>
                     {runProfile && runProfile !== profile && (
-                      <Badge tone="outline">
+                      <Badge
+                        tone="outline"
+                        className={badgeClass}
+                        style={badgeStyle}
+                      >
                         {t.cron.runProfile}: {profileLabel(runProfile)}
                       </Badge>
                     )}
                     {deliver && deliver !== "local" && (
-                      <Badge tone="outline">{deliver}</Badge>
+                      <Badge
+                        tone="outline"
+                        className={badgeClass}
+                        style={badgeStyle}
+                      >
+                        {deliver}
+                      </Badge>
                     )}
                   </div>
-                  {hasName && promptText && (
-                    <p className="text-xs text-muted-foreground truncate mb-1">
-                      {truncateText(promptText, 100)}
-                    </p>
-                  )}
-                  <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                    <span className="font-mono">{getJobScheduleDisplay(job)}</span>
-                    <span>
-                      {t.cron.last}: {formatTime(job.last_run_at)}
-                    </span>
-                    <span>
-                      {t.cron.next}: {formatTime(job.next_run_at)}
-                    </span>
+
+                  <div className="grid grid-cols-1 gap-2 text-xs text-muted-foreground sm:grid-cols-[minmax(7rem,auto)_minmax(8rem,1fr)_minmax(8rem,1fr)]">
+                    <div className={timeItemClass}>
+                      <span className={timeLabelClass}>{t.cron.schedule}</span>
+                      <span className={timeValueClass}>
+                        {getJobScheduleDisplay(job)}
+                      </span>
+                    </div>
+                    <div className={timeItemClass}>
+                      <span className={timeLabelClass}>{t.cron.last}</span>
+                      <span className={timeValueClass}>
+                        {formatTime(job.last_run_at)}
+                      </span>
+                    </div>
+                    <div className={timeItemClass}>
+                      <span className={timeLabelClass}>{t.cron.next}</span>
+                      <span className={timeValueClass}>
+                        {formatTime(job.next_run_at)}
+                      </span>
+                    </div>
                   </div>
+
                   {job.last_error && (
-                    <p className="text-xs text-destructive mt-1">
+                    <p className="text-xs text-destructive break-words">
                       {job.last_error}
                     </p>
                   )}
                 </div>
 
-                <div className="flex items-center gap-1 shrink-0">
-                  <Button
-                    ghost
-                    size="icon"
-                    title={t.cron.edit}
-                    aria-label={t.cron.edit}
-                    onClick={() => setEditingJob(job)}
-                  >
-                    <Pencil />
-                  </Button>
-
-                  <Button
-                    ghost
-                    size="icon"
-                    title={state === "paused" ? t.cron.resume : t.cron.pause}
-                    aria-label={
-                      state === "paused" ? t.cron.resume : t.cron.pause
-                    }
-                    onClick={() => handlePauseResume(job)}
-                    className={
-                      state === "paused" ? "text-success" : "text-warning"
-                    }
-                  >
-                    {state === "paused" ? <Play /> : <Pause />}
-                  </Button>
-
-                  <Button
-                    ghost
-                    size="icon"
-                    title={t.cron.triggerNow}
-                    aria-label={t.cron.triggerNow}
-                    onClick={() => handleTrigger(job)}
-                  >
-                    <Zap />
-                  </Button>
-
-                  <Button
-                    ghost
-                    destructive
-                    size="icon"
-                    title={t.common.delete}
-                    aria-label={t.common.delete}
-                    onClick={() => jobDelete.requestDelete(jobKey)}
-                  >
-                    <Trash2 />
-                  </Button>
-                </div>
+                {renderActions()}
               </CardContent>
             </Card>
           );
