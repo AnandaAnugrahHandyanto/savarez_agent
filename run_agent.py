@@ -3644,6 +3644,30 @@ class AIAgent:
         self._thinking_pad_cache = (key, result)
         return result
 
+    def _needs_mimo_tool_reasoning(self) -> bool:
+        """Return True when the current provider is Xiaomi MiMo thinking mode.
+
+        MiMo requires ``reasoning_content`` to be passed back in multi-turn
+        Agent conversations when history contains assistant tool calls;
+        omitting it causes HTTP 400 ("The reasoning_content in the thinking
+        mode must be passed back to the API.").
+        """
+        provider = (self.provider or "").lower()
+        model = (self.model or "").strip().lower()
+        if "/" in model:
+            model_leaf = model.rsplit("/", 1)[-1]
+        else:
+            model_leaf = model
+        return (
+            provider in {"xiaomi", "mimo", "xiaomi-mimo"}
+            or model_leaf.startswith(("mimo-", "mimo_", "xiaomi-mimo-", "xiaomi_mimo_"))
+            or base_url_host_matches(self.base_url, "xiaomimimo.com")
+            # Defence-in-depth: catch deeper-namespaced model names like
+            # ``vendor/sub/mimo-v3`` (see PR #24465 review).
+            or "/mimo-" in model
+            or "/xiaomi-mimo-" in model
+        )
+
     def _needs_kimi_tool_reasoning(self) -> bool:
         """Return True when the current provider is Kimi / Moonshot thinking mode.
 
