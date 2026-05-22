@@ -39,9 +39,37 @@ export const normalizeLocale = (value: unknown): Locale => {
   // Direct matches against the supported set.
   if ((LOCALES as readonly string[]).includes(raw)) return raw as Locale
 
-  // Canonical aliases.
-  if (raw === 'zh-cn' || raw === 'zh-hans' || raw === 'chinese') return 'zh'
+  // Canonical aliases — one-to-one with agent/i18n.py _LANGUAGE_ALIASES.
+  // English + Chinese
   if (raw === 'en-us' || raw === 'en-gb' || raw === 'english') return 'en'
+  if (raw === 'zh-cn' || raw === 'zh-hans' || raw === 'zh-sg' || raw === 'chinese' || raw === 'mandarin') return 'zh'
+  if (raw === 'zh-tw' || raw === 'zh-hk' || raw === 'zh-mo' || raw === 'traditional-chinese' || raw === 'traditional_chinese') return 'zh-hant'
+  // Japanese
+  if (raw === 'japanese' || raw === 'jp' || raw === 'ja-jp') return 'ja'
+  // German
+  if (raw === 'german' || raw === 'deutsch' || raw === 'de-de' || raw === 'de-at' || raw === 'de-ch') return 'de'
+  // Spanish
+  if (raw === 'spanish' || raw === 'español' || raw === 'espanol' || raw === 'es-es' || raw === 'es-mx' || raw === 'es-ar') return 'es'
+  // French
+  if (raw === 'french' || raw === 'français' || raw === 'france' || raw === 'fr-fr' || raw === 'fr-be' || raw === 'fr-ca' || raw === 'fr-ch') return 'fr'
+  // Ukrainian
+  if (raw === 'ukrainian' || raw === 'ukrainisch' || raw === 'українська' || raw === 'uk-ua' || raw === 'ua') return 'uk'
+  // Turkish
+  if (raw === 'turkish' || raw === 'türkçe' || raw === 'tr-tr') return 'tr'
+  // Afrikaans
+  if (raw === 'afrikaans' || raw === 'af-za') return 'af'
+  // Korean
+  if (raw === 'korean' || raw === '한국어' || raw === 'ko-kr') return 'ko'
+  // Italian
+  if (raw === 'italian' || raw === 'italiano' || raw === 'it-it' || raw === 'it-ch') return 'it'
+  // Irish
+  if (raw === 'irish' || raw === 'gaeilge' || raw === 'ga-ie') return 'ga'
+  // Portuguese
+  if (raw === 'portuguese' || raw === 'português' || raw === 'portugues' || raw === 'pt-pt' || raw === 'pt-br' || raw === 'brazilian' || raw === 'brasileiro') return 'pt'
+  // Russian
+  if (raw === 'russian' || raw === 'русский' || raw === 'ru-ru') return 'ru'
+  // Hungarian
+  if (raw === 'hungarian' || raw === 'magyar' || raw === 'hu-hu') return 'hu'
 
   return 'en'
 }
