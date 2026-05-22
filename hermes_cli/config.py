@@ -477,6 +477,11 @@ def _ensure_hermes_home_managed(home: Path):
 DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
+    "acp": {
+        # ACP clients can provide MCP server definitions per session. Stdio
+        # transports execute local commands, so only operator config can opt in.
+        "allow_client_stdio_mcp_servers": False,
+    },
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
@@ -2551,6 +2556,14 @@ OPTIONAL_ENV_VARS = {
     "GATEWAY_PROXY_KEY": {
         "description": "Bearer token for authenticating with the remote Hermes API server (proxy mode). Must match the API_SERVER_KEY on the remote host.",
         "prompt": "Remote API server auth key",
+        "url": None,
+        "password": True,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "GATEWAY_PROXY_SCOPE_KEY": {
+        "description": "Shared secret used to sign hermes_proxy_scope metadata sent from the gateway proxy to the API server. Must match on both ends to allow the proxy to forward platform and toolset context.",
+        "prompt": "Gateway proxy scope signing key",
         "url": None,
         "password": True,
         "category": "messaging",
@@ -4871,21 +4884,12 @@ def edit_config():
         import shutil
         import sys as _sys
         if _sys.platform == "win32":
-            import ntpath
-
-            from hermes_cli.stdio import _trusted_system_notepad_path
-
-            candidates = [_trusted_system_notepad_path(), 'code', 'vim', 'vi', 'nano']
-            is_abs_editor = ntpath.isabs
+            candidates = ['notepad', 'code', 'vim', 'vi', 'nano']
         else:
             candidates = ['nano', 'vim', 'vi', 'code', 'notepad']
-            is_abs_editor = os.path.isabs
         for cmd in candidates:
-            if not cmd:
-                continue
-            resolved = cmd if is_abs_editor(cmd) else shutil.which(cmd)
-            if resolved:
-                editor = resolved
+            if shutil.which(cmd):
+                editor = cmd
                 break
     
     if not editor:

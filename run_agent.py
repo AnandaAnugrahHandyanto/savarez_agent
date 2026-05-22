@@ -83,6 +83,16 @@ def _load_openai_cls() -> type:
     return _OPENAI_CLS_CACHE
 
 
+
+def _safe_session_path_component(session_id: str) -> str:
+    """Return a filesystem-safe component for session-scoped log filenames."""
+    raw = str(session_id or "")
+    if re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", raw):
+        return raw
+    digest = hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:16]
+    return f"unsafe-{digest}"
+
+
 class _OpenAIProxy:
     """Module-level proxy that looks like ``openai.OpenAI`` but imports lazily."""
 
@@ -1855,7 +1865,7 @@ class AIAgent:
         hermes_home = get_hermes_home()
         self.logs_dir = hermes_home / "sessions"
         self.logs_dir.mkdir(parents=True, exist_ok=True)
-        self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
+        self.session_log_file = self.logs_dir / f"session_{_safe_session_path_component(self.session_id)}.json"
         
         # Track conversation messages for session logging
         self._session_messages: List[Dict[str, Any]] = []
@@ -2002,7 +2012,7 @@ class AIAgent:
         # through get_tool_definitions()).  Duplicate function names cause
         # 400 errors on providers that enforce unique names (e.g. Xiaomi
         # MiMo via Nous Portal).
-        if self._memory_manager and self.tools is not None:
+        if self._memory_provider_tools_allowed() and self.tools is not None:
             _existing_tool_names = {
                 t.get("function", {}).get("name")
                 for t in self.tools
@@ -2325,8 +2335,9 @@ class AIAgent:
             except Exception as _ce_err:
                 logger.debug("Context engine on_session_start: %s", _ce_err)
 
+        from gateway.session_context import get_terminal_cwd
         self._subdirectory_hints = SubdirectoryHintTracker(
-            working_dir=os.getenv("TERMINAL_CWD") or None,
+            working_dir=get_terminal_cwd() or None,
         )
         self._user_turn_count = 0
 
@@ -5079,7 +5090,7 @@ class AIAgent:
                 dump_payload["error"] = error_info
 
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            dump_file = self.logs_dir / f"request_dump_{self.session_id}_{timestamp}.json"
+            dump_file = self.logs_dir / f"request_dump_{_safe_session_path_component(self.session_id)}_{timestamp}.json"
             dump_file.write_text(
                 json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str),
                 encoding="utf-8",
@@ -5871,11 +5882,12 @@ class AIAgent:
             context_parts.append(system_message)
 
         if not self.skip_context_files:
-            # Use TERMINAL_CWD for context file discovery when set (gateway
-            # mode).  The gateway process runs from the hermes-agent install
-            # dir, so os.getcwd() would pick up the repo's AGENTS.md and
-            # other dev files — inflating token usage by ~10k for no benefit.
-            _context_cwd = os.getenv("TERMINAL_CWD") or None
+            # Use session-scoped TERMINAL_CWD for context file discovery when
+            # set (gateway/cron mode). Falling back to os.getcwd() in the
+            # gateway process would pick up the repo's AGENTS.md and other
+            # dev files — inflating token usage by ~10k for no benefit.
+            from gateway.session_context import get_terminal_cwd
+            _context_cwd = get_terminal_cwd() or None
             context_files_prompt = build_context_files_prompt(
                 cwd=_context_cwd, skip_soul=_soul_loaded)
             if context_files_prompt:
@@ -10266,7 +10278,7 @@ class AIAgent:
                 except Exception:
                     pass
                 # Update session_log_file to point to the new session's JSON file
-                self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
+                self.session_log_file = self.logs_dir / f"session_{_safe_session_path_component(self.session_id)}.json"
                 self._session_db_created = False
                 self._session_db.create_session(
                     session_id=self.session_id,
@@ -10422,6 +10434,18 @@ class AIAgent:
         finally:
             self._executing_tools = False
 
+    def _memory_provider_tools_allowed(self) -> bool:
+        """Return True when provider-backed memory tools are in this agent's toolset."""
+        return bool(self._memory_manager and "memory" in self.valid_tool_names)
+
+    def _is_allowed_memory_provider_tool(self, function_name: str) -> bool:
+        """Return True only for provider memory tools exposed to this agent."""
+        return bool(
+            self._memory_manager
+            and function_name in self.valid_tool_names
+            and self._memory_manager.has_tool(function_name)
+        )
+
     def _dispatch_delegate_task(self, function_args: dict) -> str:
         """Single call site for delegate_task dispatch.
 
@@ -10435,8 +10459,6 @@ class AIAgent:
             toolsets=function_args.get("toolsets"),
             tasks=function_args.get("tasks"),
             max_iterations=function_args.get("max_iterations"),
-            acp_command=function_args.get("acp_command"),
-            acp_args=function_args.get("acp_args"),
             role=function_args.get("role"),
             parent_agent=self,
         )
@@ -10508,7 +10530,7 @@ class AIAgent:
                 except Exception:
                     pass
             return result
-        elif self._memory_manager and self._memory_manager.has_tool(function_name):
+        elif self._is_allowed_memory_provider_tool(function_name):
             return self._memory_manager.handle_tool_call(function_name, function_args)
         elif function_name == "clarify":
             from tools.clarify_tool import clarify_tool as _clarify_tool
@@ -10605,9 +10627,10 @@ class AIAgent:
             # Checkpoint before destructive terminal commands
             if function_name == "terminal" and self._checkpoint_mgr.enabled:
                 try:
+                    from gateway.session_context import get_terminal_cwd
                     cmd = function_args.get("command", "")
                     if _is_destructive_command(cmd):
-                        cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                        cwd = function_args.get("workdir") or get_terminal_cwd(os.getcwd())
                         self._checkpoint_mgr.ensure_checkpoint(
                             cwd, f"before terminal: {cmd[:60]}"
                         )
@@ -11064,9 +11087,10 @@ class AIAgent:
             # Checkpoint before destructive terminal commands
             if not _execution_blocked and function_name == "terminal" and self._checkpoint_mgr.enabled:
                 try:
+                    from gateway.session_context import get_terminal_cwd
                     cmd = function_args.get("command", "")
                     if _is_destructive_command(cmd):
-                        cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                        cwd = function_args.get("workdir") or get_terminal_cwd(os.getcwd())
                         self._checkpoint_mgr.ensure_checkpoint(
                             cwd, f"before terminal: {cmd[:60]}"
                         )
@@ -11196,7 +11220,7 @@ class AIAgent:
                         spinner.stop(cute_msg)
                     elif self._should_emit_quiet_tool_messages():
                         self._vprint(f"  {cute_msg}")
-            elif self._memory_manager and self._memory_manager.has_tool(function_name):
+            elif self._is_allowed_memory_provider_tool(function_name):
                 # Memory provider tools (hindsight_retain, honcho_search, etc.)
                 # These are not in the tool registry — route through MemoryManager.
                 spinner = None
@@ -13874,6 +13898,9 @@ class AIAgent:
                             self._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
                             time.sleep(2)  # Brief pause between compression retries
                             restart_with_compressed_messages = True
+                            # Fix: reset retry counters after compression so the model
+                            # gets a fresh budget on the compressed context.
+                            retry_count = 0
                             break
                         else:
                             self._vprint(f"{self.log_prefix}❌ Payload too large and cannot compress further.", force=True)
@@ -14032,6 +14059,9 @@ class AIAgent:
                                 self._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
                             time.sleep(2)  # Brief pause between compression retries
                             restart_with_compressed_messages = True
+                            # Fix: reset retry counters after compression so the model
+                            # gets a fresh budget on the compressed context.
+                            retry_count = 0
                             break
                         else:
                             # Can't compress further and already at minimum tier
