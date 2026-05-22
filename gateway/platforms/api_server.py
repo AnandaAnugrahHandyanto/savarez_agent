@@ -25,6 +25,7 @@ Requires:
 """
 
 import asyncio
+import functools
 import hashlib
 import hmac
 import json
@@ -36,6 +37,8 @@ import sqlite3
 import time
 import uuid
 from typing import Any, Dict, List, Optional
+
+_json_dumps_utf8 = functools.partial(json.dumps, ensure_ascii=False)
 
 try:
     from aiohttp import web
@@ -380,7 +383,7 @@ class ResponseStore:
         """Store a response, evicting the oldest if at capacity."""
         self._conn.execute(
             "INSERT OR REPLACE INTO responses (response_id, data, accessed_at) VALUES (?, ?, ?)",
-            (response_id, json.dumps(data, default=str), time.time()),
+            (response_id, json.dumps(data, default=str, ensure_ascii=False), time.time()),
         )
         # Evict oldest entries beyond max_size
         count = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0]
@@ -1339,7 +1342,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if err_msg:
                 response_headers["X-Hermes-Error"] = err_msg[:200]
 
-        return web.json_response(response_data, headers=response_headers)
+        return web.json_response(response_data, headers=response_headers, dumps=_json_dumps_utf8)
 
     async def _write_sse_chat_completion(
         self, request: "web.Request", completion_id: str, model: str,
@@ -1381,7 +1384,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "created": created, "model": model,
                 "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
             }
-            await response.write(f"data: {json.dumps(role_chunk)}\n\n".encode())
+            await response.write(f"data: {_json_dumps_utf8(role_chunk)}\n\n".encode())
             last_activity = time.monotonic()
 
             # Helper — route a queue item to the correct SSE event.
@@ -1396,7 +1399,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 #16588 for the ``toolCallId``/``status`` lifecycle fields.
                 """
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
-                    event_data = json.dumps(item[1])
+                    event_data = _json_dumps_utf8(item[1])
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
                     )
@@ -1406,7 +1409,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         "created": created, "model": model,
                         "choices": [{"index": 0, "delta": {"content": item}, "finish_reason": None}],
                     }
-                    await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
+                    await response.write(f"data: {_json_dumps_utf8(content_chunk)}\n\n".encode())
                 return time.monotonic()
 
             # Stream content chunks as they arrive from the agent
@@ -1455,7 +1458,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "total_tokens": usage.get("total_tokens", 0),
                 },
             }
-            await response.write(f"data: {json.dumps(finish_chunk)}\n\n".encode())
+            await response.write(f"data: {_json_dumps_utf8(finish_chunk)}\n\n".encode())
             await response.write(b"data: [DONE]\n\n")
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
             # Client disconnected mid-stream.  Interrupt the agent so it
@@ -1486,7 +1489,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "created": created, "model": model,
                     "choices": [{"index": 0, "delta": {}, "finish_reason": "error"}],
                 }
-                await response.write(f"data: {json.dumps(error_chunk)}\n\n".encode())
+                await response.write(f"data: {_json_dumps_utf8(error_chunk)}\n\n".encode())
                 await response.write(b"data: [DONE]\n\n")
             except Exception:
                 pass
@@ -1584,7 +1587,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if "sequence_number" not in data:
                 data["sequence_number"] = sequence_number
             sequence_number += 1
-            payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+            payload = f"event: {event_type}\ndata: {_json_dumps_utf8(data)}\n\n"
             await response.write(payload.encode())
 
         def _envelope(status: str) -> Dict[str, Any]:
@@ -1713,7 +1716,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 call_id = payload.get("tool_call_id") or f"call_{response_id[5:]}_{call_counter}"
                 args = payload.get("arguments", {})
                 if isinstance(args, dict):
-                    arguments_str = json.dumps(args)
+                    arguments_str = _json_dumps_utf8(args)
                 else:
                     arguments_str = str(args)
                 item = {
@@ -1779,7 +1782,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 })
 
                 # function_call_output added (result)
-                result_str = result if isinstance(result, str) else json.dumps(result)
+                result_str = result if isinstance(result, str) else _json_dumps_utf8(result)
                 output_parts = [{"type": "input_text", "text": result_str}]
                 output_item = {
                     "id": f"fco_{uuid.uuid4().hex[:24]}",
@@ -1959,7 +1962,7 @@ class APIServerAdapter(BasePlatformAdapter):
                             for _k in ("content", "query", "pattern", "old_string", "new_string"):
                                 if isinstance(_args.get(_k), str) and len(_args[_k]) > 500:
                                     _args[_k] = "[" + str(len(_args[_k])) + " chars — truncated for response.completed]"
-                            _item["arguments"] = json.dumps(_args)
+                            _item["arguments"] = _json_dumps_utf8(_args)
                     except Exception:
                         pass
                 elif _item.get("type") == "function_call_output":
@@ -2367,7 +2370,7 @@ class APIServerAdapter(BasePlatformAdapter):
         response_headers = {"X-Hermes-Session-Id": session_id}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
-        return web.json_response(response_data, headers=response_headers)
+        return web.json_response(response_data, headers=response_headers, dumps=_json_dumps_utf8)
 
     # ------------------------------------------------------------------
     # GET / DELETE response endpoints
@@ -2384,7 +2387,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if stored is None:
             return web.json_response(_openai_error(f"Response not found: {response_id}"), status=404)
 
-        return web.json_response(stored["response"])
+        return web.json_response(stored["response"], dumps=_json_dumps_utf8)
 
     async def _handle_delete_response(self, request: "web.Request") -> "web.Response":
         """DELETE /v1/responses/{response_id} — delete a stored response."""
@@ -3168,7 +3171,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 _openai_error(f"Run not found: {run_id}", code="run_not_found"),
                 status=404,
             )
-        return web.json_response(status)
+        return web.json_response(status, dumps=_json_dumps_utf8)
 
     async def _handle_run_events(self, request: "web.Request") -> "web.StreamResponse":
         """GET /v1/runs/{run_id}/events — SSE stream of structured agent lifecycle events."""
@@ -3209,7 +3212,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     # Run finished — send final SSE comment and close
                     await response.write(b": stream closed\n\n")
                     break
-                payload = f"data: {json.dumps(event)}\n\n"
+                payload = f"data: {_json_dumps_utf8(event)}\n\n"
                 await response.write(payload.encode())
         except Exception as exc:
             logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
