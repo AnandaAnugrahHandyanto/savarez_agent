@@ -913,6 +913,8 @@ export function TextInput({
       let c = curRef.current
       let v = vRef.current
       const mod = isActionMod(k)
+      const bareCtrl = k.ctrl && !k.alt && !k.meta && k.super !== true && !k.shift
+      const ctrlDeleteChar = bareCtrl && inp.toLowerCase() === 'd'
       const wordMod = mod || k.meta
       const actionHome = k.home || (!isMac && mod && inp === 'a') || isMacActionFallback(k, inp, 'a')
       const actionEnd = k.end || (mod && inp === 'e') || isMacActionFallback(k, inp, 'e')
@@ -920,7 +922,7 @@ export function TextInput({
       const actionKillToEnd = (mod && inp === 'k') || isMacActionFallback(k, inp, 'k')
       const actionDeleteWord = (mod && inp === 'w') || isMacActionFallback(k, inp, 'w')
       const range = selRange()
-      const delFwd = k.delete || fwdDel.current
+      const delFwd = k.delete || fwdDel.current || ctrlDeleteChar
 
       if (mod && inp === 'z') {
         return swap(undo, redo)
@@ -966,6 +968,9 @@ export function TextInput({
         moveCursor(c, k.shift)
 
         return
+      } else if (bareCtrl && inp.toLowerCase() === 'f') {
+        clearSel()
+        c = nextPos(v, c)
       } else if (wordMod && inp === 'b') {
         clearSel()
         c = wordLeft(v, c)
@@ -1000,12 +1005,14 @@ export function TextInput({
           c = t
         }
       } else if (delFwd && c < v.length) {
-        if (wordMod) {
+        if (wordMod && !ctrlDeleteChar) {
           const t = wordRight(v, c)
           v = v.slice(0, c) + v.slice(t)
         } else {
           v = v.slice(0, c) + v.slice(nextPos(v, c))
         }
+      } else if (ctrlDeleteChar) {
+        return
       } else if (actionDeleteWord) {
         if (range) {
           v = v.slice(0, range.start) + v.slice(range.end)
