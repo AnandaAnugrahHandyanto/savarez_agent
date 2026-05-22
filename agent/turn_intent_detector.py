@@ -344,9 +344,21 @@ def execute_via_helper(
         "announcement": announcement,
     })
 
+    # The helper imports the Artemis MCP server module, which depends on
+    # the `mcp` SDK installed in the Hermes venv (not in the system
+    # python). Resolve the venv python from $HERMES_REPO or fall back to
+    # ~/hermes-agent/venv/bin/python; default to sys.executable as a
+    # last resort so dev-machine tests with the venv on PATH still work.
+    from pathlib import Path
+    hermes_repo = os.environ.get("HERMES_REPO") or str(Path.home() / "hermes-agent")
+    venv_python = str(Path(hermes_repo) / "venv" / "bin" / "python")
+    if not Path(venv_python).exists():
+        import sys as _sys
+        venv_python = _sys.executable
+
     try:
         proc = subprocess.run(
-            ["python3", helper_path],
+            [venv_python, helper_path],
             input=payload,
             capture_output=True,
             text=True,
