@@ -42,6 +42,31 @@ def test_bundled_skills_document_pr_review_gate():
     assert "explicit\ninstruction" in pr_workflow
 
 
+def test_generated_bundled_skill_docs_document_pr_review_gate():
+    worker_doc = _read(
+        "website/docs/user-guide/skills/bundled/devops/devops-kanban-worker.md"
+    )
+    orchestrator_doc = _read(
+        "website/docs/user-guide/skills/bundled/devops/devops-kanban-orchestrator.md"
+    )
+    pr_workflow_doc = _read(
+        "website/docs/user-guide/skills/bundled/github/github-github-pr-workflow.md"
+    )
+
+    for text in (worker_doc, orchestrator_doc, pr_workflow_doc):
+        assert "auto-merge" in text
+        assert "reviewer" in text
+        assert "merge decision" in text
+
+    assert "## Repository code-change workflow" in worker_doc
+    assert "blocked parent keeps the reviewer task in `todo`" in worker_doc
+    assert "## User-requested repository changes" in orchestrator_doc
+    assert "main/default profile should route" in orchestrator_doc
+    assert "structured PR handoff metadata" in orchestrator_doc
+    assert "### Kanban-gated agent work" in pr_workflow_doc
+    assert "deadlocks review in `todo`" in pr_workflow_doc
+
+
 def test_repo_docs_and_pr_template_carry_gate():
     agents = _read("AGENTS.md")
     contributing = _read("CONTRIBUTING.md")
