@@ -161,6 +161,25 @@ async def publish_draft_dry_run(draft_id: str):
     return {"result": result, "overview": _overview(store)}
 
 
+@router.post("/drafts/approve-all")
+async def approve_all_pending(app_slug: Optional[str] = None, reviewer: str = "dashboard"):
+    store = _store()
+    approved: list[Dict[str, Any]] = []
+    for draft in store.list_drafts(app_slug=app_slug, status="needs_review"):
+        if draft.get("safety", {}).get("passed"):
+            approved.append(store.set_approval(draft["id"], "approved", reviewer=reviewer, reason="bulk-approved from dashboard"))
+    return {"result": approved, "overview": _overview(store)}
+
+
+@router.post("/drafts/reject-all")
+async def reject_all_pending(app_slug: Optional[str] = None, reviewer: str = "dashboard"):
+    store = _store()
+    rejected: list[Dict[str, Any]] = []
+    for draft in store.list_drafts(app_slug=app_slug, status="needs_review"):
+        rejected.append(store.set_approval(draft["id"], "rejected", reviewer=reviewer, reason="bulk-rejected from dashboard"))
+    return {"result": rejected, "overview": _overview(store)}
+
+
 @router.post("/schedule")
 async def schedule_approved(app_slug: Optional[str] = None):
     store = _store()

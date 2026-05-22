@@ -237,3 +237,43 @@ def test_dashboard_api_overview_and_dry_run_actions(isolate_home):
     assert event["would_post"] is True
     assert event["posted"] is False
     assert published.json()["overview"]["summary"]["dry_run_publish_events"] == 1
+
+
+def test_dashboard_bulk_approve_and_reject_endpoints(isolate_home):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from plugins.marketing_factory.dashboard.plugin_api import router
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/plugins/marketing_factory")
+    client = TestClient(app)
+
+    client.post("/api/plugins/marketing_factory/init")
+    client.post(
+        "/api/plugins/marketing_factory/campaigns/generate",
+        json={"app_slug": "pupular", "days": 3},
+    )
+    client.post(
+        "/api/plugins/marketing_factory/campaigns/generate",
+        json={"app_slug": "setvenue", "days": 2},
+    )
+
+    # Bulk-approve only Pupular's queue; SetVenue should remain pending.
+    bulk = client.post("/api/plugins/marketing_factory/drafts/approve-all?app_slug=pupular")
+    assert bulk.status_code == 200
+    approved = bulk.json()["result"]
+    assert len(approved) == 3
+    assert all(record["status"] == "approved" for record in approved)
+    counts = bulk.json()["overview"]["draft_status_counts"]
+    assert counts.get("approved") == 3
+    assert counts.get("needs_review") == 2  # SetVenue still pending
+
+    # Bulk-reject SetVenue's queue.
+    bulk_reject = client.post("/api/plugins/marketing_factory/drafts/reject-all?app_slug=setvenue")
+    assert bulk_reject.status_code == 200
+    rejected = bulk_reject.json()["result"]
+    assert len(rejected) == 2
+    final_counts = bulk_reject.json()["overview"]["draft_status_counts"]
+    assert final_counts.get("rejected") == 2
+    assert final_counts.get("needs_review", 0) == 0
