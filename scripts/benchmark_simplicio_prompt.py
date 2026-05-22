@@ -5,8 +5,9 @@ This benchmark intentionally does not call a hosted model. It measures the
 local pre-LLM message preparation cost and rough token footprint for:
 
 1. a normal/V1 instruction baseline with no overlay,
-2. a manually pasted SIMPLICIO_PROMPT V2 prompt,
-3. the compact automatic SIMPLICIO_PROMPT V2 plugin overlay.
+2. a manually pasted SIMPLICIO_PROMPT V2 prompt with local file paths,
+3. the automatic SIMPLICIO_PROMPT V2 plugin overlay loaded from the vendored
+   runtime snapshot.
 """
 
 from __future__ import annotations
@@ -29,10 +30,16 @@ USER_MESSAGE = (
     "Refactor the dashboard layout, update tests, and report the benchmark difference."
 )
 
-MANUAL_V2_PROMPT = """Use the canonical repo https://github.com/wesleysimplicio/simplicio-prompt.
-Read before editing: YOOL_TUPLE_HAMT.md, kernel/yool_tuple_kernel.py,
-guardrails/cpu_throttle.py, guardrails/disk_gc.py, examples/python/receipts.py,
-and scripts/build_hamt.py.
+MANUAL_V2_PROMPT = """Use the bundled local SIMPLICIO_PROMPT snapshot under
+plugins/simplicio_prompt/vendor/simplicio_prompt. Do not fetch an external
+repository at runtime.
+Read before editing:
+plugins/simplicio_prompt/vendor/simplicio_prompt/YOOL_TUPLE_HAMT.md,
+plugins/simplicio_prompt/vendor/simplicio_prompt/kernel/yool_tuple_kernel.py,
+plugins/simplicio_prompt/vendor/simplicio_prompt/guardrails/cpu_throttle.py,
+plugins/simplicio_prompt/vendor/simplicio_prompt/guardrails/disk_gc.py,
+plugins/simplicio_prompt/vendor/simplicio_prompt/examples/python/receipts.py,
+and plugins/simplicio_prompt/vendor/simplicio_prompt/scripts/build_hamt.py.
 
 When receiving any task, decompose it into a Hilbert-indexed graph, create a
 root tuple, use batch_spawn(depth, branching, compression_threshold) for
@@ -120,8 +127,8 @@ def main() -> int:
     print("SIMPLICIO_PROMPT local benchmark")
     print(f"iterations: {args.iterations}")
     print(
-        "baseline_note: V2 means SIMPLICIO_PROMPT/simplicio-prompt; comparisons "
-        "are against normal/V1 baselines."
+        "baseline_note: V2 means the bundled SIMPLICIO_PROMPT runtime snapshot; "
+        "comparisons are against normal/V1 baselines."
     )
     print("")
     print("| case | median ms/build | p95 ms/build | rough input tokens | chars |")

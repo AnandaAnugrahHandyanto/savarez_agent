@@ -2,7 +2,10 @@
 
 SIMPLICIO_PROMPT is an opt-in Hermes plugin that injects the SIMPLICIO_PROMPT V2 execution overlay into every main-agent turn through the `pre_llm_call` hook.
 
-Canonical reference: [wesleysimplicio/simplicio-prompt](https://github.com/wesleysimplicio/simplicio-prompt).
+The runtime is bundled in this plugin. Hermes does not need to fetch or consult
+an external GitHub repository to apply the prompt.
+
+Bundled snapshot: `plugins/simplicio_prompt/vendor/simplicio_prompt/`
 
 ![YOOL V2 Safe-Speed Runtime reference infographic](../../website/static/img/simplicio-prompt/yool-v2-safe-speed-infographic-en.png)
 
@@ -40,7 +43,29 @@ hermes plugins enable SIMPLICIO_PROMPT
 | Provider safety | Backoff with jitter and circuit breakers are required; provider limits and terms must be respected. |
 | Stable reporting | The default output contract keeps tuple-space state, active agents, totals, next yool, and partial result visible. |
 
-The plugin is intentionally lightweight. It does not call external services and does not bypass provider throttles. Its runtime work is a local boolean check plus a static context string returned from `pre_llm_call` when enabled.
+The plugin is intentionally local-only. It does not call external services and
+does not bypass provider throttles. Its runtime work is a local boolean check
+plus a cached read of the bundled prompt context returned from `pre_llm_call`
+when enabled.
+
+## Bundled Runtime Files
+
+The plugin vendors the SIMPLICIO_PROMPT runtime files from source commit
+`917fb15bf3b918fa43836623f611bc846a4eeb21`, including:
+
+| Local file | Purpose |
+|---|---|
+| `vendor/simplicio_prompt/prompts/agent-runtime-execution-prompt.md` | Prompt loaded into the Hermes `pre_llm_call` context. |
+| `vendor/simplicio_prompt/YOOL_TUPLE_HAMT.md` | Tuple-space, yool, HAMT, hookwall, receipt, and lane specification. |
+| `vendor/simplicio_prompt/kernel/yool_tuple_kernel.py` | Reference kernel with `batch_spawn`, tuple routing, hookwall, and compression. |
+| `vendor/simplicio_prompt/guardrails/cpu_throttle.py` | CPU quota guardrail reference. |
+| `vendor/simplicio_prompt/guardrails/disk_gc.py` | Disk GC and disk-pressure reference. |
+| `vendor/simplicio_prompt/examples/python/receipts.py` | Content-addressable receipt example. |
+| `vendor/simplicio_prompt/scripts/build_hamt.py` | HAMT/catalog builder script. |
+| `vendor/simplicio_prompt/benchmarks/` | V1/normal vs SIMPLICIO_PROMPT V2 benchmark reports and PDFs. |
+
+At runtime, the plugin reads the Hermes-adapted vendored prompt from the local
+bundle before injecting it into the model context.
 
 ## Activation Semantics
 
@@ -55,12 +80,12 @@ same SIMPLICIO_PROMPT V2 execution policy automatically. The hook intentionally
 ignores the message body, so the user never has to write "Implement" to
 activate it.
 
-## Canonical SIMPLICIO_PROMPT V2 Reference Data
+## Bundled SIMPLICIO_PROMPT V2 Reference Data
 
-The canonical `simplicio-prompt` README reports these local SIMPLICIO_PROMPT V2
-benchmark highlights for the safe-speed runtime. In this plugin documentation,
-V2 means SIMPLICIO_PROMPT/simplicio-prompt; the comparisons are against normal
-and V1 instruction baselines.
+The bundled `vendor/simplicio_prompt/README.md` reports these local
+SIMPLICIO_PROMPT V2 benchmark highlights for the safe-speed runtime. In this
+plugin documentation, V2 means the bundled SIMPLICIO_PROMPT runtime snapshot;
+the comparisons are against normal and V1 instruction baselines.
 
 | Area | Reported SIMPLICIO_PROMPT V2 result vs normal/V1 |
 |---|---:|
@@ -77,7 +102,7 @@ bypass hosted-provider latency, quotas, or rate limits.
 
 ## High-Throughput Reference Knobs
 
-The canonical runtime documents these safe-speed environment settings for local tuple-space execution:
+The bundled runtime documents these safe-speed environment settings for local tuple-space execution:
 
 ```bash
 YOOL_TUPLE_LANE_CONCURRENCY=32

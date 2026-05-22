@@ -173,13 +173,18 @@ Hermes-prefixed and standard SDK env vars (`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECR
 
 ### SIMPLICIO_PROMPT
 
-Injects a compact SIMPLICIO_PROMPT V2 execution overlay into every main-agent turn through `pre_llm_call`. The user does not need to type "Implement"; when enabled, Hermes adds the tuple-space policy before the model call as ephemeral context.
+Injects a SIMPLICIO_PROMPT V2 execution overlay into every main-agent turn
+through `pre_llm_call`. The user does not need to type "Implement"; when
+enabled, Hermes adds the tuple-space policy before the model call as ephemeral
+context loaded from the bundled local runtime snapshot.
 
 ![YOOL V2 Safe-Speed Runtime reference infographic](/img/simplicio-prompt/yool-v2-safe-speed-infographic-en.png)
 
-Canonical reference: [`wesleysimplicio/simplicio-prompt`](https://github.com/wesleysimplicio/simplicio-prompt).
-Here, V2 refers to SIMPLICIO_PROMPT/simplicio-prompt; benchmark comparisons are
-against normal/V1 baselines.
+Bundled runtime snapshot:
+`plugins/simplicio_prompt/vendor/simplicio_prompt/`.
+Hermes does not fetch or consult an external GitHub repository to apply the
+prompt. Here, V2 refers to the bundled SIMPLICIO_PROMPT runtime snapshot;
+benchmark comparisons are against normal/V1 baselines.
 
 **Enable with one boolean:**
 
@@ -205,13 +210,14 @@ hermes plugins enable SIMPLICIO_PROMPT
 | SIMPLICIO_PROMPT V2 item | Behaviour in Hermes |
 |---|---|
 | Automatic pass-through | Every enabled main-agent turn receives the overlay before the model call; no trigger word such as "Implement", "Fix", or "Build" is required. |
+| Local vendored runtime | The plugin ships the prompt, spec, reference kernel, guardrails, examples, benchmarks, PDFs, and assets under `plugins/simplicio_prompt/vendor/simplicio_prompt/`. |
 | Tuple-space decomposition | Work is framed as root tuple plus Hilbert/HAMT graph, lanes, authority, receipts, and source pointers. |
 | Massive-agent abstraction | `batch_spawn(depth, branching, compression_threshold)` is represented as a summarized hierarchy for 1,000,000+ subagents without enumerating them. |
 | Safer speed | The model is steered toward local deterministic work first, input-hash caching, batching, context compression, stable prefixes, adaptive lanes, jittered backoff, circuit breakers, and idempotent-only speculation. |
 | Rate-limit safety | The overlay explicitly preserves provider limits and terms; it is not a bypass. |
 | Stable report shape | The default output contract includes tuple-space snapshot, active agents, total agents, next yool, and partial result. |
 
-**Canonical SIMPLICIO_PROMPT V2 report highlights (vs normal/V1):**
+**Bundled SIMPLICIO_PROMPT V2 report highlights (vs normal/V1):**
 
 | Area | Reported SIMPLICIO_PROMPT V2 result vs normal/V1 |
 |---|---:|
@@ -222,7 +228,7 @@ hermes plugins enable SIMPLICIO_PROMPT
 | Circuit breaker | `64x` fewer failure attempts, a `98.44%` reduction |
 | Token economy | `76.32%` estimated savings through context compression |
 
-The plugin carries these as reference policy data from the canonical
+The plugin carries these as reference policy data from the bundled
 SIMPLICIO_PROMPT V2 runtime. It does not bypass hosted-provider rate limits,
 quotas, latency, or terms.
 
@@ -232,7 +238,12 @@ questions, layout edits, refactors, bug fixes, documentation tasks, benchmarks,
 and implementation requests all receive the same overlay automatically through
 `pre_llm_call`.
 
-**Performance note:** the plugin is local-only. When disabled it is a no-op. When enabled, it adds a compact static context block; it does not make extra model calls. See `docs/simplicio-prompt-v2-benchmark.md` and run `python scripts/benchmark_simplicio_prompt.py` for the local token and preprocessing benchmark.
+**Performance note:** the plugin is local-only. When disabled it is a no-op.
+When enabled, it injects a cached context loaded from the bundled runtime
+snapshot; it does not make extra model calls or GitHub fetches. See
+`docs/simplicio-prompt-v2-benchmark.md` and run
+`python scripts/benchmark_simplicio_prompt.py` for the local token and
+preprocessing benchmark.
 
 ### google_meet
 

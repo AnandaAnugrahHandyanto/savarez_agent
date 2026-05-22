@@ -1,6 +1,6 @@
 name: SIMPLICIO_PROMPT
 version: 0.1.0
-description: "Opt-in tuple-space execution overlay. When SIMPLICIO_PROMPT=true or simplicio_prompt.enabled=true, every main-agent turn receives the SIMPLICIO_PROMPT V2 policy before the model call."
+description: "Opt-in tuple-space execution overlay with a bundled SIMPLICIO_PROMPT V2 runtime snapshot. When SIMPLICIO_PROMPT=true or simplicio_prompt.enabled=true, every main-agent turn receives the local policy before the model call."
 author: "@wesleysimplicio"
 kind: standalone
 hooks:

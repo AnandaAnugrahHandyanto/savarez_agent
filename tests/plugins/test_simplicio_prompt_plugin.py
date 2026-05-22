@@ -28,8 +28,12 @@ def test_simplicio_prompt_enabled_by_env(monkeypatch):
 
     assert payload is not None
     assert payload["context"].startswith("[SIMPLICIO_PROMPT]")
-    assert "Default response" in payload["context"]
-    assert "[Próximo Yool a executar]" in payload["context"]
+    assert "Bundled local snapshot" in payload["context"]
+    assert "Do not fetch or consult an external GitHub repository" in payload["context"]
+    assert "[Proximo Yool a executar]" in payload["context"]
+    assert (
+        "https://github.com/wesleysimplicio/simplicio-prompt" not in payload["context"]
+    )
 
 
 def test_simplicio_prompt_pre_llm_hook_ignores_trigger_words(monkeypatch):
@@ -48,10 +52,8 @@ def test_simplicio_prompt_pre_llm_hook_ignores_trigger_words(monkeypatch):
     )
 
     assert payload is not None
-    assert (
-        'Do not require any user trigger word such as "Implement"' in payload["context"]
-    )
-    assert "layout edits" in payload["context"]
+    assert "Trigger rule: this runtime is ALWAYS-ON" in payload["context"]
+    assert "You do NOT need a keyword such as `Implement`" in payload["context"]
 
 
 def test_simplicio_prompt_enabled_by_config(monkeypatch):
@@ -63,6 +65,25 @@ def test_simplicio_prompt_enabled_by_config(monkeypatch):
 
     assert payload is not None
     assert "tuple-space" in payload["context"]
+    assert "For every user input X" in payload["context"]
+
+
+def test_simplicio_prompt_vendored_runtime_files_exist():
+    from plugins import simplicio_prompt as sp
+
+    expected = [
+        "README.md",
+        "YOOL_TUPLE_HAMT.md",
+        "kernel/yool_tuple_kernel.py",
+        "guardrails/cpu_throttle.py",
+        "guardrails/disk_gc.py",
+        "examples/python/receipts.py",
+        "scripts/build_hamt.py",
+        "prompts/agent-runtime-execution-prompt.md",
+    ]
+
+    for relative_path in expected:
+        assert (sp.VENDORED_ROOT / relative_path).is_file()
 
 
 def test_simplicio_prompt_enabled_by_plugin_allow_list(monkeypatch):
@@ -73,7 +94,7 @@ def test_simplicio_prompt_enabled_by_plugin_allow_list(monkeypatch):
     payload = sp.build_context(config={"plugins": {"enabled": ["SIMPLICIO_PROMPT"]}})
 
     assert payload is not None
-    assert "Respect provider limits" in payload["context"]
+    assert "provider-ban risk" in payload["context"]
 
 
 def test_simplicio_prompt_registers_pre_llm_hook():

@@ -6,28 +6,97 @@ follow the SIMPLICIO_PROMPT V2 tuple-space execution policy automatically.
 
 from __future__ import annotations
 
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from utils import env_var_enabled, is_truthy_value
 
 
-CANONICAL_REPO = "https://github.com/wesleysimplicio/simplicio-prompt"
 PLUGIN_NAME = "SIMPLICIO_PROMPT"
+PLUGIN_DIR = Path(__file__).resolve().parent
+VENDORED_ROOT = PLUGIN_DIR / "vendor" / "simplicio_prompt"
+VENDORED_PROMPT_PATH = VENDORED_ROOT / "prompts" / "agent-runtime-execution-prompt.md"
+VENDORED_SOURCE_COMMIT = "917fb15bf3b918fa43836623f611bc846a4eeb21"
 
-SIMPLICIO_PROMPT_CONTEXT = """[SIMPLICIO_PROMPT]
-Canonical repo: https://github.com/wesleysimplicio/simplicio-prompt. Apply to every enabled main-agent turn before the model call. Do not require any user trigger word such as "Implement", "Fix", or "Build"; apply equally to questions, layout edits, refactors, debugging, docs, and normal chat.
+FALLBACK_RUNTIME_POLICY = """You are a Tuple-Space + Yool Architecture execution engine.
+Treat any user input as task X. Decompose X into a Hilbert-indexed tuple graph,
+create a root tuple, use batch_spawn(depth, branching, compression_threshold)
+for 1,000,000+ subagents without enumeration, execute active work with
+spawn_agent, route by out_tuple/in_tuple/rd_tuple/route_packet/scan_index, apply
+hookwall, compress_token, prune_idle, LaneWorkerPool, receipt/input cache,
+adaptive lanes, jittered backoff, provider circuit breakers, small-task
+batching, prompt/context compression, local deterministic routing, and
+idempotent-only speculation. Respect provider limits and terms.
 
-Plan as tuple-space: root tuple, Hilbert/HAMT work graph, out/in/rd routing, receipts, lane, authority, and source pointers. Use batch_spawn(depth, branching, compression_threshold) as summarized hierarchy for 1,000,000+ subagents; never enumerate. Use real spawn/delegate only when useful, route deterministic work to local tools first, then compress_token, weakref, hookwall, and prune_idle inactive branches.
-
-SIMPLICIO_PROMPT V2 safe speed: cache by receipt/input hash, batch tiny tasks, compress prompt/context, use stable prefixes, adaptive lanes, backoff+jitter, circuit breakers, and idempotent-only speculation. Respect provider limits and terms.
-
-Default response:
+Return exactly:
 [Tuple Space Snapshot]
 [Active Agents/Subagents]
 [Total Agents/Subagents]
-[Próximo Yool a executar]
-[Resultado parcial]
+[Proximo Yool a executar]
+[Resultado parcial]"""
+
+
+def _extract_prompt_section(markdown: str) -> str:
+    lines = markdown.splitlines()
+    try:
+        start_idx = next(
+            i for i, line in enumerate(lines) if line.strip() == "## Prompt"
+        )
+    except StopIteration:
+        return markdown.strip()
+
+    body = lines[start_idx + 1 :]
+    for idx, line in enumerate(body):
+        if line.startswith("## "):
+            body = body[:idx]
+            break
+    return "\n".join(body).strip()
+
+
+@lru_cache(maxsize=1)
+def _load_vendored_prompt_section() -> str:
+    try:
+        prompt = VENDORED_PROMPT_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return FALLBACK_RUNTIME_POLICY
+
+    section = _extract_prompt_section(prompt)
+    if not section:
+        return FALLBACK_RUNTIME_POLICY
+    return section
+
+
+@lru_cache(maxsize=1)
+def _build_context_text() -> str:
+    vendored_prompt = _load_vendored_prompt_section()
+    return f"""[SIMPLICIO_PROMPT]
+Bundled local snapshot: plugins/simplicio_prompt/vendor/simplicio_prompt.
+Vendored source commit: {VENDORED_SOURCE_COMMIT}.
+Apply to every enabled main-agent turn before the model call. Do not require
+any user trigger word such as "Implement", "Fix", or "Build"; apply equally to
+questions, layout edits, refactors, debugging, docs, and normal chat.
+
+Do not fetch or consult an external GitHub repository to execute this policy.
+The local bundle includes the prompt, spec, reference kernel, guardrails,
+examples, benchmarks, receipts, and build scripts needed by SIMPLICIO_PROMPT V2.
+When file access is available, read local bundled files before editing:
+- plugins/simplicio_prompt/vendor/simplicio_prompt/YOOL_TUPLE_HAMT.md
+- plugins/simplicio_prompt/vendor/simplicio_prompt/kernel/yool_tuple_kernel.py
+- plugins/simplicio_prompt/vendor/simplicio_prompt/kernel/README.md
+- plugins/simplicio_prompt/vendor/simplicio_prompt/guardrails/cpu_throttle.py
+- plugins/simplicio_prompt/vendor/simplicio_prompt/guardrails/disk_gc.py
+- plugins/simplicio_prompt/vendor/simplicio_prompt/examples/python/minimal_bus.py
+- plugins/simplicio_prompt/vendor/simplicio_prompt/examples/python/receipts.py
+- plugins/simplicio_prompt/vendor/simplicio_prompt/scripts/build_hamt.py
+- plugins/simplicio_prompt/vendor/simplicio_prompt/prompts/agent-runtime-execution-prompt.md
+
+Vendored SIMPLICIO_PROMPT V2 policy:
+{vendored_prompt}
 [/SIMPLICIO_PROMPT]"""
+
+
+SIMPLICIO_PROMPT_CONTEXT = _build_context_text()
 
 
 def _load_config() -> Dict[str, Any]:
