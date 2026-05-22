@@ -30,6 +30,16 @@ npm run build
 
 This outputs to `../hermes_cli/web_dist/`, which the FastAPI server serves as a static SPA. The built assets are included in the Python package via `pyproject.toml` package-data.
 
+## Network access
+
+The dashboard is localhost-only by default. To expose it safely on a LAN or behind a reverse proxy, use public mode:
+
+```bash
+hermes dashboard --host 0.0.0.0 --public --allowed-host agents.example.lan --no-open
+```
+
+Public mode removes the token from the HTML bundle, enables cookie login + CSRF protection, and enforces an explicit Host allow-list. See `website/docs/guides/dashboard-network-access.md` for the full runbook.
+
 ## Structure
 
 ```

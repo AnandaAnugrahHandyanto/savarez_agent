@@ -4,6 +4,7 @@ import {
   useMemo,
   useState,
   type ComponentType,
+  type FormEvent,
   type ReactNode,
 } from "react";
 import {
@@ -75,7 +76,7 @@ import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
-import { api } from "@/lib/api";
+import { api, setDashboardCsrfToken, type DashboardAuthStatus } from "@/lib/api";
 
 function RootRedirect() {
   return <Navigate to="/sessions" replace />;
@@ -305,6 +306,74 @@ function buildRoutes(
   return routes;
 }
 
+function DashboardAuthGate({
+  status,
+  onAuthenticated,
+}: {
+  status: DashboardAuthStatus;
+  onAuthenticated: (status: DashboardAuthStatus) => void;
+}) {
+  const [username, setUsername] = useState("admin");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const setup = status.needs_setup === true;
+
+  const submit = async (ev: FormEvent) => {
+    ev.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const next = setup
+        ? await api.setupDashboardAdmin({ username, password })
+        : await api.loginDashboard({ username, password });
+      onAuthenticated(next);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex h-dvh items-center justify-center bg-black p-6 text-midground">
+      <form onSubmit={submit} className="w-full max-w-sm space-y-4 rounded border border-current/20 bg-background-base/90 p-6">
+        <div className="space-y-1">
+          <Typography variant="xl">{setup ? "Create dashboard admin" : "Dashboard login"}</Typography>
+          <p className="text-sm normal-case opacity-70">
+            {setup
+              ? "First public launch: create the local admin account."
+              : "Sign in to access this public Hermes dashboard."}
+          </p>
+        </div>
+        <label className="block space-y-1 text-sm">
+          <span>Username</span>
+          <input
+            className="w-full rounded border border-current/25 bg-black px-3 py-2 text-midground"
+            value={username}
+            onChange={(ev) => setUsername(ev.target.value)}
+            autoComplete="username"
+          />
+        </label>
+        <label className="block space-y-1 text-sm">
+          <span>Password</span>
+          <input
+            className="w-full rounded border border-current/25 bg-black px-3 py-2 text-midground"
+            type="password"
+            value={password}
+            onChange={(ev) => setPassword(ev.target.value)}
+            autoComplete={setup ? "new-password" : "current-password"}
+          />
+        </label>
+        {error ? <p className="text-sm normal-case text-red-400">{error}</p> : null}
+        <Button type="submit" disabled={busy || !username || !password} className="w-full">
+          {busy ? "Please wait…" : setup ? "Create admin" : "Login"}
+        </Button>
+      </form>
+    </div>
+  );
+}
+
 export default function App() {
   const { t } = useI18n();
   const { pathname } = useLocation();
@@ -316,6 +385,30 @@ export default function App() {
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
+  const [authStatus, setAuthStatus] = useState<DashboardAuthStatus | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getAuthStatus()
+      .then((status) => {
+        if (cancelled) return;
+        setDashboardCsrfToken(status.csrf_token);
+        setAuthStatus(status);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAuthStatus({ enabled: false, authenticated: true });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setAuthLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // `dashboard.show_token_analytics` gates the Analytics nav item.  The
   // page itself remains reachable by URL (it renders an explanation when
@@ -323,6 +416,11 @@ export default function App() {
   // surfacing misleading token/cost numbers in the sidebar.  Default off.
   const [showTokenAnalytics, setShowTokenAnalytics] = useState(false);
   useEffect(() => {
+    if (authLoading) return;
+    if (authStatus?.enabled && !authStatus.authenticated) {
+      setShowTokenAnalytics(false);
+      return;
+    }
     api
       .getConfig()
       .then((cfg) => {
@@ -330,7 +428,7 @@ export default function App() {
         setShowTokenAnalytics(dash.show_token_analytics === true);
       })
       .catch(() => setShowTokenAnalytics(false));
-  }, []);
+  }, [authLoading, authStatus?.enabled, authStatus?.authenticated]);
 
   // A plugin can replace the built-in /chat page via `tab.override: "/chat"`
   // in its manifest.  When one does, `buildRoutes` already swaps the route
@@ -412,6 +510,26 @@ export default function App() {
     mql.addEventListener("change", onChange);
     return () => mql.removeEventListener("change", onChange);
   }, []);
+
+  if (authLoading) {
+    return (
+      <div className="flex h-dvh items-center justify-center bg-black text-midground">
+        <Spinner />
+      </div>
+    );
+  }
+
+  if (authStatus?.enabled && !authStatus.authenticated) {
+    return (
+      <DashboardAuthGate
+        status={authStatus}
+        onAuthenticated={(next) => {
+          setDashboardCsrfToken(next.csrf_token);
+          setAuthStatus({ ...next, authenticated: true });
+        }}
+      />
+    );
+  }
 
   return (
     <div

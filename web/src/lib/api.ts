@@ -28,7 +28,13 @@ declare global {
   }
 }
 let _sessionToken: string | null = null;
+let _csrfToken: string | null = null;
 const SESSION_HEADER = "X-Hermes-Session-Token";
+const CSRF_HEADER = "X-Hermes-CSRF-Token";
+
+export function setDashboardCsrfToken(token: string | null | undefined): void {
+  _csrfToken = token || null;
+}
 
 function setSessionHeader(headers: Headers, token: string): void {
   if (!headers.has(SESSION_HEADER)) {
@@ -37,13 +43,19 @@ function setSessionHeader(headers: Headers, token: string): void {
 }
 
 export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
-  // Inject the session token into all /api/ requests.
+  // Inject the legacy session token into all /api/ requests when the server
+  // provided one. Public mode intentionally omits it and relies on cookies.
   const headers = new Headers(init?.headers);
   const token = window.__HERMES_SESSION_TOKEN__;
   if (token) {
     setSessionHeader(headers, token);
+  } else if (_csrfToken && !headers.has(CSRF_HEADER)) {
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+      headers.set(CSRF_HEADER, _csrfToken);
+    }
   }
-  const res = await fetch(`${BASE}${url}`, { ...init, headers });
+  const res = await fetch(`${BASE}${url}`, { ...init, headers, credentials: "same-origin" });
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
     throw new Error(`${res.status}: ${text}`);
@@ -62,6 +74,30 @@ async function getSessionToken(): Promise<string> {
 }
 
 export const api = {
+  getAuthStatus: () => fetchJSON<DashboardAuthStatus>("/api/auth/status"),
+  setupDashboardAdmin: (body: DashboardAuthRequest) =>
+    fetchJSON<DashboardAuthStatus>("/api/auth/setup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then((res) => {
+      setDashboardCsrfToken(res.csrf_token);
+      return res;
+    }),
+  loginDashboard: (body: DashboardAuthRequest) =>
+    fetchJSON<DashboardAuthStatus>("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then((res) => {
+      setDashboardCsrfToken(res.csrf_token);
+      return res;
+    }),
+  logoutDashboard: () =>
+    fetchJSON<{ ok: boolean }>("/api/auth/logout", { method: "POST" }).then((res) => {
+      setDashboardCsrfToken(null);
+      return res;
+    }),
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
@@ -362,6 +398,19 @@ export interface PlatformStatus {
   error_message?: string;
   state: string;
   updated_at: string;
+}
+
+export interface DashboardAuthRequest {
+  username: string;
+  password: string;
+}
+
+export interface DashboardAuthStatus {
+  enabled: boolean;
+  needs_setup?: boolean;
+  authenticated?: boolean;
+  csrf_token?: string | null;
+  user?: { username: string; role: string } | null;
 }
 
 export interface StatusResponse {

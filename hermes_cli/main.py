@@ -10512,6 +10512,10 @@ def cmd_dashboard(args):
         port=args.port,
         open_browser=not args.no_open,
         allow_public=getattr(args, "insecure", False),
+        public=getattr(args, "public", False),
+        allowed_hosts=getattr(args, "allowed_host", None),
+        secure_cookies=getattr(args, "secure_cookies", False),
+        trust_proxy_headers=not getattr(args, "no_trust_proxy", False),
         embedded_chat=embedded_chat,
     )
 
@@ -13493,7 +13497,29 @@ Examples:
     dashboard_parser.add_argument(
         "--insecure",
         action="store_true",
-        help="Allow binding to non-localhost (DANGEROUS: exposes API keys on the network)",
+        help="Allow binding to non-localhost using legacy token-in-HTML auth (DANGEROUS)",
+    )
+    dashboard_parser.add_argument(
+        "--public",
+        action="store_true",
+        help="Safely expose dashboard on LAN/proxy with cookie login and no injected session token",
+    )
+    dashboard_parser.add_argument(
+        "--allowed-host",
+        action="append",
+        default=[],
+        metavar="HOST",
+        help="Allowed Host header for --public; repeat for DNS names/IPs users will browse to",
+    )
+    dashboard_parser.add_argument(
+        "--secure-cookies",
+        action="store_true",
+        help="Always mark dashboard auth cookies Secure (use behind HTTPS reverse proxies)",
+    )
+    dashboard_parser.add_argument(
+        "--no-trust-proxy",
+        action="store_true",
+        help="Ignore X-Forwarded-Proto when deciding cookie security",
     )
     dashboard_parser.add_argument(
         "--tui",

@@ -38,12 +38,13 @@ import { api } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
 
 function buildWsUrl(
-  token: string,
+  token: string | undefined,
   resume: string | null,
   channel: string,
 ): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const qs = new URLSearchParams({ token, channel });
+  const qs = new URLSearchParams({ channel });
+  if (token) qs.set("token", token);
   if (resume) qs.set("resume", resume);
   return `${proto}//${window.location.host}${HERMES_BASE_PATH}/api/pty?${qs.toString()}`;
 }
@@ -114,13 +115,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // collapses the host's box, so ResizeObserver never fires on return).
   const syncMetricsRef = useRef<(() => void) | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
-  // Lazy-init: the missing-token check happens at construction so the effect
-  // body doesn't have to setState (React 19's set-state-in-effect rule).
-  const [banner, setBanner] = useState<string | null>(() =>
-    typeof window !== "undefined" && !window.__HERMES_SESSION_TOKEN__
-      ? "Session token unavailable. Open this page through `hermes dashboard`, not directly."
-      : null,
-  );
+  const [banner, setBanner] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Raw state for the mobile side-sheet + a derived value that force-
@@ -270,10 +265,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     if (!host) return;
 
     const token = window.__HERMES_SESSION_TOKEN__;
-    // Banner already initialised above; just bail before wiring xterm/WS.
-    if (!token) {
-      return;
-    }
 
     const tierW0 = terminalTierWidthPx(host);
     const term = new Terminal({
@@ -577,7 +568,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         return;
       }
       if (ev.code === 4401) {
-        setBanner("Auth failed. Reload the page to refresh the session token.");
+        setBanner("Auth failed. Reload or sign in again to refresh the dashboard session.");
         return;
       }
       if (ev.code === 4403) {

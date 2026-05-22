@@ -10,6 +10,8 @@ Usage:
 """
 
 import asyncio
+import base64
+import hashlib
 import hmac
 import importlib.util
 import json
@@ -23,7 +25,7 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import yaml
 
@@ -85,6 +87,9 @@ app = FastAPI(title="Hermes Agent", version=__version__)
 # ---------------------------------------------------------------------------
 _SESSION_TOKEN = secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
+_CSRF_HEADER_NAME = "X-Hermes-CSRF-Token"
+_DASHBOARD_SESSION_COOKIE = "hermes_dashboard_session"
+_DASHBOARD_SESSION_TTL_SECONDS = 12 * 60 * 60
 
 # In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
 # or HERMES_DASHBOARD_TUI=1.  Set from :func:`start_server`.
@@ -119,17 +124,103 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
     "/api/dashboard/themes",
     "/api/dashboard/plugins",
     "/api/dashboard/plugins/rescan",
+    "/api/auth/status",
+    "/api/auth/setup",
+    "/api/auth/login",
+    "/api/auth/logout",
+    "/api/auth/me",
 })
 
 
-def _has_valid_session_token(request: Request) -> bool:
-    """True if the request carries a valid dashboard session token.
+def _public_mode_enabled() -> bool:
+    return bool(getattr(app.state, "public_mode", False))
 
-    The dedicated session header avoids collisions with reverse proxies that
-    already use ``Authorization`` (for example Caddy ``basic_auth``). We still
-    accept the legacy Bearer path for backward compatibility with older
-    dashboard bundles.
-    """
+
+def _legacy_token_auth_enabled() -> bool:
+    return bool(getattr(app.state, "legacy_token_auth_enabled", True))
+
+
+def _dashboard_users_path() -> Path:
+    return get_hermes_home() / "dashboard-users.yaml"
+
+
+def _load_dashboard_users() -> Dict[str, Any]:
+    path = _dashboard_users_path()
+    if not path.exists():
+        return {"users": {}}
+    try:
+        data = yaml.safe_load(path.read_text()) or {}
+    except Exception:
+        return {"users": {}}
+    users = data.get("users") if isinstance(data, dict) else None
+    return {"users": users if isinstance(users, dict) else {}}
+
+
+def _save_dashboard_users(data: Dict[str, Any]) -> None:
+    path = _dashboard_users_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(data, sort_keys=True))
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _hash_password(password: str, salt: Optional[str] = None) -> Dict[str, str]:
+    salt = salt or secrets.token_urlsafe(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 240_000)
+    return {"salt": salt, "hash": base64.urlsafe_b64encode(dk).decode()}
+
+
+def _verify_password(password: str, record: Dict[str, Any]) -> bool:
+    salt = str(record.get("salt") or "")
+    expected = str(record.get("hash") or "")
+    if not salt or not expected:
+        return False
+    actual = _hash_password(password, salt)["hash"]
+    return hmac.compare_digest(actual.encode(), expected.encode())
+
+
+def _sign_session_payload(payload: Dict[str, Any]) -> str:
+    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    body = base64.urlsafe_b64encode(raw).decode().rstrip("=")
+    sig = hmac.new(_SESSION_TOKEN.encode(), body.encode(), hashlib.sha256).hexdigest()
+    return f"{body}.{sig}"
+
+
+def _read_session_cookie(request: Any) -> Optional[Dict[str, Any]]:
+    value = request.cookies.get(_DASHBOARD_SESSION_COOKIE, "")
+    if not value or "." not in value:
+        return None
+    body, sig = value.rsplit(".", 1)
+    expected = hmac.new(_SESSION_TOKEN.encode(), body.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig.encode(), expected.encode()):
+        return None
+    try:
+        padded = body + "=" * (-len(body) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
+    except Exception:
+        return None
+    try:
+        if int(payload.get("exp", 0)) < int(time.time()):
+            return None
+    except (TypeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _request_is_cookie_authenticated(request: Request) -> bool:
+    return _read_session_cookie(request) is not None
+
+
+def _has_valid_session_token(request: Request) -> bool:
+    """True if the request carries valid dashboard credentials."""
+    if _request_is_cookie_authenticated(request):
+        return True
+
+    if not _legacy_token_auth_enabled():
+        return False
+
     session_header = request.headers.get(_SESSION_HEADER_NAME, "")
     if session_header and hmac.compare_digest(
         session_header.encode(),
@@ -143,9 +234,46 @@ def _has_valid_session_token(request: Request) -> bool:
 
 
 def _require_token(request: Request) -> None:
-    """Validate the ephemeral session token.  Raises 401 on mismatch."""
+    """Validate dashboard credentials. Raises 401 on mismatch."""
     if not _has_valid_session_token(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def _csrf_is_valid(request: Request) -> bool:
+    sess = _read_session_cookie(request)
+    if not sess:
+        return True  # legacy token auth does not use CSRF
+    expected = str(sess.get("csrf") or "")
+    supplied = request.headers.get(_CSRF_HEADER_NAME, "")
+    return bool(expected) and hmac.compare_digest(supplied.encode(), expected.encode())
+
+
+def _cookie_secure_for_request(request: Request) -> bool:
+    if bool(getattr(app.state, "secure_cookies", False)):
+        return True
+    if bool(getattr(app.state, "trust_proxy_headers", True)):
+        return request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip().lower() == "https"
+    return request.url.scheme == "https"
+
+
+def _set_dashboard_session_cookie(response: Response, request: Request, username: str, role: str) -> str:
+    csrf = secrets.token_urlsafe(24)
+    payload = {
+        "sub": username,
+        "role": role,
+        "csrf": csrf,
+        "exp": int(time.time()) + _DASHBOARD_SESSION_TTL_SECONDS,
+    }
+    response.set_cookie(
+        _DASHBOARD_SESSION_COOKIE,
+        _sign_session_payload(payload),
+        max_age=_DASHBOARD_SESSION_TTL_SECONDS,
+        httponly=True,
+        secure=_cookie_secure_for_request(request),
+        samesite="lax",
+        path="/",
+    )
+    return csrf
 
 
 # Accepted Host header values for loopback binds. DNS rebinding attacks
@@ -159,40 +287,39 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
-def _is_accepted_host(host_header: str, bound_host: str) -> bool:
+def _normalise_host_header(host_header: str) -> str:
+    if not host_header:
+        return ""
+    h = host_header.strip()
+    if h.startswith("["):
+        close = h.find("]")
+        host_only = h[1:close] if close != -1 else h.strip("[]")
+    else:
+        host_only = h.rsplit(":", 1)[0] if ":" in h else h
+    return host_only.lower()
+
+
+def _is_accepted_host(host_header: str, bound_host: str, allowed_hosts: Optional[Set[str]] = None) -> bool:
     """True if the Host header targets the interface we bound to.
 
     Accepts:
     - Exact bound host (with or without port suffix)
     - Loopback aliases when bound to loopback
-    - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
-      no protection possible at this layer)
+    - Explicit allowed_hosts when bound to all interfaces
     """
-    if not host_header:
+    host_only = _normalise_host_header(host_header)
+    if not host_only:
         return False
-    # Strip port suffix. IPv6 addresses use bracket notation:
-    #   [::1]         — no port
-    #   [::1]:9119    — with port
-    # Plain hosts/v4:
-    #   localhost:9119
-    #   127.0.0.1:9119
-    h = host_header.strip()
-    if h.startswith("["):
-        # IPv6 bracketed — port (if any) follows "]:"
-        close = h.find("]")
-        if close != -1:
-            host_only = h[1:close]  # strip brackets
-        else:
-            host_only = h.strip("[]")
-    else:
-        host_only = h.rsplit(":", 1)[0] if ":" in h else h
-    host_only = host_only.lower()
 
-    # 0.0.0.0 bind means operator explicitly opted into all-interfaces
-    # (requires --insecure per web_server.start_server). No Host-layer
-    # defence can protect that mode; rely on operator network controls.
-    if bound_host in {"0.0.0.0", "::"}:
+    allowed_lc = {h.lower() for h in allowed_hosts if h} if allowed_hosts is not None else set()
+    if allowed_lc and host_only in allowed_lc:
         return True
+
+    # 0.0.0.0 bind means all-interfaces. In safe public mode we require an
+    # explicit Host allow-list; legacy --insecure passes allowed_hosts=None and
+    # keeps the old any-host behavior.
+    if bound_host in {"0.0.0.0", "::"}:
+        return allowed_hosts is None
 
     # Loopback bind: accept the loopback names
     bound_lc = bound_host.lower()
@@ -220,7 +347,8 @@ async def host_header_middleware(request: Request, call_next):
     bound_host = getattr(app.state, "bound_host", None)
     if bound_host:
         host_header = request.headers.get("host", "")
-        if not _is_accepted_host(host_header, bound_host):
+        allowed_hosts = getattr(app.state, "allowed_hosts", None)
+        if not _is_accepted_host(host_header, bound_host, allowed_hosts):
             return JSONResponse(
                 status_code=400,
                 content={
@@ -235,7 +363,7 @@ async def host_header_middleware(request: Request, call_next):
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    """Require the session token on all /api/ routes except the public list."""
+    """Require dashboard credentials on all /api/ routes except the public list."""
     path = request.url.path
     if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
         if not _has_valid_session_token(request):
@@ -243,7 +371,122 @@ async def auth_middleware(request: Request, call_next):
                 status_code=401,
                 content={"detail": "Unauthorized"},
             )
+        if request.method.upper() not in {"GET", "HEAD", "OPTIONS"} and not _csrf_is_valid(request):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "CSRF token required"},
+            )
     return await call_next(request)
+
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none'",
+    )
+    return response
+
+
+class DashboardAuthRequest(BaseModel):
+    username: str
+    password: str
+
+
+@app.get("/api/auth/status")
+async def dashboard_auth_status(request: Request):
+    enabled = _public_mode_enabled()
+    users = _load_dashboard_users().get("users", {})
+    sess = _read_session_cookie(request)
+    return {
+        "enabled": enabled,
+        "needs_setup": enabled and not bool(users),
+        "authenticated": (not enabled) or bool(sess),
+        "user": ({"username": sess.get("sub"), "role": sess.get("role", "admin")} if sess else None),
+        "csrf_token": sess.get("csrf") if sess else None,
+    }
+
+
+@app.get("/api/auth/me")
+async def dashboard_auth_me(request: Request):
+    sess = _read_session_cookie(request)
+    if not _public_mode_enabled():
+        return {"authenticated": True, "user": None, "csrf_token": None}
+    if not sess:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return {
+        "authenticated": True,
+        "user": {"username": sess.get("sub"), "role": sess.get("role", "admin")},
+        "csrf_token": sess.get("csrf"),
+    }
+
+
+@app.post("/api/auth/setup")
+async def dashboard_auth_setup(body: DashboardAuthRequest, request: Request):
+    if not _public_mode_enabled():
+        raise HTTPException(status_code=404, detail="Dashboard auth is disabled")
+    username = body.username.strip()
+    if len(username) < 3 or len(body.password) < 12:
+        raise HTTPException(status_code=400, detail="Username must be at least 3 chars and password at least 12 chars")
+    data = _load_dashboard_users()
+    if data.get("users"):
+        raise HTTPException(status_code=409, detail="Dashboard users already configured")
+    pw = _hash_password(body.password)
+    data["users"] = {username: {"role": "admin", **pw}}
+    _save_dashboard_users(data)
+    response = JSONResponse({
+        "ok": True,
+        "user": {"username": username, "role": "admin"},
+        "csrf_token": "",
+    })
+    csrf = _set_dashboard_session_cookie(response, request, username, "admin")
+    response.body = json.dumps({
+        "ok": True,
+        "user": {"username": username, "role": "admin"},
+        "csrf_token": csrf,
+    }).encode()
+    response.headers["content-length"] = str(len(response.body))
+    return response
+
+
+@app.post("/api/auth/login")
+async def dashboard_auth_login(body: DashboardAuthRequest, request: Request):
+    if not _public_mode_enabled():
+        raise HTTPException(status_code=404, detail="Dashboard auth is disabled")
+    username = body.username.strip()
+    users = _load_dashboard_users().get("users", {})
+    record = users.get(username)
+    if not isinstance(record, dict) or not _verify_password(body.password, record):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    role = str(record.get("role") or "admin")
+    response = JSONResponse({
+        "ok": True,
+        "user": {"username": username, "role": role},
+        "csrf_token": "",
+    })
+    csrf = _set_dashboard_session_cookie(response, request, username, role)
+    response.body = json.dumps({
+        "ok": True,
+        "user": {"username": username, "role": role},
+        "csrf_token": csrf,
+    }).encode()
+    response.headers["content-length"] = str(len(response.body))
+    return response
+
+
+@app.post("/api/auth/logout")
+async def dashboard_auth_logout(request: Request):
+    if _public_mode_enabled() and _read_session_cookie(request) and not _csrf_is_valid(request):
+        raise HTTPException(status_code=403, detail="CSRF token required")
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(_DASHBOARD_SESSION_COOKIE, path="/")
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -3409,8 +3652,9 @@ async def pty_ws(ws: WebSocket) -> None:
 
     # --- auth + loopback check (before accept so we can close cleanly) ---
     token = ws.query_params.get("token", "")
-    expected = _SESSION_TOKEN
-    if not hmac.compare_digest(token.encode(), expected.encode()):
+    token_ok = token and _legacy_token_auth_enabled() and hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode())
+    cookie_ok = _read_session_cookie(ws) is not None
+    if not (token_ok or cookie_ok):
         await ws.close(code=4401)
         return
 
@@ -3683,11 +3927,13 @@ def mount_spa(application: FastAPI):
         """
         html = _index_path.read_text()
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
-        token_script = (
-            f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
+        runtime = (
             f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
-            f'window.__HERMES_BASE_PATH__="{prefix}";</script>'
+            f'window.__HERMES_BASE_PATH__="{prefix}";'
         )
+        if _legacy_token_auth_enabled():
+            runtime = f'window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";' + runtime
+        token_script = f"<script>{runtime}</script>"
         if prefix:
             # Rewrite absolute asset URLs baked into the Vite build so the
             # browser fetches them through the same proxy prefix.
@@ -4519,6 +4765,10 @@ def start_server(
     open_browser: bool = True,
     allow_public: bool = False,
     *,
+    public: bool = False,
+    allowed_hosts: Optional[List[str]] = None,
+    secure_cookies: bool = False,
+    trust_proxy_headers: bool = True,
     embedded_chat: bool = False,
 ):
     """Start the web UI server."""
@@ -4528,16 +4778,22 @@ def start_server(
     _DASHBOARD_EMBEDDED_CHAT_ENABLED = embedded_chat
 
     _LOCALHOST = ("127.0.0.1", "localhost", "::1")
-    if host not in _LOCALHOST and not allow_public:
+    if host not in _LOCALHOST and not (allow_public or public):
         raise SystemExit(
             f"Refusing to bind to {host} — the dashboard exposes API keys "
-            f"and config without robust authentication.\n"
-            f"Use --insecure to override (NOT recommended on untrusted networks)."
+            f"and config.\n"
+            f"Use --public for cookie-authenticated LAN/reverse-proxy exposure, "
+            f"or --insecure for the legacy token-exposing override."
         )
-    if host not in _LOCALHOST:
+    if host not in _LOCALHOST and allow_public and not public:
         _log.warning(
-            "Binding to %s with --insecure — the dashboard has no robust "
-            "authentication. Only use on trusted networks.", host,
+            "Binding to %s with --insecure — legacy dashboard token auth is "
+            "injected into HTML. Only use on trusted networks.", host,
+        )
+    if host not in _LOCALHOST and public and not allowed_hosts:
+        raise SystemExit(
+            "--public with a non-localhost bind requires at least one "
+            "--allowed-host value (DNS name or IP users will browse to)."
         )
 
     # Record the bound host so host_header_middleware can validate incoming
@@ -4546,6 +4802,11 @@ def start_server(
     # PTY child uses to publish events to the dashboard sidebar.
     app.state.bound_host = host
     app.state.bound_port = port
+    app.state.public_mode = bool(public)
+    app.state.legacy_token_auth_enabled = not bool(public)
+    app.state.allowed_hosts = {h.lower() for h in (allowed_hosts or [])} if public else None
+    app.state.secure_cookies = bool(secure_cookies)
+    app.state.trust_proxy_headers = bool(trust_proxy_headers)
 
     if open_browser:
         import webbrowser
