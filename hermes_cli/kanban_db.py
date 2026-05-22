@@ -2554,6 +2554,68 @@ def _followup_run_has_success_evidence(run: Optional[Run]) -> bool:
     return False
 
 
+_FOLLOWUP_VERDICT_LINE_RE = re.compile(
+    r"(?i)^\s*verdict\s*:\s*(?:[-*]\s*)?([a-z][a-z_-]*)\b"
+)
+_FOLLOWUP_VERDICT_HEADER_RE = re.compile(r"(?i)^\s*verdict\s*:\s*$")
+_FOLLOWUP_VERDICT_BULLET_RE = re.compile(r"^\s*[-*]?\s*([a-z][a-z_-]*)\b")
+
+
+def _extract_followup_verdict_from_text(text: str) -> Optional[str]:
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        match = _FOLLOWUP_VERDICT_LINE_RE.match(line)
+        if match:
+            return match.group(1).strip().lower().replace("-", "_")
+        if _FOLLOWUP_VERDICT_HEADER_RE.match(line):
+            for next_line in lines[index + 1 : index + 4]:
+                if not next_line.strip():
+                    continue
+                bullet = _FOLLOWUP_VERDICT_BULLET_RE.match(next_line)
+                return (
+                    bullet.group(1).strip().lower().replace("-", "_")
+                    if bullet else None
+                )
+    return None
+
+
+def _extract_followup_verdict(run: Optional[Run]) -> Optional[str]:
+    if run is None or not isinstance(run.metadata, dict):
+        return None
+    candidates: list[str] = []
+    lane_meta = run.metadata.get("worker_lane")
+    if isinstance(lane_meta, dict):
+        tail = lane_meta.get("output_tail")
+        if isinstance(tail, str):
+            candidates.append(tail)
+    verification = run.metadata.get("verification")
+    if isinstance(verification, dict):
+        summary = verification.get("summary")
+        if isinstance(summary, str):
+            candidates.append(summary)
+    for text in candidates:
+        verdict = _extract_followup_verdict_from_text(text)
+        if verdict:
+            return verdict
+    return None
+
+
+def _followup_verdict_accepts_purpose(
+    purpose: str,
+    verdict: Optional[str],
+) -> bool:
+    if not verdict:
+        # Older non-Codex/Hermes follow-up workers may only have exit metadata.
+        # Preserve that compatibility while newer Codex receipts get stricter
+        # semantic gating when they emit a structured verdict.
+        return True
+    if purpose == "review":
+        return verdict in {"approve", "approved"}
+    if purpose == "test":
+        return verdict in {"pass", "passed"}
+    return verdict in {"approve", "approved", "pass", "passed"}
+
+
 def review_followup_gate_status(
     conn: sqlite3.Connection,
     task_id: str,
@@ -2610,9 +2672,24 @@ def review_followup_gate_status(
                     verification = run.metadata.get("verification")
                     if isinstance(verification, dict):
                         item["verification"] = verification
-            if _followup_run_has_success_evidence(run):
+            verdict = _extract_followup_verdict(run)
+            if verdict:
+                item["verdict"] = verdict
+            if _followup_run_has_success_evidence(
+                run
+            ) and _followup_verdict_accepts_purpose(ref["purpose"], verdict):
                 item["state"] = "satisfied"
                 satisfied += 1
+            elif (
+                _followup_run_has_success_evidence(run)
+                and not _followup_verdict_accepts_purpose(ref["purpose"], verdict)
+            ):
+                item["state"] = "failed"
+                item["failure_reason"] = (
+                    f"{ref['purpose']} follow-up verdict {verdict!r} "
+                    "does not satisfy the gate"
+                )
+                failed += 1
             elif followup_task.status == "running":
                 item["state"] = "running"
                 running += 1

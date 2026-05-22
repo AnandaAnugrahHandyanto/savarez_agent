@@ -220,7 +220,7 @@ dashboard/API accepts `{"dispatch": true}` on
 `POST /api/plugins/kanban/tasks/<task_id>/plan-review`. This scoped dispatch
 does not pick unrelated ready cards from the board.
 
-Approval is gated once follow-ups are planned. `hermes kanban review <task_id> approve` refuses to mark the implementation task done until every planned follow-up for the current implementation run has successful worker evidence. For the built-in Codex adapter, a follow-up that exits 0 and blocks with `review.required: true` counts as successful evidence: Hermes still reviews the bounded receipt, not the full Codex session. Pending, running, missing, timed out, binary-missing, or nonzero-exit follow-ups block approval with an explicit gate error. `request-changes` remains available at any time and unblocks the implementation task for another worker run.
+Approval is gated once follow-ups are planned. `hermes kanban review <task_id> approve` refuses to mark the implementation task done until every planned follow-up for the current implementation run has successful worker evidence. For the built-in Codex adapter, a follow-up must exit 0, block with `review.required: true`, and, when it emits a structured `Verdict: ...`, satisfy the purpose-specific verdict: review follow-ups must be `approve`, and test follow-ups must be `pass`. Pending, running, missing, timed out, binary-missing, nonzero-exit, `request_changes`, `fail`, or `blocked` follow-ups block approval with an explicit gate error. Hermes still reviews the bounded receipt, not the full Codex session. `request-changes` remains available at any time and unblocks the implementation task for another worker run.
 
 Before deciding, controllers can read a single acceptance snapshot:
 
@@ -392,7 +392,7 @@ So lane authors don't have to reimplement these:
 
 - No full Codex event stream integration yet; progress is parsed from wrapper stdout/stderr.
 - No approval bridge; configure Codex lanes with controlled approval policy.
-- Follow-up gating proves that review/test workers produced successful bounded evidence; it does not yet perform automatic semantic acceptance of large diffs.
+- Follow-up gating understands simple structured verdicts (`approve` for review, `pass` for test), but it does not yet perform automatic semantic acceptance of large diffs beyond that bounded evidence.
 - External lane command shapes are adapter-defined, not model-defined.
 - Review reads Codex artifacts and bounded metadata, not the full Codex session.
 

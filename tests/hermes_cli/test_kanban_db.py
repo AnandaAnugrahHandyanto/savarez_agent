@@ -394,9 +394,20 @@ def test_review_worker_evidence_request_changes_unblocks_with_comment(
     )
 
 
-def _finish_followup_with_worker_evidence(conn, task_id: str, *, lane: str) -> None:
+def _finish_followup_with_worker_evidence(
+    conn,
+    task_id: str,
+    *,
+    lane: str,
+    verdict: str | None = None,
+) -> None:
     task = kb.claim_task(conn, task_id, claimer=f"worker:{lane}")
     assert task is not None
+    output_tail = "Progress:\n- [x] inspect bounded evidence\n"
+    verification_summary = "passed"
+    if verdict:
+        output_tail += f"\nVerdict: {verdict}\n"
+        verification_summary = f"Verdict: {verdict}\npassed"
     assert kb.block_task(
         conn,
         task_id,
@@ -409,8 +420,12 @@ def _finish_followup_with_worker_evidence(conn, task_id: str, *, lane: str) -> N
                 "exit_code": 0,
                 "timed_out": False,
                 "binary_missing": False,
+                "output_tail": output_tail,
             },
-            "verification": {"commands": ["pytest -q"], "summary": "passed"},
+            "verification": {
+                "commands": ["pytest -q"],
+                "summary": verification_summary,
+            },
             "review": {
                 "required": True,
                 "reason": "Codex completed; Hermes review required",
@@ -481,6 +496,205 @@ def test_review_worker_evidence_approve_requires_planned_followups(
     approved_events = [event for event in events if event.kind == "worker_review_approved"]
     assert approved_events
     assert approved_events[-1].payload["review_followup_gate"]["ready"] is True
+
+
+def test_review_followup_gate_requires_approving_review_verdict(
+    kanban_home, tmp_path,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="implementation with bad review verdict",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+        plan = kb.plan_review_followups(conn, tid)
+        _finish_followup_with_worker_evidence(
+            conn,
+            plan.review_task_id,
+            lane="codex-review",
+            verdict="request_changes",
+        )
+        _finish_followup_with_worker_evidence(
+            conn,
+            plan.test_task_id,
+            lane="codex-test",
+            verdict="pass",
+        )
+        gate = kb.review_followup_gate_status(
+            conn,
+            tid,
+            source_run_id=task.current_run_id,
+        )
+        acceptance = kb.task_acceptance_snapshot(conn, tid)
+        with pytest.raises(ValueError, match="1 failed"):
+            kb.review_worker_evidence(
+                conn,
+                tid,
+                decision="approve",
+                reviewer="reviewer",
+                summary="should not approve",
+            )
+
+    review_item = next(item for item in gate["items"] if item["purpose"] == "review")
+    assert gate["ready"] is False
+    assert gate["failed"] == 1
+    assert gate["satisfied"] == 1
+    assert review_item["state"] == "failed"
+    assert review_item["verdict"] == "request_changes"
+    assert "does not satisfy" in review_item["failure_reason"]
+    assert acceptance["approval_allowed"] is False
+    assert acceptance["recommended_action"] == "request_changes_or_replan_followups"
+
+
+def test_review_followup_gate_requires_passing_test_verdict(
+    kanban_home, tmp_path,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="implementation with failing test verdict",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+        plan = kb.plan_review_followups(conn, tid)
+        _finish_followup_with_worker_evidence(
+            conn,
+            plan.review_task_id,
+            lane="codex-review",
+            verdict="approve",
+        )
+        _finish_followup_with_worker_evidence(
+            conn,
+            plan.test_task_id,
+            lane="codex-test",
+            verdict="fail",
+        )
+        gate = kb.review_followup_gate_status(
+            conn,
+            tid,
+            source_run_id=task.current_run_id,
+        )
+        with pytest.raises(ValueError, match="1 failed"):
+            kb.review_worker_evidence(
+                conn,
+                tid,
+                decision="approve",
+                reviewer="reviewer",
+                summary="should not approve",
+            )
+
+    test_item = next(item for item in gate["items"] if item["purpose"] == "test")
+    assert gate["ready"] is False
+    assert gate["failed"] == 1
+    assert gate["satisfied"] == 1
+    assert test_item["state"] == "failed"
+    assert test_item["verdict"] == "fail"
+    assert "does not satisfy" in test_item["failure_reason"]
+
+
+def test_review_followup_verdict_ignores_recommended_action(
+    kanban_home, tmp_path,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="implementation with recommended action",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+        plan = kb.plan_review_followups(conn, tid)
+        _finish_followup_with_worker_evidence(
+            conn,
+            plan.review_task_id,
+            lane="codex-review",
+            verdict="approve",
+        )
+        test = kb.claim_task(conn, plan.test_task_id, claimer="worker:codex-test")
+        assert test is not None
+        assert kb.block_task(
+            conn,
+            plan.test_task_id,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=test.current_run_id,
+            metadata={
+                "worker_lane": {
+                    "name": "codex-test",
+                    "kind": "codex_cli",
+                    "exit_code": 0,
+                    "timed_out": False,
+                    "binary_missing": False,
+                    "output_tail": (
+                        "Verdict: pass\n"
+                        "Recommended reviewer action:\n"
+                        "- approve\n"
+                    ),
+                },
+                "verification": {
+                    "commands": ["pytest -q"],
+                    "summary": "Recommended reviewer action:\n- approve",
+                },
+                "review": {
+                    "required": True,
+                    "reason": "Codex completed; Hermes review required",
+                },
+            },
+        )
+        gate = kb.review_followup_gate_status(
+            conn,
+            tid,
+            source_run_id=task.current_run_id,
+        )
+
+    test_item = next(item for item in gate["items"] if item["purpose"] == "test")
+    assert gate["ready"] is True
+    assert test_item["verdict"] == "pass"
+    assert test_item["state"] == "satisfied"
 
 
 def test_task_acceptance_snapshot_summarizes_followup_evidence(
