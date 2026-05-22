@@ -608,14 +608,15 @@ class TurnController {
     toolId: string,
     fallbackName?: string,
     error?: string,
-    duration?: number
+    duration?: number,
+    resultText?: string
   ) {
     if (this.interrupted) {
       return
     }
 
     this.flushStreamingSegment()
-    this.pushInlineDiffSegment(diffText, [this.completeTool(toolId, fallbackName, error, '', duration)])
+    this.pushInlineDiffSegment(diffText, [this.completeTool(toolId, fallbackName, error, '', duration, resultText)])
     this.publishToolState()
   }
 

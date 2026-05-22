@@ -504,6 +504,25 @@ describe('createGatewayEventHandler', () => {
     expect(appended[3]?.text).not.toContain('```diff')
   })
 
+  it('keeps verbose result text on inline_diff tool completions', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+    const diff = '--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
+
+    onEvent({
+      payload: { args_text: '{ "path": "foo.ts" }', context: 'foo.ts', name: 'patch', tool_id: 'tool-1' },
+      type: 'tool.start'
+    } as any)
+    onEvent({
+      payload: { inline_diff: diff, result_text: 'patched result', tool_id: 'tool-1' },
+      type: 'tool.complete'
+    } as any)
+
+    expect(turnController.segmentMessages[0]).toMatchObject({ kind: 'diff' })
+    expect(turnController.segmentMessages[0]?.tools?.[0]).toContain('Args:\n{ "path": "foo.ts" }')
+    expect(turnController.segmentMessages[0]?.tools?.[0]).toContain('Result:\npatched result')
+  })
+
   it('keeps full final responses from duplicating flushed pre-diff narration', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))

@@ -528,6 +528,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'tool.complete': {
         const inlineDiffText =
           ev.payload.inline_diff && getUiState().inlineDiffs ? stripAnsi(String(ev.payload.inline_diff)).trim() : ''
+        const resultText = ev.payload.result_text ? stripAnsi(String(ev.payload.result_text)) : undefined
 
         if (inlineDiffText) {
           turnController.recordInlineDiffToolComplete(
@@ -535,7 +536,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             ev.payload.tool_id,
             ev.payload.name,
             ev.payload.error,
-            ev.payload.duration_s
+            ev.payload.duration_s,
+            resultText
           )
         } else {
           turnController.recordToolComplete(
@@ -545,7 +547,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             ev.payload.summary,
             ev.payload.duration_s,
             ev.payload.todos,
-            ev.payload.result_text ? stripAnsi(String(ev.payload.result_text)) : undefined
+            resultText
           )
         }
 
