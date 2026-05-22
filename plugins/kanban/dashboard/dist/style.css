@@ -67,13 +67,15 @@
   gap: 0.75rem;
   align-items: start;
   overflow-x: auto;
+  scrollbar-width: none;
   padding-bottom: 0.35rem;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--color-muted-foreground) 45%, transparent) transparent;
 }
 .hermes-kanban-columns::-webkit-scrollbar {
-   height: 0.55rem;
+  display: none;
+  height: 0.55rem;
 }
 .hermes-kanban-columns::-webkit-scrollbar-track {
   background: transparent;
