@@ -246,6 +246,12 @@ def _parse_publish_response(raw: bytes | str) -> dict:
     ``{"ok": False, "error": ..., "code": ...}`` otherwise. QZone wraps the
     JSON body in a ``_Callback(...)`` shim in some flows, so the JSON object
     is located by a permissive search rather than parsed from offset 0.
+
+    ``emotion_cgi_publish_v6`` reports success two ways depending on the
+    account / endpoint variant: the classic ``{"ret":0,"tid":...}`` shape and
+    a newer ``{"code":0,"tid":...,"feedinfo":...}`` shape (verified live —
+    NapCat/QZone returns ``code`` with no ``ret``). Either zero status, with a
+    non-error ``subcode``, counts as success.
     """
     obj = _extract_json_object(raw)
     if obj is None:
@@ -253,12 +259,17 @@ def _parse_publish_response(raw: bytes | str) -> dict:
         return {"ok": False, "error": f"unparseable QZone response: {text[:200]}"}
 
     ret = obj.get("ret")
+    code = obj.get("code")
     subcode = obj.get("subcode", 0)
-    if ret == 0 and subcode in (0, None):
+    # Newer QZone responses carry `code` instead of `ret`; fall back to it so
+    # a successful post is never mis-reported as a failure.
+    status = ret if ret is not None else code
+    if status == 0 and subcode in (0, None):
         return {"ok": True, "tid": obj.get("tid") or obj.get("t1_tid"), "raw": obj}
 
-    err = obj.get("msg") or obj.get("message") or f"ret={ret}, subcode={subcode}"
-    return {"ok": False, "code": ret, "error": err, "raw": obj}
+    err = (obj.get("msg") or obj.get("message")
+           or f"ret={ret}, code={code}, subcode={subcode}")
+    return {"ok": False, "code": status, "error": err, "raw": obj}
 
 
 def _parse_upload_response(raw: bytes | str) -> dict:

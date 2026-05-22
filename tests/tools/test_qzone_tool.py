@@ -176,6 +176,25 @@ class TestParsePublishResponse:
         result = _parse_publish_response(b"")
         assert result["ok"] is False
 
+    def test_success_with_code_field(self):
+        # Verified live: emotion_cgi_publish_v6 returns `code` (no `ret`).
+        raw = b'{"attach":"","code":0,"subcode":0,"tid":"1cbe3d3c17","feedinfo":"<li>"}'
+        result = _parse_publish_response(raw)
+        assert result["ok"] is True
+        assert result["tid"] == "1cbe3d3c17"
+
+    def test_error_code_nonzero(self):
+        result = _parse_publish_response(
+            b'{"code":-10000,"message":"\xe4\xbd\xbf\xe7\x94\xa8\xe4\xba\xba\xe6\x95\xb0\xe8\xbf\x87\xe5\xa4\x9a"}'
+        )
+        assert result["ok"] is False
+        assert result["code"] == -10000
+
+    def test_code_success_with_bad_subcode(self):
+        # A non-zero subcode is still an error even when code is 0.
+        result = _parse_publish_response(b'{"code":0,"subcode":-4001,"msg":"verify"}')
+        assert result["ok"] is False
+
 
 # ---------------------------------------------------------------------------
 # Availability gating
