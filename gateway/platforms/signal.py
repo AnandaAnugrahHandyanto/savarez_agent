@@ -192,6 +192,13 @@ class SignalAdapter(BasePlatformAdapter):
         group_allowed_str = os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "")
         self.group_allow_from = set(_parse_comma_list(group_allowed_str))
 
+        # Group invite policy — who can add the bot to new groups.
+        # "approved-only" (default): only users in dm_allow_from can invite
+        # "allow-all": anyone can invite the bot to groups
+        self.group_invite_policy = os.getenv(
+            "SIGNAL_GROUP_INVITE_POLICY", "approved-only"
+        ).strip().lower()
+
         # Mention filter — only respond in groups when the bot account is @mentioned.
         # Read from config extra first, then SIGNAL_REQUIRE_MENTION env var.
         _rm_cfg = extra.get("require_mention")
@@ -242,6 +249,13 @@ class SignalAdapter(BasePlatformAdapter):
         self._recipient_number_by_uuid: Dict[str, str] = {}
         self._recipient_cache_lock = asyncio.Lock()
 
+        # UUID-resolved versions of the allowlists.  Populated after
+        # connect() when the RPC layer is available.  Auth checks use
+        # these first (stable identifiers) and fall back to the raw
+        # phone-number sets when UUID resolution wasn't possible.
+        self.dm_allow_from_uuids: set = set()
+        self.group_allow_from_uuids: set = set()
+
         logger.info("Signal adapter initialized: url=%s account=%s groups=%s",
                      self.http_url, redact_phone(self.account),
                      "enabled" if self.group_allow_from else "disabled")
@@ -281,6 +295,13 @@ class SignalAdapter(BasePlatformAdapter):
 
             self._running = True
             self._last_sse_activity = time.time()
+
+            # Resolve phone-number allowlists to UUIDs now that RPC is live.
+            await self._resolve_allowlist_uuids()
+
+            # Set profile name from environment if configured.
+            await self._set_profile_name()
+
             self._sse_task = asyncio.create_task(self._sse_listener())
             self._health_monitor_task = asyncio.create_task(self._health_monitor())
 
@@ -489,10 +510,73 @@ class SignalAdapter(BasePlatformAdapter):
         if self.ignore_stories and envelope_data.get("storyMessage"):
             return
 
+        # ------------------------------------------------------------------
+        # Auto-accept group invitations (gated by group invite policy)
+        # Group invites arrive as envelopes with groupV2 update info but no
+        # dataMessage.  Policy is controlled by SIGNAL_GROUP_INVITE_POLICY:
+        #   "allow-all" — accept all group invitations
+        #   "approved-only" (default) — only accept from approved users
+        # ------------------------------------------------------------------
+        data_message_raw = envelope_data.get("dataMessage")
+        if not data_message_raw:
+            group_v2_invite = envelope_data.get("groupV2") or {}
+            group_v2_invite_id = group_v2_invite.get("groupId")
+            # Also check for a top-level groupV2Update field (older signal-cli)
+            if not group_v2_invite_id:
+                group_v2_update = envelope_data.get("groupV2Update") or {}
+                group_v2_invite_id = group_v2_update.get("groupId")
+            if group_v2_invite_id:
+                # Check group invite policy
+                if self.group_invite_policy == "allow-all":
+                    inviter_approved = True
+                else:
+                    # Check if the inviter is an approved user.
+                    # Prefer UUID match (stable) with phone-number fallback.
+                    inviter_approved = (
+                        not self.dm_allow_from  # no allowlist = open mode
+                        or "*" in self.dm_allow_from  # wildcard = accept all
+                        or (sender_uuid and sender_uuid in self.dm_allow_from_uuids)
+                        or sender in self.dm_allow_from
+                        or sender_uuid in self.dm_allow_from
+                    )
+                if not inviter_approved:
+                    logger.warning(
+                        "Signal: rejecting group invite from unapproved user %s for group %s",
+                        sender_uuid[:12] if sender_uuid else sender,
+                        group_v2_invite_id[:12] if group_v2_invite_id else "?",
+                    )
+                    return
+                try:
+                    logger.info(
+                        "Signal: auto-accepting group invitation from %s for group %s",
+                        sender_uuid[:12] if sender_uuid else sender,
+                        group_v2_invite_id[:12] if group_v2_invite_id else "?",
+                    )
+                    await self._rpc(
+                        "joinGroup",
+                        {"account": self.account, "groupId": group_v2_invite_id},
+                    )
+                except Exception:
+                    logger.warning(
+                        "Signal: joinGroup failed for %s, trying updateGroup",
+                        group_v2_invite_id[:12] if group_v2_invite_id else "?",
+                    )
+                    try:
+                        await self._rpc(
+                            "updateGroup",
+                            {"account": self.account, "groupId": group_v2_invite_id},
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Signal: failed to accept group invitation for %s",
+                            group_v2_invite_id[:12] if group_v2_invite_id else "?",
+                        )
+                return  # nothing else to process — no dataMessage
+
         # Get data message — also check editMessage (edited messages contain
         # their updated dataMessage inside editMessage.dataMessage)
         data_message = (
-            envelope_data.get("dataMessage")
+            data_message_raw
             or (envelope_data.get("editMessage") or {}).get("dataMessage")
         )
         if not data_message:
@@ -644,11 +728,25 @@ class SignalAdapter(BasePlatformAdapter):
         await self.handle_message(event)
 
     def _remember_recipient_identifiers(self, number: Optional[str], service_id: Optional[str]) -> None:
-        """Cache any number↔UUID mapping observed from Signal envelopes."""
+        """Cache any number↔UUID mapping observed from Signal envelopes.
+
+        Also performs lazy allowlist resolution: if the phone number is in an
+        allowlist but its UUID wasn't resolved at startup, add it now.
+        """
         if not number or not service_id or not _is_signal_service_id(service_id):
             return
         self._recipient_uuid_by_number[number] = service_id
         self._recipient_number_by_uuid[service_id] = number
+
+        # Lazy allowlist resolution — pick up UUIDs we missed at startup
+        if number in self.dm_allow_from and service_id not in self.dm_allow_from_uuids:
+            self.dm_allow_from_uuids.add(service_id)
+            logger.debug("Signal: lazily resolved DM allowlist entry %s → %s",
+                         redact_phone(number), service_id[:12])
+        if number in self.group_allow_from and service_id not in self.group_allow_from_uuids:
+            self.group_allow_from_uuids.add(service_id)
+            logger.debug("Signal: lazily resolved group allowlist entry %s → %s",
+                         redact_phone(number), service_id[:12])
 
     def _extract_contact_uuid(self, contact: Any, phone_number: str) -> Optional[str]:
         """Best-effort extraction of a Signal service ID from listContacts output."""
@@ -700,6 +798,130 @@ class SignalAdapter(BasePlatformAdapter):
                         self._remember_recipient_identifiers(number, service_id)
 
             return self._recipient_uuid_by_number.get(chat_id, chat_id)
+
+    # ------------------------------------------------------------------
+    # Allowlist UUID Resolution
+    # ------------------------------------------------------------------
+
+    async def _resolve_allowlist_uuids(self) -> None:
+        """Resolve phone numbers in dm/group allowlists to Signal UUIDs.
+
+        Called once after connect() succeeds.  Numbers that can't be resolved
+        (unknown contacts) are silently skipped — they'll be resolved lazily
+        when a message arrives via _remember_recipient_identifiers().
+        """
+        # Collect all phone numbers that need resolution (skip wildcards / UUIDs)
+        numbers_to_resolve: set = set()
+        for entry in self.dm_allow_from | self.group_allow_from:
+            if entry == "*":
+                continue
+            if _is_signal_service_id(entry):
+                # Already a UUID — add directly to resolved sets
+                if entry in self.dm_allow_from:
+                    self.dm_allow_from_uuids.add(entry)
+                if entry in self.group_allow_from:
+                    self.group_allow_from_uuids.add(entry)
+                continue
+            if _looks_like_e164_number(entry):
+                numbers_to_resolve.add(entry)
+
+        if not numbers_to_resolve:
+            return
+
+        try:
+            contacts = await self._rpc("listContacts", {
+                "account": self.account,
+                "allRecipients": True,
+            })
+        except Exception:
+            logger.warning("Signal: could not resolve allowlist UUIDs — listContacts failed")
+            return
+
+        if not isinstance(contacts, list):
+            return
+
+        # Build UUID cache from all contacts
+        for contact in contacts:
+            if not isinstance(contact, dict):
+                continue
+            number = contact.get("number")
+            if not number:
+                continue
+            for phone in numbers_to_resolve:
+                service_id = self._extract_contact_uuid(contact, phone)
+                if service_id:
+                    self._remember_recipient_identifiers(number, service_id)
+                    if phone in self.dm_allow_from:
+                        self.dm_allow_from_uuids.add(service_id)
+                    if phone in self.group_allow_from:
+                        self.group_allow_from_uuids.add(service_id)
+
+        resolved = len(self.dm_allow_from_uuids) + len(self.group_allow_from_uuids)
+        if resolved:
+            logger.info(
+                "Signal: resolved %d allowlist entries to UUIDs (dm=%d, group=%d)",
+                resolved, len(self.dm_allow_from_uuids), len(self.group_allow_from_uuids),
+            )
+        unresolved = numbers_to_resolve - set(self._recipient_uuid_by_number.keys())
+
+        # Fallback: try getUserStatus for numbers not found in listContacts.
+        # This resolves phone numbers of users who haven't messaged us yet.
+        for phone in list(unresolved):
+            try:
+                statuses = await self._rpc("getUserStatus", {
+                    "account": self.account,
+                    "recipients": [phone],
+                })
+                if isinstance(statuses, list):
+                    for status in statuses:
+                        if not isinstance(status, dict):
+                            continue
+                        sid = status.get("uuid") or status.get("serviceId")
+                        if sid and _is_signal_service_id(sid):
+                            self._remember_recipient_identifiers(phone, sid)
+                            if phone in self.dm_allow_from:
+                                self.dm_allow_from_uuids.add(sid)
+                            if phone in self.group_allow_from:
+                                self.group_allow_from_uuids.add(sid)
+                            unresolved.discard(phone)
+                            logger.info("Signal: resolved %s via getUserStatus → %s",
+                                        redact_phone(phone), sid[:12])
+            except Exception:
+                pass  # getUserStatus not available or failed — skip
+
+        if unresolved:
+            logger.warning(
+                "Signal: %d allowlist phone(s) could not be resolved to UUID — "
+                "will try lazily on first message: %s",
+                len(unresolved),
+                ", ".join(redact_phone(n) for n in unresolved),
+            )
+
+    # ------------------------------------------------------------------
+    # Profile Name Setting
+    # ------------------------------------------------------------------
+
+    async def _set_profile_name(self) -> None:
+        """Set the Signal profile name from SIGNAL_PROFILE_NAME env var.
+
+        Called once during connect() after the RPC layer is live.  If the
+        env var is unset or empty, this is a silent no-op.  Failures are
+        logged as warnings but never prevent startup.
+        """
+        profile_name = os.getenv("SIGNAL_PROFILE_NAME")
+        if not profile_name:
+            return
+        try:
+            result = await self._rpc("updateProfile", {
+                "account": self.account,
+                "givenName": profile_name,
+            })
+            if result is not None:
+                logger.info('Signal: set profile name to "%s"', profile_name)
+            else:
+                logger.warning("Signal: updateProfile returned no result — profile name may not have been set")
+        except Exception as e:
+            logger.warning("Signal: failed to set profile name: %s", e)
 
     # ------------------------------------------------------------------
     # Attachment Handling
