@@ -621,24 +621,34 @@ class HonchoSessionManager:
         with self._prefetch_cache_lock:
             return self._context_cache.pop(session_key, {})
 
-    def get_prefetch_context(self, session_key: str, user_message: str | None = None) -> dict[str, str]:
+    def get_prefetch_context(
+        self,
+        session_key: str,
+        user_message: str | None = None,
+        *,
+        scope: str = "session",
+    ) -> dict[str, str]:
         """
-        Pre-fetch user and AI peer context from Honcho.
+        Pre-fetch Honcho context for prompt injection.
 
-        Fetches peer_representation and peer_card for both peers, plus the
-        session summary when available. When user_message is provided, it is
-        passed as search_query to the peer context call so Honcho returns
-        conclusions relevant to the session topic rather than the full
-        observation dump.
+        ``scope="session"`` is the safe automatic-injection path: return only
+        context tied to the current Honcho session, such as its summary. Broad
+        peer-level representation/card data can aggregate observations across
+        Telegram DMs, groups, and topics for the same user peer, so it must not
+        be injected automatically.
+
+        ``scope="global"`` preserves the old broad peer context behavior for
+        explicit tool/search flows where cross-session memory is intentional.
 
         Args:
             session_key: The session key to get context for.
             user_message: Optional first user message used as search_query for
-                          topic-relevant context retrieval.
+                          global peer-context retrieval.
+            scope: ``session`` for auto-inject, ``global`` for explicit search.
 
         Returns:
-            Dictionary with 'representation', 'card', 'ai_representation',
-            'ai_card', and optionally 'summary' keys.
+            Dictionary with optionally 'summary', and in global scope also
+            'representation', 'card', 'ai_representation', and 'ai_card' keys.
         """
         session = self._cache.get(session_key)
         if not session:
@@ -659,20 +669,28 @@ class HonchoSessionManager:
         except Exception as e:
             logger.debug("Failed to fetch session summary from Honcho: %s", e)
 
-        try:
-            user_ctx = self._fetch_peer_context(session.user_peer_id, search_query=user_message or None, target=session.user_peer_id)
-            result["representation"] = user_ctx["representation"]
-            result["card"] = "\n".join(user_ctx["card"])
-        except Exception as e:
-            logger.warning("Failed to fetch user context from Honcho: %s", e)
+        if scope == "global":
+            try:
+                user_ctx = self._fetch_peer_context(
+                    session.user_peer_id,
+                    search_query=user_message or None,
+                    target=session.user_peer_id,
+                )
+                result["representation"] = user_ctx["representation"]
+                result["card"] = "\n".join(user_ctx["card"])
+            except Exception as e:
+                logger.warning("Failed to fetch user context from Honcho: %s", e)
 
-        # Also fetch AI peer's own representation so Hermes knows itself.
-        try:
-            ai_ctx = self._fetch_peer_context(session.assistant_peer_id, target=session.assistant_peer_id)
-            result["ai_representation"] = ai_ctx["representation"]
-            result["ai_card"] = "\n".join(ai_ctx["card"])
-        except Exception as e:
-            logger.debug("Failed to fetch AI peer context from Honcho: %s", e)
+            # Also fetch AI peer's own representation so Hermes knows itself.
+            try:
+                ai_ctx = self._fetch_peer_context(
+                    session.assistant_peer_id,
+                    target=session.assistant_peer_id,
+                )
+                result["ai_representation"] = ai_ctx["representation"]
+                result["ai_card"] = "\n".join(ai_ctx["card"])
+            except Exception as e:
+                logger.debug("Failed to fetch AI peer context from Honcho: %s", e)
 
         return result
 
@@ -1125,19 +1143,26 @@ class HonchoSessionManager:
         query: str,
         max_tokens: int = 800,
         peer: str = "user",
+        *,
+        scope: str = "session",
     ) -> str:
         """
-        Semantic search over Honcho session context.
+        Semantic search over Honcho memory.
 
-        Returns raw excerpts ranked by relevance to the query. No LLM
-        reasoning — cheaper and faster than dialectic_query. Good for
-        factual lookups where the model will do its own synthesis.
+        ``scope="session"`` is safe for automatic prompt injection and does
+        not use broad/global Honcho search. Until the Honcho SDK path has a
+        proven session filter, it returns empty rather than leaking memory from
+        other Telegram DMs, groups, or topics.
+
+        ``scope="global"`` preserves explicit cross-session search behavior.
+        Use it only from tools or other user-requested memory lookups.
 
         Args:
             session_key: Session to search against.
             query: Search query for semantic matching.
             max_tokens: Token budget for returned content.
             peer: Peer alias or explicit peer ID to search about.
+            scope: ``session`` for auto-inject, ``global`` for explicit search.
 
         Returns:
             Relevant context excerpts as a string, or empty string if none.
@@ -1147,6 +1172,9 @@ class HonchoSessionManager:
             return ""
 
         try:
+            if scope != "global":
+                return ""
+
             raw_result = self._raw_search_context(query, max_tokens=max_tokens)
             if raw_result:
                 return raw_result
