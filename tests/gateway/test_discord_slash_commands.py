@@ -97,7 +97,16 @@ class FakeTree:
 
 
 @pytest.fixture
-def adapter():
+def adapter(monkeypatch):
+    for _var in (
+        "DISCORD_ALLOWED_CHANNELS",
+        "DISCORD_IGNORED_CHANNELS",
+        "DISCORD_FREE_RESPONSE_CHANNELS",
+        "DISCORD_NO_THREAD_CHANNELS",
+        "DISCORD_AUTO_THREAD_CHANNELS",
+    ):
+        monkeypatch.delenv(_var, raising=False)
+
     config = PlatformConfig(enabled=True, token="***")
     adapter = DiscordAdapter(config)
     adapter._client = SimpleNamespace(
@@ -765,18 +774,21 @@ def test_discord_auto_thread_config_bridge(monkeypatch, tmp_path):
     hermes_dir.mkdir()
     config_path = hermes_dir / "config.yaml"
     config_path.write_text(yaml.dump({
-        "discord": {"auto_thread": True},
+        "discord": {"auto_thread": True, "auto_thread_channels": ["*"]},
     }))
 
     monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_AUTO_THREAD_CHANNELS", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(hermes_dir))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-    from gateway.config import load_gateway_config
-    load_gateway_config()
+    from gateway.config import Platform, load_gateway_config
+    cfg = load_gateway_config()
 
     import os
     assert os.getenv("DISCORD_AUTO_THREAD") == "true"
+    assert os.getenv("DISCORD_AUTO_THREAD_CHANNELS") == "*"
+    assert cfg.platforms[Platform.DISCORD].extra.get("auto_thread_channels") == ["*"]
 
 
 # ------------------------------------------------------------------
