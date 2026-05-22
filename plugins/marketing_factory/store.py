@@ -380,6 +380,46 @@ class MarketingFactoryStore:
         self.audit(f"draft.{status}", draft["app_slug"], {"draft_id": draft_id, "reviewer": reviewer, "reason": reason})
         return approval
 
+    def update_draft_body(
+        self,
+        draft_id: str,
+        body: str,
+        *,
+        editor: str = "human",
+        safety: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Update a draft's body in place — used for the inline-edit-before-approve flow.
+
+        Records edited_at / edited_by, length deltas, optionally a re-run safety dict
+        if the caller provided one (PublisherAgent / dashboard typically pass the
+        recomputed safety result). Refuses empty bodies. Refuses to edit drafts that
+        have already been published.
+        """
+        if not body or not body.strip():
+            raise ValueError("body cannot be empty")
+        state = self.load()
+        draft = state["drafts"].get(draft_id)
+        if not draft:
+            raise KeyError(f"Unknown draft id: {draft_id}")
+        if draft["status"] in {"posted", "dry_run_posted"}:
+            raise ValueError("Cannot edit a draft that has already been published")
+        previous_body = draft.get("body") or ""
+        new_body = body.strip()
+        draft["body"] = new_body
+        draft["edited_at"] = utc_now()
+        draft["edited_by"] = editor
+        draft["updated_at"] = utc_now()
+        if safety is not None:
+            draft["safety"] = safety
+        self._write_state(state)
+        self.audit("draft.edited", draft["app_slug"], {
+            "draft_id": draft_id,
+            "editor": editor,
+            "from_length": len(previous_body),
+            "to_length": len(new_body),
+        })
+        return draft
+
     def schedule_draft(self, draft_id: str, scheduled_for: str) -> Dict[str, Any]:
         state = self.load()
         draft = state["drafts"].get(draft_id)

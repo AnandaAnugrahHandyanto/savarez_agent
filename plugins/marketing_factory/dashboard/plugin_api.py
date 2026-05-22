@@ -37,6 +37,11 @@ class ChannelModeBody(BaseModel):
     reviewer: str = "dashboard"
 
 
+class DraftEditBody(BaseModel):
+    body: str
+    editor: str = "dashboard"
+
+
 class AppCreateBody(BaseModel):
     slug: str
     name: str
@@ -276,6 +281,18 @@ async def delete_app(app_slug: str, cascade: bool = True):
     store = _store()
     try:
         result = store.remove_app(app_slug, cascade=cascade)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"result": result, "overview": _overview(store)}
+
+
+@router.patch("/drafts/{draft_id}")
+async def edit_draft(draft_id: str, body: DraftEditBody):
+    store = _store()
+    try:
+        result = _pipe(store).edit_draft(draft_id, body.body, editor=body.editor)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

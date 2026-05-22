@@ -191,6 +191,40 @@
     );
   }
 
+  function EditableBody({ draft, busy, run }) {
+    const [editing, setEditing] = useState(false);
+    const [value, setValue] = useState(draft.body || "");
+    useEffect(() => { setValue(draft.body || ""); }, [draft.body, draft.id]);
+    const canEdit = draft.status !== "posted" && draft.status !== "dry_run_posted";
+    if (!editing) {
+      return h("div", { className: "mt-3 flex items-start gap-2" },
+        h("p", { className: "flex-1 whitespace-pre-wrap text-sm leading-6" }, draft.body),
+        canEdit ? h("button", {
+          type: "button",
+          onClick: () => { setValue(draft.body || ""); setEditing(true); },
+          className: "text-[10px] text-midground/60 hover:text-cyan-200 underline shrink-0",
+        }, "edit") : null
+      );
+    }
+    return h("div", { className: "mt-3 flex flex-col gap-2" },
+      h("textarea", {
+        value,
+        onChange: (e) => setValue(e.target.value),
+        rows: Math.max(3, Math.min(12, (value.match(/\n/g) || []).length + 3)),
+        className: "w-full rounded-lg border border-cyan-300/40 bg-background/60 p-2 text-sm leading-6 font-mono",
+      }),
+      h("div", { className: "flex items-center gap-2" },
+        smallButton("Save edit", () => {
+          if (!value.trim()) return;
+          setEditing(false);
+          return run(`edit ${draft.id}`, () => fetchJSON(`${API}/drafts/${encodeURIComponent(draft.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ body: value, editor: "dashboard" }) }));
+        }, !!busy, "primary"),
+        smallButton("Cancel", () => { setValue(draft.body || ""); setEditing(false); }, !!busy),
+        h("span", { className: "text-[10px] text-midground/60" }, `${value.length} chars`)
+      )
+    );
+  }
+
   function MarketingFactoryPage() {
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(true);
@@ -379,7 +413,7 @@
               ),
               draft.llm_error ? h("div", { className: "mt-2 text-[11px] text-amber-200/90" }, `LLM fallback reason: ${draft.llm_error}`) : null,
               draft.safety && !draft.safety.passed && safetyDetail(draft.safety) ? h("div", { className: "mt-2 text-[11px] text-red-200/90" }, `Safety issues: ${safetyDetail(draft.safety)}`) : null,
-              h("p", { className: "mt-3 whitespace-pre-wrap text-sm leading-6" }, draft.body),
+              h(EditableBody, { draft, busy, run }),
               (Array.isArray(draft.images) && draft.images.length) ? h("div", { className: "mt-3 flex flex-wrap gap-2" },
                 draft.images.filter((img) => img && img.url).map((img, idx) => h("div", {
                   key: idx,

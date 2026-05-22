@@ -75,6 +75,11 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     regen = subs.add_parser("regenerate", help="Re-roll a single draft with the latest steering applied (keeps the old draft)")
     regen.add_argument("draft_id")
 
+    edit = subs.add_parser("edit", help="Edit a draft's body in place; safety check re-runs automatically")
+    edit.add_argument("draft_id")
+    edit.add_argument("--body", required=True)
+    edit.add_argument("--editor", default="human")
+
     variants = subs.add_parser("variants", help="Generate N alternative drafts for the same plan item — pick the best of N")
     variants.add_argument("draft_id")
     variants.add_argument("--count", type=int, default=3)
@@ -135,7 +140,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
 def marketing_command(args: argparse.Namespace) -> int:
     sub = getattr(args, "marketing_command", None)
     if not sub:
-        print("usage: hermes marketing-factory {init,status,apps,add-app,update-app,remove-app,campaigns,drafts,approvals,approve,reject,regenerate,variants,schedule,publish-dry-run,poll,enable-poller,disable-poller,advise,digest,audit,export,generate,full-dry-run}")
+        print("usage: hermes marketing-factory {init,status,apps,add-app,update-app,remove-app,campaigns,drafts,approvals,approve,reject,regenerate,variants,edit,schedule,publish-dry-run,poll,enable-poller,disable-poller,advise,digest,audit,export,generate,full-dry-run}")
         return 2
     store = MarketingFactoryStore(getattr(args, "store_path", None))
     pipe = MarketingFactoryPipeline(store)
@@ -208,6 +213,16 @@ def marketing_command(args: argparse.Namespace) -> int:
             return 0
         if sub == "digest":
             print(pipe.weekly_digest(args.app, days=args.days))
+            return 0
+        if sub == "edit":
+            result = pipe.edit_draft(args.draft_id, args.body, editor=args.editor)
+            _print_json({
+                "draft_id": result["id"],
+                "edited_by": result.get("edited_by"),
+                "edited_at": result.get("edited_at"),
+                "new_length": len(result.get("body") or ""),
+                "safety_passed": (result.get("safety") or {}).get("passed"),
+            })
             return 0
         if sub == "variants":
             result = pipe.generate_variants(args.draft_id, count=args.count)

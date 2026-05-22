@@ -525,6 +525,83 @@ def test_weekly_digest_via_api_endpoint(isolate_home):
     assert response_404.status_code == 404
 
 
+def test_edit_draft_updates_body_and_reruns_safety(isolate_home):
+    """Phase 12: editing a draft updates body, sets edited_by/at, re-runs safety, audits."""
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    gen = pipe.generate_campaign("pupular", days=1)
+    draft = gen["drafts"][0]
+    original_body = draft["body"]
+    new_body = "Edited body for pupular — meet adoptable pets near you and download Pupular today. https://apps.apple.com/us/app/pupular"
+
+    edited = pipe.edit_draft(draft["id"], new_body, editor="tester")
+    assert edited["body"] == new_body
+    assert edited["edited_by"] == "tester"
+    assert edited["edited_at"]
+    assert (edited.get("safety") or {}).get("passed") is True
+
+    audit_actions = [event["action"] for event in store.list_audit(app_slug="pupular", limit=200)]
+    assert "draft.edited" in audit_actions
+
+    # Re-reading from store reflects the edit
+    persisted = store.get_draft(draft["id"])
+    assert persisted["body"] == new_body
+    assert persisted["body"] != original_body
+
+
+def test_edit_draft_rejects_empty_body(isolate_home):
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    gen = pipe.generate_campaign("pupular", days=1)
+    with pytest.raises(ValueError):
+        pipe.edit_draft(gen["drafts"][0]["id"], "   ", editor="tester")
+
+
+def test_edit_draft_refuses_when_already_published(isolate_home):
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    gen = pipe.generate_campaign("pupular", days=1)
+    draft = gen["drafts"][0]
+    store.set_approval(draft["id"], "approved", reviewer="tester")
+    pipe.scheduler.schedule_approved(store, app_slug="pupular")
+    pipe.publisher.dry_run_publish_scheduled(store, app_slug="pupular")
+    # Draft is now in dry_run_posted — editing should be refused
+    with pytest.raises(ValueError):
+        pipe.edit_draft(draft["id"], "new body", editor="tester")
+
+
+def test_edit_draft_via_api_endpoint(isolate_home):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from plugins.marketing_factory.dashboard.plugin_api import router
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/plugins/marketing_factory")
+    client = TestClient(app)
+    client.post("/api/plugins/marketing_factory/init")
+    gen = client.post("/api/plugins/marketing_factory/campaigns/generate", json={"app_slug": "pupular", "days": 1}).json()
+    draft_id = gen["result"]["drafts"][0]["id"]
+
+    response = client.patch(f"/api/plugins/marketing_factory/drafts/{draft_id}", json={"body": "Tweaked body for pupular adoption.", "editor": "dashboard"})
+    assert response.status_code == 200
+    assert response.json()["result"]["body"] == "Tweaked body for pupular adoption."
+
+    bad_response = client.patch(f"/api/plugins/marketing_factory/drafts/{draft_id}", json={"body": "", "editor": "dashboard"})
+    assert bad_response.status_code == 400
+
+
 def test_generate_variants_produces_n_distinct_drafts(isolate_home):
     """Phase 11: generate_variants(draft_id, count=3) returns 3 distinct drafts all linked to the source."""
     from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
