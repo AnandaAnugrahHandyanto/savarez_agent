@@ -139,6 +139,7 @@ describe('createGatewayEventHandler', () => {
     const verdict = '✓ Goal achieved: long judge reason goes only in transcript, not merged with cwd label.'
 
     vi.useFakeTimers()
+
     try {
       onEvent({
         payload: { kind: 'goal', text: verdict },

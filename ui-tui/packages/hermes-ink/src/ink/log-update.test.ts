@@ -167,10 +167,12 @@ describe('LogUpdate.render diff contract', () => {
     paint(next, 1, 'row one')
 
     const prevFrame = mkFrame(prev, w, h)
+
     const nextFrame: Frame = {
       ...mkFrame(next, w, h),
       scrollHint: { top: 1, bottom: 4, delta: 1 }
     }
+
     const log = new LogUpdate({ isTTY: true, stylePool })
     const diff = log.render(prevFrame, nextFrame, true, true)
 
@@ -187,10 +189,12 @@ describe('LogUpdate.render diff contract', () => {
     paint(next, 1, 'row one')
 
     const prevFrame = mkFrame(prev, w, h)
+
     const nextFrame: Frame = {
       ...mkFrame(next, w, h),
       scrollHint: { top: 1, bottom: 5, delta: 1 }
     }
+
     const log = new LogUpdate({ isTTY: true, stylePool })
     const diff = log.render(prevFrame, nextFrame, true, true)
 
