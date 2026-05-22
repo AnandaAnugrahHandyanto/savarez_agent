@@ -1866,7 +1866,11 @@ def convert_messages_to_anthropic(
 
 
 def _strip_first_cache_control(value: Any) -> bool:
-    """Remove the first cache_control marker found in a nested request object."""
+    """Remove the first cache_control marker found in a nested request object.
+
+    Mutates ``value`` in place. Returns True if a marker was removed,
+    False if none was found.
+    """
     if isinstance(value, dict):
         if isinstance(value.get("cache_control"), dict):
             value.pop("cache_control", None)

@@ -195,4 +195,24 @@ class TestAnthropicAdapterCacheBudget:
             reasoning_config=None,
         )
 
+        # Request-wide budget is respected.
         assert _count_cache_control(kwargs) <= 4
+
+        # Tools are stripped first: tool-schema caching is not part of the
+        # budgeted placement strategy, so the tool's marker must be gone.
+        assert all(
+            "cache_control" not in tool for tool in kwargs.get("tools", [])
+        )
+
+        # Stripping prefers older messages over newer ones: the most recent
+        # message's marker must survive so prefix-cache hits on the live tail
+        # of the conversation are preserved.
+        last_message = kwargs["messages"][-1]
+        last_block = last_message["content"][-1]
+        assert last_block.get("cache_control") == marker
+
+        # The system prompt is the last thing touched, so it should still
+        # carry its marker when tools + older messages absorbed the overflow.
+        system = kwargs.get("system")
+        if isinstance(system, list) and system:
+            assert system[0].get("cache_control") == marker
