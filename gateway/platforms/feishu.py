@@ -155,7 +155,7 @@ _MARKDOWN_HINT_RE = re.compile(
 )
 # Detect markdown tables: a line starting with | followed by a separator line.
 # Feishu post-type 'md' elements do not render tables, so table content uses cards.
-_MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
+_MARKDOWN_TABLE_RE = re.compile(r"^\s{0,3}\|.*\|\n\s{0,3}\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^(`{3,}|~{3,})([^\n`~]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")

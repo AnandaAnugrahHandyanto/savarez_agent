@@ -2633,6 +2633,44 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(payload["body"]["elements"][0]["content"], content)
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_uses_interactive_card_for_indented_markdown_table(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_indented_markdown_table"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = "表格：\n  | Regex | Meaning |\n  | --- | --- |\n  | `a|b` | alternation |"
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=content))
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
+        payload = json.loads(captured["request"].request_body.content)
+        element = payload["body"]["elements"][0]
+        self.assertEqual(element["tag"], "markdown")
+        self.assertEqual(element["content"], content)
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_falls_back_to_text_when_interactive_card_table_is_rejected(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
