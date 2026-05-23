@@ -935,6 +935,7 @@ class TestToolRegistration:
             "attachments_fetch", "events_poll", "events_wait",
             "messages_send", "channels_list",
             "memory_bridge_status", "memory_evolution_status",
+            "memory_orchestration_routing_metrics",
             "memory_recall_quality_evaluate",
             "memory_fabric_search", "memory_graph_read",
             "memory_write_proposal", "memory_snapshot_export",
@@ -976,6 +977,20 @@ class TestToolRegistration:
         assert result["policy"]["evaluation_is_read_only"] is True
         assert result["read_only_memory"] is True
         assert result["would_modify_config"] is False
+
+    def test_memory_orchestration_routing_metrics_is_registered_and_read_only(self, fake_mcp_server, _event_loop):
+        server, _ = fake_mcp_server
+        result = _run_tool(server, "memory_orchestration_routing_metrics")
+
+        assert result["success"] is True
+        assert result["metrics_type"] == "hermes_memory_orchestration_routing_metrics"
+        assert "routing_readiness_score" in result
+        assert "active_routing_metrics" in result
+        assert result["policy"]["metrics_are_read_only"] is True
+        assert result["policy"]["does_not_modify_openclaw_config"] is True
+        assert result["policy"]["does_not_write_memory"] is True
+        assert result["would_modify_config"] is False
+        assert result["would_write_graph"] is False
 
     def test_memory_boundary_allowlist_audit_is_registered_and_read_only(self, fake_mcp_server, _event_loop):
         server, _ = fake_mcp_server

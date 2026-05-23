@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import sqlite3
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -255,9 +256,10 @@ def memory_evolution_status() -> dict[str, Any]:
     bridge = memory_bridge_status()
     federation = memory_federation_status()
     boundary_audit = memory_boundary_allowlist_audit(log_limit=200)
+    routing_metrics = memory_orchestration_routing_metrics()
     outcome = memory_policy_outcome_monitor(limit=50, stale_after_hours=72)
     recall_quality = memory_recall_quality_evaluate(limit=5)
-    evidence = _memory_evolution_evidence(bridge, federation, outcome, recall_quality)
+    evidence = _memory_evolution_evidence(bridge, federation, outcome, recall_quality, routing_metrics)
     evidence["boundary_allowlists_reviewed"] = bool(boundary_audit.get("ready"))
     evidence["boundary_readiness_score"] = boundary_audit.get("boundary_readiness_score", 0)
     readiness = [_tier_readiness(tier, evidence) for tier in MEMORY_EVOLUTION_TIERS]
@@ -284,6 +286,7 @@ def memory_evolution_status() -> dict[str, Any]:
         "next": next_item,
         "readiness": readiness,
         "evidence": evidence,
+        "orchestration_routing_metrics": routing_metrics,
         "recall_quality": {
             "quality_score": recall_quality.get("quality_score"),
             "readiness": recall_quality.get("readiness"),
@@ -316,6 +319,7 @@ def memory_federation_status() -> dict[str, Any]:
     tools = [
         "memory_bridge_status",
         "memory_evolution_status",
+        "memory_orchestration_routing_metrics",
         "memory_recall_quality_evaluate",
         "memory_fabric_search",
         "memory_graph_read",
@@ -584,6 +588,109 @@ def memory_boundary_allowlist_audit(*, log_limit: int = 200) -> dict[str, Any]:
             "does_not_approve_allowlists": True,
             "does_not_enable_external_recall": True,
             "persistent_changes_must_use_proposals": True,
+        },
+        "read_only": True,
+        "read_only_memory": True,
+        "would_mutate_memory": False,
+        "would_modify_config": False,
+        "would_write_graph": False,
+    }
+
+
+def memory_orchestration_routing_metrics() -> dict[str, Any]:
+    """Inspect read-only memory orchestration routing evidence."""
+
+    config_path = Path.home() / ".openclaw" / "openclaw.json"
+    config = _loads_json(_safe_read_text(config_path), {})
+    config = config if isinstance(config, dict) else {}
+    plugin_config = _openclaw_hermes_plugin_config(config)
+    profiles = plugin_config.get("autoPrecheckAgentProfiles", {}) if isinstance(plugin_config, dict) else {}
+    auto_precheck_agent_ids = _list_of_str(plugin_config.get("autoPrecheckAgentIds", [])) if isinstance(plugin_config, dict) else []
+    profile_ids = sorted(profiles.keys()) if isinstance(profiles, dict) else _list_of_str(profiles if isinstance(profiles, list) else [])
+    agent_ids = _openclaw_agent_ids(config)
+    route_bindings = _openclaw_route_bindings(config)
+    routed_agent_ids = sorted({
+        binding["agent_id"]
+        for binding in route_bindings
+        if binding.get("agent_id")
+    })
+    channel_counts = dict(sorted(Counter(
+        binding["channel"]
+        for binding in route_bindings
+        if binding.get("channel")
+    ).items()))
+
+    ledger = memory_operation_ledger(limit=500)
+    events = ledger.get("events", []) if isinstance(ledger.get("events"), list) else []
+    client_counts: Counter[str] = Counter()
+    decision_counts: Counter[str] = Counter()
+    operation_routing_event_count = 0
+    gate_decision_count = 0
+    auto_precheck_operation_count = 0
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        client = _clean_text(event.get("client")).lower()
+        decision = _clean_text(event.get("decision")).lower()
+        operation = _clean_text(event.get("operation")).lower()
+        event_type = _clean_text(event.get("event_type")).lower()
+        action = _clean_text(event.get("action")).lower()
+        combined = " ".join([operation, event_type, action])
+        if client:
+            client_counts[client] += 1
+        if decision:
+            decision_counts[decision] += 1
+        if event_type == "gate_decision":
+            gate_decision_count += 1
+        if "route" in combined or "routing" in combined or "orchestration" in combined or event.get("route_id") or event.get("routed_agent_id"):
+            operation_routing_event_count += 1
+        if operation == "auto_precheck":
+            auto_precheck_operation_count += 1
+
+    evidence_checks = {
+        "has_three_or_more_agents": len(agent_ids) >= 3,
+        "has_route_binding": len(route_bindings) >= 1,
+        "has_auto_precheck_profile": len(profile_ids) >= 1,
+        "has_operation_activity": (
+            operation_routing_event_count + gate_decision_count + auto_precheck_operation_count
+        ) >= 1,
+    }
+    routing_readiness_score = round(sum(1 for value in evidence_checks.values() if value) / len(evidence_checks), 3)
+    gaps = _orchestration_routing_gaps(evidence_checks)
+    ready = not gaps
+    return {
+        "success": True,
+        "metrics_type": "hermes_memory_orchestration_routing_metrics",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "openclaw_config_path": str(config_path),
+        "openclaw_config_exists": config_path.exists(),
+        "agent_count": len(agent_ids),
+        "agent_ids": agent_ids,
+        "route_binding_count": len(route_bindings),
+        "routed_agent_count": len(routed_agent_ids),
+        "routed_agent_ids": routed_agent_ids,
+        "route_channel_counts": channel_counts,
+        "channel_counts": channel_counts,
+        "auto_precheck_profile_count": len(profile_ids),
+        "auto_precheck_agent_ids": auto_precheck_agent_ids,
+        "operation_routing_event_count": operation_routing_event_count,
+        "gate_decision_count": gate_decision_count,
+        "auto_precheck_operation_count": auto_precheck_operation_count,
+        "client_counts": dict(sorted(client_counts.items())),
+        "decision_counts": dict(sorted(decision_counts.items())),
+        "routing_readiness_score": routing_readiness_score,
+        "active_routing_metrics": ready,
+        "ready": ready,
+        "gaps": gaps,
+        "recommended_next_actions": _orchestration_routing_next_actions(gaps),
+        "evidence_checks": evidence_checks,
+        "policy": {
+            "metrics_are_read_only": True,
+            "does_not_modify_openclaw_config": True,
+            "does_not_write_memory": True,
+            "does_not_write_graph": True,
+            "does_not_approve_allowlists": True,
+            "does_not_enable_external_recall": True,
         },
         "read_only": True,
         "read_only_memory": True,
@@ -1586,6 +1693,7 @@ def _memory_evolution_evidence(
     federation: Mapping[str, Any],
     outcome: Mapping[str, Any],
     recall_quality: Mapping[str, Any],
+    routing_metrics: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     surfaces = bridge.get("surfaces", {}) if isinstance(bridge.get("surfaces"), dict) else {}
     graph = surfaces.get("graph", {}) if isinstance(surfaces.get("graph"), dict) else {}
@@ -1596,6 +1704,7 @@ def _memory_evolution_evidence(
     clients = federation.get("clients", {}) if isinstance(federation.get("clients"), dict) else {}
     openclaw = clients.get("openclaw", {}) if isinstance(clients.get("openclaw"), dict) else {}
     codex = clients.get("codex", {}) if isinstance(clients.get("codex"), dict) else {}
+    routing_metrics = routing_metrics if isinstance(routing_metrics, Mapping) else {}
     return {
         "has_basic_memory_home": bool(bridge.get("hermes_home")),
         "has_graph": bool(graph.get("exists")) and _safe_int(graph.get("node_count")) > 0,
@@ -1613,6 +1722,14 @@ def _memory_evolution_evidence(
         "openclaw_ready": openclaw.get("ready") is True,
         "openclaw_agent_profiles": openclaw.get("auto_precheck_agent_profiles", []),
         "openclaw_auto_precheck_enabled": openclaw.get("auto_precheck_enabled") is True,
+        "orchestration_routing_metrics_ready": routing_metrics.get("ready") is True,
+        "active_routing_metrics": routing_metrics.get("active_routing_metrics") is True,
+        "routing_readiness_score": routing_metrics.get("routing_readiness_score", 0),
+        "routing_agent_count": _safe_int(routing_metrics.get("agent_count")),
+        "routing_route_binding_count": _safe_int(routing_metrics.get("route_binding_count")),
+        "routing_operation_event_count": _safe_int(routing_metrics.get("operation_routing_event_count")),
+        "routing_gate_decision_count": _safe_int(routing_metrics.get("gate_decision_count")),
+        "routing_auto_precheck_operation_count": _safe_int(routing_metrics.get("auto_precheck_operation_count")),
         "recall_quality_evaluation_ready": recall_quality.get("readiness") == "ready",
         "recall_quality_score": recall_quality.get("quality_score"),
         "recall_quality_passed_query_count": recall_quality.get("summary", {}).get("passed_query_count", 0)
@@ -1651,7 +1768,7 @@ def _tier_readiness(tier: Mapping[str, Any], evidence: Mapping[str, Any]) -> dic
     if level >= 10:
         criteria.append(("Cross-system boundary allowlists are explicitly reviewed", bool(evidence.get("boundary_allowlists_reviewed"))))
     if level >= 11:
-        criteria.append(("Memory orchestration has active routing metrics", False))
+        criteria.append(("Memory orchestration has active routing metrics", bool(evidence.get("active_routing_metrics"))))
     if level >= 12:
         criteria.append(("Policy proposals close automatically after human approval and guarded checks", False))
     if level >= 13:
@@ -1688,6 +1805,32 @@ def _memory_evolution_next_actions(
         actions.append("Keep external-channel automatic recall blocked until exact allowlists are reviewed.")
     if not actions:
         actions.append("Continue with the next read-only governance/readiness capability before any durable write.")
+    return actions[:5]
+
+
+def _orchestration_routing_gaps(evidence_checks: Mapping[str, bool]) -> list[str]:
+    labels = {
+        "has_three_or_more_agents": "OpenClaw has at least 3 configured agents.",
+        "has_route_binding": "OpenClaw has at least 1 route binding.",
+        "has_auto_precheck_profile": "Hermes memory auto-precheck has at least 1 profile.",
+        "has_operation_activity": "Hermes operation ledger has routing, gate, or auto-precheck activity.",
+    }
+    return [label for key, label in labels.items() if not evidence_checks.get(key)]
+
+
+def _orchestration_routing_next_actions(gaps: Iterable[str]) -> list[str]:
+    actions: list[str] = []
+    gap_text = " ".join(gaps)
+    if "3 configured agents" in gap_text:
+        actions.append("Keep Star Hub pending until OpenClaw exposes at least 3 existing agents in local config.")
+    if "route binding" in gap_text:
+        actions.append("Keep Star Hub pending until local OpenClaw route bindings are present; do not modify OpenClaw config from this tool.")
+    if "auto-precheck" in gap_text:
+        actions.append("Keep Star Hub pending until the Hermes memory plugin has an existing auto-precheck profile.")
+    if "operation ledger" in gap_text:
+        actions.append("Keep Star Hub pending until the Hermes operation ledger contains routing, gate, or auto-precheck events.")
+    if not actions:
+        actions.append("Continue monitoring routing metrics read-only; do not widen allowlists or enable external automatic recall.")
     return actions[:5]
 
 
@@ -1736,8 +1879,7 @@ def _openclaw_memory_client_status() -> dict[str, Any]:
     extension_path = Path.home() / ".openclaw" / "extensions" / "hermes-memory" / "index.ts"
     manifest_path = Path.home() / ".openclaw" / "extensions" / "hermes-memory" / "openclaw.plugin.json"
     config = _loads_json(_safe_read_text(config_path), {})
-    entries = config.get("plugins", {}).get("entries", {}) if isinstance(config, dict) else {}
-    entry = entries.get("hermes-memory", {}) if isinstance(entries, dict) else {}
+    entry = _openclaw_hermes_plugin_entry(config if isinstance(config, dict) else {})
     plugin_config = entry.get("config", {}) if isinstance(entry, dict) else {}
     profiles = plugin_config.get("autoPrecheckAgentProfiles", {}) if isinstance(plugin_config, dict) else {}
     allowed_channels = plugin_config.get("autoPrecheckAllowedChannelIds", []) if isinstance(plugin_config, dict) else []
@@ -1759,6 +1901,168 @@ def _openclaw_memory_client_status() -> dict[str, Any]:
         "write_policy": "proposal_only",
         "ready": config_path.exists() and extension_path.exists() and bool(entry.get("enabled")) if isinstance(entry, dict) else False,
     }
+
+
+def _openclaw_hermes_plugin_entry(config: Mapping[str, Any]) -> dict[str, Any]:
+    plugins = config.get("plugins", {}) if isinstance(config, Mapping) else {}
+    entries = plugins.get("entries", {}) if isinstance(plugins, Mapping) else {}
+    entry = entries.get("hermes-memory", {}) if isinstance(entries, Mapping) else {}
+    return entry if isinstance(entry, dict) else {}
+
+
+def _openclaw_hermes_plugin_config(config: Mapping[str, Any]) -> dict[str, Any]:
+    entry = _openclaw_hermes_plugin_entry(config)
+    plugin_config = entry.get("config", {}) if isinstance(entry, Mapping) else {}
+    return plugin_config if isinstance(plugin_config, dict) else {}
+
+
+def _openclaw_agent_ids(config: Mapping[str, Any]) -> list[str]:
+    agents = config.get("agents", {}) if isinstance(config, Mapping) else {}
+    ids: set[str] = set()
+    if isinstance(agents, list):
+        for index, item in enumerate(agents):
+            if isinstance(item, Mapping):
+                ids.add(_clean_text(item.get("id") or item.get("name") or item.get("agentId") or f"agent_{index}"))
+            elif _clean_text(item):
+                ids.add(_clean_text(item))
+    elif isinstance(agents, Mapping):
+        for key, value in agents.items():
+            key_text = _clean_text(key)
+            if key_text in {"defaults", "default", "settings", "config"}:
+                continue
+            if key_text in {"entries", "profiles", "items", "list", "agents"}:
+                ids.update(_ids_from_collection(value, fallback_prefix="agent"))
+                continue
+            if isinstance(value, Mapping):
+                ids.add(_clean_text(value.get("id") or value.get("name") or key_text))
+            elif isinstance(value, list):
+                ids.update(_ids_from_collection(value, fallback_prefix=key_text or "agent"))
+            elif _clean_text(value):
+                ids.add(key_text or _clean_text(value))
+    return sorted(item for item in ids if item)
+
+
+def _ids_from_collection(value: Any, *, fallback_prefix: str) -> set[str]:
+    ids: set[str] = set()
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if isinstance(item, Mapping):
+                ids.add(_clean_text(item.get("id") or item.get("name") or key))
+            elif _clean_text(item):
+                ids.add(_clean_text(key) or _clean_text(item))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            if isinstance(item, Mapping):
+                ids.add(_clean_text(item.get("id") or item.get("name") or item.get("agentId") or f"{fallback_prefix}_{index}"))
+            elif _clean_text(item):
+                ids.add(_clean_text(item))
+    return {item for item in ids if item}
+
+
+def _openclaw_route_bindings(config: Mapping[str, Any]) -> list[dict[str, str]]:
+    bindings: list[dict[str, str]] = []
+    _collect_openclaw_route_bindings(config, bindings, path="")
+    unique: dict[tuple[str, str, str, str, str, str], dict[str, str]] = {}
+    for binding in bindings:
+        key = (
+            binding.get("channel", ""),
+            binding.get("agent_id", ""),
+            binding.get("account_id", ""),
+            binding.get("peer_kind", ""),
+            binding.get("peer_id", ""),
+            binding.get("source", ""),
+        )
+        unique[key] = binding
+    return list(unique.values())
+
+
+def _collect_openclaw_route_bindings(value: Any, bindings: list[dict[str, str]], *, path: str) -> None:
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _collect_openclaw_route_bindings(item, bindings, path=f"{path}/{index}")
+        return
+    if not isinstance(value, Mapping):
+        return
+
+    normalized_path = path.replace("_", "").replace("-", "").lower()
+    if _looks_like_route_binding(value):
+        bindings.append(_normalize_openclaw_route_binding(value, source=path or "/"))
+
+    for key, item in value.items():
+        key_text = _clean_text(key)
+        key_normalized = key_text.replace("_", "").replace("-", "").lower()
+        child_path = f"{path}/{key_text}" if path else key_text
+        if _is_route_binding_container(key_normalized):
+            if isinstance(item, Mapping):
+                for route_key, route_value in item.items():
+                    if isinstance(route_value, Mapping):
+                        binding = _normalize_openclaw_route_binding(route_value, source=f"{child_path}/{route_key}")
+                        if not binding.get("channel"):
+                            binding["channel"] = _clean_text(route_key)
+                        bindings.append(binding)
+                    elif isinstance(route_value, list):
+                        for agent_id in _list_of_str(route_value):
+                            bindings.append({"channel": _clean_text(route_key), "agent_id": agent_id, "source": f"{child_path}/{route_key}"})
+                    elif _clean_text(route_value):
+                        bindings.append({"channel": _clean_text(route_key), "agent_id": _clean_text(route_value), "source": f"{child_path}/{route_key}"})
+            elif isinstance(item, list):
+                for index, route_value in enumerate(item):
+                    if isinstance(route_value, Mapping) and _looks_like_route_binding(route_value):
+                        bindings.append(_normalize_openclaw_route_binding(route_value, source=f"{child_path}/{index}"))
+            continue
+        if "route" in normalized_path or "binding" in normalized_path or "route" in key_normalized or "binding" in key_normalized:
+            _collect_openclaw_route_bindings(item, bindings, path=child_path)
+
+
+def _is_route_binding_container(key: str) -> bool:
+    return key in {
+        "routebindings",
+        "routingbindings",
+        "channelroutebindings",
+        "channelagentbindings",
+        "agentroutebindings",
+        "routes",
+        "routing",
+    }
+
+
+def _looks_like_route_binding(value: Mapping[str, Any]) -> bool:
+    keys = {str(key).replace("_", "").replace("-", "").lower() for key in value.keys()}
+    match = value.get("match")
+    match_keys = {str(key).replace("_", "").replace("-", "").lower() for key in match.keys()} if isinstance(match, Mapping) else set()
+    binding_type = _clean_text(value.get("type")).lower()
+    has_channel = bool(keys & {"channel", "channelid", "route", "target"} or match_keys & {"channel", "channelid"})
+    has_agent = bool(keys & {"agent", "agentid", "profile", "profileid"})
+    return has_channel and has_agent and (not binding_type or binding_type == "route")
+
+
+def _normalize_openclaw_route_binding(value: Mapping[str, Any], *, source: str) -> dict[str, str]:
+    match = value.get("match")
+    match = match if isinstance(match, Mapping) else {}
+    binding = {
+        "agent_id": _clean_text(value.get("agentId") or value.get("agent_id") or value.get("agent") or value.get("profileId") or value.get("profile")),
+        "channel": _clean_text(
+            value.get("channelId")
+            or value.get("channel_id")
+            or value.get("channel")
+            or value.get("route")
+            or value.get("target")
+            or match.get("channelId")
+            or match.get("channel_id")
+            or match.get("channel")
+        ),
+        "source": source,
+    }
+    optional_fields = {
+        "account_id": value.get("accountId") or value.get("account_id") or match.get("accountId") or match.get("account_id"),
+        "peer_kind": value.get("peerKind") or value.get("peer_kind") or match.get("peerKind") or match.get("peer_kind"),
+        "peer_id": value.get("peerId") or value.get("peer_id") or match.get("peerId") or match.get("peer_id"),
+    }
+    for key, item in optional_fields.items():
+        cleaned = _clean_text(item)
+        if cleaned:
+            binding[key] = cleaned
+    return binding
 
 
 def _federation_warnings(clients: Mapping[str, Any]) -> list[str]:

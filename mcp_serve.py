@@ -51,6 +51,7 @@ from agent.memory_fabric_bridge import (
     memory_federation_status as get_memory_federation_status,
     memory_ledger_intelligence as get_memory_ledger_intelligence,
     memory_operation_ledger as get_memory_operation_ledger,
+    memory_orchestration_routing_metrics as get_memory_orchestration_routing_metrics,
     memory_policy_apply_execute as execute_memory_policy_apply_plan,
     memory_policy_apply_plan as get_memory_policy_apply_plan,
     memory_policy_autotune as get_memory_policy_autotune,
@@ -852,6 +853,11 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
     def memory_evolution_status() -> str:
         """Inspect the fixed Hermes memory tier taxonomy and current stage."""
         return json.dumps(get_memory_evolution_status(), ensure_ascii=False, indent=2)
+
+    @mcp.tool()
+    def memory_orchestration_routing_metrics() -> str:
+        """Inspect read-only memory orchestration routing metrics."""
+        return json.dumps(get_memory_orchestration_routing_metrics(), ensure_ascii=False, indent=2)
 
     @mcp.tool()
     def memory_recall_quality_evaluate(

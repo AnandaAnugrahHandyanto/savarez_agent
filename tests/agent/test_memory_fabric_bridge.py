@@ -5,6 +5,7 @@ from agent.memory_fabric_bridge import (
     memory_bridge_status,
     memory_evolution_status,
     memory_federation_gate,
+    memory_orchestration_routing_metrics,
     memory_policy_outcome_monitor,
     memory_recall_quality_evaluate,
 )
@@ -86,6 +87,153 @@ def test_memory_recall_quality_evaluate_is_read_only():
     assert result["policy"]["does_not_append_ledger_events"] is True
     assert result["read_only_memory"] is True
     assert result["would_mutate_memory"] is False
+
+
+def test_memory_orchestration_routing_metrics_ready_from_local_evidence(tmp_path, monkeypatch):
+    openclaw = tmp_path / ".openclaw"
+    openclaw.mkdir()
+    (openclaw / "openclaw.json").write_text(
+        """
+        {
+          "agents": {
+            "entries": {
+              "planner": {},
+              "coder": {},
+              "reviewer": {}
+            }
+          },
+          "bindings": [
+            {
+              "type": "route",
+              "agentId": "planner",
+              "match": {
+                "channel": "telegram",
+                "accountId": "bot-main",
+                "peerKind": "group",
+                "peerId": "team"
+              }
+            },
+            {
+              "type": "route",
+              "agentId": "coder",
+              "match": {
+                "channel": "slack",
+                "accountId": "workspace-main",
+                "peerKind": "channel",
+                "peerId": "eng"
+              }
+            }
+          ],
+          "plugins": {
+            "entries": {
+              "hermes-memory": {
+                "enabled": true,
+                "config": {
+                  "autoPrecheckAgentIds": ["planner", "coder"],
+                  "autoPrecheckAgentProfiles": {
+                    "default": {"scope": "project"}
+                  }
+                }
+              }
+            }
+          }
+        }
+        """,
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    def operation_ledger(*, limit=500, client="", operation="", decision="", event_type=""):
+        return {
+            "events": [
+                {"client": "openclaw", "operation": "route_memory_request", "decision": "allow"},
+                {"client": "hermes", "operation": "auto_precheck", "decision": "allow"},
+                {"client": "codex", "event_type": "gate_decision", "operation": "search", "decision": "block"},
+                {"client": "openclaw", "operation": "memory_search", "decision": "allow"},
+            ]
+        }
+
+    monkeypatch.setattr(memory_fabric_bridge, "memory_operation_ledger", operation_ledger)
+
+    result = memory_orchestration_routing_metrics()
+
+    assert result["success"] is True
+    assert result["metrics_type"] == "hermes_memory_orchestration_routing_metrics"
+    assert result["agent_count"] == 3
+    assert result["route_binding_count"] == 2
+    assert result["routed_agent_count"] == 2
+    assert result["routed_agent_ids"] == ["coder", "planner"]
+    assert result["route_channel_counts"] == {"slack": 1, "telegram": 1}
+    assert result["auto_precheck_profile_count"] == 1
+    assert result["auto_precheck_agent_ids"] == ["planner", "coder"]
+    assert result["operation_routing_event_count"] == 1
+    assert result["gate_decision_count"] == 1
+    assert result["auto_precheck_operation_count"] == 1
+    assert result["client_counts"] == {"codex": 1, "hermes": 1, "openclaw": 2}
+    assert result["decision_counts"] == {"allow": 3, "block": 1}
+    assert result["routing_readiness_score"] == 1.0
+    assert result["ready"] is True
+    assert result["active_routing_metrics"] is True
+    assert result["policy"]["metrics_are_read_only"] is True
+    assert result["policy"]["does_not_modify_openclaw_config"] is True
+    assert result["policy"]["does_not_write_memory"] is True
+    assert result["would_modify_config"] is False
+    assert result["would_write_graph"] is False
+
+
+def test_openclaw_route_bindings_parse_top_level_bindings():
+    bindings = memory_fabric_bridge._openclaw_route_bindings(
+        {
+            "bindings": [
+                {
+                    "type": "route",
+                    "agentId": "telegram-agent",
+                    "match": {
+                        "channel": "telegram",
+                        "accountId": "bot-main",
+                        "peerKind": "group",
+                        "peerId": "team",
+                    },
+                },
+                {
+                    "type": "tool",
+                    "agentId": "ignored-agent",
+                    "match": {"channel": "telegram"},
+                },
+            ]
+        }
+    )
+
+    assert bindings == [
+        {
+            "agent_id": "telegram-agent",
+            "channel": "telegram",
+            "source": "bindings/0",
+            "account_id": "bot-main",
+            "peer_kind": "group",
+            "peer_id": "team",
+        }
+    ]
+
+
+def test_memory_orchestration_routing_metrics_reports_gaps(tmp_path, monkeypatch):
+    (tmp_path / ".openclaw").mkdir()
+    (tmp_path / ".openclaw" / "openclaw.json").write_text(
+        '{"agents": {"entries": {"planner": {}}}, "plugins": {"entries": {"hermes-memory": {"config": {}}}}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(memory_fabric_bridge, "memory_operation_ledger", lambda **kwargs: {"events": []})
+
+    result = memory_orchestration_routing_metrics()
+
+    assert result["ready"] is False
+    assert result["active_routing_metrics"] is False
+    assert result["routing_readiness_score"] == 0.0
+    assert "OpenClaw has at least 3 configured agents." in result["gaps"]
+    assert "OpenClaw has at least 1 route binding." in result["gaps"]
+    assert "Hermes memory auto-precheck has at least 1 profile." in result["gaps"]
+    assert "Hermes operation ledger has routing, gate, or auto-precheck activity." in result["gaps"]
 
 
 def _ready_federation_status():
@@ -203,6 +351,62 @@ def test_memory_boundary_allowlist_audit_accepts_existing_policy_review_evidence
     assert result["evidence"]["manual_boundary_review"]["complete"] is True
     assert result["evidence"]["manual_boundary_review"]["source"] == "policy_proposal_ledger"
     assert result["reviewed_allowlists"][0]["review"] == "empty_allowlist_reviewed_with_manual_evidence"
+
+
+def test_memory_evolution_uses_orchestration_routing_metrics_for_star_hub(monkeypatch):
+    monkeypatch.setattr(
+        memory_fabric_bridge,
+        "memory_bridge_status",
+        lambda: {
+            "hermes_home": "/tmp/hermes",
+            "surfaces": {
+                "graph": {"exists": True, "node_count": 3, "edge_count": 2, "provenance_count": 1},
+                "gpt_image_prompt_cases": {"exists": True, "case_count": 1},
+                "knowledge": {"exists": True, "file_count": 1},
+                "operation_ledger": {"exists": True, "event_count": 3},
+                "policy_proposals": {"exists": True, "event_count": 1},
+            },
+        },
+    )
+    monkeypatch.setattr(memory_fabric_bridge, "memory_federation_status", _ready_federation_status)
+    monkeypatch.setattr(
+        memory_fabric_bridge,
+        "memory_boundary_allowlist_audit",
+        lambda *, log_limit=200: {"ready": True, "boundary_readiness_score": 100},
+    )
+    monkeypatch.setattr(
+        memory_fabric_bridge,
+        "memory_orchestration_routing_metrics",
+        lambda: {
+            "ready": True,
+            "active_routing_metrics": True,
+            "routing_readiness_score": 1.0,
+            "agent_count": 3,
+            "route_binding_count": 1,
+            "operation_routing_event_count": 1,
+            "gate_decision_count": 1,
+            "auto_precheck_operation_count": 1,
+        },
+    )
+    monkeypatch.setattr(memory_fabric_bridge, "memory_policy_outcome_monitor", _healthy_policy_outcome)
+    monkeypatch.setattr(
+        memory_fabric_bridge,
+        "memory_recall_quality_evaluate",
+        lambda *, limit=5: {
+            "readiness": "ready",
+            "quality_score": 1.0,
+            "summary": {"passed_query_count": 5, "benchmark_query_count": 5},
+        },
+    )
+
+    result = memory_evolution_status()
+    star_hub = next(item for item in result["readiness"] if item["level"] == 11)
+
+    assert result["evidence"]["active_routing_metrics"] is True
+    assert result["evidence"]["routing_readiness_score"] == 1.0
+    assert result["orchestration_routing_metrics"]["ready"] is True
+    assert star_hub["achieved"] is True
+    assert "Memory orchestration has active routing metrics" in star_hub["passed_criteria"]
 
 
 def test_memory_evolution_does_not_claim_star_realm_without_boundary_review():
