@@ -23,7 +23,7 @@ chmod +x hermes-mcp-serve
 ./setup-hermes.sh   # or: pip install -e ".[mcp,dev]"
 ```
 
-3. In Cursor: enable the **hermes** MCP server (Settings → MCP). Restart the IDE if tools do not appear.
+3. In Cursor: enable the **hermes** MCP server (Settings -> MCP). Restart the IDE if tools do not appear.
 
 4. Optional: run `hermes doctor` to check dependencies and config.
 
@@ -35,7 +35,7 @@ chmod +x hermes-mcp-serve
 | `HERMES_HOME` | Profile directory (`~/.hermes` or `~/.hermes/profiles/<name>`) |
 | `HERMES_AGENTS_DIR` | **Runtime** fleet agents directory (SOUL.md, HEARTBEAT.md) |
 
-Resolution order for agent documents: **`HERMES_AGENTS_DIR`** → `HERMES_REPO/agents/` → `HERMES_HOME/hermes-agent/agents/`.
+Resolution order for agent documents: **`HERMES_AGENTS_DIR`** -> `HERMES_REPO/agents/` -> `HERMES_HOME/hermes-agent/agents/`.
 
 For multi-repo fleets, point `HERMES_AGENTS_DIR` at the operational repo (e.g. `your-product/agents/`) and keep `hermes-agent/agents/AGENT_REGISTRY.json` as **index only** (no duplicate SOUL trees).
 
@@ -51,6 +51,7 @@ Hermes MCP is really two products behind one server:
 
 | Tool | Purpose |
 |------|---------|
+| `fleet_context_snapshot` | One-call bounded fleet bootstrap for IDEs |
 | `skills_list` | Agent SOUL.md dirs + repo `skills/` catalog |
 | `skills_read` | Read SOUL.md or skill files |
 | `agents_list` | Registry + optional heartbeat files |
@@ -69,7 +70,7 @@ Messaging tools: `conversations_list`, `messages_read`, `messages_send`, `events
 
 Use this mode for: steering live Telegram/Discord/Slack sessions, approvals, and operational messaging.
 
-If messaging tools fail with session/DB errors, the gateway is probably not running — that does **not** mean skills tools are broken.
+If messaging tools fail with session/DB errors, the gateway is probably not running -- that does **not** mean skills tools are broken.
 
 ## Source of truth hierarchy
 
@@ -77,20 +78,18 @@ When layers disagree, use this precedence (highest first):
 
 | Priority | Layer | Authority |
 |----------|--------|-----------|
-| 1 | Runtime wrappers, cron, production scripts | **Execution truth** — what actually runs |
-| 2 | `HERMES_AGENTS_DIR/<agent>/SOUL.md`, `IDENTITY.md`, `HEARTBEAT.md` | **Behavioral truth** — how the agent must act |
-| 3 | `AGENT_REGISTRY.json` | **Index / discovery** — names, lanes, metadata; not a substitute for SOUL |
-| 4 | Knowledge layer (`artifacts/ops/knowledge_layer/`, ledgers) | **Operational state** — production status, holds |
-| 5 | `.learnings/` | **Memory / reference** — operator notes, HOT memory |
-| 6 | `CLAUDE.md`, `.cursor/rules/` | **IDE workflow** — session rituals, not runtime overrides |
+| 1 | Runtime wrappers, cron, production scripts | **Execution truth** -- what actually runs |
+| 2 | `HERMES_AGENTS_DIR/<agent>/SOUL.md`, `IDENTITY.md`, `HEARTBEAT.md` | **Behavioral truth** -- how the agent must act |
+| 3 | `AGENT_REGISTRY.json` | **Index / discovery** -- names, lanes, metadata; not a substitute for SOUL |
+| 4 | Knowledge layer (`artifacts/ops/knowledge_layer/`, ledgers) | **Operational state** -- production status, holds |
+| 5 | `.learnings/` | **Memory / reference** -- operator notes, HOT memory |
+| 6 | `CLAUDE.md`, `.cursor/rules/` | **IDE workflow** -- session rituals, not runtime overrides |
 
 **Anti-pattern:** Treating registry JSON or synthesized summaries as behavioral truth while runtime SOUL.md says something else. That causes identity drift (e.g. audit wrappers vs live SOUL).
 
 ## Session bootstrap
 
-Today, a thorough Cursor session often calls several MCP tools in sequence. That is correct but **procedural** — it depends on env vars, path overrides, and operator habit.
-
-**Direction:** a single `fleet_context_snapshot` tool (planned) should return registry summary, HOT learnings excerpt, `latest_state` digest, and held-spec flags in one call. Until then, use the checklist in `.cursor/rules/hermes-fleet.mdc` or `CLAUDE.md`.
+Use `fleet_context_snapshot` for a single-call bounded bootstrap that returns registry summary, HOT learnings excerpt, `latest_state` digest, and held-spec flags. For finer control, call the individual tools per the checklist in `.cursor/rules/hermes-fleet.mdc` or `CLAUDE.md`.
 
 ## Read-only fleet tools (by design)
 
@@ -110,14 +109,13 @@ A common mature layout:
 
 ## Related docs
 
-- [MCP (Model Context Protocol)](./mcp.md) — Hermes as MCP *client* to external servers
-- [ACP](./acp.md) — VS Code / Zed / JetBrains adapter
-- `CLAUDE.md` — session checklist for Claude Code/Cursor agents in this repo
+- [MCP (Model Context Protocol)](./mcp.md) -- Hermes as MCP *client* to external servers
+- [ACP](./acp.md) -- VS Code / Zed / JetBrains adapter
+- `CLAUDE.md` -- session checklist for Claude Code/Cursor agents in this repo
 
 ## Roadmap (high leverage)
 
 | Item | Benefit |
 |------|---------|
-| `fleet_context_snapshot` | Declarative session bootstrap |
 | `hermes doctor --mcp` | Validates venv, paths, gateway reachability, prints suggested `mcp.json` |
 | Cursor Cloud env templates | No `/mnt/c/...` paths in shared `main` |
