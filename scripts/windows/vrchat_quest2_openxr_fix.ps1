@@ -115,13 +115,8 @@ function Invoke-OpenXrFix {
     }
 
     if ($ResetBindings) {
-        $bindings = Join-Path $env:USERPROFILE 'AppData\LocalLow\VRChat\VRChat\Bindings'
-        if (Test-Path $bindings) {
-            $backup = Join-Path (Split-Path $bindings -Parent) ('Bindings_backup_' + (Get-Date -Format 'yyyyMMdd_HHmmss'))
-            Copy-Item -Path $bindings -Destination $backup -Recurse -Force
-            Remove-Item -Path $bindings -Recurse -Force
-            Write-Host "Bindings backed up to $backup" -ForegroundColor Green
-        }
+        $br = Invoke-VrChatBindingReset -DisableOscInputController
+        foreach ($a in $br.actions) { Write-Host "  binding: $a" -ForegroundColor Green }
     }
 
     $after = Get-RegistryOpenXrFixed
@@ -140,4 +135,65 @@ function Get-VirtualDesktopStreamerHints {
     )
 }
 
+
+
+function Get-VirtualDesktopStreamerConfig { $streamerSettings = 'C:\ProgramData\Virtual Desktop\StreamerSettings.json'; $gameSettings = Join-Path $env:APPDATA 'Virtual Desktop\GameSettings.json'; $regPath = 'HKCU:\Software\Guy Godin\Virtual Desktop Streamer'; $openVrPaths = Join-Path $env:LOCALAPPDATA 'openvr\openvrpaths.vrpath'; $cfg = [ordered]@{ streamer_settings_path = $streamerSettings; streamer_settings_exists = (Test-Path $streamerSettings); game_settings_path = $gameSettings; game_settings_exists = (Test-Path $gameSettings); registry_path = $regPath; openvr_paths = $openVrPaths; openvr_external_drivers = @(); streamer_settings_keys = @(); patchable_note = 'SteamVR/controller toggles are primarily in VD Streamer GUI.' }; if (Test-Path $streamerSettings) { try { $j = Get-Content $streamerSettings -Raw | ConvertFrom-Json; $cfg.streamer_settings_keys = @($j.PSObject.Properties.Name); $cfg.openxr_runtime_value = $j.OpenXRRuntime } catch {} }; if (Test-Path $openVrPaths) { try { $ov = Get-Content $openVrPaths -Raw | ConvertFrom-Json; $cfg.openvr_external_drivers = @($ov.external_drivers) } catch {} }; return [PSCustomObject]$cfg }
+
+function Invoke-VirtualDesktopStreamerSettingsPatch {
+    param([switch]$WhatIf)
+    $settingsPath = 'C:\ProgramData\Virtual Desktop\StreamerSettings.json'
+    if (-not (Test-Path $settingsPath)) {
+        return [PSCustomObject]@{ patched = $false; reason = 'StreamerSettings.json missing' }
+    }
+    $backup = "$settingsPath.backup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+    $json = Get-Content $settingsPath -Raw | ConvertFrom-Json
+    $desired = @{ OpenXRRuntime = 1; EmulateGamepad = $true; GamepadEmulation = $true }
+    $changed = @()
+    foreach ($kv in $desired.GetEnumerator()) {
+        $prop = $json.PSObject.Properties[$kv.Key]
+        if (-not $prop) {
+            $json | Add-Member -NotePropertyName $kv.Key -NotePropertyValue $kv.Value
+            $changed += "added $($kv.Key)=$($kv.Value)"
+        } elseif ($prop.Value -ne $kv.Value) {
+            $prop.Value = $kv.Value
+            $changed += "set $($kv.Key)=$($kv.Value)"
+        }
+    }
+    if ($changed.Count -eq 0) {
+        return [PSCustomObject]@{ patched = $false; reason = 'already satisfied'; backup = $null }
+    }
+    if ($WhatIf) {
+        return [PSCustomObject]@{ patched = $false; whatif = $true; would_change = $changed }
+    }
+    Copy-Item $settingsPath $backup -Force
+    ($json | ConvertTo-Json -Depth 6) + [Environment]::NewLine | Set-Content -Path $settingsPath -Encoding UTF8
+    return [PSCustomObject]@{ patched = $true; backup = $backup; changes = $changed }
+}
+
+function Invoke-VrChatBindingReset {
+    param([switch]$DisableOscInputController)
+    $localLow = Join-Path $env:USERPROFILE 'AppData\LocalLow\VRChat\VRChat'
+    $actions = New-Object System.Collections.Generic.List[string]
+    $bindings = Join-Path $localLow 'Bindings'
+    if (Test-Path $bindings) {
+        $backup = Join-Path $localLow ('Bindings_backup_' + (Get-Date -Format 'yyyyMMdd_HHmmss'))
+        Copy-Item $bindings $backup -Recurse -Force
+        Remove-Item $bindings -Recurse -Force
+        $actions.Add("removed Bindings (backup $backup)")
+    } else {
+        $actions.Add('Bindings folder absent (OK)')
+    }
+    $openxrJson = Get-ChildItem $localLow -Filter '*openxr*.json' -File -ErrorAction SilentlyContinue
+    foreach ($f in $openxrJson) {
+        $bak = "$($f.FullName).bak_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+        Move-Item $f.FullName $bak -Force
+        $actions.Add("renamed $($f.Name)")
+    }
+    $regKey = 'HKCU:\Software\VRChat\VRChat'
+    if ($DisableOscInputController -and (Test-Path $regKey)) {
+        Set-ItemProperty -Path $regKey -Name 'VRC_INPUT_OSC_h1104161515' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+        $actions.Add('set VRC_INPUT_OSC=0')
+    }
+    return [PSCustomObject]@{ actions = @($actions) }
+}
 
