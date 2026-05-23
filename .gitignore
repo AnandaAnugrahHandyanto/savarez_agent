@@ -79,3 +79,6 @@ docs/superpowers/*
 .gitnexus
 .claude/
 CLAUDE.md
+
+# External nested research/worktree checkouts
+/tinker-atropos/
