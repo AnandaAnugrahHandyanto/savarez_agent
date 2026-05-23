@@ -888,7 +888,26 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
             )]
             response.output = output
         else:
-            raise RuntimeError("Responses API returned no output items")
+            response_status = str(getattr(response, "status", "") or "").strip().lower()
+            incomplete_details = getattr(response, "incomplete_details", None)
+            if isinstance(incomplete_details, dict):
+                incomplete_reason = incomplete_details.get("reason")
+            else:
+                incomplete_reason = getattr(incomplete_details, "reason", None)
+            if response_status == "incomplete" and incomplete_reason in {"max_output_tokens", "length"}:
+                logger.debug(
+                    "Codex response has empty output with internal output ceiling; "
+                    "synthesizing empty incomplete assistant item for continuation."
+                )
+                output = [SimpleNamespace(
+                    type="message",
+                    role="assistant",
+                    status="incomplete",
+                    content=[SimpleNamespace(type="output_text", text="")],
+                )]
+                response.output = output
+            else:
+                raise RuntimeError("Responses API returned no output items")
 
     response_status = getattr(response, "status", None)
     if isinstance(response_status, str):
@@ -936,6 +955,14 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
             message_text = _extract_responses_message_text(item)
             if message_text:
                 content_parts.append(message_text)
+            if message_text or item_status in {"queued", "in_progress", "incomplete"}:
+                # Preserve incomplete message items even when their visible
+                # content is empty.  chatgpt.com/backend-api/codex can return
+                # status=incomplete / reason=max_output_tokens with output=[];
+                # we synthesize an empty incomplete message above.  If that
+                # state is not replayed, the continuation request is identical
+                # to the failed request and can hit the same backend ceiling
+                # repeatedly with zero progress.
                 raw_message_item: Dict[str, Any] = {
                     "type": "message",
                     "role": "assistant",

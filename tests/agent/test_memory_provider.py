@@ -806,6 +806,7 @@ class TestMemoryContextFencing:
         assert combined.index("weather") < fence_start
 
 
+
 # ---------------------------------------------------------------------------
 # AIAgent.commit_memory_session — routes to MemoryManager.on_session_end
 # ---------------------------------------------------------------------------
@@ -991,6 +992,79 @@ class TestOnMemoryWriteBridge:
         mgr.on_memory_write("add", "user", "test")
         # Good provider still received the call despite bad provider crashing
         assert good.memory_writes == [("add", "user", "test")]
+
+
+class TestAIAgentMemoryProviderContext:
+    def test_explicit_agent_context_reaches_memory_provider(self, tmp_path):
+        from run_agent import AIAgent
+
+        provider = FakeMemoryProvider("context-provider")
+        cfg = {"memory": {"provider": "context-provider"}}
+
+        with patch("run_agent.OpenAI"), \
+            patch("hermes_cli.config.load_config", return_value=cfg), \
+            patch("agent.agent_init.get_hermes_home", return_value=tmp_path), \
+            patch("plugins.memory.load_memory_provider", return_value=provider):
+            AIAgent(
+                api_key="key",
+                base_url="https://openrouter.ai/api/v1",
+                model="test/model",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=False,
+                platform="cron",
+                agent_context="cron",
+            )
+
+        assert provider.initialized is True
+        assert provider._init_kwargs["agent_context"] == "cron"
+        assert provider._init_kwargs["platform"] == "cron"
+
+    def test_agent_context_env_fallback_reaches_memory_provider(self, tmp_path, monkeypatch):
+        from run_agent import AIAgent
+
+        provider = FakeMemoryProvider("context-provider")
+        cfg = {"memory": {"provider": "context-provider"}}
+        monkeypatch.setenv("HERMES_AGENT_CONTEXT", "batch")
+
+        with patch("run_agent.OpenAI"), \
+            patch("hermes_cli.config.load_config", return_value=cfg), \
+            patch("agent.agent_init.get_hermes_home", return_value=tmp_path), \
+            patch("plugins.memory.load_memory_provider", return_value=provider):
+            AIAgent(
+                api_key="key",
+                base_url="https://openrouter.ai/api/v1",
+                model="test/model",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=False,
+                platform="cli",
+            )
+
+        assert provider._init_kwargs["agent_context"] == "batch"
+
+    def test_cli_platform_defaults_to_primary_agent_context(self, tmp_path, monkeypatch):
+        from run_agent import AIAgent
+
+        provider = FakeMemoryProvider("context-provider")
+        cfg = {"memory": {"provider": "context-provider"}}
+        monkeypatch.delenv("HERMES_AGENT_CONTEXT", raising=False)
+
+        with patch("run_agent.OpenAI"), \
+            patch("hermes_cli.config.load_config", return_value=cfg), \
+            patch("agent.agent_init.get_hermes_home", return_value=tmp_path), \
+            patch("plugins.memory.load_memory_provider", return_value=provider):
+            AIAgent(
+                api_key="key",
+                base_url="https://openrouter.ai/api/v1",
+                model="test/model",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=False,
+                platform="cli",
+            )
+
+        assert provider._init_kwargs["agent_context"] == "primary"
 
 
 class TestHonchoCadenceTracking:

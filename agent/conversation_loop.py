@@ -118,6 +118,40 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
     )
 
 
+def _inject_ephemeral_context_into_user_message(
+    msg: Dict[str, Any],
+    *,
+    messages: List[Dict[str, Any]],
+    message_index: int,
+    current_turn_user_idx: int,
+    memory_prefetch: str = "",
+    plugin_user_context: str = "",
+) -> Dict[str, Any]:
+    """Return an API-copy of a message with ephemeral recall context injected.
+
+    The persisted ``messages`` history is never mutated. Injection is restricted
+    to the current turn's string user message so memory prefetch cannot leak into
+    older turns or multimodal/content-block payloads.
+    """
+
+    api_msg = msg.copy()
+    if message_index != current_turn_user_idx or msg.get("role") != "user":
+        return api_msg
+
+    injections: list[str] = []
+    if memory_prefetch:
+        fenced = build_memory_context_block(memory_prefetch)
+        if fenced:
+            injections.append(fenced)
+    if plugin_user_context:
+        injections.append(plugin_user_context)
+    if injections:
+        base = api_msg.get("content", "")
+        if isinstance(base, str):
+            api_msg["content"] = base + "\n\n" + "\n\n".join(injections)
+    return api_msg
+
+
 def _ra():
     """Lazy reference to ``run_agent`` so callers can patch
     ``run_agent.handle_function_call`` / ``run_agent._set_interrupt`` /
@@ -574,6 +608,7 @@ def run_conversation(
     interrupted = False
     failed = False
     codex_ack_continuations = 0
+    codex_incomplete_compression_attempted = False
     length_continue_retries = 0
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
@@ -787,25 +822,14 @@ def run_conversation(
 
         api_messages = []
         for idx, msg in enumerate(messages):
-            api_msg = msg.copy()
-
-            # Inject ephemeral context into the current turn's user message.
-            # Sources: memory manager prefetch + plugin pre_llm_call hooks
-            # with target="user_message" (the default).  Both are
-            # API-call-time only — the original message in `messages` is
-            # never mutated, so nothing leaks into session persistence.
-            if idx == current_turn_user_idx and msg.get("role") == "user":
-                _injections = []
-                if _ext_prefetch_cache:
-                    _fenced = build_memory_context_block(_ext_prefetch_cache)
-                    if _fenced:
-                        _injections.append(_fenced)
-                if _plugin_user_context:
-                    _injections.append(_plugin_user_context)
-                if _injections:
-                    _base = api_msg.get("content", "")
-                    if isinstance(_base, str):
-                        api_msg["content"] = _base + "\n\n" + "\n\n".join(_injections)
+            api_msg = _inject_ephemeral_context_into_user_message(
+                msg,
+                messages=messages,
+                message_index=idx,
+                current_turn_user_idx=current_turn_user_idx,
+                memory_prefetch=_ext_prefetch_cache,
+                plugin_user_context=_plugin_user_context,
+            )
 
             # For ALL assistant messages, pass reasoning back to the API
             # This ensures multi-turn reasoning context is preserved
@@ -1192,18 +1216,39 @@ def run_conversation(
                                 error_details.append(f"response.status={_codex_resp_status}: {_codex_error_msg}")
                             else:
                                 # output_text fallback: stream backfill may have failed
-                                # but normalize can still recover from output_text
+                                # but normalize can still recover from output_text.
+                                # Codex can also return a terminal
+                                # status=incomplete/reason=max_output_tokens with no
+                                # output items even when Hermes did NOT send
+                                # max_output_tokens; that is a recoverable continuation
+                                # signal, not a malformed provider response.
                                 _out_text = getattr(response, "output_text", None)
                                 _out_text_stripped = _out_text.strip() if isinstance(_out_text, str) else ""
+                                _resp_status = str(getattr(response, "status", "") or "").strip().lower()
+                                _resp_incomplete = getattr(response, "incomplete_details", None)
+                                if isinstance(_resp_incomplete, dict):
+                                    _resp_incomplete_reason = _resp_incomplete.get("reason")
+                                else:
+                                    _resp_incomplete_reason = getattr(_resp_incomplete, "reason", None)
+                                _is_empty_internal_output_ceiling = (
+                                    _resp_status == "incomplete"
+                                    and _resp_incomplete_reason in {"max_output_tokens", "length"}
+                                )
                                 if _out_text_stripped:
                                     logger.debug(
                                         "Codex response.output is empty but output_text is present "
                                         "(%d chars); deferring to normalization.",
                                         len(_out_text_stripped),
                                     )
+                                elif _is_empty_internal_output_ceiling:
+                                    logger.warning(
+                                        "Codex response.output is empty with internal output ceiling "
+                                        "(status=%s, incomplete_details=%s, model=%s); deferring to continuation. %s",
+                                        _resp_status, _resp_incomplete,
+                                        getattr(response, "model", None),
+                                        f"api_mode={agent.api_mode} provider={agent.provider}",
+                                    )
                                 else:
-                                    _resp_status = getattr(response, "status", None)
-                                    _resp_incomplete = getattr(response, "incomplete_details", None)
                                     logger.warning(
                                         "Codex response.output is empty after stream backfill "
                                         "(status=%s, incomplete_details=%s, model=%s). %s",
@@ -1378,17 +1423,14 @@ def run_conversation(
 
                 # Check finish_reason before proceeding
                 if agent.api_mode == "codex_responses":
-                    status = getattr(response, "status", None)
-                    incomplete_details = getattr(response, "incomplete_details", None)
-                    incomplete_reason = None
-                    if isinstance(incomplete_details, dict):
-                        incomplete_reason = incomplete_details.get("reason")
-                    else:
-                        incomplete_reason = getattr(incomplete_details, "reason", None)
-                    if status == "incomplete" and incomplete_reason in {"max_output_tokens", "length"}:
-                        finish_reason = "length"
-                    else:
-                        finish_reason = "stop"
+                    # Do not map Codex status=incomplete/reason=max_output_tokens
+                    # to generic finish_reason='length' here. The ChatGPT Codex
+                    # backend can emit that terminal event because of its own
+                    # internal output ceiling even when Hermes omitted
+                    # max_output_tokens. Let the Codex normalizer classify it
+                    # later so the Codex-specific incomplete-continuation path
+                    # can recover instead of surfacing a raw truncation error.
+                    finish_reason = "stop"
                 elif agent.api_mode == "anthropic_messages":
                     _tfr = agent._get_transport()
                     finish_reason = _tfr.map_finish_reason(response.stop_reason)
@@ -3179,10 +3221,72 @@ def run_conversation(
                     agent._session_messages = messages
                     continue
 
+                # chatgpt.com/backend-api/codex can get stuck returning
+                # empty status=incomplete/reason=max_output_tokens near its
+                # effective context ceiling.  Replaying the synthetic
+                # incomplete item changes the request, but if the backend is
+                # out of headroom it may still return another empty incomplete
+                # forever.  Treat three consecutive empty/opaque incompletes
+                # with a large prompt as a context-pressure signal: compact
+                # once, reset the incomplete retry counter, and give the model
+                # a fresh continuation attempt instead of immediately handing
+                # the user a dead-end error.
+                _codex_prompt_tokens = agent.context_compressor.last_prompt_tokens
+                if _codex_prompt_tokens <= 0:
+                    _codex_prompt_tokens = estimate_request_tokens_rough(
+                        messages,
+                        system_prompt=active_system_prompt or "",
+                        tools=agent.tools or None,
+                    )
+                _codex_near_internal_ceiling = _codex_prompt_tokens >= 240_000
+                _codex_should_compact = (
+                    agent.compression_enabled
+                    and not codex_incomplete_compression_attempted
+                    and len(messages) > agent.context_compressor.protect_first_n
+                                      + agent.context_compressor.protect_last_n + 1
+                    and (
+                        agent.context_compressor.should_compress(_codex_prompt_tokens)
+                        or _codex_near_internal_ceiling
+                    )
+                )
+                if _codex_should_compact:
+                    codex_incomplete_compression_attempted = True
+                    original_len = len(messages)
+                    agent._emit_status(
+                        f"🗜️ Codex repeatedly hit its internal output ceiling near "
+                        f"context pressure (~{_codex_prompt_tokens:,} tokens) — compacting and retrying..."
+                    )
+                    messages, active_system_prompt = agent._compress_context(
+                        messages,
+                        system_message,
+                        approx_tokens=_codex_prompt_tokens,
+                        task_id=effective_task_id,
+                    )
+                    if len(messages) < original_len:
+                        conversation_history = None
+                        agent._codex_incomplete_retries = 0
+                        agent._empty_content_retries = 0
+                        agent._thinking_prefill_retries = 0
+                        agent._last_content_with_tools = None
+                        agent._last_content_tools_all_housekeeping = False
+                        agent._mute_post_response = False
+                        agent._session_messages = messages
+                        continue
+
                 agent._codex_incomplete_retries = 0
                 agent._persist_session(messages, conversation_history)
+                _codex_incomplete_response = (
+                    "⚠️ **Codex internal output ceiling hit**\n\n"
+                    "The ChatGPT Codex backend ended the response with "
+                    "`status=incomplete` / `reason=max_output_tokens` before "
+                    "returning visible text. Hermes did not send `max_output_tokens` "
+                    "for this backend; this is the backend's internal output ceiling.\n\n"
+                    "I tried continuing the turn 3 times and it remained incomplete. "
+                    "Try a smaller next step, lower reasoning effort, or restart the "
+                    "turn after reducing context."
+                )
                 return {
-                    "final_response": None,
+                    "final_response": _codex_incomplete_response,
                     "messages": messages,
                     "api_calls": api_call_count,
                     "completed": False,

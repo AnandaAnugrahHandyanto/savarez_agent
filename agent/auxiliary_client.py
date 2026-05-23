@@ -665,7 +665,7 @@ class _CodexCompletionsAdapter:
         # by auxiliary calls such as context compression; if the timeout is not
         # forwarded and enforced, a Codex Responses stream can sit behind a
         # dead-looking CLI until the user force-interrupts the whole session.
-        timeout = kwargs.get("timeout")
+        timeout = _normalize_aux_timeout(kwargs.get("timeout"), default=None)
         if timeout is not None:
             resp_kwargs["timeout"] = timeout
 
@@ -747,7 +747,8 @@ class _CodexCompletionsAdapter:
         timeout_timer: Optional[threading.Timer] = None
 
         def _timeout_message() -> str:
-            return f"Codex auxiliary Responses stream exceeded {float(total_timeout):.1f}s total timeout"
+            timeout_text = float(total_timeout) if total_timeout is not None else 0.0
+            return f"Codex auxiliary Responses stream exceeded {timeout_text:.1f}s total timeout"
 
         def _close_client_on_timeout() -> None:
             timed_out.set()
@@ -2553,7 +2554,7 @@ def _retry_same_provider_sync(
     temperature: Optional[float],
     max_tokens: Optional[int],
     tools: Optional[list],
-    effective_timeout: float,
+    effective_timeout: Optional[float],
     effective_extra_body: dict,
 ) -> Any:
     if task == "vision":
@@ -2610,7 +2611,7 @@ async def _retry_same_provider_async(
     temperature: Optional[float],
     max_tokens: Optional[int],
     tools: Optional[list],
-    effective_timeout: float,
+    effective_timeout: Optional[float],
     effective_extra_body: dict,
 ) -> Any:
     if task == "vision":
@@ -4357,18 +4358,34 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     return task_config if isinstance(task_config, dict) else {}
 
 
-def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
-    """Read timeout from auxiliary.{task}.timeout in config, falling back to *default*."""
+def _normalize_aux_timeout(raw: Any, default: Optional[float] = _DEFAULT_AUX_TIMEOUT) -> Optional[float]:
+    """Normalize auxiliary timeout values.
+
+    ``0`` and negative values intentionally mean "no timeout" for auxiliary
+    tasks.  Passing raw ``0`` through to the OpenAI/httpx layer is interpreted as
+    an already-expired deadline and surfaces as immediate ``Connection error``
+    failures during context compression.
+    """
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except (ValueError, TypeError):
+        return default
+    if value <= 0:
+        return None
+    return value
+
+
+def _get_task_timeout(task: str, default: Optional[float] = _DEFAULT_AUX_TIMEOUT) -> Optional[float]:
+    """Read timeout from auxiliary.{task}.timeout in config, falling back to *default*.
+
+    Configured ``0`` or negative timeout values disable the timeout.
+    """
     if not task:
         return default
     task_config = _get_auxiliary_task_config(task)
-    raw = task_config.get("timeout")
-    if raw is not None:
-        try:
-            return float(raw)
-        except (ValueError, TypeError):
-            pass
-    return default
+    return _normalize_aux_timeout(task_config.get("timeout"), default=default)
 
 
 def _get_task_extra_body(task: str) -> Dict[str, Any]:
@@ -4456,7 +4473,7 @@ def _build_call_kwargs(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
     tools: Optional[list] = None,
-    timeout: float = 30.0,
+    timeout: Optional[float] = 30.0,
     extra_body: Optional[dict] = None,
     base_url: Optional[str] = None,
 ) -> dict:
@@ -4671,7 +4688,7 @@ def call_llm(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
 
-    effective_timeout = timeout if timeout is not None else _get_task_timeout(task)
+    effective_timeout = _get_task_timeout(task) if timeout is None else _normalize_aux_timeout(timeout, default=None)
 
     # Log what we're about to do — makes auxiliary operations visible
     _base_info = str(getattr(client, "base_url", resolved_base_url) or "")
@@ -5065,7 +5082,7 @@ async def async_call_llm(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
 
-    effective_timeout = timeout if timeout is not None else _get_task_timeout(task)
+    effective_timeout = _get_task_timeout(task) if timeout is None else _normalize_aux_timeout(timeout, default=None)
 
     # Pass the client's actual base_url (not just resolved_base_url) so
     # endpoint-specific temperature overrides can distinguish

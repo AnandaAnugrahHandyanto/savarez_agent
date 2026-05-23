@@ -39,6 +39,20 @@ jobs:
           # Single stable key. main always overwrites, PRs always find it.
           key: test-durations
 
+      - name: Checkout standalone LLM Wiki source of truth
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          repository: michaelkrauty/hermes-llm-wiki
+          ref: v0.1.1
+          path: .llm-wiki-standalone
+
+      - name: Verify standalone LLM Wiki dependency ref
+        run: |
+          python scripts/check_git_ref.py https://github.com/michaelkrauty/hermes-llm-wiki.git v0.1.1
+          if [ "${HERMES_LLM_WIKI_CHECK_REMOTE_REF:-}" = "1" ]; then
+            python scripts/check_git_ref.py https://github.com/michaelkrauty/hermes-llm-wiki.git v0.1.1 --remote
+          fi
+
       - name: Install ripgrep (prebuilt binary)
         run: |
           set -euo pipefail
@@ -63,7 +77,32 @@ jobs:
         run: |
           uv venv .venv --python 3.11
           source .venv/bin/activate
+          uv pip install -e .llm-wiki-standalone
           uv pip install -e ".[all,dev]"
+
+      - name: Verify LLM Wiki standalone import boundary
+        run: |
+          source .venv/bin/activate
+          python scripts/check_llm_wiki_standalone_import.py --standalone-root .llm-wiki-standalone
+          python scripts/check_llm_wiki_standalone_import.py --standalone-root .llm-wiki-standalone --install-standalone
+          LLM_WIKI_TESTS=(
+            tests/plugins/memory/test_llm_wiki_agent_agnostic_adapter.py
+            tests/plugins/memory/test_llm_wiki_provider.py
+            tests/plugins/memory/test_llm_wiki_hybrid_search.py
+            tests/plugins/memory/test_llm_wiki_vector_core_compat.py
+            tests/plugins/memory/test_llm_wiki_caretaker.py
+            tests/plugins/memory/test_llm_wiki_source_integrity.py
+            tests/plugins/memory/test_llm_wiki_engine_source_hash.py
+            tests/plugins/memory/test_llm_wiki_embedding_cache.py
+            tests/plugins/memory/test_llm_wiki_maintenance.py
+            tests/plugins/memory/test_llm_wiki_retrieval_introspection.py
+          )
+          LLM_WIKI_PYTEST_ARGS=()
+          for test_path in "${LLM_WIKI_TESTS[@]}"; do
+            LLM_WIKI_PYTEST_ARGS+=(--pytest "$test_path")
+          done
+          python scripts/check_llm_wiki_standalone_import.py --standalone-root .llm-wiki-standalone "${LLM_WIKI_PYTEST_ARGS[@]}"
+          python scripts/check_llm_wiki_standalone_import.py --standalone-root .llm-wiki-standalone --install-standalone "${LLM_WIKI_PYTEST_ARGS[@]}"
 
       - name: Run tests (slice ${{ matrix.slice }}/6)
         # Per-file isolation via scripts/run_tests_parallel.py: discovers

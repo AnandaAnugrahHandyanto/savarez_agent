@@ -28,6 +28,7 @@ from agent.auxiliary_client import (
     _resolve_auto,
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
+    _get_task_timeout,
 )
 
 
@@ -2326,6 +2327,57 @@ class TestVisionAutoSkipsKimiCoding:
         })
 
 
+class TestAuxiliaryTimeoutNormalization:
+    def test_config_timeout_zero_disables_timeout(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"auxiliary": {"compression": {"timeout": 0}}},
+        )
+
+        assert _get_task_timeout("compression") is None
+
+    def test_config_negative_timeout_disables_timeout(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"auxiliary": {"compression": {"timeout": -1}}},
+        )
+
+        assert _get_task_timeout("compression") is None
+
+    def test_call_llm_explicit_timeout_zero_forwards_none(self, monkeypatch):
+        captured = {}
+
+        class FakeCompletions:
+            def create(self, **kwargs):
+                captured.update(kwargs)
+                return SimpleNamespace(
+                    choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
+                )
+
+        fake_client = SimpleNamespace(
+            chat=SimpleNamespace(completions=FakeCompletions()),
+            base_url="https://example.test/v1",
+        )
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            lambda task, provider, model, base_url, api_key: ("custom", "test-model", "https://example.test/v1", "k", None),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_cached_client",
+            lambda *args, **kwargs: (fake_client, "test-model"),
+        )
+        monkeypatch.setattr("agent.auxiliary_client._get_task_extra_body", lambda task: {})
+
+        call_llm(
+            task="compression",
+            messages=[{"role": "user", "content": "summarize"}],
+            timeout=0,
+        )
+
+        assert captured["timeout"] is None
+
+
 class TestCodexAuxiliaryAdapterTimeout:
     def test_forwards_timeout_to_responses_stream(self):
         class FakeStream:
@@ -2364,6 +2416,45 @@ class TestCodexAuxiliaryAdapterTimeout:
         )
 
         assert fake_client.responses.kwargs["timeout"] == 12.5
+        assert response.choices[0].message.content == "summary"
+
+    def test_timeout_zero_is_not_forwarded_to_responses_stream(self):
+        class FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                return iter(())
+
+            def get_final_response(self):
+                return SimpleNamespace(
+                    output=[SimpleNamespace(
+                        type="message",
+                        content=[SimpleNamespace(type="output_text", text="summary")],
+                    )],
+                    usage=None,
+                )
+
+        class FakeResponses:
+            def __init__(self):
+                self.kwargs = None
+
+            def stream(self, **kwargs):
+                self.kwargs = kwargs
+                return FakeStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(
+            messages=[{"role": "user", "content": "summarize this"}],
+            timeout=0,
+        )
+
+        assert "timeout" not in fake_client.responses.kwargs
         assert response.choices[0].message.content == "summary"
 
     def test_enforces_total_timeout_while_stream_keeps_emitting_events(self):

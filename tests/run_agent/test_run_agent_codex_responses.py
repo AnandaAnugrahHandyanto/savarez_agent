@@ -123,6 +123,16 @@ def _codex_incomplete_message_response(text: str):
     )
 
 
+def _codex_max_output_empty_response(input_tokens: int = 10):
+    return SimpleNamespace(
+        output=[],
+        usage=SimpleNamespace(input_tokens=input_tokens, output_tokens=0, total_tokens=input_tokens),
+        status="incomplete",
+        incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+        model="gpt-5-codex",
+    )
+
+
 def _codex_commentary_message_response(text: str):
     return SimpleNamespace(
         output=[
@@ -1122,6 +1132,126 @@ def test_run_conversation_codex_continues_after_incomplete_interim_message(monke
         for msg in result["messages"]
     )
     assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
+
+
+def test_run_conversation_codex_continues_after_internal_max_output_empty_response(monkeypatch):
+    """chatgpt.com Codex can return status=incomplete/reason=max_output_tokens
+    even though Hermes did not send max_output_tokens. Treat it as a Codex
+    incomplete turn and continue, rather than surfacing the generic truncation
+    warning as the final user response.
+    """
+    agent = _build_agent(monkeypatch)
+    responses = [
+        _codex_max_output_empty_response(),
+        _codex_message_response("Recovered after internal output ceiling."),
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    result = agent.run_conversation("finish the patch")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered after internal output ceiling."
+    assert result.get("error") is None
+
+
+def test_run_conversation_codex_replays_empty_incomplete_state_on_continuation(monkeypatch):
+    """An empty internal-ceiling Codex response must change the next request.
+
+    Without replaying a synthetic incomplete assistant item, Hermes sends the
+    exact same Responses input again and the backend can repeat
+    status=incomplete/reason=max_output_tokens forever with zero streamed text.
+    """
+    agent = _build_agent(monkeypatch)
+    requests = []
+    responses = [
+        _codex_max_output_empty_response(),
+        _codex_message_response("Recovered after replaying incomplete state."),
+    ]
+
+    def fake_call(api_kwargs):
+        requests.append(api_kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", fake_call)
+
+    result = agent.run_conversation("finish the patch")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered after replaying incomplete state."
+    assert len(requests) == 2
+    second_input = requests[1]["input"]
+    assert any(
+        item.get("type") == "message"
+        and item.get("role") == "assistant"
+        and item.get("status") == "incomplete"
+        and item.get("content") == [{"type": "output_text", "text": ""}]
+        for item in second_input
+    )
+
+
+def test_run_conversation_codex_compresses_on_repeated_empty_internal_ceiling(monkeypatch):
+    """Repeated empty Codex internal-ceiling events near the context limit should
+    compact once and continue, not stop with the user-facing ceiling error.
+    """
+    agent = _build_agent(monkeypatch)
+    agent.max_iterations = 5
+    agent.compression_enabled = True
+    agent.context_compressor.context_length = 272_000
+    agent.context_compressor.threshold_tokens = 136_000
+    compressed = []
+    responses = [
+        _codex_max_output_empty_response(input_tokens=271_477),
+        _codex_max_output_empty_response(input_tokens=271_477),
+        _codex_max_output_empty_response(input_tokens=271_477),
+        _codex_message_response("Recovered after compacting repeated Codex incomplete state."),
+    ]
+
+    def fake_call(api_kwargs):
+        return responses.pop(0)
+
+    def fake_compress(messages, system_message, *, approx_tokens=None, task_id="default", focus_topic=None, force=False):
+        compressed.append(approx_tokens)
+        compacted = [
+            messages[0],
+            {"role": "system", "content": "[compressed prior Codex continuation state]"},
+            messages[-1],
+        ]
+        return compacted, agent._cached_system_prompt
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", fake_call)
+    monkeypatch.setattr(agent, "_compress_context", fake_compress)
+
+    result = agent.run_conversation(
+        "finish the patch",
+        conversation_history=[
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"prior message {i}"}
+            for i in range(30)
+        ],
+    )
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered after compacting repeated Codex incomplete state."
+    assert compressed == [271_477]
+    assert result.get("error") is None
+
+
+def test_run_conversation_codex_internal_max_output_exhaustion_is_user_friendly(monkeypatch):
+    """If every Codex continuation attempt hits the backend's internal output
+    ceiling before visible text when no compression pressure is present, don't
+    send the raw generic truncation marker as the final gateway response.
+    """
+    agent = _build_agent(monkeypatch)
+    responses = [_codex_max_output_empty_response() for _ in range(3)]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    result = agent.run_conversation("finish the patch")
+
+    assert result["completed"] is False
+    assert result["partial"] is True
+    assert result["final_response"] is not None
+    assert "Response truncated due to output length limit" not in result["final_response"]
+    assert "Codex" in result["final_response"]
+    assert "internal output" in result["final_response"]
 
 
 def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(monkeypatch):

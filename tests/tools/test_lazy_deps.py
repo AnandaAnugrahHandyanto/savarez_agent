@@ -12,7 +12,9 @@ call is mocked — we never actually shell out during unit tests.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Iterator
+import tomllib
 
 import pytest
 
@@ -68,6 +70,34 @@ class TestSpecSafety:
     def test_unsafe_specs_rejected(self, spec):
         assert not ld._spec_is_safe(spec), \
             f"expected {spec!r} to be rejected"
+
+    def test_vetted_llm_wiki_git_spec_is_allowed_for_llm_wiki(self):
+        specs = ld.feature_specs("memory.llm_wiki")
+        llm_wiki_specs = [spec for spec in specs if spec.startswith("hermes-llm-wiki @ git+")]
+
+        assert len(llm_wiki_specs) == 1
+        assert ld._spec_is_safe(llm_wiki_specs[0])
+        assert "github.com/michaelkrauty/hermes-llm-wiki.git" in llm_wiki_specs[0]
+        assert llm_wiki_specs[0].rsplit("@", 1)[-1]
+
+    def test_llm_wiki_dependency_uses_release_tag_not_raw_sha(self):
+        specs = ld.feature_specs("memory.llm_wiki")
+        llm_wiki_specs = [spec for spec in specs if spec.startswith("hermes-llm-wiki @ git+")]
+
+        assert len(llm_wiki_specs) == 1
+        ref = llm_wiki_specs[0].rsplit("@", 1)[-1]
+        assert ref == "v0.1.1"
+
+    def test_llm_wiki_lazy_spec_matches_optional_extra(self):
+        pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
+        with pyproject_path.open("rb") as f:
+            pyproject = tomllib.load(f)
+        extra_specs = pyproject["project"]["optional-dependencies"]["llm-wiki"]
+        lazy_specs = ld.feature_specs("memory.llm_wiki")
+
+        assert lazy_specs == tuple(extra_specs)
+        assert not any(spec.startswith("vector-core @") for spec in lazy_specs)
+        assert not any(spec.startswith("qdrant-client") for spec in lazy_specs)
 
 
 # ---------------------------------------------------------------------------
