@@ -98,12 +98,14 @@ curl -sS -X POST "https://scholar-sidekick.com/api/verify" \
   -H "Content-Type: application/json" \
   -d '{"claimed": {"title": "The title exactly as cited", "doi": "10.xxxx/xxxxx"}}'
 ```
-Citation fields go inside a **`claimed`** object: `title` (required) plus one identifier
-(`doi`, `pmid`, …) and optional `authors` / `year` / `container`. Returns
-`{ ok, verdict, confidence, matched }`, verdict ∈ `matched` / `mismatch` / `not_found` /
-`parsing_error`. `mismatch` = the identifier resolves but the title doesn't — the dominant
-AI-fabrication pattern (real DOI + invented title; Topaz et al., Lancet 2026). Use this for
-"is this citation real?", not a plain format/resolve.
+Citation fields go inside a **`claimed`** object: `title` (required) plus an identifier
+(`doi`, `pmid`, … — recommended) and optional `authors` / `year` / `container`. Returns
+`{ ok, verdict, confidence, matched }`, verdict ∈ `matched` / `mismatch` / `ambiguous` /
+`not_found`. `mismatch` = the identifier resolves but the title doesn't — the dominant
+AI-fabrication pattern (real DOI + invented title; Topaz et al., Lancet 2026); `ambiguous` =
+the identifier resolves to one paper but the claimed title matches a different real paper
+(wrong-identifier citation error). Use this for "is this citation real?", not a plain
+format/resolve.
 
 ## Pitfalls
 - Never scrape the web UI — the JSON API is faster and stable.
