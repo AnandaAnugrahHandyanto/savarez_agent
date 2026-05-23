@@ -1,7 +1,7 @@
 name: ntfy-platform
 label: ntfy
 kind: platform
-version: 1.0.0
+version: 1.0.1
 description: >
   ntfy push-notification gateway adapter for Hermes Agent.
   Subscribes to a topic on ntfy.sh or any self-hosted ntfy server via
