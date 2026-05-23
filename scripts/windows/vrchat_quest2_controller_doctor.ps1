@@ -15,11 +15,16 @@
 param(
     [switch]$Json,
     [switch]$ApplyFixHints,
+    [switch]$Fix,
+    [switch]$ResetBindings,
+    [ValidateSet('Auto','VirtualDesktop','SteamVR')]
+    [string]$OpenXrRuntime = 'Auto',
     [string]$OutputPath = ""
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'SilentlyContinue'
+if ($Fix) { $ApplyFixHints = $true }
 
 function Get-ProcessMatches {
     param([string[]]$Terms)
@@ -47,21 +52,13 @@ function Get-ProcessMatches {
 }
 
 function Get-RegistryOpenXr {
+    if (Get-Command Get-RegistryOpenXrFixed -ErrorAction SilentlyContinue) { return Get-RegistryOpenXrFixed }
     $results = @()
     foreach ($root in @('HKLM:\SOFTWARE\Khronos\OpenXR\1', 'HKCU:\SOFTWARE\Khronos\OpenXR\1')) {
-        $active = Join-Path $root 'ActiveRuntime'
-        $item = [PSCustomObject]@{
-            root          = $root
-            active_exists = (Test-Path $active)
-            active_json   = $null
-            active_dll    = $null
-        }
-        if (Test-Path $active) {
-            $props = Get-ItemProperty $active
-            $item.active_json = ($props | ConvertTo-Json -Compress)
-            if ($props.PSObject.Properties.Name -contains '(default)') {
-                $item.active_dll = $props.'(default)'
-            }
+        $item = [PSCustomObject]@{ root=$root; key_exists=(Test-Path $root); active_exists=$false; active_manifest=$null }
+        if (Test-Path $root) {
+            $props = Get-ItemProperty $root -ErrorAction SilentlyContinue
+            if ($props -and $props.ActiveRuntime) { $item.active_exists=$true; $item.active_manifest=[string]$props.ActiveRuntime }
         }
         $results += $item
     }
@@ -248,7 +245,7 @@ function Get-FixRecommendations {
     if ($log.log_found -and $log.openxr_binding -eq 'Custom') {
         $recs.Add('1-HIGH: VRChat loaded Custom OpenXR binding. Reset: Quick Menu > Options > Controls > Reset VR Controls; or delete %LOCALAPPDATA%Low\\VRChat\\VRChat\\Bindings then restart.')
     }
-    if ($Report.openxr_registry | Where-Object { -not $_.active_exists }) {
+    if ($Report.openxr_registry | Where-Object { $_.key_exists -and -not $_.active_exists }) {
         $recs.Add('1-HIGH: No OpenXR ActiveRuntime in registry. Install Meta Quest Link (PC) OR set SteamVR as OpenXR runtime via SteamVR Settings > Developer > Set SteamVR as OpenXR Runtime.')
     }
     if (-not $Report.oculus_install.client_exe) {
@@ -265,8 +262,8 @@ function Get-FixRecommendations {
         $recs.Add('2-MED: VD streamer is running but SteamVR is not. In VD Streamer: enable SteamVR integration + controller tracking; launch VRChat from Games tab with controllers awake in VD.')
     }
     foreach ($reg in $Report.openxr_registry) {
-        if ($reg.active_dll -and ($reg.active_dll -notmatch 'oculus|meta|steam')) {
-            $recs.Add('2-MED: OpenXR active runtime is neither Oculus nor SteamVR: ' + $reg.active_dll)
+        if ($reg.active_manifest -and ($reg.active_manifest -notmatch 'oculus|meta|steam|virtualdesktop|Virtual Desktop')) {
+            $recs.Add('2-MED: OpenXR active runtime is neither Oculus nor SteamVR: ' + $reg.active_manifest)
         }
     }
     if (-not $Report.steamvr_install.vrstartup_exists) {
@@ -333,4 +330,15 @@ if ($Json) {
 if ($ApplyFixHints) {
     Write-Host ''
     Write-Host 'ApplyFixHints is informational only — no automatic destructive fixes.' -ForegroundColor DarkYellow
+}
+
+. (Join-Path $PSScriptRoot 'vrchat_quest2_openxr_fix.ps1')
+if ($Fix) {
+    Write-Host ''
+    Write-Host '=== Applying OpenXR fixes (-Fix) ===' -ForegroundColor Cyan
+    try {
+        $fixResult = Invoke-OpenXrFix -Preference $OpenXrRuntime -ResetBindings:$ResetBindings
+        $fixResult.registry_writes | ForEach-Object { Write-Host ("  wrote: " + $_) -ForegroundColor Green }
+    } catch { Write-Host ("Fix failed: " + $_.Exception.Message) -ForegroundColor Red }
+    Get-VirtualDesktopStreamerHints | ForEach-Object { Write-Host ("  - " + $_) -ForegroundColor Yellow }
 }
