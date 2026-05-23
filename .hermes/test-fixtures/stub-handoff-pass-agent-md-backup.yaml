@@ -1,0 +1,9 @@
+task_id: T-PASS-AGENT-MD-BACKUP
+agent: claude_code
+completed_at: "2026-05-22T20:00:00Z"
+summary: "AGENTS.md.backup is allowed (not exact forbidden name)"
+changed_files:
+  - "AGENTS.md.backup"
+test_results:
+  passed: true
+  summary: "All tests passed"

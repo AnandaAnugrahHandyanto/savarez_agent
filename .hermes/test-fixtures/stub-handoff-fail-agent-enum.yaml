@@ -1,0 +1,9 @@
+task_id: T-FAIL-AGENT-ENUM
+agent: grok  # invalid enum (must be claude_code or codex)
+completed_at: "2026-05-22T20:00:00Z"
+summary: "Invalid agent enum test fixture"
+changed_files:
+  - "docs/example.md"
+test_results:
+  passed: true
+  summary: "No tests run"

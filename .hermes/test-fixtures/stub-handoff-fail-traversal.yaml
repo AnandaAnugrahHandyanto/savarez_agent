@@ -1,0 +1,8 @@
+task_id: T-FAIL-TRAVERSAL
+agent: codex
+completed_at: "2026-05-22T20:00:00Z"
+summary: "Path with .. traversal must be rejected"
+changed_files:
+  - "../outside.txt"
+test_results:
+  passed: true

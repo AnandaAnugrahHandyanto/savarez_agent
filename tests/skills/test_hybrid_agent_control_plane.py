@@ -20,7 +20,10 @@ Coverage:
 """
 from __future__ import annotations
 
+import importlib.util
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +44,20 @@ FIXTURE_PASS = HERMES / "test-fixtures" / "stub-handoff-pass.yaml"
 FIXTURE_FAIL_SCHEMA = HERMES / "test-fixtures" / "stub-handoff-fail-schema.yaml"
 FIXTURE_FAIL_FORBIDDEN = HERMES / "test-fixtures" / "stub-handoff-fail-forbidden.yaml"
 FIXTURE_FAIL_TESTS = HERMES / "test-fixtures" / "stub-handoff-fail-tests.yaml"
+FIXTURE_FAIL_AGENT_ENUM = HERMES / "test-fixtures" / "stub-handoff-fail-agent-enum.yaml"
+FIXTURE_FAIL_TEST_RESULTS_ABSENT = HERMES / "test-fixtures" / "stub-handoff-fail-test-results-absent.yaml"
+FIXTURE_FAIL_EMPTY_CHANGED_FILES = HERMES / "test-fixtures" / "stub-handoff-fail-empty-changed-files.yaml"
+FIXTURE_FAIL_DOTSLASH_PROMPT_ARTIFACT = HERMES / "test-fixtures" / "stub-handoff-fail-dotslash-prompt-artifact.yaml"
+FIXTURE_FAIL_TRAVERSAL = HERMES / "test-fixtures" / "stub-handoff-fail-traversal.yaml"
+FIXTURE_PASS_AGENT_MD_BACKUP = HERMES / "test-fixtures" / "stub-handoff-pass-agent-md-backup.yaml"
+NEW_FAIL_FIXTURES = [
+    FIXTURE_FAIL_AGENT_ENUM,
+    FIXTURE_FAIL_TEST_RESULTS_ABSENT,
+    FIXTURE_FAIL_EMPTY_CHANGED_FILES,
+    FIXTURE_FAIL_DOTSLASH_PROMPT_ARTIFACT,
+    FIXTURE_FAIL_TRAVERSAL,
+]
+NEW_PASS_FIXTURES = [FIXTURE_PASS_AGENT_MD_BACKUP]
 RUN_MANIFEST_TPL = HERMES / "templates" / "run-manifest.yaml.j2"
 TASK_CONTRACT_TPL = HERMES / "templates" / "task-contract.yaml.j2"
 
@@ -76,10 +93,38 @@ def load_yaml_file(path: Path) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+CHECKER_PATH = REPO / "scripts" / "check_hybrid_control_plane.py"
+_CHECK_SPEC = importlib.util.spec_from_file_location(
+    "_check_hybrid_control_plane",
+    str(CHECKER_PATH),
+)
+if _CHECK_SPEC is None or _CHECK_SPEC.loader is None:
+    raise RuntimeError(f"Unable to load checker module from {CHECKER_PATH}")
+_CHECKER = importlib.util.module_from_spec(_CHECK_SPEC)
+sys.modules[_CHECK_SPEC.name] = _CHECKER
+_CHECK_SPEC.loader.exec_module(_CHECKER)
+
+# Production helpers loaded from the checker script (authoritative implementations).
+is_repo_relative_posix = _CHECKER.is_repo_relative_posix
+is_forbidden_path = _CHECKER.is_forbidden_path
+validate_changed_files_for_schema = _CHECKER.validate_changed_files_for_schema
+validate_path_format_and_forbidden = _CHECKER.validate_path_format_and_forbidden
+validate_schema = _CHECKER.validate_schema
+
+
 def is_forbidden(filepath: str) -> bool:
-    return any(
-        filepath.startswith(p) or filepath == p.rstrip("/")
-        for p in FORBIDDEN_PREFIXES
+    return bool(is_forbidden_path(filepath))
+
+
+def run_checker(args: list[str]) -> subprocess.CompletedProcess[str]:
+    """Invoke the checker script through Python so subprocess tests cover CLI behavior."""
+    return subprocess.run(
+        [sys.executable, str(CHECKER_PATH), *args],
+        cwd=str(REPO),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
     )
 
 
@@ -394,3 +439,199 @@ class TestHandoffSchema:
         assert "token_count_estimate" in text, (
             "handoff-v1.yaml should include token_count_estimate in cost method enum"
         )
+
+
+# ---------------------------------------------------------------------------
+# Section 8: Phase 1.5 amended fixtures and checker gates
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("fixture_path", NEW_FAIL_FIXTURES + NEW_PASS_FIXTURES)
+def test_phase_15_fixture_exists(fixture_path: Path):
+    assert fixture_path.is_file(), f"Missing Phase 1.5 fixture: {fixture_path.name}"
+
+
+def test_path_policy_uses_production_helpers_for_dotslash_and_backup():
+    # ./AGENTS.md normalizes to AGENTS.md → forbidden path (not format error)
+    assert is_forbidden_path("./AGENTS.md") is True
+    assert is_forbidden_path("AGENTS.md.backup") is False
+
+    ok, err = validate_path_format_and_forbidden(["AGENTS.md.backup"])
+    assert ok is True, err
+
+    # Policy change: leading ./ is normalized away; ./AGENTS.md => forbidden, not format error
+    ok, err = validate_path_format_and_forbidden(["./AGENTS.md"])
+    assert ok is False
+    assert err and "Forbidden path" in err, f"Expected 'Forbidden path' in error, got: {err!r}"
+
+
+def test_dotslash_ordinary_path_is_valid_after_normalization():
+    """Leading ./ on an ordinary (non-forbidden) path must be accepted and normalized."""
+    ok, err = validate_path_format_and_forbidden(["./src/main.py"])
+    assert ok is True, f"Expected ./src/main.py to be valid after normalization, got err: {err!r}"
+
+    ok, err = validate_path_format_and_forbidden(["./README.md"])
+    assert ok is True, f"Expected ./README.md to be valid after normalization, got err: {err!r}"
+
+
+def test_dotslash_on_forbidden_prefix_is_forbidden_not_format_error():
+    """./AGENTS.md and ./.hermes/plans/x.md must be caught as forbidden, not format error."""
+    ok, err = validate_path_format_and_forbidden(["./AGENTS.md"])
+    assert ok is False
+    assert err and "Forbidden path" in err, f"Expected 'Forbidden path', got: {err!r}"
+
+    ok, err = validate_path_format_and_forbidden(["./.hermes/plans/x.md"])
+    assert ok is False
+    assert err and "Forbidden path" in err, f"Expected 'Forbidden path', got: {err!r}"
+
+
+def test_bare_dotslash_is_still_invalid():
+    """A path that is just './' (no filename) must still be rejected as invalid format."""
+    ok, err = validate_path_format_and_forbidden(["./"])
+    assert ok is False, "'./' alone must be rejected as invalid path"
+
+
+def test_dotdot_traversal_still_rejected():
+    """'../foo' must remain invalid regardless of dotslash normalization."""
+    ok, err = validate_path_format_and_forbidden(["../outside.txt"])
+    assert ok is False
+    assert err and "Invalid path format" in err, f"Expected 'Invalid path format', got: {err!r}"
+
+
+def test_is_repo_relative_posix_accepts_dotslash_ordinary():
+    """is_repo_relative_posix must return True for './src/foo.py' after policy change."""
+    assert is_repo_relative_posix("./src/foo.py") is True
+    assert is_repo_relative_posix("./README.md") is True
+
+
+def test_is_repo_relative_posix_still_rejects_invalid():
+    """Absolute paths, backslashes, drive paths, and '..' still rejected."""
+    assert is_repo_relative_posix("/absolute") is False
+    assert is_repo_relative_posix("..") is False
+    assert is_repo_relative_posix("../foo") is False
+    assert is_repo_relative_posix("C:\\file.txt") is False
+    assert is_repo_relative_posix("") is False
+    assert is_repo_relative_posix("./") is False
+
+
+def test_schema_validation_does_not_swallow_path_policy_failures():
+    data = {
+        "task_id": "path-policy-split",
+        "agent": "codex",
+        "completed_at": "2026-05-22T00:00:00Z",
+        "summary": "schema-valid but path-invalid",
+        "changed_files": ["../outside.txt", ".hermes/config/capability-matrix.yaml"],
+    }
+    ok, err, next_gate = validate_schema(data)
+    assert ok is True, err
+    assert next_gate == "forbidden_path_writes"
+
+    ok, err = validate_path_format_and_forbidden(data["changed_files"])
+    assert ok is False
+    assert err and "Invalid path format" in err
+
+
+@pytest.mark.parametrize(
+    "fixture_path, expected_error",
+    [
+        (FIXTURE_FAIL_FORBIDDEN, "Forbidden path"),
+        (FIXTURE_FAIL_DOTSLASH_PROMPT_ARTIFACT, "Forbidden path"),
+        (FIXTURE_FAIL_TRAVERSAL, "Invalid path format"),
+    ],
+)
+def test_protected_or_invalid_paths_fail_at_forbidden_gate(fixture_path: Path, expected_error: str):
+    result = run_checker(["--handoff", str(fixture_path.relative_to(REPO))])
+    assert result.returncode != 0
+    assert result.stderr.strip() == ""
+    assert "Traceback" not in result.stdout
+    assert "Traceback" not in result.stderr
+    assert "schema_validation: PASS" in result.stdout
+    assert "forbidden_path_writes: FAIL" in result.stdout
+    assert expected_error in result.stdout
+    assert "prompt_artifact_unchanged" not in result.stdout
+    assert "unit_tests" not in result.stdout
+    assert "AUTOMATED_PASS_HUMAN_REVIEW_REQUIRED" not in result.stdout
+
+
+def test_agent_enum_failure_remains_schema_gate():
+    result = run_checker(["--handoff", str(FIXTURE_FAIL_AGENT_ENUM.relative_to(REPO))])
+    assert result.returncode != 0
+    assert result.stderr.strip() == ""
+    assert "schema_validation: FAIL" in result.stdout
+    assert "agent enum" in result.stdout
+    assert "forbidden_path_writes" not in result.stdout
+
+
+def test_empty_changed_files_failure_remains_schema_gate():
+    result = run_checker(["--handoff", str(FIXTURE_FAIL_EMPTY_CHANGED_FILES.relative_to(REPO))])
+    assert result.returncode != 0
+    assert result.stderr.strip() == ""
+    assert "schema_validation: FAIL" in result.stdout
+    assert "changed_files must be non-empty" in result.stdout
+    assert "forbidden_path_writes" not in result.stdout
+
+
+def test_missing_test_results_fails_at_unit_tests_gate_before_human_review():
+    result = run_checker(["--handoff", str(FIXTURE_FAIL_TEST_RESULTS_ABSENT.relative_to(REPO))])
+    assert result.returncode != 0
+    assert result.stderr.strip() == ""
+    assert "schema_validation: PASS" in result.stdout
+    assert "forbidden_path_writes: PASS" in result.stdout
+    assert "prompt_artifact_unchanged: PASS" in result.stdout
+    assert "diff_size_limit: SKIP" in result.stdout
+    assert "unit_tests: SKIP/missing evidence" in result.stdout
+    assert "cost_cap" not in result.stdout
+    assert "AUTOMATED_PASS_HUMAN_REVIEW_REQUIRED" not in result.stdout
+
+
+def test_failed_test_results_print_unit_tests_failure_before_human_review():
+    result = run_checker(["--handoff", str(FIXTURE_FAIL_TESTS.relative_to(REPO))])
+    assert result.returncode != 0
+    assert result.stderr.strip() == ""
+    assert "schema_validation: PASS" in result.stdout
+    assert "forbidden_path_writes: PASS" in result.stdout
+    assert "unit_tests: failed" in result.stdout
+    assert "cost_cap" not in result.stdout
+    assert "AUTOMATED_PASS_HUMAN_REVIEW_REQUIRED" not in result.stdout
+
+
+def test_success_result_is_automated_pass_with_human_review_required():
+    result = run_checker(["--handoff", str(FIXTURE_PASS.relative_to(REPO))])
+    assert result.returncode == 0
+    assert result.stderr.strip() == ""
+    assert "schema_validation: PASS" in result.stdout
+    assert "forbidden_path_writes: PASS" in result.stdout
+    assert "diff_size_limit: SKIP" in result.stdout
+    assert "unit_tests: passed" in result.stdout
+    assert "cost_cap: SKIP" in result.stdout
+    assert "RESULT: AUTOMATED_PASS_HUMAN_REVIEW_REQUIRED" in result.stdout
+
+
+def test_all_handoff_fixtures_mode_passes_registered_fixtures():
+    result = run_checker(["--all-handoff-fixtures"])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stderr.strip() == ""
+    assert "stub-handoff-pass-agent-md-backup.yaml -> pass" in result.stdout
+
+
+def test_all_handoff_fixtures_mode_fails_closed_on_unknown_fixture():
+    unknown = HERMES / "test-fixtures" / "stub-handoff-unknown-temporary.yaml"
+    unknown.write_text(
+        "task_id: unknown-fixture\n"
+        "agent: codex\n"
+        "completed_at: 2026-05-22T00:00:00Z\n"
+        "summary: Should be rejected by closed fixture map.\n"
+        "changed_files:\n"
+        "  - src/allowed.py\n"
+        "test_results:\n"
+        "  passed: true\n",
+        encoding="utf-8",
+    )
+    try:
+        result = run_checker(["--all-handoff-fixtures"])
+    finally:
+        unknown.unlink(missing_ok=True)
+
+    assert result.returncode != 0
+    assert result.stderr.strip() == ""
+    assert "unexpected handoff fixtures" in result.stdout
+    assert "stub-handoff-unknown-temporary.yaml" in result.stdout

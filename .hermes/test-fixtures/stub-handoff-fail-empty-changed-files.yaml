@@ -1,0 +1,8 @@
+task_id: T-FAIL-EMPTY-CHANGED
+agent: codex
+completed_at: "2026-05-22T20:00:00Z"
+summary: "changed_files must be non-empty list"
+changed_files: []
+test_results:
+  passed: true
+  summary: "No files"

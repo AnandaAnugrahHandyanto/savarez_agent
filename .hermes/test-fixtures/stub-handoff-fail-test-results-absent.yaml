@@ -1,0 +1,7 @@
+task_id: T-FAIL-TEST-RESULTS-ABSENT
+agent: claude_code
+completed_at: "2026-05-22T20:00:00Z"
+summary: "Missing test_results triggers unit_tests gate with SKIP note"
+changed_files:
+  - "src/module.py"
+# intentionally no test_results key

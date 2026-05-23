@@ -1,0 +1,8 @@
+task_id: T-FAIL-DOTSLASH-PROMPT
+agent: claude_code
+completed_at: "2026-05-22T20:00:00Z"
+summary: "./AGENTS.md is forbidden prompt artifact"
+changed_files:
+  - "./AGENTS.md"
+test_results:
+  passed: true
