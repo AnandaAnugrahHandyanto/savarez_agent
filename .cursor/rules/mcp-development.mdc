@@ -15,7 +15,7 @@ alwaysApply: false
 ## Architecture
 
 - `mcp_serve.py` — Main MCP server entry point (stdio transport)
-- `hermes_skills_mcp.py` — Standalone module providing 7 read-only skills/knowledge tools
+- `hermes_skills_mcp.py` — Standalone module providing 8 read-only skills/knowledge tools
 - `.cursor/mcp.json` — Cursor auto-connects to the server defined here
 - Transport: stdio (no HTTP, no gateway dependency for skills tools)
 
@@ -23,13 +23,14 @@ alwaysApply: false
 
 | Surface | Module | Tools | Gateway Required |
 |---------|--------|-------|-----------------|
-| Skills & Knowledge | `hermes_skills_mcp.py` | 7 read-only | No |
+| Skills & Knowledge | `hermes_skills_mcp.py` | 8 read-only | No |
 | Messaging & Ops | `mcp_serve.py` core | 10 messaging tools | Yes |
 
 ### Skills tools (read-only, no gateway)
 
 | Tool | Input | Returns |
 |------|-------|---------|
+| `fleet_context_snapshot()` | — | Bounded session bootstrap: mode, paths, registry, memory, knowledge, held-spec flags |
 | `skills_list()` | — | All SOUL.md files and repo skills |
 | `skills_read(name)` | agent/skill name | Full SOUL.md or skill content |
 | `agents_list(include_heartbeat)` | bool | Registry + optional heartbeat |
@@ -59,7 +60,7 @@ alwaysApply: false
 ## Adding a new messaging/ops tool
 
 1. Define in the appropriate module under `mcp_serve.py` dispatch
-2. Requires gateway connection (Together AI / messaging platform)
+2. Requires gateway connection / messaging platform state
 3. Must respect authority model — tool cannot exceed the invoking agent's authority
 4. Add to `toolsets.py` if it should be available to agents
 5. Test via `scripts/run_tests.sh tests/tools/`

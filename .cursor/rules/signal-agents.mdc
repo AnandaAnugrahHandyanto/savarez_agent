@@ -1,12 +1,15 @@
 ---
 description: Signal agent workflows — Herald, Bellringer, Intraday Mover, catalyst tracking, and email delivery
 globs:
+  - "agents/AGENT_REGISTRY.json"
   - "agents/herald/**"
   - "agents/bellringer*/**"
   - "agents/intraday_mover_watch/**"
   - "agents/catalyst_delta/**"
   - "agents/crt_resolution_watcher/**"
   - "agents/event_analyst/**"
+  - "artifacts/ops/knowledge_layer/**"
+  - "artifacts/ops/held_spec_ledger/**"
   - "data/press_releases/**"
   - "tools/run_agent_direct.py"
 alwaysApply: false

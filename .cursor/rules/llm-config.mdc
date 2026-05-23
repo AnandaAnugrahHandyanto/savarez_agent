@@ -10,19 +10,23 @@ alwaysApply: false
 
 # LLM & Model Configuration
 
-## Provider hierarchy (May 2026)
+## Provider / model source of truth
 
-| Provider | Role | Key Env Var |
-|----------|------|------------|
-| Together AI | Primary (all agents) | TOGETHER_API_KEY |
-| Anthropic SDK | Fallback | ANTHROPIC_API_KEY |
-| OpenRouter | Previous primary (credits exhausted) | OPENROUTER_API_KEY |
+Do **not** infer the active provider/model from this rule. Verify the current
+runtime source before changing model configuration:
+
+1. `fleet_context_snapshot()` for fleet state and missing layers
+2. `agents_list(include_heartbeat=true)` for agent registry / heartbeat state
+3. `hermes model` or `hermes config get model` for local CLI defaults
+4. Relevant runtime wrappers/scripts for production-pinned model values
+
+Secrets belong in `.env`; non-secret routing/settings belong in config.
 
 ### Model routing logic
 
 - `llama*` patterns -> Together AI (OpenAI-compatible endpoint)
 - `claude*` patterns -> Anthropic SDK
-- Primary fleet model: **deepseek/deepseek-v4-flash:free** (migrated 2026-05-20)
+- HOT memory currently records fleet model: **deepseek/deepseek-v4-flash:free** (migrated 2026-05-20). Verify before editing.
 
 ## Inference parameters (production)
 
