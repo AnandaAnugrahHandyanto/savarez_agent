@@ -1056,6 +1056,7 @@ def run_conversation(
                 if agent.api_mode == "codex_responses":
                     api_kwargs = agent._get_transport().preflight_kwargs(api_kwargs, allow_stream=False)
 
+                _pre_results: list = []
                 try:
                     from hermes_cli.plugins import invoke_hook as _invoke_hook
                     request_messages = api_kwargs.get("messages")
@@ -1069,7 +1070,7 @@ def run_conversation(
                     # mutated by the agent loop, so a shallow copy is
                     # sufficient; a deepcopy would walk every tool result
                     # and base64 image on every API call.
-                    _invoke_hook(
+                    _pre_results = _invoke_hook(
                         "pre_api_request",
                         task_id=effective_task_id,
                         session_id=agent.session_id or "",
@@ -1091,11 +1092,30 @@ def run_conversation(
                 except Exception:
                     pass
 
+                # Allow plugins to override model/provider before the API call.
+                # Plugins inspect the request and return {"model": "...", "provider": "..."}.
+                # Only the first non-None override takes effect.
+                _model_overridden = False
+                for _result in _pre_results:
+                    if isinstance(_result, dict) and _result.get("model"):
+                        agent.model = _result["model"]
+                        if _result.get("provider"):
+                            agent.provider = _result["provider"]
+                        if _result.get("base_url"):
+                            agent.base_url = _result["base_url"]
+                        _model_overridden = True
+                        break
+                if _model_overridden:
+                    api_kwargs = agent._build_api_kwargs(api_messages)
+                    if agent._force_ascii_payload:
+                        _sanitize_structure_non_ascii(api_kwargs)
+                    if agent.api_mode == "codex_responses":
+                        api_kwargs = agent._get_transport().preflight_kwargs(api_kwargs, allow_stream=False)
+
                 if env_var_enabled("HERMES_DUMP_REQUESTS"):
                     agent._dump_api_request_debug(api_kwargs, reason="preflight")
 
-                # Always prefer the streaming path — even without stream
-                # consumers.  Streaming gives us fine-grained health
+                # Always prefer the streaming path
                 # checking (90s stale-stream detection, 60s read timeout)
                 # that the non-streaming path lacks.  Without this,
                 # subagents and other quiet-mode callers can hang
