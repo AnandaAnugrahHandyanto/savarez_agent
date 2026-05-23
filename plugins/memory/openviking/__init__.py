@@ -491,6 +491,23 @@ class OpenVikingMemoryProvider(MemoryProvider):
         global _last_active_provider
         _last_active_provider = self
 
+    def on_session_switch(self, new_session_id: str, *, reset: bool = False, **kwargs) -> None:
+        """Update cached session state on session rotation.
+
+        Called after /new, /reset, /resume, /branch, or context compression.
+        Updates _session_id so subsequent sync_turn() and on_session_end()
+        write to the correct session on the OpenViking server.
+
+        Args:
+            new_session_id: The new session identifier.
+            reset: True for genuinely new conversations (/new, /reset).
+                   Resets _turn_count to 0. False for /resume, /branch,
+                   compression where the conversation continues.
+        """
+        self._session_id = new_session_id
+        if reset:
+            self._turn_count = 0
+
     def system_prompt_block(self) -> str:
         if not self._client:
             return ""
