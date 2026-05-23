@@ -214,5 +214,52 @@
         }
       }
     ]
+  },
+  {
+    "id": "contradiction_engine_review_recommendation",
+    "dimension": "contradiction_engine",
+    "description": "Contradiction engine flags conflicting facts for review.",
+    "query": "Should external-channel memory exposure be allowed?",
+    "expected_answer": "review_contradiction",
+    "memories": [
+      {
+        "fact_id": "external-exposure-allowed",
+        "subject": "external-channel memory exposure",
+        "predicate": "policy",
+        "object": "allowed",
+        "project_id": "memory-fabric",
+        "source_episode_id": "episode-policy-old",
+        "provenance": "bench:contradiction-engine:old",
+        "confidence": 0.82,
+        "valid_from": "2026-05-16T00:00:00Z",
+        "system_created_at": "2026-05-16T10:00:00Z",
+        "governance": {
+          "read_only": true,
+          "would_write_memory": false,
+          "would_modify_config": false,
+          "would_write_graph": false,
+          "does_not_create_operation_events": true
+        }
+      },
+      {
+        "fact_id": "external-exposure-blocked",
+        "subject": "external-channel memory exposure",
+        "predicate": "policy",
+        "object": "blocked_until_reviewed",
+        "project_id": "memory-fabric",
+        "source_episode_id": "episode-policy-current",
+        "provenance": "bench:contradiction-engine:current",
+        "confidence": 0.94,
+        "valid_from": "2026-05-22T00:00:00Z",
+        "system_created_at": "2026-05-22T10:00:00Z",
+        "governance": {
+          "read_only": true,
+          "would_write_memory": false,
+          "would_modify_config": false,
+          "would_write_graph": false,
+          "does_not_create_operation_events": true
+        }
+      }
+    ]
   }
 ]

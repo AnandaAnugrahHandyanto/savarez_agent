@@ -123,6 +123,21 @@ All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes
 
 ---
 
+## Hermes Memory Fabric Foundations
+
+The local Memory Fabric foundations include deterministic, read-only modules for
+benchmarking, retrieval fusion, bi-temporal fact reasoning, and contradiction
+classification.
+
+Contradiction Engine v0.1 lives in `agent.memory_contradiction_engine`. It
+classifies fact relationships as `supports`, `updates`, `contradicts`,
+`unrelated`, or `needs_review` while preserving bi-temporal fields and
+provenance through `normalize_fact`. Contradictions are flagged for review and
+future governed proposal handling; they are not directly written to durable
+memory or the Memory Graph.
+
+---
+
 ## Migrating from OpenClaw
 
 If you're coming from OpenClaw, Hermes can automatically import your settings, memories, skills, and API keys.

@@ -26,6 +26,7 @@ python -m benchmarks.hermes_memory_bench.run --suite smoke --output /tmp/hermes-
 - `contradiction_handling`
 - `hybrid_retrieval_fusion`
 - `bitemporal_fact_graph`
+- `contradiction_engine`
 - `latency_ms`
 
 ## Hybrid Retrieval Fusion v0.1
@@ -69,6 +70,24 @@ claims, and explain fact lineage so superseded historical facts remain visible.
 
 The smoke suite includes `bitemporal_fact_graph`, proving that a newer valid
 fact wins while the older historical fact remains explainable through lineage.
+
+## Contradiction Engine v0.1
+
+Contradiction Engine v0.1 lives in
+`agent.memory_contradiction_engine`. It exposes deterministic read-only
+classification for memory facts and candidates with relation labels:
+`supports`, `updates`, `contradicts`, `unrelated`, and `needs_review`.
+
+The engine imports `normalize_fact` from the Bi-temporal Fact Graph module, so
+validity windows, system timestamps, source episode ids, provenance, confidence,
+and governance metadata are preserved without mutating inputs. Contradictions
+are flagged for review or later governed proposal handling; the engine does not
+write memory, write the Memory Graph, modify config, approve allowlists, create
+proposals, or create operation-ledger events.
+
+The smoke suite includes `contradiction_engine`, proving that a candidate fact
+which conflicts with an existing fact returns a review recommendation rather
+than being merged directly.
 
 ## Report Schema
 

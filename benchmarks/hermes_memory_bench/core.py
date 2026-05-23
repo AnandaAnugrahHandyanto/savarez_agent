@@ -12,6 +12,7 @@ from agent.memory_bitemporal_fact_graph import (
     explain_fact_lineage,
     select_current_facts,
 )
+from agent.memory_contradiction_engine import explain_contradiction_group, group_contradictions
 from agent.memory_retrieval_fusion import fuse_memory_retrieval
 
 
@@ -25,6 +26,7 @@ DIMENSIONS = (
     "contradiction_handling",
     "hybrid_retrieval_fusion",
     "bitemporal_fact_graph",
+    "contradiction_engine",
     "latency_ms",
 )
 POLICY = {
@@ -197,6 +199,17 @@ def _answer_case(case: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             "lineage": lineage,
             "candidate_count": len(memories),
             "policy": dict(BITEMPORAL_FACT_GRAPH_POLICY),
+        }
+
+    if dimension == "contradiction_engine":
+        groups = group_contradictions(memories)
+        explanation = explain_contradiction_group(groups[0]) if groups else {}
+        recommendation = explanation.get("recommended_action", {})
+        return recommendation.get("action", "no_action"), {
+            "contradiction_groups": groups,
+            "explanation": explanation,
+            "review_recommendation": recommendation,
+            "candidate_count": len(memories),
         }
 
     selected = _newest(memories)
