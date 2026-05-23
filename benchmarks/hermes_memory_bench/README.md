@@ -47,6 +47,7 @@ python -m benchmarks.hermes_memory_bench.run --suite smoke --output /tmp/hermes-
 - `memory_human_approval_token_final_confirmation_review_gate`
 - `memory_human_approval_token_write_execution_plan`
 - `memory_human_approval_token_write_execution_dry_run`
+- `memory_human_approval_token_write_final_gate`
 - `latency_ms`
 
 ## Hybrid Retrieval Fusion v0.1
@@ -501,6 +502,28 @@ The smoke suite includes
 execution plan becomes manual-token-write-final-preflight-required without
 issuing a token, persisting approval, creating a real proposal, writing token
 files, writing approval audit, or creating an operation event.
+
+### Memory Human Approval Token Write Final Gate v0.1
+
+Implemented in `agent.memory_human_approval_token_write_final_gate`. It turns a
+valid `manual_token_write_final_preflight_required` execution dry-run candidate
+into a deterministic, read-only final gate candidate with
+`eligible_for_real_token_write_executor` status.
+
+Locked or invalid execution dry runs, missing previews, missing source
+evidence, missing final preflight checklists, preview integrity failures, and
+final preflight integrity failures become locked final gate candidates with
+explicit reasons. The final gate may route to a separate real token write
+executor later, but v0.1 does not invoke that executor, issue approval tokens,
+persist approvals, create real proposals, write proposal files, write
+operation-ledger events, write token files, write approval audit records,
+submit to governance, write memory, write the Memory Graph, or modify config.
+
+The smoke suite includes `memory_human_approval_token_write_final_gate`,
+proving that a valid write execution dry run becomes executor-eligible without
+issuing a token, persisting approval, invoking the executor, writing token
+files, writing approval audit, creating a real proposal, or creating an
+operation event.
 
 ## Report Schema
 

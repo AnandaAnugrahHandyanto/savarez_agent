@@ -215,6 +215,13 @@ manual-token-write-execution-plan-required candidates without issuing tokens,
 persisting approvals, writing token files, writing approval audit, creating real
 proposals, or creating operation-ledger events.
 
+Memory Human Approval Token Write Final Gate v0.1 lives in
+`agent.memory_human_approval_token_write_final_gate`. It marks valid final
+preflight dry-run candidates as eligible for a separate real token write
+executor without invoking that executor, issuing tokens, persisting approvals,
+writing token files, writing approval audit, creating real proposals, or
+creating operation-ledger events.
+
 ---
 
 ## Migrating from OpenClaw
