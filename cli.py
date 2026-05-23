@@ -14782,6 +14782,14 @@ def main(
                     # status lines).  The response is printed once below.
                     cli.agent.stream_delta_callback = None
                     cli.agent.tool_gen_callback = None
+                    try:
+                        from hermes_cli.kanban_worker_log import (
+                            wire_kanban_worker_log_callbacks,
+                        )
+
+                        wire_kanban_worker_log_callbacks(cli.agent)
+                    except ImportError:
+                        pass
                     result = cli.agent.run_conversation(
                         user_message=effective_query,
                         conversation_history=cli.conversation_history,

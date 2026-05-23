@@ -111,6 +111,12 @@ def test_specify_task_happy_path(kanban_home):
     assert task.title == "Refined rough"
     assert "**Goal**" in (task.body or "")
 
+    log = kb.read_worker_log(tid)
+    assert log is not None
+    assert "Kanban specify" in log
+    assert "Calling auxiliary LLM" in log
+    assert "Refined rough" in log
+
 
 def test_specify_task_falls_back_to_body_only_on_bad_json(kanban_home):
     with kb.connect() as conn:

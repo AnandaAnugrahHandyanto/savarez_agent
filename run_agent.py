@@ -693,6 +693,16 @@ class AIAgent:
             self._vprint(f"{self.log_prefix}{message}", force=True)
         except Exception:
             pass
+        try:
+            from hermes_cli.kanban_worker_log import (
+                kanban_task_id_from_env,
+                write_active_worker_log,
+            )
+
+            if kanban_task_id_from_env() and message:
+                write_active_worker_log(f"\n[status] {message}\n")
+        except ImportError:
+            pass
         if self.status_callback:
             try:
                 self.status_callback("lifecycle", message)

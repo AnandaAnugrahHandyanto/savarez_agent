@@ -226,8 +226,28 @@ def specify_task(
         # final JSON in content, so disable reasoning for this formatting step.
         request_kwargs["reasoning_effort"] = "none"
 
+    from hermes_cli.kanban_worker_log import emit_task_worker_log, task_worker_log
+
     try:
-        resp = client.chat.completions.create(**request_kwargs)
+        with task_worker_log(task_id, operation="specify", model=model or ""):
+            emit_task_worker_log("Calling auxiliary LLM…\n")
+            resp = client.chat.completions.create(**request_kwargs)
+            try:
+                raw = (resp.choices[0].message.content or "").strip()
+            except Exception:
+                raw = ""
+            try:
+                from agent.cursor_auxiliary_client import CursorAuxiliaryClient
+
+                streamed = isinstance(client, CursorAuxiliaryClient)
+            except ImportError:
+                streamed = False
+            if not streamed:
+                emit_task_worker_log("\n--- LLM response ---\n")
+                if raw:
+                    emit_task_worker_log(raw)
+                    if not raw.endswith("\n"):
+                        emit_task_worker_log("\n")
     except Exception as exc:
         logger.info(
             "specify: API call failed for %s (%s) — skipping",
@@ -237,11 +257,6 @@ def specify_task(
         return SpecifyOutcome(
             task_id, False, f"LLM error: {detail}"
         )
-
-    try:
-        raw = (resp.choices[0].message.content or "").strip()
-    except Exception:
-        raw = ""
 
     parsed = _extract_json_blob(raw)
 

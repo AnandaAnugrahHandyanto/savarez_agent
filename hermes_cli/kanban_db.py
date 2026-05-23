@@ -6131,6 +6131,50 @@ def gc_worker_logs(
 # Worker log accessor
 # ---------------------------------------------------------------------------
 
+_worker_log_lock = threading.Lock()
+
+
+def begin_worker_log(
+    task_id: str,
+    *,
+    board: Optional[str] = None,
+    clear: bool = True,
+) -> Path:
+    """Prepare ``<task_id>.log`` for a new in-process auxiliary run."""
+    log_dir = worker_logs_dir(board=board)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    path = log_dir / f"{task_id}.log"
+    rotate_bytes, backup_count = worker_log_rotation_config()
+    with _worker_log_lock:
+        if clear and path.exists():
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        _rotate_worker_log(path, rotate_bytes, backup_count)
+    return path
+
+
+def append_worker_log(
+    task_id: str,
+    text: str,
+    *,
+    board: Optional[str] = None,
+) -> None:
+    """Append text to a task worker log (creates the file if needed)."""
+    if not text:
+        return
+    log_dir = worker_logs_dir(board=board)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    path = log_dir / f"{task_id}.log"
+    rotate_bytes, backup_count = worker_log_rotation_config()
+    with _worker_log_lock:
+        _rotate_worker_log(path, rotate_bytes, backup_count)
+        with open(path, "a", encoding="utf-8", errors="replace") as handle:
+            handle.write(text)
+            handle.flush()
+
+
 def worker_log_path(task_id: str, *, board: Optional[str] = None) -> Path:
     """Return the path to a worker's log file. The file may not exist
     (task never spawned, or log already GC'd).

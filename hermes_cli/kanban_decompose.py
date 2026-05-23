@@ -325,27 +325,41 @@ def decompose_task(
         default_assignee=default_assignee,
     )
 
+    from hermes_cli.kanban_worker_log import emit_task_worker_log, task_worker_log
+
     try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": user_msg},
-            ],
-            temperature=0.3,
-            timeout=timeout or 180,
-            extra_body=get_auxiliary_extra_body() or None,
-        )
+        with task_worker_log(task_id, operation="decompose", model=model or ""):
+            emit_task_worker_log("Calling auxiliary LLM…\n")
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user", "content": user_msg},
+                ],
+                temperature=0.3,
+                timeout=timeout or 180,
+                extra_body=get_auxiliary_extra_body() or None,
+            )
+            try:
+                raw = resp.choices[0].message.content or ""
+            except Exception:
+                raw = ""
+            try:
+                from agent.cursor_auxiliary_client import CursorAuxiliaryClient
+
+                streamed = isinstance(client, CursorAuxiliaryClient)
+            except ImportError:
+                streamed = False
+            if not streamed:
+                emit_task_worker_log("\n--- LLM response ---\n")
+                if raw:
+                    emit_task_worker_log(raw if raw.endswith("\n") else raw + "\n")
     except Exception as exc:
         logger.info(
             "decompose: API call failed for %s (%s)", task_id, exc,
         )
-        return DecomposeOutcome(task_id, False, f"LLM error: {type(exc).__name__}")
-
-    try:
-        raw = resp.choices[0].message.content or ""
-    except Exception:
-        raw = ""
+        detail = str(exc).strip() or type(exc).__name__
+        return DecomposeOutcome(task_id, False, f"LLM error: {detail}")
 
     parsed = _extract_json_blob(raw)
     if parsed is None:

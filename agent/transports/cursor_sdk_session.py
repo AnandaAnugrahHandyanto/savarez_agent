@@ -696,10 +696,24 @@ class CursorSDKSession:
 
             projector = CursorEventProjector()
             tool_iterations = 0
+            stream_logger = None
+            try:
+                from hermes_cli.kanban_worker_log import (
+                    CursorStreamLogger,
+                    kanban_task_id_from_env,
+                    write_active_worker_log,
+                )
+
+                if kanban_task_id_from_env():
+                    stream_logger = CursorStreamLogger(write_active_worker_log)
+            except ImportError:
+                stream_logger = None
             for message in run.messages():
                 if self._interrupt_event.is_set():
                     result.interrupted = True
                     break
+                if stream_logger is not None:
+                    stream_logger.handle(message)
                 if self._on_event is not None:
                     try:
                         self._on_event(message)

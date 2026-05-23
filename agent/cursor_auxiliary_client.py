@@ -14,7 +14,7 @@ import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from types import SimpleNamespace
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +132,33 @@ def _run_result_to_openai_response(result: Any, *, model: str) -> Any:
     return SimpleNamespace(choices=[choice], model=model, usage=None)
 
 
+def _run_cursor_prompt_streaming(
+    *,
+    prompt: str,
+    options: Any,
+    client: Any,
+    timeout: float,
+    progress_emit: Callable[[str], None],
+) -> Any:
+    from cursor_sdk import Agent
+    from hermes_cli.kanban_worker_log import CursorStreamLogger
+
+    def _worker() -> Any:
+        with Agent.create(options, client=client) as agent:
+            run = agent.send(prompt)
+            stream_logger = CursorStreamLogger(progress_emit)
+            for message in run.messages():
+                stream_logger.handle(message)
+            return run.wait()
+
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cursor-aux")
+    future = pool.submit(_worker)
+    try:
+        return future.result(timeout=max(1.0, timeout))
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
 def _cursor_api_key(explicit: Optional[str] = None) -> str:
     """Resolve CURSOR_API_KEY for auxiliary calls.
 
@@ -246,7 +273,28 @@ class _CursorCompletionsAdapter:
         )
         client = get_cursor_sdk_client(cwd=self._cwd)
 
+        try:
+            from hermes_cli.kanban_worker_log import (
+                CursorStreamLogger,
+                get_task_worker_log_sink,
+            )
+
+            progress_emit = get_task_worker_log_sink()
+        except ImportError:
+            progress_emit = None
+
         def _prompt() -> Any:
+            if progress_emit is not None:
+                progress_emit("Starting Cursor agent…\n")
+                return _run_cursor_prompt_streaming(
+                    prompt=prompt,
+                    options=options,
+                    client=client,
+                    timeout=timeout,
+                    progress_emit=progress_emit,
+                )
+            from cursor_sdk import Agent
+
             return Agent.prompt(prompt, options, client=client)
 
         pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cursor-aux")

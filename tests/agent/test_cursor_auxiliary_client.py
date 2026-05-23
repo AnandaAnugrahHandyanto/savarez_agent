@@ -75,6 +75,25 @@ class CursorAuxiliaryClientTests(unittest.TestCase):
         self.assertIn("Be concise.", text)
         self.assertIn("Hello", text)
 
+    def test_cursor_stream_logger_emits_assistant_deltas(self):
+        from hermes_cli.kanban_worker_log import CursorStreamLogger
+
+        chunks: list[str] = []
+        logger = CursorStreamLogger(chunks.append)
+        logger.handle(
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "Hello"}]},
+            }
+        )
+        logger.handle(
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "Hello world"}]},
+            }
+        )
+        self.assertEqual("".join(chunks), "Hello world")
+
 
 if __name__ == "__main__":
     unittest.main()

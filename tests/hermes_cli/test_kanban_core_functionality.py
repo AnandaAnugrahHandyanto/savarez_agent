@@ -706,6 +706,14 @@ def test_worker_log_rotation_config_defaults_and_overrides():
     }) == (10, 4)
 
 
+def test_append_worker_log_creates_and_appends(kanban_home):
+    kb.begin_worker_log("t_spec", clear=True)
+    kb.append_worker_log("t_spec", "line one\n")
+    kb.append_worker_log("t_spec", "line two\n")
+    content = kb.read_worker_log("t_spec")
+    assert content == "line one\nline two\n"
+
+
 def test_read_worker_log_tail(kanban_home):
     log_dir = kanban_home / "kanban" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
