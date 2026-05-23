@@ -5,6 +5,7 @@ without risk of circular imports.
 """
 
 import os
+import sys
 import sysconfig
 from contextvars import ContextVar, Token
 from pathlib import Path
@@ -15,6 +16,17 @@ _UNSET = object()
 _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar(
     "_HERMES_HOME_OVERRIDE", default=_UNSET
 )
+
+
+def _get_default_hermes_home_platform() -> Path:
+    """Return the platform-native default Hermes home directory.
+
+    On Windows: %LOCALAPPDATA%\\hermes  (consistent with install.ps1)
+    Elsewhere: ~/.hermes
+    """
+    if sys.platform == "win32":
+        return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "hermes"
+    return Path.home() / ".hermes"
 
 
 def set_hermes_home_override(path: str | Path | None) -> Token:
@@ -64,6 +76,13 @@ def get_hermes_home() -> Path:
     if val:
         return Path(val)
 
+    # Honor HERMES_PROFILE to scope the home directory per profile,
+    # so that multiple gateways with different profiles don't collide
+    # on the same PID file (see issue #29948).
+    profile = os.environ.get("HERMES_PROFILE", "").strip()
+    if profile:
+        return Path.home() / ".hermes" / profile
+
     # Guard: if a non-default profile is sticky-active, warn once that
     # the fallback to the default profile is almost certainly wrong.
     global _profile_fallback_warned
@@ -86,7 +105,7 @@ def get_hermes_home() -> Path:
             import sys
             msg = (
                 f"[HERMES_HOME fallback] HERMES_HOME is unset but active "
-                f"profile is {active!r}. Falling back to ~/.hermes, which "
+                f"profile is {active!r}. Falling back to {str(_get_default_hermes_home_platform())!r}, which "
                 f"is the DEFAULT profile — not {active!r}. Any data this "
                 f"process writes will land in the wrong profile. The "
                 f"subprocess spawner should pass HERMES_HOME explicitly "
@@ -98,7 +117,7 @@ def get_hermes_home() -> Path:
             except Exception:
                 pass
 
-    return Path.home() / ".hermes"
+    return _get_default_hermes_home_platform()
 
 
 def get_default_hermes_root() -> Path:
@@ -117,7 +136,7 @@ def get_default_hermes_root() -> Path:
 
     Import-safe — no dependencies beyond stdlib.
     """
-    native_home = Path.home() / ".hermes"
+    native_home = _get_default_hermes_home_platform()
     env_home = os.environ.get("HERMES_HOME", "")
     if not env_home:
         return native_home
