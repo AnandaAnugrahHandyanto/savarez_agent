@@ -16,9 +16,10 @@ read-only tools that let MCP clients discover and read:
 Paths resolve via HERMES_AGENTS_DIR (runtime fleet), then HERMES_REPO,
 then HERMES_HOME — same profile conventions as mcp_serve.py.
 
-Tool surface (10 tools; read-only by design):
+Tool surface (11 tools; read-only by design):
   fleet_context_snapshot — one-call bounded fleet bootstrap for IDEs
   agent_health_summary — compact actionable fleet health anomalies
+  town_brief — human-facing Cursor/Town integration brief
   knowledge_query — bounded keyword query over knowledge graph artifacts
   skills_list          — list available agent SOUL.md files and repo skills
   skills_read          — read a specific skill/SOUL.md document
@@ -517,6 +518,104 @@ def build_agent_health_summary() -> dict:
     }
 
 
+def build_town_brief() -> dict:
+    """Build a concise, read-only Town/Cursor operational brief."""
+    snapshot = build_fleet_context_snapshot(summary=True)
+    health = build_agent_health_summary()
+
+    active_issues: list[dict] = []
+    if not snapshot.get("registry_present"):
+        active_issues.append({
+            "kind": "missing_registry",
+            "severity": "warning",
+            "detail": "AGENT_REGISTRY.json was not found.",
+        })
+    for layer in snapshot.get("missing_layers") or []:
+        active_issues.append({
+            "kind": "missing_layer",
+            "severity": "warning",
+            "detail": layer,
+        })
+    for heartbeat in snapshot.get("stale_heartbeats") or []:
+        active_issues.append({
+            "kind": "heartbeat",
+            "severity": "attention",
+            "detail": heartbeat,
+        })
+    for warning in snapshot.get("warnings") or []:
+        active_issues.append({
+            "kind": "warning",
+            "severity": "warning",
+            "detail": warning,
+        })
+
+    held_flags = snapshot.get("held_spec_flags") or []
+    if held_flags:
+        active_issues.append({
+            "kind": "held_specs",
+            "severity": "governance",
+            "detail": {
+                "count": snapshot.get("held_spec_flags_count", len(held_flags)),
+                "sample": held_flags[:10],
+            },
+        })
+
+    status = "ok"
+    if active_issues:
+        status = "attention"
+    if any(issue["kind"] in {"missing_registry", "missing_layer"} for issue in active_issues):
+        status = "degraded"
+
+    next_actions = [
+        "Use town_brief or fleet_context_snapshot(summary=True) at Cursor session start.",
+        "Use agents_get(name) and skills_read(name) before modifying a named agent.",
+        "Use knowledge_read('held_spec_ledger') before changing governed specs or pipelines.",
+    ]
+    if not snapshot.get("gateway_reachable"):
+        next_actions.append(
+            "Gateway is unavailable; skills/context MCP tools can still be used, "
+            "but live messaging tools require a running gateway."
+        )
+    if active_issues:
+        next_actions.insert(0, health.get("next_action") or "Review active Town issues.")
+
+    return {
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "status": status,
+        "mode": snapshot.get("mode"),
+        "writes_allowed": False,
+        "source_of_truth": snapshot.get("source_of_truth"),
+        "paths": {
+            "hermes_home": snapshot.get("hermes_home"),
+            "hermes_repo": snapshot.get("hermes_repo"),
+            "agents_dir": snapshot.get("agents_dir"),
+            "latest_state": snapshot.get("latest_state_path"),
+            "hot_learnings": snapshot.get("hot_learnings_path"),
+        },
+        "counts": {
+            "agents": snapshot.get("agent_count", 0),
+            "stale_heartbeats": len(snapshot.get("stale_heartbeats") or []),
+            "held_spec_flags": snapshot.get("held_spec_flags_count", 0),
+            "missing_layers": len(snapshot.get("missing_layers") or []),
+        },
+        "registry_summary": snapshot.get("registry_summary", {}),
+        "gateway": {
+            "reachable": bool(snapshot.get("gateway_reachable")),
+            "skills_context_available": True,
+            "live_ops_requires_gateway": True,
+        },
+        "active_issues": active_issues[:_SNAPSHOT_LIST_CAP],
+        "active_issues_truncated": len(active_issues) > _SNAPSHOT_LIST_CAP,
+        "recommended_cursor_calls": [
+            "town_brief()",
+            "agent_health_summary()",
+            "fleet_context_snapshot(summary=True)",
+            "knowledge_read(artifact='held_spec_ledger')",
+        ],
+        "next_actions": next_actions,
+    }
+
+
 def _find_heartbeat(agent_name: str) -> Optional[dict]:
     """Find and parse an agent's HEARTBEAT.md for status info."""
     agents_dir = _find_agents_dir()
@@ -717,6 +816,18 @@ def register_skills_tools(mcp) -> None:
         answer instead of the full fleet context snapshot. Read-only.
         """
         return json.dumps(build_agent_health_summary(), indent=2)
+
+    # -- town_brief ---------------------------------------------------------
+
+    @mcp.tool()
+    def town_brief() -> str:
+        """Return a concise Cursor/Town operational brief.
+
+        This is a human-facing summary of the read-only fleet context:
+        source-of-truth paths, health counts, held-spec flags, gateway mode,
+        and recommended next MCP calls for Cursor agents.
+        """
+        return json.dumps(build_town_brief(), indent=2)
 
     # -- skills_list -------------------------------------------------------
 
@@ -1243,4 +1354,4 @@ def register_skills_tools(mcp) -> None:
             },
         }, indent=2)
 
-    logger.debug("Registered 10 skills/knowledge MCP tools")
+    logger.debug("Registered 11 skills/knowledge MCP tools")

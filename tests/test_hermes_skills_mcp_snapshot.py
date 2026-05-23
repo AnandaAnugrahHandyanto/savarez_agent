@@ -255,6 +255,28 @@ def test_agent_health_summary_registered_tool(snapshot_env):
     assert result["writes_allowed"] is False
 
 
+def test_town_brief_reports_cursor_bootstrap_context(snapshot_env):
+    repo, _home, mcp = snapshot_env
+    agents_dir = repo / "agents"
+    _write_registry(agents_dir, {"alpha": {"lane": "A", "status": "active"}})
+    (agents_dir / "alpha").mkdir()
+    (agents_dir / "alpha" / "HEARTBEAT.md").write_text("ok\n", encoding="utf-8")
+    knowledge = repo / "artifacts" / "ops" / "held_spec_ledger"
+    knowledge.mkdir(parents=True)
+    (knowledge / "latest.md").write_text("HELD: wait for validation\n", encoding="utf-8")
+    tools = _registered_tools(mcp)
+
+    result = json.loads(tools.town_brief())
+
+    assert result["mode"] == "skills_only"
+    assert result["writes_allowed"] is False
+    assert result["source_of_truth"] == "HERMES_REPO/agents"
+    assert result["counts"]["agents"] == 1
+    assert result["counts"]["held_spec_flags"] == 1
+    assert "town_brief()" in result["recommended_cursor_calls"]
+    assert result["gateway"]["skills_context_available"] is True
+
+
 def test_knowledge_query_matches_bounded_graph(snapshot_env):
     repo, _home, mcp = snapshot_env
     kg = repo / "artifacts" / "ops" / "knowledge_graph"

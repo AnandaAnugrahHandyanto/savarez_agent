@@ -25,7 +25,7 @@ chmod +x hermes-mcp-serve
 
 3. In Cursor: enable the **hermes** MCP server (Settings -> MCP). Restart the IDE if tools do not appear.
 
-4. Optional: run `hermes doctor` to check dependencies and config.
+4. Optional: run `hermes doctor --mcp` or `hermes mcp doctor` to check launcher, Cursor config, tool registration, and gateway reachability.
 
 ### Recommended `mcp.json` environment
 
@@ -53,6 +53,7 @@ Hermes MCP is really two products behind one server:
 |------|---------|
 | `fleet_context_snapshot` | One-call bounded fleet bootstrap for IDEs |
 | `agent_health_summary` | Compact actionable health anomalies without the full registry dump |
+| `town_brief` | Human-facing Town/Cursor status, source-of-truth paths, and next MCP calls |
 | `skills_list` | Agent SOUL.md dirs + repo `skills/` catalog |
 | `skills_read` | Read SOUL.md or skill files |
 | `agents_list` | Registry + optional heartbeat files |
@@ -63,6 +64,11 @@ Hermes MCP is really two products behind one server:
 | `artifacts_list` | Browse `artifacts/` tree |
 
 Use this mode for: editing agents, pipeline code, audits, PRs, and Cursor Cloud sessions that only need fleet cognition.
+
+For a concise session start, call `town_brief()` first. Use
+`fleet_context_snapshot(summary=True)` when the agent needs structured
+bootstrap data without text blobs, and use the full snapshot only when a task
+needs learnings or latest-state excerpts.
 
 ### Live ops / gateway mode
 
@@ -93,6 +99,11 @@ When layers disagree, use this precedence (highest first):
 
 Use `fleet_context_snapshot` for a single-call bounded bootstrap that returns registry summary, HOT learnings excerpt, `latest_state` digest, and held-spec flags. For finer control, call the individual tools per the checklist in `.cursor/rules/hermes-fleet.mdc` or `CLAUDE.md`.
 
+For Cursor Cloud agents, `.cursor/mcp.cloud.json.example` is a portable
+template that keeps `HERMES_REPO` tied to `${workspaceFolder}` and leaves
+`HERMES_AGENTS_DIR` empty for local override. Copy it to `.cursor/mcp.json`
+inside the cloud workspace when you want a clean cloud-only MCP setup.
+
 ## Read-only fleet tools (by design)
 
 Skills/knowledge MCP tools are **read-only**. That is intentional for governed fleets (auditability, no silent SOUL mutation from the IDE).
@@ -119,5 +130,5 @@ A common mature layout:
 
 | Item | Benefit |
 |------|---------|
-| `hermes doctor --mcp` | Validates venv, paths, gateway reachability, prints suggested `mcp.json` |
-| Cursor Cloud env templates | No `/mnt/c/...` paths in shared `main` |
+| Spec-aware edit guards | Prevents governed edits without held-spec and contradiction context |
+| Agent dependency graph | Shows Lane A/B/C, pipeline dependencies, and stale heartbeat impact |

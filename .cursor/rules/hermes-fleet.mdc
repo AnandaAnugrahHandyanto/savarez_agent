@@ -13,7 +13,7 @@ Read the canonical guide: `website/docs/user-guide/features/cursor-hermes.md`.
 
 Prefer one consolidated MCP read when available; otherwise call in order:
 
-1. `fleet_context_snapshot()` — if present on the Hermes MCP server
+1. `town_brief()` or `fleet_context_snapshot(summary=true)` — if present on the Hermes MCP server
 2. Else: `agents_list(include_heartbeat=true)` → `learnings_read()` → `knowledge_read(artifact="latest_state")` → `knowledge_read(artifact="held_spec_ledger")`
 
 Before changing a named agent: `skills_read(name="<agent>")` and `agents_get(name="<agent>")`.
@@ -42,6 +42,6 @@ Registry metadata must never override runtime identity documents.
 
 ## Paths
 
-Set machine-specific values in `.cursor/mcp.json` (copy from `.cursor/mcp.json.example`). Do not commit host-specific paths to the shared repo.
+Set machine-specific values in `.cursor/mcp.json` (copy from `.cursor/mcp.json.example`, or `.cursor/mcp.cloud.json.example` in Cursor Cloud). Do not commit host-specific paths to the shared repo.
 
-Verify setup: `hermes doctor` (MCP checks planned).
+Verify setup: `hermes doctor --mcp` or `hermes mcp doctor`.

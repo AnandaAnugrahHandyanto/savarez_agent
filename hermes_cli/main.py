@@ -11875,6 +11875,11 @@ def main():
         "--fix", action="store_true", help="Attempt to fix issues automatically"
     )
     doctor_parser.add_argument(
+        "--mcp",
+        action="store_true",
+        help="Run Cursor/Hermes MCP diagnostics and exit",
+    )
+    doctor_parser.add_argument(
         "--ack",
         metavar="ADVISORY_ID",
         default=None,
@@ -12762,6 +12767,11 @@ Examples:
         help="Force re-authentication for an OAuth-based MCP server",
     )
     mcp_login_p.add_argument("name", help="Server name to re-authenticate")
+
+    mcp_sub.add_parser(
+        "doctor",
+        help="Diagnose Cursor/Hermes MCP launcher, config, and tool registration",
+    )
 
     _add_accept_hooks_flag(mcp_parser)
 
