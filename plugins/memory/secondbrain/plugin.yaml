@@ -1,0 +1,3 @@
+name: secondbrain
+version: 0.1.0
+description: "SecondBrain local memory provider — controlled recall-only trial client with disabled-by-default switch."
