@@ -436,8 +436,20 @@ class TestMattermostMentionBehavior:
 
     @pytest.mark.asyncio
     async def test_require_mention_true_skips_without_mention(self):
-        """Default: messages without @mention in channels are skipped."""
+        """Default: messages without @mention in channels are dispatched as observe_only."""
         with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
+            os.environ.pop("MATTERMOST_FREE_RESPONSE_CHANNELS", None)
+            await self.adapter._handle_ws_event(self._make_event("hello"))
+            # With observe_only, handle_message IS called, but with observe_only=True
+            assert self.adapter.handle_message.called
+            event = self.adapter.handle_message.call_args[0][0]
+            assert event.observe_only is True
+
+    @pytest.mark.asyncio
+    async def test_require_mention_true_drops_when_observe_disabled(self):
+        """MATTERMOST_OBSERVE_UNMENTIONED=false: messages without @mention are dropped."""
+        with patch.dict(os.environ, {"MATTERMOST_OBSERVE_UNMENTIONED": "false"}, clear=False):
             os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
             os.environ.pop("MATTERMOST_FREE_RESPONSE_CHANNELS", None)
             await self.adapter._handle_ws_event(self._make_event("hello"))
@@ -460,11 +472,13 @@ class TestMattermostMentionBehavior:
 
     @pytest.mark.asyncio
     async def test_non_free_channel_still_requires_mention(self):
-        """Channels NOT in free-response list still require @mention."""
+        """Channels NOT in free-response list dispatch as observe_only without @mention."""
         with patch.dict(os.environ, {"MATTERMOST_FREE_RESPONSE_CHANNELS": "chan_789"}):
             os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
             await self.adapter._handle_ws_event(self._make_event("hello", channel_id="chan_456"))
-            assert not self.adapter.handle_message.called
+            assert self.adapter.handle_message.called
+            event = self.adapter.handle_message.call_args[0][0]
+            assert event.observe_only is True
 
     @pytest.mark.asyncio
     async def test_dm_always_responds(self):
@@ -543,7 +557,10 @@ class TestMattermostMentionBehavior:
             os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
             os.environ.pop("MATTERMOST_FREE_RESPONSE_CHANNELS", None)
             await self.adapter._handle_ws_event(event)
-            assert not self.adapter.handle_message.called
+            # With observe_only, handle_message IS called with observe_only=True
+            assert self.adapter.handle_message.called
+            dispatched_event = self.adapter.handle_message.call_args[0][0]
+            assert dispatched_event.observe_only is True
 
     @pytest.mark.asyncio
     async def test_mention_stripped_from_text(self):

@@ -739,6 +739,7 @@ class MattermostAdapter(BasePlatformAdapter):
         #   require_mention / MATTERMOST_REQUIRE_MENTION: Require @mention in channels (default: true)
         #   free_response_channels / MATTERMOST_FREE_RESPONSE_CHANNELS: Channel IDs where bot responds without mention
         #   allowed_channels / MATTERMOST_ALLOWED_CHANNELS: If set, bot ONLY responds in these channels (whitelist)
+        _observe_only = False
         if channel_type_raw != "D":
             # allowed_channels check (whitelist — must pass before other gating).
             # When set, messages from channels NOT in this list are silently
@@ -791,11 +792,17 @@ class MattermostAdapter(BasePlatformAdapter):
                     pass
 
             if require_mention and not is_free_channel and not has_mention and not is_reply_to_bot and not is_command:
-                logger.debug(
-                    "Mattermost: skipping non-DM message without @mention (channel=%s)",
-                    channel_id,
-                )
-                return
+                observe_enabled = os.getenv(
+                    "MATTERMOST_OBSERVE_UNMENTIONED", "true"
+                ).lower() in ("true", "1", "yes")
+                if observe_enabled:
+                    _observe_only = True
+                else:
+                    logger.debug(
+                        "Mattermost: skipping non-DM message without @mention (channel=%s)",
+                        channel_id,
+                    )
+                    return
 
             # Strip @mention from the message text so the agent sees clean input.
             if has_mention:
@@ -888,6 +895,7 @@ class MattermostAdapter(BasePlatformAdapter):
             media_urls=media_urls if media_urls else None,
             media_types=media_types if media_types else None,
             channel_prompt=_channel_prompt,
+            observe_only=_observe_only,
         )
 
         await self.handle_message(msg_event)
