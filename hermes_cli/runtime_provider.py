@@ -927,6 +927,31 @@ def _resolve_explicit_runtime(
             "requested_provider": requested_provider,
         }
 
+    # gemini-oauth: Google OAuth flow
+    if provider == "gemini-oauth":
+        from hermes_cli.auth import resolve_gemini_oauth_runtime_credentials
+
+        base_url = (
+            explicit_base_url
+            or os.getenv("GEMINI_BASE_URL", "").strip().rstrip("/")
+            or "https://generativelanguage.googleapis.com/v1beta/openai"
+        )
+
+        try:
+            creds = resolve_gemini_oauth_runtime_credentials()
+            return {
+                "provider": "gemini-oauth",
+                "api_mode": "chat_completions",
+                "base_url": base_url.rstrip("/"),
+                "api_key": creds.get("api_key", ""),
+                "source": creds.get("source", "gemini-oauth"),
+                "expires_at": creds.get("expires_at"),
+                "requested_provider": requested_provider,
+            }
+        except Exception:
+            # Let it propagate — no fallback for OAuth
+            raise
+
     return None
 
 

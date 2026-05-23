@@ -6334,6 +6334,30 @@ class AIAgent:
 
         return True
 
+    def _try_refresh_gemini_oauth_client_credentials(self) -> bool:
+        if self.provider != "gemini-oauth":
+            return False
+
+        try:
+            from hermes_cli.auth import resolve_gemini_oauth_runtime_credentials
+
+            creds = resolve_gemini_oauth_runtime_credentials()
+        except Exception as exc:
+            logger.debug("Gemini OAuth credential refresh failed: %s", exc)
+            return False
+
+        api_key = creds.get("api_key")
+        if not isinstance(api_key, str) or not api_key.strip():
+            return False
+
+        self.api_key = api_key.strip()
+        self._client_kwargs["api_key"] = self.api_key
+
+        if not self._replace_primary_openai_client(reason="gemini_oauth_credential_refresh"):
+            return False
+
+        return True
+
     def _try_refresh_nous_client_credentials(self, *, force: bool = True) -> bool:
         if self.api_mode != "chat_completions" or self.provider != "nous":
             return False
@@ -12482,6 +12506,16 @@ class AIAgent:
                         codex_auth_retry_attempted = True
                         if self._try_refresh_codex_client_credentials(force=True):
                             self._vprint(f"{self.log_prefix}🔐 Codex auth refreshed after 401. Retrying request...")
+                            continue
+                    if (
+                        self.api_mode == "chat_completions"
+                        and self.provider == "gemini-oauth"
+                        and status_code == 401
+                        and not gemini_oauth_retry_attempted
+                    ):
+                        gemini_oauth_retry_attempted = True
+                        if self._try_refresh_gemini_oauth_client_credentials():
+                            print(f"{self.log_prefix}🔐 Gemini OAuth token refreshed after 401. Retrying request...")
                             continue
                     if (
                         self.api_mode == "chat_completions"

@@ -205,6 +205,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("GOOGLE_API_KEY", "GEMINI_API_KEY"),
         base_url_env_var="GEMINI_BASE_URL",
     ),
+    "gemini-oauth": ProviderConfig(
+        id="gemini-oauth",
+        name="Google AI Studio (OAuth)",
+        auth_type="oauth_google",
+        inference_base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        extra={"base_url_env_var": "GEMINI_BASE_URL"},
+    ),
     "zai": ProviderConfig(
         id="zai",
         name="Z.AI / GLM",
@@ -1439,6 +1446,14 @@ def resolve_provider(
 
     if has_usable_secret(os.getenv("OPENAI_API_KEY")) or has_usable_secret(os.getenv("OPENROUTER_API_KEY")):
         return "openrouter"
+
+    # Check for stored Gemini OAuth credentials (outside the auth store)
+    try:
+        from hermes_cli.google_oauth import has_stored_credentials
+        if has_stored_credentials():
+            return "gemini-oauth"
+    except Exception:
+        pass
 
     # Auto-detect API-key providers by checking their env vars
     for pid, pconfig in PROVIDER_REGISTRY.items():
@@ -5339,3 +5354,33 @@ def logout_command(args) -> None:
             print("Model provider configuration was unchanged.")
     else:
         print(f"No auth state found for {provider_name}.")
+
+
+# =============================================================================
+# Gemini OAuth — resolve_runtime_credentials entry point
+# =============================================================================
+
+def resolve_gemini_oauth_runtime_credentials(
+    *,
+    timeout_seconds: float = 15.0,
+) -> Dict[str, Any]:
+    """Resolve a valid Gemini OAuth access token from the local GhostBridge proxy.
+
+    GhostBridge (gemini_bridge.js) handles the full OAuth refresh cycle.
+    This function just asks it for a token — no local credential storage needed.
+    """
+    from hermes_cli.google_oauth import get_valid_access_token
+
+    try:
+        api_key, expires_at = get_valid_access_token()
+        return {
+            "api_key": api_key,
+            "source": "ghostbridge",
+            "expires_at": expires_at,
+        }
+    except Exception as exc:
+        raise AuthError(
+            f"Gemini token via GhostBridge failed: {exc}",
+            provider="gemini-oauth",
+            relogin_required=True,
+        )

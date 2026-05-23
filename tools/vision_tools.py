@@ -466,9 +466,13 @@ async def vision_analyze_tool(
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
+        # Strip stray characters that LLMs sometimes append when copying path hints
+        # e.g. "image_url: /path/to/img.webp ~]" → the model may pass "/path/to/img.webp ~"
+        image_url = image_url.strip().rstrip(" ~]")
+
         logger.info("Analyzing image: %s", image_url[:60])
         logger.info("User prompt: %s", user_prompt[:100])
-        
+
         # Determine if this is a local file path or a remote URL
         # Strip file:// scheme so file URIs resolve as local paths.
         resolved_url = image_url
