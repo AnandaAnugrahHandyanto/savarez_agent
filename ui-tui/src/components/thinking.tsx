@@ -47,6 +47,8 @@ const fmtElapsed = (ms: number) => {
   return sec < 10 ? `${sec.toFixed(1)}s` : `${Math.round(sec)}s`
 }
 
+export const thinkingHeaderLabel = (thinkingLive: boolean) => (thinkingLive ? 'Thinking' : 'Reasoning')
+
 type TreeBranch = 'mid' | 'last'
 type TreeRails = readonly boolean[]
 
@@ -888,6 +890,7 @@ export const ToolTrail = memo(function ToolTrail({
   const hasMeta = meta.length > 0
   const hasThinking = !!cot || reasoningActive || reasoningStreaming
   const thinkingLive = reasoningActive || reasoningStreaming
+  const thinkingLabel = thinkingHeaderLabel(thinkingLive)
 
   const tokenCount =
     reasoningTokens && reasoningTokens > 0 ? reasoningTokens : reasoning ? estimateTokensRough(reasoning) : 0
@@ -1015,11 +1018,11 @@ export const ToolTrail = memo(function ToolTrail({
             <Text color={t.color.accent}>{openThinking ? '▾ ' : '▸ '}</Text>
             {thinkingLive ? (
               <Text bold color={t.color.text}>
-                Thinking
+                {thinkingLabel}
               </Text>
             ) : (
               <Text color={t.color.muted} dim>
-                Thinking
+                {thinkingLabel}
               </Text>
             )}
             {thinkingTokensLabel ? (
