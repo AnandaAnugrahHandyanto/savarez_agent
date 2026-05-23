@@ -6,8 +6,8 @@ import pytest
 from unittest.mock import AsyncMock
 
 from gateway.config import PlatformConfig
-import gateway.platforms.discord as discord_platform
-from gateway.platforms.discord import (
+import plugins.platforms.discord.adapter as discord_platform
+from plugins.platforms.discord.adapter import (
     DISCORD_QUICK_ACTION_COMMANDS,
     DISCORD_QUICK_ACTION_CONFIRM_COMMANDS,
     DISCORD_QUICK_ACTION_CONFIRM_PROMPTS,
