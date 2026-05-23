@@ -29,6 +29,7 @@ import shutil
 import sys
 import json
 import re
+import copy
 import concurrent.futures
 import base64
 import atexit
@@ -7188,6 +7189,54 @@ class HermesCLI:
         scroll_offset = max(0, min(scroll_offset, n - visible))
         return scroll_offset, visible
 
+    def _snapshot_model_runtime(self) -> dict:
+        """Capture the live CLI model runtime for a later one-turn restore."""
+        return {
+            "model": self.model,
+            "provider": self.provider,
+            "requested_provider": self.requested_provider,
+            "api_key": self.api_key,
+            "explicit_api_key": self._explicit_api_key,
+            "base_url": self.base_url,
+            "explicit_base_url": self._explicit_base_url,
+            "api_mode": self.api_mode,
+            "agent_primary_runtime": (
+                copy.deepcopy(getattr(self.agent, "_primary_runtime", None))
+                if self.agent is not None else None
+            ),
+        }
+
+    def _restore_model_runtime_snapshot(self, snapshot: dict | None) -> None:
+        """Restore a CLI/AIAgent runtime snapshot captured before --once."""
+        if not snapshot:
+            return
+        self.model = snapshot.get("model", self.model)
+        self.provider = snapshot.get("provider", self.provider)
+        self.requested_provider = snapshot.get("requested_provider", self.provider)
+        self.api_key = snapshot.get("api_key", self.api_key)
+        self._explicit_api_key = snapshot.get("explicit_api_key", self._explicit_api_key)
+        self.base_url = snapshot.get("base_url", self.base_url)
+        self._explicit_base_url = snapshot.get("explicit_base_url", self._explicit_base_url)
+        self.api_mode = snapshot.get("api_mode", self.api_mode)
+        if self.agent is not None:
+            try:
+                primary = snapshot.get("agent_primary_runtime")
+                if primary and hasattr(self.agent, "_restore_primary_runtime"):
+                    self.agent._primary_runtime = copy.deepcopy(primary)
+                    self.agent._fallback_activated = True
+                    self.agent._rate_limited_until = 0
+                    if self.agent._restore_primary_runtime():
+                        return
+                self.agent.switch_model(
+                    new_model=self.model,
+                    new_provider=self.provider,
+                    api_key=self.api_key,
+                    base_url=self.base_url,
+                    api_mode=self.api_mode,
+                )
+            except Exception as exc:
+                _cprint(f"  ⚠ Model restore failed ({exc}); current session may remain on {getattr(self.agent, 'model', self.model)}.")
+
     def _apply_model_switch_result(self, result, persist_global: bool) -> None:
         if not result.success:
             _cprint(f"  ✗ {result.error_message}")
@@ -7226,6 +7275,7 @@ class HermesCLI:
             f"via {result.provider_label or result.target_provider}. "
             f"Adjust your self-identification accordingly.]"
         )
+        self._pending_one_turn_model_restore = None
 
         provider_label = result.provider_label or result.target_provider
         _cprint(f"  ✓ Model switched: {result.new_model}")
@@ -7341,19 +7391,27 @@ class HermesCLI:
         Supports:
           /model                              — show current model + usage hints
           /model <name>                       — switch for this session only
+          /model <name> --once                — switch for the next turn only
           /model <name> --global              — switch and persist to config.yaml
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
         """
-        from hermes_cli.model_switch import switch_model, parse_model_flags
+        from hermes_cli.model_switch import switch_model, parse_model_flags_detailed
         from hermes_cli.providers import get_label
 
         # Parse args from the original command
         parts = cmd_original.split(None, 1)  # split off '/model'
         raw_args = parts[1].strip() if len(parts) > 1 else ""
 
-        # Parse --provider and --global flags
-        model_input, explicit_provider, persist_global = parse_model_flags(raw_args)
+        # Parse --provider, --global, and --once flags
+        parsed_flags = parse_model_flags_detailed(raw_args)
+        model_input = parsed_flags.model_input
+        explicit_provider = parsed_flags.explicit_provider
+        persist_global = parsed_flags.is_global
+        one_turn = parsed_flags.is_once
+        if persist_global and one_turn:
+            _cprint("  ✗ /model --once cannot be combined with --global")
+            return
 
         # Single inventory context — replaces the inline config-slice the
         # dashboard / TUI used to duplicate. Overlay live session state
@@ -7420,6 +7478,8 @@ class HermesCLI:
             _cprint(f"  ✗ {result.error_message}")
             return
 
+        restore_snapshot = self._snapshot_model_runtime() if one_turn else None
+
         # Apply to CLI state.
         # Update requested_provider so _ensure_runtime_credentials() doesn't
         # overwrite the switch on the next turn (it re-resolves from this).
@@ -7458,8 +7518,13 @@ class HermesCLI:
         self._pending_model_switch_note = (
             f"[Note: model was just switched from {old_model} to {result.new_model} "
             f"via {result.provider_label or result.target_provider}. "
+            f"{'This override applies to the next turn only. ' if one_turn else ''}"
             f"Adjust your self-identification accordingly.]"
         )
+        if one_turn:
+            self._pending_one_turn_model_restore = restore_snapshot
+        else:
+            self._pending_one_turn_model_restore = None
 
         # Display confirmation with full metadata
         provider_label = result.provider_label or result.target_provider
@@ -7506,6 +7571,8 @@ class HermesCLI:
             if result.provider_changed:
                 save_config_value("model.provider", result.target_provider)
             _cprint("    Saved to config.yaml (--global)")
+        elif one_turn:
+            _cprint("    (next turn only — restores after one response)")
         else:
             _cprint("    (session only — add --global to persist)")
 
@@ -11469,6 +11536,9 @@ class HermesCLI:
                 if _srn:
                     agent_message = _srn + "\n\n" + agent_message
                     self._pending_skills_reload_note = None
+                _one_turn_restore = getattr(self, "_pending_one_turn_model_restore", None)
+                if _one_turn_restore:
+                    self._pending_one_turn_model_restore = None
                 try:
                     result = self.agent.run_conversation(
                         user_message=agent_message,
@@ -11489,6 +11559,8 @@ class HermesCLI:
                         "error": _summary,
                     }
                 finally:
+                    if _one_turn_restore:
+                        self._restore_model_runtime_snapshot(_one_turn_restore)
                     # Clear thread-local callbacks so a reused thread doesn't
                     # hold stale references to a disposed CLI instance.
                     try:

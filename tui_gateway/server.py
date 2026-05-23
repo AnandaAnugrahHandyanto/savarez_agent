@@ -1103,15 +1103,59 @@ def _persist_model_switch(result) -> None:
     save_config(cfg)
 
 
+def _snapshot_agent_model_runtime(agent) -> dict:
+    """Capture the current agent model runtime for a one-turn restore."""
+    return {
+        "model": getattr(agent, "model", ""),
+        "provider": getattr(agent, "provider", ""),
+        "api_key": getattr(agent, "api_key", ""),
+        "base_url": getattr(agent, "base_url", ""),
+        "api_mode": getattr(agent, "api_mode", ""),
+        "primary_runtime": copy.deepcopy(getattr(agent, "_primary_runtime", None)),
+    }
+
+
+def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
+    """Restore an agent model runtime captured before a one-turn override."""
+    if not snapshot or agent is None:
+        return
+    primary = snapshot.get("primary_runtime")
+    if primary and hasattr(agent, "_restore_primary_runtime"):
+        try:
+            agent._primary_runtime = copy.deepcopy(primary)
+            agent._fallback_activated = True
+            agent._rate_limited_until = 0
+            if agent._restore_primary_runtime():
+                return
+        except Exception:
+            logger.debug("TUI one-turn model restore via primary runtime failed", exc_info=True)
+    if hasattr(agent, "switch_model"):
+        agent.switch_model(
+            new_model=snapshot.get("model", ""),
+            new_provider=snapshot.get("provider", ""),
+            api_key=snapshot.get("api_key", ""),
+            base_url=snapshot.get("base_url", ""),
+            api_mode=snapshot.get("api_mode", ""),
+        )
+
+
 def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
-    from hermes_cli.model_switch import parse_model_flags, switch_model
+    from hermes_cli.model_switch import parse_model_flags_detailed, switch_model
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
-    model_input, explicit_provider, persist_global = parse_model_flags(raw_input)
+    parsed_flags = parse_model_flags_detailed(raw_input)
+    model_input = parsed_flags.model_input
+    explicit_provider = parsed_flags.explicit_provider
+    persist_global = parsed_flags.is_global
+    one_turn = parsed_flags.is_once
+    if persist_global and one_turn:
+        raise ValueError("/model --once cannot be combined with --global")
     if not model_input:
         raise ValueError("model value required")
 
     agent = session.get("agent")
+    if one_turn and not agent:
+        raise ValueError("/model --once requires a live session")
     if agent:
         current_provider = getattr(agent, "provider", "") or ""
         current_model = getattr(agent, "model", "") or ""
@@ -1160,6 +1204,8 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
     if not result.success:
         raise ValueError(result.error_message or "model switch failed")
 
+    restore_snapshot = _snapshot_agent_model_runtime(agent) if (one_turn and agent) else None
+
     if agent:
         agent.switch_model(
             new_model=result.new_model,
@@ -1170,25 +1216,34 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
         )
         _restart_slash_worker(session)
         _emit("session.info", sid, _session_info(agent))
+        if one_turn:
+            session["one_turn_model_restore"] = restore_snapshot
+        else:
+            session.pop("one_turn_model_restore", None)
 
-    os.environ["HERMES_MODEL"] = result.new_model
-    os.environ["HERMES_INFERENCE_MODEL"] = result.new_model
-    # Keep the process-level provider env vars in sync with the user's
-    # explicit choice so any ambient re-resolution (credential pool refresh,
-    # compressor rebuild, aux clients) and startup re-resolution on /new
-    # both pick up the new provider instead of the original one persisted
-    # in config or env.
-    #
-    # HERMES_TUI_PROVIDER is the canonical "explicit-this-process" carrier
-    # consumed by _resolve_startup_runtime() — set it unconditionally on
-    # /model so /new can't fall through to static-catalog detection and
-    # pick a coincidentally-matching native provider (fixes #16857).
-    if result.target_provider:
-        os.environ["HERMES_INFERENCE_PROVIDER"] = result.target_provider
-        os.environ["HERMES_TUI_PROVIDER"] = result.target_provider
-    if persist_global:
-        _persist_model_switch(result)
-    return {"value": result.new_model, "warning": result.warning_message or ""}
+    if not one_turn:
+        os.environ["HERMES_MODEL"] = result.new_model
+        os.environ["HERMES_INFERENCE_MODEL"] = result.new_model
+        # Keep the process-level provider env vars in sync with the user's
+        # explicit choice so any ambient re-resolution (credential pool refresh,
+        # compressor rebuild, aux clients) and startup re-resolution on /new
+        # both pick up the new provider instead of the original one persisted
+        # in config or env.
+        #
+        # HERMES_TUI_PROVIDER is the canonical "explicit-this-process" carrier
+        # consumed by _resolve_startup_runtime() — set it unconditionally on
+        # /model so /new can't fall through to static-catalog detection and
+        # pick a coincidentally-matching native provider (fixes #16857).
+        if result.target_provider:
+            os.environ["HERMES_INFERENCE_PROVIDER"] = result.target_provider
+            os.environ["HERMES_TUI_PROVIDER"] = result.target_provider
+        if persist_global:
+            _persist_model_switch(result)
+    return {
+        "value": result.new_model,
+        "warning": result.warning_message or "",
+        "scope": "once" if one_turn else ("global" if persist_global else "session"),
+    }
 
 
 def _compress_session_history(
@@ -3283,6 +3338,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         approval_token = None
         session_tokens = []
         goal_followup = None  # set by the post-turn goal hook below
+        one_turn_restore = session.pop("one_turn_model_restore", None)
         try:
             from tools.approval import (
                 reset_current_session_key,
@@ -3594,6 +3650,13 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             )
             _emit("error", sid, {"message": str(e)})
         finally:
+            if one_turn_restore:
+                try:
+                    _restore_agent_model_runtime(agent, one_turn_restore)
+                    _restart_slash_worker(session)
+                    _emit("session.info", sid, _session_info(agent))
+                except Exception:
+                    logger.debug("TUI one-turn model restore failed", exc_info=True)
             try:
                 if approval_token is not None:
                     reset_current_session_key(approval_token)
@@ -3922,7 +3985,12 @@ def _(rid, params: dict) -> dict:
                 result = _apply_model_switch("", {"agent": None}, value)
             return _ok(
                 rid,
-                {"key": key, "value": result["value"], "warning": result["warning"]},
+                {
+                    "key": key,
+                    "value": result["value"],
+                    "warning": result["warning"],
+                    "scope": result.get("scope", "session"),
+                },
             )
         except Exception as e:
             return _err(rid, 5001, str(e))
