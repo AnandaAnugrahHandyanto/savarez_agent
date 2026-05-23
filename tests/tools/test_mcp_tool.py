@@ -1462,6 +1462,25 @@ class TestHTTPConfig:
 
         asyncio.run(_test())
 
+    def test_stdio_unavailable_raises_clear_import_error(self):
+        """Regression for #30904: when the SDK import block failed (mcp not
+        installed, or a build that doesn't expose StdioServerParameters at
+        the top level), `_run_stdio` must surface a clear ImportError rather
+        than letting the dangling `StdioServerParameters` reference raise a
+        confusing `NameError: name 'StdioServerParameters' is not defined`.
+        """
+        from tools.mcp_tool import MCPServerTask
+
+        server = MCPServerTask("local")
+        config = {"command": "python3", "args": ["/tmp/echo_mcp.py"]}
+
+        async def _test():
+            with patch("tools.mcp_tool._MCP_AVAILABLE", False):
+                with pytest.raises(ImportError, match="stdio transport"):
+                    await server._run_stdio(config)
+
+        asyncio.run(_test())
+
     def test_http_seeds_initial_protocol_header(self):
         from tools.mcp_tool import LATEST_PROTOCOL_VERSION, MCPServerTask
 

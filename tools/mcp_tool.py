@@ -1255,6 +1255,19 @@ class MCPServerTask:
 
     async def _run_stdio(self, config: dict):
         """Run the server using stdio transport."""
+        # Mirror the _run_http guard: if the SDK import block above failed
+        # (mcp not installed, or a non-standard build that doesn't re-export
+        # StdioServerParameters at top level), surface a clear ImportError
+        # here rather than letting StdioServerParameters dereference below
+        # raise a confusing NameError. See #30904.
+        if not _MCP_AVAILABLE:
+            raise ImportError(
+                f"MCP server '{self.name}' requires the 'mcp' Python SDK "
+                "for stdio transport, but it is not available (import of "
+                "'StdioServerParameters' from 'mcp' failed). Install or "
+                "repair the SDK with 'uv pip install \"mcp>=1.0\"'."
+            )
+
         command = config.get("command")
         args = config.get("args", [])
         user_env = config.get("env")
