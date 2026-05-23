@@ -56,6 +56,7 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | Plugin | Kind | Purpose |
 |---|---|---|
 | `disk-cleanup` | hooks + slash command | Auto-track ephemeral files and clean them on session end |
+| `bmad-symphony` | hooks + tools + CLI + slash command | BMad intake, Symphony worker fan-out, and proof-of-work gates |
 | `observability/langfuse` | hooks | Trace turns / LLM calls / tools to [Langfuse](https://langfuse.com) |
 | `spotify` | backend (7 tools) | Native Spotify playback, queue, search, playlists, albums, library |
 | `google_meet` | standalone | Join Meet calls, live-caption transcription, optional realtime duplex audio |
@@ -114,6 +115,34 @@ Auto-tracks and removes ephemeral files created during sessions — test scripts
 **Enabling:** `hermes plugins enable disk-cleanup` (or check the box in `hermes plugins`).
 
 **Disabling again:** `hermes plugins disable disk-cleanup`.
+
+### bmad-symphony
+
+Deep planning + implementation workflow for agentic work.
+
+**What it adds:**
+
+- `bmad_intake` — capture the goal, scope, assumptions, risks, and recommended next action
+- `bmad_story` — turn the intake into a reviewable story with acceptance criteria
+- `symphony_run` — generate or dispatch an isolated worker fan-out plan
+- `bmad_proof` — evaluate proof-of-work before merge or handoff
+- `bmad_status` / `bmad_reset` — inspect or reset the workflow state
+- `/bmad` and `/bmad-symphony` — in-session slash commands for the same workflow
+- `hermes bmad-symphony ...` — CLI entry point for humans and automation
+
+**Integration:**
+
+| Surface | Behaviour |
+|---|---|
+| `pre_llm_call` | Injects a compact reminder when the turn is clearly about BMad / Symphony work, or when an active workflow state exists. |
+| `on_session_end` | Records a terminal event in the plugin state log so the workflow history survives across turns. |
+| `register_skill` | Exposes a plugin-local skill (`bmad-symphony:workflow`) so the agent can load the playbook on demand. |
+
+**State** — saved at `$HERMES_HOME/plugins/bmad-symphony/state.json` so the plugin can remember the active goal, story, run, proof gate, and recent history.
+
+**Enabling:** `hermes plugins enable bmad-symphony`.
+
+**Disabling again:** `hermes plugins disable bmad-symphony`.
 
 ### observability/langfuse
 

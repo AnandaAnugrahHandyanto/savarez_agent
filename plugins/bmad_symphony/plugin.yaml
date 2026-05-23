@@ -1,0 +1,18 @@
+name: bmad-symphony
+version: 1.1.0
+description: "Source-grounded BMAD workflow plugin: derive BMAD guidance from the extracted docs model, with optional Hermes/Symphony delegation kept separate."
+author: NousResearch
+kind: standalone
+platforms:
+  - linux
+  - macos
+provides_tools:
+  - bmad_intake
+  - bmad_story
+  - symphony_run
+  - bmad_proof
+  - bmad_status
+  - bmad_reset
+provides_hooks:
+  - pre_llm_call
+  - on_session_end
