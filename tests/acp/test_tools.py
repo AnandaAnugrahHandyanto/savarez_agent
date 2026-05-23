@@ -147,6 +147,19 @@ class TestBuildToolTitle:
 
 
 class TestBuildToolStart:
+    def test_build_tool_start_attaches_hermes_started_metadata(self):
+        result = build_tool_start(
+            "tc-timed-start",
+            "terminal",
+            {"command": "pwd"},
+            hermes_meta={"startedAt": "2026-05-23T18:42:11.123Z"},
+        )
+
+        assert result.field_meta == {
+            "hermes": {"startedAt": "2026-05-23T18:42:11.123Z"}
+        }
+        assert result.model_dump(by_alias=True, exclude_none=True)["_meta"] == result.field_meta
+
     def test_build_tool_start_for_patch(self):
         """patch start should not duplicate the edit-approval diff."""
         args = {
@@ -300,6 +313,35 @@ class TestBuildToolStart:
 
 
 class TestBuildToolComplete:
+    def test_build_tool_complete_attaches_hermes_timing_metadata(self):
+        result = build_tool_complete(
+            "tc-timed-complete",
+            "terminal",
+            "ok",
+            function_args={"command": "pwd"},
+            hermes_meta={
+                "call_id": "tc-timed-complete",
+                "tool_name": "terminal",
+                "arguments": {"command": "pwd"},
+                "outcome": "completed",
+                "response": "ok",
+                "duration_ms": 1234,
+                "durationMs": 1234,
+                "durationSource": "monotonic",
+                "started_at": "2026-05-23T18:42:11.123Z",
+                "startedAt": "2026-05-23T18:42:11.123Z",
+                "completed_at": "2026-05-23T18:42:12.357Z",
+                "completedAt": "2026-05-23T18:42:12.357Z",
+            },
+        )
+
+        hermes = result.field_meta["hermes"]
+        assert hermes["durationMs"] == 1234
+        assert hermes["duration_ms"] == 1234
+        assert hermes["durationSource"] == "monotonic"
+        assert hermes["outcome"] == "completed"
+        assert result.model_dump(by_alias=True, exclude_none=True)["_meta"] == result.field_meta
+
     def test_build_tool_complete_for_terminal(self):
         """Completed terminal call should include output text."""
         result = build_tool_complete("tc-2", "terminal", "total 42\ndrwxr-xr-x 2 root root 4096 ...")

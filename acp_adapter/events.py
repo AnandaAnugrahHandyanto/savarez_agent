@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 from collections import deque
+from datetime import datetime, timezone
 from typing import Any, Callable, Deque, Dict
 
 import acp
@@ -23,6 +24,17 @@ from .tools import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _duration_ms(duration: Any) -> int | None:
+    try:
+        return int(max(0.0, float(duration)) * 1000)
+    except (TypeError, ValueError):
+        return None
 
 
 def _json_loads_maybe_prefix(value: str) -> Any:
@@ -132,6 +144,45 @@ def make_tool_progress_cb(
     """
 
     def _tool_progress(event_type: str, name: str = None, preview: str = None, args: Any = None, **kwargs) -> None:
+        if event_type == "tool.completed":
+            queue = tool_call_ids.get(name or "")
+            if isinstance(queue, str):
+                queue = deque([queue])
+                tool_call_ids[name or ""] = queue
+            if not queue:
+                return
+            tc_id = queue[0]
+            meta = tool_call_meta.setdefault(tc_id, {})
+            hermes = dict(meta.get("hermes") or {})
+            duration_ms = _duration_ms(kwargs.get("duration"))
+            completed_at = (
+                kwargs.get("completed_at")
+                or kwargs.get("completedAt")
+                or _utc_now_iso()
+            )
+            response = kwargs.get("response") if "response" in kwargs else kwargs.get("result")
+            if response is not None and not isinstance(response, str):
+                response = str(response)
+            arguments = meta.get("args") if isinstance(meta.get("args"), dict) else {}
+            hermes.update(
+                {
+                    "call_id": tc_id,
+                    "tool_name": name,
+                    "arguments": arguments,
+                    "outcome": "failed" if kwargs.get("is_error") else "completed",
+                    "completed_at": completed_at,
+                    "completedAt": completed_at,
+                    "durationSource": "monotonic",
+                }
+            )
+            if response is not None:
+                hermes["response"] = response
+            if duration_ms is not None:
+                hermes["duration_ms"] = duration_ms
+                hermes["durationMs"] = duration_ms
+            meta["hermes"] = hermes
+            return
+
         # Only emit ACP ToolCallStart for tool.started; ignore other event types
         if event_type != "tool.started":
             return
@@ -143,7 +194,7 @@ def make_tool_progress_cb(
         if not isinstance(args, dict):
             args = {}
 
-        tc_id = make_tool_call_id()
+        tc_id = str(kwargs.get("tool_call_id") or "").strip() or make_tool_call_id()
         queue = tool_call_ids.get(name)
         if queue is None:
             queue = deque()
@@ -161,7 +212,17 @@ def make_tool_progress_cb(
                 snapshot = capture_local_edit_snapshot(name, args)
             except Exception:
                 logger.debug("Failed to capture ACP edit snapshot for %s", name, exc_info=True)
-        tool_call_meta[tc_id] = {"args": args, "snapshot": snapshot}
+        meta = {"args": args, "snapshot": snapshot}
+        started_at = kwargs.get("started_at") or kwargs.get("startedAt")
+        if started_at:
+            meta["hermes"] = {
+                "call_id": tc_id,
+                "tool_name": name,
+                "arguments": args,
+                "started_at": started_at,
+                "startedAt": started_at,
+            }
+        tool_call_meta[tc_id] = meta
 
         edit_diff = None
         if name in {"write_file", "patch"} and edit_approval_policy_getter is not None:
@@ -176,7 +237,10 @@ def make_tool_progress_cb(
             except Exception:
                 logger.debug("Failed to prepare auto-approved ACP edit diff for %s", name, exc_info=True)
 
-        update = build_tool_start(tc_id, name, args, edit_diff=edit_diff)
+        update_kwargs = {"edit_diff": edit_diff}
+        if "hermes" in meta:
+            update_kwargs["hermes_meta"] = meta["hermes"]
+        update = build_tool_start(tc_id, name, args, **update_kwargs)
         _send_update(conn, session_id, loop, update)
 
     return _tool_progress
@@ -241,12 +305,17 @@ def make_step_cb(
                 if tool_name and queue:
                     tc_id = queue.popleft()
                     meta = tool_call_meta.pop(tc_id, {})
+                    complete_kwargs = {
+                        "result": str(result) if result is not None else None,
+                        "function_args": function_args or meta.get("args"),
+                        "snapshot": meta.get("snapshot"),
+                    }
+                    if meta.get("hermes"):
+                        complete_kwargs["hermes_meta"] = meta["hermes"]
                     update = build_tool_complete(
                         tc_id,
                         tool_name,
-                        result=str(result) if result is not None else None,
-                        function_args=function_args or meta.get("args"),
-                        snapshot=meta.get("snapshot"),
+                        **complete_kwargs,
                     )
                     _send_update(conn, session_id, loop, update)
                     if tool_name == "todo":

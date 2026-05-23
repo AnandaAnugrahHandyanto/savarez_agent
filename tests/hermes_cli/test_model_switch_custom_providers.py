@@ -5,6 +5,8 @@ shared slash-command pipeline (`/model` in CLI/gateway/Telegram) historically
 only looked at `providers:`.
 """
 
+import pytest
+
 import hermes_cli.providers as providers_mod
 from hermes_cli.model_switch import list_authenticated_providers, switch_model
 from hermes_cli.providers import resolve_provider_full
@@ -16,6 +18,19 @@ _MOCK_VALIDATION = {
     "recognized": True,
     "message": None,
 }
+
+
+@pytest.fixture(autouse=True)
+def _disable_live_api_model_fetch(monkeypatch):
+    """Keep custom-provider picker tests hermetic by default.
+
+    Several tests use localhost/openai-compatible URLs to exercise config
+    grouping. If a developer happens to have a compatible server listening,
+    live ``/models`` discovery can replace the static fixture models and make
+    the assertions environment-dependent. Tests that explicitly cover live
+    discovery override this fixture with their own fake.
+    """
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *a, **kw: [])
 
 
 def test_list_authenticated_providers_includes_custom_providers(monkeypatch):
