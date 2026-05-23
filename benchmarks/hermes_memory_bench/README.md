@@ -39,6 +39,7 @@ python -m benchmarks.hermes_memory_bench.run --suite smoke --output /tmp/hermes-
 - `memory_real_proposal_dry_run`
 - `memory_real_proposal_write_lock_gate`
 - `memory_human_approval_token_request`
+- `memory_human_approval_token_review_gate`
 - `latency_ms`
 
 ## Hybrid Retrieval Fusion v0.1
@@ -327,6 +328,26 @@ Graph, or modifies config.
 The smoke suite includes `memory_human_approval_token_request`, proving that an
 eligible write-lock gate becomes review-required without issuing a token,
 creating a real proposal, or creating an operation event.
+
+### Memory Human Approval Token Review Gate v0.1
+
+Implemented in `agent.memory_human_approval_token_review_gate`. It turns an
+`approval_token_review_required` request candidate into a deterministic
+`token_review_outcome_candidate` with outcome labels `approve_token_issuance`,
+`request_changes`, `reject`, and `defer`.
+
+Invalid or locked request candidates reject. Missing proposal record,
+operation-ledger, target-path previews, or source evidence request changes.
+Valid review-required requests with intact previews and source evidence become
+`approve_token_issuance` candidates. Explicit supported outcome overrides are
+recorded only as read-only candidates; the gate never issues approval tokens,
+persists approvals, creates real proposals, writes proposal files, writes
+operation-ledger events, submits to governance, writes memory, writes the Memory
+Graph, or modifies config.
+
+The smoke suite includes `memory_human_approval_token_review_gate`, proving that
+a valid approval token request becomes `approve_token_issuance` without issuing
+a token, creating a real proposal, or creating an operation event.
 
 ## Report Schema
 
