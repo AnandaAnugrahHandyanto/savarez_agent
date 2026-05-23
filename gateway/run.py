@@ -9243,7 +9243,7 @@ class GatewayRunner:
         On Telegram (DM or group), emits an InlineKeyboardMarkup with one
         button per host (url buttons). On other platforms, falls back to a
         plain text list of URLs. Hosts read from CLI config key
-        ``dashboard.agent_hosts`` (RFD-0002 §11).
+        ``dashboard.agent_hosts``.
         """
         from hermes_cli.config import load_config as _load_cli_config
         try:
@@ -9273,7 +9273,7 @@ class GatewayRunner:
                     try:
                         await bot.send_message(
                             chat_id=int(source.chat_id),
-                            text="🚀 Agents Dashboards",
+                            text="🚀 Agents Dashboard",
                             reply_markup=keyboard,
                         )
                         return None  # already sent
@@ -9284,7 +9284,7 @@ class GatewayRunner:
                 pass
 
         # Text fallback (non-Telegram, or Telegram send failed)
-        lines = ["**Agents Dashboards:**"]
+        lines = ["**Agents Dashboard:**"]
         for h in hosts:
             name = h.get("name") or h.get("url")
             lines.append(f"• {name}: {h.get('url')}")
