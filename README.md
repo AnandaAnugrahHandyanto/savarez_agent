@@ -202,6 +202,12 @@ eligible token write-lock gates into read-only final confirmation request
 candidates without issuing tokens, persisting approvals, writing token files,
 creating real proposals, or creating operation-ledger events.
 
+Memory Human Approval Token Final Confirmation Review Gate v0.1 lives in
+`agent.memory_human_approval_token_final_confirmation_review_gate`. It turns
+final-confirmation-review-required requests into read-only review outcome
+candidates without issuing tokens, persisting approvals, writing token files,
+creating real proposals, or creating operation-ledger events.
+
 ---
 
 ## Migrating from OpenClaw
