@@ -2938,8 +2938,9 @@ async def open_profile_terminal_endpoint(name: str):
 
 
 @app.post("/api/profiles/{name}/activate")
-async def activate_profile(name: str):
+async def activate_profile(request: Request, name: str):
     """Set the active profile (sticky — persists across restarts)."""
+    _require_token(request)
     from hermes_cli import profiles as profiles_mod
 
     canon = profiles_mod.normalize_profile_name(name)
@@ -2955,8 +2956,9 @@ async def activate_profile(name: str):
 
 
 @app.get("/api/agents/metrics")
-async def get_agent_metrics():
+async def get_agent_metrics(request: Request):
     """Live telemetry: memory, disk, token usage, and active profile name."""
+    _require_token(request)
     import time
     from datetime import datetime
 

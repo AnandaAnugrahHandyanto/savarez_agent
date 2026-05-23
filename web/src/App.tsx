@@ -329,6 +329,13 @@ export default function App() {
   const [chatUiEnabled, setChatUiEnabled] = useState(true);
   const [chatSystemMonitorEnabled, setChatSystemMonitorEnabled] = useState(true);
   const [chatByAgentProfileEnabled, setChatByAgentProfileEnabled] = useState(true);
+  // Bumped when the user switches the active agent profile — causes the PTY
+  // WebSocket to reconnect under the new profile's HERMES_HOME.
+  const [channelBumpKey, setChannelBumpKey] = useState(0);
+
+  const bumpChannel = useCallback(() => {
+    setChannelBumpKey((k) => k + 1);
+  }, []);
 
   useEffect(() => {
     api
@@ -664,6 +671,8 @@ export default function App() {
                         isActive={isChatRoute}
                         chatSystemMonitor={chatSystemMonitorEnabled}
                         chatByAgentProfile={chatByAgentProfileEnabled}
+                        channelBumpKey={channelBumpKey}
+                        onProfileActivated={bumpChannel}
                       />
                     </div>
                   ))}

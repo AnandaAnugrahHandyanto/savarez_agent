@@ -75,12 +75,15 @@ interface ChatSidebarProps {
   className?: string;
   /** When false, the Agent Profile selector card is hidden. */
   chatByAgentProfile?: boolean;
+  /** Fires after a profile switch is saved and the PTY is respawning — parent bumps channelKey. */
+  onProfileActivated?: () => void;
 }
 
 export function ChatSidebar({
   channel,
   className,
   chatByAgentProfile = true,
+  onProfileActivated,
 }: ChatSidebarProps) {
   // `version` bumps on reconnect; gw is derived so we never call setState
   // for it inside an effect (React 19's set-state-in-effect rule). The
@@ -319,21 +322,21 @@ export function ChatSidebar({
     [gw, sessionId],
   );
 
-  // When the user picks a new profile, call activateProfile then force
-  // a gateway reconnect so the next PTY session starts under the new profile.
-  const onProfileActivated = useCallback(
+  // When the user picks a new profile, call activateProfile then signal
+  // parent to bump the channel key so the PTY respawns under the new profile.
+  const handleProfileActivated = useCallback(
     (name: string) => {
       void api
         .activateProfile(name)
         .then(() => {
           setActiveProfile(name);
-          // Force gateway reconnect so next PTY picks up new profile
-          setVersion((v) => v + 1);
+          // Signal parent to regenerate channel → new PTY with new HERMES_HOME
+          onProfileActivated?.();
           setProfileOpen(false);
         })
         .catch(() => {});
     },
-    [],
+    [onProfileActivated],
   );
 
   const canPickModel = state === "open" && !!sessionId;
@@ -446,7 +449,7 @@ export function ChatSidebar({
         <ProfilePickerDialog
           activeProfile={activeProfile}
           onClose={() => setProfileOpen(false)}
-          onProfileActivated={onProfileActivated}
+          onProfileActivated={handleProfileActivated}
         />
       )}
     </aside>

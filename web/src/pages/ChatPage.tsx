@@ -113,10 +113,14 @@ export default function ChatPage({
   isActive = true,
   chatSystemMonitor = true,
   chatByAgentProfile = true,
+  channelBumpKey = 0,
+  onProfileActivated,
 }: {
   isActive?: boolean;
   chatSystemMonitor?: boolean;
   chatByAgentProfile?: boolean;
+  channelBumpKey?: number;
+  onProfileActivated?: () => void;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -169,7 +173,13 @@ export default function ChatPage({
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
-  const channel = useMemo(() => generateChannelId(), [resumeParam]);
+  // channel re-creates when either resume or the bump key changes —
+  // bumpKey increments on profile switch so the PTY respawns under the new profile.
+  const channel = useMemo(
+    () => generateChannelId(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [resumeParam, channelBumpKey],
+  );
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -803,7 +813,11 @@ export default function ChatPage({
               "border-t border-current/10",
             )}
           >
-            <ChatSidebar channel={channel} chatByAgentProfile={chatByAgentProfile} />
+            <ChatSidebar
+              channel={channel}
+              chatByAgentProfile={chatByAgentProfile}
+              onProfileActivated={onProfileActivated}
+            />
           </div>
         </div>
       </>,
@@ -873,7 +887,11 @@ export default function ChatPage({
             className="flex min-h-0 shrink-0 flex-col overflow-hidden lg:h-full lg:w-80"
           >
             <div className="min-h-0 flex-1 overflow-hidden">
-              <ChatSidebar channel={channel} chatByAgentProfile={chatByAgentProfile} />
+              <ChatSidebar
+              channel={channel}
+              chatByAgentProfile={chatByAgentProfile}
+              onProfileActivated={onProfileActivated}
+            />
             </div>
           </div>
         )}
