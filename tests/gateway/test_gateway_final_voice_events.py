@@ -50,6 +50,7 @@ class _FakeAgent:
 async def test_gateway_success_turn_publishes_only_final_voice_event(monkeypatch):
     from gateway.config import GatewayConfig, Platform
     import gateway.pulse_voice_events as pulse_voice_events
+    import gateway.voice_response_pipeline as voice_response_pipeline
     import gateway.run as gateway_run
     from gateway.run import GatewayRunner
     from gateway.session import SessionSource
@@ -58,20 +59,27 @@ async def test_gateway_success_turn_publishes_only_final_voice_event(monkeypatch
     voice_event_calls = []
     voice_out_calls = []
     completion_calls = []
+    voice_emissions = []
 
     def record_voice_event(kind, text, **metadata):
         voice_event_calls.append((kind, text, metadata))
+        voice_emissions.append(("event", kind, text, metadata))
 
     def record_voice_out(kind, text, **metadata):
         voice_out_calls.append((kind, text, metadata))
+        voice_emissions.append(("voice_out", kind, text, metadata))
 
-    def record_completion(final_response, **metadata):
+    def record_completion(self, final_response, context, **kwargs):
+        metadata = context.to_metadata()
         completion_calls.append((final_response, metadata))
+        voice_emissions.append(("completion", "completion", final_response, metadata))
+        return original_publish_final_response(self, final_response, context, **kwargs)
 
+    original_publish_final_response = voice_response_pipeline.VoiceResponsePipeline.publish_final_response
     monkeypatch.setattr(run_agent, "AIAgent", _FakeAgent)
     monkeypatch.setattr(pulse_voice_events, "publish_voice_event", record_voice_event)
     monkeypatch.setattr(pulse_voice_events, "publish_voice_out", record_voice_out)
-    monkeypatch.setattr(pulse_voice_events, "publish_completion_voice_out", record_completion)
+    monkeypatch.setattr(voice_response_pipeline.VoiceResponsePipeline, "publish_final_response", record_completion)
     monkeypatch.setattr(
         gateway_run,
         "_load_gateway_config",
@@ -152,21 +160,32 @@ async def test_gateway_success_turn_publishes_only_final_voice_event(monkeypatch
         event_message_id="message-source-001",
     )
 
-    assert result["final_response"] == "I finished the gateway voice regression and verified the seam."
-    assert ("commentary", "I am checking the gateway seam.") in [
-        (kind, text) for kind, text, _metadata in voice_event_calls
-    ]
-    assert all(kind != "ack" for kind, _text, _metadata in voice_event_calls)
-    assert all(kind != "ack" for kind, _text, _metadata in voice_out_calls)
-    assert completion_calls == [
+    final_response = "I finished the gateway voice regression and verified the seam."
+    expected_metadata = {
+        "session_id": "session-abc",
+        "platform": "discord",
+        "chat_id": "chat-123",
+        "thread_id": "thread-456",
+        "source_message_id": "message-source-001",
+        "voice_profile": "eon",
+        "room_context": "living_room",
+    }
+
+    assert result["final_response"] == final_response
+    assert voice_event_calls == []
+    assert voice_out_calls == [
         (
-            "I finished the gateway voice regression and verified the seam.",
+            "completion",
+            final_response,
             {
-                "session_id": "session-abc",
-                "platform": "discord",
-                "chat_id": "chat-123",
-                "thread_id": "thread-456",
-                "source_message_id": "message-source-001",
+                **expected_metadata,
+                "source": "assistant_final",
+                "derived_from": "final_response",
+                "policy": voice_out_calls[0][2]["policy"],
+                "summarizer": voice_out_calls[0][2]["summarizer"],
             },
         )
     ]
+    assert completion_calls == [(final_response, expected_metadata)]
+    assert voice_emissions[0] == ("completion", "completion", final_response, expected_metadata)
+    assert voice_emissions[1][0:3] == ("voice_out", "completion", final_response)

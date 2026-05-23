@@ -479,6 +479,36 @@ class TestSendVoiceReply:
         mock_tts.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_policy_blocked_text_input_all_mode_never_calls_tts(self, runner):
+        event = _make_event(message_type=MessageType.TEXT)
+        runner._voice_mode["telegram:123"] = "all"
+        assert runner._should_send_voice_reply(event, "API_KEY=hk_test_1234567890abcdef", []) is True
+
+        with patch("tools.tts_tool.text_to_speech_tool") as mock_tts:
+            await runner._send_voice_reply(event, "API_KEY=hk_test_1234567890abcdef")
+
+        mock_tts.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_policy_blocked_voice_only_streaming_takeover_never_calls_tts(self, runner):
+        event = _make_event(message_type=MessageType.VOICE)
+        runner._voice_mode["telegram:123"] = "voice_only"
+        assert runner._should_send_voice_reply(
+            event,
+            "Traceback (most recent call last):\n  File \"/Users/brenno/app.py\", line 1, in <module>",
+            [],
+            already_sent=True,
+        ) is True
+
+        with patch("tools.tts_tool.text_to_speech_tool") as mock_tts:
+            await runner._send_voice_reply(
+                event,
+                "Traceback (most recent call last):\n  File \"/Users/brenno/app.py\", line 1, in <module>",
+            )
+
+        mock_tts.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_tts_failure_no_crash(self, runner):
         event = _make_event()
         mock_adapter = AsyncMock()

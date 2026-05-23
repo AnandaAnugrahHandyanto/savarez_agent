@@ -284,27 +284,23 @@ async def test_voice_events_are_final_answer_only_and_do_not_change_text_respons
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     import gateway.pulse_voice_events as pulse_voice_events
+    import gateway.voice_response_pipeline as voice_response_pipeline
 
     voice_out_calls = []
     completion_calls = []
     original_publish_voice_out = pulse_voice_events.publish_voice_out
-    original_publish_completion_voice_out = pulse_voice_events.publish_completion_voice_out
+    original_publish_final_response = voice_response_pipeline.VoiceResponsePipeline.publish_final_response
 
     def record_voice_out(kind, text, **metadata):
         voice_out_calls.append({"kind": kind, "text": text, "metadata": metadata})
         return original_publish_voice_out(kind, text, **metadata)
 
-    def record_completion(final_response, **metadata):
-        completion_calls.append({"final_response": final_response, "metadata": metadata})
-        return original_publish_completion_voice_out(final_response, **metadata)
+    def record_final_response(self, final_response, context, **kwargs):
+        completion_calls.append({"final_response": final_response, "context": context})
+        return original_publish_final_response(self, final_response, context, **kwargs)
 
     monkeypatch.setattr(pulse_voice_events, "publish_voice_out", record_voice_out)
-    # ``record_completion`` delegates to the original function object, so route
-    # that function's global lookup through the spy too. This keeps the test
-    # sensitive to hidden ack/start-of-turn publish_voice_out calls while still
-    # exercising the real completion publisher.
-    monkeypatch.setitem(original_publish_completion_voice_out.__globals__, "publish_voice_out", record_voice_out)
-    monkeypatch.setattr(pulse_voice_events, "publish_completion_voice_out", record_completion)
+    monkeypatch.setattr(voice_response_pipeline.VoiceResponsePipeline, "publish_final_response", record_final_response)
 
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001", thread_id="42")
 
@@ -321,28 +317,27 @@ async def test_voice_events_are_final_answer_only_and_do_not_change_text_respons
     final_response = "I fixed the voice bridge from the actual assistant answer. Extra Discord-only detail follows."
     assert result["final_response"] == final_response
     assert [message["content"] for message in adapter.sent] == ["I’m checking the voice path now."]
-    assert [call["kind"] for call in voice_out_calls] == ["progress", "completion"]
+    assert [call["kind"] for call in voice_out_calls] == ["completion"]
     assert all(call["kind"] != "ack" for call in voice_out_calls)
     final_turn_voice_calls = [
         call for call in voice_out_calls if call["kind"] in {"ack", "completion", "error", "question"}
     ]
     assert [call["kind"] for call in final_turn_voice_calls] == ["completion"]
     assert final_turn_voice_calls[0]["text"] == "I fixed the voice bridge from the actual assistant answer."
-    assert completion_calls == [
-        {
-            "final_response": final_response,
-            "metadata": {
-                "session_id": "sess-voice",
-                "platform": "telegram",
-                "chat_id": "-1001",
-                "thread_id": "42",
-                "source_message_id": "msg-voice-1",
-            },
-        }
-    ]
+    assert len(completion_calls) == 1
+    assert completion_calls[0]["final_response"] == final_response
+    assert completion_calls[0]["context"].to_metadata() == {
+        "session_id": "sess-voice",
+        "platform": "telegram",
+        "chat_id": "-1001",
+        "thread_id": "42",
+        "source_message_id": "msg-voice-1",
+        "voice_profile": "eon",
+        "room_context": "living_room",
+    }
 
     events = [json.loads(line) for line in voice_out_path().read_text(encoding="utf-8").splitlines()]
-    assert [event["kind"] for event in events] == ["progress", "completion"]
+    assert [event["kind"] for event in events] == ["completion"]
     turn_level_events = [event for event in events if event["kind"] in {"ack", "completion", "error", "question"}]
     assert [event["kind"] for event in turn_level_events] == ["completion"]
     assert turn_level_events[0]["text"] == "I fixed the voice bridge from the actual assistant answer."
@@ -385,29 +380,30 @@ async def test_discord_final_text_is_preserved_while_voice_event_is_summarized(m
 async def test_discord_text_delivery_unchanged_when_voice_publisher_records_media_appended_response(monkeypatch, tmp_path):
     """Voice publication observes the post-media final_response, while Discord sends clean text."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    import gateway.pulse_voice_events as pulse_voice_events
+    import gateway.voice_response_pipeline as voice_response_pipeline
 
     completion_calls = []
+    original_publish_final_response = voice_response_pipeline.VoiceResponsePipeline.publish_final_response
 
-    def record_completion(final_response, **metadata):
-        completion_calls.append({"final_response": final_response, "metadata": metadata})
+    def record_final_response(self, final_response, context, **kwargs):
+        completion_calls.append({"final_response": final_response, "context": context})
+        return original_publish_final_response(self, final_response, context, **kwargs)
 
-    monkeypatch.setattr(pulse_voice_events, "publish_completion_voice_out", record_completion)
+    monkeypatch.setattr(voice_response_pipeline.VoiceResponsePipeline, "publish_final_response", record_final_response)
 
     adapter = await _deliver_one_discord_turn(monkeypatch, tmp_path, VoiceMediaFinalAgent)
 
-    assert completion_calls == [
-        {
-            "final_response": "Here is the unchanged Discord text.\nMEDIA:/tmp/hermes-voice-regression.mp3",
-            "metadata": {
-                "session_id": "sess-discord",
-                "platform": "discord",
-                "chat_id": "discord-channel",
-                "thread_id": "thread-7",
-                "source_message_id": "discord-msg-1",
-            },
-        }
-    ]
+    assert len(completion_calls) == 1
+    assert completion_calls[0]["final_response"] == "Here is the unchanged Discord text.\nMEDIA:/tmp/hermes-voice-regression.mp3"
+    assert completion_calls[0]["context"].to_metadata() == {
+        "session_id": "sess-discord",
+        "platform": "discord",
+        "chat_id": "discord-channel",
+        "thread_id": "thread-7",
+        "source_message_id": "discord-msg-1",
+        "voice_profile": "eon",
+        "room_context": "living_room",
+    }
     assert adapter.sent[0]["content"] == "Here is the unchanged Discord text."
     assert "MEDIA:" not in adapter.sent[0]["content"]
 
@@ -416,12 +412,12 @@ async def test_discord_text_delivery_unchanged_when_voice_publisher_records_medi
 async def test_discord_text_delivery_survives_completion_voice_publisher_failure(monkeypatch, tmp_path):
     """Voice publication is best-effort and must not break normal Discord delivery."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    import gateway.pulse_voice_events as pulse_voice_events
+    import gateway.voice_response_pipeline as voice_response_pipeline
 
-    def failing_completion(final_response, **metadata):
+    def failing_final_response(self, final_response, context, **kwargs):
         raise RuntimeError("voice publisher unavailable")
 
-    monkeypatch.setattr(pulse_voice_events, "publish_completion_voice_out", failing_completion)
+    monkeypatch.setattr(voice_response_pipeline.VoiceResponsePipeline, "publish_final_response", failing_final_response)
 
     adapter = await _deliver_one_discord_turn(monkeypatch, tmp_path, VoiceFinalAgent)
 

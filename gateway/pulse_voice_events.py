@@ -215,6 +215,77 @@ def _policy_metadata_from_decision(
     return policy
 
 
+_SAFE_METADATA_KEYS = {
+    "session_id",
+    "platform",
+    "chat_id",
+    "channel_id",
+    "thread_id",
+    "source_message_id",
+    "input_modality",
+    "output_device",
+    "config_scope",
+    "explicit_spoken_request",
+    "is_private_context",
+    "summarizer",
+}
+_SAFE_METADATA_STRING_RE = re.compile(r"^[A-Za-z0-9_.:@#-]{1,128}$")
+_SAFE_ENUM_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
+
+
+def _safe_metadata_string(value: Any, *, enum: bool = False) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    pattern = _SAFE_ENUM_RE if enum else _SAFE_METADATA_STRING_RE
+    if pattern.fullmatch(text) and not _SECRET_RE.search(text) and not _PATH_RE.search(text):
+        return text
+    return None
+
+
+def _safe_summarizer_metadata(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    allowed: dict[str, Any] = {}
+    for key in ("mode", "method", "fallback", "validation_reason"):
+        safe = _safe_metadata_string(value.get(key), enum=True)
+        if safe is not None:
+            allowed[key] = safe
+    for key in ("fallback_used", "validation_failed"):
+        if key in value:
+            allowed[key] = bool(value.get(key))
+    if "timeout_ms" in value:
+        try:
+            allowed["timeout_ms"] = max(1, min(int(value.get("timeout_ms") or 0), 10000))
+        except (TypeError, ValueError):
+            pass
+    return allowed or None
+
+
+def _safe_voice_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Return allowlisted Pulse metadata with no raw content/debug passthrough."""
+    safe: dict[str, Any] = {}
+    for key in _SAFE_METADATA_KEYS:
+        if key not in metadata or metadata[key] is None:
+            continue
+        value = metadata[key]
+        if key in {"explicit_spoken_request", "is_private_context"}:
+            safe[key] = bool(value)
+        elif key == "summarizer":
+            summarizer = _safe_summarizer_metadata(value)
+            if summarizer:
+                safe[key] = summarizer
+        elif key in {"platform", "input_modality", "output_device", "config_scope"}:
+            safe_value = _safe_metadata_string(value, enum=True)
+            if safe_value is not None:
+                safe[key] = safe_value
+        else:
+            safe_value = _safe_metadata_string(value)
+            if safe_value is not None:
+                safe[key] = safe_value
+    return safe
+
+
 def _final_summary_config() -> dict[str, Any]:
     """Load pulse.voice.final_summary with conservative defaults.
 
@@ -426,18 +497,29 @@ def publish_voice_out(kind: str, text: str, **metadata: Any) -> None:
             policy = _policy_metadata_from_decision(decision, merged_policy)
         else:
             policy = _policy_metadata_from_decision(decision, sanitized.policy)
+        safe_metadata = _safe_voice_metadata(metadata)
+        try:
+            requested_max_seconds = int(metadata.pop("max_seconds", decision.max_seconds or default_seconds) or default_seconds)
+        except (TypeError, ValueError):
+            requested_max_seconds = int(decision.max_seconds or default_seconds)
         event = {
             "id": f"{time.time_ns()}",
             "ts": time.time(),
             "schema_version": 2,
             "kind": kind,
             "text": decision.text,
-            "max_seconds": int(metadata.pop("max_seconds", decision.max_seconds or default_seconds) or default_seconds),
-            "source": metadata.pop("source", kind),
-            "derived_from": metadata.pop("derived_from", "pulse_voice_candidate"),
-            "voice_profile": metadata.pop("voice_profile", context.profile or "eon"),
+            "max_seconds": max(1, min(requested_max_seconds, 30)),
+            "source": _safe_metadata_string(metadata.pop("source", kind), enum=True) or kind,
+            "derived_from": _safe_metadata_string(
+                metadata.pop("derived_from", "pulse_voice_candidate"),
+                enum=True,
+            ) or "pulse_voice_candidate",
+            "voice_profile": _safe_metadata_string(
+                metadata.pop("voice_profile", context.profile or "eon"),
+                enum=True,
+            ) or "eon",
             "policy": policy,
-            **{k: v for k, v in metadata.items() if v is not None},
+            **safe_metadata,
         }
         canonical = voice_out_path()
         legacy = voice_events_path()
@@ -459,16 +541,12 @@ def publish_completion_voice_out(
     **metadata: Any,
 ) -> None:
     """Publish a short spoken completion derived from executor final text."""
-    result = summarize_final_voice_response(final_response, summarizer=summarizer)
-    publish_voice_out(
-        result.kind,
-        result.text,
-        source=result.source,
-        derived_from=result.derived_from,
-        voice_profile=result.voice_profile,
-        summarizer=result.summarizer,
-        policy=result.policy,
-        **metadata,
+    from gateway.voice_response_pipeline import VoiceContext, VoiceResponsePipeline
+
+    VoiceResponsePipeline().publish_final_response(
+        final_response,
+        VoiceContext.from_metadata(**metadata),
+        summarizer=summarizer,
     )
 
 
@@ -479,8 +557,6 @@ def publish_voice_event(kind: str, text: str, **metadata: Any) -> None:
     ``commentary`` maps to a short ``progress`` voice-out event only when the
     model actually generated that assistant text.
     """
-    legacy_kind = str(kind or "").strip().lower()
-    if legacy_kind == "delta":
-        return
-    mapped = "progress" if legacy_kind == "commentary" else legacy_kind
-    publish_voice_out(mapped, text, **metadata)
+    from gateway.voice_response_pipeline import VoiceContext, VoiceResponsePipeline
+
+    VoiceResponsePipeline().publish_legacy_event(kind, text, VoiceContext.from_metadata(**metadata))

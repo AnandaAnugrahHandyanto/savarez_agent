@@ -240,6 +240,7 @@ def test_validation_rejects_paths_secrets_code_media_actions_and_future_promises
         "I updated gateway/run.py and ran tests.",
         "I deployed the bridge and ran tests.",
         "I will update the bridge now.",
+        "The system will send the email.",
     ]
     summarizer = FinalSpeechSummarizer(generator=None, mode="deterministic")
 
@@ -247,3 +248,22 @@ def test_validation_rejects_paths_secrets_code_media_actions_and_future_promises
         valid, reason = summarizer.validate_generated_summary(output, final, VoiceContext())
         assert valid is False, output
         assert reason
+
+
+def test_validation_rejects_hallucinated_actions_not_grounded_in_final_text():
+    final = "I updated the bridge and ran tests."
+    bad_outputs = [
+        "I finished the deployment.",
+        "I completed the migration.",
+        "I wrote the file.",
+        "I emailed Brenno.",
+        "I reviewed the PR.",
+        "I called Alice.",
+        "Your lunch is ready.",
+    ]
+    summarizer = FinalSpeechSummarizer(generator=None, mode="deterministic")
+
+    for output in bad_outputs:
+        valid, reason = summarizer.validate_generated_summary(output, final, VoiceContext())
+        assert valid is False, output
+        assert reason in {"unsupported_action", "unsupported_content"}

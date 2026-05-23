@@ -57,21 +57,27 @@ _ERROR_SIGNAL_RE = re.compile(
     r"(?i)\b(?:error|failed?|failure|timed\s+out|timeout|blocked|can't|cannot|couldn't|unable|unavailable|interrupted|sorry)\b"
 )
 _ACTION_TERMS = {
-    "deployed",
-    "deploy",
-    "sent",
+    "called",
+    "changed",
     "closed",
-    "opened",
-    "merged",
+    "completed",
     "created",
     "deleted",
+    "deploy",
+    "deployed",
+    "emailed",
+    "finished",
     "fixed",
-    "updated",
-    "changed",
     "implemented",
-    "ran",
+    "merged",
+    "opened",
     "passed",
+    "ran",
+    "reviewed",
+    "sent",
+    "updated",
     "verified",
+    "wrote",
 }
 _COMPLETION_VERBS = {
     "tests pass",
@@ -88,6 +94,36 @@ _COMPLETION_VERBS = {
     "closed the issue",
     "message sent",
     "sent the message",
+}
+_CONTENT_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "been",
+    "being",
+    "by",
+    "for",
+    "from",
+    "i",
+    "in",
+    "is",
+    "it",
+    "its",
+    "my",
+    "of",
+    "on",
+    "or",
+    "our",
+    "the",
+    "this",
+    "that",
+    "to",
+    "with",
+    "your",
 }
 
 FINAL_SPEECH_PROMPT_CONTRACT = """You are Eon speaking aloud in Brenno's living room.
@@ -159,6 +195,11 @@ def _base_policy() -> dict[str, bool]:
 def _first_sentence(text: str) -> str:
     match = _SENTENCE_RE.match(text)
     return match.group(0) if match else text
+
+
+def _content_words(text: str) -> set[str]:
+    words = set(re.findall(r"[a-z]+", text.lower()))
+    return {word for word in words if len(word) > 2 and word not in _CONTENT_STOPWORDS}
 
 
 def sanitize_voice_text(
@@ -380,6 +421,13 @@ class FinalSpeechSummarizer:
 
         if _FUTURE_PROMISE_RE.search(generated_text) and not _FUTURE_PROMISE_RE.search(final_text):
             return False, "future_promise"
+        if "will" in generated_words and "will" not in final_words:
+            return False, "future_promise"
+
+        generated_content = _content_words(generated_text)
+        final_content = _content_words(final_text)
+        if generated_content and final_content and not (generated_content & final_content):
+            return False, "unsupported_content"
 
         return True, None
 

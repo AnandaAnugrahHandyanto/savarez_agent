@@ -11254,7 +11254,54 @@ class GatewayRunner:
         try:
             from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
 
-            tts_text = _strip_markdown_for_tts(text[:4000])
+            adapter = self.adapters.get(event.source.platform)
+            guild_id = self._get_guild_id(event)
+            is_in_voice_channel = getattr(adapter, "is_in_voice_channel", None) if adapter is not None else None
+            in_voice_channel = bool(guild_id and callable(is_in_voice_channel) and is_in_voice_channel(guild_id))
+            output_device = "discord_voice" if in_voice_channel else "chat_attachment"
+            rule_profile = "discord_voice" if in_voice_channel else "chat_attachment"
+
+            stripped_text = _strip_markdown_for_tts(text[:4000])
+            if not stripped_text:
+                return
+
+            # Gate every direct runner auto-TTS path through AmbientVoicePolicy
+            # before synthesis.  Use the adapter helper when available; otherwise
+            # fall back to the same policy surface locally so bare test runners and
+            # simple adapters remain protected.
+            prepare_tts_text = getattr(type(adapter), "prepare_tts_text", None) if adapter is not None else None
+            if callable(prepare_tts_text):
+                tts_text = str(prepare_tts_text(
+                    adapter,
+                    stripped_text,
+                    chat_id=event.source.chat_id,
+                    thread_id=getattr(event.source, "thread_id", None),
+                    source_message_id=getattr(event, "message_id", None),
+                    explicit_spoken_request=True,
+                    is_private_context=False,
+                    output_device=output_device,
+                    rule_profile=rule_profile,
+                ) or "")
+            else:
+                from gateway.ambient_voice_policy import AmbientVoicePolicy, VoiceContext
+
+                platform = getattr(event.source.platform, "value", event.source.platform)
+                decision = AmbientVoicePolicy().evaluate(
+                    stripped_text,
+                    VoiceContext(
+                        source="auto_tts_reply",
+                        platform=str(platform or ""),
+                        chat_id=event.source.chat_id,
+                        thread_id=getattr(event.source, "thread_id", None),
+                        source_message_id=getattr(event, "message_id", None),
+                        input_modality="voice" if event.message_type == MessageType.VOICE else "text",
+                        output_device=output_device,
+                        explicit_spoken_request=True,
+                        is_private_context=False,
+                        config_scope=rule_profile,
+                    ),
+                )
+                tts_text = decision.text if decision.allowed and decision.text else ""
             if not tts_text:
                 return
 
@@ -16418,14 +16465,16 @@ class GatewayRunner:
                                 if _run_still_current():
                                     _stream_consumer.on_delta(text)
                                     try:
-                                        from gateway.pulse_voice_events import publish_voice_event
-                                        publish_voice_event(
+                                        from gateway.voice_response_pipeline import VoiceContext, VoiceResponsePipeline
+                                        VoiceResponsePipeline().publish_legacy_event(
                                             "delta",
                                             text,
-                                            session_id=session_id,
-                                            platform=platform_key,
-                                            chat_id=source.chat_id,
-                                            thread_id=source.thread_id,
+                                            VoiceContext(
+                                                session_id=session_id,
+                                                platform=platform_key,
+                                                chat_id=source.chat_id,
+                                                thread_id=source.thread_id,
+                                            ),
                                         )
                                     except Exception:
                                         pass
@@ -16436,19 +16485,9 @@ class GatewayRunner:
             def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
                 if not _run_still_current():
                     return
-                if str(text or "").strip():
-                    try:
-                        from gateway.pulse_voice_events import publish_voice_event
-                        publish_voice_event(
-                            "commentary",
-                            text,
-                            session_id=session_id,
-                            platform=platform_key,
-                            chat_id=source.chat_id,
-                            thread_id=source.thread_id,
-                        )
-                    except Exception:
-                        pass
+                # Interim/commentary text is a display concern only. The Pulse voice
+                # seam is final-only for successful turns so room audio is derived
+                # from final_response, not transient assistant progress text.
                 if _stream_consumer is not None:
                     if already_streamed:
                         _stream_consumer.on_segment_break()
@@ -16983,15 +17022,17 @@ class GatewayRunner:
                 error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
                 if error_msg:
                     try:
-                        from gateway.pulse_voice_events import publish_voice_out
-                        publish_voice_out(
+                        from gateway.voice_response_pipeline import VoiceContext, VoiceResponsePipeline
+                        VoiceResponsePipeline().publish_legacy_event(
                             "error",
                             error_msg,
-                            session_id=session_id,
-                            platform=platform_key,
-                            chat_id=source.chat_id,
-                            thread_id=source.thread_id,
-                            source_message_id=event_message_id,
+                            VoiceContext(
+                                session_id=session_id,
+                                platform=platform_key,
+                                chat_id=source.chat_id,
+                                thread_id=source.thread_id,
+                                source_message_id=event_message_id,
+                            ),
                         )
                     except Exception:
                         pass
@@ -17058,14 +17099,16 @@ class GatewayRunner:
                     final_response = final_response + "\n" + "\n".join(unique_tags)
 
             try:
-                from gateway.pulse_voice_events import publish_completion_voice_out
-                publish_completion_voice_out(
+                from gateway.voice_response_pipeline import VoiceContext, VoiceResponsePipeline
+                VoiceResponsePipeline().publish_final_response(
                     final_response,
-                    session_id=session_id,
-                    platform=platform_key,
-                    chat_id=source.chat_id,
-                    thread_id=source.thread_id,
-                    source_message_id=event_message_id,
+                    VoiceContext(
+                        session_id=session_id,
+                        platform=platform_key,
+                        chat_id=source.chat_id,
+                        thread_id=source.thread_id,
+                        source_message_id=event_message_id,
+                    ),
                 )
             except Exception:
                 pass

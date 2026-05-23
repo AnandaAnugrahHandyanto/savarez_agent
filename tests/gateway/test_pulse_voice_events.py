@@ -100,6 +100,45 @@ def test_publish_voice_out_adds_default_v2_source_fields(tmp_path, monkeypatch):
     assert event["voice_profile"] == "eon"
 
 
+def test_publish_voice_out_drops_malicious_metadata_from_canonical_and_legacy(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    malicious_values = [
+        "debug_raw=/Users/brenno/.hermes/.env",
+        "API_KEY=hk_test_1234567890abcdef",
+        "Traceback (most recent call last): File /Users/brenno/app.py",
+        "user said my portfolio exposure is private",
+    ]
+
+    publish_voice_out(
+        "completion",
+        "Safe completion.",
+        session_id="safe-session-1",
+        source_message_id="msg-1",
+        debug_raw=malicious_values[0],
+        raw_path=malicious_values[0],
+        user_content=malicious_values[3],
+        error=malicious_values[2],
+        trace=malicious_values[2],
+        path="/Users/brenno/.hermes/.env",
+        extra_secret=malicious_values[1],
+    )
+
+    canonical = _jsonl(voice_out_path())
+    legacy = _jsonl(voice_events_path())
+    assert canonical == legacy
+    payload = json.dumps(canonical[0], ensure_ascii=False)
+    assert canonical[0]["session_id"] == "safe-session-1"
+    assert canonical[0]["source_message_id"] == "msg-1"
+    for raw in malicious_values:
+        assert raw not in payload
+    assert "/Users/brenno" not in payload
+    assert "hk_test_1234567890abcdef" not in payload
+    assert "debug_raw" not in canonical[0]
+    assert "raw_path" not in canonical[0]
+    assert "user_content" not in canonical[0]
+    assert "extra_secret" not in canonical[0]
+
+
 def test_publish_voice_out_routes_candidate_through_ambient_policy(tmp_path, monkeypatch):
     import gateway.pulse_voice_events as pulse_voice_events
 
