@@ -208,6 +208,13 @@ final-confirmation-review-required requests into read-only review outcome
 candidates without issuing tokens, persisting approvals, writing token files,
 creating real proposals, or creating operation-ledger events.
 
+Memory Human Approval Token Write Execution Dry Run v0.1 lives in
+`agent.memory_human_approval_token_write_execution_dry_run`. It previews token
+write payloads, approval audit payloads, target paths, and final preflight from
+manual-token-write-execution-plan-required candidates without issuing tokens,
+persisting approvals, writing token files, writing approval audit, creating real
+proposals, or creating operation-ledger events.
+
 ---
 
 ## Migrating from OpenClaw

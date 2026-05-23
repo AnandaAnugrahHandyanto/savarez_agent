@@ -46,6 +46,7 @@ python -m benchmarks.hermes_memory_bench.run --suite smoke --output /tmp/hermes-
 - `memory_human_approval_token_final_confirmation_request`
 - `memory_human_approval_token_final_confirmation_review_gate`
 - `memory_human_approval_token_write_execution_plan`
+- `memory_human_approval_token_write_execution_dry_run`
 - `latency_ms`
 
 ## Hybrid Retrieval Fusion v0.1
@@ -476,6 +477,30 @@ proving that a valid final confirmation review outcome becomes
 manual-token-write-execution-plan-required without issuing a token, persisting
 approval, creating a real proposal, writing token files, writing approval audit,
 or creating an operation event.
+
+### Memory Human Approval Token Write Execution Dry Run v0.1
+
+Implemented in
+`agent.memory_human_approval_token_write_execution_dry_run`. It turns a
+`manual_token_write_execution_plan_required` execution plan candidate into a
+deterministic, read-only token write execution dry-run candidate.
+
+Only a valid execution plan with intact token, audit, proposal, ledger, target
+path, payload, source evidence, and execution-control previews becomes
+`manual_token_write_final_preflight_required`. Locked or invalid plans, missing
+previews, missing evidence, missing controls, and preview integrity failures
+become locked dry-run candidates with explicit reasons. The dry run previews
+the exact token write payload, approval audit write payload, target paths, and
+final preflight checklist, but never issues approval tokens, persists approvals,
+creates real proposals, writes proposal files, writes operation-ledger events,
+writes token files, writes approval audit records, submits to governance, writes
+memory, writes the Memory Graph, or modifies config.
+
+The smoke suite includes
+`memory_human_approval_token_write_execution_dry_run`, proving that a valid
+execution plan becomes manual-token-write-final-preflight-required without
+issuing a token, persisting approval, creating a real proposal, writing token
+files, writing approval audit, or creating an operation event.
 
 ## Report Schema
 
