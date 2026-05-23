@@ -25,6 +25,7 @@ def test_parallel_orchestrator_skill_frontmatter_is_valid():
     assert "aliases:" in content
     assert "  - параллельно" in content
     assert "  - распараллелить" in content
+    assert "  - быстрее" not in content
 
 
 def test_parallel_orchestrator_skill_is_discoverable(monkeypatch, tmp_path):
@@ -60,6 +61,8 @@ def test_parallel_orchestrator_documents_safety_and_batch_contracts():
         "No child was asked to perform external side effects.",
         "Results were synthesized, not pasted.",
         "If there are more objects than the limit",
+        "When giving children `terminal`, constrain commands to read-only inspection",
+        "Do not let children install packages, run formatters, update lockfiles",
     ]
     for phrase in required_phrases:
         assert phrase in content
@@ -67,3 +70,28 @@ def test_parallel_orchestrator_documents_safety_and_batch_contracts():
     forbidden_vendor_references = ["OpenCode", "opencode", "OpenClaw", "openclaw"]
     for phrase in forbidden_vendor_references:
         assert phrase not in content
+
+
+def test_parallel_orchestrator_documents_delegate_task_limitations():
+    content = _skill_text()
+
+    required_phrases = [
+        "cancelled if the parent turn is interrupted",
+        "Children cannot clarify with the user",
+        "Subagent results are leads, not verified facts",
+        "Use cron jobs or background terminal processes for durable monitoring",
+    ]
+    for phrase in required_phrases:
+        assert phrase in content
+
+
+def test_parallel_orchestrator_has_output_and_done_sections():
+    content = _skill_text()
+
+    required_sections = [
+        "## Output Contract",
+        "## Quick Test Checklist",
+        "## Done Criteria",
+    ]
+    for section in required_sections:
+        assert section in content
