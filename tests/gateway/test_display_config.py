@@ -55,6 +55,12 @@ class TestResolveDisplaySetting:
         # Unknown platform, no config → global default "all"
         assert resolve_display_setting(config, "unknown_platform", "tool_progress") == "all"
 
+    def test_status_messages_default_to_enabled(self):
+        """Agent status messages stay enabled unless quiet configs disable them."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "telegram", "status_messages") is True
+
     def test_fallback_parameter_used_last(self):
         """Explicit fallback is used when nothing else matches."""
         from gateway.display_config import resolve_display_setting
@@ -170,6 +176,13 @@ class TestYAMLNormalisation:
 
         config = {"display": {"platforms": {"slack": {"tool_progress": False}}}}
         assert resolve_display_setting(config, "slack", "tool_progress") == "off"
+
+    def test_status_messages_string_false(self):
+        """String false disables status messages instead of staying truthy."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"status_messages": " false "}}
+        assert resolve_display_setting(config, "telegram", "status_messages") is False
 
 
 # ---------------------------------------------------------------------------

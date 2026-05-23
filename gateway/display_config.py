@@ -35,6 +35,10 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "show_reasoning": False,
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
+    # Agent status_callback notices include context compression and provider
+    # retry/timeout messages. Enabled by default for transparency; messaging
+    # platforms can disable them with display.platforms.<platform>.status_messages.
+    "status_messages": True,
     # When true, delete tool-progress / "Still working..." / status bubbles
     # after the final response lands on platforms that support message
     # deletion (e.g. Telegram). Off by default — progress is still shown
@@ -190,9 +194,9 @@ def _normalise(setting: str, value: Any) -> Any:
         if value is True:
             return "all"
         return str(value).lower()
-    if setting in {"show_reasoning", "streaming"}:
+    if setting in {"show_reasoning", "streaming", "status_messages"}:
         if isinstance(value, str):
-            return value.lower() in {"true", "1", "yes", "on"}
+            return value.strip().lower() in {"true", "1", "yes", "on"}
         return bool(value)
     if setting == "cleanup_progress":
         if isinstance(value, str):

@@ -131,6 +131,24 @@ class FailingAgent:
         }
 
 
+class StatusAgent:
+    """Emits a user-visible agent status message."""
+
+    def __init__(self, **kwargs):
+        self.status_callback = kwargs.get("status_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.status_callback
+        if cb is not None:
+            cb(
+                "lifecycle",
+                "ℹ️ Preparing your request...",
+            )
+            time.sleep(0.05)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
@@ -154,7 +172,15 @@ def _make_runner(adapter):
     return runner
 
 
-def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool):
+def _install_fakes(
+    monkeypatch,
+    agent_cls,
+    *,
+    cleanup_on: bool,
+    platform: Platform = Platform.TELEGRAM,
+    platform_display: dict | None = None,
+    global_display: dict | None = None,
+):
     """Wire up the module stubs every _run_agent test needs."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
@@ -170,17 +196,26 @@ def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool):
     gateway_run = importlib.import_module("gateway.run")
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
 
-    # Wire the per-platform cleanup_progress flag via the config loader the
-    # gateway actually reads (``_load_gateway_config`` returns user config).
-    cfg = {
-        "display": {
-            "platforms": {
-                "telegram": {"cleanup_progress": True},
-            }
-        }
-    } if cleanup_on else {}
+    # Wire display flags via the config loader the gateway actually reads
+    # (``_load_gateway_config`` returns user config).
+    display = dict(global_display or {})
+    current_platform_display = {}
+    if cleanup_on:
+        current_platform_display["cleanup_progress"] = True
+    if platform_display:
+        current_platform_display.update(platform_display)
+    if current_platform_display:
+        display.setdefault("platforms", {})[platform.value] = current_platform_display
+    cfg = {"display": display} if display else {}
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: cfg)
     return gateway_run
+
+
+async def _wait_for_sent(adapter: CleanupCaptureAdapter, expected: int = 1) -> None:
+    for _ in range(20):
+        if len(adapter.sent) >= expected:
+            return
+        await asyncio.sleep(0.01)
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +254,142 @@ async def test_cleanup_off_by_default_leaves_bubbles(monkeypatch, tmp_path):
         for _ in range(10):
             await asyncio.sleep(0.01)
     assert adapter.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_status_messages_enabled_by_default(monkeypatch, tmp_path):
+    """User-visible status notices are sent unless explicitly disabled."""
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, StatusAgent, cleanup_on=False)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-1",
+        session_key="agent:main:telegram:group:-1001",
+    )
+
+    assert result["final_response"] == "done"
+    await _wait_for_sent(adapter)
+    assert any("Preparing your request" in item["content"] for item in adapter.sent)
+
+
+@pytest.mark.asyncio
+async def test_status_messages_can_be_disabled_per_platform(monkeypatch, tmp_path):
+    """Telegram quiet mode can suppress raw compression/provider status bubbles."""
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(
+        monkeypatch,
+        StatusAgent,
+        cleanup_on=False,
+        platform_display={"status_messages": False},
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-1",
+        session_key="agent:main:telegram:group:-1001",
+    )
+
+    assert result["final_response"] == "done"
+    await asyncio.sleep(0.1)
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_status_messages_can_be_disabled_globally(monkeypatch, tmp_path):
+    """Global display.status_messages false suppresses status bubbles."""
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(
+        monkeypatch,
+        StatusAgent,
+        cleanup_on=False,
+        global_display={"status_messages": False},
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-1",
+        session_key="agent:main:telegram:group:-1001",
+    )
+
+    assert result["final_response"] == "done"
+    await asyncio.sleep(0.1)
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_status_messages_enabled_for_webhook_by_default(monkeypatch, tmp_path):
+    """Webhook status delivery remains opt-out, matching the default true setting."""
+    adapter = CleanupCaptureAdapter(platform=Platform.WEBHOOK)
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(
+        monkeypatch,
+        StatusAgent,
+        cleanup_on=False,
+        platform=Platform.WEBHOOK,
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(platform=Platform.WEBHOOK, chat_id="webhook:job-1", chat_type="webhook")
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-1",
+        session_key="agent:main:webhook:job-1",
+    )
+
+    assert result["final_response"] == "done"
+    await _wait_for_sent(adapter)
+    assert any("Preparing your request" in item["content"] for item in adapter.sent)
+
+
+@pytest.mark.asyncio
+async def test_status_messages_can_be_disabled_for_webhook(monkeypatch, tmp_path):
+    """display.platforms.webhook.status_messages false is honored."""
+    adapter = CleanupCaptureAdapter(platform=Platform.WEBHOOK)
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(
+        monkeypatch,
+        StatusAgent,
+        cleanup_on=False,
+        platform=Platform.WEBHOOK,
+        platform_display={"status_messages": False},
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(platform=Platform.WEBHOOK, chat_id="webhook:job-1", chat_type="webhook")
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-1",
+        session_key="agent:main:webhook:job-1",
+    )
+
+    assert result["final_response"] == "done"
+    await asyncio.sleep(0.1)
+    assert adapter.sent == []
 
 
 @pytest.mark.asyncio

@@ -15501,6 +15501,9 @@ class GatewayRunner:
                 default=True,
             )
         )
+        status_messages_enabled = bool(
+            resolve_display_setting(user_config, platform_key, "status_messages", True)
+        )
         
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
@@ -16046,7 +16049,7 @@ class GatewayRunner:
             _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
 
         def _status_callback_sync(event_type: str, message: str) -> None:
-            if not _status_adapter or not _run_still_current():
+            if not status_messages_enabled or not _status_adapter or not _run_still_current():
                 return
             prepared_message = _prepare_gateway_status_message(
                 source.platform,
@@ -16322,7 +16325,7 @@ class GatewayRunner:
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
-            agent.status_callback = _status_callback_sync
+            agent.status_callback = _status_callback_sync if status_messages_enabled else None
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
