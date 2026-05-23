@@ -4270,13 +4270,13 @@ class FeishuAdapter(BasePlatformAdapter):
         if not headers or not data_rows:
             return None
 
-        try:
-            app_id = self._client.config.app_id
-            app_secret = self._client.config.app_secret
-            base_url = getattr(self._client.config, "domain", None) or "https://open.feishu.cn"
-        except AttributeError as exc:
-            logger.warning("[Feishu] sheet create: cannot read credentials: %s", exc)
-            return None
+        # Bot credentials live on the adapter instance (set in connect()
+        # from FEISHU_APP_ID / FEISHU_APP_SECRET), not on the lark_oapi
+        # Client object — Client has no ``.config`` attribute on this SDK
+        # build.
+        app_id = self._app_id
+        app_secret = self._app_secret
+        base_url = "https://open.feishu.cn"
         if not app_id or not app_secret:
             logger.warning("[Feishu] sheet create: app_id or app_secret missing")
             return None
