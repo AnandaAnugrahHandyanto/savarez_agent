@@ -62,6 +62,34 @@ class TestDetectOnboardingComplete:
         assert result["trigger"] is False
         assert called["aux"] is False
 
+    def test_flag_file_short_circuits(self, monkeypatch, tmp_path):
+        """Persistent flag file at <hermes_home>/artemis/<uid>/onboarding_pushed.flag
+        wins over profile field — survives Coach's save_user_profile overwrites."""
+        called = {"aux": False}
+
+        def _fake_call_llm(**kwargs):
+            called["aux"] = True
+            raise AssertionError("should not be called")
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        user_dir = tmp_path / "artemis" / "U_FLAG_TEST"
+        user_dir.mkdir(parents=True)
+        (user_dir / "onboarding_pushed.flag").write_text("")
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client.call_llm",
+            _fake_call_llm,
+            raising=False,
+        )
+        result = ocd.detect_onboarding_complete(
+            "Long enough reply that mentions briefing the team now for unit-test length purposes",
+            {},  # profile field NOT set — only the file is
+            "U_FLAG_TEST",
+        )
+        assert result["checked"] is False
+        assert result["skipped"] == "intros_already_pushed"
+        assert called["aux"] is False
+
     def test_intros_already_pushed_short_circuits(self, monkeypatch):
         called = {"aux": False}
 

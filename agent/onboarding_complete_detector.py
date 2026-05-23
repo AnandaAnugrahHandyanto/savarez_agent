@@ -165,9 +165,23 @@ def _normalize_intros(raw: Any) -> list[dict[str, str]]:
     ]
 
 
+def is_onboarding_pushed(user_id: str) -> bool:
+    """Check the persistent onboarding-flag file. Source of truth for the
+    Type A idempotency latch — separate from profile.json so Coach's
+    `save_user_profile` overwrites can't wipe it."""
+    if not user_id:
+        return False
+    import os
+    from pathlib import Path
+    hermes_home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+    flag = Path(hermes_home) / "artemis" / user_id / "onboarding_pushed.flag"
+    return flag.exists()
+
+
 def detect_onboarding_complete(
     coach_reply: str,
     user_profile: dict | None,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     """Classify whether Coach's reply marks the onboarding handoff.
 
@@ -200,8 +214,15 @@ def detect_onboarding_complete(
         out["skipped"] = "reply_too_short"
         return out
 
-    # Short-circuit: if profile already has sub_agent_intros_pushed=true,
-    # we already did this once for the user; don't fire again.
+    # Short-circuit: if the persistent onboarding flag is set, we already
+    # did this once for the user; don't fire again. The flag lives at
+    # `<hermes_home>/artemis/<user_id>/onboarding_pushed.flag` and is
+    # written by `scripts/dispatch-team-self-intros.py` after the three
+    # `*X here.*` pushes succeed. The profile-field fallback (legacy) is
+    # kept for tests that pre-seed the profile rather than the file.
+    if user_id and is_onboarding_pushed(user_id):
+        out["skipped"] = "intros_already_pushed"
+        return out
     if isinstance(user_profile, dict) and user_profile.get("sub_agent_intros_pushed"):
         out["skipped"] = "intros_already_pushed"
         return out

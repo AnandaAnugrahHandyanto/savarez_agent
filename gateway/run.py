@@ -3153,7 +3153,7 @@ class GatewayRunner:
                             _profile = _json.loads(_pp.read_text(encoding="utf-8"))
                     except Exception:
                         _profile = None
-                    _onb = detect_onboarding_complete(response, _profile)
+                    _onb = detect_onboarding_complete(response, _profile, _uid)
                     _log_onb(source.chat_id or "", _onb)
                     if _onb.get("trigger") and _uid:
                         _onb_result = _onb_execute(_uid, _onb["intros"])
