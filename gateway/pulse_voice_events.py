@@ -247,7 +247,7 @@ def _safe_summarizer_metadata(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
     allowed: dict[str, Any] = {}
-    for key in ("mode", "method", "fallback", "validation_reason"):
+    for key in ("mode", "method", "fallback", "validation_reason", "reason"):
         safe = _safe_metadata_string(value.get(key), enum=True)
         if safe is not None:
             allowed[key] = safe
@@ -426,7 +426,9 @@ def summarize_final_voice_response(
 
 
     if result.reason:
-        summarizer_meta["reason"] = result.reason
+        reason_code = re.sub(r"[^A-Za-z0-9_-]+", "_", result.reason).strip("_")
+        if reason_code:
+            summarizer_meta["reason"] = reason_code
 
     summary_policy = sanitize_voice_text(result.text).policy if result.text else _default_policy()
     summary_policy.update(result.policy)

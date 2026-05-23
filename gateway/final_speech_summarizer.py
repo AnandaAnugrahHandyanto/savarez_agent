@@ -14,6 +14,10 @@ from typing import Callable, Literal
 import re
 
 _MAX_TEXT_CHARS = 180
+_GENERATOR_EXECUTOR = ThreadPoolExecutor(
+    max_workers=4,
+    thread_name_prefix="final-speech-summarizer",
+)
 
 Kind = Literal["completion", "question", "error"]
 SummaryMethod = Literal["generated", "deterministic", "silence"]
@@ -290,6 +294,14 @@ class FinalSpeechSummarizer:
             generated, failure_reason = self._try_generated(pre.text, final_response, context)
             if generated is not None:
                 return VoiceSummaryResult(kind=kind, text=generated.text, method="generated", policy=generated.policy)
+            if self.mode == "generated":
+                return VoiceSummaryResult(
+                    kind=kind,
+                    text="",
+                    method="silence",
+                    policy=pre.policy,
+                    reason=failure_reason,
+                )
             fallback = self._deterministic(pre.text, context)
             return VoiceSummaryResult(
                 kind=kind,
@@ -319,20 +331,14 @@ class FinalSpeechSummarizer:
             max_chars=context.max_spoken_chars,
         )
         timeout_ms = max(1, int(context.timeout_ms or 1))
-        executor = ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(self._call_generator, prompt, timeout_ms)
+        future = _GENERATOR_EXECUTOR.submit(self._call_generator, prompt, timeout_ms)
         try:
             raw = future.result(timeout=timeout_ms / 1000)
         except TimeoutError:
             future.cancel()
-            executor.shutdown(wait=False, cancel_futures=True)
             return None, "generated_timeout"
         except Exception:
-            executor.shutdown(wait=False, cancel_futures=True)
             return None, "generated_exception"
-        finally:
-            if future.done():
-                executor.shutdown(wait=False, cancel_futures=True)
         valid, reason = self.validate_generated_summary(raw, original_final_response, context)
         if not valid:
             return None, f"generated_invalid: {reason}"

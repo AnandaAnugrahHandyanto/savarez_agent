@@ -156,3 +156,45 @@ def test_policy_metadata_contains_only_safe_reason_codes_and_booleans():
         "dropped_paths": True,
         "blocked_sensitive_topic": False,
     }
+
+
+
+def test_output_device_selects_airpods_profile_when_no_config_scope():
+    decision = evaluate(
+        "Your trading PnL and portfolio drawdown look risky today.",
+        output_device="airpods",
+        config_scope=None,
+        explicit_spoken_request=True,
+        is_private_context=True,
+    )
+
+    assert decision.allowed is True
+    assert decision.rule_profile == "airpods_private"
+
+
+def test_ambient_policy_loads_rule_profiles_from_config(monkeypatch):
+    import hermes_cli.config as hermes_config
+
+    def fake_load_config():
+        return {
+            "voice": {
+                "ambient_policy": {
+                    "default_context": "living_room_default",
+                    "rule_profiles": {
+                        "living_room_default": {
+                            "max_chars": 24,
+                            "max_seconds": {"completion": 2},
+                        }
+                    },
+                }
+            }
+        }
+
+    monkeypatch.setattr(hermes_config, "load_config", fake_load_config)
+    decision = AmbientVoicePolicy().evaluate(
+        "I completed the implementation and verified the focused tests passed.",
+        living_room_context(),
+    )
+
+    assert decision.max_seconds == 2
+    assert decision.text == "I completed the impleme…"

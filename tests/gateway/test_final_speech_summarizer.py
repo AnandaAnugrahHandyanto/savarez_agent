@@ -267,3 +267,18 @@ def test_validation_rejects_hallucinated_actions_not_grounded_in_final_text():
         valid, reason = summarizer.validate_generated_summary(output, final, VoiceContext())
         assert valid is False, output
         assert reason in {"unsupported_action", "unsupported_content"}
+
+
+
+def test_generated_mode_silences_invalid_output_without_deterministic_fallback():
+    generator = FakeGenerator("I deployed the bridge and ran 15 tests.")
+    summarizer = FinalSpeechSummarizer(generator=generator, mode="generated")
+
+    result = summarizer.summarize(
+        "I updated the bridge and ran 14 tests.",
+        VoiceContext(max_spoken_chars=180),
+    )
+
+    assert result.method == "silence"
+    assert result.text == ""
+    assert result.reason == "generated_invalid: unsupported_number"

@@ -9,6 +9,7 @@ matched excerpts in decisions or metadata.
 
 from __future__ import annotations
 
+import copy
 import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
@@ -115,6 +116,38 @@ _SENSITIVE_TOPIC_RE = re.compile(
 _SENTENCE_RE = re.compile(r"^.{1,260}?[.!?。！？](?=\s|$)")
 
 
+def _load_ambient_policy_config() -> Mapping[str, Any]:
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config() or {}
+        voice = (config.get("voice") or {}) if isinstance(config, dict) else {}
+        ambient = voice.get("ambient_policy") or {}
+        return ambient if isinstance(ambient, Mapping) else {}
+    except Exception:
+        return {}
+
+
+def _configured_rule_profiles() -> dict[str, dict[str, Any]]:
+    profiles: dict[str, dict[str, Any]] = copy.deepcopy(_DEFAULT_PROFILES)
+    ambient = _load_ambient_policy_config()
+    configured = ambient.get("rule_profiles") if ambient.get("enabled", True) is not False else None
+    if isinstance(configured, Mapping):
+        for name, profile in configured.items():
+            if not isinstance(name, str) or not isinstance(profile, Mapping):
+                continue
+            base = copy.deepcopy(profiles.get(name, {}))
+            base.update(dict(profile))
+            profiles[name] = base
+    return profiles
+
+
+def _configured_default_rule_profile() -> str:
+    ambient = _load_ambient_policy_config()
+    default = str(ambient.get("default_context") or "living_room_default").strip()
+    return default or "living_room_default"
+
+
 @dataclass(frozen=True)
 class VoiceContext:
     source: str
@@ -128,7 +161,7 @@ class VoiceContext:
     profile: str | None = None
     explicit_spoken_request: bool = False
     is_private_context: bool = False
-    config_scope: str = "living_room_default"
+    config_scope: str | None = None
 
 
 @dataclass(frozen=True)
@@ -166,8 +199,8 @@ class VoicePolicyDecision:
 class AmbientVoicePolicy:
     """Evaluate candidate speech for deterministic ambient-safety rules."""
 
-    rule_profiles: Mapping[str, Mapping[str, Any]] = field(default_factory=lambda: _DEFAULT_PROFILES)
-    default_rule_profile: str = "living_room_default"
+    rule_profiles: Mapping[str, Mapping[str, Any]] = field(default_factory=_configured_rule_profiles)
+    default_rule_profile: str = field(default_factory=_configured_default_rule_profile)
 
     def evaluate(self, text: str, context: VoiceContext) -> VoicePolicyDecision:
         original = str(text or "")
@@ -334,7 +367,11 @@ class AmbientVoicePolicy:
         return self.default_rule_profile
 
     def _profile(self, rule_profile: str) -> Mapping[str, Any]:
-        return self.rule_profiles.get(rule_profile) or self.rule_profiles[self.default_rule_profile]
+        if rule_profile in self.rule_profiles:
+            return self.rule_profiles[rule_profile]
+        if self.default_rule_profile in self.rule_profiles:
+            return self.rule_profiles[self.default_rule_profile]
+        return _DEFAULT_PROFILES["living_room_default"]
 
     @staticmethod
     def _append_reason(reasons: list[str], reason: str) -> None:

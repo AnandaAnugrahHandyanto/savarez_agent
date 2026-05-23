@@ -423,3 +423,19 @@ def test_publish_completion_voice_out_keeps_platform_text_out_of_voice_history(t
     assert event["derived_from"] == "final_response"
     assert event["voice_profile"] == "eon"
     assert event["summarizer"]["method"] == "generated"
+
+
+def test_publish_completion_voice_out_preserves_safe_summary_failure_reason(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    publish_completion_voice_out(
+        "I updated the bridge and ran 14 tests. Full details are in Discord.",
+        summarizer=lambda _text: "Bridge deployed and 15 tests passed.",
+    )
+
+    [event] = _jsonl(voice_out_path())
+    assert event["summarizer"]["method"] == "deterministic"
+    assert event["summarizer"]["fallback_used"] is True
+    assert event["summarizer"]["validation_failed"] is True
+    assert event["summarizer"]["reason"] == "generated_invalid_unsupported_number"
+    assert "Bridge deployed" not in json.dumps(event["summarizer"])
