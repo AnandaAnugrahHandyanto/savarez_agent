@@ -2497,7 +2497,23 @@ def run_conversation(
                         base_url=getattr(agent, "base_url", None),
                     )
                     if not pool_may_recover:
-                        agent._emit_status("⚠️ Rate limited — switching to fallback provider...")
+                        _reset_hint = ""
+                        _reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
+                        if _reset_at:
+                            try:
+                                _reset_ts = float(_reset_at) if not isinstance(_reset_at, (int, float)) else _reset_at
+                                if _reset_ts > 0:
+                                    if _reset_ts > 1000000000000:  # ms → s
+                                        _reset_ts /= 1000
+                                    _remaining = max(0, int(_reset_ts - time.time()))
+                                    if _remaining > 0:
+                                        _reset_hint = f" (resets in ~{_remaining // 60}m{_remaining % 60}s)"
+                                    else:
+                                        _reset_hint = f" (resets ~{time.strftime('%H:%M', time.localtime(_reset_ts))})"
+                            except (TypeError, ValueError):
+                                if isinstance(_reset_at, str) and _reset_at.strip():
+                                    _reset_hint = f" (resets at {_reset_at[:40]})"
+                        agent._emit_status(f"⚠️ Rate limited — switching to fallback provider...{_reset_hint}")
                         if agent._try_activate_fallback(reason=classified.reason):
                             agent._hit_rate_limit = False  # Fallback will handle it
                             retry_count = 0
