@@ -3124,6 +3124,58 @@ class GatewayRunner:
                 _response_time, _api_calls, _resp_len,
             )
 
+            # S-0518-01 Type A — onboarding-complete signal detector.
+            # Runs auxiliary LLM on Coach's outgoing reply; if it
+            # classifies the reply as the "briefing the team" moment AND
+            # the user's profile hasn't yet had sub_agent_intros_pushed
+            # set, server dispatches 3 announce_subagent (style="here")
+            # calls so the user sees the team's first-person self-intros
+            # in the same Slack thread. Side effect committed before
+            # any subsequent Coach turn so the LLM can't double-fire.
+            # Failures are silent.
+            try:
+                from agent.onboarding_complete_detector import (
+                    detect_onboarding_complete,
+                    execute_via_helper as _onb_execute,
+                    log_result as _log_onb,
+                )
+                _uid = getattr(source, "user_id", "") or ""
+                _profile: dict | None = None
+                if _uid and response:
+                    # Read profile.json from disk for the detector's input.
+                    import os
+                    from pathlib import Path as _Path
+                    _hh = os.environ.get("HERMES_HOME") or str(_Path.home() / ".hermes")
+                    _pp = _Path(_hh) / "artemis" / _uid / "profile.json"
+                    try:
+                        if _pp.exists():
+                            import json as _json
+                            _profile = _json.loads(_pp.read_text(encoding="utf-8"))
+                    except Exception:
+                        _profile = None
+                    _onb = detect_onboarding_complete(response, _profile)
+                    _log_onb(source.chat_id or "", _onb)
+                    if _onb.get("trigger") and _uid:
+                        _onb_result = _onb_execute(_uid, _onb["intros"])
+                        if _onb_result.get("ok"):
+                            logger.info(
+                                "onboarding-complete: chat=%s dispatched=%s",
+                                source.chat_id or "unknown",
+                                _onb_result.get("pushed"),
+                            )
+                        else:
+                            logger.warning(
+                                "onboarding-complete: chat=%s dispatch_failed "
+                                "stage=%s err=%s",
+                                source.chat_id or "unknown",
+                                _onb_result.get("stage"),
+                                _onb_result.get("error"),
+                            )
+            except Exception as _onb_err:  # noqa: BLE001
+                logger.debug(
+                    "onboarding-complete hook failed: %s", _onb_err
+                )
+
             # Surface error details when the agent failed silently (final_response=None)
             if not response and agent_result.get("failed"):
                 error_detail = agent_result.get("error", "unknown error")
