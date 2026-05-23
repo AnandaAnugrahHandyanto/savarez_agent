@@ -23,6 +23,7 @@ Configuration in config.yaml:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import html
 import json
 import logging
@@ -121,6 +122,35 @@ def _coerce_port(value: Any, *, default: int = _DEFAULT_PORT) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+def _compute_summary_hash(payload: Any) -> str:
+    """Compute a SHA-256 hash of the summary content for dedup comparison.
+
+    Hashes the structural summary fields (title, summary, action_items,
+    key_decisions, risks) so that recurring meetings with new transcripts
+    produce different hashes and trigger re-delivery.
+    """
+    if hasattr(payload, "to_dict"):
+        d = payload.to_dict()
+    elif isinstance(payload, dict):
+        d = payload
+    else:
+        d = {}
+
+    content = json.dumps(
+        {
+            "title": d.get("title"),
+            "summary": d.get("summary"),
+            "action_items": sorted(d.get("action_items") or []),
+            "key_decisions": sorted(d.get("key_decisions") or []),
+            "risks": sorted(d.get("risks") or []),
+            "start_time": d.get("start_time"),
+            "end_time": d.get("end_time"),
+        },
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha256(content.encode()).hexdigest()
 
 class _DelegatedOAuthTokenProvider:
     """OAuth2 token provider that uses authorization code + refresh token flow.
@@ -249,8 +279,16 @@ class TeamsSummaryWriter:
         existing_record: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         merged = self._resolve_delivery_config(config)
+
+        # Dedup: skip delivery only if content hasn't changed.
+        # For recurring meetings with new transcripts, the summary content
+        # will differ — so we detect the hash mismatch and re-deliver.
         if existing_record and not _parse_bool(merged.get("force_resend"), default=False):
-            return dict(existing_record)
+            new_hash = _compute_summary_hash(payload)
+            stored_hash = existing_record.get("content_hash")
+            if stored_hash and stored_hash == new_hash:
+                return dict(existing_record)
+            # Hash mismatch or no stored hash → deliver (new content)
 
         mode = str(merged.get("delivery_mode") or merged.get("mode") or "").strip().lower()
         if not mode:
@@ -285,12 +323,17 @@ class TeamsSummaryWriter:
             pass
 
         if mode == "incoming_webhook":
-            return await self._write_summary_via_incoming_webhook(payload, merged)
-        if mode == "graph":
-            return await self._write_summary_via_graph(payload, merged, meeting_chat_id=meeting_chat_id)
-        raise ValueError(
-            "Teams delivery_mode must be 'incoming_webhook' or 'graph'."
-        )
+            result = await self._write_summary_via_incoming_webhook(payload, merged)
+        elif mode == "graph":
+            result = await self._write_summary_via_graph(payload, merged, meeting_chat_id=meeting_chat_id)
+        else:
+            raise ValueError(
+                "Teams delivery_mode must be 'incoming_webhook' or 'graph'."
+            )
+
+        # Store content hash for future dedup comparison
+        result["content_hash"] = _compute_summary_hash(payload)
+        return result
 
     def _resolve_delivery_config(self, config: dict[str, Any] | None) -> dict[str, Any]:
         merged: dict[str, Any] = {}
