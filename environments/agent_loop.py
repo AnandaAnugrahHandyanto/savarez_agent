@@ -50,15 +50,25 @@ def resize_tool_pool(max_workers: int):
 logger = logging.getLogger(__name__)
 
 
-@dataclass
 class ToolError:
     """Record of a tool execution error during the agent loop."""
 
-    turn: int  # Which turn the error occurred on
-    tool_name: str  # Which tool was called
-    arguments: str  # The arguments passed (truncated)
-    error: str  # The error message
-    tool_result: str  # The raw result returned to the model
+    def __init__(
+        self,
+        turn: int,
+        tool_name: str,
+        arguments: str,
+        error: str,
+        tool_result: str,
+    ):
+        self.turn = turn
+        self.tool_name = tool_name
+        self.arguments = arguments
+        self.error = error
+        self.tool_result = tool_result
+
+    def __repr__(self):
+        return f"ToolError(turn={self.turn}, tool_name={self.tool_name}, error={self.error})"
 
 
 @dataclass
@@ -293,11 +303,11 @@ class HermesAgentLoop:
                             "Fallback parser extracted %d tool calls from raw content",
                             len(parsed_calls),
                         )
-                except Exception:
+                except Exception as e:
                     logger.exception(
-                        "Fallback parser failed on turn %d (task=%s)",
-                        turn + 1,
+                        "[%s] turn %d: Fallback parser failed",
                         self.task_id[:8],
+                        turn + 1,
                     )
                     # Fall through to no tool calls
 
