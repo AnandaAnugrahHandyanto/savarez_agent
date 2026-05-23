@@ -7,6 +7,7 @@ Local, opt-in Hermes plugin proof for the Volt V2 tool adapter lane.
 - Default: disabled (`volt_v2.tool_adapter.enabled: false`).
 - Hook mode only: registers `post_tool_call` and `transform_tool_result`.
 - No registry override, no new global dispatch path, no network send, no memory write.
+- Runtime observe and transform smokes verified with temporary `HERMES_HOME` directories; production Doni config was not modified.
 
 ## Config shape
 
@@ -45,6 +46,14 @@ volt_v2:
       require_result_marker: true
 ```
 
+Malformed config is coerced to safe defaults:
+
+- unknown `mode` -> `observe`;
+- unknown `fail_policy` -> `open`;
+- scalar list fields become single-item tuples only when safe;
+- non-list/non-scalar allowlist and path fields become empty tuples;
+- verification booleans accept normal YAML booleans and safe strings like `true`, `false`, `yes`, `no`, `on`, `off`.
+
 ## Behavior
 
 - Disabled config: hook callbacks return without side effects.
@@ -56,8 +65,28 @@ volt_v2:
 
 ## Audit safety
 
+Audit format is schema v1. Each JSONL row is validated before write/read and contains:
+
+- `schema_version`, `ts`, `session_id`, `task_id`, `tool_call_id`;
+- `tool_name`, `mode`, `decision`, `allowlisted`, `duration_ms`, `reason`;
+- `args_shape` with redacted/hash-shaped arguments only;
+- `result_chars`, never raw result payload.
+
 Audit stores argument shape only:
 
 - path-like values are SHA-256 shaped (`sha256:<prefix>`), not raw paths;
 - token/secret/password/credential-like keys are `<redacted>`;
 - result payload is represented as character count only.
+
+## Security / privacy review
+
+Verified boundaries:
+
+- no credential read/write requirement;
+- no production config mutation during tests or runtime smokes;
+- no memory-layer writes;
+- no network delivery or public side effects;
+- no `tools.registry` override in v0;
+- allowlist/denylist blocks sensitive args, denylisted paths, denied tools, and non-allowlisted tools.
+
+Route/override are decision-gated only. They are not enabled as runtime modes for Doni rollout until a separate explicit approval and stronger acceptance test set exist.
