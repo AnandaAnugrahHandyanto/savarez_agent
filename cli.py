@@ -8099,6 +8099,8 @@ class HermesCLI:
             self._handle_codex_runtime(cmd_original)
         elif canonical == "gquota":
             self._handle_gquota_command(cmd_original)
+        elif canonical == "quota":
+            self._show_account_quota(cmd_original)
 
         elif canonical == "personality":
             # Use original case (handler lowercases the personality name itself)
@@ -9545,6 +9547,46 @@ class HermesCLI:
         # sys.exit inside a non-main thread does not exit the process).
         self._pending_relaunch = ["update"]
         return True
+
+    def _show_account_quota(self, cmd_original: str = "/quota"):
+        """Show provider account quota/limits without the full token-usage report."""
+        parts = cmd_original.split(maxsplit=1)
+        requested_provider = parts[1].strip() if len(parts) > 1 else ""
+        agent = self.agent
+        provider = requested_provider or getattr(agent, "provider", None) or getattr(self, "provider", None)
+        base_url = getattr(agent, "base_url", None) if agent else getattr(self, "base_url", None)
+        api_key = getattr(agent, "api_key", None) if agent else getattr(self, "api_key", None)
+
+        if not provider:
+            print("  Account quota unavailable: no provider configured yet.")
+            return
+
+        from agent.account_usage import fetch_account_usage, render_account_usage_lines
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
+            try:
+                account_snapshot = _pool.submit(
+                    fetch_account_usage,
+                    provider,
+                    base_url=base_url,
+                    api_key=api_key,
+                ).result(timeout=15.0)
+            except concurrent.futures.TimeoutError:
+                print(f"  Account quota unavailable for {provider}: timed out.")
+                return
+            except Exception as e:
+                print(f"  Account quota unavailable for {provider}: {e}")
+                return
+
+        account_lines = render_account_usage_lines(account_snapshot)
+        if not account_lines:
+            print(f"  Account quota unavailable for {provider}.")
+            print("  Supported today: openai-codex, anthropic OAuth, openrouter.")
+            return
+
+        print()
+        for line in account_lines:
+            print(f"  {line}")
 
     def _show_usage(self):
         """Show rate limits (if available) and session token usage."""

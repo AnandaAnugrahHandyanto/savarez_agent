@@ -7,6 +7,7 @@ import { SECTION_NAMES, isSectionName, nextDetailsMode, parseDetailsMode } from 
 import type {
   ConfigGetValueResponse,
   ConfigSetResponse,
+  AccountUsageResponse,
   SessionSaveResponse,
   SessionStatusResponse,
   SessionSteerResponse,
@@ -176,6 +177,31 @@ export const coreCommands: SlashCommand[] = [
       ctx.gateway
         .rpc<SessionStatusResponse>('session.status', { session_id: ctx.sid })
         .then(ctx.guarded<SessionStatusResponse>(r => ctx.transcript.page(r.output || '(no status)', 'Status')))
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    aliases: ['cquota', 'limits'],
+    help: 'show account quota/limits for current provider, including Codex',
+    name: 'quota',
+    usage: '/quota [provider]',
+    run: (arg, ctx) => {
+      if (!ctx.sid) {
+        return ctx.transcript.sys('no active session')
+      }
+
+      const provider = arg.trim() || undefined
+      ctx.transcript.sys(`checking ${provider || 'current provider'} quota...`)
+      ctx.gateway
+        .rpc<AccountUsageResponse>('account.usage', { session_id: ctx.sid, ...(provider && { provider }) })
+        .then(
+          ctx.guarded<AccountUsageResponse>(r => {
+            const output = r.output || 'Account quota unavailable.'
+            const long = output.length > 180 || output.split('\n').filter(Boolean).length > 2
+            long ? ctx.transcript.page(output, 'Quota') : ctx.transcript.sys(output)
+          })
+        )
         .catch(ctx.guardedErr)
     }
   },
