@@ -6,7 +6,7 @@ import json
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig, _apply_env_overrides
-from gateway.platforms.msgraph_webhook import MSGraphWebhookAdapter
+from gateway.platforms.msgraph_webhook import DEFAULT_HOST, MSGraphWebhookAdapter
 
 
 def _make_adapter(**extra_overrides) -> MSGraphWebhookAdapter:
@@ -31,6 +31,17 @@ class _FakeRequest:
 
 
 class TestMSGraphWebhookConfig:
+    def test_default_listener_host_is_loopback(self):
+        adapter = _make_adapter()
+
+        assert DEFAULT_HOST == "127.0.0.1"
+        assert adapter._host == "127.0.0.1"
+
+    def test_public_listener_host_requires_explicit_opt_in(self):
+        adapter = _make_adapter(host="0.0.0.0")
+
+        assert adapter._host == "0.0.0.0"
+
     def test_gateway_config_accepts_msgraph_webhook_platform(self):
         config = GatewayConfig.from_dict(
             {
@@ -99,6 +110,32 @@ class TestMSGraphValidationHandshake:
 
 
 class TestMSGraphNotifications:
+    @pytest.mark.anyio
+    async def test_missing_client_state_configuration_rejects_notifications(self):
+        """Notification POSTs fail closed when no shared clientState is configured."""
+        adapter = _make_adapter(client_state=None)
+        payload = {
+            "value": [
+                {
+                    "id": "notif-no-secret",
+                    "subscriptionId": "sub-1",
+                    "changeType": "updated",
+                    "resource": "communications/onlineMeetings/meeting-0",
+                }
+            ]
+        }
+
+        resp = await adapter._handle_notification(_FakeRequest(json_payload=payload))
+        assert resp.status == 403
+
+    @pytest.mark.anyio
+    async def test_connect_requires_client_state_configuration(self):
+        """The listener should not start accepting POSTs without a clientState secret."""
+        adapter = _make_adapter(client_state=None)
+
+        with pytest.raises(ValueError, match="client_state"):
+            await adapter.connect()
+
     @pytest.mark.anyio
     async def test_valid_notification_accepted_and_scheduled(self):
         adapter = _make_adapter()
