@@ -607,6 +607,12 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
     return rows or [[{"tag": "md", "text": content}]]
 
 
+# Card JSON 2.0 table builders live in a sibling module so they can be
+# unit-tested without loading the full feishu adapter stack (which pulls in
+# hermes_cli, lark_oapi, websockets, aiohttp). See _feishu_card_table.py.
+from gateway.platforms._feishu_card_table import _build_card_with_table_payload  # noqa: E402
+
+
 def parse_feishu_post_payload(
     payload: Any,
     *,
@@ -4222,12 +4228,14 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+        # Markdown tables: route through Card JSON 2.0 interactive card with
+        # native ``tag: "table"`` component (Lark V7.4+). Previously this path
+        # forced plain text because post-type 'md' elements render tables as
+        # blank — the native card path produces sortable / paginated UI that
+        # matches the experience Doubao etc. ship in their own apps.
+        # See ``_build_card_with_table_payload`` for the conversion details.
         if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+            return "interactive", _build_card_with_table_payload(content)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
