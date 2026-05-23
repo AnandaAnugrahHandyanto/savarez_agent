@@ -36,7 +36,7 @@ from typing import List, Tuple
 # Hardcoded trust configuration
 # ---------------------------------------------------------------------------
 
-TRUSTED_REPOS = {"openai/skills", "anthropics/skills"}
+TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills"}
 
 INSTALL_POLICY = {
     #                  safe      caution    dangerous
@@ -717,12 +717,24 @@ def format_scan_report(result: ScanResult) -> str:
 
 
 def content_hash(skill_path: Path) -> str:
-    """Compute a SHA-256 hash of all files in a skill directory for integrity tracking."""
+    """Compute a SHA-256 hash of all files in a skill directory for integrity tracking.
+
+    File paths (relative to ``skill_path``) are mixed into the hash alongside
+    file contents so that swapping the contents of two files in a skill
+    changes the hash. This must stay symmetric with
+    ``tools.skills_hub.bundle_content_hash`` — both functions need to
+    produce the same digest for the same skill (one operates on disk,
+    one on an in-memory bundle), so any change to the hash shape MUST
+    land in both places at once.
+    """
     h = hashlib.sha256()
     if skill_path.is_dir():
         for f in sorted(skill_path.rglob("*")):
             if f.is_file():
                 try:
+                    rel = f.relative_to(skill_path).as_posix()
+                    h.update(rel.encode("utf-8"))
+                    h.update(b"\x00")
                     h.update(f.read_bytes())
                 except OSError:
                     continue
@@ -814,7 +826,7 @@ def _check_structure(skill_dir: Path) -> List[Finding]:
             ))
 
         # Executable permission on non-script files
-        if ext not in ('.sh', '.bash', '.py', '.rb', '.pl') and f.stat().st_mode & 0o111:
+        if ext not in {'.sh', '.bash', '.py', '.rb', '.pl'} and f.stat().st_mode & 0o111:
             findings.append(Finding(
                 pattern_id="unexpected_executable",
                 severity="medium",
@@ -928,5 +940,5 @@ def _build_summary(name: str, source: str, trust: str, verdict: str, findings: L
     if not findings:
         return f"{name}: clean scan, no threats detected"
 
-    categories = set(f.category for f in findings)
+    categories = {f.category for f in findings}
     return f"{name}: {verdict} — {len(findings)} finding(s) in {', '.join(sorted(categories))}"
