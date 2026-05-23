@@ -582,6 +582,93 @@ def test_weekly_digest_via_api_endpoint(isolate_home):
     assert response_404.status_code == 404
 
 
+def test_progress_bus_publish_to_subscribers(isolate_home):
+    """Phase 18: in-loop subscriber receives published events."""
+    import asyncio
+    from plugins.marketing_factory import progress_bus
+
+    progress_bus.clear()
+
+    async def _run():
+        q = progress_bus.subscribe()
+        progress_bus.publish("agent.start", agent="research", detail="hello")
+        progress_bus.publish("agent.end", agent="research", detail="bye")
+        e1 = await asyncio.wait_for(q.get(), timeout=1.0)
+        e2 = await asyncio.wait_for(q.get(), timeout=1.0)
+        progress_bus.unsubscribe(q)
+        return e1, e2
+
+    e1, e2 = asyncio.run(_run())
+    assert e1["type"] == "agent.start"
+    assert e1["agent"] == "research"
+    assert e1["detail"] == "hello"
+    assert e2["type"] == "agent.end"
+    assert e2["seq"] > e1["seq"]
+
+
+def test_progress_bus_cross_thread_delivery(isolate_home):
+    """Phase 18: pipeline runs in a worker thread; events must still hit the main-loop subscriber."""
+    import asyncio
+    import threading
+    from plugins.marketing_factory import progress_bus
+
+    progress_bus.clear()
+
+    async def _run():
+        q = progress_bus.subscribe()
+
+        def _worker():
+            progress_bus.publish("agent.start", agent="copy", detail="from worker")
+
+        t = threading.Thread(target=_worker)
+        t.start()
+        t.join()
+        event = await asyncio.wait_for(q.get(), timeout=2.0)
+        progress_bus.unsubscribe(q)
+        return event
+
+    event = asyncio.run(_run())
+    assert event["agent"] == "copy"
+    assert event["detail"] == "from worker"
+
+
+def test_progress_bus_recent_returns_buffer(isolate_home):
+    from plugins.marketing_factory import progress_bus
+
+    progress_bus.clear()
+    for i in range(5):
+        progress_bus.publish("agent.start", agent="research", detail=f"step {i}")
+    last3 = progress_bus.recent(limit=3)
+    assert len(last3) == 3
+    assert [e["detail"] for e in last3] == ["step 2", "step 3", "step 4"]
+
+
+def test_generate_campaign_publishes_expected_event_sequence(isolate_home):
+    """Phase 18: a campaign run must emit campaign.start, agent.{start,end} for each agent boundary, and campaign.end."""
+    from plugins.marketing_factory import progress_bus
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    progress_bus.clear()
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    pipe.generate_campaign("pupular", days=2)
+
+    events = progress_bus.recent(limit=200)
+    types = [e["type"] for e in events]
+    agents_seen = {e.get("agent") for e in events if e["type"] in {"agent.start", "agent.end"}}
+
+    assert "campaign.start" in types
+    assert "campaign.end" in types
+    # All agent boundaries we instrumented should appear at least once
+    assert {"brand_memory", "research", "strategy", "copy", "safety"}.issubset(agents_seen)
+    # The order: campaign.start before any agent.start, campaign.end last
+    first_campaign_idx = types.index("campaign.start")
+    last_campaign_idx = len(types) - 1 - list(reversed(types)).index("campaign.end")
+    assert first_campaign_idx < last_campaign_idx
+
+
 def test_app_analytics_returns_expected_shape_on_fresh_init(isolate_home):
     """Phase 17: fresh init has no drafts → analytics returns zero counts and null rates."""
     from plugins.marketing_factory.pipeline import MarketingFactoryPipeline

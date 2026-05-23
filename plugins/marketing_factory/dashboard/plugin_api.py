@@ -7,12 +7,16 @@ All operations remain dry-run-first: the only publishing endpoint delegates to
 
 from __future__ import annotations
 
+import asyncio
+import json
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+from plugins.marketing_factory import progress_bus
 from plugins.marketing_factory.store import MarketingFactoryStore
 
 router = APIRouter()
@@ -169,13 +173,48 @@ async def initialize_samples():
 @router.post("/campaigns/generate")
 async def generate_campaign(body: GenerateBody):
     store = _store()
+    pipe = _pipe(store)
+    # generate_campaign is CPU+LLM-bound and takes 60-90s. Run it on a worker
+    # thread so the event loop stays free to stream progress events to the
+    # dashboard via the SSE endpoint while it runs.
     try:
-        result = _pipe(store).generate_campaign(body.app_slug, days=body.days)
+        result = await asyncio.to_thread(pipe.generate_campaign, body.app_slug, body.days)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"result": {"campaign": result["campaign"], "drafts": result["drafts"]}, "overview": _overview(store)}
+
+
+@router.get("/progress/stream")
+async def progress_stream():
+    """Server-Sent Events stream of live agent activity.
+
+    Each event is published by the pipeline at agent boundaries
+    (campaign.start, agent.start, agent.end, campaign.end). On connect we
+    backfill the last ~30 events so the dashboard immediately reflects
+    what happened seconds ago.
+    """
+    loop = asyncio.get_running_loop()
+    queue = progress_bus.subscribe(loop=loop)
+
+    async def event_generator():
+        try:
+            # Backfill so a fresh SSE subscriber instantly sees recent state.
+            for event in progress_bus.recent(limit=30):
+                yield f"data: {json.dumps(event)}\n\n"
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=20.0)
+                except asyncio.TimeoutError:
+                    # SSE heartbeat — keeps proxies / browsers from closing idle streams
+                    yield ": ping\n\n"
+                    continue
+                yield f"data: {json.dumps(event)}\n\n"
+        finally:
+            progress_bus.unsubscribe(queue)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @router.post("/drafts/{draft_id}/approve")

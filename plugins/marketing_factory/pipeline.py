@@ -23,6 +23,7 @@ from plugins.marketing_factory.connectors import (
 )
 from plugins.marketing_factory.connectors.base import ConnectorError
 from plugins.marketing_factory.model_dispatcher import dispatch, dispatch_json
+from plugins.marketing_factory.progress_bus import publish as _publish_progress
 from plugins.marketing_factory.store import MarketingFactoryStore, utc_now
 
 logger = logging.getLogger(__name__)
@@ -625,21 +626,46 @@ class MarketingFactoryPipeline:
 
     def generate_campaign(self, app_slug: str, days: int = 7, auto_approve: bool = False) -> Dict[str, Any]:
         app = self.store.require_app(app_slug)
+        _publish_progress("campaign.start", app_slug=app["slug"], days=days)
         token_ledger: List[Dict[str, Any]] = []
+
+        _publish_progress("agent.start", agent="brand_memory", detail=f"Reading prior feedback for {app['slug']}")
         steering = self.brand_memory.get_steering(self.store, app["slug"], token_ledger=token_ledger)
+        _publish_progress("agent.end", agent="brand_memory", detail=("Steering loaded · " + steering.get("method", "n/a") if steering else "No steering yet"))
+
+        _publish_progress("agent.start", agent="research", detail=f"Extracting trends for {app['name']}")
         research = self.research.research(app, token_ledger=token_ledger, steering=steering)
+        _publish_progress("agent.end", agent="research", detail=f"{len(research.get('trends', []))} trends · {len(research.get('pain_points', []))} pain points")
+
+        _publish_progress("agent.start", agent="strategy", detail=f"Planning {days}-day campaign")
         campaign_plan = self.strategy.plan_campaign(app, research, days=days)
+        _publish_progress("agent.end", agent="strategy", detail=f"{len(campaign_plan.get('plan', []))} slots across {len(campaign_plan.get('channels', []))} channels")
+
         campaign = self.store.create_campaign(app["slug"], campaign_plan)
         drafts = []
-        for item in campaign["plan"]:
+        for idx, item in enumerate(campaign["plan"], start=1):
+            channel = item.get("channel")
+            slot_label = f"day {idx}/{len(campaign['plan'])} · {channel}"
+
+            _publish_progress("agent.start", agent="copy", channel=channel, detail=f"Writing {channel} post — {slot_label}")
             raw_draft = self.copy.draft_for_item(app, campaign["id"], item, token_ledger=token_ledger, steering=steering)
             raw_draft["scheduled_for"] = item["scheduled_for"]
+            _publish_progress("agent.end", agent="copy", channel=channel, detail=f"{len(raw_draft.get('body') or '')} chars · {raw_draft.get('llm_model') or 'template'}")
+
+            # ImageGen ran inside copy (only for visual channels); publish a snapshot event
+            if raw_draft.get("images"):
+                img = raw_draft["images"][0]
+                _publish_progress("agent.start", agent="image_gen", channel=channel, detail=f"Rendering image for {slot_label}")
+                _publish_progress("agent.end", agent="image_gen", channel=channel, detail=f"{img.get('backend', '?')} · {(img.get('prompt') or '')[:80]}")
+
             enriched = self.creative.add_concepts(app, raw_draft)
+
+            _publish_progress("agent.start", agent="safety", channel=channel, detail=f"Checking {channel} body against forbidden claims")
             safety = self.review.review(app, enriched)
+            _publish_progress("agent.end", agent="safety", channel=channel, detail="passed" if safety["passed"] else f"FAIL · {safety.get('recommendation')}")
+
             enriched["safety"] = safety
             enriched["status"] = "needs_review" if safety["passed"] else "rejected"
-            # Freshness vs prior same-channel drafts (computed BEFORE persisting
-            # so the new draft itself isn't in the candidate set).
             freshness = _compute_freshness(self.store, app["slug"], item["channel"], enriched["body"])
             enriched["freshness_score"] = freshness["score"]
             enriched["freshness_compared_against"] = freshness["compared_against"]
@@ -660,6 +686,13 @@ class MarketingFactoryPipeline:
                 "tokens_used": (token_summary or {}).get("tokens_used", 0),
                 "llm_calls": len(token_ledger),
             },
+        )
+        _publish_progress(
+            "campaign.end",
+            app_slug=app["slug"],
+            draft_count=len(drafts),
+            tokens_used=(token_summary or {}).get("tokens_used", 0),
+            llm_calls=len(token_ledger),
         )
         return {"app": app, "campaign": campaign, "drafts": drafts, "token_summary": token_summary}
 

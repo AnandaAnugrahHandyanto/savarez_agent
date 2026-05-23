@@ -191,6 +191,105 @@
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // FactoryFloor — live agent activity strip
+  // ---------------------------------------------------------------------------
+  // Subscribes to /api/plugins/marketing_factory/progress/stream (SSE) and
+  // shows each agent as a card that lights up green while it's working,
+  // dims when idle, and shows the last detail line so the user can SEE
+  // their factory operate during a Generate run.
+
+  const AGENT_CARDS = [
+    { key: "brand_memory", label: "Brand Memory", emoji: "🧠" },
+    { key: "research",     label: "Trend Spotter", emoji: "🔭" },
+    { key: "strategy",     label: "Strategist",    emoji: "📐" },
+    { key: "copy",         label: "Copywriter",    emoji: "✍️" },
+    { key: "image_gen",    label: "Photographer",  emoji: "📸" },
+    { key: "safety",       label: "Safety Officer", emoji: "🛡️" },
+  ];
+
+  function FactoryFloor() {
+    const [agentStates, setAgentStates] = useState({});
+    const [campaignRunning, setCampaignRunning] = useState(null);
+    const [, setTickKey] = useState(0); // force re-render for time-since
+    useEffect(() => {
+      const es = new EventSource(`${API}/progress/stream`);
+      es.onmessage = (ev) => {
+        if (!ev.data) return;
+        let payload;
+        try { payload = JSON.parse(ev.data); } catch (e) { return; }
+        const type = payload.type;
+        if (type === "campaign.start") {
+          setCampaignRunning({ app_slug: payload.app_slug, days: payload.days, started_at: payload.timestamp });
+        } else if (type === "campaign.end") {
+          setCampaignRunning(null);
+        } else if (type === "agent.start" || type === "agent.end") {
+          const agent = payload.agent;
+          setAgentStates((prev) => ({
+            ...prev,
+            [agent]: {
+              state: type === "agent.start" ? "working" : "idle",
+              detail: payload.detail || "",
+              channel: payload.channel || null,
+              at: payload.timestamp,
+            },
+          }));
+        }
+      };
+      es.onerror = () => { /* browser auto-reconnects */ };
+      // Heartbeat to refresh "Nm ago" labels
+      const t = setInterval(() => setTickKey((n) => n + 1), 5000);
+      return () => { es.close(); clearInterval(t); };
+    }, []);
+
+    function timeAgo(ts) {
+      if (!ts) return "—";
+      const secs = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+      if (secs < 5) return "just now";
+      if (secs < 60) return `${secs}s ago`;
+      const m = Math.floor(secs / 60);
+      if (m < 60) return `${m}m ago`;
+      const h = Math.floor(m / 60);
+      return `${h}h ago`;
+    }
+
+    return h("div", { className: "rounded-2xl border border-midground/15 bg-background/65 p-4 shadow-sm" },
+      h("div", { className: "flex items-center justify-between gap-2 mb-3" },
+        h("div", null,
+          h("div", { className: "text-xs uppercase tracking-[0.22em] text-cyan-200/70" }, "Factory floor"),
+          h("div", { className: "text-base font-semibold" }, campaignRunning
+            ? `Running for ${campaignRunning.app_slug} (${campaignRunning.days}d)…`
+            : "Idle — click Generate to wake the agents")
+        ),
+        campaignRunning ? h("div", { className: "flex items-center gap-2 text-xs text-cyan-200" },
+          h("div", { className: "h-2 w-2 rounded-full bg-cyan-300 animate-pulse" }),
+          h("span", null, `Started ${timeAgo(campaignRunning.started_at)}`)
+        ) : null
+      ),
+      h("div", { className: "grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2" },
+        AGENT_CARDS.map((agent) => {
+          const state = agentStates[agent.key];
+          const working = state && state.state === "working";
+          const tone = working ? "border-cyan-300/50 bg-cyan-300/10" : "border-midground/15 bg-background/60";
+          return h("div", { key: agent.key, className: cx("rounded-xl border p-2.5 transition", tone) },
+            h("div", { className: "flex items-center gap-2" },
+              h("span", { className: cx("text-lg", working ? "" : "opacity-70") }, agent.emoji),
+              h("span", { className: "text-xs font-medium" }, agent.label),
+              working ? h("span", { className: "ml-auto h-2 w-2 rounded-full bg-cyan-300 animate-pulse" })
+                      : h("span", { className: "ml-auto h-2 w-2 rounded-full bg-midground/30" })
+            ),
+            h("div", { className: cx("mt-1.5 text-[10px] leading-snug min-h-[28px]", working ? "text-cyan-100" : "text-midground/70") },
+              state ? (state.detail || (working ? "working…" : "ready")) : "ready"
+            ),
+            state ? h("div", { className: "mt-0.5 text-[10px] text-midground/50" },
+              working ? "now" : timeAgo(state.at)
+            ) : null
+          );
+        })
+      )
+    );
+  }
+
   function PlatformPreview({ draft, app }) {
     const channel = draft.channel;
     const brandName = (app && app.name) || draft.app_slug;
@@ -463,6 +562,8 @@
           )
         );
       })(),
+
+      h(FactoryFloor, null),
 
       h("div", { className: "grid gap-3 sm:grid-cols-2 lg:grid-cols-5" },
         h(Stat, { label: "Apps", value: data?.summary?.apps }),
