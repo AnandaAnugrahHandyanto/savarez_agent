@@ -3963,6 +3963,16 @@ class TelegramAdapter(BasePlatformAdapter):
                     exc_info=True,
                 )
 
+    async def stop_typing(self, chat_id: str) -> None:
+        """Suppress the last _keep_typing refresh so Telegram's 5s indicator fades naturally.
+
+        Telegram has no native "stop typing" API — the indicator expires on its own
+        after ~5s.  Pausing the refresh loop here prevents a final spurious
+        send_typing() from resetting the 5s timer after the response has already
+        been delivered.
+        """
+        self._typing_paused.add(chat_id)
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Telegram chat."""
         if not self._bot:
