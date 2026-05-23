@@ -1707,6 +1707,7 @@ def _memory_evolution_evidence(
     routing_metrics = routing_metrics if isinstance(routing_metrics, Mapping) else {}
     policy_outcome = _policy_closed_loop_evidence(outcome)
     star_soul_evidence = _star_soul_continuity_evidence()
+    star_universe_evidence = _star_universe_temporal_evolution_evidence()
     return {
         "has_basic_memory_home": bool(bridge.get("hermes_home")),
         "has_graph": bool(graph.get("exists")) and _safe_int(graph.get("node_count")) > 0,
@@ -1744,6 +1745,7 @@ def _memory_evolution_evidence(
         else 0,
         **policy_outcome,
         **star_soul_evidence,
+        **star_universe_evidence,
     }
 
 
@@ -1847,6 +1849,214 @@ def _is_persona_continuity_write_proposal(proposal: Mapping[str, Any]) -> bool:
     return any(term.lower() in searchable for term in STAR_SOUL_CONTINUITY_TERMS)
 
 
+TEMPORAL_EVOLUTION_METRICS_TYPE = "temporal_evolution_metrics"
+TEMPORAL_EVOLUTION_PROJECT_KEYS = {
+    "project",
+    "project_id",
+    "project_scope",
+    "target_project",
+    "target_project_id",
+    "source_project",
+    "source_project_id",
+}
+TEMPORAL_EVOLUTION_PROJECT_LIST_KEYS = {
+    "projects",
+    "project_ids",
+    "project_scopes",
+    "target_projects",
+    "source_projects",
+    "ecosystem_projects",
+    "ecosystem_project_ids",
+}
+TEMPORAL_EVOLUTION_SURFACE_KEYS = {
+    "surface",
+    "source_surface",
+    "target_surface",
+    "ecosystem_surface",
+}
+TEMPORAL_EVOLUTION_SURFACE_LIST_KEYS = {
+    "surfaces",
+    "surface_ids",
+    "memory_surfaces",
+    "ecosystem_surfaces",
+    "evidence_surfaces",
+    "contributing_surfaces",
+}
+TEMPORAL_EVOLUTION_DATE_KEYS = {
+    "created_at",
+    "updated_at",
+    "recorded_at",
+    "generated_at",
+    "date",
+    "day",
+    "start",
+    "end",
+    "start_at",
+    "end_at",
+    "window_start",
+    "window_end",
+    "start_date",
+    "end_date",
+    "from",
+    "to",
+}
+TEMPORAL_EVOLUTION_DATE_LIST_KEYS = {
+    "days",
+    "dates",
+    "covered_days",
+    "temporal_evolution_days",
+}
+
+
+def _star_universe_temporal_evolution_evidence() -> dict[str, Any]:
+    """Read explicit temporal evolution metric evidence without mutating state."""
+
+    home = get_hermes_home()
+    sources = [
+        ("operation_ledger", _operation_ledger_path(home)),
+        ("policy_proposal_ledger", _policy_proposal_path(home)),
+        ("write_proposal_ledger", _proposal_path(home)),
+    ]
+    explicit_events: list[Mapping[str, Any]] = []
+    days: set[str] = set()
+    clients: set[str] = set()
+    operations: set[str] = set()
+    project_ids: set[str] = set()
+    surfaces: set[str] = set()
+    read_only_policy_holds = True
+
+    for source_surface, path in sources:
+        for row in _read_jsonl(path):
+            if row.get("_parse_error") or not _is_explicit_temporal_evolution_metrics_record(row):
+                continue
+            explicit_events.append(row)
+            surfaces.add(source_surface)
+            days.update(_temporal_evolution_days(row))
+            clients.update(_temporal_evolution_values(row, {"client", "source_agent", "agent", "actor"}, {"clients"}))
+            operation = _clean_text(row.get("operation"))
+            if operation:
+                operations.add(operation)
+            operations.update(_temporal_evolution_values(row, {"operation_id"}, {"operations", "operation_ids"}))
+            project_ids.update(
+                _temporal_evolution_values(
+                    row,
+                    TEMPORAL_EVOLUTION_PROJECT_KEYS,
+                    TEMPORAL_EVOLUTION_PROJECT_LIST_KEYS,
+                )
+            )
+            surfaces.update(
+                _temporal_evolution_values(
+                    row,
+                    TEMPORAL_EVOLUTION_SURFACE_KEYS,
+                    TEMPORAL_EVOLUTION_SURFACE_LIST_KEYS,
+                )
+            )
+            read_only_policy_holds = read_only_policy_holds and _temporal_evolution_record_is_read_only(row)
+
+    sorted_days = sorted(days)
+    sorted_project_ids = sorted(project_ids)
+    event_count = len(explicit_events)
+    operation_count = max(len(operations), event_count)
+    span_days = 0
+    if len(sorted_days) >= 2:
+        start_day = datetime.fromisoformat(sorted_days[0])
+        end_day = datetime.fromisoformat(sorted_days[-1])
+        span_days = max((end_day - start_day).days, 0)
+    ready = (
+        event_count >= 1
+        and len(sorted_days) >= 2
+        and len(sorted_project_ids) >= 2
+        and len(surfaces) >= 2
+        and read_only_policy_holds
+    )
+    return {
+        "temporal_evolution_metric_event_count": event_count,
+        "temporal_evolution_day_count": len(sorted_days),
+        "temporal_evolution_span_days": span_days,
+        "temporal_evolution_client_count": len(clients),
+        "temporal_evolution_operation_count": operation_count,
+        "temporal_evolution_project_count": len(sorted_project_ids),
+        "temporal_evolution_project_ids": sorted_project_ids,
+        "temporal_evolution_surface_count": len(surfaces),
+        "temporal_evolution_metrics_ready": ready,
+    }
+
+
+def _is_explicit_temporal_evolution_metrics_record(row: Mapping[str, Any]) -> bool:
+    for key in (
+        "event_type",
+        "operation",
+        "metrics_type",
+        "snapshot_type",
+        "record_type",
+        "evidence_type",
+        "type",
+    ):
+        value = _clean_text(row.get(key)).lower().replace("-", "_").replace(" ", "_")
+        if value == TEMPORAL_EVOLUTION_METRICS_TYPE:
+            return True
+    return False
+
+
+def _temporal_evolution_record_is_read_only(row: Mapping[str, Any]) -> bool:
+    operation = _clean_text(row.get("operation")).lower()
+    return (
+        operation not in DURABLE_WRITE_OPERATIONS
+        and operation != "policy_apply_execute"
+        and row.get("would_modify_config") is not True
+        and row.get("would_write_memory") is not True
+        and row.get("would_mutate_memory") is not True
+        and row.get("would_modify_graph") is not True
+        and row.get("would_write_graph") is not True
+    )
+
+
+def _temporal_evolution_values(
+    row: Mapping[str, Any],
+    scalar_keys: set[str],
+    list_keys: set[str],
+) -> set[str]:
+    values: set[str] = set()
+    for key in scalar_keys:
+        value = _clean_text(row.get(key))
+        if value and value.lower() not in {"all", "global", "unknown"}:
+            values.add(value)
+    for key in list_keys:
+        values.update(item for item in _list_of_str(row.get(key)) if item.lower() not in {"all", "global", "unknown"})
+    return values
+
+
+def _temporal_evolution_days(row: Mapping[str, Any]) -> set[str]:
+    days: set[str] = set()
+    for key in TEMPORAL_EVOLUTION_DATE_KEYS:
+        day = _date_only(row.get(key))
+        if day:
+            days.add(day)
+    for key in TEMPORAL_EVOLUTION_DATE_LIST_KEYS:
+        for value in _list_of_str(row.get(key)):
+            day = _date_only(value)
+            if day:
+                days.add(day)
+    return days
+
+
+def _date_only(value: Any) -> str:
+    text = _clean_text(value)
+    if not text:
+        return ""
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat()
+    except ValueError:
+        pass
+    if len(text) >= 10:
+        candidate = text[:10]
+        try:
+            return datetime.fromisoformat(candidate).date().isoformat()
+        except ValueError:
+            return ""
+    return ""
+
+
 def _tier_readiness(tier: Mapping[str, Any], evidence: Mapping[str, Any]) -> dict[str, Any]:
     level = _safe_int(tier.get("level"))
     criteria: list[tuple[str, bool]] = []
@@ -1880,7 +2090,7 @@ def _tier_readiness(tier: Mapping[str, Any], evidence: Mapping[str, Any]) -> dic
     if level >= 13:
         criteria.append(("Long-term preference/persona continuity is governed", bool(evidence.get("persona_continuity_governed"))))
     if level >= 14:
-        criteria.append(("Temporal evolution metrics exist across projects", False))
+        criteria.append(("Temporal evolution metrics exist across projects", bool(evidence.get("temporal_evolution_metrics_ready"))))
     if level >= 15:
         criteria.append(("Source reasoning and methodology self-evolution are implemented", False))
     passed = [name for name, ok in criteria if ok]
@@ -1915,6 +2125,8 @@ def _memory_evolution_next_actions(
         actions.append("Run guarded non-mutating policy apply checks with explicit confirmation for approved proposals before claiming 星律记忆.")
     if next_item and next_item.get("name") == "星魂记忆" and not evidence.get("persona_continuity_governed"):
         actions.append("Create a governed memory_write_proposal for long-term preference/persona/collaboration-style continuity; do not write memory directly.")
+    if next_item and next_item.get("name") == "星宙记忆" and not evidence.get("temporal_evolution_metrics_ready"):
+        actions.append("Create or export a governed read-only temporal evolution metrics snapshot across projects; do not write Memory Graph or durable memory.")
     if not actions:
         actions.append("Continue with the next read-only governance/readiness capability before any durable write.")
     return actions[:5]
