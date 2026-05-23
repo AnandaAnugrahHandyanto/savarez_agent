@@ -1,0 +1,39 @@
+# LiteLLM proxy config — routes model requests to Bedrock + Vertex AI
+#
+# Hermes agents point here as a custom provider:
+#   model:
+#     provider: custom
+#     base_url: http://litellm-proxy:4000/v1
+#
+# Env vars read from ~/.hermes/.env via docker-compose env_file:
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY  (Bedrock)
+#   GOOGLE_CLOUD_API_KEY                       (Vertex AI)
+
+model_list:
+  - model_name: "claude-sonnet-4"
+    litellm_params:
+      model: "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0"
+      aws_region_name: "us-west-2"
+
+  - model_name: "claude-haiku-4-5"
+    litellm_params:
+      model: "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"
+      aws_region_name: "us-west-2"
+
+  - model_name: "gemini-2.5-flash"
+    litellm_params:
+      model: "vertex_ai/gemini-2.5-flash"
+      vertex_project: "nimbleco"
+      vertex_location: "us-central1"
+      api_key: "os.environ/GOOGLE_CLOUD_API_KEY"
+
+  - model_name: "gemini-2.5-pro"
+    litellm_params:
+      model: "vertex_ai/gemini-2.5-pro"
+      vertex_project: "nimbleco"
+      vertex_location: "us-central1"
+      api_key: "os.environ/GOOGLE_CLOUD_API_KEY"
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false

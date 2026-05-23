@@ -1,0 +1,71 @@
+--- a/gateway/platforms/signal.py	2026-05-23 12:51:47
++++ b/gateway/platforms/signal.py	2026-05-23 12:52:31
+@@ -255,6 +255,15 @@
+         # phone-number sets when UUID resolution wasn't possible.
+         self.dm_allow_from_uuids: set = set()
+         self.group_allow_from_uuids: set = set()
++
++        # Container-to-host path translation for signal-cli attachments.
++        # When the gateway runs in Docker (HERMES_HOME=/opt/data) but signal-cli
++        # runs on the host via host.docker.internal, file paths like
++        # /opt/data/cache/audio/tts_123.ogg are unreachable from signal-cli.
++        # SIGNAL_HOST_DATA_DIR tells us the host-side mount point so we can
++        # translate container paths before passing them to signal-cli.
++        self._container_data_prefix = os.getenv("HERMES_HOME", "")
++        self._host_data_dir = os.getenv("SIGNAL_HOST_DATA_DIR", "")
+ 
+         logger.info("Signal adapter initialized: url=%s account=%s groups=%s",
+                      self.http_url, redact_phone(self.account),
+@@ -1516,7 +1525,7 @@
+         params: Dict[str, Any] = {
+             "account": self.account,
+             "message": caption or "",
+-            "attachments": [file_path],
++            "attachments": [self._translate_container_path_to_host(file_path)],
+         }
+ 
+         if chat_id.startswith("group:"):
+@@ -1529,7 +1538,34 @@
+             self._track_sent_timestamp(result)
+             return SendResult(success=True)
+         return SendResult(success=False, error="RPC send with attachment failed")
++
++    def _translate_container_path_to_host(self, path: str) -> str:
++        """Translate a container file path to the equivalent host path.
++
++        When Hermes runs in Docker with /opt/data as HERMES_HOME and signal-cli
++        runs on the host (via host.docker.internal), attachment paths like
++        /opt/data/cache/audio/tts_123.ogg are invisible to signal-cli.
++
++        If SIGNAL_HOST_DATA_DIR is set (e.g. ~/.hermes), this replaces the
++        container HERMES_HOME prefix with the host path.
++        Without SIGNAL_HOST_DATA_DIR, the path is returned unchanged.
++        """
++        if (
++            not self._host_data_dir
++            or not self._container_data_prefix
++            or not path.startswith(self._container_data_prefix)
++        ):
++            return path
+ 
++        host_data = os.path.expanduser(self._host_data_dir)
++        relative = path[len(self._container_data_prefix):]
++        translated = host_data.rstrip("/") + "/" + relative.lstrip("/")
++        logger.debug(
++            "Signal: translated container path %s → host path %s",
++            path, translated,
++        )
++        return translated
++
+     async def _send_attachment(
+         self,
+         chat_id: str,
+@@ -1555,7 +1591,7 @@
+         params: Dict[str, Any] = {
+             "account": self.account,
+             "message": caption or "",
+-            "attachments": [file_path],
++            "attachments": [self._translate_container_path_to_host(file_path)],
+         }
+ 
+         if chat_id.startswith("group:"):

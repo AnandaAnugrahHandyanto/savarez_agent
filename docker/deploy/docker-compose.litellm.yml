@@ -1,0 +1,21 @@
+# LiteLLM proxy sidecar — translates OpenAI-compatible API to Bedrock + Vertex AI
+#
+# Usage (overlay on main compose):
+#   docker compose -f docker-compose.yml -f docker/deploy/docker-compose.litellm.yml up -d
+#
+# Requires env vars in ~/.hermes/.env:
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY  (for Bedrock)
+#   GOOGLE_CLOUD_API_KEY                       (for Vertex AI)
+
+services:
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: litellm-proxy
+    restart: unless-stopped
+    volumes:
+      - ./docker/deploy/litellm-config.yaml:/app/config.yaml:ro
+    env_file:
+      - ~/.hermes/.env
+    ports:
+      - "4000:4000"
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
