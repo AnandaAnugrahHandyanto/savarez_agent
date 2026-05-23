@@ -23,11 +23,12 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, chmodSync } from 'fs';
 import { randomBytes } from 'crypto';
 import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
+import QRCode from 'qrcode';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 
 // Parse CLI args
@@ -45,6 +46,7 @@ const WHATSAPP_DEBUG =
 
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
+const WHATSAPP_QR_IMAGE = getArg('qr-image', process.env.WHATSAPP_QR_IMAGE || path.join(path.dirname(SESSION_DIR), 'latest-qr.png'));
 const IMAGE_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'image_cache');
 const DOCUMENT_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'document_cache');
 const AUDIO_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'audio_cache');
@@ -62,6 +64,22 @@ const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10
 // which pins the bridge's HTTP handler until the upstream aiohttp timeout
 // fires. Fail fast instead so the gateway can surface a real error and retry.
 const SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_SEND_TIMEOUT_MS || '60000', 10);
+let qrImageActive = false;
+
+function cleanupQrImage() {
+  if (!qrImageActive) return;
+  try { unlinkSync(WHATSAPP_QR_IMAGE); } catch {}
+  qrImageActive = false;
+}
+
+function exitAfterCleanup(code) {
+  cleanupQrImage();
+  process.exit(code);
+}
+
+process.once('SIGINT', () => exitAfterCleanup(130));
+process.once('SIGTERM', () => exitAfterCleanup(143));
+process.once('exit', cleanupQrImage);
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -206,6 +224,14 @@ async function startSocket() {
     if (qr) {
       console.log('\n📱 Scan this QR code with WhatsApp on your phone:\n');
       qrcode.generate(qr, { small: true });
+      cleanupQrImage();
+      QRCode.toFile(WHATSAPP_QR_IMAGE, qr, { errorCorrectionLevel: 'M', margin: 2, width: 512 })
+        .then(() => {
+          try { chmodSync(WHATSAPP_QR_IMAGE, 0o600); } catch {}
+          qrImageActive = true;
+          console.log(`\nQR image saved to: ${WHATSAPP_QR_IMAGE}`);
+        })
+        .catch((err) => console.log(`\n⚠️  Could not write QR image: ${err.message}`));
       console.log('\nWaiting for scan...\n');
     }
 
@@ -228,6 +254,7 @@ async function startSocket() {
     } else if (connection === 'open') {
       connectionState = 'connected';
       console.log('✅ WhatsApp connected!');
+      cleanupQrImage();
       if (PAIR_ONLY) {
         console.log('✅ Pairing complete. Credentials saved.');
         // Give Baileys a moment to flush creds, then exit cleanly
