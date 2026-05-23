@@ -2,7 +2,7 @@
   <img src="assets/banner.png" alt="Hermes Agent" width="100%">
 </p>
 
-# Hermes Agent ☤ - zapabob Windows / Operations Fork
+# Hermes Agent ☤ — zapabob Windows / Operations Fork
 
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
@@ -11,130 +11,53 @@
   <a href="https://github.com/NousResearch/hermes-agent"><img src="https://img.shields.io/badge/Upstream-NousResearch-blueviolet?style=for-the-badge" alt="Upstream: NousResearch"></a>
 </p>
 
-このリポジトリは [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) を基盤にした、Windows ネイティブ運用と常駐ゲートウェイ運用を厚くした fork です。
+**English deployment fork** of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) tuned for a single Windows 11 workstation: OpenCode Zen free models as primary inference, llama.cpp TurboQuant as local rollback, messaging gateway always-on, VRChat Quest 2 tooling, and companion WebUI.
 
-公式版の強みであるモデル非依存、TUI、メッセージングゲートウェイ、スキル、メモリ、cron、自律的な学習ループを基盤にし、公式の最新変更を継続的に取り込む方針です。その上で、この fork は実運用で詰まりやすい Windows shell、Discord / Telegram gateway、OpenClaw / Hypura / VRChat 周辺を先に補修し、ローカル PC でそのまま動かすための道具を追加しています。
+### 日本語概要
 
-比較基準: 2026-05-22 に `git fetch upstream main` で確認した公式 `upstream/main` と、この fork の `main`。この README は fork 独自価値の説明であり、公式最新が先行している変更は sync policy に沿って取り込みます。
-
----
-
-## 公式版に対する利点
-
-| 領域 | 公式 `NousResearch/hermes-agent` | この fork の利点 |
-|---|---|---|
-| Windows terminal | Native Windows は early beta。`bash` 探索は PATH 上の `bash.exe` を拾うため、環境によって WSL 起動スタブを誤認する余地があります。 | Git for Windows / portable Git Bash を優先し、`System32\bash.exe` と `WindowsApps\bash.exe` の WSL スタブを除外します。`terminal` の文字化けと `search_files` の `rg/grep/find` 不検出を避けます。 |
-| Windows xurl | `skills/social-media/xurl` は `platforms: [linux, macos]`。 | `windows` を有効化し、Hermes 用 Windows shim を追加。公開 OAuth2 / PKCE client の client secret なし登録にも対応します。 |
-| Discord gateway | 公式の gateway 機能を基盤にします。 | stale な Discord global slash command を先に削除してから再作成します。100 command limit 到達時の起動失敗を避け、`DISCORD_ALLOWED_USERS=*` を明示的な allow-all として扱います。 |
-| Telegram startup | 公式の Telegram adapter を基盤にします。 | fallback IP retry を見込んだ 90 秒接続予算を戻し、`HERMES_TELEGRAM_DISABLE_FALLBACK_IPS=1` のときは設定済み fallback IP と DoH discovery を本当に読まないようにしています。 |
-| Harness / Hypura | 公式 README には Hypura Harness CLI の運用面は前面に出ていません。 | `hermes harness status/start/stop/restart` を復元し、daemon 不在時も argparse ではなく明確な診断を返します。 |
-| Skills Hub safety | 公式の Skills Hub を基盤にします。 | uninstall lock の `install_path` を検証し、絶対パス、traversal、skills root 削除を拒否します。CRLF / LF 差による bundle hash ぶれも抑えます。 |
-| OpenClaw / VRChat / Voice | 公式にも OpenClaw migration はあります。 | OpenClaw 移行、VRChat OSC、VoiceVox、channel readiness、Hypura native helper を Windows PC 向けに拡張しています。 |
-| Windows desktop operation | 公式 installer は Windows native を提供します。 | desktop shortcut、autostart、gateway 起動 wrapper、xurl shim など、実機常駐用の補助スクリプトを追加しています。 |
-
-私の見方では、この fork は公式版の代替品というより、Windows 常駐運用を前提にした実務向けの運用レイヤーです。Linux / macOS / WSL2 で素直に使うなら公式版が自然です。Windows 11 上で gateway、ローカル shell、X 投稿、VRChat / Hypura 連携までまとめて動かしたい場合は、この fork の方が手戻りが少ない構成です。
+[NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) をベースに、**OpenCode Zen 無料モデル自動ローテーション**、**RTX3080 llama.cpp ローカルフォールバック**、**OpenClaw 由来 API キー橋渡し**、**hermes-webui 連携**、**VRChat Quest2（OSC / neuro-sdk / OpenXR 修復）**、**Windows ログオン自動起動**を厚くした実運用 fork です。公式 upstream の TUI・ゲートウェイ・スキル・メモリ・cron はそのまま継承し、`scripts/sync_upstream.py` で追従します。
 
 ---
 
-## Fork 独自機能
+## Overview
 
-### Windows native terminal hardening
+This checkout (`hermes-agent-upstream-sync`) is not generic upstream marketing — it is a **production stack** for:
 
-- Git Bash を優先して検出し、WSL の `bash.exe` 起動スタブを terminal backend から除外。
-- `terminal` tool の stdout / stderr を UTF-8 前提で扱い、Windows の文字化けを抑制。
-- `search_files` が `rg`、Git Bash 同梱 `grep`、`find` を見つけられる状態を維持。
-- Windows で誤って POSIX 専用 PATH を混ぜないようにし、ローカル shell の実行環境を安定化。
+1. **Cloud-first, free inference** — `opencode-zen` + virtual model `auto-free` with live catalog refresh and runtime rotation when limits hit.
+2. **Local rollback** — TurboQuant `llama-server` on `http://127.0.0.1:8080/v1` (RTX 3080 defaults: ngram-mod speculative, asymmetric KV).
+3. **Always-on gateway** — Telegram, Discord, and other platforms via `hermes gateway run`, with Windows-specific reliability fixes.
+4. **VRChat autonomy** — Neuro API bridge, OSC tools, safety-gated harness scripts, Quest 2 controller doctor, OpenXR ActiveRuntime fix for Virtual Desktop.
+5. **Desktop integration** — Task Scheduler autostart for llama + gateway, optional [hermes-webui](https://github.com/zapabob/hermes-webui) companion.
 
-検証例:
+Upstream Hermes still provides the core agent loop, TUI, toolsets, skills hub, memory providers, delegation, and cron. This fork adds the **operations layer** that makes those features survive on native Windows without WSL.
 
-```powershell
-py -3.12 -m pytest -o addopts="" -p no:randomly tests\tools\test_local_env_windows_msys.py tests\tools\test_terminal_tool.py -q
-```
-
-### Gateway reliability hardening
-
-- Discord global command sync は stale command の削除を先に行い、100 command limit に近いアプリでも起動しやすい順序に調整。
-- Discord の `DISCORD_ALLOWED_USERS=*` は username 解決ではなく wildcard allow-all として処理。
-- Telegram の platform connect timeout を fallback retry に合わせて 90 秒へ調整。
-- Telegram fallback IP を無効化した場合、設定値と DoH discovery の両方をスキップ。
-- `gateway --replace` は Windows でも安全な PID 生存判定を使い、古い gateway の置換を安定化。
-
-検証例:
-
-```powershell
-py -3.12 -m pytest -o addopts="" -p no:randomly `
-  tests\gateway\test_discord_connect.py `
-  tests\gateway\test_discord_component_auth.py `
-  tests\gateway\test_discord_slash_auth.py `
-  tests\gateway\test_platform_reconnect.py `
-  tests\gateway\test_runner_startup_failures.py `
-  tests\gateway\test_telegram_conflict.py -q
-```
-
-### Hypura Harness CLI
-
-`hermes harness` を復元し、Harness daemon の状態確認と起動停止を CLI から扱えるようにしています。
-
-```bash
-hermes harness status
-hermes harness start
-hermes harness stop
-hermes harness restart
-```
-
-daemon script が未配置でも、`invalid choice: 'harness'` ではなく、どの runtime dependency が足りないかを返します。
-
-### Windows xurl skill
-
-公式 xurl skill は Linux / macOS 向けです。この fork では Windows を有効化し、Hermes から扱いやすい shim を追加しています。
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_xurl_windows_shim.ps1
-xurl auth status
-```
-
-対応済みの shim コマンド:
-
-- `auth status`
-- `auth apps add/remove/default/list`
-- `auth oauth2`
-- `whoami`
-- `post`
-- `reply`
-- `quote`
-
-token 値を標準出力に出さないことを重視しています。
-
-### Skills Hub path safety
-
-Skills Hub の uninstall 処理で lock file の `install_path` をそのまま信頼しないようにしています。
-
-- `skill` または `category/skill` 形式だけを許可。
-- final segment が対象 skill 名と一致しない場合は拒否。
-- `SKILLS_DIR` の外側、絶対パス、traversal、skills root 自体の削除を拒否。
-- text asset は改行差を正規化して hash し、Windows checkout と Unix checkout の差を抑制。
+Sync baseline: compare against `upstream/main` via `git fetch upstream main` and `py -3 scripts/sync_upstream.py`.
 
 ---
 
-## 公式版から引き継ぐ主な機能
+## Unique Features
 
-| 機能 | 内容 |
+| Feature | What it does |
 |---|---|
-| Real terminal interface | TUI、複数行編集、slash command 補完、会話履歴、interrupt、streaming tool output。 |
-| Messaging gateway | Telegram、Discord、Slack、WhatsApp、Signal、Email などを単一 gateway から扱います。 |
-| Closed learning loop | メモリ、session search、skill creation、skill self-improvement、Honcho user modeling。 |
-| Cron automations | 自然言語で定義する scheduled task と、各 messaging platform への配信。 |
-| Delegation | subagent と RPC tool 呼び出しによる並列作業。 |
-| Terminal backends | local、Docker、SSH、Singularity、Modal、Daytona、Vercel Sandbox。 |
-| Research workflows | trajectory generation と compression。 |
+| **OpenCode Zen `auto-free`** | Virtual model sentinel resolves to the first live free ID from `https://opencode.ai/zen/v1/models`. On `Free usage exceeded` and similar limits, Hermes walks the deduped free catalog automatically. Skill: `skills/autonomous-ai-agents/opencode-free-rotation/`. |
+| **Live catalog refresh** | `scripts/refresh_opencode_free_catalog.py` pulls the current Zen free list; use in cron or before long sessions. |
+| **OpenClaw → OpenCode key bridge** | Shared `OPENCODE_API_KEY` (OpenClaw `.env` or `auth-profiles.json`) satisfies `OPENCODE_ZEN_API_KEY` when the Zen-specific key is unset. See `hermes_cli/auth.py` and `tests/hermes_cli/test_opencode_openclaw_bridge.py`. |
+| **llama.cpp TurboQuant fallback** | `hermes_cli/llama_fallback_runtime.py` autostarts `llama-server` when the fallback chain reaches `llama-cpp`. RTX3080 script: `scripts/windows/start-hermes-llama-fallback-rtx3080.ps1` (ngram-mod speculative, `f16v_turbo4` KV). Example config: `docs/migration/opencode_free_webui_config.example.yaml`. |
+| **hermes-webui companion** | `scripts/windows/start-hermes-webui.ps1` bootstraps a sibling `hermes-webui` checkout (default `~/Desktop/hermes-webui`) with `config/hermes-webui.env.example`. WebUI reads raw `config.yaml`; `auto-free` displays as-is but resolves at agent runtime. |
+| **VRChat Neuro / autonomy harness** | `skills/gaming/neuro-vrchat/` + `tools/vrchat_*` + `scripts/vrchat_*` — Neuro API websocket bridge, observation queue, preflight, runtime doctor, private smoke, completion audit. Uses vendored `vendor/neuro-sdk` protocol reference. Profile safety gate blocks live OSC/audio until explicitly armed. |
+| **Quest 2 Windows doctor + OpenXR fix** | Read-only stack diagnosis: `scripts/windows/vrchat_quest2_controller_doctor.ps1`. HKLM/HKCU ActiveRuntime sync for Virtual Desktop: `scripts/windows/vrchat_quest2_openxr_fix.ps1` and UAC wrapper `scripts/windows/run-vrchat-openxr-fix-admin.ps1`. |
+| **Windows logon autostart** | `scripts/windows/register-hermes-autostart.ps1` registers Task Scheduler jobs for llama fallback + gateway (and optional legacy stack). Cleans stale HKCU Run entries. |
+| **Gateway hardening** | Discord stale slash-command cleanup before re-register (100-command limit). `DISCORD_ALLOWED_USERS=*` as explicit allow-all. Telegram 90s connect budget with optional fallback IP disable. |
+| **Windows terminal hardening** | Git Bash preferred over WSL `bash.exe` stubs; UTF-8 terminal output; `search_files` finds `rg` / Git Bash `grep` / `find`. |
+| **Hypura Harness CLI** | `hermes harness status|start|stop|restart` with clear diagnostics when daemon scripts are missing. |
+| **OpenClaw migration** | `hermes claw migrate` plus `scripts/openclaw_ports/` and `tools/openclaw/` for VRChat, VoiceVox, channel readiness. |
+| **Skills Hub path safety** | Uninstall lock validates `install_path` — rejects traversal, absolute paths, and skills-root deletion. |
 
 ---
 
-## Quick Install
+## Quick Start
 
-### この fork を Windows で使う
-
-PowerShell:
+### Windows (this fork)
 
 ```powershell
 git clone https://github.com/zapabob/hermes-agent.git
@@ -143,22 +66,28 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -U pip
 pip install -e ".[all,dev]"
-python -m hermes_cli.main --help
+python -m hermes_cli.main setup
 ```
 
-Git Bash:
+Set secrets in `~/.hermes/.env`:
 
-```bash
-git clone https://github.com/zapabob/hermes-agent.git
-cd hermes-agent
-py -3.12 -m venv .venv
-source .venv/Scripts/activate
-python -m pip install -U pip
-pip install -e ".[all,dev]"
-hermes
+```env
+OPENCODE_ZEN_API_KEY=...          # from https://opencode.ai/auth
+# Or reuse OpenClaw:
+# OPENCODE_API_KEY=...
+GATEWAY_ALLOW_ALL_USERS=true      # single-user personal gateway
 ```
 
-### 公式版を使う
+Copy model/fallback sections from `docs/migration/opencode_free_webui_config.example.yaml` into `~/.hermes/config.yaml`, then:
+
+```powershell
+hermes                          # interactive CLI / TUI
+hermes fallback list            # verify auto-free expansion
+hermes gateway run              # messaging gateway
+hermes doctor                   # environment diagnostics
+```
+
+### Official upstream install
 
 Linux / macOS / WSL2 / Termux:
 
@@ -168,7 +97,7 @@ source ~/.bashrc
 hermes
 ```
 
-Native Windows 公式 installer:
+Native Windows (official installer):
 
 ```powershell
 iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)
@@ -176,54 +105,138 @@ iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/script
 
 ---
 
-## Getting Started
+## Local Fallback (llama.cpp + TurboQuant)
 
-```bash
-hermes              # interactive CLI
-hermes model        # model / provider selection
-hermes tools        # toolset configuration
-hermes gateway run  # foreground messaging gateway
-hermes setup        # setup wizard
-hermes doctor       # environment diagnostics
-hermes logs         # inspect runtime logs
-hermes harness      # fork-specific Hypura Harness management
+When OpenCode free models are exhausted or offline, Hermes fails over to `llama-cpp` at `http://127.0.0.1:8080/v1`.
+
+**RTX 3080 manual start:**
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows\start-hermes-llama-fallback-rtx3080.ps1
 ```
 
-CLI と messaging platform の詳細は公式ドキュメントを参照してください。
+**Environment (optional autostart via `HERMES_LLAMA_FALLBACK_AUTOSTART=auto`):**
 
-- [Quickstart](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart)
-- [CLI Usage](https://hermes-agent.nousresearch.com/docs/user-guide/cli)
-- [Messaging Gateway](https://hermes-agent.nousresearch.com/docs/user-guide/messaging)
-- [Tools & Toolsets](https://hermes-agent.nousresearch.com/docs/user-guide/features/tools)
-- [Skills System](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills)
-- [Cron Scheduling](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron)
+| Variable | Purpose |
+|---|---|
+| `HERMES_LLAMA_MODEL_PATH` | Path to fallback GGUF |
+| `HERMES_LLAMA_GPU_PROFILE` | `rtx3080` (default in script) |
+| `HERMES_LLAMA_SERVER_EXE` | Override TurboQuant `llama-server.exe` |
+
+Runtime module: `hermes_cli/llama_fallback_runtime.py` — probes port 8080, spawns server with ngram-mod speculative decoding when needed.
 
 ---
 
-## OpenClaw / VRChat / Hypura
+## OpenCode Free Rotation
 
-この fork には、OpenClaw 由来の運用資産を Hermes へ移すための補助と、Windows PC 上での VRChat / Hypura 周辺連携が含まれています。
+**Primary config pattern:**
 
-```bash
-hermes claw migrate
-hermes claw migrate --dry-run
-hermes claw migrate --preset user-data
-hermes harness status
+```yaml
+model:
+  provider: opencode-zen
+  default: auto-free
+
+fallback_providers:
+  - provider: opencode-zen
+    model: auto-free
+  - provider: llama-cpp
+    model: your-fallback.gguf
+    base_url: http://127.0.0.1:8080/v1
 ```
 
-関連ファイル:
+**Refresh catalog:**
 
-- `scripts/openclaw_ports/`
-- `tools/openclaw/`
-- `skills/gaming/vrchat/`
-- `hermes_cli/hypura_native.py`
-- `tools/harness_tools.py`
+```powershell
+py -3 scripts/refresh_opencode_free_catalog.py --force
+hermes fallback list
+```
+
+**Credential bridge:** if you migrated from OpenClaw, a single `OPENCODE_API_KEY` in `~/.hermes/.env` is enough — Hermes maps it to Zen and Go provider env vars.
+
+Full skill procedure: `skills/autonomous-ai-agents/opencode-free-rotation/SKILL.md`.
 
 ---
 
-## Upstream sync policy
+## VRChat & Neuro SDK
 
-この fork は公式 `NousResearch/hermes-agent` を追従します。同期時は公式差分を取り込みつつ、Windows / gateway / OpenClaw-Hypura 層の fork 独自価値を残します。
+### Skills and tools
+
+- `skills/gaming/vrchat/` — OSC, avatar registry, relay bridge
+- `skills/gaming/neuro-vrchat/` — Neuro API bridge with safety-gated autonomy profile
+- Tools: `vrchat_osc`, `vrchat_neuro_*`, `vrchat_autonomy_*`, `vrchat_preflight`, `vrchat_runtime_doctor`, etc.
+
+### Key harness scripts
+
+| Script | Role |
+|---|---|
+| `scripts/vrchat_neuro_bridge.py` | Neuro websocket harness |
+| `scripts/vrchat_preflight.py` | Read-only readiness bundle |
+| `scripts/vrchat_runtime_doctor.py` | Operator mismatch + VOICEVOX/VRChat diagnostics |
+| `scripts/vrchat_private_smoke.py` | Gated private-instance smoke (dry-run default) |
+| `scripts/vrchat_completion_audit.py` | Objective completion evidence |
+
+Migration guide: `docs/migration/vrchat_neurosama_autonomy.md`.
+
+### Quest 2 on Windows (Virtual Desktop)
+
+**Controller / stack doctor (read-only):**
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows\vrchat_quest2_controller_doctor.ps1 -Json
+```
+
+**OpenXR ActiveRuntime fix (Virtual Desktop / SteamVR):**
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows\run-vrchat-openxr-fix-admin.ps1 -Preference VirtualDesktop
+```
+
+Requires UAC elevation for HKLM `ActiveRuntime` sync.
+
+---
+
+## Windows Autostart
+
+Register logon tasks for llama fallback + gateway:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows\register-hermes-autostart.ps1
+```
+
+Options:
+
+- `-GatewayOnly` — skip llama task
+- `-Unregister` — remove tasks and stale Run keys
+- `-IncludeLegacyStack` — also register full stack launcher
+
+Gateway wrapper: `scripts/windows/start-hermes-gateway.ps1` (ensures llama if port 8080 is down).
+
+**Companion WebUI:**
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows\start-hermes-webui.ps1
+```
+
+Set `HERMES_WEBUI_ROOT` if not using `~/Desktop/hermes-webui`.
+
+---
+
+## Inherited Upstream Capabilities
+
+| Area | Highlights |
+|---|---|
+| TUI / CLI | Ink TUI (`hermes --tui`), slash commands, session resume, tool streaming |
+| Messaging gateway | Telegram, Discord, Slack, WhatsApp, Signal, Email, Matrix, … |
+| Learning loop | Memory providers, session search, skill creation, curator |
+| Cron | Natural-language scheduled jobs with multi-platform delivery |
+| Delegation | Subagents with isolated terminal sessions |
+| Terminal backends | local, Docker, SSH, Modal, Daytona, … |
+
+Official docs: [Quickstart](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart) · [Gateway](https://hermes-agent.nousresearch.com/docs/user-guide/messaging) · [Skills](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills) · [Cron](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron)
+
+---
+
+## Upstream Sync
 
 ```powershell
 git fetch upstream main
@@ -232,46 +245,40 @@ py -3 scripts\sync_upstream.py --merge
 py -3 scripts\sync_upstream.py --pytest-only
 ```
 
-watch list:
+Watch list (preserve fork value during merges):
 
-- `tools/environments/local.py`
-- `tools/environments/persistent_shell.py`
-- `tools/environments/platform_shell_compat.py`
-- `gateway/platforms/discord.py`
-- `gateway/platforms/telegram.py`
-- `hermes_cli/harness.py`
-- `tools/skills_hub.py`
-- `README.md`
+- `tools/environments/local.py`, `gateway/platforms/discord.py`, `gateway/platforms/telegram.py`
+- `hermes_cli/harness.py`, `hermes_cli/llama_fallback_runtime.py`, `hermes_cli/auth.py`
+- `tools/skills_hub.py`, `scripts/windows/`, `README.md`
 
 ---
 
 ## Development
 
-```bash
-git clone https://github.com/zapabob/hermes-agent.git
-cd hermes-agent
-py -3.12 -m venv .venv
-source .venv/Scripts/activate
-pip install -e ".[all,dev]"
+```powershell
+py -3.12 -m pytest -o addopts="" -p no:randomly tests\hermes_cli\test_opencode_openclaw_bridge.py -q
+py -3.12 -m pytest -o addopts="" -p no:randomly tests\hermes_cli\test_opencode_free_rotation.py -q
 py -3.12 -m pytest -o addopts="" -p no:randomly tests\tools\test_local_env_windows_msys.py -q
 ```
 
-広い confidence が必要な場合は、公式 Hermes test environment を持つ CI または developer host で full test suite を実行してください。
+Full suite (CI parity): `scripts/run_tests.sh`
 
 ---
 
-## Community
+## Community & Links
 
-- [Official docs](https://hermes-agent.nousresearch.com/docs/)
-- [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)
-- [zapabob/hermes-agent issues](https://github.com/zapabob/hermes-agent/issues)
+- [Official Hermes docs](https://hermes-agent.nousresearch.com/docs/)
+- [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) (upstream)
+- [zapabob/hermes-agent](https://github.com/zapabob/hermes-agent) (this fork)
+- [hermes-webui](https://github.com/zapabob/hermes-webui) (companion WebUI)
+- [OpenCode Zen](https://opencode.ai/auth) (free model API key)
+- [VedalAI neuro-sdk](https://github.com/VedalAI/neuro-sdk) (Neuro API protocol)
 - [Nous Research Discord](https://discord.gg/NousResearch)
-- [Skills Hub](https://agentskills.io)
 
 ---
 
 ## License
 
-MIT - see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
 
 Built by [Nous Research](https://nousresearch.com). Windows and operations fork maintained by [zapabob](https://github.com/zapabob).
