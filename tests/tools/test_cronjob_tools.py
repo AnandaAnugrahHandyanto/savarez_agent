@@ -249,6 +249,34 @@ class TestUnifiedCronjobTool:
         assert updated["job"]["provider"] == "openrouter"
         assert updated["job"]["base_url"] is None
 
+    def test_create_and_update_allow_memory_tools_flag(self):
+        from cron.jobs import get_job
+
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Memory-aware review",
+                schedule="every 1h",
+                enabled_toolsets=["session_search", "memory"],
+                allow_memory_tools=True,
+            )
+        )
+        assert created["success"] is True
+        job_id = created["job_id"]
+        stored = get_job(job_id)
+        assert stored is not None
+        assert stored["allow_memory_tools"] is True
+
+        listing = json.loads(cronjob(action="list"))
+        assert listing["jobs"][0]["allow_memory_tools"] is True
+
+        updated = json.loads(cronjob(action="update", job_id=job_id, allow_memory_tools=False))
+        assert updated["success"] is True
+        assert updated["job"].get("allow_memory_tools") is None
+        stored_after_update = get_job(job_id)
+        assert stored_after_update is not None
+        assert stored_after_update["allow_memory_tools"] is False
+
     def test_create_skill_backed_job(self):
         result = json.loads(
             cronjob(

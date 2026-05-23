@@ -1555,6 +1555,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 job_id, _mcp_exc,
             )
 
+        _allow_memory_tools = bool(job.get("allow_memory_tools"))
         agent = AIAgent(
             model=model,
             api_key=runtime.get("api_key"),
@@ -1582,7 +1583,14 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             # Without a workdir, keep cwd context discovery disabled.
             skip_context_files=not bool(_job_workdir),
             load_soul_identity=True,
-            skip_memory=True,  # Cron system prompts would corrupt user representations
+            # Cron prompt text should never receive automatic memory context:
+            # autonomous/system prompts can corrupt user representations if
+            # ingested as ordinary context.  Selected jobs can still opt into
+            # memory/Honcho tool initialization via allow_memory_tools=True;
+            # suppress_memory_prompt keeps injection off while preserving an
+            # explicit tool-call path for deliberate writes/reads.
+            skip_memory=not _allow_memory_tools,
+            suppress_memory_prompt=_allow_memory_tools,
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,
