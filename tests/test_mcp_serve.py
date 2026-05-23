@@ -950,7 +950,7 @@ _MESSAGING_MCP_TOOLS = frozenset({
 _SKILLS_MCP_TOOLS = frozenset({
     "fleet_context_snapshot", "agent_health_summary", "skills_list",
     "skills_read", "agents_list", "agents_get", "knowledge_read",
-    "learnings_read", "artifacts_list",
+    "knowledge_query", "learnings_read", "artifacts_list",
 })
 
 

@@ -562,7 +562,7 @@ Restart Cursor after changing MCP settings. First connection can take several se
 
 ### Available tools
 
-The MCP server exposes **19 tools** when the optional skills module is installed (default in this repo): **10 messaging tools** plus **9 read-only skills/knowledge tools**.
+The MCP server exposes **20 tools** when the optional skills module is installed (default in this repo): **10 messaging tools** plus **10 read-only skills/knowledge tools**.
 
 #### Messaging (10 tools)
 
@@ -581,7 +581,7 @@ Matches OpenClaw's channel bridge surface plus a Hermes-specific channel browser
 | `permissions_list_open` | List approval requests observed by this MCP bridge process. |
 | `permissions_respond` | Resolve an approval observed by this MCP bridge process. This is best-effort bridge-local state, not a durable gateway approval API. |
 
-#### Skills and knowledge (9 tools, read-only)
+#### Skills and knowledge (10 tools, read-only)
 
 Registered from `hermes_skills_mcp` when the module is importable (bundled with `hermes-agent` installs). Paths resolve via `HERMES_AGENTS_DIR`, then `HERMES_REPO`, then `HERMES_HOME`. See [Cursor & Hermes](./cursor-hermes.md) for skills-only vs gateway mode and source-of-truth hierarchy.
 
@@ -594,6 +594,7 @@ Registered from `hermes_skills_mcp` when the module is importable (bundled with 
 | `agents_list` | List agents from `AGENT_REGISTRY.json` with status summary. |
 | `agents_get` | Full agent detail: registry entry, heartbeat, files. |
 | `knowledge_read` | Read knowledge-layer artifacts (e.g. `latest_state`). |
+| `knowledge_query` | Query `artifacts/ops/knowledge_graph` with bounded deterministic keyword matching when graph artifacts are present. |
 | `learnings_read` | Read `.learnings/` memory tiers. |
 | `artifacts_list` | Browse the `artifacts/` directory tree. |
 

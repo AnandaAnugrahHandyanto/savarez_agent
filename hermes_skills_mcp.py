@@ -16,9 +16,10 @@ read-only tools that let MCP clients discover and read:
 Paths resolve via HERMES_AGENTS_DIR (runtime fleet), then HERMES_REPO,
 then HERMES_HOME — same profile conventions as mcp_serve.py.
 
-Tool surface (9 tools; read-only by design):
+Tool surface (10 tools; read-only by design):
   fleet_context_snapshot — one-call bounded fleet bootstrap for IDEs
   agent_health_summary — compact actionable fleet health anomalies
+  knowledge_query — bounded keyword query over knowledge graph artifacts
   skills_list          — list available agent SOUL.md files and repo skills
   skills_read          — read a specific skill/SOUL.md document
   agents_list          — list agents from registry with status summary
@@ -532,6 +533,16 @@ def _get_learnings_dir() -> Optional[Path]:
     for c in candidates:
         if c.is_dir():
             return c
+    return None
+
+
+def _get_knowledge_graph_dir() -> Optional[Path]:
+    """Find artifacts/ops/knowledge_graph/."""
+    artifacts = _get_artifacts_dir()
+    if artifacts:
+        kg = artifacts / "ops" / "knowledge_graph"
+        if kg.is_dir():
+            return kg
     return None
 
 
@@ -1069,4 +1080,102 @@ def register_skills_tools(mcp) -> None:
             "entries": entries,
         }, indent=2)
 
-    logger.debug("Registered 9 skills/knowledge MCP tools")
+    # -- knowledge_query ---------------------------------------------------
+
+    @mcp.tool()
+    def knowledge_query(question: str) -> str:
+        """Query knowledge graph artifacts with bounded keyword matching.
+
+        Reads `artifacts/ops/knowledge_graph/nodes.jsonl` and `edges.jsonl`
+        when present. This is deterministic keyword matching, not semantic
+        search, and never writes files.
+        """
+        kg_dir = _get_knowledge_graph_dir()
+        if not kg_dir:
+            return json.dumps({
+                "question": question,
+                "error": "knowledge_graph directory not found",
+                "matches": [],
+                "related_edges": [],
+            }, indent=2)
+
+        stop_words = {
+            "what", "which", "who", "how", "does", "do", "is", "are", "the",
+            "a", "an", "in", "on", "of", "to", "for", "and", "or", "that",
+            "this", "from", "with", "by", "at", "it", "its", "my",
+        }
+        keywords = [
+            word.lower().strip("?.,!;:")
+            for word in str(question or "").split()
+        ]
+        keywords = [
+            word for word in keywords
+            if word and word not in stop_words and len(word) > 2
+        ][:20]
+
+        nodes: list[dict] = []
+        edges: list[dict] = []
+        for filename, target in (("nodes.jsonl", nodes), ("edges.jsonl", edges)):
+            path = kg_dir / filename
+            if not path.exists():
+                continue
+            try:
+                for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                    line = line.strip()
+                    if line:
+                        target.append(json.loads(line))
+            except (OSError, json.JSONDecodeError) as exc:
+                return json.dumps({
+                    "question": question,
+                    "error": f"Failed to parse {filename}: {exc}",
+                    "matches": [],
+                    "related_edges": [],
+                }, indent=2)
+
+        matches: list[dict] = []
+        matched_ids: set[str] = set()
+        for node in nodes:
+            node_text = json.dumps(node, ensure_ascii=False).lower()
+            score = sum(1 for kw in keywords if kw in node_text)
+            if score > 0:
+                item = dict(node)
+                item["_relevance"] = score
+                matches.append(item)
+                node_id = item.get("id") or item.get("name")
+                if node_id:
+                    matched_ids.add(str(node_id))
+
+        matches.sort(key=lambda item: item.get("_relevance", 0), reverse=True)
+        matches = matches[:20]
+        for item in matches:
+            item.pop("_relevance", None)
+
+        related_edges: list[dict] = []
+        for edge in edges:
+            source = str(edge.get("source", edge.get("from", "")))
+            target = str(edge.get("target", edge.get("to", "")))
+            edge_text = json.dumps(edge, ensure_ascii=False).lower()
+            if (
+                source in matched_ids
+                or target in matched_ids
+                or any(kw in edge_text for kw in keywords)
+            ):
+                related_edges.append(edge)
+            if len(related_edges) >= 30:
+                break
+
+        return json.dumps({
+            "question": question,
+            "as_of": datetime.now(timezone.utc).isoformat(),
+            "keywords_used": keywords,
+            "matches": matches,
+            "related_edges": related_edges,
+            "stats": {
+                "total_nodes": len(nodes),
+                "total_edges": len(edges),
+                "matched_nodes": len(matches),
+                "related_edges": len(related_edges),
+            },
+        }, indent=2)
+
+    logger.debug("Registered 10 skills/knowledge MCP tools")

@@ -58,6 +58,7 @@ Hermes MCP is really two products behind one server:
 | `agents_list` | Registry + optional heartbeat files |
 | `agents_get` | Registry entry + SOUL + files for one agent |
 | `knowledge_read` | `latest_state`, held specs, operator brief, etc. |
+| `knowledge_query` | Bounded deterministic keyword query over knowledge graph artifacts |
 | `learnings_read` | `.learnings/memory.md` and namespaces |
 | `artifacts_list` | Browse `artifacts/` tree |
 

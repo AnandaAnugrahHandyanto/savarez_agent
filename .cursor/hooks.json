@@ -9,7 +9,7 @@
     {
       "event": "file-edited",
       "match": "mcp_serve.py",
-      "command": "python3 -c \"import hermes_skills_mcp; import hermes_skills_mcp_extensions\"",
+      "command": "python3 -c \"import mcp_serve; import hermes_skills_mcp\"",
       "description": "Verify MCP server imports cleanly after edits"
     },
     {
@@ -17,12 +17,6 @@
       "match": "hermes_skills_mcp.py",
       "command": "python3 -c \"import hermes_skills_mcp\"",
       "description": "Verify skills MCP module imports cleanly"
-    },
-    {
-      "event": "file-edited",
-      "match": "hermes_skills_mcp_extensions.py",
-      "command": "python3 -c \"from hermes_skills_mcp_extensions import fleet_context_snapshot, agent_health_summary, knowledge_query\"",
-      "description": "Verify extensions module imports cleanly"
     },
     {
       "event": "file-edited",

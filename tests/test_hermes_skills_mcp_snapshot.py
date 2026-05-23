@@ -253,3 +253,35 @@ def test_agent_health_summary_registered_tool(snapshot_env):
     assert result["mode"] == "skills_only"
     assert result["agent_count"] == 1
     assert result["writes_allowed"] is False
+
+
+def test_knowledge_query_matches_bounded_graph(snapshot_env):
+    repo, _home, mcp = snapshot_env
+    kg = repo / "artifacts" / "ops" / "knowledge_graph"
+    kg.mkdir(parents=True)
+    (kg / "nodes.jsonl").write_text(
+        json.dumps({"id": "spec-100", "label": "Spec 100 final_score tooling"}) + "\n"
+        + json.dumps({"id": "agent-alpha", "label": "Alpha unrelated"}) + "\n",
+        encoding="utf-8",
+    )
+    (kg / "edges.jsonl").write_text(
+        json.dumps({"source": "spec-100", "target": "ranker", "label": "blocks final_score"}) + "\n",
+        encoding="utf-8",
+    )
+    tools = _registered_tools(mcp)
+
+    result = json.loads(tools.knowledge_query("what blocks final_score?"))
+
+    assert result["matches"][0]["id"] == "spec-100"
+    assert result["related_edges"][0]["target"] == "ranker"
+    assert result["stats"]["total_nodes"] == 2
+
+
+def test_knowledge_query_missing_graph_is_graceful(snapshot_env):
+    _repo, _home, mcp = snapshot_env
+    tools = _registered_tools(mcp)
+
+    result = json.loads(tools.knowledge_query("what specs are held?"))
+
+    assert result["error"] == "knowledge_graph directory not found"
+    assert result["matches"] == []
