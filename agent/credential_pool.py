@@ -203,9 +203,9 @@ def _is_manual_source(source: str) -> bool:
 def _model_rate_limited_until(entry: PooledCredential, model_id: str) -> Optional[float]:
     """Return the TTL end timestamp for this model, or None if not rate-limited.
 
-Uses ``time.monotonic()`` so callers that compare against the same clock
-get consistent per-model TTL windows regardless of wall-clock adjustments.
-"""
+    Uses ``time.monotonic()`` so callers that compare against the same clock
+    get consistent per-model TTL windows regardless of wall-clock adjustments.
+    """
     if model_id in entry.rate_limited:
         ts = entry.rate_limited[model_id][0]
         if time.monotonic() < ts:
@@ -1281,6 +1281,20 @@ class CredentialPool:
             return current
         available = self._available_entries()
         return available[0] if available else None
+
+    def rate_limit_min_ttl(self, model_id: str) -> Optional[float]:
+        """Return the earliest per-model rate-limit TTL across all entries.
+
+        Returns a ``time.monotonic()`` timestamp, or None if no entry is
+        rate-limited for *model_id*.
+        """
+        now = time.monotonic()
+        min_ttl: Optional[float] = None
+        for entry in self._entries:
+            ts = _model_rate_limited_until(entry, model_id)
+            if ts is not None and ts > now:
+                min_ttl = min(min_ttl, ts) if min_ttl is not None else ts
+        return min_ttl
 
     def mark_rate_limited(
         self,

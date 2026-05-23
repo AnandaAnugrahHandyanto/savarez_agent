@@ -51,7 +51,7 @@ import threading
 from types import SimpleNamespace
 import urllib.request
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from urllib.parse import urlparse, parse_qs, urlunparse
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
@@ -237,7 +237,7 @@ def _routermint_headers() -> dict:
 
 
 def _pool_may_recover_from_rate_limit(
-    pool, *, provider: str | None = None, base_url: str | None = None
+    pool, *, provider: str | None = None, base_url: str | None = None, model_id: str | None = None
 ) -> bool:
     """Decide whether to wait for credential-pool rotation instead of falling back.
 
@@ -255,6 +255,9 @@ def _pool_may_recover_from_rate_limit(
     throttles — even a multi-entry pool shares the same quota window, so
     rotation won't recover.  Skip straight to the fallback for those (#13636).
 
+    When *model_id* is given, also checks per-model rate-limit state: if every
+    pool entry is rate-limited for that model, rotation cannot recover.
+
     In those cases we must fall back to the configured ``fallback_model``
     instead.  Returns True only when rotation has somewhere to go.
 
@@ -267,6 +270,8 @@ def _pool_may_recover_from_rate_limit(
     # CloudCode / Gemini CLI quotas are account-wide — all pool entries share
     # the same throttle window, so rotation can't recover.  Prefer fallback.
     if provider == "google-gemini-cli" or str(base_url or "").startswith("cloudcode-pa://"):
+        return False
+    if model_id and not pool._available_entries(model_id=model_id):
         return False
     return len(pool.entries()) > 1
 
@@ -3085,14 +3090,14 @@ class AIAgent:
         from agent.chat_completion_helpers import interruptible_streaming_api_call
         return interruptible_streaming_api_call(self, api_kwargs, on_first_delta=on_first_delta)
 
-    def _try_activate_fallback(self, reason: "FailoverReason | None" = None) -> bool:
+    def _try_activate_fallback(self, reason: "FailoverReason | None" = None, min_ttl: float = 0) -> bool:
         """Forwarder — see ``agent.chat_completion_helpers.try_activate_fallback``."""
         from agent.chat_completion_helpers import try_activate_fallback
-        return try_activate_fallback(self, reason)
+        return try_activate_fallback(self, reason, min_ttl=min_ttl)
 
     # ── Per-turn primary restoration ─────────────────────────────────────
 
-    def _restore_primary_runtime(self) -> bool:
+    def _restore_primary_runtime(self) -> Tuple[bool, float]:
         """Forwarder — see ``agent.agent_runtime_helpers.restore_primary_runtime``."""
         from agent.agent_runtime_helpers import restore_primary_runtime
         return restore_primary_runtime(self)

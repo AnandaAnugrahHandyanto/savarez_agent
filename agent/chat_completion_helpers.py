@@ -685,13 +685,19 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
 
 
 
-def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
+def try_activate_fallback(agent, reason: "FailoverReason | None" = None, min_ttl: float = 0) -> bool:
     """Switch to the next fallback model/provider in the chain.
 
     Called when the current model is failing after retries.  Swaps the
     OpenAI client, model slug, and provider in-place so the retry loop
     can continue with the new backend.  Advances through the chain on
     each call; returns False when exhausted.
+
+    *min_ttl* is the earliest per-model rate-limit TTL for the primary
+    model (from ``restore_primary_runtime``).  When the entire chain is
+    exhausted with no usable entry, the function sleeps until this TTL
+    expires before returning False — so the caller can retry without
+    tight-looping.
 
     Uses the centralized provider router (resolve_provider_client) for
     auth resolution and client construction — no duplicated provider→key
@@ -707,6 +713,18 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
             agent._rate_limited_until = time.monotonic() + 60
     if agent._fallback_index >= len(agent._fallback_chain):
+        # Chain exhausted — if primary model has a pending rate-limit TTL,
+        # wait for it before returning so the caller can retry with the
+        # primary instead of bailing out entirely.
+        if min_ttl > 0:
+            now = time.monotonic()
+            if min_ttl > now:
+                wait = min_ttl - now
+                logging.info(
+                    "Fallback chain exhausted; waiting %.0fs for primary TTL to expire",
+                    wait,
+                )
+                time.sleep(wait)
         return False
 
     fb = agent._fallback_chain[agent._fallback_index]

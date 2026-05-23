@@ -2427,10 +2427,26 @@ def run_conversation(
                         agent._credential_pool,
                         provider=agent.provider,
                         base_url=getattr(agent, "base_url", None),
+                        model_id=agent.model,
                     )
                     if not pool_may_recover:
                         agent._emit_status("⚠️ Rate limited — switching to fallback provider...")
-                        if agent._try_activate_fallback(reason=classified.reason):
+                        restored, min_ttl = agent._restore_primary_runtime()
+                        if restored:
+                            retry_count = 0
+                            compression_attempts = 0
+                            primary_recovery_attempted = False
+                            continue
+                        if agent._try_activate_fallback(reason=classified.reason, min_ttl=min_ttl):
+                            retry_count = 0
+                            compression_attempts = 0
+                            primary_recovery_attempted = False
+                            continue
+                        # Both fallback chain and primary are rate-limited —
+                        # try_activate_fallback already slept until min_ttl,
+                        # so the primary should now be recoverable.
+                        restored, _ = agent._restore_primary_runtime()
+                        if restored:
                             retry_count = 0
                             compression_attempts = 0
                             primary_recovery_attempted = False
