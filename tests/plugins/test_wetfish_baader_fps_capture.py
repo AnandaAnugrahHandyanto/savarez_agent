@@ -18,10 +18,13 @@ Covers the bundled opt-in plugin at ``plugins/wetfish_baader_fps_capture/``:
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -46,6 +49,11 @@ def _load_capture():
     sys.modules[mod_name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _load_plugin_shell():
+    """Import the plugin package (the __init__.py shell with _http_post/_http_get)."""
+    return importlib.import_module("plugins.wetfish_baader_fps_capture")
 
 
 def _make_event(
@@ -745,3 +753,129 @@ class TestProcessEvent:
         # Verify ran and Saved reply went out.
         assert len(http.gets) == 1
         assert any("saved baader" in s.lower() for s in replies.sent)
+
+
+# ---------------------------------------------------------------------------
+# HTTP helper tests (User-Agent + header propagation)
+# ---------------------------------------------------------------------------
+
+class _FakeUrlopenResponse:
+    def __init__(self, status: int, body: bytes):
+        self.status = status
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class TestHttpHelpersUserAgent:
+    """Wetfish ops found that the live FPS endpoint returns HTTP 403 when
+    urllib sends no User-Agent. Both _http_post and _http_get must include
+    a stable product-style User-Agent on every outbound request, alongside
+    any caller-supplied headers (including the secret X-FPS-PIN).
+    """
+
+    def test_http_post_includes_user_agent_and_pin(self):
+        plugin = _load_plugin_shell()
+        captured = {}
+
+        def _fake_urlopen(req, timeout):
+            captured["req"] = req
+            captured["timeout"] = timeout
+            return _FakeUrlopenResponse(200, b'{"ok": true}')
+
+        with patch.object(plugin.urllib.request, "urlopen", _fake_urlopen):
+            status, body = plugin._http_post(
+                "http://127.0.0.1:8090/api/readings",
+                headers={"Content-Type": "application/json", "X-FPS-PIN": SENTINEL_PIN},
+                json_body={"reading": {"baaderId": "192"}},
+                timeout=5,
+            )
+
+        assert status == 200
+        assert body == {"ok": True}
+        req = captured["req"]
+        assert req.get_method() == "POST"
+        # urllib stores headers title-cased on first capitalize.
+        assert req.get_header("User-agent") == plugin.USER_AGENT
+        assert req.get_header("X-fps-pin") == SENTINEL_PIN
+        assert req.get_header("Content-type") == "application/json"
+        # Body must be the JSON-encoded payload.
+        assert json.loads(req.data.decode("utf-8")) == {"reading": {"baaderId": "192"}}
+
+    def test_http_get_includes_user_agent(self):
+        plugin = _load_plugin_shell()
+        captured = {}
+
+        def _fake_urlopen(req, timeout):
+            captured["req"] = req
+            return _FakeUrlopenResponse(200, b'{"readings": {}}')
+
+        with patch.object(plugin.urllib.request, "urlopen", _fake_urlopen):
+            status, body = plugin._http_get(
+                "http://127.0.0.1:8090/api/state",
+                headers={"Accept": "application/json"},
+                timeout=5,
+            )
+
+        assert status == 200
+        assert body == {"readings": {}}
+        req = captured["req"]
+        assert req.get_method() == "GET"
+        assert req.get_header("User-agent") == plugin.USER_AGENT
+        assert req.get_header("Accept") == "application/json"
+        # GET must not carry the secret pin.
+        assert req.get_header("X-fps-pin") is None
+        assert req.data is None
+
+    def test_user_agent_is_stable_non_secret_product_string(self):
+        plugin = _load_plugin_shell()
+        # Stable identifier, not derived from any secret. Must be a non-empty
+        # product-style token so the FPS server's UA check accepts it.
+        ua = plugin.USER_AGENT
+        assert isinstance(ua, str) and ua
+        assert "/" in ua  # product/version shape
+        assert SENTINEL_PIN not in ua
+
+    def test_caller_supplied_user_agent_overrides_default(self):
+        """If a future caller needs a different UA, it should win over the default."""
+        plugin = _load_plugin_shell()
+        captured = {}
+
+        def _fake_urlopen(req, timeout):
+            captured["req"] = req
+            return _FakeUrlopenResponse(200, b"")
+
+        with patch.object(plugin.urllib.request, "urlopen", _fake_urlopen):
+            plugin._http_get(
+                "http://127.0.0.1:8090/api/state",
+                headers={"User-Agent": "OverrideAgent/9.9"},
+                timeout=5,
+            )
+
+        assert captured["req"].get_header("User-agent") == "OverrideAgent/9.9"
+
+    def test_http_helpers_do_not_log_pin(self, caplog):
+        plugin = _load_plugin_shell()
+
+        def _fake_urlopen(req, timeout):
+            return _FakeUrlopenResponse(200, b'{"ok": true}')
+
+        with caplog.at_level("DEBUG"), patch.object(
+            plugin.urllib.request, "urlopen", _fake_urlopen
+        ):
+            plugin._http_post(
+                "http://127.0.0.1:8090/api/readings",
+                headers={"Content-Type": "application/json", "X-FPS-PIN": SENTINEL_PIN},
+                json_body={"reading": {"baaderId": "192"}},
+                timeout=5,
+            )
+
+        log_text = "\n".join(rec.getMessage() for rec in caplog.records)
+        assert SENTINEL_PIN not in log_text

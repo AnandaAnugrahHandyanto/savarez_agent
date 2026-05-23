@@ -26,6 +26,13 @@ from . import capture as _capture
 logger = logging.getLogger(__name__)
 
 
+# Stable, non-secret product-style User-Agent for outbound FPS API requests.
+# Wetfish ops found that the FPS pi-server returns HTTP 403 to urllib's
+# default (no User-Agent) but HTTP 200 with a normal product UA, so this is
+# required for the plugin to function against live FPS.
+USER_AGENT = "HermesWetfishBaaderFpsCapture/1.0"
+
+
 def _http_request(
     url: str,
     *,
@@ -40,7 +47,10 @@ def _http_request(
     than raised. Other network errors propagate as exceptions for the
     caller to catch and convert to a safe user-facing hint.
     """
-    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    merged_headers = {"User-Agent": USER_AGENT, **headers}
+    req = urllib.request.Request(
+        url, data=body, headers=merged_headers, method=method
+    )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read()
