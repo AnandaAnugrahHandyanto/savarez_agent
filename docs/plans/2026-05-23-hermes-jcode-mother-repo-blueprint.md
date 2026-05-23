@@ -133,19 +133,29 @@ jcode's `jcode_tool_core::Tool` trait, so jcode keeps ownership of the
 model-facing tool registry, session context, TUI rendering, and low-latency
 execution path while Hermes supplies the capability result.
 
-`patches/jcode/register-external-toolset.patch` is the current jcode-side hook.
-It adds a generic `Registry::register_toolset` method for namespaced native
-extension crates. The patch deliberately does not import Hermes. The mother repo
-can apply it while the hook is proposed upstream, and future upstream updates
-must pass `scripts/jcode_native_registration_check.py`.
+`patches/jcode/register-external-toolset.patch` is the current upstream-facing
+jcode hook. It adds a generic `Registry::register_toolset` method for
+namespaced native extension crates. The patch deliberately does not import
+Hermes. The mother repo can apply it while the hook is proposed upstream, and
+future upstream updates must pass `scripts/jcode_native_registration_check.py`.
+
+`patches/jcode/register-hermes-native-toolset.patch` is the mother-repo overlay.
+It adds the native Hermes tool crate as a jcode dependency and auto-registers
+Hermes-backed tools from `Registry::new` when either
+`JCODE_HERMES_SERVICE_COMMAND_JSON` or `JCODE_HERMES_SERVICE_COMMAND` is set.
+`JCODE_HERMES_TIMEOUT_MS` can tune the service call timeout. This overlay is
+not the generic upstream proposal; it is the practical fusion layer for the
+combined tool.
 
 `scripts/jcode_supertool_registry_smoke.py` closes the loop between the patch
 queue and the native crate. It creates a temporary jcode worktree, applies the
-registration hook, copies `bridges/jcode-native-hermes-tool` into jcode, patches
-jcode's dev-dependencies, and runs a Rust integration test that verifies
+generic registration hook and the Hermes overlay, copies
+`bridges/jcode-native-hermes-tool` into jcode, sets
+`JCODE_HERMES_SERVICE_COMMAND_JSON` to a fake Hermes service, and runs a Rust
+integration test that verifies `Registry::new` auto-registers
 `hermes_web_search`, `hermes_web_extract`, `hermes_session_search`, and
-`hermes_memory` are visible through jcode's native registry definitions, then
-executes `hermes_web_search` through `Registry::execute`.
+`hermes_memory` through jcode's native registry definitions, then executes
+`hermes_web_search` through `Registry::execute`.
 
 `bridges/hermes-mcp-server/` exposes the same `hermes-service.v1` boundary as a
 small dependency-free stdio MCP server. jcode already has an MCP manager, so
@@ -370,6 +380,11 @@ The generated workspace includes:
   overhead inside the scaffold
 - `scripts/jcode_native_tool_check.py`, which checks that the native Hermes
   tool crate still compiles against a pinned jcode checkout
+- `scripts/jcode_native_registration_check.py`, which verifies the generic
+  jcode registration hook still applies
+- `scripts/jcode_supertool_registry_smoke.py`, which verifies the mother-repo
+  Hermes overlay auto-registers native Hermes tools through jcode's
+  `Registry::new`
 
 Build and smoke the Rust client:
 
@@ -391,6 +406,17 @@ python3 scripts/jcode_native_tool_check.py --jcode /path/to/jcode
 This is intentionally a scaffold, not the final product. Its job is to make the
 future-update boundary concrete and testable before registering Hermes-backed
 tools directly inside jcode's Rust tool registry.
+
+Smoke the jcode-hosted supertool path:
+
+```bash
+python3 scripts/jcode_supertool_registry_smoke.py --jcode /path/to/jcode
+```
+
+That command applies both jcode patches in a temporary worktree, configures a
+fake Hermes service with `JCODE_HERMES_SERVICE_COMMAND_JSON`, and proves a
+jcode registry created with `Registry::new` can see and execute Hermes-backed
+native tools.
 
 Smoke the no-patch MCP route:
 

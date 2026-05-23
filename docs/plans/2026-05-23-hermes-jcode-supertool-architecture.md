@@ -57,6 +57,10 @@ needed to build it without permanently forking both upstreams:
 - `patches/jcode/register-external-toolset.patch` is the upstream-facing jcode
   hook: a generic namespaced native toolset registration method plus a registry
   test. It does not mention Hermes, so it can support future bridge crates too.
+- `patches/jcode/register-hermes-native-toolset.patch` is the mother-repo
+  overlay: it adds the Hermes native tool crate to jcode and auto-registers it
+  from `Registry::new` when `JCODE_HERMES_SERVICE_COMMAND_JSON` or
+  `JCODE_HERMES_SERVICE_COMMAND` is configured.
 - `contracts/hermes_service/v1/` defines the service envelope between Rust
   jcode tools and the Python Hermes capability host.
 - `bridges/hermes-mcp-server/` is only a no-patch bootstrap path for jcode's
@@ -70,9 +74,10 @@ needed to build it without permanently forking both upstreams:
 - `scripts/jcode_native_registration_check.py` verifies that the jcode
   registration patch still applies to the pinned jcode checkout.
 - `scripts/jcode_supertool_registry_smoke.py` is the strongest native proof:
-  it applies the jcode hook in a temp worktree, copies the Hermes native tool
-  crate into jcode, and runs a Rust integration test that sees Hermes-backed
-  tools in jcode's registry definitions and executes one through
+  it applies the generic hook and Hermes overlay in a temp worktree, copies the
+  Hermes native tool crate into jcode, sets a fake Hermes service command, and
+  runs a Rust integration test that proves `Registry::new` auto-registers
+  Hermes-backed tools in jcode's registry definitions and executes one through
   `Registry::execute`.
 
 ## Migration Path

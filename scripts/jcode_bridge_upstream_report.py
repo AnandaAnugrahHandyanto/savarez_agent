@@ -516,6 +516,8 @@ def _markdown(report: dict[str, Any]) -> str:
         "",
         f"Success: {supertool_registry.get('success')}",
         f"jcode path: {supertool_registry.get('jcode_path')}",
+        f"generic patch: {supertool_registry.get('patch_path')}",
+        f"Hermes overlay patch: {supertool_registry.get('overlay_patch_path')}",
         f"worktree: {supertool_registry.get('worktree')}",
         "",
         "| Check | OK |",

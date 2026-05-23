@@ -1,0 +1,57 @@
+diff --git a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -205,0 +206 @@
++jcode-native-hermes-tool = { path = "bridges/jcode-native-hermes-tool" }
+diff --git a/src/tool/mod.rs b/src/tool/mod.rs
+--- a/src/tool/mod.rs
++++ b/src/tool/mod.rs
+@@ -253,0 +254,48 @@ impl Registry {
++        let hermes_tools_start = std::time::Instant::now();
++        let hermes_tools_registered = std::env::var("JCODE_HERMES_SERVICE_COMMAND_JSON")
++            .ok()
++            .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
++            .or_else(|| {
++                std::env::var("JCODE_HERMES_SERVICE_COMMAND")
++                    .ok()
++                    .map(|raw| {
++                        raw.split_whitespace()
++                            .map(str::to_string)
++                            .collect::<Vec<_>>()
++                    })
++            })
++            .map(|service_command| {
++                if service_command.is_empty() {
++                    None
++                } else {
++                    let timeout_ms = std::env::var("JCODE_HERMES_TIMEOUT_MS")
++                        .ok()
++                        .and_then(|raw| raw.parse::<u64>().ok())
++                        .unwrap_or(60_000);
++                    let config = jcode_native_hermes_tool::HermesToolConfig {
++                        service_command,
++                        timeout_ms,
++                    };
++                    Some(config)
++                }
++            })
++            .flatten();
++
++        let hermes_tools_registered = if let Some(config) = hermes_tools_registered {
++            registry
++                .register_toolset(
++                    "hermes",
++                    jcode_native_hermes_tool::default_hermes_toolset(config),
++                )
++                .await
++        } else {
++            Vec::new()
++        };
++        if !hermes_tools_registered.is_empty() {
++            crate::logging::info(&format!(
++                "[TIMING] registry_hermes_native_tools: tools=[{}], total={}ms",
++                hermes_tools_registered.join(", "),
++                hermes_tools_start.elapsed().as_millis()
++            ));
++        }
++

@@ -239,10 +239,15 @@ cargo run --manifest-path bridges/jcode-tool-hermes/Cargo.toml -- \
 That client is intentionally standalone. A later jcode patch can wrap the same
 request/response logic in a native jcode `Tool`.
 
-The native path now has a concrete jcode-side patch queue at
-`patches/jcode/register-external-toolset.patch`. It adds a generic
-`Registry::register_toolset` hook so external Rust crates can register
-namespaced native tools without teaching jcode about Hermes.
+The native path now has a concrete jcode-side patch queue:
+
+- `patches/jcode/register-external-toolset.patch` adds a generic
+  `Registry::register_toolset` hook so external Rust crates can register
+  namespaced native tools without teaching jcode about Hermes.
+- `patches/jcode/register-hermes-native-toolset.patch` is the mother-repo
+  overlay. It adds the native Hermes tool crate as a jcode dependency and
+  auto-registers it from `Registry::new` when
+  `JCODE_HERMES_SERVICE_COMMAND_JSON` or `JCODE_HERMES_SERVICE_COMMAND` is set.
 
 For integration without patching jcode, use the dependency-free MCP wrapper at
 `bridges/hermes-mcp-server/`:
@@ -304,10 +309,11 @@ Run the strongest jcode-hosted supertool smoke:
 scripts/jcode_supertool_registry_smoke.py --jcode /absolute/path/to/jcode
 ```
 
-That smoke applies the jcode registry patch in a temporary jcode worktree,
-copies `bridges/jcode-native-hermes-tool` into jcode, patches jcode's
-dev-dependencies, and runs a Rust integration test proving Hermes-backed tools
-show up in jcode's own native registry definitions and execute through
+That smoke applies the generic jcode registry hook and the Hermes overlay in a
+temporary jcode worktree, copies `bridges/jcode-native-hermes-tool` into jcode,
+sets `JCODE_HERMES_SERVICE_COMMAND_JSON` to a fake Hermes service, and runs a
+Rust integration test proving `Registry::new` auto-registers Hermes-backed
+tools in jcode's own native registry definitions and executes one through
 `Registry::execute`.
 
 Run the contract fixture gate:
@@ -366,9 +372,10 @@ upstream updates cleanly.
 - The bridge does not yet mirror jcode memory or swarm state into Hermes
   memory/kanban surfaces.
 - `bridges/jcode-native-hermes-tool` is a native jcode `Tool` scaffold. The
-  patch queue provides the small upstream-facing registry hook, but the default
-  jcode binary still needs to apply or accept that hook before the tools appear
-  in every jcode session.
+  patch queue provides the small upstream-facing registry hook and a
+  mother-repo overlay for Hermes auto-registration, but the default jcode binary
+  still needs to apply or accept the hook before the tools appear in every jcode
+  session.
 - `debug_socket` requires a running jcode server with debug socket enabled.
 - `preflight_live_run` can spend model/API budget and should be reserved for
   deliberate compatibility checks.

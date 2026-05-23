@@ -426,6 +426,7 @@ def check_jcode_supertool_registry_smoke() -> dict[str, Any]:
     payload = run_supertool_registry_smoke(
         ROOT / ".codex-research" / "jcode",
         ROOT / "patches" / "jcode" / "register-external-toolset.patch",
+        ROOT / "patches" / "jcode" / "register-hermes-native-toolset.patch",
         cargo=False,
         target_dir=Path(tempfile.gettempdir()) / "jcode-supertool-registry-smoke-target",
         keep_worktree=False,
@@ -580,6 +581,9 @@ def check_mother_repo_scaffold() -> dict[str, Any]:
         patch_exists = (
             output / "patches" / "jcode" / "register-external-toolset.patch"
         ).exists()
+        overlay_patch_exists = (
+            output / "patches" / "jcode" / "register-hermes-native-toolset.patch"
+        ).exists()
         native_tool = (
             output
             / "bridges"
@@ -618,6 +622,7 @@ def check_mother_repo_scaffold() -> dict[str, Any]:
             )
             and config_exists
             and patch_exists
+            and overlay_patch_exists
             and "impl Tool for HermesNativeTool" in native_tool_text
             and "jcode_tool_core" in native_tool_text
             and str(output) in str(payload.get("jcode_bridge", {}).get("schema_dir", ""))
@@ -631,6 +636,7 @@ def check_mother_repo_scaffold() -> dict[str, Any]:
         "native_registration_payload": native_registration_payload,
         "supertool_registry_payload": supertool_registry_payload,
         "copied_count": len(result.get("copied", [])),
+        "overlay_patch_exists": overlay_patch_exists,
         "native_tool_scaffold": str(native_tool),
     }
 

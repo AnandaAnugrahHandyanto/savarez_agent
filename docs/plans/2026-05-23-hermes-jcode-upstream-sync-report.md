@@ -1,12 +1,12 @@
 # Hermes/jcode upstream sync report
 
-Generated: 2026-05-23T19:54:00+00:00
+Generated: 2026-05-23T20:56:48+00:00
 
 ## Repositories
 
 | Repo | Branch | Commit | Dirty |
 | --- | --- | --- | --- |
-| hermes | codex/hermes-jcode-bridge | 3048dd9a4c9a0e9d69ecbb0ab2ddf4a37b4ee8ac | True |
+| hermes | codex/hermes-jcode-bridge | 6ee0910753ead827cd23f3940378a6b276874d0b | True |
 | jcode | master | 7951a2ddb91bad10155b911ccd0971de5baeafc8 | True |
 
 ## Graphify
@@ -99,10 +99,10 @@ Iterations: 30
 
 | Metric | ms |
 | --- | ---: |
-| min | 0.035 |
-| p50 | 0.036 |
-| p95 | 0.076 |
-| max | 0.121 |
+| min | 0.038 |
+| p50 | 0.042 |
+| p95 | 0.108 |
+| max | 0.123 |
 
 ## jcode Native Hermes Tool
 
@@ -143,18 +143,24 @@ jcode path: /Users/aayu/Workspace/developer/hermes/.codex-research/jcode
 
 Success: True
 jcode path: /Users/aayu/Workspace/developer/hermes/.codex-research/jcode
-worktree: /var/folders/t1/lv87zx017jl6tsks2dz22mk00000gn/T/jcode-supertool-registry-fjq985c_/jcode
+generic patch: /Users/aayu/Workspace/developer/hermes/patches/jcode/register-external-toolset.patch
+Hermes overlay patch: /Users/aayu/Workspace/developer/hermes/patches/jcode/register-hermes-native-toolset.patch
+worktree: /var/folders/t1/lv87zx017jl6tsks2dz22mk00000gn/T/jcode-supertool-registry-p_scn26e/jcode
 
 | Check | OK |
 | --- | --- |
 | jcode_checkout:exists | True |
 | patch:exists | True |
+| overlay_patch:exists | True |
 | native_tool:exists | True |
 | jcode_worktree:prepared | True |
 | jcode_patch:applied | True |
+| jcode_overlay_patch:applied | True |
 | native_tool:copied_into_jcode | True |
 | native_tool:exports_toolset | True |
 | jcode_test:writes_native_registry_test | True |
+| jcode_test:uses_auto_registration | True |
+| fake_hermes_service:exists | True |
 | cargo:test_jcode_registry_with_hermes_tools | True |
 
 ## Recommendations

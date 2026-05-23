@@ -216,10 +216,13 @@ Then wire `bridges/jcode-native-hermes-tool` into upstream jcode's native tool
 registry. That is the supertool path: Hermes-backed capabilities appear inside
 jcode's normal Rust agent loop rather than as a second agent.
 
-The patch queue in `patches/jcode/` contains the minimal upstream-facing hook
-for that native integration. It is intentionally generic: jcode gets a
-namespaced external toolset registration point, while Hermes-specific code stays
-in this scaffold.
+The patch queue in `patches/jcode/` has two layers. The generic upstream-facing
+hook adds a namespaced external toolset registration point. The mother-repo
+overlay adds the Hermes native tool crate as a jcode dependency and
+auto-registers it when `JCODE_HERMES_SERVICE_COMMAND_JSON` or
+`JCODE_HERMES_SERVICE_COMMAND` is configured. That keeps Hermes-specific code in
+this scaffold while giving the combined tool a practical native registration
+path.
 
 `bridges/hermes-plugin-jcode`, `bridges/jcode-tool-hermes`, and
 `bridges/hermes-mcp-server` are compatibility/bootstrap layers. They keep both
@@ -258,10 +261,11 @@ Use `scripts/jcode_native_registration_check.py --jcode upstreams/jcode` to
 verify the patch queue still applies to the pinned jcode commit.
 
 Use `scripts/jcode_supertool_registry_smoke.py --jcode upstreams/jcode` for the
-strongest local proof: it applies the jcode patch in a temporary worktree,
-copies the native Hermes tool crate into jcode, and runs a Rust integration test
-that verifies Hermes tools appear in jcode's native registry definitions and
-execute through `Registry::execute`.
+strongest local proof: it applies the generic jcode hook and Hermes overlay in a
+temporary worktree, copies the native Hermes tool crate into jcode, sets
+`JCODE_HERMES_SERVICE_COMMAND_JSON`, and runs a Rust integration test that
+verifies `Registry::new` auto-registers Hermes tools in jcode's native registry
+definitions and executes one through `Registry::execute`.
 """
 
 
@@ -357,6 +361,11 @@ def build_manifest(hermes: Path, jcode: Path) -> dict[str, Any]:
             "primary_runtime": "jcode",
             "native_extension_point": "jcode_tool_core::Tool",
             "hermes_role": "capability host for integrations, providers, memory, webhooks, and policy",
+            "auto_registration_env": [
+                "JCODE_HERMES_SERVICE_COMMAND_JSON",
+                "JCODE_HERMES_SERVICE_COMMAND",
+                "JCODE_HERMES_TIMEOUT_MS",
+            ],
             "bootstrap_layers": [
                 "hermes-plugin-jcode",
                 "jcode-tool-hermes",
@@ -398,6 +407,7 @@ def build_manifest(hermes: Path, jcode: Path) -> dict[str, Any]:
         "jcode_patch_queue": {
             "path": "patches/jcode",
             "registration_hook": "patches/jcode/register-external-toolset.patch",
+            "hermes_auto_registration_overlay": "patches/jcode/register-hermes-native-toolset.patch",
             "check": "scripts/jcode_native_registration_check.py --jcode <jcode checkout>",
             "native_registry_smoke": "scripts/jcode_supertool_registry_smoke.py --jcode <jcode checkout>",
         },

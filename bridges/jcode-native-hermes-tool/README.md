@@ -40,3 +40,14 @@ such as:
 
 The MCP server remains useful as a no-patch bootstrap and compatibility test,
 but this native crate is the mesh point for the final supertool.
+
+The current mother-repo patch queue has two layers:
+
+- `patches/jcode/register-external-toolset.patch` adds the generic
+  `Registry::register_toolset` hook.
+- `patches/jcode/register-hermes-native-toolset.patch` adds this crate to
+  jcode and auto-registers the Hermes tools from `Registry::new` when
+  `JCODE_HERMES_SERVICE_COMMAND_JSON` or `JCODE_HERMES_SERVICE_COMMAND` is set.
+
+Use `scripts/jcode_supertool_registry_smoke.py --jcode /path/to/jcode` to prove
+that auto-registration path against a real jcode checkout.

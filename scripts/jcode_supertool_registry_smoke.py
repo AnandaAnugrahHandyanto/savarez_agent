@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prove Hermes-backed tools can register inside jcode's native registry."""
+"""Prove Hermes-backed tools auto-register inside jcode's native registry."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_JCODE = ROOT / ".codex-research" / "jcode"
 DEFAULT_PATCH = ROOT / "patches" / "jcode" / "register-external-toolset.patch"
+DEFAULT_OVERLAY_PATCH = ROOT / "patches" / "jcode" / "register-hermes-native-toolset.patch"
 NATIVE_TOOL_DIR = ROOT / "bridges" / "jcode-native-hermes-tool"
 
 
@@ -23,7 +24,6 @@ REGISTRY_TEST = r'''use async_trait::async_trait;
 use jcode::message::{Message, ToolDefinition};
 use jcode::provider::{EventStream, Provider};
 use jcode::tool::{Registry, ToolContext, ToolExecutionMode};
-use jcode_native_hermes_tool::{default_hermes_toolset, HermesToolConfig};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -50,59 +50,10 @@ impl Provider for MockProvider {
     }
 }
 
-fn fake_hermes_service_command() -> Vec<String> {
-    let script = std::env::temp_dir().join(format!(
-        "fake-hermes-service-{}-{}.py",
-        std::process::id(),
-        std::thread::current().name().unwrap_or("test")
-    ));
-    std::fs::write(
-        &script,
-        r#"import json
-import sys
-
-line = sys.stdin.readline().strip()
-request = json.loads(line)
-print(json.dumps({
-    "type": "hermes_service_response",
-    "contract_version": "hermes-service.v1",
-    "id": request.get("id"),
-    "ok": True,
-    "tool": request.get("tool"),
-    "result": {
-        "executed_by": "fake_hermes_service",
-        "tool": request.get("tool"),
-        "args": request.get("args", {}),
-    },
-    "duration_ms": 1,
-}))
-"#,
-    )
-    .expect("write fake Hermes service");
-    vec!["python3".to_string(), script.display().to_string()]
-}
-
 #[tokio::test]
-async fn hermes_native_tools_register_and_execute_in_jcode_registry() {
+async fn hermes_native_tools_auto_register_and_execute_in_jcode_registry() {
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
     let registry = Registry::new(provider).await;
-    let config = HermesToolConfig {
-        service_command: fake_hermes_service_command(),
-        timeout_ms: 1_000,
-    };
-
-    let registered = registry
-        .register_toolset("hermes", default_hermes_toolset(config))
-        .await;
-    assert_eq!(
-        registered,
-        vec![
-            "hermes_memory",
-            "hermes_session_search",
-            "hermes_web_extract",
-            "hermes_web_search",
-        ]
-    );
 
     let names = registry.tool_names().await;
     assert!(names.contains(&"hermes_memory".to_string()));
@@ -235,21 +186,6 @@ def _copy_native_tool(worktree: Path) -> Path:
     return destination
 
 
-def _add_jcode_dev_dependency(worktree: Path) -> None:
-    cargo_toml = worktree / "Cargo.toml"
-    text = cargo_toml.read_text(encoding="utf-8")
-    dependency = (
-        'jcode-native-hermes-tool = { path = "bridges/jcode-native-hermes-tool" }\n'
-    )
-    if dependency in text:
-        return
-    marker = "[dev-dependencies]\n"
-    if marker not in text:
-        text += f"\n{marker}"
-    text = text.replace(marker, marker + dependency, 1)
-    cargo_toml.write_text(text, encoding="utf-8")
-
-
 def _write_registry_test(worktree: Path) -> Path:
     test_path = worktree / "tests" / "hermes_native_tool_registry.rs"
     test_path.parent.mkdir(parents=True, exist_ok=True)
@@ -257,28 +193,71 @@ def _write_registry_test(worktree: Path) -> Path:
     return test_path
 
 
+def _write_fake_service(worktree: Path) -> Path:
+    service_path = worktree / "tests" / "fake_hermes_service.py"
+    service_path.parent.mkdir(parents=True, exist_ok=True)
+    service_path.write_text(
+        """#!/usr/bin/env python3
+import json
+import sys
+
+line = sys.stdin.readline().strip()
+request = json.loads(line)
+print(json.dumps({
+    "type": "hermes_service_response",
+    "contract_version": "hermes-service.v1",
+    "id": request.get("id"),
+    "ok": True,
+    "tool": request.get("tool"),
+    "result": {
+        "executed_by": "fake_hermes_service",
+        "tool": request.get("tool"),
+        "args": request.get("args", {}),
+    },
+    "duration_ms": 1,
+}))
+""",
+        encoding="utf-8",
+    )
+    service_path.chmod(0o755)
+    return service_path
+
+
 def run_supertool_registry_smoke(
     jcode_path: Path,
-    patch_path: Path,
+    patch_path: Path | None = None,
+    overlay_patch_path: Path | None = None,
     *,
     cargo: bool,
     target_dir: Path,
     keep_worktree: bool,
 ) -> dict[str, Any]:
     jcode_path = jcode_path.expanduser().resolve()
-    patch_path = patch_path.expanduser().resolve()
+    patch_path = (patch_path or DEFAULT_PATCH).expanduser().resolve()
+    overlay_patch_path = (overlay_patch_path or DEFAULT_OVERLAY_PATCH).expanduser().resolve()
     target_dir = target_dir.expanduser().resolve()
     checks: list[dict[str, Any]] = [
         _check("jcode_checkout:exists", jcode_path.is_dir(), path=str(jcode_path)),
         _check("patch:exists", patch_path.is_file(), path=str(patch_path)),
+        _check(
+            "overlay_patch:exists",
+            overlay_patch_path.is_file(),
+            path=str(overlay_patch_path),
+        ),
         _check("native_tool:exists", NATIVE_TOOL_DIR.is_dir(), path=str(NATIVE_TOOL_DIR)),
     ]
-    if not jcode_path.is_dir() or not patch_path.is_file() or not NATIVE_TOOL_DIR.is_dir():
+    if (
+        not jcode_path.is_dir()
+        or not patch_path.is_file()
+        or not overlay_patch_path.is_file()
+        or not NATIVE_TOOL_DIR.is_dir()
+    ):
         return {
             "success": False,
             "checks": checks,
             "jcode_path": str(jcode_path),
             "patch_path": str(patch_path),
+            "overlay_patch_path": str(overlay_patch_path),
         }
 
     temp: tempfile.TemporaryDirectory[str] | None = None
@@ -323,8 +302,30 @@ def run_supertool_registry_smoke(
             }
 
         native_destination = _copy_native_tool(worktree)
-        _add_jcode_dev_dependency(worktree)
+        overlay_completed = _run(
+            ["git", "apply", "--unidiff-zero", str(overlay_patch_path)],
+            cwd=worktree,
+        )
+        checks.append(_check(
+            "jcode_overlay_patch:applied",
+            overlay_completed.returncode == 0,
+            returncode=overlay_completed.returncode,
+            stdout=overlay_completed.stdout[-4000:],
+            stderr=overlay_completed.stderr[-4000:],
+        ))
+        if overlay_completed.returncode != 0:
+            return {
+                "success": False,
+                "checks": checks,
+                "jcode_path": str(jcode_path),
+                "patch_path": str(patch_path),
+                "overlay_patch_path": str(overlay_patch_path),
+                "worktree": str(worktree),
+            }
+
+        fake_service = _write_fake_service(worktree)
         test_path = _write_registry_test(worktree)
+        test_text = test_path.read_text(encoding="utf-8") if test_path.exists() else ""
         checks.extend([
             _check(
                 "native_tool:copied_into_jcode",
@@ -340,14 +341,30 @@ def run_supertool_registry_smoke(
             _check(
                 "jcode_test:writes_native_registry_test",
                 test_path.exists()
-                and "register_toolset" in test_path.read_text(encoding="utf-8"),
+                and "Registry::new" in test_text
+                and "execute(" in test_text,
                 path=str(test_path),
+            ),
+            _check(
+                "jcode_test:uses_auto_registration",
+                "register_toolset" not in test_text,
+                path=str(test_path),
+            ),
+            _check(
+                "fake_hermes_service:exists",
+                fake_service.exists(),
+                path=str(fake_service),
             ),
         ])
 
         if cargo:
             env = os.environ.copy()
             env["CARGO_TARGET_DIR"] = str(target_dir)
+            env["JCODE_HERMES_SERVICE_COMMAND_JSON"] = json.dumps([
+                "python3",
+                str(fake_service),
+            ])
+            env["JCODE_HERMES_TIMEOUT_MS"] = "1000"
             cargo_completed = _run(
                 [
                     "cargo",
@@ -374,6 +391,7 @@ def run_supertool_registry_smoke(
             "checks": checks,
             "jcode_path": str(jcode_path),
             "patch_path": str(patch_path),
+            "overlay_patch_path": str(overlay_patch_path),
             "worktree": str(worktree),
             "kept_worktree": keep_worktree,
         }
@@ -397,6 +415,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Registration patch to apply.",
     )
     parser.add_argument(
+        "--overlay-patch",
+        default=str(DEFAULT_OVERLAY_PATCH),
+        help="Hermes native auto-registration overlay patch to apply.",
+    )
+    parser.add_argument(
         "--skip-cargo",
         action="store_true",
         help="Prepare the temp jcode smoke without running cargo.",
@@ -416,6 +439,7 @@ def main(argv: list[str] | None = None) -> int:
     report = run_supertool_registry_smoke(
         Path(ns.jcode),
         Path(ns.patch),
+        Path(ns.overlay_patch),
         cargo=not ns.skip_cargo,
         target_dir=Path(ns.target_dir),
         keep_worktree=bool(ns.keep_worktree),
