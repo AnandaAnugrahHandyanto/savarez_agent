@@ -85,11 +85,9 @@ def _get_safe_write_root() -> Optional[str]:
     return _shared_get_safe_write_root()
 
 
-def _is_write_denied(path: str) -> bool:
+def _is_write_denied(path: str, base_dir: str | None = None) -> bool:
     """Return True if path is on the write deny list."""
-    # base_dir is retained for backward compatibility with older callers/tests;
-    # the shared policy helper now resolves paths solely from the target path.
-    return _shared_is_write_denied(path)
+    return _shared_is_write_denied(path, base_dir=base_dir)
 
 
 # =============================================================================
@@ -574,12 +572,15 @@ class ShellFileOperations(FileOperations):
 
     def _is_write_denied(self, path: str) -> bool:
         """Return True if a write path is denied locally or for this backend."""
-        if _is_write_denied(path):
+        exec_cwd = self._effective_cwd(None)
+        if _is_write_denied(path, base_dir=exec_cwd):
             return True
 
         environment_home = self._get_environment_home()
         if environment_home:
-            return _shared_is_write_denied(path, home=environment_home)
+            return _shared_is_write_denied(
+                path, home=environment_home, base_dir=exec_cwd
+            )
         return False
 
     def _expand_path(self, path: str) -> str:

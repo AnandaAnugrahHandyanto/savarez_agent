@@ -78,6 +78,17 @@ class TestSafeWriteRoot:
         monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", os.path.expanduser("~"))
         assert _is_write_denied(os.path.expanduser("~/.ssh/id_rsa")) is True
 
+    def test_relative_path_uses_base_dir_for_safe_root(self, tmp_path: Path, monkeypatch):
+        safe_root = tmp_path / "workspace"
+        inside = safe_root / "nested" / "file.txt"
+        outside = tmp_path / "outside" / "file.txt"
+        os.makedirs(inside.parent, exist_ok=True)
+        os.makedirs(outside.parent, exist_ok=True)
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+
+        assert _is_write_denied("nested/file.txt", base_dir=str(safe_root)) is False
+        assert _is_write_denied("../outside/file.txt", base_dir=str(safe_root)) is True
+
 
 class TestCheckSensitivePathMacOSBypass:
     """Verify _check_sensitive_path blocks /private/etc paths (issue #8734)."""
