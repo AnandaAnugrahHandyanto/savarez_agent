@@ -168,6 +168,9 @@ _POST_CONTENT_INVALID_RE = re.compile(
     r"|Failed to create card content",
     re.IGNORECASE,
 )
+# Subset: specifically table-count limit errors (used for smart retry with
+# card splitting rather than falling back to plain text immediately).
+_CARD_TABLE_LIMIT_RE = re.compile(r"card table.* over limit", re.IGNORECASE)
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -560,6 +563,11 @@ _CARD_MD_ELEMENT_MAX_CHARS = 3800
 # payloads exceeding ~30 KB.  We use 28 KB as a safe threshold with headroom.
 _CARD_PAYLOAD_MAX_BYTES = 28000
 
+# Feishu Card JSON 2.0 table count limit per card.  The API rejects cards with
+# more tables than this (error: "card table number over limit").  Based on
+# empirical testing — official docs do not document this limit explicitly.
+_CARD_MAX_TABLES = 5
+
 
 
 def _assemble_card(elements: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -573,30 +581,108 @@ def _assemble_card(elements: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def _split_elements_into_cards(elements: List[Dict[str, Any]]) -> List[str]:
-    """Split elements into multiple card payloads, each within the byte limit.
+def _count_tables_in_element(element: Dict[str, Any]) -> int:
+    """Count markdown tables in a single card element's content."""
+    content = element.get("content", "")
+    # A markdown table starts with a header row (|...|) followed by a separator (|---|)
+    return len(_MARKDOWN_TABLE_RE.findall(content))
+
+
+def _split_elements_into_cards(
+    elements: List[Dict[str, Any]],
+    *,
+    max_tables: int = _CARD_MAX_TABLES,
+) -> List[str]:
+    """Split elements into multiple card payloads respecting BOTH byte and table limits.
 
     Uses a greedy approach: keeps adding elements to the current card until
-    the next element would push the payload over the limit, then starts a new card.
+    the next element would push the payload over the byte limit OR exceed the
+    per-card table count limit, then starts a new card.
     """
     cards: List[str] = []
     current_elements: List[Dict[str, Any]] = []
+    current_tables = 0
 
     for element in elements:
+        elem_tables = _count_tables_in_element(element)
         trial_elements = current_elements + [element]
         trial_payload = json.dumps(_assemble_card(trial_elements), ensure_ascii=False)
-        if len(trial_payload.encode("utf-8")) > _CARD_PAYLOAD_MAX_BYTES and current_elements:
+        exceeds_bytes = len(trial_payload.encode("utf-8")) > _CARD_PAYLOAD_MAX_BYTES
+        exceeds_tables = (current_tables + elem_tables) > max_tables
+
+        if (exceeds_bytes or exceeds_tables) and current_elements:
             # Current batch is full — flush it as a card
             cards.append(json.dumps(_assemble_card(current_elements), ensure_ascii=False))
             current_elements = [element]
+            current_tables = elem_tables
         else:
             current_elements = trial_elements
+            current_tables += elem_tables
 
     # Flush remaining elements
     if current_elements:
         cards.append(json.dumps(_assemble_card(current_elements), ensure_ascii=False))
 
     return cards
+
+
+def _explode_multi_table_elements(elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Break elements that contain multiple tables into one-table-per-element.
+
+    This ensures _split_elements_into_cards can distribute tables across cards.
+    Elements with 0 or 1 tables pass through unchanged.
+    """
+    result: List[Dict[str, Any]] = []
+    for element in elements:
+        tables_in = _count_tables_in_element(element)
+        if tables_in <= 1:
+            result.append(element)
+            continue
+
+        # Split content at table boundaries.  A table starts with "|...|\\n|---|"
+        content = element.get("content", "")
+        # Split on double-newline that precedes a table header line
+        # Strategy: find all table start positions, split content before each table
+        parts: List[str] = []
+        lines = content.split("\n")
+        current_part: List[str] = []
+        i = 0
+        while i < len(lines):
+            # Detect table start: line matches |...|  followed by |---|---|
+            if (
+                i + 1 < len(lines)
+                and lines[i].strip().startswith("|")
+                and lines[i].strip().endswith("|")
+                and _MARKDOWN_TABLE_RE.match(lines[i] + "\n" + lines[i + 1])
+            ):
+                # If we have accumulated non-table content, flush it
+                if current_part:
+                    text = "\n".join(current_part).strip()
+                    if text:
+                        parts.append(text)
+                    current_part = []
+                # Collect entire table (header + separator + data rows)
+                table_lines = [lines[i], lines[i + 1]]
+                i += 2
+                while i < len(lines) and lines[i].strip().startswith("|"):
+                    table_lines.append(lines[i])
+                    i += 1
+                parts.append("\n".join(table_lines))
+            else:
+                current_part.append(lines[i])
+                i += 1
+
+        # Flush remaining non-table content
+        if current_part:
+            text = "\n".join(current_part).strip()
+            if text:
+                parts.append(text)
+
+        # Convert parts to elements
+        for part in parts:
+            result.append({"tag": "markdown", "content": part})
+
+    return result
 
 
 def _build_markdown_card_payload(content: str) -> "str | List[str]":
@@ -629,14 +715,28 @@ def _build_markdown_card_payload(content: str) -> "str | List[str]":
     if not elements:
         elements.append({"tag": "markdown", "content": content})
 
-    # Check if single card fits within the payload byte limit
+    # Pre-check: count total tables across all elements.  If it exceeds the
+    # per-card table limit, we must split into multiple cards regardless of
+    # byte size.  This avoids hitting the API and getting rejected.
+    total_tables = sum(_count_tables_in_element(e) for e in elements)
+
+    # If total tables exceed the limit, ensure no single element contains more
+    # tables than the limit — otherwise _split_elements_into_cards can't split
+    # them across cards.  Break multi-table elements at table boundaries.
+    if total_tables > _CARD_MAX_TABLES:
+        elements = _explode_multi_table_elements(elements)
+
+    # Check if single card fits within BOTH the byte limit and table limit
     card = _assemble_card(elements)
     payload_str = json.dumps(card, ensure_ascii=False)
 
-    if len(payload_str.encode("utf-8")) <= _CARD_PAYLOAD_MAX_BYTES:
+    if (
+        len(payload_str.encode("utf-8")) <= _CARD_PAYLOAD_MAX_BYTES
+        and total_tables <= _CARD_MAX_TABLES
+    ):
         return payload_str
 
-    # Payload exceeds limit — split into multiple cards
+    # Exceeds at least one limit — split into multiple cards
     cards = _split_elements_into_cards(elements)
     return cards if len(cards) > 1 else cards[0]
 
@@ -1948,33 +2048,109 @@ class FeishuAdapter(BasePlatformAdapter):
                     except Exception as exc:
                         if msg_type not in ("post", "interactive") or not _POST_CONTENT_INVALID_RE.search(str(exc)):
                             raise
-                        logger.warning("[Feishu] Invalid %s payload rejected by API; falling back to plain text", msg_type)
-                        response = await self._feishu_send_with_retry(
-                            chat_id=chat_id,
-                            msg_type="text",
-                            payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
-                            reply_to=reply_to,
-                            metadata=metadata,
-                        )
+                        # Table limit error — try splitting the card further
+                        if msg_type == "interactive" and _CARD_TABLE_LIMIT_RE.search(str(exc)):
+                            split_results = await self._resplit_and_send_card(
+                                payload=payload, chat_id=chat_id,
+                                reply_to=reply_to, metadata=metadata,
+                            )
+                            if split_results is not None:
+                                response = split_results
+                            else:
+                                # Split retry failed — fall back to plain text
+                                logger.warning("[Feishu] Card table-limit split retry failed; falling back to plain text")
+                                response = await self._feishu_send_with_retry(
+                                    chat_id=chat_id, msg_type="text",
+                                    payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                                    reply_to=reply_to, metadata=metadata,
+                                )
+                        else:
+                            logger.warning("[Feishu] Invalid %s payload rejected by API; falling back to plain text", msg_type)
+                            response = await self._feishu_send_with_retry(
+                                chat_id=chat_id, msg_type="text",
+                                payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                                reply_to=reply_to, metadata=metadata,
+                            )
                     if (
                         msg_type in ("post", "interactive")
                         and not self._response_succeeded(response)
                         and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
                     ):
-                        logger.warning("[Feishu] %s payload rejected by API response; falling back to plain text", msg_type)
-                        response = await self._feishu_send_with_retry(
-                            chat_id=chat_id,
-                            msg_type="text",
-                            payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
-                            reply_to=reply_to,
-                            metadata=metadata,
-                        )
+                        error_msg = str(getattr(response, "msg", "") or "")
+                        # Table limit — try splitting before giving up
+                        if msg_type == "interactive" and _CARD_TABLE_LIMIT_RE.search(error_msg):
+                            split_results = await self._resplit_and_send_card(
+                                payload=payload, chat_id=chat_id,
+                                reply_to=reply_to, metadata=metadata,
+                            )
+                            if split_results is not None:
+                                response = split_results
+                            else:
+                                logger.warning("[Feishu] Card table-limit split retry failed (response); falling back to plain text")
+                                response = await self._feishu_send_with_retry(
+                                    chat_id=chat_id, msg_type="text",
+                                    payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                                    reply_to=reply_to, metadata=metadata,
+                                )
+                        else:
+                            logger.warning("[Feishu] %s payload rejected by API response; falling back to plain text", msg_type)
+                            response = await self._feishu_send_with_retry(
+                                chat_id=chat_id, msg_type="text",
+                                payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                                reply_to=reply_to, metadata=metadata,
+                            )
                     last_response = response
 
             return self._finalize_send_result(last_response, "send failed")
         except Exception as exc:
             logger.error("[Feishu] Send error: %s", exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
+
+    async def _resplit_and_send_card(
+        self,
+        *,
+        payload: str,
+        chat_id: str,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> "Any | None":
+        """Re-split a rejected card payload with a halved table limit and resend.
+
+        When the API rejects a card for exceeding the table count, this method
+        extracts the elements from the original payload, re-splits them with a
+        smaller max_tables (halved from current _CARD_MAX_TABLES, minimum 1),
+        and sends each sub-card individually.
+
+        Returns the last send response on success, or None if re-splitting fails.
+        """
+        try:
+            card_data = json.loads(payload)
+            elements = card_data.get("body", {}).get("elements", [])
+            if not elements:
+                return None
+
+            # Halve the table limit — if the API says we exceeded the limit,
+            # the actual limit may have been lowered by Feishu.
+            reduced_max = max(1, _CARD_MAX_TABLES // 2)
+            logger.info(
+                "[Feishu] Re-splitting card (%d elements) with reduced table limit %d",
+                len(elements), reduced_max,
+            )
+            sub_cards = _split_elements_into_cards(elements, max_tables=reduced_max)
+
+            last_response = None
+            for sub_payload in sub_cards:
+                last_response = await self._feishu_send_with_retry(
+                    chat_id=chat_id,
+                    msg_type="interactive",
+                    payload=sub_payload,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+            return last_response
+        except Exception as exc:
+            logger.warning("[Feishu] _resplit_and_send_card failed: %s", exc)
+            return None
 
     async def edit_message(
         self,
