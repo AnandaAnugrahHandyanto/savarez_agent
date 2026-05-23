@@ -822,7 +822,7 @@ async def test_b13_assimilation_respects_restart_limit(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_b13_assimilation_respects_deadline(monkeypatch):
-    """After 1.5s from turn start, assimilation is rejected."""
+    """After 5.0s from turn start, assimilation is rejected."""
     adapter = _make_assim_adapter()
     session_key = build_session_key(_make_event("a").source)
     _setup_assim_session(adapter, session_key, monkeypatch)

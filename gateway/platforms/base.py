@@ -3291,7 +3291,7 @@ class BasePlatformAdapter(ABC):
             "revision": 0,
             "restart_count": 0,
             "turn_started_at": now,
-            "assimilation_deadline": now + 3.0,
+            "assimilation_deadline": now + 5.0,
             "assimilated_texts": [],
             "visible_output_started": False,
             "side_effect_started": False,
