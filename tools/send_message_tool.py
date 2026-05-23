@@ -140,6 +140,21 @@ SEND_MESSAGE_SCHEMA = {
             "message": {
                 "type": "string",
                 "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/hermes/cache/img_xxx.jpg') in the message — the platform will deliver it as a native media attachment."
+            },
+            "buttons": {
+                "type": "array",
+                "description": "Optional Telegram inline keyboard rows. Each row is an array of button objects with text and callback_data.",
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string"},
+                            "callback_data": {"type": "string"}
+                        },
+                        "required": ["text", "callback_data"]
+                    }
+                }
             }
         },
         "required": []
@@ -297,17 +312,24 @@ def _handle_send(args):
         except Exception as e:
             return json.dumps({"error": f"Failed to open Slack DM: {e}"})
 
+    buttons = args.get("buttons")
+
     try:
         from model_tools import _run_async
+        send_kwargs = {
+            "thread_id": thread_id,
+            "media_files": media_files,
+            "force_document": force_document_attachments,
+        }
+        if buttons is not None:
+            send_kwargs["buttons"] = buttons
         result = _run_async(
             _send_to_platform(
                 platform,
                 pconfig,
                 chat_id,
                 cleaned_message,
-                thread_id=thread_id,
-                media_files=media_files,
-                force_document=force_document_attachments,
+                **send_kwargs,
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
@@ -554,7 +576,7 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, buttons=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -631,6 +653,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 thread_id=thread_id,
                 disable_link_previews=disable_link_previews,
                 force_document=force_document,
+                buttons=buttons if is_last else None,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -811,7 +834,7 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False, buttons=None):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -896,6 +919,25 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         text_kwargs = dict(thread_kwargs)
         if disable_link_previews:
             text_kwargs["disable_web_page_preview"] = True
+        if buttons:
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+            rows = []
+            for row in buttons:
+                if not isinstance(row, list):
+                    continue
+                button_row = []
+                for button in row:
+                    if not isinstance(button, dict):
+                        continue
+                    text = str(button.get("text") or "").strip()
+                    callback_data = str(button.get("callback_data") or "").strip()
+                    if text and callback_data:
+                        button_row.append(InlineKeyboardButton(text, callback_data=callback_data))
+                if button_row:
+                    rows.append(button_row)
+            if rows:
+                text_kwargs["reply_markup"] = InlineKeyboardMarkup(rows)
 
         last_msg = None
         warnings = []
