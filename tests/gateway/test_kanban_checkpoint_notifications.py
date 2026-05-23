@@ -157,18 +157,69 @@ Acceptance criteria:
         runs=runs,
     )
 
-    assert "Gabriel review needed: Decision: Gabriel approve Phase 1 visual direction" in msg
-    assert "Project/task: Decision: Gabriel approve Phase 1 visual direction" in msg
-    assert "What changed: Waterworx demo v2 redesign ready for review" in msg
-    assert "Artifact: /tmp/preview.png" in msg
-    assert "How to view/run: xdg-open /tmp/preview.png" in msg
-    assert "Acceptance/checklist: - Premium visual quality | - Mobile layout is usable" in msg
-    assert "Card: ghl-manager-ui/t_review" in msg
-    assert "Decision needed: checkpoint reached: approve the preview" in msg
-    assert "Known risks/safety: local-only/no-send" in msg
-    assert "Assignee: @reviewer" in msg
-    assert "Reply options: `approve` / `needs changes: <what must change>`" in msg
+    assert "## Gabriel review needed" in msg
+    assert "**Project/task:** Decision: Gabriel approve Phase 1 visual direction" in msg
+    assert "**Card:** ghl-manager-ui/t_review" in msg
+    assert "**Assignee:** @reviewer" in msg
+    assert "### What changed" in msg
+    assert "- Summary: Waterworx demo v2 redesign ready for review" in msg
+    assert "### Verification" in msg
+    assert "- Tests/checks: playwright desktop/mobile smoke" in msg
+    assert "- Acceptance/checklist: - Premium visual quality | - Mobile layout is usable" in msg
+    assert "### Review needed" in msg
+    assert "- Decision needed: checkpoint reached: approve the preview" in msg
+    assert "### Links / artifacts" in msg
+    assert "- Artifact: /tmp/preview.png" in msg
+    assert "- How to view/run: xdg-open /tmp/preview.png" in msg
+    assert "### Safety / next action" in msg
+    assert "- Known risks/safety: local-only/no-send" in msg
+    assert "- Reply options: `approve` / `needs changes: <what must change>`" in msg
 
+
+
+def test_checkpoint_message_omits_bogus_artifact_from_prior_links_heading(monkeypatch):
+    runner = _runner(monkeypatch)
+    comments = [
+        SimpleNamespace(body="""review-required handoff:
+{
+  "changed_files": ["gateway/run.py", "tests/gateway/test_kanban_checkpoint_notifications.py"],
+  "tests_run": ["python -m pytest tests/gateway/test_kanban_checkpoint_notifications.py -q"],
+  "summary": "Kanban review notifications are now sectioned with headings/bullets."
+}
+
+### Links / artifacts
+- No explicit artifact for this code review."""),
+        SimpleNamespace(body="""Gabriel review feedback from Discord:
+> Gabriel review needed: Fix Kanban review notification formatting for scanability
+> Artifact: / artifacts
+> How to view/run: Local-only artifact: on Atlas, run `xdg-open '/ artifacts'`
+"""),
+    ]
+
+    msg = runner._format_kanban_checkpoint_message(
+        board="default",
+        task=_task(
+            id="t_5e5382e2",
+            title="Fix Kanban review notification formatting for scanability",
+            body="""Acceptance criteria:
+- Update notifications so Discord packets use headings/sections and bullets.
+- Preserve project/task, changed summary, verification/tests, artifacts/URLs, decision, and next action.
+""",
+        ),
+        event=_event(payload={"reason": "review-required: needs human review before merge/restart"}),
+        comments=comments,
+    )
+
+    assert msg.startswith("## Gabriel review needed\n")
+    assert "Gabriel review needed:" not in msg
+    assert "**Project/task:** Fix Kanban review notification formatting for scanability" in msg
+    assert "### What changed" in msg
+    assert "### Verification" in msg
+    assert "### Review needed" in msg
+    assert "### Links / artifacts" in msg
+    assert "- No artifact/URL provided in the card or handoff comments" in msg
+    assert "Artifact: / artifacts" not in msg
+    assert "xdg-open '/ artifacts'" not in msg
 
 
 def test_checkpoint_collection_advances_cursor_for_non_checkpoint_events(monkeypatch, tmp_path):
@@ -215,6 +266,41 @@ def test_checkpoint_collection_advances_cursor_for_non_checkpoint_events(monkeyp
 
     restarted = runner._collect_kanban_notifier_deliveries(Platform, kb)
     assert [d for d in restarted["checkpoints"] if d["board"] == "project-board"] == []
+
+
+def test_checkpoint_message_formats_ghl_cards_as_operational_decisions(monkeypatch):
+    runner = _runner(monkeypatch)
+
+    msg = runner._format_kanban_checkpoint_message(
+        board="ghl-six-priority-cleanup",
+        task=_task(
+            title="Approval: Vanessa weather update / Saturday safety decision",
+            body="""Brand/location: Solar Renew
+Contact: Vanessa / contact c_123 / +614****000
+Job/service location: Suburb NSW
+Latest customer ask/message: Asked whether the wet-weather Saturday job is still safe.
+Last outbound/manual contact: We previously offered safer Saturday replacement slots.
+Current state: Old appointment is still confirmed; replacement slots need live calendar and ledger recheck.
+Why the action matters now: Weather/safety decision affects whether Gabriel attends today.
+Recommended action: Ask Gabriel whether to proceed or reschedule; do not auto-send.
+Exact draft text if choosing A: Hi Vanessa, with the weather looking unsafe I think best to move this one.
+Send target/channel and brand/location: SMS via Solar Renew
+Approval options: approve draft / reschedule manually / no action
+""",
+        ),
+        event=_event(payload={"reason": "Blocked for Gabriel approval: weather/safety decision"}),
+    )
+
+    assert "## Blue/GHL approval needed" in msg
+    assert "**Project/task:** Approval: Vanessa weather update / Saturday safety decision" in msg
+    assert "- Customer: Vanessa / contact c_123 / +614****000" in msg
+    assert "- Why now: Weather/safety decision affects whether Gabriel attends today." in msg
+    assert "- Recommended next action: Ask Gabriel whether to proceed or reschedule; do not auto-send." in msg
+    assert "- Draft/action: Hi Vanessa, with the weather looking unsafe I think best to move this one." in msg
+    assert "**Card:** ghl-six-priority-cleanup/t_review" in msg
+    assert "### Safety / next action" in msg
+    assert "Artifact:" not in msg
+    assert "How to view/run:" not in msg
 
 
 def test_checkpoint_message_prefers_explicit_artifact_label_over_project_path(monkeypatch):

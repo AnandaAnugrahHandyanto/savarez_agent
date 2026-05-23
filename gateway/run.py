@@ -4706,20 +4706,38 @@ class GatewayRunner:
         return any(str(k).strip().lower() in haystack for k in keywords if str(k).strip())
 
     @staticmethod
-    def _extract_review_artifact(text: str) -> str:
+    def _extract_review_artifact(text: str) -> Optional[str]:
         """Pull a likely URL/path/artifact line out of checkpoint text."""
         if not text:
-            return "Kanban card"
+            return None
+
+        def _valid_artifact(candidate: str) -> Optional[str]:
+            value = (candidate or "").strip().rstrip(".,)")
+            if not value:
+                return None
+            # Avoid turning Markdown section labels like ``Links / artifacts``
+            # or prior malformed notifications like ``Artifact: / artifacts``
+            # into fake filesystem paths.
+            if re.fullmatch(r"/?\s*artifacts?", value, flags=re.IGNORECASE):
+                return None
+            if value.lower() in {"kanban card", "none", "n/a", "not specified"}:
+                return None
+            return value
+
         for line in text.splitlines():
             if line.lower().strip().startswith(("review:", "artifact:", "preview:", "path:", "url:")):
-                return line.split(":", 1)[1].strip() or "Kanban card"
+                artifact = _valid_artifact(line.split(":", 1)[1])
+                if artifact:
+                    return artifact
         url = re.search(r"https?://\S+", text)
         if url:
-            return url.group(0).rstrip(".,)")
-        path = re.search(r"(?:^|\s)(/[\w .~+@%/=-]+)", text)
+            return _valid_artifact(url.group(0))
+        # Unlabelled paths are heuristic only; keep them strict so prose such
+        # as ``Links / artifacts`` never becomes ``/ artifacts``.
+        path = re.search(r"(?:^|\s)(/(?!\s)[^\s,;)]+)", text)
         if path:
-            return path.group(1).strip().rstrip(".,)")
-        return "Kanban card"
+            return _valid_artifact(path.group(1))
+        return None
 
     @staticmethod
     def _extract_safety_line(text: str) -> str:
@@ -4740,6 +4758,45 @@ class GatewayRunner:
             if key.strip().lower() in wanted and value.strip():
                 return value.strip()
         return None
+
+    @staticmethod
+    def _extract_labeled_section(text: str, labels: tuple[str, ...], *, max_chars: int = 700) -> Optional[str]:
+        """Return a labelled value plus continuation lines until the next label."""
+        wanted = tuple(label.rstrip(":").strip().lower() for label in labels)
+        lines = (text or "").splitlines()
+        for idx, line in enumerate(lines):
+            raw = line.strip().lstrip("-*").strip()
+            if ":" not in raw:
+                continue
+            key, value = raw.split(":", 1)
+            if key.strip().lower() not in wanted:
+                continue
+            parts = [value.strip()] if value.strip() else []
+            for nxt in lines[idx + 1:]:
+                stripped = nxt.strip()
+                if not stripped:
+                    if parts:
+                        parts.append("")
+                    continue
+                if re.match(r"^[A-Z][A-Za-z0-9 /()_.-]{2,80}:\s*", stripped):
+                    break
+                parts.append(stripped)
+                if sum(len(p) for p in parts) >= max_chars:
+                    break
+            compact = "\n".join(parts).strip()
+            if compact:
+                return compact[:max_chars]
+        return None
+
+    @staticmethod
+    def _looks_like_ghl_approval_card(board: str, body: str) -> bool:
+        board_l = (board or "").lower()
+        body_l = (body or "").lower()
+        return (
+            board_l in {"ghl-six-priority-cleanup", "ghl-blue-consolidation"}
+            or "brand/location:" in body_l
+            or ("conversation id" in body_l and "contact" in body_l and "recommended action" in body_l)
+        )
 
     @staticmethod
     def _extract_review_checklist(text: str) -> str:
@@ -4794,9 +4851,6 @@ class GatewayRunner:
                         else:
                             changed_text = str(changed)
                         bits.append(f"Changed/artifacts: {changed_text}")
-                    tests = meta.get("tests_run") or meta.get("verification")
-                    if tests:
-                        bits.append(f"Verification: {tests}")
                 if bits:
                     return "; ".join(bits)[:700]
         for comment in reversed(comments):
@@ -4823,8 +4877,6 @@ class GatewayRunner:
                             else:
                                 changed_text = str(changed)
                             bits.append("Changed/artifacts: " + changed_text)
-                        if parsed.get("tests_run"):
-                            bits.append(f"Tests: {parsed['tests_run']}")
                         if bits:
                             return "; ".join(bits)[:700]
                 except Exception:
@@ -4838,13 +4890,61 @@ class GatewayRunner:
         return "See the card body and recent handoff comments for the implementation/change summary."
 
     @staticmethod
-    def _format_review_how_to_view(artifact: str, context: str) -> str:
+    def _summarize_review_verification(
+        *,
+        body: str,
+        comments: Optional[list[Any]] = None,
+        runs: Optional[list[Any]] = None,
+    ) -> str:
+        """Summarize tests/verification separately from the change summary."""
+        comments = comments or []
+        runs = runs or []
+        for run in reversed(runs):
+            meta = getattr(run, "metadata", None) or {}
+            if isinstance(meta, dict):
+                tests = meta.get("tests_run") or meta.get("verification") or meta.get("tests")
+                if tests:
+                    return str(tests)[:500]
+        for comment in reversed(comments):
+            text = str(getattr(comment, "body", "") or "").strip()
+            if not text:
+                continue
+            for label in ("Verification", "Tests", "tests_run"):
+                value = GatewayRunner._extract_labeled_value(text, (label,))
+                if value:
+                    return value[:500]
+            match = re.search(r"\{[\s\S]*\}", text)
+            if match:
+                try:
+                    parsed = json.loads(match.group(0))
+                    if isinstance(parsed, dict):
+                        tests = parsed.get("tests_run") or parsed.get("verification") or parsed.get("tests")
+                        if tests:
+                            return str(tests)[:500]
+                except Exception:
+                    pass
+        explicit = GatewayRunner._extract_labeled_value(body or "", ("Verification", "Tests"))
+        if explicit:
+            return explicit[:500]
+        return "Not specified in the card; verify manually against the checklist/artifact before approving."
+
+    @staticmethod
+    def _checkpoint_bullet(label: str, value: object) -> str:
+        """Format one notification fact as a Discord-friendly bullet."""
+        text = str(value or "not specified").strip().replace("\r", "")
+        text = re.sub(r"\n+", " | ", text)
+        return f"- {label}: {text}"
+
+    @staticmethod
+    def _format_review_how_to_view(artifact: Optional[str], context: str) -> str:
         explicit = GatewayRunner._extract_labeled_value(
             context,
             ("How to view", "How to run", "Run", "View", "Open", "Instructions"),
         )
         if explicit:
             return explicit[:500]
+        if not artifact:
+            return "No explicit artifact/URL was provided; open the Kanban card and review the latest handoff comment before deciding."
         if artifact.startswith("http://") or artifact.startswith("https://"):
             return f"Open the URL above and review the current rendered artifact."
         if artifact.startswith("/") or artifact.startswith("~"):
@@ -4865,6 +4965,16 @@ class GatewayRunner:
         reason = str(payload.get("reason", "") if isinstance(payload, dict) else "").strip()
         title = (getattr(task, "title", None) or getattr(event, "task_id", "checkpoint"))[:160]
         body = getattr(task, "body", "") if task else ""
+        if self._looks_like_ghl_approval_card(board, body or ""):
+            return self._format_ghl_kanban_checkpoint_message(
+                board=board,
+                task=task,
+                event=event,
+                reason=reason,
+                title=title,
+                body=body or "",
+                comments=comments,
+            )
         comment_text = "\n".join(str(getattr(c, "body", "") or "") for c in (comments or [])[-5:])
         run_text = "\n".join(
             "\n".join([
@@ -4887,20 +4997,111 @@ class GatewayRunner:
         checklist = self._extract_review_checklist(combined)
         safety = self._extract_safety_line(combined)
         how_to_view = self._format_review_how_to_view(artifact, combined)
-        assignee_line = f"@{assignee}" if assignee else "not specified"
-        return (
-            f"Gabriel review needed: {title}\n"
-            f"Project/task: {title}\n"
-            f"What changed: {changed}\n"
-            f"Artifact: {artifact}\n"
-            f"How to view/run: {how_to_view}\n"
-            f"Acceptance/checklist: {checklist}\n"
-            f"Card: {card}\n"
-            f"Decision needed: {decision}\n"
-            f"Known risks/safety: {safety}\n"
-            f"Assignee: {assignee_line}\n"
-            "Reply options: `approve` / `needs changes: <what must change>`"
+        verification = self._summarize_review_verification(
+            body=body or "",
+            comments=comments,
+            runs=runs,
         )
+        links_lines = ["### Links / artifacts"]
+        if artifact:
+            links_lines.append(self._checkpoint_bullet("Artifact", artifact))
+            links_lines.append(self._checkpoint_bullet("How to view/run", how_to_view))
+        else:
+            links_lines.append("- No artifact/URL provided in the card or handoff comments; use the Kanban card plus the latest handoff comment.")
+
+        assignee_line = f"@{assignee}" if assignee else "not specified"
+        return "\n".join([
+            "## Gabriel review needed",
+            f"**Project/task:** {title}",
+            f"**Card:** {card}",
+            f"**Assignee:** {assignee_line}",
+            "",
+            "### What changed",
+            self._checkpoint_bullet("Summary", changed),
+            "",
+            "### Verification",
+            self._checkpoint_bullet("Tests/checks", verification),
+            self._checkpoint_bullet("Acceptance/checklist", checklist),
+            "",
+            "### Review needed",
+            self._checkpoint_bullet("Decision needed", decision),
+            "- Reply options: `approve` / `needs changes: <what must change>`",
+            "",
+            *links_lines,
+            "",
+            "### Safety / next action",
+            self._checkpoint_bullet("Known risks/safety", safety),
+            "- Next action: Gabriel replies with approval or specific requested changes; the worker proceeds only after that decision.",
+        ])
+
+    def _format_ghl_kanban_checkpoint_message(
+        self,
+        *,
+        board: str,
+        task: Any,
+        event: Any,
+        reason: str,
+        title: str,
+        body: str,
+        comments: Optional[list[Any]] = None,
+    ) -> str:
+        """Format Blue/GHL approval cards as operational decisions, not code-review artifacts."""
+        combined_comments = "\n".join(str(getattr(c, "body", "") or "") for c in (comments or [])[-3:])
+        latest_context = combined_comments.strip() or reason.strip()
+        brand = self._extract_labeled_section(body, ("Brand/location", "Location/brand"), max_chars=180) or "not specified"
+        contact = self._extract_labeled_section(body, ("Contact", "Contact name/phone/contact ID"), max_chars=220) or "not specified"
+        job_location = self._extract_labeled_section(body, ("Job/service location", "Service location"), max_chars=180)
+        latest_customer = self._extract_labeled_section(body, ("Latest customer ask/message", "Latest customer message summary"), max_chars=300)
+        last_outbound = self._extract_labeled_section(body, ("Last outbound/manual contact", "Last outbound"), max_chars=300)
+        current_state = self._extract_labeled_section(body, ("Current state", "Current CRM/calendar/task/opportunity/ledger state"), max_chars=420)
+        why_now = self._extract_labeled_section(body, ("Why the action matters now", "Why it matters"), max_chars=380)
+        recommended = self._extract_labeled_section(body, ("Recommended action",), max_chars=450) or "review the card and decide the next safe action"
+        draft = self._extract_labeled_section(body, ("Exact draft text if choosing A", "Exact draft", "Draft"), max_chars=700)
+        send_target = self._extract_labeled_section(body, ("Send target/channel and brand/location", "Send target/channel"), max_chars=220)
+        options = self._extract_labeled_section(body, ("Approval options",), max_chars=300)
+        decision = reason.splitlines()[0][:260] if reason else recommended[:260]
+        card = f"{board}/{getattr(event, 'task_id', '')}"
+        lines = [
+            "## Blue/GHL approval needed",
+            f"**Project/task:** {title}",
+            f"**Card:** {card}",
+            "",
+            "### Decision needed",
+            self._checkpoint_bullet("Decision", decision),
+            self._checkpoint_bullet("Recommended next action", recommended),
+            "",
+            "### Customer / context",
+            self._checkpoint_bullet("Customer", contact),
+            self._checkpoint_bullet("Brand", brand),
+        ]
+        if job_location:
+            lines.append(self._checkpoint_bullet("Job/location", job_location))
+        if why_now:
+            lines.append(self._checkpoint_bullet("Why now", why_now))
+        if current_state:
+            lines.append(self._checkpoint_bullet("Live/current state", current_state))
+        if latest_customer:
+            lines.append(self._checkpoint_bullet("Latest customer", latest_customer))
+        if last_outbound:
+            lines.append(self._checkpoint_bullet("Last outbound", last_outbound))
+        if latest_context:
+            lines.append(self._checkpoint_bullet("Latest card update", latest_context[:700]))
+        lines.extend([
+            "",
+            "### Draft / action",
+            self._checkpoint_bullet("Draft/action", draft if draft else "No customer-facing draft proposed in this card."),
+        ])
+        if send_target:
+            lines.append(self._checkpoint_bullet("Send target", send_target))
+        if options:
+            lines.append(self._checkpoint_bullet("Approval options", options))
+        lines.extend([
+            "",
+            "### Safety / next action",
+            "- Guardrail: no customer send, calendar change, opportunity update, or other risky CRM mutation until Gabriel approves and Blue re-fetches live GHL/calendar/ledger state.",
+            "- Reply with the decision, e.g. `approve/send`, `reschedule`, `call back`, `close/no action`, or `edit: ...`.",
+        ])
+        return "\n".join(lines)
 
     def _collect_kanban_notifier_deliveries(self, platform_enum, kb_module) -> dict:
         """Collect regular task-subscription and human checkpoint deliveries.
