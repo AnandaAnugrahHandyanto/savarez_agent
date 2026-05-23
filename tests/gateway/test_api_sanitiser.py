@@ -55,6 +55,63 @@ class TestSanitizeValueStructural:
         assert "sk-secret" not in v
         assert f"api_key={REDACTED}" in v
 
+    def test_querystring_redaction_handles_boundary_chars(self):
+        """Lock in the boundary behaviour of ``_TOKEN_QS_RE`` against
+        the encoded / punctuated value shapes that come up in real
+        URLs: percent-encoded reserved chars, JWT-style dots, base64
+        ``=`` padding, fragments, adjacent params, matrix-style
+        ``;`` separators, and trailing punctuation in prose.
+
+        Every case must (a) remove the original secret string and
+        (b) leave the ``api_key=<redacted>`` (or equivalent) marker
+        intact so a reader can still see *that* something was
+        redacted."""
+        cases = [
+            # (input, the secret substring we must NOT see in the output)
+            # Percent-encoded reserved characters in the value.
+            ("https://x?api_key=abc%2Fdef",       "abc%2Fdef"),
+            ("https://x?api_key=abc%26more=xx",   "abc%26more=xx"),
+            ("https://x?api_key=abc%3Bdef",       "abc%3Bdef"),
+            # Trailing slash / semicolon in the raw token body.
+            ("https://x?api_key=abc/def/ghi",     "abc/def/ghi"),
+            ("https://x?api_key=abc;jsessionid=xyz", "abc;jsessionid"),
+            # JWT-shaped value (segments separated by dots).
+            ("https://x?access_token=hdr.payload.sig", "hdr.payload.sig"),
+            # Base64 padding inside the value.
+            ("https://x?secret=abc=padding==",    "abc=padding=="),
+            # Fragment after the value.
+            ("https://x?api_key=abc#frag",        "abc#frag"),
+            # Adjacent param: only the first value goes; q= survives.
+            ("https://x?api_key=abc&q=foo",       "abc"),
+            # Case-insensitive field name.
+            ("https://x?TOKEN=abc",               "abc"),
+        ]
+        for url, secret in cases:
+            out = sanitize_value(url)
+            assert secret not in out, (
+                f"token value leaked through sanitizer for input {url!r}: "
+                f"got {out!r}"
+            )
+            assert REDACTED in out, (
+                f"redaction marker missing for input {url!r}: got {out!r}"
+            )
+
+    def test_querystring_redaction_preserves_adjacent_params(self):
+        """The redaction must not eat the next param. ``?api_key=X&q=Y``
+        must come out as ``?api_key=<redacted>&q=Y`` — that ``q=Y``
+        is sometimes the *only* readable hint a debugger has."""
+        out = sanitize_value("https://x?api_key=sk-secret&q=hello&page=2")
+        assert "sk-secret" not in out
+        assert "q=hello" in out
+        assert "page=2" in out
+
+    def test_querystring_empty_value_is_left_alone(self):
+        """An empty value (``?api_key=``) has nothing to redact and
+        must not crash. The marker stays as-is so the caller can
+        still see the (vacuous) key."""
+        out = sanitize_value("https://x?api_key=&q=1")
+        assert out == "https://x?api_key=&q=1"
+
     def test_redacts_value_when_field_name_signals_secret(self):
         # All known secret-substring variants → wholesale redaction.
         for field in (
