@@ -35,6 +35,7 @@ python -m benchmarks.hermes_memory_bench.run --suite smoke --output /tmp/hermes-
 - `memory_proposal_governance_gate`
 - `memory_governance_submission_packet`
 - `memory_human_review_outcome_gate`
+- `memory_real_proposal_creation_plan`
 - `latency_ms`
 
 ## Hybrid Retrieval Fusion v0.1
@@ -247,6 +248,25 @@ operation-ledger events.
 The smoke suite includes `memory_human_review_outcome_gate`, proving that a
 valid human-review packet becomes an `approve_real_proposal_creation` outcome
 candidate without creating a real proposal.
+
+## Memory Real Proposal Creation Plan v0.1
+
+Memory Real Proposal Creation Plan v0.1 lives in
+`agent.memory_real_proposal_creation_plan`. It turns an
+`approve_real_proposal_creation` human-review outcome candidate into a
+deterministic `manual_creation_plan_required` plan candidate.
+
+Only valid approve outcomes with payload preview and source evidence can produce
+valid plans. `request_changes`, `reject`, `defer`, invalid outcomes, missing
+payload previews, and missing source evidence produce invalid plans with
+explicit reasons. The planner creates plan candidates only; it does not create
+real proposals, submit to governance, apply proposal drafts, persist approvals,
+write memory, write the Memory Graph, modify config, or create operation-ledger
+events.
+
+The smoke suite includes `memory_real_proposal_creation_plan`, proving that a
+valid `approve_real_proposal_creation` outcome becomes a
+`manual_creation_plan_required` plan candidate without creating a real proposal.
 
 ## Report Schema
 

@@ -171,6 +171,13 @@ read-only outcome candidates such as `approve_real_proposal_creation`,
 `request_changes`, `reject`, and `defer`; it still requires manual real proposal
 creation and never persists approvals or creates proposal records.
 
+Memory Real Proposal Creation Plan v0.1 lives in
+`agent.memory_real_proposal_creation_plan`. It turns approved human-review
+outcome candidates into read-only `manual_creation_plan_required` plan
+candidates and never creates real proposals, persists approvals, writes memory,
+writes graph state, modifies config, submits to governance, or creates
+operation-ledger events.
+
 ---
 
 ## Migrating from OpenClaw
