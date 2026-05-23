@@ -76,12 +76,13 @@ class WhatsAppPluginAdapter(BuiltinWhatsAppAdapter):
                 canonical_ids.add(canonical_id)
         return canonical_ids
 
-    def _classify_inbound_principal(self, *, chat_id: str, sender_id: str) -> tuple[str, str, str]:
+    def _classify_inbound_principal(
+        self, *, chat_id: str, sender_id: str
+    ) -> tuple[str, str, str]:
         is_group = str(chat_id or "").endswith("@g.us")
         canonical_sender_id = canonical_whatsapp_identifier(sender_id)
-        if (
-            canonical_sender_id
-            and canonical_sender_id in self._admin_ids_for_scope(is_group=is_group)
+        if canonical_sender_id and canonical_sender_id in self._admin_ids_for_scope(
+            is_group=is_group
         ):
             return ("owner_operator", "command_capable", "owner_only")
         return ("external_party", "conversational_only", "none")
@@ -132,7 +133,9 @@ class WhatsAppPluginAdapter(BuiltinWhatsAppAdapter):
             record.update(extra)
         return record, effective
 
-    def _append_record(self, record: dict[str, Any], effective_event_at: datetime) -> None:
+    def _append_record(
+        self, record: dict[str, Any], effective_event_at: datetime
+    ) -> None:
         try:
             append_whatsapp_record(record, effective_event_at=effective_event_at)
         except Exception as exc:
@@ -222,11 +225,16 @@ class WhatsAppPluginAdapter(BuiltinWhatsAppAdapter):
         if event is None:
             return None
 
-        participant_role, message_classification, command_authority_scope = self._classify_inbound_principal(
-            chat_id=event.source.chat_id,
-            sender_id=(
-                event.source.user_id or data.get("senderId") or data.get("from") or ""
-            ),
+        participant_role, message_classification, command_authority_scope = (
+            self._classify_inbound_principal(
+                chat_id=event.source.chat_id,
+                sender_id=(
+                    event.source.user_id
+                    or data.get("senderId")
+                    or data.get("from")
+                    or ""
+                ),
+            )
         )
         event.participant_role = participant_role
         event.message_classification = message_classification
@@ -284,7 +292,14 @@ class WhatsAppPluginAdapter(BuiltinWhatsAppAdapter):
                 if len(chunks) > 1:
                     await asyncio.sleep(0.3)
 
-            return SendResult(success=True, message_id=last_message_id)
+            return SendResult(
+                success=True,
+                message_id=last_message_id,
+                raw_response={
+                    "dispatch_group_id": dispatch_group_id,
+                    "messageId": last_message_id,
+                },
+            )
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
 

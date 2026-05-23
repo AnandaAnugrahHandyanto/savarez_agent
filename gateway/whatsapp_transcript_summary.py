@@ -5,7 +5,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from gateway.whatsapp_message_store import query_whatsapp_records
+from gateway.whatsapp_message_store import (
+    query_whatsapp_records,
+    query_whatsapp_records_any_time,
+)
 
 TRANSCRIPT_SUMMARY_SCOPE_FIELDS = (
     "conversation_key",
@@ -245,7 +248,8 @@ def _collect_open_items(rows: list[dict[str, Any]]) -> list[str]:
             continue
         if (
             pending_question is not None
-            and str(row.get("participant_role") or "") == pending_question["participant_role"]
+            and str(row.get("participant_role") or "")
+            == pending_question["participant_role"]
             and text
         ):
             pending_question = None
@@ -313,10 +317,7 @@ def _summary_output(
         raise ValueError(f"unsupported summary status: {summary_status}")
     return {
         "summary_status": summary_status,
-        "scope": {
-            key: scope.get(key)
-            for key in TRANSCRIPT_SUMMARY_SCOPE_FIELDS
-        },
+        "scope": {key: scope.get(key) for key in TRANSCRIPT_SUMMARY_SCOPE_FIELDS},
         "coverage_start_utc": coverage_start_utc,
         "coverage_end_utc": coverage_end_utc,
         "covered_record_count": covered_record_count,
@@ -398,13 +399,11 @@ def generate_whatsapp_transcript_summary(
         if participant in seen_participants:
             continue
         seen_participants.add(participant)
-        participants.append(
-            {
-                "participant_role": participant[0],
-                "participant_id": participant[1],
-                "participant_name": participant[2],
-            }
-        )
+        participants.append({
+            "participant_role": participant[0],
+            "participant_id": participant[1],
+            "participant_name": participant[2],
+        })
 
     conversation_recap = _merge_fact_rows(conversation_rows)
     open_items = _collect_open_items(conversation_rows)
@@ -463,16 +462,14 @@ def format_whatsapp_transcript_summary(summary: dict[str, Any]) -> str:
     summary_status = summary.get("summary_status")
     if summary_status == "ready":
         scope = summary.get("scope") or {}
-        lines.extend(
-            [
-                f"Thread: {_scope_label(scope)}",
-                (
-                    "Coverage: "
-                    f"{summary.get('coverage_start_utc')} → {summary.get('coverage_end_utc')} "
-                    f"({summary.get('covered_record_count', 0)} records)"
-                ),
-            ]
-        )
+        lines.extend([
+            f"Thread: {_scope_label(scope)}",
+            (
+                "Coverage: "
+                f"{summary.get('coverage_start_utc')} → {summary.get('coverage_end_utc')} "
+                f"({summary.get('covered_record_count', 0)} records)"
+            ),
+        ])
         participants = summary.get("participants") or []
         if participants:
             rendered_participants = []
@@ -495,8 +492,12 @@ def format_whatsapp_transcript_summary(summary: dict[str, Any]) -> str:
             for entry in entries:
                 lines.append(f"- {entry}")
 
-        _append_section("Operator context:", list(summary.get("operator_context") or []))
-        _append_section("Conversation recap:", list(summary.get("conversation_recap") or []))
+        _append_section(
+            "Operator context:", list(summary.get("operator_context") or [])
+        )
+        _append_section(
+            "Conversation recap:", list(summary.get("conversation_recap") or [])
+        )
         _append_section("Open items:", list(summary.get("open_items") or []))
         _append_section("Uncertainties:", list(summary.get("uncertainties") or []))
         lines.append("")
@@ -504,11 +505,17 @@ def format_whatsapp_transcript_summary(summary: dict[str, Any]) -> str:
         return "\n".join(line for line in lines if line is not None)
 
     if summary_status == "forbidden":
-        lines.append("This request is not authorized to generate a WhatsApp transcript summary.")
+        lines.append(
+            "This request is not authorized to generate a WhatsApp transcript summary."
+        )
     elif summary_status == "summary_window_too_large":
-        lines.append("The requested window is too large to summarize safely without dropping evidence.")
+        lines.append(
+            "The requested window is too large to summarize safely without dropping evidence."
+        )
     elif summary_status == "no_conversation_records":
-        lines.append("No conversational WhatsApp records matched the requested scope and timeframe.")
+        lines.append(
+            "No conversational WhatsApp records matched the requested scope and timeframe."
+        )
     else:
         lines.append(
             "The request was invalid. Provide an exact scope plus explicit UTC "
@@ -529,3 +536,284 @@ __all__ = [
     "normalize_transcript_summary_request",
     "parse_transcript_summary_command_args",
 ]
+
+
+THREAD_WORKFLOW_EXACT_SELECTOR_FIELDS = (
+    "conversation_key",
+    "destination_key",
+    "group_chat_id",
+    "dm_counterparty_id",
+)
+THREAD_WORKFLOW_RETRIEVE_REQUIRED_FIELDS = (
+    "range_start_utc",
+    "range_end_utc",
+)
+THREAD_WORKFLOW_SEND_REQUIRED_FIELDS = ("message_text", "confirm")
+
+
+def _normalized_optional_field(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _normalized_exact_selector(request: dict[str, Any] | None) -> dict[str, str | None]:
+    raw_request = request or {}
+    return {
+        field: _normalized_optional_field(raw_request.get(field))
+        for field in THREAD_WORKFLOW_EXACT_SELECTOR_FIELDS
+    }
+
+
+def _selected_exact_selector_fields(selector: dict[str, str | None]) -> list[str]:
+    return [field for field, value in selector.items() if value]
+
+
+def _record_exact_selector(
+    record: dict[str, Any],
+) -> tuple[str | None, str | None, str | None, str | None]:
+    return (
+        _normalized_optional_field(record.get("conversation_key")),
+        _normalized_optional_field(record.get("destination_key")),
+        _normalized_optional_field(record.get("group_chat_id")),
+        _normalized_optional_field(record.get("dm_counterparty_id")),
+    )
+
+
+def resolve_whatsapp_exact_target(
+    request: dict[str, Any] | None,
+    *,
+    base_dir: Path | None = None,
+) -> dict[str, Any]:
+    selector = _normalized_exact_selector(request)
+    selected_fields = _selected_exact_selector_fields(selector)
+    resolved_selector = {
+        **selector,
+        "range_start_utc": _normalized_optional_field(
+            (request or {}).get("range_start_utc")
+        ),
+        "range_end_utc": _normalized_optional_field(
+            (request or {}).get("range_end_utc")
+        ),
+    }
+
+    if len(selected_fields) != 1:
+        return {
+            "resolution_status": "invalid_request",
+            "selector": resolved_selector,
+            "resolved_target": None,
+        }
+
+    records = query_whatsapp_records_any_time(
+        base_dir=base_dir,
+        conversation_key=selector["conversation_key"],
+        destination_key=selector["destination_key"],
+        group_chat_id=selector["group_chat_id"],
+        dm_counterparty_id=selector["dm_counterparty_id"],
+    )
+    if not records:
+        return {
+            "resolution_status": "target_not_found",
+            "selector": resolved_selector,
+            "resolved_target": None,
+        }
+
+    exact_targets: dict[
+        tuple[str | None, str | None, str | None, str | None],
+        dict[str, Any],
+    ] = {}
+    for record in records:
+        target_key = _record_exact_selector(record)
+        exact_targets.setdefault(
+            target_key,
+            {
+                "conversation_key": target_key[0],
+                "destination_key": target_key[1],
+                "group_chat_id": target_key[2],
+                "dm_counterparty_id": target_key[3],
+                "destination_context_type": _normalized_optional_field(
+                    record.get("destination_context_type")
+                ),
+                "destination_chat_id": _normalized_optional_field(
+                    record.get("destination_chat_id")
+                ),
+                "destination_target_id": _normalized_optional_field(
+                    record.get("destination_target_id")
+                ),
+            },
+        )
+
+    if len(exact_targets) != 1:
+        return {
+            "resolution_status": "target_not_found",
+            "selector": resolved_selector,
+            "resolved_target": None,
+        }
+
+    resolved_target = next(iter(exact_targets.values()))
+    if not resolved_target.get("destination_chat_id"):
+        return {
+            "resolution_status": "target_not_found",
+            "selector": resolved_selector,
+            "resolved_target": None,
+        }
+
+    return {
+        "resolution_status": "resolved",
+        "selector": resolved_selector,
+        "resolved_target": resolved_target,
+    }
+
+
+def ResolveWhatsAppExactTarget(
+    request: dict[str, Any] | None,
+    *,
+    base_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Canonical exact-target resolver for owner-authorized WhatsApp workflows."""
+    return resolve_whatsapp_exact_target(request, base_dir=base_dir)
+
+
+def normalize_wthread_retrieve_request(
+    request: dict[str, Any] | None,
+) -> dict[str, Any]:
+    normalized = normalize_transcript_summary_request({
+        **(request or {}),
+        "include_operator_context": True,
+    })
+    selector = _normalized_exact_selector(request)
+    selected_fields = _selected_exact_selector_fields(selector)
+    if len(selected_fields) != 1:
+        raise ValueError("retrieve requires exactly one exact selector")
+    return normalized
+
+
+def normalize_wthread_send_request(request: dict[str, Any] | None) -> dict[str, Any]:
+    raw_request = request or {}
+    selector = _normalized_exact_selector(raw_request)
+    selected_fields = _selected_exact_selector_fields(selector)
+    if len(selected_fields) != 1:
+        raise ValueError("send requires exactly one exact selector")
+
+    message_text = str(raw_request.get("message_text") or "")
+    if not message_text.strip():
+        raise ValueError("message_text must not be blank")
+
+    confirm_raw = raw_request.get("confirm")
+    if isinstance(confirm_raw, bool):
+        confirm = confirm_raw
+    else:
+        text = str(confirm_raw or "").strip().lower()
+        if text == "true":
+            confirm = True
+        elif text == "false":
+            confirm = False
+        else:
+            raise ValueError("confirm must be true or false")
+
+    return {
+        **selector,
+        "message_text": message_text,
+        "message_preview": message_text.strip(),
+        "confirm": confirm,
+    }
+
+
+def format_wthread_retrieve_output(
+    *,
+    resolved_target: dict[str, Any],
+    rows: list[dict[str, Any]],
+    range_start_utc: str,
+    range_end_utc: str,
+) -> str:
+    lines = [
+        "WhatsApp thread workflow",
+        "Status: ready",
+        "Action: retrieve",
+        (
+            f"Thread: {resolved_target.get('destination_key') or resolved_target.get('conversation_key')}"
+        ),
+        f"Resolved destination_chat_id: {resolved_target.get('destination_chat_id')}",
+        f"Coverage: {range_start_utc} → {range_end_utc}",
+        f"Rows: {len(rows)}",
+        "",
+        "Ordered rows:",
+    ]
+    for row in rows:
+        event_at = row.get("effective_event_at_utc") or "unknown-time"
+        participant_role = row.get("participant_role") or "unknown"
+        text = " ".join(str(row.get("text") or "").split())
+        if not text:
+            media_types = [
+                str(item).strip()
+                for item in (row.get("media_types") or [])
+                if str(item).strip()
+            ]
+            text = (
+                f"[non-text media: {', '.join(media_types)}]"
+                if media_types
+                else "[no stored text]"
+            )
+        message_id = row.get("message_id") or "none"
+        lines.append(
+            f"- {event_at} | {participant_role} | message_id={message_id} | {text}"
+        )
+    return "\n".join(lines)
+
+
+def format_wthread_send_confirmation_required(
+    *,
+    resolved_target: dict[str, Any],
+    message_preview: str,
+) -> str:
+    return "\n".join([
+        "WhatsApp thread workflow",
+        "Status: confirmation_required",
+        "Action: send",
+        (
+            f"Thread: {resolved_target.get('destination_key') or resolved_target.get('conversation_key')}"
+        ),
+        f"Resolved destination_chat_id: {resolved_target.get('destination_chat_id')}",
+        f"Pending message preview: {message_preview}",
+        "Resend with confirm=true to dispatch this text.",
+    ])
+
+
+def format_wthread_send_result(
+    *,
+    resolved_target: dict[str, Any],
+    send_status: str,
+    dispatch_group_id: str | None,
+    message_id: str | None,
+    error: str | None = None,
+) -> str:
+    lines = [
+        "WhatsApp thread workflow",
+        f"Status: {send_status}",
+        "Action: send",
+        (
+            f"Thread: {resolved_target.get('destination_key') or resolved_target.get('conversation_key')}"
+        ),
+        f"Resolved destination_chat_id: {resolved_target.get('destination_chat_id')}",
+        f"send_status: {send_status}",
+        f"dispatch_group_id: {dispatch_group_id}",
+        f"message_id: {message_id}",
+    ]
+    if error:
+        lines.append(f"Error: {error}")
+    return "\n".join(lines)
+
+
+__all__.extend([
+    "THREAD_WORKFLOW_EXACT_SELECTOR_FIELDS",
+    "THREAD_WORKFLOW_RETRIEVE_REQUIRED_FIELDS",
+    "THREAD_WORKFLOW_SEND_REQUIRED_FIELDS",
+    "ResolveWhatsAppExactTarget",
+    "format_wthread_retrieve_output",
+    "format_wthread_send_confirmation_required",
+    "format_wthread_send_result",
+    "normalize_wthread_retrieve_request",
+    "normalize_wthread_send_request",
+    "resolve_whatsapp_exact_target",
+])
