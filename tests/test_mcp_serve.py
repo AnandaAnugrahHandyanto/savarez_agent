@@ -934,6 +934,16 @@ class TestToolRegistration:
             "conversations_list", "conversation_get", "messages_read",
             "attachments_fetch", "events_poll", "events_wait",
             "messages_send", "channels_list",
+            "memory_bridge_status", "memory_evolution_status",
+            "memory_recall_quality_evaluate",
+            "memory_fabric_search", "memory_graph_read",
+            "memory_write_proposal", "memory_snapshot_export",
+            "memory_federation_status", "memory_federation_audit",
+            "memory_boundary_allowlist_audit", "memory_federation_gate", "memory_operation_ledger",
+            "memory_ledger_intelligence", "memory_policy_autotune",
+            "memory_policy_proposal_create", "memory_policy_proposal_ledger",
+            "memory_policy_proposal_decision", "memory_policy_apply_plan",
+            "memory_policy_apply_execute", "memory_policy_outcome_monitor",
             "permissions_list_open", "permissions_respond",
         }
         assert expected == tool_names, f"Missing: {expected - tool_names}, Extra: {tool_names - expected}"
@@ -942,6 +952,43 @@ class TestToolRegistration:
         server, _ = mcp_server_e2e
         for tool in server._tool_manager.list_tools():
             assert tool.description, f"Tool {tool.name} has no description"
+
+    def test_memory_evolution_status_is_registered_and_read_only(self, fake_mcp_server, _event_loop):
+        server, _ = fake_mcp_server
+        result = _run_tool(server, "memory_evolution_status")
+
+        assert result["success"] is True
+        assert len(result["taxonomy"]) == 15
+        assert result["taxonomy"][5]["name"] == "星辰记忆"
+        assert result["taxonomy"][-1]["name"] == "星源记忆"
+        assert result["policy"]["status_is_read_only"] is True
+        assert result["would_mutate_memory"] is False
+
+    def test_memory_recall_quality_evaluate_is_registered_and_read_only(self, fake_mcp_server, _event_loop):
+        server, _ = fake_mcp_server
+        result = _run_tool(
+            server,
+            "memory_recall_quality_evaluate",
+            {"queries": "memory,policy", "limit": 3},
+        )
+
+        assert result["success"] is True
+        assert result["policy"]["evaluation_is_read_only"] is True
+        assert result["read_only_memory"] is True
+        assert result["would_modify_config"] is False
+
+    def test_memory_boundary_allowlist_audit_is_registered_and_read_only(self, fake_mcp_server, _event_loop):
+        server, _ = fake_mcp_server
+        result = _run_tool(server, "memory_boundary_allowlist_audit", {"log_limit": 200})
+
+        assert result["success"] is True
+        assert result["audit_type"] == "hermes_memory_boundary_allowlist_audit"
+        assert result["ready"] is True
+        assert result["policy"]["audit_is_read_only"] is True
+        assert result["policy"]["does_not_modify_config"] is True
+        assert result["policy"]["does_not_write_memory"] is True
+        assert result["policy"]["does_not_approve_allowlists"] is True
+        assert result["would_modify_config"] is False
 
 
 # ---------------------------------------------------------------------------
