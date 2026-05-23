@@ -68,6 +68,8 @@ async function getSessionToken(): Promise<string> {
 
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getSystemHealth: () => fetchJSON<SystemHealthResponse>("/api/system/health"),
+  getKanbanStats: () => fetchJSON<KanbanStatsResponse>("/api/plugins/kanban/stats"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -385,6 +387,57 @@ export interface StatusResponse {
   latest_config_version: number;
   release_date: string;
   version: string;
+}
+
+export interface SystemPathStat {
+  path: string;
+  exists: boolean;
+  is_dir: boolean;
+  size: number | null;
+  mtime: number | null;
+}
+
+export interface SystemHealthResponse {
+  hermes: {
+    version: string;
+    release_date: string;
+    home: string;
+    config_path: string;
+    env_path: string;
+    project_root: string;
+    web_dist: string;
+  };
+  runtime: {
+    python: string;
+    python_executable: string;
+    platform: string;
+    system: string;
+    machine: string;
+    process_pid: number;
+  };
+  git: {
+    branch: string | null;
+    commit: string | null;
+    dirty: boolean;
+    dirty_count: number;
+  };
+  gateway: {
+    running: boolean;
+    pid: number | null;
+    state: string | null;
+    updated_at: string | null;
+    exit_reason: string | null;
+    platform_count: number;
+  };
+  paths: Record<string, SystemPathStat>;
+  last_errors: string[];
+}
+
+export interface KanbanStatsResponse {
+  by_status: Record<string, number>;
+  by_assignee: Record<string, Record<string, number>>;
+  oldest_ready_age_seconds: number | null;
+  now: number;
 }
 
 export interface SessionInfo {
