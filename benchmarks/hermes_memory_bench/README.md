@@ -45,6 +45,7 @@ python -m benchmarks.hermes_memory_bench.run --suite smoke --output /tmp/hermes-
 - `memory_human_approval_token_write_lock_gate`
 - `memory_human_approval_token_final_confirmation_request`
 - `memory_human_approval_token_final_confirmation_review_gate`
+- `memory_human_approval_token_write_execution_plan`
 - `latency_ms`
 
 ## Hybrid Retrieval Fusion v0.1
@@ -453,6 +454,28 @@ The smoke suite includes
 valid final confirmation request becomes a confirm-token-write review outcome
 candidate without issuing a token, persisting approval, creating a real
 proposal, or creating an operation event.
+
+### Memory Human Approval Token Write Execution Plan v0.1
+
+Implemented in `agent.memory_human_approval_token_write_execution_plan`. It
+turns a `confirm_token_write` final confirmation review outcome candidate into
+a deterministic, read-only token write execution plan candidate.
+
+Only a valid `confirm_token_write` outcome with intact previews and source
+evidence becomes `manual_token_write_execution_plan_required`. Request changes,
+reject, defer, invalid outcomes, missing previews, missing source evidence, and
+preview integrity failures become locked plan candidates with explicit lock
+reasons. The plan describes future token write steps and preflight checks, but
+never issues approval tokens, persists approvals, creates real proposals, writes
+proposal files, writes operation-ledger events, writes token files, writes
+approval audit records, submits to governance, writes memory, writes the Memory
+Graph, or modifies config.
+
+The smoke suite includes `memory_human_approval_token_write_execution_plan`,
+proving that a valid final confirmation review outcome becomes
+manual-token-write-execution-plan-required without issuing a token, persisting
+approval, creating a real proposal, writing token files, writing approval audit,
+or creating an operation event.
 
 ## Report Schema
 
