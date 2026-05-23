@@ -16857,6 +16857,20 @@ class GatewayRunner:
                     entry.session_id = agent.session_id
                     self.session_store._save()
 
+                # Migrate goal state from the old session to the new one
+                # so /goal continuation survives context compression.
+                try:
+                    from hermes_cli.goals import load_goal, save_goal
+                    old_goal = load_goal(session_id)
+                    if old_goal and old_goal.status == "active":
+                        save_goal(agent.session_id, old_goal)
+                        logger.info(
+                            "Goal state migrated: %s → %s",
+                            session_id, agent.session_id,
+                        )
+                except Exception as _goal_migrate_exc:
+                    logger.debug("Goal migration failed during session split: %s", _goal_migrate_exc)
+
                 # If this is a Telegram DM and source.thread_id was lost during
                 # the session split (synthetic / recovered event), restore it
                 # from the binding so _thread_metadata_for_source produces the
