@@ -8357,10 +8357,10 @@ class GatewayRunner:
                     choice.exit_on_error = False  # type: ignore[attr-defined]
 
         try:
-            with (
-                contextlib.redirect_stdout(io.StringIO()),
-                contextlib.redirect_stderr(io.StringIO()),
-            ):
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    return kanban_parser.parse_args(tokens)
                 return kanban_parser.parse_args(tokens)
         except (argparse.ArgumentError, SystemExit):
             return None
