@@ -250,6 +250,12 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         Dict mapping "/skill-name" to {name, description, skill_md_path, skill_dir}.
     """
     global _skill_commands, _skill_commands_platform, _scan_error_logged
+    # NOTE: We update the platform marker before the build attempt so that a
+    # subsequent platform change is reflected even if the build fails and we
+    # fall back to the previous _skill_commands mapping. The trade-off is that
+    # the marker can briefly disagree with the live mapping during a failed
+    # rescan; this is intentional — the marker is advisory metadata, while the
+    # mapping is the authoritative state callers depend on.
     _skill_commands_platform = _resolve_skill_commands_platform()
     new_commands: Dict[str, Dict[str, Any]] = {}
     try:
