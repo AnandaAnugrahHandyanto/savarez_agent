@@ -516,6 +516,18 @@ DEFAULT_CONFIG = {
         "lock_manual_titles": True,
         "max_words": 7,
     },
+    "context_refresh": {
+        "enabled": True,
+        "handoff_after_compressions": 2,
+        "mode": "prepare_only",
+        "require_safe_turn_boundary": True,
+        "require_no_running_processes": True,
+        "write_session_handoff": True,
+        "write_project_handoff_when_detectable": True,
+        "include_sha256": True,
+        "max_handoff_lines": 250,
+        "handoff_base_dir": "",
+    },
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).

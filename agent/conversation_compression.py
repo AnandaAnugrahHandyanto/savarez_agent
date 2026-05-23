@@ -450,6 +450,16 @@ def compress_context(
             f"accuracy may degrade. Consider /new to start fresh.",
             force=True,
         )
+        try:
+            from agent.session_handoff import maybe_prepare_context_refresh_handoff
+
+            maybe_prepare_context_refresh_handoff(
+                agent,
+                compressed,
+                reason=f"compression_count>={_cc}",
+            )
+        except Exception as _handoff_err:
+            logger.debug("context refresh handoff preparation failed: %s", _handoff_err)
 
     # Update token estimate after compaction so pressure calculations
     # use the post-compression count, not the stale pre-compression one.
