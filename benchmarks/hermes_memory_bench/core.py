@@ -7,6 +7,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from agent.memory_bitemporal_fact_graph import (
+    BITEMPORAL_FACT_GRAPH_POLICY,
+    explain_fact_lineage,
+    select_current_facts,
+)
 from agent.memory_retrieval_fusion import fuse_memory_retrieval
 
 
@@ -19,6 +24,7 @@ DIMENSIONS = (
     "project_scope_isolation",
     "contradiction_handling",
     "hybrid_retrieval_fusion",
+    "bitemporal_fact_graph",
     "latency_ms",
 )
 POLICY = {
@@ -175,6 +181,22 @@ def _answer_case(case: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             "fusion": result,
             "selected_id": selected.get("id"),
             "candidate_count": len(memories),
+        }
+
+    if dimension == "bitemporal_fact_graph":
+        selected = select_current_facts(
+            memories,
+            at_time=case.get("at_time") or case.get("now"),
+            project_scope=case.get("project_scope"),
+        )
+        winner = selected[0] if selected else None
+        lineage = explain_fact_lineage(winner.fact_id, memories) if winner else {}
+        return (winner.object if winner else ""), {
+            "selected_fact_id": winner.fact_id if winner else None,
+            "selected_fact": winner.to_json() if winner else None,
+            "lineage": lineage,
+            "candidate_count": len(memories),
+            "policy": dict(BITEMPORAL_FACT_GRAPH_POLICY),
         }
 
     selected = _newest(memories)

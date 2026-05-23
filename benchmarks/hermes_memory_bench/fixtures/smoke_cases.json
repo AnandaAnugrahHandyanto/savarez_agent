@@ -162,5 +162,57 @@
         }
       }
     ]
+  },
+  {
+    "id": "bitemporal_newer_valid_fact_wins",
+    "dimension": "bitemporal_fact_graph",
+    "description": "Newer valid fact wins while the old historical fact remains explainable.",
+    "query": "Which fact graph foundation should Hermes Memory Fabric use?",
+    "project_scope": "memory-fabric",
+    "at_time": "2026-05-23T00:00:00Z",
+    "expected_answer": "Bi-temporal Fact Graph v0.1",
+    "memories": [
+      {
+        "fact_id": "fact-graph-old",
+        "subject": "Hermes Memory Fabric",
+        "predicate": "foundation",
+        "object": "Hybrid Retrieval Fusion v0.1",
+        "project_id": "memory-fabric",
+        "source_episode_id": "episode-hybrid-retrieval-fusion",
+        "provenance": "bench:hybrid-retrieval-fusion",
+        "confidence": 0.91,
+        "valid_from": "2026-05-20T00:00:00Z",
+        "valid_until": "2026-05-23T00:00:00Z",
+        "system_created_at": "2026-05-20T12:00:00Z",
+        "system_invalidated_at": "2026-05-23T00:00:00Z",
+        "governance": {
+          "read_only": true,
+          "would_write_memory": false,
+          "would_modify_config": false,
+          "would_write_graph": false,
+          "does_not_create_operation_events": true
+        }
+      },
+      {
+        "fact_id": "fact-graph-current",
+        "subject": "Hermes Memory Fabric",
+        "predicate": "foundation",
+        "object": "Bi-temporal Fact Graph v0.1",
+        "project_id": "memory-fabric",
+        "source_episode_id": "episode-bitemporal-fact-graph",
+        "provenance": "bench:bitemporal-fact-graph",
+        "confidence": 0.95,
+        "valid_from": "2026-05-23T00:00:00Z",
+        "system_created_at": "2026-05-23T08:00:00Z",
+        "supersedes": ["fact-graph-old"],
+        "governance": {
+          "read_only": true,
+          "would_write_memory": false,
+          "would_modify_config": false,
+          "would_write_graph": false,
+          "does_not_create_operation_events": true
+        }
+      }
+    ]
   }
 ]

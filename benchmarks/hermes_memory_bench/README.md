@@ -25,6 +25,7 @@ python -m benchmarks.hermes_memory_bench.run --suite smoke --output /tmp/hermes-
 - `project_scope_isolation`
 - `contradiction_handling`
 - `hybrid_retrieval_fusion`
+- `bitemporal_fact_graph`
 - `latency_ms`
 
 ## Hybrid Retrieval Fusion v0.1
@@ -52,6 +53,22 @@ Scoring dimensions:
 - `governance_score` — read-only and proposal-governed records score highest;
   unsafe write/config/graph/allowlist indicators are rejected
 - `final_score` — deterministic weighted total
+
+## Bi-temporal Fact Graph v0.1
+
+Bi-temporal Fact Graph v0.1 lives in
+`agent.memory_bitemporal_fact_graph`. It exposes a deterministic in-memory
+fact model for temporal fact reasoning without writing durable memory, the
+Memory Graph, config, proposals, or operation-ledger events.
+
+Fact records include domain validity (`valid_from`, `valid_until`) separately
+from system timing (`system_created_at`, `system_invalidated_at`). The v0.1
+operations normalize facts, select current project-scoped facts, supersede
+facts by returning updated copies, detect contradictory subject/predicate/project
+claims, and explain fact lineage so superseded historical facts remain visible.
+
+The smoke suite includes `bitemporal_fact_graph`, proving that a newer valid
+fact wins while the older historical fact remains explainable through lineage.
 
 ## Report Schema
 
