@@ -127,6 +127,7 @@ class ChatCompletionsTransport(ProviderTransport):
           ``Extra inputs are not permitted, field: 'messages[N].tool_name'``.
           Permissive providers (OpenRouter, MiniMax) silently ignore the
           field, which masked the bug for months.
+        - ``_meta`` internal extension payloads used by ACP/session replay.
         """
         needs_sanitize = False
         for msg in messages:
@@ -136,6 +137,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 "codex_reasoning_items" in msg
                 or "codex_message_items" in msg
                 or "tool_name" in msg
+                or "_meta" in msg
             ):
                 needs_sanitize = True
                 break
@@ -160,6 +162,7 @@ class ChatCompletionsTransport(ProviderTransport):
             msg.pop("codex_reasoning_items", None)
             msg.pop("codex_message_items", None)
             msg.pop("tool_name", None)
+            msg.pop("_meta", None)
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
                 for tc in tool_calls:

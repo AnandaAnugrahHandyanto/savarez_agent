@@ -93,6 +93,41 @@ class TestStrictApiValidation:
         assert tool_call["id"] == "call_123"
         assert tool_call["function"]["name"] == "terminal"
 
+    def test_api_kwargs_strip_internal_tool_meta_without_mutating_history(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        agent.api_mode = "chat_completions"
+        hermes_meta = {
+            "call_id": "call_123",
+            "tool_name": "terminal",
+            "duration_ms": 1234,
+            "durationSource": "monotonic",
+        }
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "Checking now.",
+                "tool_calls": [
+                    {
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": '{"command":"pwd"}'},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_123",
+                "content": "/tmp",
+                "_meta": {"hermes": hermes_meta},
+            },
+        ]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        assert "_meta" not in kwargs["messages"][2]
+        assert messages[2]["_meta"] == {"hermes": hermes_meta}
+
     def test_codex_preserves_fields_for_replay(self, monkeypatch):
         """Codex mode should preserve fields for Responses API replay."""
         agent = _make_agent(monkeypatch, "openrouter")

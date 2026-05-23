@@ -279,6 +279,41 @@ class TestStepCallback:
             snapshot="snap",
         )
 
+    def test_step_callback_passes_hermes_timing_metadata(self, mock_conn, event_loop_fixture):
+        from collections import deque
+
+        hermes_meta = {
+            "call_id": "tc-timed",
+            "tool_name": "terminal",
+            "arguments": {"command": "pwd"},
+            "outcome": "completed",
+            "duration_ms": 1234,
+            "durationMs": 1234,
+            "durationSource": "monotonic",
+        }
+        tool_call_ids = {"terminal": deque(["tc-timed"])}
+        tool_call_meta = {"tc-timed": {"args": {"command": "pwd"}, "snapshot": None, "hermes": hermes_meta}}
+        loop = event_loop_fixture
+
+        cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+
+        with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts, \
+             patch("acp_adapter.events.build_tool_complete") as mock_btc:
+            future = MagicMock(spec=Future)
+            future.result.return_value = None
+            mock_rcts.return_value = future
+
+            cb(1, [{"name": "terminal", "result": "ok"}])
+
+        mock_btc.assert_called_once_with(
+            "tc-timed",
+            "terminal",
+            result="ok",
+            function_args={"command": "pwd"},
+            snapshot=None,
+            hermes_meta=hermes_meta,
+        )
+
     def test_tool_progress_captures_snapshot_metadata(self, mock_conn, event_loop_fixture):
         tool_call_ids = {}
         tool_call_meta = {}
@@ -296,6 +331,40 @@ class TestStepCallback:
             "snapshot": "snapshot",
         }
         mock_send.assert_called_once()
+
+    def test_tool_progress_records_timing_metadata_for_completion(self, mock_conn, event_loop_fixture):
+        from collections import deque
+
+        tool_call_ids = {"terminal": deque(["tc-timed"])}
+        tool_call_meta = {
+            "tc-timed": {
+                "args": {"command": "pwd"},
+                "snapshot": None,
+                "hermes": {"startedAt": "2026-05-23T18:42:11.123Z"},
+            }
+        }
+        loop = event_loop_fixture
+
+        cb = make_tool_progress_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
+        cb(
+            "tool.completed",
+            "terminal",
+            None,
+            None,
+            duration=1.234,
+            is_error=False,
+            completed_at="2026-05-23T18:42:12.357Z",
+        )
+
+        hermes = tool_call_meta["tc-timed"]["hermes"]
+        assert hermes["call_id"] == "tc-timed"
+        assert hermes["tool_name"] == "terminal"
+        assert hermes["arguments"] == {"command": "pwd"}
+        assert hermes["outcome"] == "completed"
+        assert hermes["duration_ms"] == 1234
+        assert hermes["durationMs"] == 1234
+        assert hermes["durationSource"] == "monotonic"
+        assert hermes["completedAt"] == "2026-05-23T18:42:12.357Z"
 
     def test_todo_completion_emits_native_plan_update_after_tool_completion(self, mock_conn, event_loop_fixture):
         from collections import deque

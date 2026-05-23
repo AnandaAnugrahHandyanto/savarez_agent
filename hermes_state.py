@@ -238,7 +238,8 @@ CREATE TABLE IF NOT EXISTS messages (
     codex_reasoning_items TEXT,
     codex_message_items TEXT,
     platform_message_id TEXT,
-    observed INTEGER DEFAULT 0
+    observed INTEGER DEFAULT 0,
+    field_meta TEXT
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -1462,6 +1463,7 @@ class SessionDB:
         codex_message_items: Any = None,
         platform_message_id: str = None,
         observed: bool = False,
+        field_meta: Any = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -1489,6 +1491,7 @@ class SessionDB:
             if codex_message_items else None
         )
         tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+        field_meta_json = json.dumps(field_meta) if field_meta else None
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
         stored_content = self._encode_content(content)
@@ -1503,8 +1506,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, field_meta)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -1522,6 +1525,7 @@ class SessionDB:
                     codex_message_items_json,
                     platform_message_id,
                     1 if observed else 0,
+                    field_meta_json,
                 ),
             )
             msg_id = cursor.lastrowid
@@ -1583,6 +1587,11 @@ class SessionDB:
                     json.dumps(codex_message_items) if codex_message_items else None
                 )
                 tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+                field_meta = msg.get("_meta") or msg.get("field_meta")
+                field_meta_json = (
+                    field_meta if isinstance(field_meta, str)
+                    else json.dumps(field_meta) if field_meta else None
+                )
                 # Accept either `platform_message_id` (new explicit name) or
                 # `message_id` (yuanbao's existing convention on message dicts).
                 platform_msg_id = (
@@ -1593,8 +1602,8 @@ class SessionDB:
                     """INSERT INTO messages (session_id, role, content, tool_call_id,
                        tool_calls, tool_name, timestamp, token_count, finish_reason,
                        reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                       codex_message_items, platform_message_id, observed)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       codex_message_items, platform_message_id, observed, field_meta)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         session_id,
                         role,
@@ -1612,6 +1621,7 @@ class SessionDB:
                         codex_message_items_json,
                         platform_msg_id,
                         1 if msg.get("observed") else 0,
+                        field_meta_json,
                     ),
                 )
                 total_messages += 1
@@ -1639,6 +1649,12 @@ class SessionDB:
         result = []
         for row in rows:
             msg = dict(row)
+            field_meta = msg.pop("field_meta", None)
+            if field_meta:
+                try:
+                    msg["_meta"] = json.loads(field_meta)
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("Failed to deserialize field_meta in get_messages, dropping it")
             if "content" in msg:
                 msg["content"] = self._decode_content(msg["content"])
             if msg.get("tool_calls"):
@@ -1929,7 +1945,7 @@ class SessionDB:
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
-                "codex_reasoning_items, codex_message_items, platform_message_id, observed "
+                "codex_reasoning_items, codex_message_items, platform_message_id, observed, field_meta "
                 f"FROM messages WHERE session_id IN ({placeholders}) ORDER BY id",
                 tuple(session_ids),
             ).fetchall()
@@ -1944,6 +1960,11 @@ class SessionDB:
                 msg["tool_call_id"] = row["tool_call_id"]
             if row["tool_name"]:
                 msg["tool_name"] = row["tool_name"]
+            if row["field_meta"]:
+                try:
+                    msg["_meta"] = json.loads(row["field_meta"])
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("Failed to deserialize field_meta in conversation replay, dropping it")
             if row["tool_calls"]:
                 try:
                     msg["tool_calls"] = json.loads(row["tool_calls"])

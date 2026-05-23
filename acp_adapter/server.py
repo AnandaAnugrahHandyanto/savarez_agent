@@ -1052,12 +1052,17 @@ class HermesACPAgent(acp.Agent):
                     continue
                 result = message.get("content")
                 result_text = result if isinstance(result, str) else None
+                field_meta = message.get("_meta") if isinstance(message, dict) else None
+                hermes_meta = None
+                if isinstance(field_meta, dict) and isinstance(field_meta.get("hermes"), dict):
+                    hermes_meta = field_meta["hermes"]
                 if not await _send(
                     build_tool_complete(
                         tool_call_id,
                         tool_name,
                         result=result_text,
                         function_args=function_args,
+                        hermes_meta=hermes_meta,
                     )
                 ):
                     return

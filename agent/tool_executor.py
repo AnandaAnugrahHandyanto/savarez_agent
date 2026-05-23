@@ -20,6 +20,7 @@ import os
 import random
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from agent.display import (
@@ -54,6 +55,47 @@ logger = logging.getLogger(__name__)
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
 _MAX_TOOL_WORKERS = 8
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _duration_ms(duration: Any) -> int:
+    try:
+        return int(max(0.0, float(duration)) * 1000)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _build_hermes_tool_meta(
+    *,
+    call_id: str,
+    tool_name: str,
+    arguments: dict,
+    response: Any,
+    duration: float,
+    is_error: bool,
+    started_at: str | None = None,
+    completed_at: str | None = None,
+) -> dict:
+    completed = completed_at or _utc_now_iso()
+    meta = {
+        "call_id": call_id,
+        "tool_name": tool_name,
+        "arguments": arguments,
+        "outcome": "failed" if is_error else "completed",
+        "response": _multimodal_text_summary(response),
+        "duration_ms": _duration_ms(duration),
+        "durationMs": _duration_ms(duration),
+        "durationSource": "monotonic",
+        "completed_at": completed,
+        "completedAt": completed,
+    }
+    if started_at:
+        meta["started_at"] = started_at
+        meta["startedAt"] = started_at
+    return meta
 
 
 def _ra():
@@ -143,6 +185,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         parsed_calls.append((tool_call, function_name, function_args, block_result, blocked_by_guardrail))
 
     # ── Logging / callbacks ──────────────────────────────────────────
+    tool_started_at: dict[str, str] = {}
     tool_names_str = ", ".join(name for _, name, _, _, _ in parsed_calls)
     if not agent.quiet_mode:
         print(f"  ⚡ Concurrent: {num_tools} tool calls — {tool_names_str}")
@@ -161,7 +204,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         if agent.tool_progress_callback:
             try:
                 preview = _build_tool_preview(name, args)
-                agent.tool_progress_callback("tool.started", name, preview, args)
+                started_at = _utc_now_iso()
+                tool_started_at[tc.id] = started_at
+                agent.tool_progress_callback(
+                    "tool.started", name, preview, args,
+                    tool_call_id=tc.id, started_at=started_at,
+                )
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
 
@@ -232,7 +280,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 _set_sudo_password_callback(_parent_sudo_cb)
             except Exception:
                 pass
-        start = time.time()
+        start = time.monotonic()
         try:
             result = agent._invoke_tool(
                 function_name,
@@ -245,7 +293,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         except Exception as tool_error:
             result = f"Error executing tool '{function_name}': {tool_error}"
             logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
-        duration = time.time() - start
+        duration = time.monotonic() - start
         is_error, _ = _detect_tool_failure(function_name, result)
         if is_error:
             logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
@@ -297,7 +345,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 # concurrent tool batches. Also check for user interrupts
                 # so we don't block indefinitely when the user sends /stop
                 # or a new message during concurrent tool execution.
-                _conc_start = time.time()
+                _conc_start = time.monotonic()
                 _interrupt_logged = False
                 while True:
                     done, not_done = concurrent.futures.wait(
@@ -326,7 +374,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                         concurrent.futures.wait(not_done, timeout=3.0)
                         break
 
-                    _conc_elapsed = int(time.time() - _conc_start)
+                    _conc_elapsed = int(time.monotonic() - _conc_start)
                     # Heartbeat every ~30s (6 × 5s poll intervals)
                     if _conc_elapsed > 0 and _conc_elapsed % 30 < 6:
                         _still_running = [
@@ -349,6 +397,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     for i, (tc, name, args, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
         r = results[i]
         blocked = False
+        function_name = name
+        function_args = args
+        is_error = True
+        hermes_meta = None
         if r is None:
             # Tool was cancelled (interrupt) or thread didn't return
             if agent._interrupt_requested:
@@ -383,11 +435,22 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 except Exception as _ver_err:
                     logging.debug("file-mutation verifier record failed: %s", _ver_err)
 
+            hermes_meta = _build_hermes_tool_meta(
+                call_id=tc.id,
+                tool_name=function_name,
+                arguments=function_args,
+                response=function_result,
+                duration=tool_duration,
+                is_error=is_error,
+                started_at=tool_started_at.get(tc.id),
+            )
             if not blocked and agent.tool_progress_callback:
                 try:
                     agent.tool_progress_callback(
                         "tool.completed", function_name, None, None,
                         duration=tool_duration, is_error=is_error,
+                        completed_at=hermes_meta.get("completed_at"),
+                        response=hermes_meta.get("response"),
                     )
                 except Exception as cb_err:
                     logging.debug(f"Tool progress callback error: {cb_err}")
@@ -443,7 +506,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # image tool result never poisons canonical session history.
         # String results pass through unchanged.
         _tool_content = agent._tool_result_content_for_active_model(name, function_result)
-        messages.append(make_tool_result_message(name, _tool_content, tc.id))
+        messages.append(make_tool_result_message(name, _tool_content, tc.id, hermes_meta=hermes_meta))
 
         # ── Per-tool /steer drain ───────────────────────────────────
         # Same as the sequential path: drain between each collected
@@ -547,10 +610,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             except Exception:
                 pass
 
+        started_at = None
         if not _execution_blocked and agent.tool_progress_callback:
             try:
                 preview = _build_tool_preview(function_name, function_args)
-                agent.tool_progress_callback("tool.started", function_name, preview, function_args)
+                started_at = _utc_now_iso()
+                agent.tool_progress_callback(
+                    "tool.started", function_name, preview, function_args,
+                    tool_call_id=tool_call.id, started_at=started_at,
+                )
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
 
@@ -584,7 +652,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             except Exception:
                 pass  # never block tool execution
 
-        tool_start_time = time.time()
+        tool_start_time = time.monotonic()
 
         if _block_msg is not None:
             # Tool blocked by plugin policy — return error without executing.
@@ -602,7 +670,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 merge=function_args.get("merge", False),
                 store=agent._todo_store,
             )
-            tool_duration = time.time() - tool_start_time
+            tool_duration = time.monotonic() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
         elif function_name == "session_search":
@@ -623,7 +691,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     db=session_db,
                     current_session_id=agent.session_id,
                 )
-            tool_duration = time.time() - tool_start_time
+            tool_duration = time.monotonic() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
         elif function_name == "memory":
@@ -650,7 +718,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     )
                 except Exception:
                     pass
-            tool_duration = time.time() - tool_start_time
+            tool_duration = time.monotonic() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
         elif function_name == "clarify":
@@ -660,7 +728,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 choices=function_args.get("choices"),
                 callback=agent.clarify_callback,
             )
-            tool_duration = time.time() - tool_start_time
+            tool_duration = time.monotonic() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
         elif function_name == "delegate_task":
@@ -682,7 +750,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 _delegate_result = function_result
             finally:
                 agent._delegate_spinner = None
-                tool_duration = time.time() - tool_start_time
+                tool_duration = time.monotonic() - tool_start_time
                 cute_msg = _get_cute_tool_message_impl('delegate_task', function_args, tool_duration, result=_delegate_result)
                 if spinner:
                     spinner.stop(cute_msg)
@@ -705,7 +773,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 function_result = json.dumps({"error": f"Context engine tool '{function_name}' failed: {tool_error}"})
                 logger.error("context_engine.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
             finally:
-                tool_duration = time.time() - tool_start_time
+                tool_duration = time.monotonic() - tool_start_time
                 cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_ce_result)
                 if spinner:
                     spinner.stop(cute_msg)
@@ -729,7 +797,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 function_result = json.dumps({"error": f"Memory tool '{function_name}' failed: {tool_error}"})
                 logger.error("memory_manager.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
             finally:
-                tool_duration = time.time() - tool_start_time
+                tool_duration = time.monotonic() - tool_start_time
                 cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_mem_result)
                 if spinner:
                     spinner.stop(cute_msg)
@@ -757,7 +825,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
             finally:
-                tool_duration = time.time() - tool_start_time
+                tool_duration = time.monotonic() - tool_start_time
                 cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_spinner_result)
                 if spinner:
                     spinner.stop(cute_msg)
@@ -775,7 +843,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             except Exception as tool_error:
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
-            tool_duration = time.time() - tool_start_time
+            tool_duration = time.monotonic() - tool_start_time
 
         if isinstance(function_result, str):
             result_preview = function_result if agent.verbose_logging else (
@@ -817,11 +885,22 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             except Exception as _ver_err:
                 logging.debug("file-mutation verifier record failed: %s", _ver_err)
 
+        hermes_meta = _build_hermes_tool_meta(
+            call_id=tool_call.id,
+            tool_name=function_name,
+            arguments=function_args,
+            response=function_result,
+            duration=tool_duration,
+            is_error=_is_error_result,
+            started_at=started_at,
+        )
         if not _execution_blocked and agent.tool_progress_callback:
             try:
                 agent.tool_progress_callback(
                     "tool.completed", function_name, None, None,
                     duration=tool_duration, is_error=_is_error_result,
+                    completed_at=hermes_meta.get("completed_at"),
+                    response=hermes_meta.get("response"),
                 )
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
@@ -858,7 +937,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Unwrap _multimodal dicts to an OpenAI-style content list
         # (see parallel path for rationale). String results pass through.
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
-        messages.append(make_tool_result_message(function_name, _tool_content, tool_call.id))
+        messages.append(make_tool_result_message(function_name, _tool_content, tool_call.id, hermes_meta=hermes_meta))
 
         # ── Per-tool /steer drain ───────────────────────────────────
         # Drain pending steer BETWEEN individual tool calls so the

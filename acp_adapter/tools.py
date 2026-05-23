@@ -184,6 +184,22 @@ def _text(content: str) -> Any:
     return acp.tool_content(acp.text_block(content))
 
 
+def _normalize_hermes_field_meta(hermes_meta: Any) -> dict | None:
+    """Wrap Hermes extension payloads for ACP's ``_meta`` field."""
+    if not hermes_meta:
+        return None
+    if isinstance(hermes_meta, dict) and isinstance(hermes_meta.get("hermes"), dict):
+        return hermes_meta
+    return {"hermes": hermes_meta}
+
+
+def _attach_hermes_field_meta(update: Any, hermes_meta: Any) -> Any:
+    field_meta = _normalize_hermes_field_meta(hermes_meta)
+    if field_meta is not None:
+        update.field_meta = field_meta
+    return update
+
+
 def _json_loads_maybe(value: Optional[str]) -> Any:
     if not isinstance(value, str):
         return value
@@ -1086,11 +1102,17 @@ def build_tool_start(
     arguments: Dict[str, Any],
     *,
     edit_diff: Any = None,
+    hermes_meta: Any = None,
 ) -> ToolCallStart:
     """Create a ToolCallStart event for the given hermes tool invocation."""
     kind = get_tool_kind(tool_name)
     title = build_tool_title(tool_name, arguments)
     locations = extract_locations(arguments)
+
+    def _start_tool_call(*args: Any, **kwargs: Any) -> ToolCallStart:
+        return _attach_hermes_field_meta(
+            acp.start_tool_call(*args, **kwargs), hermes_meta
+        )
 
     if tool_name == "patch":
         if edit_diff is not None:
@@ -1105,7 +1127,7 @@ def build_tool_start(
             mode = arguments.get("mode", "replace")
             path = arguments.get("path") or "patch input"
             content = [_text(f"Preparing {mode} edit for {path}. Approval prompt shows the diff.")]
-        return acp.start_tool_call(
+        return _start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
         )
 
@@ -1121,14 +1143,14 @@ def build_tool_start(
         else:
             path = arguments.get("path", "")
             content = [_text(f"Preparing write to {path}. Approval prompt shows the diff." if path else "Preparing file write. Approval prompt shows the diff.")]
-        return acp.start_tool_call(
+        return _start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
         )
 
     if tool_name == "terminal":
         command = arguments.get("command", "")
         content = [_text(f"$ {command}")]
-        return acp.start_tool_call(
+        return _start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
         )
 
@@ -1136,7 +1158,7 @@ def build_tool_start(
         # The title and location already identify the file. Sending a synthetic
         # "Reading ..." content block makes Zed render an unhelpful Output
         # section before the real file contents arrive on completion.
-        return acp.start_tool_call(
+        return _start_tool_call(
             tool_call_id, title, kind=kind, content=None, locations=locations,
         )
 
@@ -1146,7 +1168,7 @@ def build_tool_start(
         search_path = arguments.get("path")
         where = f" in {search_path}" if search_path else ""
         content = [_text(f"Searching for '{pattern}' ({target}){where}")]
-        return acp.start_tool_call(
+        return _start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
         )
 
@@ -1162,7 +1184,7 @@ def build_tool_start(
             content = [_text("\n".join(preview_lines))]
         else:
             content = [_text("Reading todo list")]
-        return acp.start_tool_call(
+        return _start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
         )
 
@@ -1170,7 +1192,7 @@ def build_tool_start(
         name = str(arguments.get("name") or "?").strip() or "?"
         file_path = str(arguments.get("file_path") or "SKILL.md").strip() or "SKILL.md"
         content = [_text(f"Loading skill '{name}' ({file_path})")]
-        return acp.start_tool_call(
+        return _start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
         )
 
@@ -1205,7 +1227,7 @@ def build_tool_start(
         else:
             content = [_text(f"Running skill_manage action '{action}' on skill '{name}' ({file_path})")]
 
-        return acp.start_tool_call(
+        return _start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
         )
 
@@ -1213,21 +1235,21 @@ def build_tool_start(
         code = str(arguments.get("code") or "").strip()
         preview = code[:1200] + (f"\n... ({len(code)} chars total, truncated)" if len(code) > 1200 else "")
         content = [_text(f"Running Python helper script:\n\n```python\n{preview}\n```" if preview else "Running Python helper script")]
-        return acp.start_tool_call(
+        return _start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
         )
 
     if tool_name == "web_search":
         query = str(arguments.get("query") or "").strip()
         content = [_text(f"Searching the web for: {query}" if query else "Searching the web")]
-        return acp.start_tool_call(
+        return _start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
         )
 
     if tool_name == "web_extract":
         # The title identifies the URL(s). Avoid a duplicate content block so
         # Zed renders this like read_file: compact start, concise completion.
-        return acp.start_tool_call(
+        return _start_tool_call(
             tool_call_id, title, kind=kind, content=None, locations=locations,
         )
 
@@ -1239,7 +1261,7 @@ def build_tool_start(
         if data_preview:
             text += "\nInput: " + _truncate_text(data_preview, limit=500)
         content = [_text(text)]
-        return acp.start_tool_call(
+        return _start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
         )
 
@@ -1258,14 +1280,14 @@ def build_tool_start(
         else:
             goal = str(arguments.get("goal") or "").strip()
             content = [_text("Delegating task" + (f":\n{_truncate_text(goal, limit=800)}" if goal else ""))]
-        return acp.start_tool_call(
+        return _start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
         )
 
     if tool_name == "session_search":
         query = str(arguments.get("query") or "").strip()
         content = [_text(f"Searching past sessions for: {query}" if query else "Loading recent sessions")]
-        return acp.start_tool_call(
+        return _start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
         )
 
@@ -1277,7 +1299,7 @@ def build_tool_start(
         if preview:
             text += "\nPreview: " + _truncate_text(preview, limit=500)
         content = [_text(text)]
-        return acp.start_tool_call(
+        return _start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
         )
 
@@ -1287,12 +1309,12 @@ def build_tool_start(
         except (TypeError, ValueError):
             args_text = str(arguments)
         content = [_text(_truncate_text(args_text, limit=1200))]
-        return acp.start_tool_call(
+        return _start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
         )
 
     if not arguments:
-        return acp.start_tool_call(
+        return _start_tool_call(
             tool_call_id, title, kind=kind, content=None, locations=locations, raw_input=None,
         )
 
@@ -1302,7 +1324,7 @@ def build_tool_start(
     except (TypeError, ValueError):
         args_text = str(arguments)
     content = [acp.tool_content(acp.text_block(args_text))]
-    return acp.start_tool_call(
+    return _start_tool_call(
         tool_call_id, title, kind=kind, content=content, locations=locations,
         raw_input=None if tool_name in _POLISHED_TOOLS else arguments,
     )
@@ -1318,6 +1340,7 @@ def build_tool_complete(
     result: Optional[str] = None,
     function_args: Optional[Dict[str, Any]] = None,
     snapshot: Any = None,
+    hermes_meta: Any = None,
 ) -> ToolCallProgress:
     """Create a ToolCallUpdate (progress) event for a completed tool call."""
     kind = get_tool_kind(tool_name)
@@ -1331,13 +1354,14 @@ def build_tool_complete(
             function_args=function_args,
             snapshot=snapshot,
         )
-    return acp.update_tool_call(
+    update = acp.update_tool_call(
         tool_call_id,
         kind=kind,
         status="failed" if _tool_result_failed(result, tool_name) else "completed",
         content=content,
         raw_output=None if tool_name in _POLISHED_TOOLS or _is_structured_json_result(result) else result,
     )
+    return _attach_hermes_field_meta(update, hermes_meta)
 
 
 # ---------------------------------------------------------------------------

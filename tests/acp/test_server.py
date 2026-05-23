@@ -425,6 +425,63 @@ class TestSessionOps:
         assert "cli.py:42" in tool_updates[1].content[0].content.text
 
     @pytest.mark.asyncio
+    async def test_load_session_replays_persisted_tool_timing_metadata(self, agent):
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        hermes_meta = {
+            "call_id": "call_terminal_1",
+            "tool_name": "terminal",
+            "arguments": {"command": "pwd"},
+            "outcome": "completed",
+            "response": "/tmp",
+            "duration_ms": 1234,
+            "durationMs": 1234,
+            "durationSource": "monotonic",
+            "startedAt": "2026-05-23T18:42:11.123Z",
+            "completedAt": "2026-05-23T18:42:12.357Z",
+        }
+        state.history = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_terminal_1",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": '{"command":"pwd"}'},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_terminal_1",
+                "tool_name": "terminal",
+                "content": "/tmp",
+                "_meta": {"hermes": hermes_meta},
+            },
+        ]
+
+        mock_conn.session_update.reset_mock()
+        resp = await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert isinstance(resp, LoadSessionResponse)
+        tool_updates = [
+            call.kwargs["update"]
+            for call in mock_conn.session_update.await_args_list
+            if getattr(call.kwargs.get("update"), "session_update", None)
+            in {"tool_call", "tool_call_update"}
+        ]
+        assert len(tool_updates) == 2
+        assert isinstance(tool_updates[1], ToolCallProgress)
+        assert tool_updates[1].field_meta == {"hermes": hermes_meta}
+
+    @pytest.mark.asyncio
     async def test_load_session_replays_native_plan_for_persisted_todo_tool(self, agent):
         """Persisted todo tool results should rebuild Zed's native plan panel."""
         mock_conn = MagicMock(spec=acp.Client)

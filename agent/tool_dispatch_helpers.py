@@ -317,17 +317,41 @@ def _trajectory_normalize_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
     return msg
 
 
-def make_tool_result_message(name: str, content: Any, tool_call_id: str) -> dict:
+def _normalize_tool_field_meta(hermes_meta: Any) -> dict | None:
+    """Return an internal ``_meta`` dict for a tool message.
+
+    Callers usually pass the inner Hermes payload, but persistence/rewrite
+    paths may already have the full ``{"hermes": ...}`` wrapper.  Accept both
+    shapes so metadata can round-trip without every caller knowing the layer.
+    """
+    if not hermes_meta:
+        return None
+    if isinstance(hermes_meta, dict) and isinstance(hermes_meta.get("hermes"), dict):
+        return hermes_meta
+    return {"hermes": hermes_meta}
+
+
+def make_tool_result_message(
+    name: str,
+    content: Any,
+    tool_call_id: str,
+    *,
+    hermes_meta: Any = None,
+) -> dict:
     """Build a tool-result message dict with both the OpenAI-format ``name``
     field (required by the wire format and provider adapters) and the internal
     ``tool_name`` field (written to the session DB messages table)."""
-    return {
+    msg = {
         "role": "tool",
         "name": name,
         "tool_name": name,
         "content": content,
         "tool_call_id": tool_call_id,
     }
+    field_meta = _normalize_tool_field_meta(hermes_meta)
+    if field_meta is not None:
+        msg["_meta"] = field_meta
+    return msg
 
 
 __all__ = [

@@ -235,6 +235,30 @@ class TestMessageStorage:
         messages = db.get_messages("s1")
         assert messages[0]["tool_calls"] == tool_calls
 
+    def test_tool_message_meta_round_trip(self, db):
+        db.create_session(session_id="s1", source="cli")
+        hermes_meta = {
+            "call_id": "call_1",
+            "tool_name": "terminal",
+            "arguments": {"command": "pwd"},
+            "outcome": "completed",
+            "duration_ms": 1234,
+            "durationMs": 1234,
+            "durationSource": "monotonic",
+        }
+
+        db.append_message(
+            "s1",
+            role="tool",
+            content="/tmp",
+            tool_name="terminal",
+            tool_call_id="call_1",
+            field_meta={"hermes": hermes_meta},
+        )
+
+        messages = db.get_messages("s1")
+        assert messages[0]["_meta"] == {"hermes": hermes_meta}
+
     def test_multimodal_list_content_round_trip(self, db):
         """Multimodal ``content`` (list of parts) must survive the SQLite
         round-trip.  sqlite3 cannot bind Python lists directly, so the DB
@@ -305,6 +329,25 @@ class TestMessageStorage:
         msgs = db.get_messages("s1")
         tool_msg = next(m for m in msgs if m["role"] == "tool")
         assert tool_msg["tool_name"] == "web_search"
+
+    def test_replace_messages_persists_tool_meta(self, db):
+        from agent.tool_dispatch_helpers import make_tool_result_message
+
+        db.create_session(session_id="s1", source="cli")
+        hermes_meta = {
+            "call_id": "c1",
+            "tool_name": "terminal",
+            "duration_ms": 1234,
+            "durationSource": "monotonic",
+        }
+
+        db.replace_messages(
+            "s1",
+            [make_tool_result_message("terminal", "ok", "c1", hermes_meta={"hermes": hermes_meta})],
+        )
+
+        msgs = db.get_messages("s1")
+        assert msgs[0]["_meta"] == {"hermes": hermes_meta}
 
     def test_replace_messages_handles_multimodal_content(self, db):
         """`replace_messages` (used by /retry, /undo, /compress) must also
