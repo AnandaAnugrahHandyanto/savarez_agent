@@ -38,8 +38,8 @@ def _write_test_registry(hermes_home: Path) -> Path:
                 "type": "code_executor",
                 "capabilities": ["code_review", "implementation_planning", "file_modification"],
             },
-            "openclaw": {
-                "id": "openclaw",
+            "agent-tars": {
+                "id": "agent-tars",
                 "type": "desktop_operator",
                 "capabilities": ["desktop_control", "app_operation", "screenshot"],
             },
@@ -70,7 +70,7 @@ def _write_test_registry(hermes_home: Path) -> Path:
             "file_modification": "claude",
             "script_execution": "claude",
             "code_review": "codex",
-            "desktop_control": "openclaw",
+            "desktop_control": "agent-tars",
             "strategy_decision": "hermes-internal",
             "creative_direction": "hermes-internal",
         },
@@ -161,7 +161,7 @@ class TestRouting:
         assert "kimi" in agents
         assert "claude" in agents
         assert "codex" in agents
-        assert "openclaw" in agents
+        assert "agent-tars" in agents
 
     def test_get_agent_info(self, hermetic_registry):
         router = AgentRouter()
@@ -201,10 +201,10 @@ class TestRouting:
         router = AgentRouter()
         decision = router.route(
             "other",
-            user_agent_override="openclaw",
+            user_agent_override="agent-tars",
             required_capabilities=["desktop_control"],
         )
-        assert decision.agents == ["openclaw"]
+        assert decision.agents == ["agent-tars"]
 
     def test_user_override_is_not_modified_by_missing_capabilities(self, hermetic_registry):
         router = AgentRouter()
@@ -272,9 +272,9 @@ class TestRouting:
             "Review /tmp/example.py for routing bugs without editing files",
         ) == []
 
-    def test_validate_delegation_prompt_covers_openclaw_and_kimi(self):
-        assert AgentRouter.validate_delegation_prompt("openclaw", "do it")
-        assert AgentRouter.validate_delegation_prompt("openclaw", "截图当前桌面") == []
+    def test_validate_delegation_prompt_covers_tars_and_kimi(self):
+        assert AgentRouter.validate_delegation_prompt("agent-tars", "do it")
+        assert AgentRouter.validate_delegation_prompt("agent-tars", "截图当前桌面") == []
         assert AgentRouter.validate_delegation_prompt("kimi", "搜索")
 
     def test_task_category_required_capability_complete(self):

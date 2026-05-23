@@ -162,6 +162,19 @@ MAX_DEPTH = 1  # flat by default: parent (0) -> child (1); grandchild rejected u
 _MIN_SPAWN_DEPTH = 1
 _MAX_SPAWN_DEPTH_CAP = 3
 
+DEFAULT_AGENT_ID_ENUM = [
+    "nesta",
+    "claude",
+    "codex",
+    "pirlo",
+    "intelligence",
+    "ambrosini",
+    "agent-tars",
+    "deepseek-tui",
+    "hermes-internal",
+    "kanban",
+]
+
 
 # ---------------------------------------------------------------------------
 # Runtime state: pause flag + active subagent registry
@@ -4091,28 +4104,29 @@ def _build_top_level_description() -> str:
         "Only the final summary is returned -- intermediate tool results "
         "never enter your context window.\n\n"
         "NAMED AGENTS (use agent_id — PREFERRED over role/toolsets):\n"
-        "- agent_id='kimi' — Deprecated/manual only. Kimi CLI may be unavailable; "
-        "do NOT use for default research unless the user explicitly asks for Kimi.\n"
+        "- agent_id='nesta' — Technical analysis and decomposition.\n"
         "- agent_id='claude' — Code modification, script execution, git ops, file editing. "
         "Has 'file'+'terminal' toolsets. Use when the user says \"用 claude\", "
         "\"让 claude 改代码\", or needs to write/edit files or run commands.\n"
         "- agent_id='codex' — Codex CLI coding executor / code review backup. "
         "Use when the user says \"用 codex\" or wants Codex-style implementation/review.\n"
-        "- agent_id='openclaw' — External desktop operator backed by OpenClaw "
-        "(zai/GLM-5-Turbo). Use for macOS desktop control, screenshots, app operations.\n"
+        "- agent_id='intelligence' — Research and competitive intelligence.\n"
+        "- agent_id='agent-tars' — External desktop operator. "
+        "Use for macOS desktop control, screenshots, app operations.\n"
         "- agent_id='hermes-internal' — Analysis, decision making, planning. "
         "Has 'file' toolset, read-only. Use for strategy judgments and design decisions.\n"
-        "- agent_id='deepseek-worker' — Background execution, polling, file ops. "
-        "Async-only worker for long-running background tasks.\n\n"
+        "- agent_id='deepseek-tui' — Small fixes, test generation, debugging spikes.\n"
+        "- agent_id='ambrosini' — Quality gate and risk review.\n"
+        "- agent_id='pirlo' — Planning, proposals, content structure.\n"
+        "- agent_id='kanban' — Task state tracking.\n\n"
         "CRITICAL RULE — When to use agent_id:\n"
         "If the user's request contains ANY of these patterns, you MUST use agent_id:\n"
-        "- \"用 kimi\" / \"用 claude\" / \"用 codex\" / \"用 openclaw\" / \"用 hermes\" → matching agent_id\n"
-        "- \"派 kimi\" / \"让 kimi\" / \"叫 kimi\" → agent_id='kimi'\n"
-        "- \"agent_id=kimi\" / \"agent_id=claude\" / \"agent_id=codex\" → matching agent_id\n"
-        "- \"kimi 搜索\" / \"kimi 查\" / \"kimi 读\" → agent_id='kimi'\n"
+        "- \"用 nesta\" / \"用 claude\" / \"用 codex\" / \"用 tars\" / \"用 intelligence\" → matching agent_id\n"
+        "- \"派 intelligence\" / \"让 intelligence\" / \"叫 intelligence\" → agent_id='intelligence'\n"
+        "- \"agent_id=nesta\" / \"agent_id=claude\" / \"agent_id=codex\" → matching agent_id\n"
         "- \"claude 改\" / \"claude 写\" / \"claude 执行\" → agent_id='claude'\n"
         "- \"codex 审\" / \"codex 改\" / \"codex 实现\" → agent_id='codex'\n"
-        "- \"桌面\" / \"截图\" / \"打开 App\" / \"点击\" / \"输入\" with OpenClaw mentioned → agent_id='openclaw'\n"
+        "- \"桌面\" / \"截图\" / \"打开 App\" / \"点击\" / \"输入\" with TARS mentioned → agent_id='agent-tars'\n"
         "- User mentions a specific agent name → use agent_id, do NOT use role+toolsets\n\n"
         "TWO MODES (one of 'goal' or 'tasks' is required):\n"
         "1. Single task: provide 'goal' (+ optional context, toolsets)\n"
@@ -4146,7 +4160,7 @@ def _build_top_level_description() -> str:
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
         "- Results are always returned as an array, one entry per task.\n"
         "- agent_id and role are MUTUALLY EXCLUSIVE. When user names a specific "
-        "agent (kimi, claude, codex, openclaw, hermes, deepseek), always use agent_id, never role."
+        "agent (nesta, claude, codex, tars, intelligence, ambrosini, pirlo, kanban, deepseek), always use agent_id, never role."
     )
 
 
@@ -4200,7 +4214,7 @@ def _build_role_param_description() -> str:
         "delegate further. 'orchestrator' = can "
         f"use delegate_task to spawn its own workers. {nesting_note} "
         "agent_id and role are mutually exclusive. If the user mentions "
-        "kimi/claude/codex/openclaw/hermes/deepseek, use agent_id instead; "
+        "nesta/claude/codex/tars/intelligence/ambrosini/pirlo/kanban/deepseek, use agent_id instead; "
         "do NOT use role."
     )
 
@@ -4308,7 +4322,7 @@ DELEGATE_TASK_SCHEMA = {
                         },
                         "agent_id": {
                             "type": "string",
-                            "enum": ["kimi", "claude", "codex", "openclaw", "hermes-internal", "deepseek-worker"],
+                            "enum": DEFAULT_AGENT_ID_ENUM,
                             "description": "Per-task agent override. When set, this specific task uses the named agent's profile. In batch mode, each task can be routed to a different agent.",
                         },
                     },
@@ -4326,21 +4340,25 @@ DELEGATE_TASK_SCHEMA = {
             },
             "agent_id": {
                 "type": "string",
-                "enum": ["kimi", "claude", "codex", "openclaw", "hermes-internal", "deepseek-worker"],
+                "enum": DEFAULT_AGENT_ID_ENUM,
                 "description": (
-                    "WHEN TO USE: User mentions a specific agent name (\"用 kimi\", "
-                    "\"派 claude\", \"用 codex\", \"用 openclaw\", \"agent_id=kimi\"). "
+                    "WHEN TO USE: User mentions a specific agent name (\"用 nesta\", "
+                    "\"派 claude\", \"用 codex\", \"用 tars\", \"agent_id=intelligence\"). "
                     "This is the PREFERRED way to delegate — each agent has a "
                     "pre-configured profile with the right toolsets, permissions, "
                     "and isolation mode. ALWAYS use agent_id when the user names "
                     "an agent. NEVER translate an agent name into role+toolsets.\n\n"
                     "AGENTS:\n"
-                    "- 'kimi': deprecated/manual-only web research; Kimi CLI may be unavailable\n"
+                    "- 'nesta': technical analysis and decomposition\n"
                     "- 'claude': code editing & command execution (tools: file+terminal)\n"
                     "- 'codex': Codex CLI coding executor and code review backup\n"
-                    "- 'openclaw': external desktop operator for macOS/app/screenshot tasks\n"
+                    "- 'agent-tars': external desktop operator for macOS/app/screenshot tasks\n"
+                    "- 'intelligence': research and competitive intelligence\n"
+                    "- 'ambrosini': quality gate and risk review\n"
+                    "- 'pirlo': planning, proposals, and content structure\n"
+                    "- 'deepseek-tui': small fixes, test generation, debugging spikes\n"
+                    "- 'kanban': task state tracking\n"
                     "- 'hermes-internal': analysis & decision making (tools: file, readonly)\n"
-                    "- 'deepseek-worker': background tasks & polling (tools: file)\n\n"
                     "Mutually exclusive with 'role'. When agent_id is set, "
                     "toolsets/blocked_tools/isolation are auto-configured from "
                     "the registry profile — do not set them manually."
@@ -4437,10 +4455,11 @@ def get_delegation_guidance() -> str:
         )
 
     agent_list = "\n".join(agent_lines) if agent_lines else (
-        "  - agent_id='kimi': deprecated/manual-only research; Kimi CLI may be unavailable\n"
+        "  - agent_id='nesta': technical analysis and decomposition\n"
         "  - agent_id='claude': code editing & commands (tools: file+terminal)\n"
         "  - agent_id='codex': Codex CLI coding executor and code review backup\n"
-        "  - agent_id='openclaw': external desktop operator for macOS/app/screenshot tasks\n"
+        "  - agent_id='agent-tars': external desktop operator for macOS/app/screenshot tasks\n"
+        "  - agent_id='intelligence': research and competitive intelligence\n"
         "  - agent_id='hermes-internal': analysis & planning (tools: file, readonly)"
     )
 
@@ -4451,20 +4470,21 @@ def get_delegation_guidance() -> str:
         "and isolation mode pre-set.\n\n"
         "**CRITICAL — When user mentions an agent name, you MUST use delegate_task "
         "with the agent_id parameter:**\n"
-        "- \"用 kimi\" / \"让 kimi\" / \"派 kimi\" → delegate_task(agent_id='kimi', goal=...) only when explicitly requested\n"
+        "- \"用 nesta\" / \"让 nesta\" / \"派 nesta\" → delegate_task(agent_id='nesta', goal=...)\n"
         "- \"用 claude\" / \"让 claude\" / \"派 claude\" → delegate_task(agent_id='claude', goal=...)\n"
         "- \"用 codex\" / \"让 codex\" / \"agent_id=codex\" → delegate_task(agent_id='codex', goal=...)\n"
-        "- \"用 openclaw\" / \"让 openclaw\" / \"agent_id=openclaw\" → delegate_task(agent_id='openclaw', goal=...)\n"
-        "- \"agent_id=kimi\" or \"agent_id=claude\" → delegate_task(agent_id=..., goal=...)\n\n"
+        "- \"用 tars\" / \"让 tars\" / \"agent_id=agent-tars\" → delegate_task(agent_id='agent-tars', goal=...)\n"
+        "- \"用 intelligence\" / \"让 intelligence\" → delegate_task(agent_id='intelligence', goal=...)\n"
+        "- \"agent_id=nesta\" or \"agent_id=claude\" → delegate_task(agent_id=..., goal=...)\n\n"
         "**Available agents:**\n"
         f"{agent_list}\n\n"
         "**Key rules:**\n"
-        "1. Kimi is deprecated/manual-only; do not use it as the default research route.\n"
-        "2. When the user names claude/codex/openclaw, use the matching agent_id.\n"
+        "1. Use intelligence as the default research route unless the user explicitly names another agent.\n"
+        "2. When the user names claude/codex/tars/nesta/intelligence, use the matching agent_id.\n"
         "3. agent_id and role are mutually exclusive. Use agent_id, not role.\n"
         "4. Never translate a user's agent request into manual toolsets+role.\n"
         "5. Set 'context' to include the user's language preference.\n"
-        "6. Treat OpenClaw as an external desktop operator; verify desktop results with screenshots or command output."
+        "6. Treat Agent TARS as an external desktop operator; verify desktop results with screenshots or command output."
     )
 
 

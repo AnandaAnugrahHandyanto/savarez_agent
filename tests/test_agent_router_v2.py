@@ -42,9 +42,9 @@ def mock_registry():
                 "display_name": "Codex CLI",
                 "capabilities": ["file_modification", "script_execution", "git_operations", "code_review", "implementation_planning"],
             },
-            "openclaw": {
-                "id": "openclaw",
-                "display_name": "OpenClaw",
+            "agent-tars": {
+                "id": "agent-tars",
+                "display_name": "Agent TARS",
                 "capabilities": ["desktop_control", "app_operation", "screenshot", "macos_automation"],
             },
             "hermes-internal": {
@@ -69,8 +69,8 @@ def mock_registry():
             "git_operations": "claude",
             "code_review": "codex",
             "implementation_planning": "codex",
-            "desktop_control": "openclaw",
-            "app_operation": "openclaw",
+            "desktop_control": "agent-tars",
+            "app_operation": "agent-tars",
             "web_research": "hermes-internal",
             "file_reading_analysis": "hermes-internal",
             "strategy_decision": "hermes-internal",
@@ -110,10 +110,10 @@ class TestNewTaskTypes:
         assert result.mode == "single_agent"
         assert "codex" in result.agents
 
-    def test_desktop_operation_routes_to_openclaw(self, router):
+    def test_desktop_operation_routes_to_agent_tars(self, router):
         result = router.route("desktop_operation")
         assert result.mode == "single_agent"
-        assert "openclaw" in result.agents
+        assert "agent-tars" in result.agents
 
     def test_conversation_is_self_execute(self, router):
         result = router.route("conversation")

@@ -151,14 +151,24 @@ class EventLog:
         self._db_path = Path(db_path) if db_path else _get_db_path()
         self._lock = threading.RLock()
         self._conn: Optional[sqlite3.Connection] = None
+        self._conn_thread_id: Optional[int] = None
 
     # ── connection management ──
 
     def _get_conn(self) -> sqlite3.Connection:
-        if self._conn is None:
+        current_thread_id = threading.get_ident()
+        if self._conn is None or self._conn_thread_id != current_thread_id:
             with self._lock:
+                if self._conn is not None and self._conn_thread_id != current_thread_id:
+                    try:
+                        self._conn.close()
+                    except Exception:
+                        pass
+                    self._conn = None
+                    self._conn_thread_id = None
                 if self._conn is None:
                     self._conn = sqlite3.connect(str(self._db_path))
+                    self._conn_thread_id = current_thread_id
                     self._conn.execute("PRAGMA journal_mode=WAL")
                     self._conn.execute("PRAGMA synchronous=NORMAL")
                     self._conn.executescript(SCHEMA_SQL)
@@ -172,6 +182,7 @@ class EventLog:
             except Exception:
                 pass
             self._conn = None
+            self._conn_thread_id = None
 
     # ── write ──
 

@@ -86,7 +86,7 @@ DEFAULT_ROUTES: Dict[str, Dict[str, Any]] = {
     "desktop_operation": {
         "mode": "single_agent",
         "capability": "desktop_control",
-        "reason": "桌面/应用操作由 OpenClaw 执行",
+        "reason": "桌面/应用操作由 TARS 执行",
     },
     "conversation": {
         "mode": "self_execute",
@@ -193,8 +193,8 @@ _FALLBACK_AGENT_CAPABILITIES: Dict[str, Dict[str, Any]] = {
         "capabilities": ["file_modification", "script_execution", "git_operations", "code_review", "implementation_planning"],
         "use_when": ["需要 Codex 风格代码推理", "代码审查", "Claude Code 的执行备选"],
     },
-    "openclaw": {
-        "name": "OpenClaw",
+    "agent-tars": {
+        "name": "Agent TARS",
         "capabilities": ["desktop_control", "app_operation", "screenshot", "macos_automation"],
         "use_when": ["需要 macOS 桌面控制", "截图", "打开 App、点击、输入"],
         "constraint": "外部桌面 operator，结果需要截图或命令输出确认",
@@ -543,12 +543,12 @@ class AgentRouter:
                     issues.append(
                         f"{label} prompt 缺少具体修改信息（文件路径、行号、函数名、参数修改等）"
                     )
-        elif normalized == "openclaw":
+        elif normalized in {"agent-tars", "tars"}:
             has_desktop_target = bool(
                 re.search(r'(截图|点击|输入|打开|切换|滚动|按|坐标|窗口|屏幕|App|应用|desktop|screenshot|click|type)', prompt, re.I)
             )
             if not has_desktop_target:
-                issues.append("OpenClaw prompt 缺少明确桌面动作或目标（如截图、点击、输入、打开 App）")
+                issues.append("TARS prompt 缺少明确桌面动作或目标（如截图、点击、输入、打开 App）")
         elif normalized == "kimi":
             if len(prompt.strip()) < 20:
                 issues.append("Kimi 已降级且 prompt 太短；仅在用户明确要求 Kimi 且任务自包含时使用")

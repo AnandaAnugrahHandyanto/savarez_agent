@@ -79,12 +79,16 @@ class TestDelegateRequirements(unittest.TestCase):
     def test_named_agent_schema_matches_current_agent_roster(self):
         props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
         expected = {
-            "kimi",
+            "nesta",
             "claude",
             "codex",
-            "openclaw",
+            "pirlo",
+            "intelligence",
+            "ambrosini",
+            "agent-tars",
+            "deepseek-tui",
             "hermes-internal",
-            "deepseek-worker",
+            "kanban",
         }
         self.assertEqual(set(props["agent_id"]["enum"]), expected)
         self.assertEqual(set(props["tasks"]["items"]["properties"]["agent_id"]["enum"]), expected)
@@ -93,11 +97,10 @@ class TestDelegateRequirements(unittest.TestCase):
     def test_delegation_guidance_reflects_current_roster(self, mock_registry):
         mock_registry.return_value = {
             "agents": {
-                "kimi": {
-                    "type": "researcher",
-                    "status": "deprecated",
-                    "capabilities": ["web_search"],
-                    "subagent_profile": {"toolsets": ["web", "file"]},
+                "nesta": {
+                    "type": "technical_analyst",
+                    "capabilities": ["technical_decomposition"],
+                    "subagent_profile": {"toolsets": ["file", "terminal"]},
                 },
                 "claude": {
                     "type": "file_executor",
@@ -109,10 +112,15 @@ class TestDelegateRequirements(unittest.TestCase):
                     "capabilities": ["code_review", "implementation_planning"],
                     "subagent_profile": {"toolsets": ["file", "terminal"]},
                 },
-                "openclaw": {
+                "agent-tars": {
                     "type": "desktop_operator",
                     "capabilities": ["desktop_control", "screenshot"],
                     "subagent_profile": {"toolsets": ["terminal", "file"]},
+                },
+                "intelligence": {
+                    "type": "researcher",
+                    "capabilities": ["web_research"],
+                    "subagent_profile": {"toolsets": ["web", "file"]},
                 },
             }
         }
@@ -120,8 +128,8 @@ class TestDelegateRequirements(unittest.TestCase):
         guidance = get_delegation_guidance()
 
         self.assertIn("agent_id='codex'", guidance)
-        self.assertIn("agent_id='openclaw'", guidance)
-        self.assertIn("Kimi is deprecated/manual-only", guidance)
+        self.assertIn("agent_id='agent-tars'", guidance)
+        self.assertIn("agent_id='intelligence'", guidance)
         self.assertNotIn("When the user names kimi, ALWAYS delegate", guidance)
 
     def test_schema_description_advertises_runtime_limits(self):

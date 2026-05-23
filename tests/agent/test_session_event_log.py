@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -137,3 +138,29 @@ class TestSubagentEvents:
         types = [e["type"] for e in events]
         assert EVENT_SUBAGENT_STARTED in types
         assert EVENT_SUBAGENT_COMPLETED in types
+
+    def test_event_log_reopens_connection_across_threads(self):
+        """Gateway sessions can reuse EventLog from different worker threads."""
+        self.elog.log_subagent_started(
+            task_id="task-thread", session_id="sess-thread",
+            subagent_id="sa-main", goal_preview="main thread",
+        )
+
+        error = []
+
+        def worker():
+            try:
+                self.elog.log_subagent_completed(
+                    task_id="task-thread", session_id="sess-thread",
+                    subagent_id="sa-main", status="completed",
+                )
+            except Exception as exc:
+                error.append(exc)
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join(timeout=5)
+
+        assert not t.is_alive()
+        assert error == []
+        assert len(self.elog.get_events_for_task("task-thread")) == 2

@@ -3960,7 +3960,7 @@ def run_conversation(
             if kb_bridge is not None:
                 try:
                     kb_bridge.request_review(["codex"])
-                    kb_bridge.complete_review(
+                    kb_bridge.apply_review_result(
                         {
                             "decision": "changes_requested"
                             if review_result.needs_revision
