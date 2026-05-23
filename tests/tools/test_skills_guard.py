@@ -66,6 +66,28 @@ class TestResolveTrustLevel:
         assert _resolve_trust_level("random-user/my-skill") == "community"
         assert _resolve_trust_level("") == "community"
 
+    def test_prefix_attack_on_trusted_repo_rejected(self):
+        """Prefix-match attack should not grant trusted tier (#31141).
+
+        An attacker-controlled repo like 'openai/skills-evil' should NOT
+        match 'openai/skills' via startswith — only exact match or
+        sub-path (openai/skills/foo) should be trusted.
+        """
+        assert _resolve_trust_level("openai/skills-evil") == "community"
+        assert _resolve_trust_level("anthropics/skills-malicious") == "community"
+        assert _resolve_trust_level("huggingface/skills-attack") == "community"
+
+    def test_prefix_attack_on_official_rejected(self):
+        """The 'official' username should not match 'official-evil/repo'."""
+        assert _resolve_trust_level("official-evil/malware") == "community"
+        assert _resolve_trust_level("official-attacker/skill") == "community"
+
+    def test_subpath_of_trusted_repo_is_trusted(self):
+        """Legitimate sub-paths under trusted repos should still work."""
+        assert _resolve_trust_level("openai/skills/some-skill") == "trusted"
+        assert _resolve_trust_level("anthropics/skills/deep/nested/skill") == "trusted"
+        assert _resolve_trust_level("huggingface/skills/llm/finetune") == "trusted"
+
 
 # ---------------------------------------------------------------------------
 # _determine_verdict
