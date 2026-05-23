@@ -20,6 +20,7 @@ from hermes_cli.config import (
     save_env_value_secure,
     sanitize_env_file,
     _sanitize_env_lines,
+    _quote_env_value,
 )
 
 
@@ -225,6 +226,80 @@ class TestSaveEnvValueSecure:
             save_env_value("TENOR_API_KEY", "sk-test-secret")
             env_mode = (tmp_path / ".env").stat().st_mode & 0o777
             assert env_mode == 0o600
+
+
+class TestQuoteEnvValue:
+    """Unit tests for the .env value quoting helper.
+
+    Regression coverage for issue #30355: unquoted values containing ``#``
+    (or whitespace, quotes, ``$``) get truncated or mangled when the file is
+    re-read by python-dotenv. ``_quote_env_value`` must produce output that
+    round-trips through ``load_env`` to the original string.
+    """
+
+    def test_plain_value_is_not_quoted(self):
+        assert _quote_env_value("sk-ant-oat01-abcDEF123") == "sk-ant-oat01-abcDEF123"
+
+    def test_empty_value_is_empty(self):
+        assert _quote_env_value("") == ""
+
+    def test_hash_in_value_is_single_quoted(self):
+        # The bug from the issue: `#` would otherwise be treated as a comment
+        # start by python-dotenv, truncating the value.
+        assert _quote_env_value("sk-ant-oat01-abc#xyz") == "'sk-ant-oat01-abc#xyz'"
+
+    def test_whitespace_in_value_is_quoted(self):
+        assert _quote_env_value("two words") == "'two words'"
+
+    def test_dollar_sign_uses_literal_single_quotes(self):
+        # Single quotes prevent python-dotenv variable expansion of ``$VAR``.
+        assert _quote_env_value("abc$VAR123") == "'abc$VAR123'"
+
+    def test_single_quote_in_value_uses_double_quotes_with_escapes(self):
+        # When the value itself contains ``'`` we can't use single-quoting,
+        # so we fall back to double quotes and escape ``$`` and ``\``.
+        assert _quote_env_value("it's-fine") == '"it\'s-fine"'
+        assert _quote_env_value("it's $VAR") == '"it\'s \\$VAR"'
+
+    def test_save_env_value_roundtrips_value_with_hash(self, tmp_path):
+        """End-to-end: a token containing ``#`` survives a write/read cycle."""
+        token = "sk-ant-oat01-abc#xyz456"
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("ANTHROPIC_TOKEN", None)
+            save_env_value("ANTHROPIC_TOKEN", token)
+            env_values = load_env()
+            assert env_values["ANTHROPIC_TOKEN"] == token
+
+    def test_save_env_value_roundtrips_value_with_dollar(self, tmp_path):
+        """Values containing ``$`` must not undergo variable expansion."""
+        token = "tok-$NOT_A_VAR-tail"
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("OPENAI_API_KEY", None)
+            save_env_value("OPENAI_API_KEY", token)
+            env_values = load_env()
+            assert env_values["OPENAI_API_KEY"] == token
+
+    def test_save_env_value_roundtrips_value_with_single_quote(self, tmp_path):
+        """A single quote in the value triggers the double-quoted branch."""
+        token = "tok-with-it's-apostrophe"
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("CUSTOM_TOKEN", None)
+            save_env_value("CUSTOM_TOKEN", token)
+            env_values = load_env()
+            assert env_values["CUSTOM_TOKEN"] == token
+
+    def test_dotenv_parses_quoted_hash_value(self, tmp_path):
+        """python-dotenv (the parser used by env_loader on startup) must see
+        the full unquoted value, not the pre-``#`` truncation it was producing
+        on unquoted writes."""
+        from dotenv import dotenv_values
+
+        token = "sk-ant-oat01-abc#xyz456"
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("ANTHROPIC_TOKEN", None)
+            save_env_value("ANTHROPIC_TOKEN", token)
+            parsed = dotenv_values(tmp_path / ".env")
+            assert parsed["ANTHROPIC_TOKEN"] == token
 
 
 class TestRemoveEnvValue:

@@ -12360,10 +12360,17 @@ Examples:
             from hermes_cli.skills_config import skills_command as skills_config_command
 
             skills_config_command(args)
-        else:
-            from hermes_cli.skills_hub import skills_command
+            return
 
-            skills_command(args)
+        from hermes_cli.skills_hub import skills_command
+
+        rc = skills_command(args)
+        # Surface failures (e.g. unresolvable identifier on `skills install`)
+        # via a non-zero process exit so shell chains, CI, and bulk-install
+        # scripts can detect the failure. Successful runs return 0 and fall
+        # through without touching the exit code.
+        if isinstance(rc, int) and rc != 0:
+            sys.exit(rc)
 
     skills_parser.set_defaults(func=cmd_skills)
 

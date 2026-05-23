@@ -460,13 +460,21 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
     if p in {"openai", "openai-chat", "openai-codex", "azure-openai"}:
         return True
 
-    # Gemini — gate on model name; older Gemini variants did not support
-    # multimodal functionResponse. Gemini 3.x does.
+    # Gemini — gate on model name; truly legacy Gemini variants (1.x) did not
+    # support multimodal functionResponse. Gemini 2.0+ accepts multimodal tool
+    # results via the OpenAI-compatible endpoint, and the native v1beta API
+    # supports it from 2.5 onward; 3.x supports it everywhere.
     if p in {"google", "gemini", "google-gemini", "google-vertex-gemini"}:
         if not isinstance(model, str):
             return False
         m = model.strip().lower()
-        if "gemini-3" in m or "gemini-pro-3" in m or "gemini-flash-3" in m:
+        if (
+            "gemini-3" in m
+            or "gemini-pro-3" in m
+            or "gemini-flash-3" in m
+            or "gemini-2.5" in m
+            or "gemini-2.0" in m
+        ):
             return True
         return False
 

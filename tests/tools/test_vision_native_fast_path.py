@@ -52,8 +52,23 @@ class TestSupportsMediaInToolResults:
     def test_gemini_3_yes(self):
         assert _supports_media_in_tool_results("google", "gemini-3-flash-preview") is True
 
-    def test_gemini_2_no(self):
-        assert _supports_media_in_tool_results("google", "gemini-2.5-pro") is False
+    def test_gemini_2_5_yes(self):
+        # Issue #30704: Gemini 2.5 accepts multimodal tool results via the
+        # OpenAI-compatible endpoint; the legacy allowlist incorrectly forced
+        # callers onto the auxiliary text pipeline.
+        assert _supports_media_in_tool_results("google", "gemini-2.5-pro") is True
+        assert _supports_media_in_tool_results("gemini", "gemini-2.5-flash") is True
+        assert _supports_media_in_tool_results("google-gemini", "gemini-2.5-pro-exp") is True
+
+    def test_gemini_2_0_yes(self):
+        assert _supports_media_in_tool_results("google", "gemini-2.0-flash") is True
+        assert _supports_media_in_tool_results("gemini", "gemini-2.0-flash-exp") is True
+
+    def test_gemini_legacy_no(self):
+        # True legacy (1.x) Gemini variants never supported multimodal
+        # functionResponse and must still fall back to the auxiliary pipeline.
+        assert _supports_media_in_tool_results("google", "gemini-1.5-pro") is False
+        assert _supports_media_in_tool_results("google", "gemini-pro") is False
 
     def test_unknown_provider_conservative_no(self):
         assert _supports_media_in_tool_results("brand-new-provider", "any-model") is False

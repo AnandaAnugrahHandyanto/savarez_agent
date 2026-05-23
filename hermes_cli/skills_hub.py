@@ -414,7 +414,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True,
-               name_override: str = "") -> None:
+               name_override: str = "") -> int:
     """Fetch, quarantine, scan, confirm, and install a skill.
 
     ``name_override`` lets non-interactive callers (slash commands, gateway,
@@ -423,6 +423,12 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     triggers a prompt instead; ``skip_confirm=True`` means "non-interactive"
     (so pair it with ``name_override`` when installing from a URL that has
     no frontmatter).
+
+    Returns 0 on a successful install (including a no-op when the skill is
+    already installed and ``--force`` was not requested) and 1 on any failure
+    that should be surfaced to shell scripts and CI runners via a non-zero
+    exit code — unresolvable identifier, fetch failure, security scan
+    rejection, or user cancellation at the confirmation prompt.
     """
     from tools.skills_hub import (
         GitHubAuth, create_source_router, ensure_hub_dirs,
@@ -441,7 +447,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     if "/" not in identifier:
         identifier = _resolve_short_name(identifier, sources, c)
         if not identifier:
-            return
+            return 1
 
     c.print(f"\n[bold]Fetching:[/] {identifier}")
 
@@ -465,7 +471,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
             )
         else:
             c.print()
-        return
+        return 1
 
     # URL-sourced skills may arrive with an empty name when SKILL.md has no
     # ``name:`` in frontmatter AND the URL path doesn't yield a valid
@@ -482,7 +488,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                 "Must be a lowercase identifier (letters, digits, hyphens, "
                 "underscores; starts with a letter).\n"
             )
-            return
+            return 1
         elif skip_confirm:
             # Non-interactive surface (slash command / TUI / gateway). Can't
             # prompt — emit an actionable error.
@@ -497,14 +503,14 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                 "[dim]Or ask the SKILL.md's author to add a `name:` field to "
                 "its YAML frontmatter.[/]\n"
             )
-            return
+            return 1
         else:
             # Interactive TTY — prompt.
             url = bundle_meta.get("url") or identifier
             chosen = _prompt_for_skill_name(c, url)
             if not chosen:
                 c.print("[dim]Installation cancelled.[/]\n")
-                return
+                return 1
             bundle.name = chosen
             bundle_meta["awaiting_name"] = False
         # Keep SkillMeta in sync so downstream "already installed" checks,
@@ -532,7 +538,9 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         c.print(f"[yellow]Warning:[/] '{bundle.name}' is already installed at {existing['install_path']}")
         if not force:
             c.print("Use --force to reinstall.\n")
-            return
+            # The requested skill is present on disk, so the caller's intent
+            # ("ensure this skill is installed") is satisfied — exit 0.
+            return 0
 
     extra_metadata = dict(getattr(meta, "extra", {}) or {})
     extra_metadata.update(getattr(bundle, "metadata", {}) or {})
@@ -545,7 +553,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         from tools.skills_hub import append_audit_log
         append_audit_log("BLOCKED", bundle.name, bundle.source,
                          bundle.trust_level, "invalid_path", str(exc))
-        return
+        return 1
     c.print(f"[dim]Quarantined to {q_path.relative_to(q_path.parent.parent.parent)}[/]")
 
     # Scan
@@ -564,7 +572,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         append_audit_log("BLOCKED", bundle.name, bundle.source,
                          bundle.trust_level, result.verdict,
                          f"{len(result.findings)}_findings")
-        return
+        return 1
 
     if extra_metadata:
         metadata_lines = _format_extra_metadata_lines(extra_metadata)
@@ -602,7 +610,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         if answer not in {"y", "yes"}:
             c.print("[dim]Installation cancelled.[/]\n")
             shutil.rmtree(q_path, ignore_errors=True)
-            return
+            return 1
 
     # Install
     try:
@@ -613,7 +621,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         from tools.skills_hub import append_audit_log
         append_audit_log("BLOCKED", bundle.name, bundle.source,
                          bundle.trust_level, "invalid_path", str(exc))
-        return
+        return 1
     from tools.skills_hub import SKILLS_DIR
     c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
@@ -628,6 +636,8 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     else:
         c.print("[dim]Skill will be available in your next session.[/]")
         c.print("[dim]Use /reset to start a new session now, or --now to activate immediately (invalidates prompt cache).[/]\n")
+
+    return 0
 
 
 def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
@@ -1319,8 +1329,14 @@ def do_snapshot_import(input_path: str, force: bool = False,
 # CLI argparse entry point
 # ---------------------------------------------------------------------------
 
-def skills_command(args) -> None:
-    """Router for `hermes skills <subcommand>` — called from hermes_cli/main.py."""
+def skills_command(args) -> int:
+    """Router for `hermes skills <subcommand>` — called from hermes_cli/main.py.
+
+    Returns an int exit code so the top-level dispatcher can surface failures
+    (e.g. an unresolvable skill identifier on ``hermes skills install``) via a
+    non-zero process exit, instead of silently exiting 0 and breaking shell
+    chains like ``hermes skills install foo && hermes skills run foo``.
+    """
     action = getattr(args, "skills_action", None)
 
     if action == "browse":
@@ -1328,9 +1344,11 @@ def skills_command(args) -> None:
     elif action == "search":
         do_search(args.query, source=args.source, limit=args.limit)
     elif action == "install":
-        do_install(args.identifier, category=args.category, force=args.force,
-                   skip_confirm=getattr(args, "yes", False),
-                   name_override=getattr(args, "name", "") or "")
+        return int(do_install(
+            args.identifier, category=args.category, force=args.force,
+            skip_confirm=getattr(args, "yes", False),
+            name_override=getattr(args, "name", "") or "",
+        ) or 0)
     elif action == "inspect":
         do_inspect(args.identifier)
     elif action == "list":
@@ -1368,11 +1386,13 @@ def skills_command(args) -> None:
         repo = getattr(args, "repo", "") or getattr(args, "name", "")
         if not tap_action:
             _console.print("Usage: hermes skills tap [list|add|remove]\n")
-            return
+            return 0
         do_tap(tap_action, repo=repo)
     else:
         _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|reset|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
+
+    return 0
 
 
 # ---------------------------------------------------------------------------
