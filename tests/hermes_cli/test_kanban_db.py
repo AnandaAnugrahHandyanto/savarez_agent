@@ -183,6 +183,125 @@ def test_workspace_kind_validation(kanban_home):
         kb.create_task(conn, title="bad ws", workspace_kind="cloud")
 
 
+def test_board_default_workdir_coerces_implicit_scratch_to_dir(kanban_home, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    kb.create_board("project-board", default_workdir=str(project))
+
+    with kb.connect(board="project-board") as conn:
+        tid = kb.create_task(conn, title="uses board cwd", assignee="alice", board="project-board")
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    assert task.workspace_kind == "dir"
+    assert task.workspace_path == str(project)
+
+
+def test_resolve_workspace_rejects_scratch_path_outside_scratch_root(kanban_home, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="legacy dangerous scratch",
+            assignee="alice",
+            workspace_kind="scratch",
+            workspace_path=str(project),
+        )
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    with pytest.raises(ValueError, match="outside scratch workspace root"):
+        kb.resolve_workspace(task)
+
+
+def test_complete_task_does_not_delete_scratch_path_outside_scratch_root(kanban_home, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    marker = project / "keep.txt"
+    marker.write_text("do not delete", encoding="utf-8")
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="legacy dangerous cleanup",
+            assignee="alice",
+            workspace_kind="scratch",
+            workspace_path=str(project),
+        )
+        assert kb.complete_task(conn, tid, summary="done") is True
+
+    assert project.is_dir()
+    assert marker.read_text(encoding="utf-8") == "do not delete"
+
+
+def test_resolve_workspace_writes_scratch_marker(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="marked scratch", assignee="alice")
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    workspace = kb.resolve_workspace(task)
+    marker = workspace / ".hermes-kanban-scratch"
+
+    assert marker.is_file()
+    assert f'"task_id": "{tid}"' in marker.read_text(encoding="utf-8")
+
+
+def test_complete_task_refuses_to_delete_unmarked_scratch_workspace(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="unmarked scratch", assignee="alice")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, tid, workspace)
+        marker = workspace / ".hermes-kanban-scratch"
+        marker.unlink()
+        keep = workspace / "keep.txt"
+        keep.write_text("still here", encoding="utf-8")
+
+        assert kb.complete_task(conn, tid, summary="done") is True
+
+    assert workspace.is_dir()
+    assert keep.read_text(encoding="utf-8") == "still here"
+
+
+def test_complete_task_refuses_to_delete_scratch_workspace_with_mismatched_marker(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="mismatched marker", assignee="alice")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, tid, workspace)
+        (workspace / ".hermes-kanban-scratch").write_text(
+            '{"version": 1, "board": "default", "task_id": "other", "path": "'
+            + str(workspace)
+            + '"}',
+            encoding="utf-8",
+        )
+        keep = workspace / "keep.txt"
+        keep.write_text("still here", encoding="utf-8")
+
+        assert kb.complete_task(conn, tid, summary="done") is True
+
+    assert workspace.is_dir()
+    assert keep.read_text(encoding="utf-8") == "still here"
+
+
+def test_complete_task_deletes_only_marked_managed_scratch_workspace(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="valid scratch", assignee="alice")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        workspace = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, tid, workspace)
+        (workspace / "temp.txt").write_text("delete me", encoding="utf-8")
+
+        assert kb.complete_task(conn, tid, summary="done") is True
+
+    assert not workspace.exists()
+
+
 def test_create_task_persists_worktree_branch_name(kanban_home, tmp_path):
     target = tmp_path / ".worktrees" / "t6-wire"
     with kb.connect() as conn:

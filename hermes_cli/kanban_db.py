@@ -99,6 +99,8 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
+SCRATCH_MARKER_NAME = ".hermes-kanban-scratch"
+SCRATCH_MARKER_VERSION = 1
 
 # A running task's claim is valid for 15 minutes by default; after that the
 # next dispatcher tick reclaims it. Workers that outlive this window should
@@ -354,6 +356,91 @@ def workspaces_root(board: Optional[str] = None) -> Path:
     if slug == DEFAULT_BOARD:
         return kanban_home() / "kanban" / "workspaces"
     return board_dir(slug) / "workspaces"
+
+
+def _is_path_relative_to(path: Path, parent: Path) -> bool:
+    """Return True when ``path`` is inside ``parent`` after resolving symlinks."""
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _canonical_path(path: Path) -> str:
+    return str(path.expanduser().resolve())
+
+
+def _scratch_marker_path(path: Path) -> Path:
+    return path / SCRATCH_MARKER_NAME
+
+
+def _write_scratch_marker(path: Path, *, task_id: str, board: Optional[str] = None) -> None:
+    """Record Kanban scratch provenance inside a managed scratch dir.
+
+    Cleanup uses this marker as proof that the directory was created by Kanban
+    as disposable scratch space. A DB row saying ``workspace_kind=scratch`` is
+    not sufficient by itself.
+    """
+    board_slug = _normalize_board_slug(board) or get_current_board()
+    marker = _scratch_marker_path(path)
+    payload = {
+        "version": SCRATCH_MARKER_VERSION,
+        "board": board_slug,
+        "task_id": task_id,
+        "path": _canonical_path(path),
+        "created_at": int(time.time()),
+    }
+    tmp = marker.with_name(f"{marker.name}.tmp")
+    tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(marker)
+
+
+def _validate_scratch_marker(path: Path, *, task_id: str, board: Optional[str] = None) -> tuple[bool, str]:
+    """Return whether ``path`` is cleanup-eligible Kanban scratch space."""
+    if _truthy_env("HERMES_KANBAN_DISABLE_SCRATCH_CLEANUP"):
+        return False, "scratch cleanup disabled by HERMES_KANBAN_DISABLE_SCRATCH_CLEANUP"
+    if path.is_symlink():
+        return False, "scratch workspace path is a symlink"
+    if not path.is_dir():
+        return False, "scratch workspace path is not a directory"
+    marker = _scratch_marker_path(path)
+    if marker.is_symlink():
+        return False, "scratch marker is a symlink"
+    if not marker.is_file():
+        return False, "missing scratch marker"
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return False, f"invalid scratch marker: {exc}"
+    marker_board = payload.get("board")
+    if not marker_board:
+        return False, "scratch marker missing board"
+    try:
+        marker_board = _normalize_board_slug(str(marker_board))
+    except ValueError as exc:
+        return False, f"invalid scratch marker board: {exc}"
+    expected_board = _normalize_board_slug(board) if board else None
+    if expected_board and marker_board != expected_board:
+        return False, "scratch marker board mismatch"
+    if payload.get("task_id") != task_id:
+        return False, "scratch marker task mismatch"
+    if payload.get("version") != SCRATCH_MARKER_VERSION:
+        return False, "scratch marker version mismatch"
+    try:
+        canonical = _canonical_path(path)
+    except OSError as exc:
+        return False, f"cannot resolve scratch path: {exc}"
+    if payload.get("path") != canonical:
+        return False, "scratch marker path mismatch"
+    root = workspaces_root(board=marker_board)
+    if not _is_path_relative_to(path, root) or path.name != task_id:
+        return False, "scratch workspace is outside managed scratch root"
+    return True, "ok"
 
 
 def worker_logs_dir(board: Optional[str] = None) -> Path:
@@ -1518,13 +1605,19 @@ def create_task(
     now = int(time.time())
 
     # Resolve workspace_path from board-level default_workdir when the
-    # caller did not specify one explicitly.
+    # caller did not specify one explicitly. A board default workdir is a
+    # durable shared directory, not a disposable scratch workspace; storing it
+    # as ``workspace_kind='scratch'`` is dangerous because scratch cleanup
+    # deletes the stored path on completion. Coerce implicit scratch defaults
+    # to ``dir`` so project roots are preserved.
     if workspace_path is None:
         board_slug = board if board else get_current_board()
         board_meta = read_board_metadata(board_slug)
         board_default = board_meta.get("default_workdir")
         if board_default:
             workspace_path = str(board_default)
+            if workspace_kind == "scratch":
+                workspace_kind = "dir"
 
     # Retry once on the extremely unlikely id collision.
     for attempt in range(2):
@@ -2925,9 +3018,17 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
             return
         import shutil
         wp = Path(path)
-        if wp.is_dir():
-            shutil.rmtree(wp, ignore_errors=True)
-            _log.debug("Removed scratch workspace: %s", wp)
+        ok, reason = _validate_scratch_marker(wp, task_id=task_id)
+        if not ok:
+            _log.error(
+                "Refusing to remove unverified scratch workspace: task=%s path=%s reason=%s",
+                task_id,
+                wp,
+                reason,
+            )
+            return
+        shutil.rmtree(wp, ignore_errors=True)
+        _log.debug("Removed scratch workspace: %s", wp)
         # Also kill the tmux session for the worker that owned this task,
         # if the tmux session is now dead (worker process exited).
         _cleanup_worker_tmux(conn, task_id)
@@ -3534,17 +3635,28 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
     if kind == "scratch":
         if task.workspace_path:
             # Legacy scratch tasks that were set to an explicit path get the
-            # same absolute-path guard as dir: — consistent with the
-            # threat model.
+            # same absolute-path guard as dir: plus a scratch-root containment
+            # check. Scratch workspaces are later removed by cleanup; never
+            # accept an arbitrary explicit path as scratch.
             p = Path(task.workspace_path).expanduser()
             if not p.is_absolute():
                 raise ValueError(
                     f"task {task.id} has non-absolute workspace_path "
                     f"{task.workspace_path!r}; workspace paths must be absolute"
                 )
+            root = workspaces_root(board=board)
+            if not _is_path_relative_to(p, root) or p.name != task.id:
+                raise ValueError(
+                    f"task {task.id} has scratch workspace_path {task.workspace_path!r} "
+                    f"outside scratch workspace root {str(root)!r}; use workspace_kind=dir "
+                    "for durable project directories"
+                )
         else:
             p = workspaces_root(board=board) / task.id
+        if p.exists() and p.is_symlink():
+            raise ValueError(f"task {task.id} scratch workspace path is a symlink: {p}")
         p.mkdir(parents=True, exist_ok=True)
+        _write_scratch_marker(p, task_id=task.id, board=board)
         return p
     if kind == "dir":
         if not task.workspace_path:
