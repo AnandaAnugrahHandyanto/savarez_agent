@@ -2098,6 +2098,14 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "OPENCODE_API_KEY": {
+        "description": "OpenCode shared API key (OpenClaw compat alias for Zen + Go)",
+        "prompt": "OpenCode API key",
+        "url": "https://opencode.ai/auth",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
     "OPENCODE_ZEN_BASE_URL": {
         "description": "OpenCode Zen base URL override",
         "prompt": "OpenCode Zen base URL (leave empty for default)",

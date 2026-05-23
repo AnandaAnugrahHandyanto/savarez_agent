@@ -383,7 +383,8 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="OpenCode Zen",
         auth_type="api_key",
         inference_base_url="https://opencode.ai/zen/v1",
-        api_key_env_vars=("OPENCODE_ZEN_API_KEY",),
+        # OpenClaw stores a shared key as OPENCODE_API_KEY and in auth-profiles.json.
+        api_key_env_vars=("OPENCODE_ZEN_API_KEY", "OPENCODE_API_KEY"),
         base_url_env_var="OPENCODE_ZEN_BASE_URL",
     ),
     "opencode-go": ProviderConfig(
@@ -395,7 +396,8 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         # - MiniMax models use Anthropic Messages under /v1/messages
         # Keep the provider base at /v1 and select api_mode per-model.
         inference_base_url="https://opencode.ai/zen/go/v1",
-        api_key_env_vars=("OPENCODE_GO_API_KEY",),
+        # Match OpenClaw: shared OPENCODE_API_KEY covers Zen + Go catalogs.
+        api_key_env_vars=("OPENCODE_GO_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_API_KEY"),
         base_url_env_var="OPENCODE_GO_BASE_URL",
     ),
     "kilocode": ProviderConfig(
@@ -574,6 +576,63 @@ def has_usable_secret(value: Any, *, min_length: int = 4) -> bool:
     return True
 
 
+def _openclaw_state_dir() -> Path:
+    """Return the active OpenClaw state directory (default: ~/.openclaw)."""
+    raw = os.getenv("OPENCLAW_STATE_DIR", "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    return Path.home() / ".openclaw"
+
+
+def _parse_dotenv_keys(path: Path) -> dict[str, str]:
+    """Parse a .env file into a key/value dict (best-effort, no expansion)."""
+    if not path.is_file():
+        return {}
+    out: dict[str, str] = {}
+    try:
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip().lstrip("\ufeff")
+            value = value.strip().strip('"').strip("'")
+            if key:
+                out[key] = value
+    except OSError:
+        return {}
+    return out
+
+
+def _resolve_openclaw_opencode_api_key() -> tuple[str, str]:
+    """Read the shared OpenCode key from an OpenClaw install, if present."""
+    state_dir = _openclaw_state_dir()
+    auth_profiles_path = state_dir / "agents" / "main" / "agent" / "auth-profiles.json"
+    if auth_profiles_path.is_file():
+        try:
+            payload = json.loads(auth_profiles_path.read_text(encoding="utf-8"))
+            profile_entries = payload.get("profiles", payload)
+            if isinstance(profile_entries, dict):
+                for profile_name, profile_data in profile_entries.items():
+                    if not isinstance(profile_data, dict):
+                        continue
+                    provider = str(profile_data.get("provider", "")).lower()
+                    name_lower = str(profile_name).lower()
+                    if provider not in {"opencode", "opencode-zen", "opencode-go"} and "opencode" not in name_lower:
+                        continue
+                    api_key = profile_data.get("key") or profile_data.get("apiKey")
+                    if isinstance(api_key, str) and has_usable_secret(api_key.strip()):
+                        return api_key.strip(), f"openclaw:auth-profiles:{profile_name}"
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    openclaw_env = _parse_dotenv_keys(state_dir / ".env")
+    env_key = openclaw_env.get("OPENCODE_API_KEY", "").strip()
+    if has_usable_secret(env_key):
+        return env_key, "openclaw:.env:OPENCODE_API_KEY"
+    return "", ""
+
+
 def _resolve_api_key_provider_secret(
     provider_id: str, pconfig: ProviderConfig
 ) -> tuple[str, str]:
@@ -611,6 +670,11 @@ def _resolve_api_key_provider_secret(
                     return key, f"credential_pool:{provider_id}"
     except Exception:
         pass
+
+    if provider_id in {"opencode-zen", "opencode-go"}:
+        api_key, source = _resolve_openclaw_opencode_api_key()
+        if api_key:
+            return api_key, source
 
     return "", ""
 

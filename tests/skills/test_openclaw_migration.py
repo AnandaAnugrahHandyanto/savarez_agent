@@ -862,6 +862,48 @@ def test_provider_keys_require_migrate_secrets_flag(tmp_path: Path):
     assert "OPENROUTER_API_KEY=sk-or-test-key" in env_text
 
 
+def test_provider_keys_migrate_opencode_auth_profile(tmp_path: Path):
+    """OpenClaw auth-profiles opencode:default maps to Hermes OPENCODE_* keys."""
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    target.mkdir()
+    source.mkdir()
+
+    auth_dir = source / "agents" / "main" / "agent"
+    auth_dir.mkdir(parents=True)
+    auth_dir.joinpath("auth-profiles.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "profiles": {
+                    "opencode:default": {
+                        "provider": "opencode",
+                        "type": "api_key",
+                        "key": "sk-opencode-from-profile",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=True,
+        output_dir=None,
+        selected_options={"provider-keys"},
+    )
+    migrator.migrate()
+    env_text = (target / ".env").read_text(encoding="utf-8")
+    assert "OPENCODE_ZEN_API_KEY=sk-opencode-from-profile" in env_text
+    assert "OPENCODE_GO_API_KEY=sk-opencode-from-profile" in env_text
+
+
 def test_workspace_agents_records_skip_when_missing(tmp_path: Path):
     """Bug fix: workspace-agents records 'skipped' when source is missing."""
     mod = load_module()

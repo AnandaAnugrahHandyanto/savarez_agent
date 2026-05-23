@@ -1703,6 +1703,8 @@ class Migrator:
                     name_lower = provider_name.lower()
                     if name_lower == "openrouter":
                         env_var = "OPENROUTER_API_KEY"
+                    elif name_lower in {"opencode", "opencode-zen", "opencode_go", "opencode-go"}:
+                        env_var = "OPENCODE_ZEN_API_KEY"
                     elif "openai" in name_lower:
                         env_var = "OPENAI_API_KEY"
                     elif name_lower in {"llama-cpp", "llamacpp"}:
@@ -1744,6 +1746,9 @@ class Migrator:
             "GEMINI_API_KEY": "GEMINI_API_KEY",
             "ZAI_API_KEY": "ZAI_API_KEY",
             "MINIMAX_API_KEY": "MINIMAX_API_KEY",
+            "OPENCODE_API_KEY": "OPENCODE_ZEN_API_KEY",
+            "OPENCODE_ZEN_API_KEY": "OPENCODE_ZEN_API_KEY",
+            "OPENCODE_GO_API_KEY": "OPENCODE_GO_API_KEY",
         }
         for oc_key, hermes_key in env_key_mapping.items():
             val = openclaw_env.get(oc_key, "").strip()
@@ -1787,6 +1792,13 @@ class Migrator:
                             secret_additions["OPENAI_API_KEY"] = api_key.strip()
                         elif "anthropic" in name_lower and "ANTHROPIC_API_KEY" not in secret_additions:
                             secret_additions["ANTHROPIC_API_KEY"] = api_key.strip()
+                        elif (
+                            "opencode" in name_lower
+                            and "OPENCODE_ZEN_API_KEY" not in secret_additions
+                        ):
+                            shared = api_key.strip()
+                            secret_additions["OPENCODE_ZEN_API_KEY"] = shared
+                            secret_additions.setdefault("OPENCODE_GO_API_KEY", shared)
             except (json.JSONDecodeError, OSError):
                 pass
 
