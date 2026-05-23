@@ -1,0 +1,20 @@
+# stub-handoff-fail-schema.yaml
+# Handoff that FAILS schema validation — intentionally missing required fields.
+# Required fields absent: task_id, completed_at, changed_files, test_results.passed.
+# Used to test that Hermes rejects handoffs before running any other gate.
+# This fixture is intentionally malformed — do NOT use as a real handoff template.
+
+agent: claude_code
+summary: "This handoff is missing task_id, completed_at, changed_files, and test_results."
+# task_id: MISSING (required)
+# completed_at: MISSING (required)
+# changed_files: MISSING (required)
+test_results:
+  command_run: "scripts/run_tests.sh"
+  exit_code: 0
+  stdout_tail: "47 passed"
+  # passed: MISSING (required field inside test_results)
+eval_evidence:
+  lint_clean: true
+open_issues: []
+self_assessed_confidence: medium

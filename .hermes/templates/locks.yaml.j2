@@ -1,0 +1,30 @@
+# Resource / Path Lock Map Template
+# Written by Hermes before agent spawn. Agents must NOT write this file.
+# Hermes holds the lock; agents never acquire or release locks directly.
+# Conflict enforcement is advisory in Phase 1/2 (post-hoc check, not OS-level lock).
+
+run_id: {{ run_id }}
+
+# conflict_policy controls behavior when a new task requests paths already locked:
+#   block     — refuse to spawn the second task (default, safest for MVP)
+#   warn      — spawn but log the conflict to audit.jsonl
+#   escalate  — pause and notify Yoshio for manual resolution
+conflict_policy: {{ conflict_policy | default("block") }}
+
+locks:
+{% for lock in locks %}
+  - task_id: {{ lock.task_id }}
+    agent: {{ lock.agent }}              # claude_code | codex
+    claimed_at: {{ lock.claimed_at }}    # ISO8601
+    released_at: ~                       # filled when task completes or is cancelled
+    paths:
+      # Glob patterns relative to repo root. Any overlap with another lock triggers conflict_policy.
+{% for path in lock.paths %}
+      - {{ path }}
+{% endfor %}
+{% endfor %}
+
+# Lock acquisition and release logic lives in the Hermes orchestrator skill.
+# Agents are never given credentials to modify this file.
+# On Phase 3 (container isolation): per-container HOME eliminates most path conflicts,
+# but this file is still used for cross-container coordination.

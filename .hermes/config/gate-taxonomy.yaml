@@ -1,0 +1,113 @@
+# Gate Taxonomy — Hybrid Agent Control Plane
+# Defines every gate type: category, blocking status, evaluator, description.
+# Human-authored. Agents must not modify this file.
+# Governed by: .hermes/plans/2026-05-22_000000-hybrid-agent-control-plane.md
+# Primary local enforcement: scripts/check_hybrid_control_plane.py (see plan C-6)
+
+gates:
+
+  # ── Static / fast ──────────────────────────────────────────────────────────
+  # Run first. No external process required. Fail fast before dynamic gates.
+
+  schema_validation:
+    category: static
+    blocking: true
+    evaluator: hermes_skill
+    description: >
+      Handoff payload matches handoff-v1.yaml schema. Required fields present
+      with correct types. Hermes rejects and logs raw payload before any other
+      gate runs on a schema-invalid handoff.
+
+  forbidden_path_writes:
+    category: static
+    blocking: true
+    evaluator: hermes_skill
+    description: >
+      handoff.changed_files contains no path matching contract.scope.forbidden_paths.
+      Forbidden paths include at minimum: .hermes/, .claude/, .codex/, AGENTS.md,
+      CLAUDE.md, CODEX.md (where CODEX.md is provisional).
+      On failure: log exact paths, reject handoff, flag as potential supply-chain
+      incident if prompt artifacts are among the forbidden paths written.
+
+  diff_size_limit:
+    category: static
+    blocking: true
+    evaluator: hermes_skill
+    description: >
+      Total diff KB <= contract.eval_gates.diff_size_limit_kb (default 500 KB).
+      Computed from actual git diff of worktree vs base SHA, not agent self-report.
+
+  prompt_artifact_unchanged:
+    category: static
+    blocking: true
+    evaluator: hermes_skill
+    description: >
+      Prompt artifacts (AGENTS.md, CLAUDE.md, CODEX.md, .claude/**, .codex/**,
+      .hermes/**) not present in changed_files unless task type is
+      prompt_artifact_change and Yoshio explicitly whitelisted the path.
+      This gate is redundant with forbidden_path_writes for most task types
+      but provides a second check specifically for supply-chain artifacts.
+
+  # ── Dynamic / execution ────────────────────────────────────────────────────
+  # Require running external commands. Run after all static gates pass.
+
+  lint:
+    category: dynamic
+    blocking: true
+    evaluator: hermes_skill_runs_command
+    description: >
+      Project linter exits 0 on changed files.
+      CONFIRM actual lint command before Phase 2.
+      Likely: ruff check <changed_files> for Python; eslint for JS/TS.
+      Hermes runs this in the worktree, not the main checkout.
+
+  unit_tests:
+    category: dynamic
+    blocking: true
+    evaluator: hermes_skill_runs_command
+    description: >
+      scripts/run_tests.sh (or equivalent) exits 0.
+      Hermes runs this in the worktree with .venv activated.
+      CONFIRM actual test command before Phase 2.
+      If handoff.test_results.passed=false, this gate fails without re-running.
+
+  integration_tests:
+    category: dynamic
+    blocking: false           # non-blocking in Phase 1; promote to blocking in Phase 2
+    evaluator: hermes_skill_runs_command
+    description: >
+      Integration test suite exits 0. Phase 1: advisory only, logged to audit.
+      Phase 2: promote to blocking after baseline established.
+
+  # ── Human / review ─────────────────────────────────────────────────────────
+
+  human_review:
+    category: human
+    blocking: true
+    evaluator: yoshio
+    description: >
+      Yoshio reviews diff and approves merge. MVP: always required before merge.
+      Hermes prints diff summary and waits for explicit /approve or /reject.
+      No automated merge in Phase 1 or Phase 2; Yoshio runs git commands manually.
+    trigger: always
+
+  security_scan:
+    category: human_or_tool
+    blocking: false           # Phase 1: advisory; Phase 2: blocking for security_adjacent tasks
+    evaluator: hermes_skill_or_yoshio
+    description: >
+      No obvious supply-chain or injection issues in diff. Phase 1: log advisory
+      only. Phase 2: promote to blocking for task types security_adjacent and
+      prompt_artifact_change.
+
+  # ── Resource ───────────────────────────────────────────────────────────────
+
+  cost_cap:
+    category: resource
+    blocking: true
+    evaluator: hermes_skill
+    description: >
+      Run total estimated cost <= manifest.total_cost_usd_cap.
+      Cost is ESTIMATED (token-count × model-pricing) — not exact.
+      Hermes checks before each agent spawn, not only at gate time.
+      See plan C-5 and capability-matrix.yaml cost_tracking field.

@@ -1,0 +1,28 @@
+# stub-handoff-fail-forbidden.yaml
+# Handoff that FAILS the forbidden_path_writes gate.
+# changed_files includes a prompt artifact path (.hermes/config/capability-matrix.yaml).
+# Used to test that the gate correctly blocks merges when agents touch forbidden paths.
+# This fixture intentionally includes a forbidden path — it is NOT a valid handoff.
+
+task_id: "stub-task-0002"
+agent: claude_code
+completed_at: "2026-05-22T10:05:00Z"
+summary: "Refactored terminal timeout AND updated capability matrix to reflect new behavior."
+changed_files:
+  - src/tools/terminal.py
+  - tests/tools/test_terminal.py
+  # FORBIDDEN: agent must not modify prompt artifacts or orchestration config
+  - .hermes/config/capability-matrix.yaml
+  - AGENTS.md
+test_results:
+  command_run: "scripts/run_tests.sh"
+  exit_code: 0
+  stdout_tail: "...\n47 passed in 3.21s"
+  passed: true
+eval_evidence:
+  lint_clean: true
+  unit_tests_passed: true
+  diff_size_kb: 6.1
+  no_forbidden_writes: false   # correctly self-reported as false here
+open_issues: []
+self_assessed_confidence: high

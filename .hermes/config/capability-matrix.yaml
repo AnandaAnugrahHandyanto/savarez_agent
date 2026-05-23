@@ -1,0 +1,62 @@
+# Capability Matrix — Hybrid Agent Control Plane
+# Defines what each agent type is allowed to do in this repo.
+# Human-authored. Agents must not modify this file.
+# Governed by: .hermes/plans/2026-05-22_000000-hybrid-agent-control-plane.md
+# Caveats: C-3 (delegate_task ≠ CLI spawn), C-4 (Codex TBD), C-5 (cost estimated)
+
+agents:
+  claude_code:
+    status: available
+    cli_behavior_confirmed: true  # CLAUDE.md exists; worktree mode confirmed as pattern
+    spawn_mode: worktree          # worktree|container — container deferred to Phase 3
+    cli_invocation: >
+      Invoked via terminal() calling the claude CLI with --workdir set to the
+      worktree path. NOT via delegate_task (which does not auto-discover external CLIs).
+      Exact flags: CONFIRM before Phase 2 (--max-turns, --model, --output-format).
+    dangerously_skip_permissions: false   # hard no on real host filesystem
+    allowed_toolsets: [terminal, file, web]
+    forbidden_toolsets: [cronjob, send_message, delegation]
+    max_parallel_instances: 2
+    max_cost_per_run_usd: 5.00
+    cost_tracking: estimated              # see plan C-5 — not exact
+    can_write_prompt_artifacts: false     # .claude/**, CLAUDE.md, AGENTS.md forbidden
+    can_push_to_main: false
+    can_install_packages: false           # MVP: block; Phase 3: allow in container only
+    worktree_isolation_gap: >
+      Worktrees are NOT security sandboxes. An agent in a worktree can
+      reach any host path accessible to the Hermes process. Path locks
+      are advisory (gate-checked post-hoc). Container isolation deferred
+      to Phase 3. This gap must be documented in every run manifest.
+
+  codex:
+    status: provisional                   # TBD — see plan C-4
+    cli_behavior_confirmed: false         # UNCONFIRMED — do not use in production
+    sandbox_verified: false               # Must be set to true after Phase 2 canary (task 2.1)
+    approvals_verified: false             # Codex approval-prompt behavior unconfirmed
+    spawn_mode: worktree                  # Assumed; CONFIRM with actual Codex CLI docs
+    cli_invocation: >
+      UNCONFIRMED. Do not assume CODEX.md is read from repo root.
+      Do not assume any specific flags. Verify with `codex --help` and
+      Codex CLI docs before Phase 2. Mark CODEX.md as provisional.
+    allowed_operations: [read, write, create, test]
+    forbidden_operations: [network_external, git_push_main, global_install]
+    max_parallel_instances: 1
+    max_cost_per_run_usd: 3.00
+    cost_tracking: estimated              # see plan C-5
+    can_write_prompt_artifacts: false
+    can_push_to_main: false
+    production_gate: >
+      Codex must not be used in real task runs until:
+      (1) sandbox_verified=true after Phase 2 canary (task 2.1),
+      (2) approvals_verified=true,
+      (3) cli_behavior_confirmed=true.
+      All three must be set by Yoshio after manual verification.
+
+  hermes:
+    role: orchestrator
+    can_spawn_agents: true                # via terminal() calling CLI
+    can_read_all_paths: true
+    can_write_run_artifacts: true         # .hermes/runs/**, audit logs, manifests
+    can_merge_to_main: false              # MVP: Yoshio merges manually after gate pass
+    can_write_prompt_artifacts: true      # only with Yoshio approval and gate pass
+    gate_for_merge: human_review          # always required in MVP; see eval-matrix.yaml

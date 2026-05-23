@@ -1,0 +1,45 @@
+# Run Manifest Template
+# Rendered by Hermes orchestrator at run start.
+# Fields marked CONFIRM require repo inspection before first real use.
+# NOTE: cost_usd_actual fields are ESTIMATED (token-count × model-pricing) — see C-5 in plan.
+
+run_id: {{ run_id }}                     # uuid4, generated at spawn time
+triggered_by: {{ triggered_by }}         # user | cron | webhook
+trigger_ref: {{ trigger_ref | default("~") }}   # session-id or event-id
+
+started_at: {{ started_at }}             # ISO8601
+closed_at: ~                             # filled at run close
+
+status: running                          # running | completed | failed | escalated
+
+plan_ref: {{ plan_ref }}                 # .hermes/plans/<plan-file>.md
+                                         # REQUIRE: human_reviewed_at set on this plan before spawn
+
+git_base_sha: {{ git_base_sha }}         # HEAD at spawn time (git rev-parse HEAD)
+
+# CONFIRM: worktree root convention before first real spawn (see plan task 2.3)
+worktree_paths:
+  claude_code: .worktrees/{{ run_id }}-cc   # CONFIRM path is correct for your setup
+  codex: .worktrees/{{ run_id }}-cx         # PROVISIONAL — Codex CLI unconfirmed (see C-4)
+
+tasks:
+{% for task in tasks %}
+  - task_id: {{ task.task_id }}
+    contract_ref: .hermes/runs/{{ run_id }}/contracts/{{ task.task_id }}.yaml
+    agent: {{ task.agent }}               # claude_code | codex
+    status: pending                       # pending | running | handoff_received | gate_passed | gate_failed | merged | cancelled
+    cost_usd_actual: ~                    # ESTIMATED when filled; see C-5
+    cost_estimated: true                  # always true until exact cost source confirmed
+{% endfor %}
+
+# Hard cap — agent spawns blocked if total_cost_usd_actual approaches this
+total_cost_usd_cap: {{ total_cost_usd_cap | default(5.00) }}
+total_cost_usd_actual: ~                 # ESTIMATED; see C-5
+cost_estimated: true
+
+audit_log: .hermes/runs/{{ run_id }}/audit.jsonl
+
+# Supply chain fields
+human_reviewed_at: ~                     # Yoshio must set before orchestrator accepts plan as run reference
+worktrees_are_sandbox: false             # DOCUMENT GAP: worktrees do not sandbox filesystem access
+container_isolation: false              # Phase 3 only — not available in MVP
