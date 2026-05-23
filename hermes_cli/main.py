@@ -2381,6 +2381,8 @@ def select_provider_and_model(args=None):
         _model_flow_minimax_oauth(config, current_model, args=args)
     elif selected_provider == "google-gemini-cli":
         _model_flow_google_gemini_cli(config, current_model)
+    elif selected_provider == "antigravity-cli":
+        _model_flow_antigravity_cli(config, current_model)
     elif selected_provider == "copilot-acp":
         _model_flow_copilot_acp(config, current_model)
     elif selected_provider == "copilot":
@@ -3521,6 +3523,67 @@ def _model_flow_google_gemini_cli(_config, current_model=""):
         )
         print(
             f"Default model set to: {selected} (via Google Gemini OAuth / Code Assist)"
+        )
+    else:
+        print("No change.")
+
+
+def _model_flow_antigravity_cli(_config, current_model=""):
+    """Google Antigravity CLI OAuth via the Code Assist agent backend."""
+    from hermes_cli.auth import (
+        DEFAULT_GEMINI_CLOUDCODE_BASE_URL,
+        get_antigravity_oauth_auth_status,
+        resolve_antigravity_oauth_runtime_credentials,
+        _prompt_model_selection,
+        _save_model_choice,
+        _update_config_for_provider,
+    )
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    print()
+    print("⚠  This reuses Antigravity CLI Google OAuth credentials with")
+    print("   third-party software. Users have reported account restrictions")
+    print("   with Google CLI OAuth reuse. Use your own API key via")
+    print("   the 'gemini' provider for the lowest-risk experience.")
+    print()
+    try:
+        proceed = (
+            input("Continue with Antigravity OAuth credentials? [y/N]: ")
+            .strip()
+            .lower()
+        )
+    except (EOFError, KeyboardInterrupt):
+        print("Cancelled.")
+        return
+    if proceed not in {"y", "yes"}:
+        print("Cancelled.")
+        return
+
+    status = get_antigravity_oauth_auth_status()
+    if not status.get("logged_in"):
+        print("No Antigravity CLI OAuth credentials found.")
+        print("Run `agy` and complete Antigravity login, then retry `hermes model`.")
+        auth_file = status.get("auth_file")
+        if auth_file:
+            print(f"Expected token file: {auth_file}")
+        return
+
+    try:
+        resolve_antigravity_oauth_runtime_credentials(force_refresh=False)
+    except Exception as exc:
+        print(f"Failed to resolve Antigravity credentials: {exc}")
+        return
+
+    models = list(_PROVIDER_MODELS.get("antigravity-cli") or [])
+    default = current_model or (models[0] if models else "gemini-3-flash-agent")
+    selected = _prompt_model_selection(models, current_model=default)
+    if selected:
+        _save_model_choice(selected)
+        _update_config_for_provider(
+            "antigravity-cli", DEFAULT_GEMINI_CLOUDCODE_BASE_URL
+        )
+        print(
+            f"Default model set to: {selected} (via Google Antigravity OAuth / Code Assist)"
         )
     else:
         print("No change.")
@@ -10630,7 +10693,7 @@ def _build_provider_choices() -> list[str]:
         # Fallback: static list guarantees the CLI always works
         return [
             "auto", "openrouter", "nous", "openai-codex", "xai-oauth", "copilot-acp", "copilot",
-            "anthropic", "gemini", "google-gemini-cli", "xai", "bedrock", "azure-foundry",
+            "anthropic", "gemini", "google-gemini-cli", "antigravity-cli", "xai", "bedrock", "azure-foundry",
             "ollama-cloud", "huggingface", "zai", "kimi-coding", "kimi-coding-cn",
             "stepfun", "minimax", "minimax-cn", "kilocode", "novita", "xiaomi", "arcee",
             "nvidia", "deepseek", "alibaba", "qwen-oauth", "opencode-zen", "opencode-go",

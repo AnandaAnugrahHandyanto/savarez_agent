@@ -315,7 +315,7 @@ def _resolve_runtime_from_pool_entry(
     elif provider == "qwen-oauth":
         api_mode = "chat_completions"
         base_url = base_url or DEFAULT_QWEN_BASE_URL
-    elif provider == "google-gemini-cli":
+    elif provider in {"google-gemini-cli", "antigravity-cli"}:
         api_mode = "chat_completions"
         base_url = base_url or "cloudcode-pa://google"
     elif provider == "minimax-oauth":
@@ -1446,6 +1446,24 @@ def resolve_runtime_provider(
             if requested_provider != "auto":
                 raise
             logger.info("Google Gemini OAuth credentials failed; "
+                        "falling through to next provider.")
+
+    if provider == "antigravity-cli":
+        try:
+            creds = auth_mod.resolve_antigravity_oauth_runtime_credentials()
+            return {
+                "provider": "antigravity-cli",
+                "api_mode": "chat_completions",
+                "base_url": creds.get("base_url", ""),
+                "api_key": creds.get("api_key", ""),
+                "source": creds.get("source", "antigravity-cli"),
+                "expires_at_ms": creds.get("expires_at_ms"),
+                "requested_provider": requested_provider,
+            }
+        except AuthError:
+            if requested_provider != "auto":
+                raise
+            logger.info("Antigravity OAuth credentials failed; "
                         "falling through to next provider.")
 
     if provider == "copilot-acp":
