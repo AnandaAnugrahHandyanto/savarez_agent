@@ -1460,6 +1460,35 @@ class DiscordAdapter(BasePlatformAdapter):
                             content=chunk,
                             reference=None,
                         )
+                    elif (
+                        "error code: 10003" in err_text
+                        or "Unknown Channel" in err_text
+                    ):
+                        # Channel cache may be stale (channel deleted, recreated,
+                        # or chat_id is actually a message ID). Don't bubble the
+                        # raw Discord error up to the agent — it confuses the
+                        # model into retrying with no useful information. Return
+                        # a structured error explaining what happened so the
+                        # model can correct its arguments on the next attempt.
+                        _bad_id = thread_id or chat_id
+                        logger.warning(
+                            "[%s] Discord returned 10003 Unknown Channel for "
+                            "id=%s (chat_id=%s thread_id=%s). The id likely "
+                            "refers to a deleted channel or is a message id "
+                            "used where a channel id is required.",
+                            self.name, _bad_id, chat_id, thread_id,
+                        )
+                        return SendResult(
+                            success=False,
+                            error=(
+                                f"Discord channel id {_bad_id!r} does not exist "
+                                "or is inaccessible (10003 Unknown Channel). "
+                                "Verify the chat_id — message ids and channel "
+                                "ids are not interchangeable. If you meant to "
+                                "reply to a message, pass the channel id as "
+                                "chat_id and the message id via reply_to."
+                            ),
+                        )
                     else:
                         raise
                 message_ids.append(str(msg.id))
