@@ -160,6 +160,36 @@ class TestBuildChildProgressCallback:
         assert parent_cb.call_args.args[0] == "subagent.thinking"
         assert parent_cb.call_args.args[2] == "some reasoning text"
 
+    def test_identity_metadata_and_spawn_requested_relayed_to_gateway(self):
+        """Gateway events include stable subagent identity, model, toolsets, and named agent."""
+        parent = MagicMock()
+        parent._delegate_spinner = None
+        parent_cb = MagicMock()
+        parent.tool_progress_callback = parent_cb
+
+        cb = _build_child_progress_callback(
+            0,
+            "test goal",
+            parent,
+            subagent_id="sa-1",
+            parent_id="sa-parent",
+            depth=1,
+            model="m",
+            toolsets=["terminal"],
+            agent_name="coder",
+        )
+
+        cb("subagent.spawn_requested", preview="queued")
+
+        parent_cb.assert_called_once()
+        assert parent_cb.call_args.args[0] == "subagent.spawn_requested"
+        assert parent_cb.call_args.kwargs["subagent_id"] == "sa-1"
+        assert parent_cb.call_args.kwargs["parent_id"] == "sa-parent"
+        assert parent_cb.call_args.kwargs["depth"] == 1
+        assert parent_cb.call_args.kwargs["model"] == "m"
+        assert parent_cb.call_args.kwargs["toolsets"] == ["terminal"]
+        assert parent_cb.call_args.kwargs["agent"] == "coder"
+
     def test_parallel_callbacks_independent(self):
         """Each child's callback batches tool names independently."""
         parent = MagicMock()
@@ -386,4 +416,3 @@ class TestBatchFlush:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-

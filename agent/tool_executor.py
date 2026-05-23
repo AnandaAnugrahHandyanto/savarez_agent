@@ -663,6 +663,24 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
+        elif function_name.startswith("agent_task_"):
+            spinner = None
+            if agent._should_emit_quiet_tool_messages() and agent._should_start_quiet_spinner():
+                face = random.choice(KawaiiSpinner.get_waiting_faces())
+                preview = _build_tool_preview(function_name, function_args) or function_name
+                spinner = KawaiiSpinner(f"{face} 🧩 {preview}", spinner_type='dots', print_fn=agent._print_fn)
+                spinner.start()
+            _agent_task_result = None
+            try:
+                function_result = agent._dispatch_agent_task(function_name, function_args)
+                _agent_task_result = function_result
+            finally:
+                tool_duration = time.time() - tool_start_time
+                cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_agent_task_result)
+                if spinner:
+                    spinner.stop(cute_msg)
+                elif agent._should_emit_quiet_tool_messages():
+                    agent._vprint(f"  {cute_msg}")
         elif function_name == "delegate_task":
             tasks_arg = function_args.get("tasks")
             if tasks_arg and isinstance(tasks_arg, list):

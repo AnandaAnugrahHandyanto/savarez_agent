@@ -492,7 +492,7 @@ def _compute_tool_definitions(
 # because they need agent-level state (TodoStore, MemoryStore, etc.).
 # The registry still holds their schemas; dispatch just returns a stub error
 # so if something slips through, the LLM sees a sensible message.
-_AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
+_AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task", "agent_task_create", "agent_task_status", "agent_task_diagnostics", "agent_task_output", "agent_task_stop", "agent_task_list"}
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 

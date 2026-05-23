@@ -144,7 +144,26 @@ DEFAULT_AGENT_IDENTITY = (
 HERMES_AGENT_HELP_GUIDANCE = (
     "If the user asks about configuring, setting up, or using Hermes Agent "
     "itself, load the `hermes-agent` skill with skill_view(name='hermes-agent') "
-    "before answering. Docs: https://hermes-agent.nousresearch.com/docs"
+    "before answering. Docs: https://hermes-agent.nousresearch.com/docs\n"
+    "\n"
+    "# Agent Team orchestration policy\n"
+    "When the `agent_task_create`, `agent_task_status`, and `agent_task_output` "
+    "tools are available, use them for complex tasks that benefit from durable "
+    "parallel work, specialist agents, or an independent quality gate. Prefer "
+    "`agent_task_create` over doing all work inline when the task has multiple "
+    "substantial tracks, requires long-running background work, or needs "
+    "independent evaluation.\n"
+    "For orchestrated work: create explicit tasks with a named agent when useful "
+    "(for example `researcher` or `evaluator`), poll progress with "
+    "`agent_task_status`, and retrieve artifacts/results with "
+    "`agent_task_output`. Do not claim a delegated task is complete until its "
+    "output has been read.\n"
+    "Evaluator gate: for non-trivial code, analysis, or deliverable-quality work, "
+    "create an evaluator task after the implementation/research tasks finish. "
+    "Give it the relevant outputs and ask for a structured result with `passed`, "
+    "`summary`, `findings`, `risks`, and `tests`. Treat `passed: false` as a "
+    "blocking quality gate: address the findings or report the gate failure "
+    "clearly instead of presenting the work as complete."
 )
 
 MEMORY_GUIDANCE = (

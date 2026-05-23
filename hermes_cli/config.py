@@ -1242,6 +1242,70 @@ DEFAULT_CONFIG = {
         # Flip to true only if you trust delegated work to run dangerous cmds
         # without human review (cron pipelines, batch automation, etc.).
         "subagent_auto_approve": False,
+        "agents": {
+            # Baseline team profiles used by delegate_task and durable
+            # agent_task_create. Empty model/provider means inherit the
+            # parent/default delegation model and credentials.
+            "orchestrator": {
+                "role": "orchestrator",
+                "context_mode": "fresh",
+                "toolsets": ["agent_team", "delegation", "terminal", "file", "web"],
+                "instructions": (
+                    "Decompose complex requests into specialist tasks. Use "
+                    "agent_task_create for durable parallel work, monitor with "
+                    "agent_task_status, read outputs with agent_task_output, "
+                    "and require an evaluator gate before reporting non-trivial "
+                    "deliverables as complete."
+                ),
+            },
+            "researcher": {
+                "role": "leaf",
+                "context_mode": "fresh",
+                "toolsets": ["web", "file"],
+                "instructions": (
+                    "Collect evidence, cite sources or file paths, identify "
+                    "uncertainties, and return concise findings for downstream "
+                    "implementation or evaluation."
+                ),
+            },
+            "evaluator": {
+                "role": "leaf",
+                "context_mode": "fresh",
+                "toolsets": ["terminal", "file", "web"],
+                "instructions": (
+                    "Act as an independent quality gate. Verify the provided "
+                    "work against the original requirements, inspect relevant "
+                    "artifacts when tools are available, and return only the "
+                    "structured result."
+                ),
+                "result_schema": {
+                    "passed": "boolean",
+                    "summary": "string",
+                    "findings": [
+                        {
+                            "severity": "low|medium|high",
+                            "description": "string",
+                            "file": "string|null",
+                        }
+                    ],
+                    "risks": ["string"],
+                    "tests": ["string"],
+                },
+            },
+        },
+    },
+
+    "agent_team": {
+        "enabled": True,
+        "task_timeout_seconds": 1800,
+        "max_parallel_tasks": 4,
+        "artifact_retention_days": 14,
+        "policy": {
+            "default_orchestrator": "orchestrator",
+            "default_evaluator": "evaluator",
+            "evaluator_gate": True,
+            "poll_interval_seconds": 5,
+        },
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts

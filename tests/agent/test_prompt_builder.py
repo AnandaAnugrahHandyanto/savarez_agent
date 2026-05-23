@@ -21,6 +21,7 @@ from agent.prompt_builder import (
     build_environment_hints,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
+    HERMES_AGENT_HELP_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
@@ -38,6 +39,13 @@ from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatu
 
 
 class TestGuidanceConstants:
+    def test_agent_team_policy_mentions_durable_task_tools_and_evaluator_gate(self):
+        assert "agent_task_create" in HERMES_AGENT_HELP_GUIDANCE
+        assert "agent_task_status" in HERMES_AGENT_HELP_GUIDANCE
+        assert "agent_task_output" in HERMES_AGENT_HELP_GUIDANCE
+        assert "Evaluator gate" in HERMES_AGENT_HELP_GUIDANCE
+        assert "passed: false" in HERMES_AGENT_HELP_GUIDANCE
+
     def test_memory_guidance_discourages_task_logs(self):
         assert "durable facts" in MEMORY_GUIDANCE
         assert "Do NOT save task progress" in MEMORY_GUIDANCE
@@ -1192,6 +1200,5 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 
 

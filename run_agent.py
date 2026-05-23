@@ -3990,8 +3990,9 @@ class AIAgent:
         New DELEGATE_TASK_SCHEMA fields only need to be added here to reach all
         invocation paths (concurrent, sequential, inline).
         """
-        from tools.delegate_tool import delegate_task as _delegate_task
-        return _delegate_task(
+        from agent.task_runners import run_delegate_task_with_parent_lock
+        return run_delegate_task_with_parent_lock(
+            self,
             goal=function_args.get("goal"),
             context=function_args.get("context"),
             toolsets=function_args.get("toolsets"),
@@ -4000,8 +4001,34 @@ class AIAgent:
             acp_command=function_args.get("acp_command"),
             acp_args=function_args.get("acp_args"),
             role=function_args.get("role"),
-            parent_agent=self,
+            agent=function_args.get("agent"),
+            context_mode=function_args.get("context_mode"),
+            result_schema=function_args.get("result_schema"),
         )
+
+    def _dispatch_agent_task(self, function_name: str, function_args: dict) -> str:
+        """Dispatch Agent Team task tools from the live agent loop.
+
+        These tools need access to the current agent for credentials, named
+        delegation profiles, and task-local execution context. Keeping this
+        routing beside delegate_task avoids the generic registry's loop-tool
+        guard from swallowing them.
+        """
+        from tools import agent_task_tool as _agent_task_tool
+
+        handlers = {
+            "agent_task_create": _agent_task_tool.agent_task_create,
+            "agent_task_status": _agent_task_tool.agent_task_status,
+            "agent_task_diagnostics": _agent_task_tool.agent_task_diagnostics,
+            "agent_task_output": _agent_task_tool.agent_task_output,
+            "agent_task_stop": _agent_task_tool.agent_task_stop,
+            "agent_task_list": _agent_task_tool.agent_task_list,
+        }
+        handler = handlers.get(function_name)
+        if handler is None:
+            import json
+            return json.dumps({"error": f"Unknown Agent Team tool: {function_name}"})
+        return handler(function_args or {}, parent_agent=self)
 
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None, messages: list = None,

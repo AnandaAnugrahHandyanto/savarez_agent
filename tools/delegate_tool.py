@@ -17,6 +17,7 @@ never the child's intermediate tool calls or reasoning.
 """
 
 import enum
+import copy
 import json
 import logging
 
@@ -28,6 +29,7 @@ from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
 )
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
@@ -326,6 +328,155 @@ def _normalize_role(r: Optional[str]) -> str:
     return "leaf"
 
 
+_VALID_CONTEXT_MODES = {"fresh", "fork"}
+
+
+def _normalize_context_mode(mode: Optional[str]) -> str:
+    """Normalise a context inheritance mode for subagents.
+
+    fresh: default isolated child conversation.
+    fork:  pass a best-effort copy of the parent's safe conversation history
+           to run_conversation(), when that runner supports it.
+    """
+    if mode is None or not mode:
+        return "fresh"
+    mode_norm = str(mode).strip().lower()
+    aliases = {
+        "isolated": "fresh",
+        "none": "fresh",
+        "inherit": "fork",
+        "append": "fork",
+    }
+    mode_norm = aliases.get(mode_norm, mode_norm)
+    if mode_norm in _VALID_CONTEXT_MODES:
+        return mode_norm
+    logger.warning("Unknown delegate_task context_mode=%r, coercing to 'fresh'", mode)
+    return "fresh"
+
+
+def _copy_parent_conversation_history(parent_agent) -> Optional[List[Dict[str, Any]]]:
+    """Best-effort parent history snapshot for explicit context_mode='fork'.
+
+    The default stays isolated. This helper intentionally only copies list-like
+    message stores and never mutates the parent.
+    """
+    if parent_agent is None:
+        return None
+    for attr in (
+        "_session_messages",
+        "conversation_history",
+        "messages",
+    ):
+        history = getattr(parent_agent, attr, None)
+        if isinstance(history, list):
+            try:
+                return copy.deepcopy(history)
+            except Exception:
+                return [m for m in history if isinstance(m, dict)]
+    return None
+
+
+def _get_named_agent_config(cfg: Dict[str, Any], agent_name: Optional[str]) -> Dict[str, Any]:
+    """Return delegation.agents.<name> config, or raise for unknown names."""
+    if not agent_name:
+        return {}
+    agents = cfg.get("agents") or {}
+    if not isinstance(agents, dict):
+        raise ValueError("delegation.agents must be an object mapping agent names to configs.")
+    agent_cfg = agents.get(str(agent_name))
+    if agent_cfg is None:
+        raise ValueError(f"Unknown delegation agent '{agent_name}'. Define delegation.agents.{agent_name} in config.yaml.")
+    if not isinstance(agent_cfg, dict):
+        raise ValueError(f"delegation.agents.{agent_name} must be an object.")
+    return dict(agent_cfg)
+
+
+def _merged_agent_cfg(base_cfg: Dict[str, Any], agent_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge a named agent config over delegation defaults for credential lookup."""
+    merged = dict(base_cfg or {})
+    for key in (
+        "model",
+        "provider",
+        "base_url",
+        "api_key",
+        "api_mode",
+        "reasoning_effort",
+        "max_iterations",
+        "child_timeout_seconds",
+        "max_concurrent_children",
+        "max_spawn_depth",
+        "orchestrator_enabled",
+        "subagent_auto_approve",
+        "inherit_mcp_toolsets",
+    ):
+        if key in agent_cfg and agent_cfg.get(key) not in (None, ""):
+            merged[key] = agent_cfg.get(key)
+    return merged
+
+
+def _coerce_result_schema(schema: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(schema, dict):
+        return schema
+    if isinstance(schema, str) and schema.strip():
+        try:
+            parsed = json.loads(schema)
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def _parse_structured_result(summary: str, result_schema: Optional[Dict[str, Any]]):
+    """Parse a JSON final response when the caller requested a structured result."""
+    if not result_schema:
+        return None, None
+    if not isinstance(summary, str) or not summary.strip():
+        return None, "empty final response"
+    try:
+        parsed = json.loads(summary)
+    except json.JSONDecodeError as exc:
+        return None, f"final response was not valid JSON: {exc.msg}"
+    if not isinstance(parsed, dict):
+        return None, "final response JSON must be an object"
+    return parsed, None
+
+
+def _write_subagent_artifact(child, entry: Dict[str, Any]) -> Optional[str]:
+    """Persist a compact subagent result artifact without raw prompt history."""
+    try:
+        subagent_id = getattr(child, "_subagent_id", None)
+        if not isinstance(subagent_id, str) or not subagent_id:
+            return None
+        hermes_home = os.getenv("HERMES_HOME")
+        root = Path(hermes_home).expanduser() if hermes_home else Path.home() / ".hermes"
+        artifacts_dir = root / "artifacts"
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        artifact_path = artifacts_dir / "subagents.jsonl"
+        record = {
+            "subagent_id": subagent_id,
+            "agent": (
+                getattr(child, "_delegate_agent_name", None)
+                if isinstance(getattr(child, "_delegate_agent_name", None), str)
+                else None
+            ),
+            "goal": getattr(child, "_subagent_goal", None),
+            "status": entry.get("status"),
+            "model": entry.get("model"),
+            "duration_seconds": entry.get("duration_seconds"),
+            "api_calls": entry.get("api_calls"),
+            "tokens": entry.get("tokens"),
+            "structured_result": entry.get("structured_result"),
+            "summary_preview": (entry.get("summary") or "")[:1000],
+            "created_at": time.time(),
+        }
+        with artifact_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return str(artifact_path)
+    except Exception as exc:
+        logger.debug("subagent artifact write failed: %s", exc)
+        return None
+
+
 def _get_max_concurrent_children() -> int:
     """Read delegation.max_concurrent_children from config, falling back to
     DELEGATION_MAX_CONCURRENT_CHILDREN env var, then the default (3).
@@ -574,6 +725,10 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    agent_name: Optional[str] = None,
+    agent_instructions: Optional[str] = None,
+    context_mode: str = "fresh",
+    result_schema: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -588,6 +743,16 @@ def _build_child_system_prompt(
         "",
         f"YOUR TASK:\n{goal}",
     ]
+    if agent_name:
+        parts.append(f"\nAGENT NAME:\n{agent_name}")
+    if agent_instructions and str(agent_instructions).strip():
+        parts.append(f"\nAGENT INSTRUCTIONS:\n{str(agent_instructions).strip()}")
+    if context_mode == "fork":
+        parts.append(
+            "\nCONTEXT MODE:\n"
+            "You may receive an explicit forked conversation snapshot from the parent. "
+            "Use it only as task context; do not assume you share the parent's memory or tool state."
+        )
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():
@@ -608,6 +773,13 @@ def _build_child_system_prompt(
         "Be thorough but concise -- your response is returned to the "
         "parent agent as a summary."
     )
+    if result_schema:
+        parts.append(
+            "\nSTRUCTURED RESULT REQUIRED:\n"
+            "Your final response must be a single valid JSON object matching this requested schema. "
+            "Do not wrap it in Markdown fences and do not include prose outside the JSON object.\n"
+            f"Requested schema:\n{json.dumps(result_schema, ensure_ascii=False)}"
+        )
     if role == "orchestrator":
         child_note = (
             "Your own children MUST be leaves (cannot delegate further) "
@@ -691,6 +863,7 @@ def _build_child_progress_callback(
     depth: Optional[int] = None,
     model: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
+    agent_name: Optional[str] = None,
 ) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
@@ -738,6 +911,8 @@ def _build_child_progress_callback(
             kw["model"] = model
         if toolsets is not None:
             kw["toolsets"] = list(toolsets)
+        if agent_name is not None:
+            kw["agent"] = agent_name
         kw["tool_count"] = _tool_count[0]
         return kw
 
@@ -772,6 +947,10 @@ def _build_child_progress_callback(
 
         if event_type == "subagent.complete":
             _relay("subagent.complete", preview=preview, **kwargs)
+            return
+
+        if event_type == "subagent.spawn_requested":
+            _relay("subagent.spawn_requested", preview=preview or goal_label or "", **kwargs)
             return
 
         # Normalise legacy strings, new-style "delegate.*" strings, and
@@ -888,6 +1067,12 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    agent_name: Optional[str] = None,
+    agent_instructions: Optional[str] = None,
+    context_mode: str = "fresh",
+    result_schema: Optional[Dict[str, Any]] = None,
+    fork_history: Optional[List[Dict[str, Any]]] = None,
+    delegation_cfg_override: Optional[Dict[str, Any]] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -918,10 +1103,13 @@ def _build_child_agent(
     # one key.  parent_id is non-None when THIS parent is itself a subagent
     # (nested orchestrator -> worker chain).
     subagent_id = f"sa-{task_index}-{_uuid.uuid4().hex[:8]}"
-    parent_subagent_id = getattr(parent_agent, "_subagent_id", None)
+    _raw_parent_subagent_id = getattr(parent_agent, "_subagent_id", None)
+    parent_subagent_id = _raw_parent_subagent_id if isinstance(_raw_parent_subagent_id, str) else None
     tui_depth = max(0, child_depth - 1)  # 0 = first-level child for the UI
 
-    delegation_cfg = _load_config()
+    delegation_cfg = delegation_cfg_override or _load_config()
+    effective_context_mode = _normalize_context_mode(context_mode)
+    effective_result_schema = _coerce_result_schema(result_schema)
 
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
@@ -975,6 +1163,10 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        agent_name=agent_name,
+        agent_instructions=agent_instructions,
+        context_mode=effective_context_mode,
+        result_schema=effective_result_schema,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -997,6 +1189,7 @@ def _build_child_agent(
         depth=tui_depth,
         model=effective_model_for_cb,
         toolsets=child_toolsets,
+        agent_name=agent_name,
     )
 
     # Each subagent gets its own iteration budget capped at max_iterations
@@ -1146,6 +1339,10 @@ def _build_child_agent(
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
+    child._delegate_agent_name = agent_name
+    child._delegate_context_mode = effective_context_mode
+    child._delegate_fork_history = fork_history if effective_context_mode == "fork" else None
+    child._delegate_result_schema = effective_result_schema
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
@@ -1443,6 +1640,8 @@ def _run_single_child(
     # hand us a MagicMock don't carry stable ids; skip registration then.
     _raw_sid = getattr(child, "_subagent_id", None)
     _subagent_id = _raw_sid if isinstance(_raw_sid, str) else None
+    _raw_agent_name = getattr(child, "_delegate_agent_name", None)
+    _agent_name = _raw_agent_name if isinstance(_raw_agent_name, str) else None
     if _subagent_id:
         _raw_depth = getattr(child, "_delegate_depth", 1)
         _tui_depth = max(0, _raw_depth - 1) if isinstance(_raw_depth, int) else 0
@@ -1453,6 +1652,7 @@ def _run_single_child(
                 "parent_id": _parent_sid if isinstance(_parent_sid, str) else None,
                 "depth": _tui_depth,
                 "goal": goal,
+                "agent": _agent_name,
                 "model": (
                     getattr(child, "model", None)
                     if isinstance(getattr(child, "model", None), str)
@@ -1504,10 +1704,15 @@ def _run_single_child(
 
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
-            return child.run_conversation(
-                user_message=goal,
-                task_id=child_task_id,
-            )
+            run_kwargs = {
+                "user_message": goal,
+                "task_id": child_task_id,
+            }
+            if getattr(child, "_delegate_context_mode", "fresh") == "fork":
+                fork_history = getattr(child, "_delegate_fork_history", None)
+                if isinstance(fork_history, list):
+                    run_kwargs["conversation_history"] = copy.deepcopy(fork_history)
+            return child.run_conversation(**run_kwargs)
 
         _child_future = _timeout_executor.submit(_run_with_thread_capture)
         try:
@@ -1685,6 +1890,7 @@ def _run_single_child(
             "task_index": task_index,
             "status": status,
             "summary": summary,
+            "agent": _agent_name,
             "api_calls": api_calls,
             "duration_seconds": duration,
             "model": _model if isinstance(_model, str) else None,
@@ -1716,6 +1922,15 @@ def _run_single_child(
                 else 0.0
             ),
         }
+        _raw_result_schema = getattr(child, "_delegate_result_schema", None)
+        _result_schema = _raw_result_schema if isinstance(_raw_result_schema, dict) else None
+        structured_result, structured_error = _parse_structured_result(
+            summary, _result_schema
+        )
+        if structured_result is not None:
+            entry["structured_result"] = structured_result
+        elif structured_error:
+            entry["structured_result_error"] = structured_error
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
 
@@ -1812,6 +2027,10 @@ def _run_single_child(
                 child_progress_cb("subagent.complete", **complete_kwargs)
             except Exception as e:
                 logger.debug("Progress callback completion failed: %s", e)
+
+        artifact_path = _write_subagent_artifact(child, entry)
+        if artifact_path:
+            entry["artifact_path"] = artifact_path
 
         return entry
 
@@ -1924,14 +2143,17 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    agent: Optional[str] = None,
+    context_mode: Optional[str] = None,
+    result_schema: Optional[Dict[str, Any]] = None,
     parent_agent=None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets, role)
-      - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
+      - Single: provide goal (+ optional context, toolsets, role, agent)
+      - Batch:  provide tasks array [{goal, context, toolsets, role, agent}, ...]
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
@@ -1987,16 +2209,6 @@ def delegate_task(
         )
     effective_max_iter = default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
-
     # Normalize to task list
     max_children = _get_max_concurrent_children()
     recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
@@ -2017,7 +2229,15 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {
+                "goal": goal,
+                "context": context,
+                "toolsets": toolsets,
+                "role": top_role,
+                "agent": agent,
+                "context_mode": context_mode,
+                "result_schema": result_schema,
+            }
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2055,14 +2275,43 @@ def delegate_task(
     try:
         for i, t in enumerate(task_list):
             task_acp_args = t.get("acp_args") if "acp_args" in t else None
+            effective_agent = t.get("agent") or agent
+            try:
+                agent_cfg = _get_named_agent_config(cfg, effective_agent)
+            except ValueError as exc:
+                return tool_error(str(exc))
+            effective_cfg = _merged_agent_cfg(cfg, agent_cfg)
+            try:
+                creds = _resolve_delegation_credentials(effective_cfg, parent_agent)
+            except ValueError as exc:
+                return tool_error(str(exc))
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
-            effective_role = _normalize_role(t.get("role") or top_role)
+            effective_role = _normalize_role(
+                t.get("role") or agent_cfg.get("role") or top_role
+            )
+            effective_toolsets = (
+                t.get("toolsets")
+                or toolsets
+                or agent_cfg.get("toolsets")
+            )
+            effective_context_mode = _normalize_context_mode(
+                t.get("context_mode") or context_mode or agent_cfg.get("context_mode")
+            )
+            effective_result_schema = _coerce_result_schema(
+                t.get("result_schema") or result_schema or agent_cfg.get("result_schema")
+            )
+            effective_max_iter = effective_cfg.get("max_iterations", default_max_iter)
+            fork_history = (
+                _copy_parent_conversation_history(parent_agent)
+                if effective_context_mode == "fork"
+                else None
+            )
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets,
+                toolsets=effective_toolsets,
                 model=creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
@@ -2080,6 +2329,14 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
+                agent_name=effective_agent,
+                agent_instructions=(
+                    agent_cfg.get("instructions") or agent_cfg.get("system_prompt")
+                ),
+                context_mode=effective_context_mode,
+                result_schema=effective_result_schema,
+                fork_history=fork_history,
+                delegation_cfg_override=effective_cfg,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -2703,6 +2960,29 @@ DELEGATE_TASK_SCHEMA = {
                     "['terminal', 'file', 'web'] for full-stack tasks."
                 ),
             },
+            "agent": {
+                "type": "string",
+                "description": (
+                    "Optional named subagent profile from delegation.agents in config.yaml. "
+                    "Use for explicit model/tool/context routing such as researcher, coder, evaluator."
+                ),
+            },
+            "context_mode": {
+                "type": "string",
+                "enum": ["fresh", "fork"],
+                "description": (
+                    "Context mode for the child. fresh is isolated and default. "
+                    "fork copies a safe parent conversation snapshot when explicitly requested."
+                ),
+            },
+            "result_schema": {
+                "type": "object",
+                "description": (
+                    "Optional JSON object describing the requested final JSON shape. "
+                    "When set, the child is instructed to return a single JSON object; "
+                    "delegate_task also returns structured_result when parsing succeeds."
+                ),
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -2717,6 +2997,19 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
+                        },
+                        "agent": {
+                            "type": "string",
+                            "description": "Per-task named subagent profile from delegation.agents.",
+                        },
+                        "context_mode": {
+                            "type": "string",
+                            "enum": ["fresh", "fork"],
+                            "description": "Per-task context mode override.",
+                        },
+                        "result_schema": {
+                            "type": "object",
+                            "description": "Per-task structured JSON result schema.",
                         },
                         "acp_command": {
                             "type": "string",
@@ -2793,6 +3086,9 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        agent=args.get("agent"),
+        context_mode=args.get("context_mode"),
+        result_schema=args.get("result_schema"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

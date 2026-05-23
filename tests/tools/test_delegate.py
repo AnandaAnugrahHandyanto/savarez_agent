@@ -29,6 +29,7 @@ from tools.delegate_tool import (
     _build_child_agent,
     _build_child_progress_callback,
     _build_child_system_prompt,
+    _run_single_child,
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
@@ -69,6 +70,13 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("tasks", props)
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
+        self.assertIn("agent", props)
+        self.assertIn("context_mode", props)
+        self.assertIn("result_schema", props)
+        task_props = props["tasks"]["items"]["properties"]
+        self.assertIn("agent", task_props)
+        self.assertIn("context_mode", task_props)
+        self.assertIn("result_schema", task_props)
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
@@ -411,6 +419,7 @@ class TestDelegateTask(unittest.TestCase):
             )
 
         self.assertTrue(callable(mock_child.thinking_callback))
+        parent.tool_progress_callback.reset_mock()
         mock_child.thinking_callback("deliberating...")
         parent.tool_progress_callback.assert_not_called()
 
@@ -1905,6 +1914,124 @@ class TestDispatchDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["override_acp_command"], "claude")
             self.assertEqual(kwargs["override_acp_args"], ["--acp", "--stdio"])
 
+
+class TestNamedSubagentProfiles(unittest.TestCase):
+    """Named delegation agents should route model/tool/context/result policy."""
+
+    @patch("tools.delegate_tool._write_subagent_artifact", return_value=None)
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_config")
+    @patch("run_agent.AIAgent")
+    def test_named_agent_routes_model_toolsets_fork_context_and_structured_result(
+        self, MockAgent, mock_cfg, mock_creds, _mock_artifact
+    ):
+        parent = _make_mock_parent(depth=0)
+        parent.enabled_toolsets = ["terminal", "file", "web"]
+        parent._session_messages = [{"role": "user", "content": "parent context"}]
+        parent._memory_manager = None
+        parent.session_estimated_cost_usd = 0.0
+
+        mock_cfg.return_value = {
+            "max_iterations": 50,
+            "child_timeout_seconds": 30,
+            "max_spawn_depth": 1,
+            "orchestrator_enabled": True,
+            "inherit_mcp_toolsets": True,
+            "agents": {
+                "researcher": {
+                    "model": "child-model",
+                    "toolsets": ["web"],
+                    "context_mode": "fork",
+                    "instructions": "Collect evidence only.",
+                    "result_schema": {"passed": "boolean"},
+                }
+            },
+        }
+        mock_creds.return_value = {
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+            "model": "child-model",
+        }
+
+        mock_child = MagicMock()
+        mock_child.run_conversation.return_value = {
+            "final_response": '{"passed": true}',
+            "completed": True,
+            "api_calls": 1,
+            "messages": [],
+        }
+        mock_child.session_prompt_tokens = 3
+        mock_child.session_completion_tokens = 4
+        mock_child.session_estimated_cost_usd = 0.0
+        mock_child.session_reasoning_tokens = 0
+        mock_child.model = "child-model"
+        mock_child.get_activity_summary.return_value = {
+            "api_call_count": 1,
+            "max_iterations": 50,
+            "current_tool": None,
+            "last_activity_desc": "",
+        }
+        MockAgent.return_value = mock_child
+
+        raw = delegate_task(goal="research this", agent="researcher", parent_agent=parent)
+        payload = json.loads(raw)
+
+        call_kwargs = MockAgent.call_args.kwargs
+        self.assertEqual(call_kwargs["model"], "child-model")
+        self.assertEqual(call_kwargs["enabled_toolsets"], ["web"])
+        self.assertIn("AGENT NAME", call_kwargs["ephemeral_system_prompt"])
+        self.assertIn("researcher", call_kwargs["ephemeral_system_prompt"])
+        self.assertIn("Collect evidence only.", call_kwargs["ephemeral_system_prompt"])
+        self.assertIn("STRUCTURED RESULT REQUIRED", call_kwargs["ephemeral_system_prompt"])
+
+        run_kwargs = mock_child.run_conversation.call_args.kwargs
+        self.assertEqual(run_kwargs["conversation_history"], parent._session_messages)
+
+        entry = payload["results"][0]
+        self.assertEqual(entry["agent"], "researcher")
+        self.assertEqual(entry["structured_result"], {"passed": True})
+
+    @patch("tools.delegate_tool._load_config")
+    def test_unknown_named_agent_returns_tool_error(self, mock_cfg):
+        parent = _make_mock_parent(depth=0)
+        parent._memory_manager = None
+        mock_cfg.return_value = {"agents": {}, "max_iterations": 50}
+
+        raw = delegate_task(goal="x", agent="missing", parent_agent=parent)
+
+        self.assertIn("Unknown delegation agent 'missing'", raw)
+
+    def test_run_single_child_reports_structured_parse_error(self):
+        parent = _make_mock_parent(depth=0)
+        child = MagicMock()
+        child._subagent_id = "sa-test"
+        child._delegate_saved_tool_names = []
+        child._delegate_result_schema = {"passed": "boolean"}
+        child._delegate_agent_name = "evaluator"
+        child._delegate_role = "leaf"
+        child._delegate_depth = 1
+        child._credential_pool = None
+        child.tool_progress_callback = None
+        child.run_conversation.return_value = {
+            "final_response": "not-json",
+            "completed": True,
+            "api_calls": 1,
+            "messages": [],
+        }
+        child.session_prompt_tokens = 0
+        child.session_completion_tokens = 0
+        child.session_estimated_cost_usd = 0.0
+        child.session_reasoning_tokens = 0
+        child.model = "m"
+
+        with patch("tools.delegate_tool._write_subagent_artifact", return_value=None):
+            entry = _run_single_child(0, "evaluate", child, parent)
+
+        self.assertEqual(entry["agent"], "evaluator")
+        self.assertIn("structured_result_error", entry)
+
 class TestDelegateEventEnum(unittest.TestCase):
     """Tests for DelegateEvent enum and back-compat aliases."""
 
@@ -2669,3 +2796,33 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+def test_dispatch_delegate_task_forwards_named_agent_fields(monkeypatch):
+    from types import SimpleNamespace
+    from run_agent import AIAgent
+    from tools import delegate_tool
+
+    captured = {}
+
+    def fake_delegate_task(**kwargs):
+        captured.update(kwargs)
+        return "{}"
+
+    monkeypatch.setattr(delegate_tool, "delegate_task", fake_delegate_task)
+    fake_agent = SimpleNamespace()
+
+    result = AIAgent._dispatch_delegate_task(fake_agent, {
+        "goal": "review",
+        "context": "bounded",
+        "agent": "reviewer",
+        "context_mode": "fork",
+        "result_schema": {"type": "object"},
+    })
+
+    assert result == "{}"
+    assert captured["agent"] == "reviewer"
+    assert captured["context_mode"] == "fork"
+    assert captured["result_schema"] == {"type": "object"}
+    assert captured["parent_agent"] is fake_agent

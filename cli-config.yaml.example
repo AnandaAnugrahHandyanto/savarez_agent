@@ -885,6 +885,31 @@ delegation:
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
+  # agents:                                  # Optional named subagent profiles for team mode.
+  #   orchestrator:
+  #     role: "orchestrator"
+  #     context_mode: "fresh"                # fresh = isolated default; fork = explicit parent-history snapshot.
+  #     toolsets: ["agent_team", "delegation", "terminal", "file", "web"]
+  #     instructions: "Decompose complex requests into durable specialist tasks and require an evaluator gate."
+  #   researcher:
+  #     role: "leaf"
+  #     toolsets: ["web", "file"]
+  #     context_mode: "fresh"
+  #     instructions: "Collect evidence and return concise citations, file paths, and uncertainties."
+  #   evaluator:
+  #     role: "leaf"
+  #     toolsets: ["terminal", "file", "web"]
+  #     context_mode: "fresh"
+  #     instructions: "Independently verify outputs against requirements and return only the structured result."
+  #     result_schema:
+  #       passed: "boolean"
+  #       summary: "string"
+  #       findings:
+  #         - severity: "low|medium|high"
+  #           description: "string"
+  #           file: "string|null"
+  #       risks: ["string"]
+  #       tests: ["string"]
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)
@@ -1098,3 +1123,16 @@ display:
 #     - command: "~/.hermes/agent-hooks/log-orchestration.sh"
 #
 # hooks_auto_accept: false
+
+
+# Agent Team durable task runtime
+agent_team:
+  enabled: true
+  task_timeout_seconds: 1800
+  max_parallel_tasks: 4
+  artifact_retention_days: 14
+  policy:
+    default_orchestrator: "orchestrator"
+    default_evaluator: "evaluator"
+    evaluator_gate: true
+    poll_interval_seconds: 5

@@ -54,6 +54,8 @@ _HERMES_CORE_TOOLS = [
     "clarify",
     # Code execution + delegation
     "execute_code", "delegate_task",
+    "agent_task_create", "agent_task_status", "agent_task_diagnostics", "agent_task_output",
+    "agent_task_stop", "agent_task_list",
     # Cronjob management
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
@@ -224,6 +226,19 @@ TOOLSETS = {
         "includes": []
     },
     
+    "agent_team": {
+        "description": "Durable Agent Team task creation, diagnostics, status, output, stop, and listing tools.",
+        "category": "basic",
+        "tools": [
+            "agent_task_create",
+            "agent_task_status",
+            "agent_task_diagnostics",
+            "agent_task_output",
+            "agent_task_stop",
+            "agent_task_list",
+        ],
+        "includes": [],
+    },
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
         "tools": ["delegate_task"],

@@ -1598,6 +1598,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         )
     elif function_name == "delegate_task":
         return agent._dispatch_delegate_task(function_args)
+    elif function_name.startswith("agent_task_"):
+        return agent._dispatch_agent_task(function_name, function_args)
     else:
         return _ra().handle_function_call(
             function_name, function_args, effective_task_id,
