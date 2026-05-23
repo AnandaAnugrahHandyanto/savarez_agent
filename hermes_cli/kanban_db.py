@@ -2911,6 +2911,12 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
     Best-effort — any error is swallowed so cleanup never blocks task completion.
     Only ``scratch`` workspaces are removed; ``worktree`` and ``dir`` workspaces
     are intentionally preserved.
+
+    Safety guard: the resolved workspace path must be under
+    :func:`workspaces_root` before deletion is allowed. This prevents
+    accidental data loss when ``default_workdir`` (or a manually edited
+    ``workspace_path``) points outside the kanban workspaces directory.
+    Symlinks and relative-path traversal are resolved before the check.
     """
     try:
         row = conn.execute(
@@ -2923,8 +2929,17 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         path: Optional[str] = row["workspace_path"]
         if kind != "scratch" or not path:
             return
+        wp = Path(path).resolve()
+        root = workspaces_root().resolve()
+        if not _is_safe_workspace_path(wp, root):
+            _log.warning(
+                "Refusing to clean up workspace %s for task %s: "
+                "path is outside workspaces_root %s",
+                wp, task_id, root,
+            )
+            _cleanup_worker_tmux(conn, task_id)
+            return
         import shutil
-        wp = Path(path)
         if wp.is_dir():
             shutil.rmtree(wp, ignore_errors=True)
             _log.debug("Removed scratch workspace: %s", wp)
@@ -2933,6 +2948,19 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         _cleanup_worker_tmux(conn, task_id)
     except Exception:
         pass  # best-effort — never block completion
+
+
+def _is_safe_workspace_path(workspace_path: Path, workspaces_root: Path) -> bool:
+    """Return True if *workspace_path* is safely under *workspaces_root*.
+
+    Both paths are resolved (symlinks + ``..`` eliminated) before comparison
+    so that symlink escapes and relative-path traversal are caught.
+    """
+    try:
+        workspace_path.relative_to(workspaces_root)
+        return True
+    except ValueError:
+        return False
 
 
 def _cleanup_worker_tmux(conn: sqlite3.Connection, task_id: str) -> None:
