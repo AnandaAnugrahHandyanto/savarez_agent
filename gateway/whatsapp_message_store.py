@@ -177,6 +177,77 @@ def _matches_exact_filter(
     return record.get(field_name) == expected
 
 
+def _iter_existing_partition_paths(*, base_dir: Path | None = None) -> list[Path]:
+    store_dir = get_whatsapp_record_store_dir(base_dir)
+    if not store_dir.exists():
+        return []
+    return sorted(path for path in store_dir.glob("*.jsonl") if path.is_file())
+
+
+def _load_filtered_whatsapp_records(
+    *,
+    partition_paths: list[Path],
+    start: datetime | None,
+    end: datetime | None,
+    conversation_key: str | None,
+    destination_key: str | None,
+    destination_context_type: str | None,
+    group_chat_id: str | None,
+    dm_counterparty_id: str | None,
+    direction: str | None,
+) -> list[dict[str, Any]]:
+    results: list[tuple[datetime, int, dict[str, Any]]] = []
+
+    for path in partition_paths:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                record = json.loads(line)
+
+                if not _is_queryable_record(record):
+                    continue
+
+                if not _matches_exact_filter(
+                    record, "conversation_key", conversation_key
+                ):
+                    continue
+                if not _matches_exact_filter(
+                    record, "destination_key", destination_key
+                ):
+                    continue
+                if not _matches_exact_filter(
+                    record,
+                    "destination_context_type",
+                    destination_context_type,
+                ):
+                    continue
+                if not _matches_exact_filter(record, "group_chat_id", group_chat_id):
+                    continue
+                if not _matches_exact_filter(
+                    record, "dm_counterparty_id", dm_counterparty_id
+                ):
+                    continue
+                if not _matches_exact_filter(record, "direction", direction):
+                    continue
+
+                effective = parse_whatsapp_event_datetime(
+                    record.get("effective_event_at_utc")
+                )
+                if effective is None:
+                    continue
+                if start is not None and effective < start:
+                    continue
+                if end is not None and effective >= end:
+                    continue
+
+                results.append((effective, _record_sequence_value(record), record))
+
+    results.sort(key=lambda item: (item[0], item[1]))
+    return [record for _, _, record in results]
+
+
 def query_whatsapp_records(
     start_at_utc: datetime,
     end_at_utc: datetime,
@@ -203,61 +274,57 @@ def query_whatsapp_records(
             "conversation_key, destination_key, group_chat_id, or dm_counterparty_id"
         )
 
-    results: list[tuple[datetime, int, dict[str, Any]]] = []
     store_dir = get_whatsapp_record_store_dir(base_dir)
+    partition_paths = [
+        store_dir / f"{partition_day.isoformat()}.jsonl"
+        for partition_day in _iter_overlapping_partition_dates(start, end)
+        if (store_dir / f"{partition_day.isoformat()}.jsonl").exists()
+    ]
+    return _load_filtered_whatsapp_records(
+        partition_paths=partition_paths,
+        start=start,
+        end=end,
+        conversation_key=conversation_key,
+        destination_key=destination_key,
+        destination_context_type=destination_context_type,
+        group_chat_id=group_chat_id,
+        dm_counterparty_id=dm_counterparty_id,
+        direction=direction,
+    )
 
-    for partition_day in _iter_overlapping_partition_dates(start, end):
-        path = store_dir / f"{partition_day.isoformat()}.jsonl"
-        if path.exists():
-            with path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    record = json.loads(line)
 
-                    if not _is_queryable_record(record):
-                        continue
+def query_whatsapp_records_any_time(
+    *,
+    base_dir: Path | None = None,
+    conversation_key: str | None = None,
+    destination_key: str | None = None,
+    destination_context_type: str | None = None,
+    group_chat_id: str | None = None,
+    dm_counterparty_id: str | None = None,
+    direction: str | None = None,
+) -> list[dict[str, Any]]:
+    if not _has_destination_scope(
+        conversation_key=conversation_key,
+        destination_key=destination_key,
+        group_chat_id=group_chat_id,
+        dm_counterparty_id=dm_counterparty_id,
+    ):
+        raise ValueError(
+            "query_whatsapp_records_any_time requires at least one destination scope: "
+            "conversation_key, destination_key, group_chat_id, or dm_counterparty_id"
+        )
 
-                    if not _matches_exact_filter(
-                        record, "conversation_key", conversation_key
-                    ):
-                        continue
-                    if not _matches_exact_filter(
-                        record, "destination_key", destination_key
-                    ):
-                        continue
-                    if not _matches_exact_filter(
-                        record,
-                        "destination_context_type",
-                        destination_context_type,
-                    ):
-                        continue
-                    if not _matches_exact_filter(
-                        record, "group_chat_id", group_chat_id
-                    ):
-                        continue
-                    if not _matches_exact_filter(
-                        record,
-                        "dm_counterparty_id",
-                        dm_counterparty_id,
-                    ):
-                        continue
-                    if not _matches_exact_filter(record, "direction", direction):
-                        continue
-
-                    effective = parse_whatsapp_event_datetime(
-                        record.get("effective_event_at_utc")
-                    )
-                    if effective is None:
-                        continue
-                    if not (start <= effective < end):
-                        continue
-
-                    results.append((effective, _record_sequence_value(record), record))
-
-    results.sort(key=lambda item: (item[0], item[1]))
-    return [record for _, _, record in results]
+    return _load_filtered_whatsapp_records(
+        partition_paths=_iter_existing_partition_paths(base_dir=base_dir),
+        start=None,
+        end=None,
+        conversation_key=conversation_key,
+        destination_key=destination_key,
+        destination_context_type=destination_context_type,
+        group_chat_id=group_chat_id,
+        dm_counterparty_id=dm_counterparty_id,
+        direction=direction,
+    )
 
 
 __all__ = [
@@ -268,6 +335,7 @@ __all__ = [
     "next_whatsapp_record_sequence",
     "parse_whatsapp_event_datetime",
     "query_whatsapp_records",
+    "query_whatsapp_records_any_time",
     "utc_isoformat",
     "utc_now",
     "whatsapp_daily_partition_path",
