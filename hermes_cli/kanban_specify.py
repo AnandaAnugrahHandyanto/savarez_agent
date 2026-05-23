@@ -186,11 +186,13 @@ def specify_task(
 
     try:
         from agent.auxiliary_client import get_auxiliary_extra_body, get_text_auxiliary_client
+        from agent.cursor_auxiliary_client import prepare_cursor_auxiliary_credentials
     except Exception as exc:  # pragma: no cover — import smoke test
         logger.debug("specify: auxiliary client import failed: %s", exc)
         return SpecifyOutcome(task_id, False, "auxiliary client unavailable")
 
     try:
+        prepare_cursor_auxiliary_credentials()
         client, model = get_text_auxiliary_client("triage_specifier")
     except Exception as exc:
         logger.debug("specify: get_text_auxiliary_client failed: %s", exc)
@@ -231,8 +233,9 @@ def specify_task(
             "specify: API call failed for %s (%s) — skipping",
             task_id, exc,
         )
+        detail = str(exc).strip() or type(exc).__name__
         return SpecifyOutcome(
-            task_id, False, f"LLM error: {type(exc).__name__}"
+            task_id, False, f"LLM error: {detail}"
         )
 
     try:

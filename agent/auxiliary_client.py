@@ -3006,6 +3006,16 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     if isinstance(sync_client, AnthropicAuxiliaryClient):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
     try:
+        from agent.cursor_auxiliary_client import (
+            AsyncCursorAuxiliaryClient,
+            CursorAuxiliaryClient,
+        )
+
+        if isinstance(sync_client, CursorAuxiliaryClient):
+            return AsyncCursorAuxiliaryClient(sync_client), model
+    except ImportError:
+        pass
+    try:
         from agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
 
         if isinstance(sync_client, GeminiNativeClient):
@@ -3242,6 +3252,21 @@ def resolve_provider_client(
         if client is None:
             logger.warning("resolve_provider_client: openai-codex requested "
                            "but no Codex OAuth token found (run: hermes model)")
+            return None, None
+        final_model = _normalize_resolved_model(model or default, provider)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
+    # ── Cursor SDK (local agent runtime — not an HTTP OpenAI endpoint) ─
+    if provider == "cursor":
+        from agent.cursor_auxiliary_client import build_cursor_auxiliary_client
+
+        client, default = build_cursor_auxiliary_client(model)
+        if client is None:
+            logger.warning(
+                "resolve_provider_client: cursor requested but CURSOR_API_KEY "
+                "is not set (https://cursor.com/dashboard/integrations)"
+            )
             return None, None
         final_model = _normalize_resolved_model(model or default, provider)
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
@@ -4114,6 +4139,20 @@ def _force_close_async_httpx(client: Any) -> None:
         pass
 
 
+def evict_cached_auxiliary_clients(predicate) -> None:
+    """Remove cached auxiliary clients matching ``predicate(client)``."""
+    with _client_cache_lock:
+        stale_keys = [
+            key
+            for key, entry in _client_cache.items()
+            if entry and predicate(entry[0])
+        ]
+        for key in stale_keys:
+            entry = _client_cache.pop(key, None)
+            if entry:
+                _force_close_async_httpx(entry[0])
+
+
 def shutdown_cached_clients() -> None:
     """Close all cached clients (sync and async) to prevent event-loop errors.
 
@@ -4264,6 +4303,16 @@ def _get_cached_client(
         is_vision=is_vision,
     )
     if client is not None:
+        # Cursor auxiliary clients embed the API key at construction time and
+        # own a bridge handle — do not cache them across long-lived dashboard
+        # requests or they keep stale credentials after .env updates.
+        try:
+            from agent.cursor_auxiliary_client import CursorAuxiliaryClient
+
+            if isinstance(client, CursorAuxiliaryClient):
+                return client, model or default_model
+        except ImportError:
+            pass
         # For async clients, remember which loop they were created on so we
         # can detect stale entries later.
         bound_loop = current_loop

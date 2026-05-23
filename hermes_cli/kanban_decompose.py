@@ -302,11 +302,13 @@ def decompose_task(
             get_auxiliary_extra_body,
             get_text_auxiliary_client,
         )
+        from agent.cursor_auxiliary_client import prepare_cursor_auxiliary_credentials
     except Exception as exc:
         logger.debug("decompose: auxiliary client import failed: %s", exc)
         return DecomposeOutcome(task_id, False, "auxiliary client unavailable")
 
     try:
+        prepare_cursor_auxiliary_credentials()
         client, model = get_text_auxiliary_client("kanban_decomposer")
     except Exception as exc:
         logger.debug("decompose: get_text_auxiliary_client failed: %s", exc)
