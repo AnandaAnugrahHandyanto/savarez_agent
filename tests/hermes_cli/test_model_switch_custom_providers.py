@@ -18,6 +18,11 @@ _MOCK_VALIDATION = {
 }
 
 
+def _mock_empty_live_model_catalog(monkeypatch):
+    """Keep custom-provider picker tests independent of local model servers."""
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *args, **kwargs: [])
+
+
 def test_list_authenticated_providers_includes_custom_providers(monkeypatch):
     """No-args /model menus should include saved custom_providers entries."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
@@ -265,6 +270,7 @@ def test_list_authenticated_providers_groups_same_endpoint(monkeypatch):
     returned as a single picker row with all their models merged."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    _mock_empty_live_model_catalog(monkeypatch)
 
     providers = list_authenticated_providers(
         current_provider="custom",
@@ -300,6 +306,7 @@ def test_list_authenticated_providers_current_endpoint_uses_current_slug(monkeyp
     the corrupt bare "custom" (see #17478)."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    _mock_empty_live_model_catalog(monkeypatch)
 
     providers = list_authenticated_providers(
         current_provider="custom:ollama",
@@ -326,6 +333,7 @@ def test_list_authenticated_providers_bare_custom_slug_recovers(monkeypatch):
     ``custom:<name>`` form so the picker stays usable."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    _mock_empty_live_model_catalog(monkeypatch)
 
     providers = list_authenticated_providers(
         current_provider="custom",
@@ -351,6 +359,7 @@ def test_list_authenticated_providers_distinct_endpoints_stay_separate(monkeypat
     even if some display names happen to be similar."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    _mock_empty_live_model_catalog(monkeypatch)
 
     providers = list_authenticated_providers(
         user_providers={},
@@ -408,6 +417,7 @@ def test_list_authenticated_providers_total_models_reflects_grouped_count(monkey
     the full count, and every grouped model appears in the list."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    _mock_empty_live_model_catalog(monkeypatch)
 
     entries = [
         {"name": f"Ollama \u2014 Model {i}", "base_url": "http://localhost:11434/v1",
