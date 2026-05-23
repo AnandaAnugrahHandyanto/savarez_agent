@@ -18,7 +18,7 @@
   const { React } = SDK;
   const h = React.createElement;
   const {
-    Card, CardContent,
+    Card, CardContent, PluginSlot,
     Badge, Button, Input, Label, Select, SelectOption,
   } = SDK.components;
   const { useState, useEffect, useCallback, useMemo, useRef } = SDK.hooks;
@@ -194,6 +194,7 @@
 
   const API = "/api/plugins/kanban";
   const MIME_TASK = "text/x-hermes-task";
+  const OPEN_TASK_EVENT = "hermes-kanban:open-task";
 
   // Docs link — surfaced as a `?` icon next to the board switcher and as
   // `title=` hints on unlabelled controls. Kept in one place so rebrands or
@@ -467,6 +468,7 @@
     const [board, setBoard] = useState(() => readSelectedBoard() || null);
     const [boardList, setBoardList] = useState([]);      // [{slug, name, counts, ...}]
     const [showNewBoard, setShowNewBoard] = useState(false);
+    const [showDropLinkDialog, setShowDropLinkDialog] = useState(false);
 
     const [kanbanBoard, setKanbanBoard] = useState(null);  // the grid data
     // Alias so the rest of the function can keep using `board` semantically
@@ -906,6 +908,19 @@
       clearSelected();
     }, [board, clearSelected]);
 
+    useEffect(function () {
+      function onOpenTask(ev) {
+        const detail = (ev && ev.detail) || {};
+        const taskId = detail.taskId || detail.task_id || detail.id;
+        const nextBoard = detail.boardSlug || detail.board || detail.board_slug;
+        if (!taskId) return;
+        if (nextBoard && nextBoard !== board) switchBoard(nextBoard);
+        setSelectedTaskId(taskId);
+      }
+      window.addEventListener(OPEN_TASK_EVENT, onOpenTask);
+      return function () { window.removeEventListener(OPEN_TASK_EVENT, onOpenTask); };
+    }, [board, switchBoard]);
+
     const createNewBoard = useCallback(function (payload) {
       return SDK.fetchJSON(`${API}/boards`, {
         method: "POST",
@@ -982,6 +997,7 @@
           boardList: boardList,
           onSwitch: switchBoard,
           onNewClick: function () { setShowNewBoard(true); },
+          onDropLinkClick: function () { setShowDropLinkDialog(true); },
           onDeleteBoard: deleteBoard,
         }),
         showNewBoard ? h(NewBoardDialog, {
@@ -990,6 +1006,27 @@
             return createNewBoard(payload).then(function () { setShowNewBoard(false); });
           },
         }) : null,
+        showDropLinkDialog ? h(DropLinkDialog, {
+          onCancel: function () { setShowDropLinkDialog(false); },
+          onCreate: async function (payload) {
+            try {
+              const res = await SDK.fetchJSON(withBoard(API + "/intake-links", "attention-intake"), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+              });
+              setShowDropLinkDialog(false);
+              if (res && res.task && res.task.id) {
+                setSelectedTaskId(res.task.id);
+              }
+              loadBoard();
+              loadBoardList();
+            } catch (e) {
+              setError("Intake link failed: " + parseApiErrorMessage(e));
+            }
+          },
+        }) : null,
+        h(PluginSlot, { name: "kanban:top" }),
         h(OrchestrationPanel, null),
         h(AttentionStrip, {
           boardData,
@@ -1036,6 +1073,7 @@
           onCreate: createTask,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
         }),
+        h(PluginSlot, { name: "kanban:bottom" }),
         selectedTaskId ? h(TaskDrawer, {
           taskId: selectedTaskId,
           boardSlug: board,
@@ -1805,6 +1843,12 @@
         h("div", { className: "flex-1" }),
         h(DocsLink, null),
         h(Button, {
+          onClick: props.onDropLinkClick,
+          size: "sm",
+          className: "h-8",
+          title: "Drop a Link onto the Attention Intake board.",
+        }, tx(t, "dropLink", "Drop Link")),
+        h(Button, {
           onClick: props.onNewClick,
           size: "sm",
           className: "h-8",
@@ -1823,6 +1867,73 @@
             title: tx(t, "archiveBoardTitle", "Archive this board"),
           }, tx(t, "archive", "Archive"))
           : null,
+      ),
+    );
+  }
+
+  function DropLinkDialog(props) {
+    const { t } = useI18n();
+    const [url, setUrl] = useState("");
+    const [note, setNote] = useState("");
+    const [submitting, setSubmitting] = useState(false);
+    const [err, setErr] = useState(null);
+    function onSubmit(ev) {
+      if (ev) ev.preventDefault();
+      const trimmed = url.trim();
+      if (!trimmed) { setErr("URL is required"); return; }
+      try { new URL(trimmed); } catch (_) { setErr("Not a valid URL"); return; }
+      setSubmitting(true);
+      setErr(null);
+      props.onCreate({ url: trimmed, context: note.trim() || undefined }).catch(function (e) { setErr(e.message || String(e)); setSubmitting(false); });
+    }
+    return h("div", {
+      className: "hermes-kanban-dialog-backdrop",
+      onClick: function (e) { if (e.target === e.currentTarget) props.onCancel(); },
+    },
+      h("form", {
+        className: "hermes-kanban-dialog",
+        onSubmit: onSubmit,
+      },
+        h("div", { className: "hermes-kanban-dialog-title" },
+          tx(t, "dropLinkTitle", "Drop Link — Attention Intake")),
+        h("div", { className: "text-xs text-muted-foreground mb-2" },
+          tx(t, "dropLinkDescription",
+            "Creates a first-class intake card on the attention-intake board. Duplicates are deduplicated by canonical URL hash.")),
+        h("div", { className: "flex flex-col gap-3" },
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs" }, tx(t, "url", "URL"), " ", h("span", { className: "text-destructive" }, "*")),
+            h(Input, {
+              value: url,
+              onChange: function (e) { setUrl(e.target.value); },
+              placeholder: "https://…",
+              autoFocus: true,
+              className: "h-8",
+            }),
+          ),
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs" }, tx(t, "note", "Note (optional)")),
+            h(Input, {
+              value: note,
+              onChange: function (e) { setNote(e.target.value); },
+              placeholder: "Why this link matters…",
+              className: "h-8",
+            }),
+          ),
+        ),
+        err ? h("div", { className: "text-xs text-destructive mt-2" }, err) : null,
+        h("div", { className: "hermes-kanban-dialog-actions" },
+          h(Button, {
+            type: "button",
+            onClick: props.onCancel,
+            size: "sm",
+            disabled: submitting,
+          }, tx(t, "cancel", "Cancel")),
+          h(Button, {
+            type: "submit",
+            size: "sm",
+            disabled: submitting || !url.trim(),
+          }, submitting ? tx(t, "dropping", "Dropping…") : tx(t, "dropLink", "Drop Link")),
+        ),
       ),
     );
   }
