@@ -3273,7 +3273,7 @@ class BasePlatformAdapter(ABC):
         return os.environ.get("HERMES_PRE_OUTPUT_ASSIMILATION_SIGNALING_ENABLED", "").lower() == "true"
 
     def init_precommit_state(self, session_key: str) -> None:
-        logger.debug(
+        logger.info(
             "B1.3 init_precommit_state entry session=%s flag=%s adapter=%s",
             session_key, self._is_assimilation_enabled(), self.name,
         )
@@ -3291,7 +3291,7 @@ class BasePlatformAdapter(ABC):
             "revision": 0,
             "restart_count": 0,
             "turn_started_at": now,
-            "assimilation_deadline": now + 1.5,
+            "assimilation_deadline": now + 3.0,
             "assimilated_texts": [],
             "visible_output_started": False,
             "side_effect_started": False,
@@ -3304,7 +3304,7 @@ class BasePlatformAdapter(ABC):
 
     def _try_assimilate(self, session_key: str, event: MessageEvent) -> bool:
         state = self._precommit_state.get(session_key) if hasattr(self, "_precommit_state") else None
-        logger.debug(
+        logger.info(
             "B1.3 _try_assimilate entry session=%s flag=%s state_found=%s adapter=%s",
             session_key, self._is_assimilation_enabled(), state is not None, self.name,
         )
@@ -3313,14 +3313,37 @@ class BasePlatformAdapter(ABC):
         if not state:
             return False
         if state["state"] != "running_precommit":
+            logger.info(
+                "B1.3 _try_assimilate REJECT session=%s gate=%s detail=%s",
+                session_key, "wrong_state", state["state"],
+            )
             return False
         if state["visible_output_started"] or state["side_effect_started"]:
+            logger.info(
+                "B1.3 _try_assimilate REJECT session=%s gate=%s detail=%s",
+                session_key, "side_effect_or_output",
+                f"visible={state['visible_output_started']} side_effect={state['side_effect_started']}",
+            )
             return False
         if state["restart_count"] >= 2:
+            logger.info(
+                "B1.3 _try_assimilate REJECT session=%s gate=%s detail=%s",
+                session_key, "restart_limit", str(state["restart_count"]),
+            )
             return False
         if time.monotonic() > state["assimilation_deadline"]:
+            logger.info(
+                "B1.3 _try_assimilate REJECT session=%s gate=%s detail=%s",
+                session_key, "deadline_expired",
+                f"elapsed={time.monotonic() - state['turn_started_at']:.2f}s deadline={state['assimilation_deadline']:.2f}",
+            )
             return False
         if not self._is_queue_text_debounce_candidate(event):
+            logger.info(
+                "B1.3 _try_assimilate REJECT session=%s gate=%s detail=%s",
+                session_key, "not_queue_candidate",
+                f"text_mode={getattr(self, '_busy_text_mode', None)} is_command={event.is_command() if hasattr(event, 'is_command') else 'n/a'}",
+            )
             return False
         state["revision"] += 1
         state["restart_count"] += 1
@@ -3331,6 +3354,10 @@ class BasePlatformAdapter(ABC):
             "restart_count": state["restart_count"],
             "message_preview": (event.text or "")[:200],
         })
+        logger.info(
+            "B1.3 _try_assimilate ACCEPT session=%s revision=%d restart=%d",
+            session_key, state["revision"], state["restart_count"],
+        )
         logger.info(
             "B1.3 assimilation r%d restart=%d for session %s: %.80s",
             state["revision"],

@@ -2846,6 +2846,8 @@ def generate_launchd_plist() -> str:
         <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
+        <key>HERMES_PRE_OUTPUT_ASSIMILATION_ENABLED</key>
+        <string>false</string>
     </dict>
     
     <key>RunAtLoad</key>
