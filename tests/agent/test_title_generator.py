@@ -7,8 +7,10 @@ import pytest
 
 from agent.title_generator import (
     generate_title,
+    generate_refined_title,
     auto_title_session,
     maybe_auto_title,
+    maybe_refine_title,
 )
 
 
@@ -112,6 +114,130 @@ class TestGenerateTitle:
         # The user content in the messages should be truncated
         user_content = captured_kwargs["messages"][1]["content"]
         assert len(user_content) < 1100  # 500 + 500 + formatting
+
+
+class FakeTitleDB:
+    """Tiny session DB double for title provenance tests."""
+
+    def __init__(self, title=None, model_config=None):
+        self.title = title
+        self.model_config = model_config or {}
+        self.set_titles = []
+        self.merged_model_configs = []
+
+    def get_session_title(self, session_id):
+        return self.title
+
+    def set_session_title(self, session_id, title):
+        self.title = title
+        self.set_titles.append((session_id, title))
+        return True
+
+    def get_session(self, session_id):
+        return {"id": session_id, "title": self.title, "model_config": self.model_config}
+
+    def merge_session_model_config(self, session_id, patch):
+        self.model_config.update(patch)
+        self.merged_model_configs.append((session_id, patch))
+        return True
+
+
+class TestGenerateRefinedTitle:
+    """Unit tests for generating later, topic-aligned titles."""
+
+    def test_uses_conversation_context_and_existing_title(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Hermes Adaptive Session Titles"
+
+        history = [
+            {"role": "user", "content": "initial vague request"},
+            {"role": "assistant", "content": "sure"},
+            {"role": "user", "content": "now implement adaptive title refinement"},
+        ]
+
+        captured = {}
+
+        def mock_call_llm(**kwargs):
+            captured.update(kwargs)
+            return mock_response
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            title = generate_refined_title("Initial Help", history)
+
+        assert title == "Hermes Adaptive Session Titles"
+        user_content = captured["messages"][1]["content"]
+        assert "Existing title: Initial Help" in user_content
+        assert "adaptive title refinement" in user_content
+
+
+class TestMaybeRefineTitle:
+    """Tests for adaptive retitling policy and provenance guards."""
+
+    def _history(self, user_turns=4):
+        history = []
+        for i in range(user_turns):
+            history.append({"role": "user", "content": f"user topic turn {i}"})
+            history.append({"role": "assistant", "content": f"assistant answer {i}"})
+        return history
+
+    def test_refines_auto_title_after_configured_user_turns(self):
+        db = FakeTitleDB(
+            title="Initial Setup Help",
+            model_config={"title_metadata": {"title_source": "auto_initial", "title_turn_count": 1}},
+        )
+        cfg = {
+            "enabled": True,
+            "adaptive_retitle": True,
+            "retitle_after_user_turns": 4,
+            "retitle_auto_titles_only": True,
+            "lock_manual_titles": True,
+        }
+
+        with patch("agent.title_generator.generate_refined_title", return_value="Hermes Adaptive Titles"):
+            maybe_refine_title(db, "sess-1", self._history(4), title_config=cfg, run_in_background=False)
+
+        assert db.set_titles == [("sess-1", "Hermes Adaptive Titles")]
+        metadata = db.model_config["title_metadata"]
+        assert metadata["title_source"] == "auto_refined"
+        assert metadata["title_turn_count"] == 4
+        assert metadata["previous_title"] == "Initial Setup Help"
+
+    def test_does_not_overwrite_manual_or_unknown_title_by_default(self):
+        db = FakeTitleDB(title="User Chosen Title", model_config={})
+        cfg = {
+            "enabled": True,
+            "adaptive_retitle": True,
+            "retitle_after_user_turns": 4,
+            "retitle_auto_titles_only": True,
+            "lock_manual_titles": True,
+        }
+
+        with patch("agent.title_generator.generate_refined_title") as gen:
+            maybe_refine_title(db, "sess-1", self._history(4), title_config=cfg, run_in_background=False)
+
+        gen.assert_not_called()
+        assert db.set_titles == []
+        assert db.title == "User Chosen Title"
+
+    def test_does_not_refine_more_than_once_without_explicit_opt_in(self):
+        db = FakeTitleDB(
+            title="Already Refined Title",
+            model_config={"title_metadata": {"title_source": "auto_refined", "title_turn_count": 4}},
+        )
+        cfg = {
+            "enabled": True,
+            "adaptive_retitle": True,
+            "retitle_after_user_turns": 4,
+            "retitle_auto_titles_only": True,
+            "lock_manual_titles": True,
+        }
+
+        with patch("agent.title_generator.generate_refined_title") as gen:
+            maybe_refine_title(db, "sess-1", self._history(6), title_config=cfg, run_in_background=False)
+
+        gen.assert_not_called()
+        assert db.set_titles == []
 
 
 class TestAutoTitleSession:

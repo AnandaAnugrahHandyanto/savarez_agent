@@ -1,5 +1,6 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import json
 import time
 import pytest
 from pathlib import Path
@@ -1416,8 +1417,22 @@ class TestSessionTitle:
         assert session["title"] == "Before End"
         assert session["ended_at"] is not None
 
+    def test_merge_session_model_config_preserves_existing_keys(self, db):
+        db.create_session(session_id="s1", source="cli", model_config={"cwd": "/tmp/work"})
+
+        assert db.merge_session_model_config("s1", {"title_metadata": {"title_source": "auto_initial"}}) is True
+
+        session = db.get_session("s1")
+        model_config = json.loads(session["model_config"])
+        assert model_config["cwd"] == "/tmp/work"
+        assert model_config["title_metadata"] == {"title_source": "auto_initial"}
+
+    def test_merge_session_model_config_returns_false_for_missing_session(self, db):
+        assert db.merge_session_model_config("missing", {"title_metadata": {}}) is False
+
 
 class TestSanitizeTitle:
+
     """Tests for SessionDB.sanitize_title() validation and cleaning."""
 
     def test_normal_title_unchanged(self):

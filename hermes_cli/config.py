@@ -506,6 +506,16 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    "session_titles": {
+        "enabled": True,
+        "initial_auto_title": True,
+        "adaptive_retitle": True,
+        "retitle_after_user_turns": 4,
+        "retitle_after_compression": True,
+        "retitle_auto_titles_only": True,
+        "lock_manual_titles": True,
+        "max_words": 7,
+    },
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).

@@ -953,6 +953,40 @@ class SessionDB:
             row = cursor.fetchone()
         return dict(row) if row else None
 
+    def merge_session_model_config(self, session_id: str, patch: Dict[str, Any]) -> bool:
+        """Merge a JSON-object patch into a session's model_config sidecar.
+
+        Used for lightweight per-session metadata that does not justify a
+        schema migration. Returns True when the session exists and was updated.
+        """
+        if not isinstance(patch, dict):
+            raise ValueError("model_config patch must be a dict")
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT model_config FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if row is None:
+                return 0
+            current: Dict[str, Any] = {}
+            raw = row["model_config"] if isinstance(row, sqlite3.Row) else row[0]
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, dict):
+                        current = parsed
+                except Exception:
+                    current = {}
+            current.update(patch)
+            cursor = conn.execute(
+                "UPDATE sessions SET model_config = ? WHERE id = ?",
+                (json.dumps(current), session_id),
+            )
+            return cursor.rowcount
+
+        rowcount = self._execute_write(_do)
+        return bool(rowcount)
+
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Resolve an exact or uniquely prefixed session ID to the full ID.
 

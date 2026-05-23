@@ -1230,6 +1230,64 @@ class TestPrompt:
         assert callable(mock_title.call_args.kwargs["title_callback"])
 
     @pytest.mark.asyncio
+    async def test_title_callback_defers_session_info_coroutine_until_scheduled(self, agent, monkeypatch):
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(resp.session_id)
+        state.agent.run_conversation = MagicMock(return_value={
+            "final_response": "Done.",
+            "messages": [
+                {"role": "user", "content": "fix zed titles"},
+                {"role": "assistant", "content": "Done."},
+            ],
+        })
+
+        loop = asyncio.get_running_loop()
+        scheduled = []
+
+        with patch("agent.title_generator.maybe_auto_title") as mock_title:
+            await agent.prompt(
+                session_id=resp.session_id,
+                prompt=[TextContentBlock(type="text", text="fix zed titles")],
+            )
+
+        def fake_call_soon_threadsafe(callback, *args):
+            # Current broken behavior creates the coroutine before scheduling it.
+            # Close any such coroutine so this RED test fails on the explicit
+            # assertion below instead of leaking a RuntimeWarning.
+            if args and hasattr(args[0], "close"):
+                args[0].close()
+            scheduled.append((callback, args))
+
+        monkeypatch.setattr(loop, "call_soon_threadsafe", fake_call_soon_threadsafe)
+
+        created = []
+
+        async def noop_send(_session_id):
+            return None
+
+        def fake_send_session_info_update(session_id):
+            created.append(session_id)
+            return noop_send(session_id)
+
+        monkeypatch.setattr(agent, "_send_session_info_update", fake_send_session_info_update)
+        callback = mock_title.call_args.kwargs["title_callback"]
+
+        callback("Fix Zed titles")
+
+        assert created == []
+        assert len(scheduled) == 1
+        scheduled_callback, scheduled_args = scheduled[0]
+        assert scheduled_args == ()
+
+        scheduled_callback()
+        await asyncio.sleep(0)
+        assert created == [resp.session_id]
+
+    @pytest.mark.asyncio
     async def test_prompt_sends_session_info_update_after_auto_title(self, agent):
         mock_conn = MagicMock(spec=acp.Client)
         mock_conn.session_update = AsyncMock()
