@@ -703,3 +703,20 @@ def test_module_has_logger():
     """Verify module has a logger instance (regression guard for #27154)."""
     assert hasattr(gateway, "logger")
     assert gateway.logger.name == "hermes_cli.gateway"
+
+
+def test_gateway_lifecycle_refuses_inside_gateway_env(monkeypatch, capsys):
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    monkeypatch.delenv("HERMES_ALLOW_GATEWAY_LIFECYCLE_FROM_GATEWAY", raising=False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        gateway._refuse_gateway_lifecycle_from_gateway("restart")
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "Refusing to restart the gateway" in out
+
+
+def test_gateway_lifecycle_allows_external_shell(monkeypatch):
+    monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+    gateway._refuse_gateway_lifecycle_from_gateway("restart")

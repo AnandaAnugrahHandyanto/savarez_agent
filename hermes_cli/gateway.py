@@ -5028,6 +5028,19 @@ def gateway_command(args):
         sys.exit(1)
 
 
+def _refuse_gateway_lifecycle_from_gateway(subcmd: str) -> None:
+    """Prevent gateway-hosted tools from killing their own runtime."""
+    if subcmd not in {"stop", "restart"}:
+        return
+    if os.environ.get("_HERMES_GATEWAY") != "1":
+        return
+    if os.environ.get("HERMES_ALLOW_GATEWAY_LIFECYCLE_FROM_GATEWAY") == "1":
+        return
+    print_error(f"Refusing to {subcmd} the gateway from inside the running gateway process.")
+    print("Run this command from an external shell instead, or use the gateway /update flow.")
+    sys.exit(1)
+
+
 def _gateway_command_inner(args):
     subcmd = getattr(args, 'gateway_command', None)
     
@@ -5042,6 +5055,8 @@ def _gateway_command_inner(args):
     if subcmd == "setup":
         gateway_setup()
         return
+
+    _refuse_gateway_lifecycle_from_gateway(subcmd)
 
     # Service management commands
     if subcmd == "install":

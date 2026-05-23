@@ -872,7 +872,7 @@ def kanban_command(args: argparse.Namespace) -> int:
     # schema creation; `create` / `list` / every other command would
     # error out on a fresh install.
     try:
-        kb.init_db()
+        kb.init_db(allow_create=False)
     except Exception as exc:
         print(f"kanban: could not initialize database: {exc}", file=sys.stderr)
         _restore_board_env()

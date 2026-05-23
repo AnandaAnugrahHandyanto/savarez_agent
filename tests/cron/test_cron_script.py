@@ -542,3 +542,36 @@ class TestRunJobEnvVarCleanup:
         assert os.environ.get("HERMES_SESSION_PLATFORM") is None
         assert os.environ.get("HERMES_SESSION_CHAT_ID") is None
         assert os.environ.get("HERMES_SESSION_CHAT_NAME") is None
+
+
+def test_cron_prompt_rejects_gateway_lifecycle_restart(cron_env):
+    from tools.cronjob_tools import cronjob
+
+    result = json.loads(cronjob(
+        action="create",
+        prompt="Run maintenance, then hermes gateway restart",
+        schedule="30m",
+        name="bad-gateway-restart",
+    ))
+
+    assert result["success"] is False
+    assert "gateway lifecycle" in result["error"]
+
+
+def test_cron_script_rejects_gateway_lifecycle_restart(cron_env):
+    from tools.cronjob_tools import cronjob
+
+    script = cron_env / "scripts" / "restart_gateway.sh"
+    script.write_text("#!/usr/bin/env bash\nhermes gateway restart\n", encoding="utf-8")
+
+    result = json.loads(cronjob(
+        action="create",
+        prompt="Run script",
+        schedule="30m",
+        script="restart_gateway.sh",
+        name="bad-script-restart",
+    ))
+
+    assert result["success"] is False
+    assert "Script 'restart_gateway.sh' is unsafe" in result["error"]
+    assert "gateway lifecycle" in result["error"]

@@ -65,6 +65,14 @@ _CRON_EXFIL_COMMAND_PATTERNS = [
     (rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*(?:Bearer|token)\s+{_CRON_SECRET_VAR_RE}["\']', "exfil_curl_auth_header"),
 ]
 
+_CRON_GATEWAY_LIFECYCLE_PATTERNS = [
+    (r'\bhermes\s+gateway\s+(?:restart|stop|start)\b', "hermes_gateway_lifecycle"),
+    (r'\bhermes\s+update\b', "hermes_update_gateway_restart"),
+    (r'\blaunchctl\s+(?:kickstart|unload|load|stop)\b[^\n]*(?:ai\.hermes|hermes)', "launchctl_hermes_lifecycle"),
+    (r'\bsystemctl\s+(?:--user\s+)?(?:restart|stop)\b[^\n]*(?:hermes|gateway)', "systemctl_hermes_lifecycle"),
+    (r'\b(?:kill|pkill|killall)\b[^\n]*(?:hermes|gateway)', "kill_hermes_gateway"),
+]
+
 _CRON_INVISIBLE_CHARS = {
     '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
     '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
@@ -137,6 +145,12 @@ def _scan_cron_prompt(prompt: str) -> str:
     for pattern, pid in _CRON_EXFIL_COMMAND_PATTERNS:
         if re.search(pattern, prompt_to_scan, re.IGNORECASE):
             return f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."
+    for pattern, pid in _CRON_GATEWAY_LIFECYCLE_PATTERNS:
+        if re.search(pattern, prompt_to_scan, re.IGNORECASE):
+            return (
+                f"Blocked: prompt matches gateway lifecycle pattern '{pid}'. "
+                "Cron jobs must not restart/stop the gateway that runs them; run lifecycle commands from an external shell."
+            )
     return ""
 
 
@@ -287,6 +301,17 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
         return (
             f"Script path escapes the scripts directory via traversal: {raw!r}"
         )
+
+    script_path = scripts_dir / raw
+    if script_path.exists() and script_path.is_file():
+        try:
+            script_text = script_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            script_text = ""
+        if script_text:
+            lifecycle_error = _scan_cron_prompt(script_text)
+            if lifecycle_error:
+                return f"Script {raw!r} is unsafe: {lifecycle_error}"
 
     return None
 

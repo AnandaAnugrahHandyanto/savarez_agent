@@ -1005,10 +1005,38 @@ def _validate_sqlite_header(path: Path) -> None:
     )
 
 
+def _validate_board_db_autocreate_allowed(path: Path, board: Optional[str], *, allow_create: bool) -> None:
+    """Refuse implicit recreation of missing/empty non-default board DBs.
+
+    The default board keeps fresh-install ergonomics. Named boards, however,
+    represent existing project state: if their DB file disappeared or was
+    truncated, silently running SQLite schema creation yields a valid but empty
+    board and makes data loss look like success.
+    """
+    slug = _normalize_board_slug(board)
+    if slug is None or slug == DEFAULT_BOARD or allow_create:
+        return
+    try:
+        stat = path.stat()
+    except FileNotFoundError as exc:
+        raise sqlite3.DatabaseError(
+            f"refusing to auto-create missing kanban DB for board {slug!r}: {path}. "
+            "Run `hermes kanban init` only after restoring/backing up the board DB."
+        ) from exc
+    except OSError:
+        return
+    if stat.st_size == 0:
+        raise sqlite3.DatabaseError(
+            f"refusing to auto-create empty/truncated kanban DB for board {slug!r}: {path}. "
+            "Restore from backup or run explicit `hermes kanban init` after preserving the damaged file."
+        )
+
+
 def connect(
     db_path: Optional[Path] = None,
     *,
     board: Optional[str] = None,
+    allow_create: bool = True,
 ) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB.
 
@@ -1030,8 +1058,13 @@ def connect(
     """
     if db_path is not None:
         path = db_path
+        resolved_board = _normalize_board_slug(board)
     else:
-        path = kanban_db_path(board=board)
+        resolved_board = _normalize_board_slug(board)
+        if resolved_board is None:
+            resolved_board = get_current_board()
+        path = kanban_db_path(board=resolved_board)
+    _validate_board_db_autocreate_allowed(path, resolved_board, allow_create=allow_create)
     path.parent.mkdir(parents=True, exist_ok=True)
     _validate_sqlite_header(path)
     resolved = str(path.resolve())
@@ -1070,6 +1103,7 @@ def init_db(
     db_path: Optional[Path] = None,
     *,
     board: Optional[str] = None,
+    allow_create: bool = True,
 ) -> Path:
     """Create the schema if it doesn't exist; return the path used.
 
@@ -1091,7 +1125,7 @@ def init_db(
     # schema + migration pass unconditionally.
     with _INIT_LOCK:
         _INITIALIZED_PATHS.discard(resolved)
-    with contextlib.closing(connect(path)):
+    with contextlib.closing(connect(path, board=board, allow_create=allow_create)):
         pass
     return path
 
