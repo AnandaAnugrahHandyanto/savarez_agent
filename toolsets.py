@@ -260,6 +260,17 @@ TOOLSETS = {
         "includes": []
     },
 
+    "image_refs": {
+        "description": (
+            "Image generation with character reference立绘 — uses gpt-image-2 "
+            "via Codex OAuth (no extra API key), sends 0-4 character PNG "
+            "portraits as visual references for likeness consistency. Built "
+            "for the daily 说说 companion-image flow."
+        ),
+        "tools": ["image_with_refs"],
+        "includes": []
+    },
+
     "kanban": {
         "description": (
             "Kanban multi-agent coordination — only active when the agent "
