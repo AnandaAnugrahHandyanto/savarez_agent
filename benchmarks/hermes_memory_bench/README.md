@@ -33,6 +33,7 @@ python -m benchmarks.hermes_memory_bench.run --suite smoke --output /tmp/hermes-
 - `memory_review_decision_gate`
 - `memory_proposal_draft_builder`
 - `memory_proposal_governance_gate`
+- `memory_governance_submission_packet`
 - `latency_ms`
 
 ## Hybrid Retrieval Fusion v0.1
@@ -205,6 +206,26 @@ write the Memory Graph, modify config, or create operation-ledger events.
 The smoke suite includes `memory_proposal_governance_gate`, proving that a
 valid proposal draft becomes a `governance_review_required` submission
 candidate without creating a real proposal or governance submission record.
+
+## Memory Governance Submission Packet v0.1
+
+Memory Governance Submission Packet v0.1 lives in
+`agent.memory_governance_submission_packet`. It turns valid governance
+submission candidates into deterministic `human_review_packet_required` packet
+candidates for manual human review before real proposal creation.
+
+Only valid governance submission candidates can produce valid packets. Invalid
+submission candidates, missing payload previews, or missing source evidence
+produce invalid packets with explicit reasons. Packets include source identity,
+payload preview, evidence summary, deterministic human review checklist, risk
+notes, source submission snapshot, validation, recommendation, and read-only
+policy. The packet builder does not submit to governance, create proposal
+records, persist approvals, convert packets to real proposals, write memory,
+write the Memory Graph, modify config, or create operation-ledger events.
+
+The smoke suite includes `memory_governance_submission_packet`, proving that a
+valid governance submission candidate becomes a `human_review_packet_required`
+packet candidate without creating a real proposal.
 
 ## Report Schema
 

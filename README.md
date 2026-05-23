@@ -159,6 +159,12 @@ and creates read-only `governance_review_required` submission candidates for
 manual governed proposal creation without submitting, approving, persisting, or
 creating real proposals or operation-ledger events.
 
+Memory Governance Submission Packet v0.1 lives in
+`agent.memory_governance_submission_packet`. It turns valid governance
+submission candidates into deterministic `human_review_packet_required` review
+packet candidates with evidence summaries, review checklists, and explicit
+read-only policy before any real proposal creation.
+
 ---
 
 ## Migrating from OpenClaw
