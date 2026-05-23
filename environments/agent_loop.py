@@ -233,8 +233,8 @@ class HermesAgentLoop:
                 response = await self.server.chat_completion(**chat_kwargs)
             except Exception as e:
                 api_elapsed = _time.monotonic() - api_start
-                logger.exception(
-                    "API call failed on turn %d (%.1fs)", turn + 1, api_elapsed
+                logger.error(
+                    "API call failed on turn %d (%.1fs): %s", turn + 1, api_elapsed, e
                 )
                 return AgentResult(
                     messages=messages,
@@ -293,12 +293,8 @@ class HermesAgentLoop:
                             "Fallback parser extracted %d tool calls from raw content",
                             len(parsed_calls),
                         )
-                except Exception:
-                    logger.exception(
-                        "Fallback parser failed on turn %d (task=%s)",
-                        turn + 1,
-                        self.task_id[:8],
-                    )
+                except Exception as e:
+                    logger.warning("Fallback parser failed: %s", e)
                     # Fall through to no tool calls
 
             if assistant_msg.tool_calls:
