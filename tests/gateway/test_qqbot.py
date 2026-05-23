@@ -2172,3 +2172,55 @@ class TestCloseCodeClassification:
         assert 4001 in fatal_codes
         assert 4915 in fatal_codes
 
+
+
+# ---------------------------------------------------------------------------
+# _read_events: closed WebSocket guard
+# ---------------------------------------------------------------------------
+
+class TestReadEventsClosedWebSocket:
+    """Verify _read_events raises on closed WebSocket (#31101)."""
+
+    def _make_adapter(self):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+    @pytest.mark.asyncio
+    async def test_raises_on_closed_websocket(self):
+        """_read_events should raise RuntimeError when WS is closed."""
+        adapter = self._make_adapter()
+
+        class FakeClosedWS:
+            closed = True
+
+        adapter._ws = FakeClosedWS()
+
+        with pytest.raises(RuntimeError, match="WebSocket not connected"):
+            await adapter._read_events()
+
+    @pytest.mark.asyncio
+    async def test_raises_on_none_websocket(self):
+        """_read_events should raise RuntimeError when WS is None."""
+        adapter = self._make_adapter()
+        adapter._ws = None
+
+        with pytest.raises(RuntimeError, match="WebSocket not connected"):
+            await adapter._read_events()
+
+    @pytest.mark.asyncio
+    async def test_enters_loop_when_ws_open(self):
+        """_read_events should enter the loop when WS is open and not closed."""
+        adapter = self._make_adapter()
+        adapter._running = False  # Stop immediately
+
+        class FakeOpenWS:
+            closed = False
+
+            async def receive(self):
+                # This should never be called because _running is False
+                pass
+
+        adapter._ws = FakeOpenWS()
+
+        # Should not raise - the while loop exits immediately because _running is False
+        await adapter._read_events()
