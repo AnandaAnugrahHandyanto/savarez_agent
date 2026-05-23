@@ -17574,103 +17574,101 @@ class GatewayRunner:
             pending_event = None
             pending = None
             if result and adapter and session_key:
-                # B1.3: Pre-output assimilation restart loop.
-                # If the agent was interrupted and the adapter has assimilated
-                # follow-up messages (text arrived before visible output),
-                # restart the turn with expanded input instead of queueing a
-                # second turn.
-                if result.get("interrupted"):
-                    _get_assim = getattr(adapter, "_get_assimilation_pending", None)
-                    if callable(_get_assim):
-                        has_assim, assim_text, rev, texts = _get_assim(session_key)
-                        if has_assim:
-                            self._evict_cached_agent(session_key)
-                            init_precommit = getattr(adapter, "init_precommit_state", None)
-                            if callable(init_precommit):
-                                # Build key using adapter's own config to match _try_assimilate / commit_precommit_turn lookup
-                                adapter_session_key = build_session_key(
-                                    source,
-                                    group_sessions_per_user=adapter.config.extra.get("group_sessions_per_user", True),
-                                    thread_sessions_per_user=adapter.config.extra.get("thread_sessions_per_user", False),
-                                )
-                                init_precommit(adapter_session_key)
-                            expanded_message = message + "\n" + assim_text
-                            expanded_context = context_prompt
-                            sig_enabled = getattr(adapter, "_is_assimilation_signaling_enabled", None)
-                            if callable(sig_enabled) and sig_enabled():
-                                build_note = getattr(adapter, "_build_assimilation_context_note", None)
-                                if callable(build_note):
-                                    note = build_note(session_key)
-                                    if note:
-                                        expanded_context = (context_prompt + "\n\n" + note).strip()
+                # B1.3: Check for accepted assimilation regardless of interrupt status.
+                # _try_assimilate is the authoritative signal; agent.interrupt() is a
+                # latency optimization that may arrive too late for single-response turns.
+                _get_assim = getattr(adapter, "_get_assimilation_pending", None)
+                has_assim, assim_text, rev, texts = (
+                    _get_assim(session_key) if callable(_get_assim) else (False, "", 0, [])
+                )
+                if has_assim:
+                    self._evict_cached_agent(session_key)
+                    init_precommit = getattr(adapter, "init_precommit_state", None)
+                    if callable(init_precommit):
+                        # Build key using adapter's own config to match _try_assimilate / commit_precommit_turn lookup
+                        adapter_session_key = build_session_key(
+                            source,
+                            group_sessions_per_user=adapter.config.extra.get("group_sessions_per_user", True),
+                            thread_sessions_per_user=adapter.config.extra.get("thread_sessions_per_user", False),
+                        )
+                        init_precommit(adapter_session_key)
+                    expanded_message = message + "\n" + assim_text
+                    expanded_context = context_prompt
+                    sig_enabled = getattr(adapter, "_is_assimilation_signaling_enabled", None)
+                    if callable(sig_enabled) and sig_enabled():
+                        build_note = getattr(adapter, "_build_assimilation_context_note", None)
+                        if callable(build_note):
+                            note = build_note(session_key)
+                            if note:
+                                expanded_context = (context_prompt + "\n\n" + note).strip()
+                    try:
+                        emit = getattr(adapter, "_emit_coalescing_event", None)
+                        if callable(emit):
+                            emit("turn_restart_requested", {
+                                "session_key": session_key,
+                                "revision": rev,
+                                "restart_count": (
+                                    adapter._precommit_state.get(session_key, {}).get("restart_count", 0)
+                                    if hasattr(adapter, "_precommit_state") else 0
+                                ),
+                                "assimilated_count": len(texts),
+                            })
+                    except Exception:
+                        pass
+                    logger.info(
+                        "B1.3 restarting turn for session %s: revision=%d, assimilated=%d messages",
+                        session_key or "?", rev, len(texts),
+                    )
+                    try:
+                        return await self._run_agent(
+                            message=expanded_message,
+                            context_prompt=expanded_context,
+                            history=history,
+                            source=source,
+                            session_id=session_id,
+                            session_key=session_key,
+                            run_generation=run_generation,
+                            _interrupt_depth=_interrupt_depth,
+                            event_message_id=event_message_id,
+                            channel_prompt=channel_prompt,
+                            agent_turn_id=agent_turn_id,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "B1.3 restart failed for session %s — "
+                            "queuing assimilated messages as pending turn",
+                            session_key or "?",
+                            exc_info=True,
+                        )
+                        if adapter and session_key:
                             try:
                                 emit = getattr(adapter, "_emit_coalescing_event", None)
                                 if callable(emit):
-                                    emit("turn_restart_requested", {
+                                    emit("turn_restart_failed", {
                                         "session_key": session_key,
                                         "revision": rev,
-                                        "restart_count": (
-                                            adapter._precommit_state.get(session_key, {}).get("restart_count", 0)
-                                            if hasattr(adapter, "_precommit_state") else 0
-                                        ),
-                                        "assimilated_count": len(texts),
+                                        "fallback": "queue_as_pending",
                                     })
                             except Exception:
                                 pass
-                            logger.info(
-                                "B1.3 restarting turn for session %s: revision=%d, assimilated=%d messages",
-                                session_key or "?", rev, len(texts),
+                            pending_event = MessageEvent(
+                                text=expanded_message,
+                                message_type=MessageType.TEXT,
+                                source=source,
                             )
-                            try:
-                                return await self._run_agent(
-                                    message=expanded_message,
-                                    context_prompt=expanded_context,
-                                    history=history,
-                                    source=source,
-                                    session_id=session_id,
-                                    session_key=session_key,
-                                    run_generation=run_generation,
-                                    _interrupt_depth=_interrupt_depth,
-                                    event_message_id=event_message_id,
-                                    channel_prompt=channel_prompt,
-                                    agent_turn_id=agent_turn_id,
+                            if pending_event:
+                                merge_pending_message_event(
+                                    adapter._pending_messages,
+                                    session_key,
+                                    pending_event,
+                                    merge_text=True,
                                 )
-                            except Exception:
-                                logger.warning(
-                                    "B1.3 restart failed for session %s — "
-                                    "queuing assimilated messages as pending turn",
-                                    session_key or "?",
-                                    exc_info=True,
-                                )
-                                if adapter and session_key:
-                                    try:
-                                        emit = getattr(adapter, "_emit_coalescing_event", None)
-                                        if callable(emit):
-                                            emit("turn_restart_failed", {
-                                                "session_key": session_key,
-                                                "revision": rev,
-                                                "fallback": "queue_as_pending",
-                                            })
-                                    except Exception:
-                                        pass
-                                    pending_event = MessageEvent(
-                                        text=expanded_message,
-                                        message_type=MessageType.TEXT,
-                                        source=source,
-                                    )
-                                    if pending_event:
-                                        merge_pending_message_event(
-                                            adapter._pending_messages,
-                                            session_key,
-                                            pending_event,
-                                            merge_text=True,
-                                        )
-                                    adapter.clear_precommit_state(session_key)
-                                return result_holder[0] or {
-                                    "final_response": "",
-                                    "messages": [],
-                                    "error": "restart_failed",
-                                }
+                            adapter.clear_precommit_state(session_key)
+                        return result_holder[0] or {
+                            "final_response": "",
+                            "messages": [],
+                            "error": "restart_failed",
+                        }
 
                 flush_text_debounce = getattr(adapter, "_flush_text_debounce_now", None)
                 if callable(flush_text_debounce):
