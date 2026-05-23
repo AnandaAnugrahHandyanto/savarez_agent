@@ -381,8 +381,9 @@ def reload_skills() -> Dict[str, Any]:
 
     before = _snapshot(_skill_commands)
 
-    # Rescan the skills dir. ``scan_skill_commands`` resets
-    # ``_skill_commands = {}`` internally and repopulates it.
+    # Rescan the skills dir. ``scan_skill_commands`` builds a fresh
+    # mapping locally and atomically swaps it into ``_skill_commands``
+    # on success; on failure the previous mapping is preserved.
     new_commands = scan_skill_commands()
 
     after = _snapshot(new_commands)
