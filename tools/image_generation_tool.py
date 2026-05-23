@@ -495,6 +495,46 @@ def _build_fal_payload(
     return {k: v for k, v in payload.items() if k in supports}
 
 
+def _json_safe(value: Any) -> Any:
+    """Return a JSON-serializable copy of public tool metadata."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return str(value)
+
+
+def _clean_response_parameters(parameters: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop absent optional tool parameters before echoing them back."""
+    cleaned: Dict[str, Any] = {}
+    for key, value in parameters.items():
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        cleaned[key] = _json_safe(value)
+    return cleaned
+
+
+def _attach_response_envelope(
+    response_data: Dict[str, Any],
+    *,
+    parameters: Dict[str, Any],
+    provider_request: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Add a user-facing completion notice and actual public parameters."""
+    if response_data.get("success") is True:
+        response_data.setdefault("message", "Image generation completed")
+    elif response_data.get("success") is False:
+        response_data.setdefault("message", "Image generation failed")
+    response_data.setdefault("parameters", _clean_response_parameters(parameters))
+    if provider_request is not None:
+        response_data.setdefault("provider_request", _json_safe(provider_request))
+    return response_data
+
+
 # ---------------------------------------------------------------------------
 # Upscaler
 # ---------------------------------------------------------------------------
@@ -586,9 +626,20 @@ def image_generate_tool(
     }
 
     start_time = datetime.datetime.now()
+    prompt_text = prompt.strip() if isinstance(prompt, str) else ""
+    effective_aspect_ratio = DEFAULT_ASPECT_RATIO
+    response_parameters: Dict[str, Any] = {
+        "prompt": prompt_text,
+        "aspect_ratio": effective_aspect_ratio,
+        "num_inference_steps": num_inference_steps,
+        "guidance_scale": guidance_scale,
+        "num_images": num_images,
+        "output_format": output_format,
+        "seed": seed,
+    }
 
     try:
-        if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
+        if not prompt_text:
             raise ValueError("Prompt is required and must be a non-empty string")
 
         if not (fal_key_is_configured() or _resolve_managed_fal_gateway()):
@@ -601,6 +652,8 @@ def image_generate_tool(
                 aspect_ratio, DEFAULT_ASPECT_RATIO,
             )
             aspect_lc = DEFAULT_ASPECT_RATIO
+        effective_aspect_ratio = aspect_lc
+        response_parameters["aspect_ratio"] = effective_aspect_ratio
 
         overrides: Dict[str, Any] = {}
         if num_inference_steps is not None:
@@ -613,12 +666,12 @@ def image_generate_tool(
             overrides["output_format"] = output_format
 
         arguments = _build_fal_payload(
-            model_id, prompt, aspect_lc, seed=seed, overrides=overrides,
+            model_id, prompt_text, aspect_lc, seed=seed, overrides=overrides,
         )
 
         logger.info(
             "Generating image with %s (%s) — prompt: %s",
-            meta.get("display", model_id), model_id, prompt[:80],
+            meta.get("display", model_id), model_id, prompt_text[:80],
         )
 
         handler = _submit_fal_request(model_id, arguments=arguments)
@@ -646,7 +699,7 @@ def image_generate_tool(
             }
 
             if should_upscale:
-                upscaled_image = _upscale_image(img["url"], prompt.strip())
+                upscaled_image = _upscale_image(img["url"], prompt_text)
                 if upscaled_image:
                     formatted_images.append(upscaled_image)
                     continue
@@ -667,7 +720,19 @@ def image_generate_tool(
         response_data = {
             "success": True,
             "image": formatted_images[0]["url"] if formatted_images else None,
+            "images": formatted_images,
+            "provider": "fal",
+            "model": model_id,
+            "operation": "generate",
+            "prompt": prompt_text,
+            "aspect_ratio": effective_aspect_ratio,
+            "generation_time": generation_time,
         }
+        _attach_response_envelope(
+            response_data,
+            parameters=response_parameters,
+            provider_request=arguments,
+        )
 
         debug_call_data["success"] = True
         debug_call_data["images_generated"] = len(formatted_images)
@@ -687,7 +752,13 @@ def image_generate_tool(
             "image": None,
             "error": str(e),
             "error_type": type(e).__name__,
+            "provider": "fal",
+            "model": model_id,
+            "operation": "generate",
+            "prompt": prompt_text,
+            "aspect_ratio": effective_aspect_ratio,
         }
+        _attach_response_envelope(response_data, parameters=response_parameters)
 
         debug_call_data["error"] = error_msg
         debug_call_data["generation_time"] = generation_time
@@ -826,21 +897,75 @@ IMAGE_GENERATE_SCHEMA = {
         "Generate high-quality images from text prompts. The underlying "
         "backend (FAL, OpenAI, etc.) and model are user-configured and not "
         "selectable by the agent. Returns either a URL or an absolute file "
-        "path in the `image` field; display it with markdown "
-        "![description](url-or-path) and the gateway will deliver it."
+        "path in the `image` field plus `message` and `parameters` fields "
+        "that echo the actual public inputs used; display the image with "
+        "markdown ![description](url-or-path) and the gateway will deliver it."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "prompt": {
                 "type": "string",
-                "description": "The text prompt describing the desired image. Be detailed and descriptive.",
+                "description": "The text prompt describing the desired image or edit. Be detailed and descriptive.",
             },
             "aspect_ratio": {
                 "type": "string",
                 "enum": list(VALID_ASPECT_RATIOS),
-                "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
+                "description": "Fallback aspect ratio when `size` is omitted. 'landscape' is wide, 'portrait' is tall, 'square' is 1:1.",
                 "default": DEFAULT_ASPECT_RATIO,
+            },
+            "size": {
+                "type": "string",
+                "description": "Optional output size, e.g. 1024x1024, 1536x1024, 1024x1536, 2560x1440, or auto when supported by the provider.",
+            },
+            "quality": {
+                "type": "string",
+                "enum": ["low", "medium", "high", "auto", "standard", "hd"],
+                "description": "Optional output quality. OpenAI-compatible GPT image models support low/medium/high/auto.",
+            },
+            "n": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10,
+                "description": "Number of images to generate or edit when the provider supports it.",
+            },
+            "background": {
+                "type": "string",
+                "enum": ["transparent", "opaque", "auto"],
+                "description": "Optional background mode for providers/models that support it.",
+            },
+            "output_format": {
+                "type": "string",
+                "enum": ["png", "jpeg", "webp"],
+                "description": "Optional output image format.",
+            },
+            "output_compression": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100,
+                "description": "Optional compression level for jpeg/webp output when supported.",
+            },
+            "moderation": {
+                "type": "string",
+                "enum": ["low", "auto"],
+                "description": "Optional moderation level for OpenAI-compatible image generation.",
+            },
+            "seed": {
+                "type": "integer",
+                "description": "Optional deterministic seed for providers that support seeded generation.",
+            },
+            "image": {
+                "type": "string",
+                "description": "Image-to-image/edit mode only: a non-empty local image file path. Omit for text-to-image; never pass an empty string.",
+            },
+            "mask": {
+                "type": "string",
+                "description": "Image editing only: optional non-empty local PNG mask path; transparent areas indicate edit regions. Omit for text-to-image and omit when no real mask exists.",
+            },
+            "input_fidelity": {
+                "type": "string",
+                "enum": ["high", "low"],
+                "description": "Image-to-image/edit mode only, and only for models that support it. Omit for text-to-image; never pass an empty string.",
             },
         },
         "required": ["prompt"],
@@ -887,7 +1012,7 @@ def _read_configured_image_provider():
     return None
 
 
-def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
+def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str, options: Optional[Dict[str, Any]] = None):
     """Route the call to a plugin-registered provider when one is selected.
 
     Returns a JSON string on dispatch, or ``None`` to fall through to the
@@ -903,66 +1028,113 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
     if not configured:
         return None
 
+    options = dict(options or {})
+    response_parameters: Dict[str, Any] = {
+        "prompt": prompt,
+        "aspect_ratio": aspect_ratio,
+        **options,
+    }
     # Also read configured model so we can pass it to the plugin
     configured_model = _read_configured_image_model()
 
+    provider = None
     try:
-        # Import locally so plugin discovery isn't triggered just by
-        # importing this module (tests rely on that).
-        from agent.image_gen_registry import get_provider
-        from hermes_cli.plugins import _ensure_plugins_discovered
+        # Named custom providers expose OpenAI-compatible image endpoints but
+        # are not plugin-registered under every custom:<name> key. Build the
+        # provider directly from the saved custom-provider runtime config.
+        if configured.startswith("custom:"):
+            from hermes_cli.runtime_provider import _get_named_custom_provider
+            from plugins.image_gen.openai import OpenAIImageGenProvider
 
-        _ensure_plugins_discovered()
-        provider = get_provider(configured)
+            custom = _get_named_custom_provider(configured)
+            if custom:
+                provider = OpenAIImageGenProvider(
+                    api_key=str(custom.get("api_key") or "").strip() or None,
+                    base_url=str(custom.get("base_url") or "").strip() or None,
+                    provider_name=configured,
+                    default_model=configured_model or str(custom.get("model") or "").strip() or None,
+                )
     except Exception as exc:
-        logger.debug("image_gen plugin dispatch skipped: %s", exc)
-        return None
+        logger.debug("image_gen custom provider dispatch skipped: %s", exc)
 
     if provider is None:
         try:
-            # Long-lived sessions may have discovered plugins before a bundled
-            # backend was patched in or before config changed. Retry once with
-            # a forced refresh before surfacing a missing-provider error.
-            _ensure_plugins_discovered(force=True)
+            # Import locally so plugin discovery isn't triggered just by
+            # importing this module (tests rely on that).
+            from agent.image_gen_registry import get_provider
+            from hermes_cli.plugins import _ensure_plugins_discovered
+
+            _ensure_plugins_discovered()
             provider = get_provider(configured)
         except Exception as exc:
-            logger.debug("image_gen plugin force-refresh skipped: %s", exc)
+            logger.debug("image_gen plugin dispatch skipped: %s", exc)
+            return None
+
+        if provider is None:
+            try:
+                # Long-lived sessions may have discovered plugins before a bundled
+                # backend was patched in or before config changed. Retry once with
+                # a forced refresh before surfacing a missing-provider error.
+                _ensure_plugins_discovered(force=True)
+                provider = get_provider(configured)
+            except Exception as exc:
+                logger.debug("image_gen plugin force-refresh skipped: %s", exc)
 
     if provider is None:
-        return json.dumps({
+        response_data = {
             "success": False,
             "image": None,
+            "provider": configured,
+            "model": configured_model or "",
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
             "error": (
                 f"image_gen.provider='{configured}' is set but no plugin "
                 f"registered that name. Run `hermes plugins list` to see "
                 f"available image gen backends."
             ),
             "error_type": "provider_not_registered",
-        })
+        }
+        _attach_response_envelope(response_data, parameters=response_parameters)
+        return json.dumps(response_data)
 
     try:
-        kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio}
-        if configured_model:
+        kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio, **options}
+        if configured_model and "model" not in kwargs:
             kwargs["model"] = configured_model
+        response_parameters = dict(kwargs)
         result = provider.generate(**kwargs)
     except Exception as exc:
         logger.warning(
             "Image gen provider '%s' raised: %s",
             getattr(provider, "name", "?"), exc,
         )
-        return json.dumps({
+        response_data = {
             "success": False,
             "image": None,
+            "provider": getattr(provider, "name", configured),
+            "model": configured_model or "",
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
             "error": f"Provider '{getattr(provider, 'name', '?')}' error: {exc}",
             "error_type": "provider_exception",
-        })
+        }
+        _attach_response_envelope(response_data, parameters=response_parameters)
+        return json.dumps(response_data)
     if not isinstance(result, dict):
-        return json.dumps({
+        response_data = {
             "success": False,
             "image": None,
+            "provider": getattr(provider, "name", configured),
+            "model": configured_model or "",
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
             "error": "Provider returned a non-dict result",
             "error_type": "provider_contract",
-        })
+        }
+        _attach_response_envelope(response_data, parameters=response_parameters)
+        return json.dumps(response_data)
+    _attach_response_envelope(result, parameters=response_parameters)
     return json.dumps(result)
 
 
@@ -971,10 +1143,40 @@ def _handle_image_generate(args, **kw):
     if not prompt:
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
+    option_keys = (
+        "size",
+        "quality",
+        "n",
+        "background",
+        "output_format",
+        "output_compression",
+        "moderation",
+        "seed",
+        "image",
+        "mask",
+        "input_fidelity",
+    )
+    options = {key: args[key] for key in option_keys if args.get(key) is not None}
+
+    image_path = options.get("image")
+    has_input_image = isinstance(image_path, str) and bool(image_path.strip())
+    if not has_input_image:
+        # Text-to-image mode: edit-only options must be absent, not empty.
+        # Some providers switch to image-edit mode just because these keys
+        # exist, causing errors such as "image must be a non-empty local file path".
+        for key in ("image", "mask", "input_fidelity"):
+            options.pop(key, None)
+    else:
+        # Image-to-image mode: keep the real input image, but omit optional
+        # edit fields when the model supplied an empty placeholder.
+        for key in ("mask", "input_fidelity"):
+            value = options.get(key)
+            if isinstance(value, str) and not value.strip():
+                options.pop(key, None)
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
-    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
+    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio, options)
     if dispatched is not None:
         return dispatched
 
