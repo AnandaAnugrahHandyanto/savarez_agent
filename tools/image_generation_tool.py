@@ -23,6 +23,7 @@ update when it's noticed.
 import json
 import logging
 import os
+import re
 import datetime
 import threading
 import uuid
@@ -70,6 +71,8 @@ from tools.tool_backend_helpers import (
 )
 
 logger = logging.getLogger(__name__)
+
+IMAGE_GEN_UPSTREAM_RETRY_ATTEMPTS = 5
 
 
 # ---------------------------------------------------------------------------
@@ -532,6 +535,138 @@ def _attach_response_envelope(
     response_data.setdefault("parameters", _clean_response_parameters(parameters))
     if provider_request is not None:
         response_data.setdefault("provider_request", _json_safe(provider_request))
+    return response_data
+
+
+_SECRET_PATTERNS = (
+    re.compile(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;]+"),
+    re.compile(r"(?i)((?:api[_-]?key|token|password|secret)\s*[:=]\s*)[^\s,;]+"),
+    re.compile(r"sk-[A-Za-z0-9_-]{12,}"),
+)
+
+_UPSTREAM_TRANSPORT_ERROR_MARKERS = (
+    "eof",
+    "end of file",
+    "connection reset",
+    "connection refused",
+    "connection aborted",
+    "connection error",
+    "connect error",
+    "connection failed",
+    "failed to connect",
+    "cannot connect",
+    "can't connect",
+    "network unreachable",
+    "network is unreachable",
+    "temporary failure in name resolution",
+    "name or service not known",
+    "timed out",
+    "timeout",
+    "read timeout",
+    "connect timeout",
+    "remote disconnected",
+    "server disconnected",
+    "server disconnected without sending a response",
+    "remote end closed connection",
+    "peer closed connection",
+    "broken pipe",
+    "incomplete read",
+    "protocol error",
+    "upstream request timeout",
+    "upstream prematurely closed",
+)
+
+_UPSTREAM_TRANSPORT_EXCEPTION_NAMES = (
+    "APIConnectionError",
+    "APITimeoutError",
+    "ConnectError",
+    "ConnectTimeout",
+    "ConnectionError",
+    "ConnectionResetError",
+    "NetworkError",
+    "ReadError",
+    "ReadTimeout",
+    "RemoteProtocolError",
+    "ServerDisconnectedError",
+    "TimeoutError",
+    "TimeoutException",
+)
+
+
+def _sanitize_error_message(value: Any) -> str:
+    """Return a compact, user-safe error string without credential material."""
+    text = str(value or "")
+    for pattern in _SECRET_PATTERNS:
+        text = pattern.sub(lambda match: f"{match.group(1)}[REDACTED]" if match.groups() else "[REDACTED]", text)
+    return text[:1000]
+
+
+def _is_upstream_transport_error(value: Any, *, error_type: str = "") -> bool:
+    """True for EOF/connection/timeout style upstream transport failures."""
+    class_name = value.__class__.__name__ if isinstance(value, BaseException) else ""
+    if isinstance(value, (ConnectionError, TimeoutError, BrokenPipeError, ConnectionResetError)):
+        return True
+    if class_name in _UPSTREAM_TRANSPORT_EXCEPTION_NAMES:
+        return True
+    lowered = f"{class_name} {error_type} {_sanitize_error_message(value)}".lower()
+    return any(marker in lowered for marker in _UPSTREAM_TRANSPORT_ERROR_MARKERS)
+
+
+def _result_is_upstream_transport_error(result: Dict[str, Any]) -> bool:
+    if result.get("success") is not False:
+        return False
+    return _is_upstream_transport_error(
+        result.get("error") or result.get("message") or "",
+        error_type=str(result.get("error_type") or ""),
+    )
+
+
+def _retry_attempt_summary(attempt: int, source: Any, *, error_type: str = "") -> Dict[str, Any]:
+    if isinstance(source, dict):
+        source_error_type = str(source.get("error_type") or error_type or "provider_error")
+        source_error = source.get("error") or source.get("message") or ""
+    else:
+        source_error_type = error_type or source.__class__.__name__
+        source_error = source
+    return {
+        "attempt": attempt,
+        "error_type": source_error_type,
+        "error": _sanitize_error_message(source_error),
+    }
+
+
+def _build_upstream_retry_exhausted_response(
+    *,
+    provider: Any,
+    configured: str,
+    configured_model: str,
+    prompt: str,
+    aspect_ratio: str,
+    parameters: Dict[str, Any],
+    attempts: list,
+) -> Dict[str, Any]:
+    provider_name = getattr(provider, "name", configured)
+    last_error = attempts[-1]["error"] if attempts else "unknown upstream transport error"
+    response_data = {
+        "success": False,
+        "image": None,
+        "provider": provider_name,
+        "model": configured_model or "",
+        "prompt": prompt,
+        "aspect_ratio": aspect_ratio,
+        "error": (
+            "Upstream image provider transport error after "
+            f"{IMAGE_GEN_UPSTREAM_RETRY_ATTEMPTS} identical attempts; "
+            f"stopped without changing parameters. Last error: {last_error}"
+        ),
+        "error_type": "upstream_transport_error",
+        "retry_policy": {
+            "max_attempts": IMAGE_GEN_UPSTREAM_RETRY_ATTEMPTS,
+            "same_parameters": True,
+        },
+        "retry_attempts": attempts,
+    }
+    _attach_response_envelope(response_data, parameters=parameters)
     return response_data
 
 
@@ -1098,29 +1233,87 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str, options: Option
         _attach_response_envelope(response_data, parameters=response_parameters)
         return json.dumps(response_data)
 
-    try:
-        kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio, **options}
-        if configured_model and "model" not in kwargs:
-            kwargs["model"] = configured_model
-        response_parameters = dict(kwargs)
-        result = provider.generate(**kwargs)
-    except Exception as exc:
-        logger.warning(
-            "Image gen provider '%s' raised: %s",
-            getattr(provider, "name", "?"), exc,
-        )
-        response_data = {
-            "success": False,
-            "image": None,
-            "provider": getattr(provider, "name", configured),
-            "model": configured_model or "",
-            "prompt": prompt,
-            "aspect_ratio": aspect_ratio,
-            "error": f"Provider '{getattr(provider, 'name', '?')}' error: {exc}",
-            "error_type": "provider_exception",
-        }
-        _attach_response_envelope(response_data, parameters=response_parameters)
-        return json.dumps(response_data)
+    kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio, **options}
+    if configured_model and "model" not in kwargs:
+        kwargs["model"] = configured_model
+    response_parameters = dict(kwargs)
+    retry_attempts = []
+    result: Any = None
+
+    for attempt in range(1, IMAGE_GEN_UPSTREAM_RETRY_ATTEMPTS + 1):
+        try:
+            result = provider.generate(**kwargs)
+        except Exception as exc:
+            if _is_upstream_transport_error(exc):
+                retry_attempts.append(_retry_attempt_summary(attempt, exc))
+                logger.warning(
+                    "Image gen provider '%s' upstream transport error on attempt %s/%s: %s",
+                    getattr(provider, "name", "?"),
+                    attempt,
+                    IMAGE_GEN_UPSTREAM_RETRY_ATTEMPTS,
+                    _sanitize_error_message(exc),
+                )
+                if attempt < IMAGE_GEN_UPSTREAM_RETRY_ATTEMPTS:
+                    continue
+                response_data = _build_upstream_retry_exhausted_response(
+                    provider=provider,
+                    configured=configured,
+                    configured_model=configured_model or "",
+                    prompt=prompt,
+                    aspect_ratio=aspect_ratio,
+                    parameters=response_parameters,
+                    attempts=retry_attempts,
+                )
+                return json.dumps(response_data)
+
+            logger.warning(
+                "Image gen provider '%s' raised: %s",
+                getattr(provider, "name", "?"),
+                _sanitize_error_message(exc),
+            )
+            response_data = {
+                "success": False,
+                "image": None,
+                "provider": getattr(provider, "name", configured),
+                "model": configured_model or "",
+                "prompt": prompt,
+                "aspect_ratio": aspect_ratio,
+                "error": f"Provider '{getattr(provider, 'name', '?')}' error: {_sanitize_error_message(exc)}",
+                "error_type": "provider_exception",
+            }
+            _attach_response_envelope(response_data, parameters=response_parameters)
+            return json.dumps(response_data)
+
+        if isinstance(result, dict) and _result_is_upstream_transport_error(result):
+            retry_attempts.append(_retry_attempt_summary(attempt, result))
+            logger.warning(
+                "Image gen provider '%s' returned upstream transport error on attempt %s/%s: %s",
+                getattr(provider, "name", "?"),
+                attempt,
+                IMAGE_GEN_UPSTREAM_RETRY_ATTEMPTS,
+                retry_attempts[-1]["error"],
+            )
+            if attempt < IMAGE_GEN_UPSTREAM_RETRY_ATTEMPTS:
+                continue
+            response_data = _build_upstream_retry_exhausted_response(
+                provider=provider,
+                configured=configured,
+                configured_model=configured_model or "",
+                prompt=prompt,
+                aspect_ratio=aspect_ratio,
+                parameters=response_parameters,
+                attempts=retry_attempts,
+            )
+            return json.dumps(response_data)
+
+        if retry_attempts and isinstance(result, dict):
+            result.setdefault("retry_policy", {
+                "max_attempts": IMAGE_GEN_UPSTREAM_RETRY_ATTEMPTS,
+                "same_parameters": True,
+            })
+            result.setdefault("retry_attempts", retry_attempts)
+        break
+
     if not isinstance(result, dict):
         response_data = {
             "success": False,

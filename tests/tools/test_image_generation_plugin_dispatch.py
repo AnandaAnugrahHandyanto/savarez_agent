@@ -54,6 +54,28 @@ class _RecordingProvider(ImageGenProvider):
         }
 
 
+class _ScriptedProvider(ImageGenProvider):
+    def __init__(self, outcomes):
+        self.outcomes = list(outcomes)
+        self.calls = []
+
+    @property
+    def name(self) -> str:
+        return "scripted"
+
+    def generate(self, prompt, aspect_ratio="landscape", **kwargs):
+        self.calls.append({
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+            "kwargs": dict(kwargs),
+        })
+        index = min(len(self.calls) - 1, len(self.outcomes) - 1)
+        outcome = self.outcomes[index]
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return dict(outcome)
+
+
 class TestPluginDispatch:
 
     def test_dispatch_routes_to_codex_provider(self, monkeypatch, tmp_path):
@@ -229,3 +251,122 @@ class TestPluginDispatch:
                 "input_fidelity": "high",
             },
         }]
+
+    def test_dispatch_retries_upstream_eof_with_identical_parameters_five_times(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from hermes_cli import plugins as plugins_module
+        from agent import image_gen_registry as registry_module
+
+        provider = _ScriptedProvider([
+            {
+                "success": False,
+                "image": None,
+                "provider": "scripted",
+                "model": "gpt-image-2",
+                "prompt": "draw cat",
+                "aspect_ratio": "square",
+                "error": "OpenAI image generation failed: EOF while reading upstream response",
+                "error_type": "api_error",
+            }
+        ])
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "scripted")
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_model", lambda: "gpt-image-2")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda force=False: None)
+        monkeypatch.setattr(registry_module, "get_provider", lambda name: provider if name == "scripted" else None)
+
+        payload = json.loads(image_generation_tool._dispatch_to_plugin_provider(
+            "draw cat",
+            "square",
+            {"size": "1024x1024", "quality": "high", "output_format": "png"},
+        ))
+
+        expected_call = {
+            "prompt": "draw cat",
+            "aspect_ratio": "square",
+            "kwargs": {
+                "size": "1024x1024",
+                "quality": "high",
+                "output_format": "png",
+                "model": "gpt-image-2",
+            },
+        }
+        assert provider.calls == [expected_call] * 5
+        assert payload["success"] is False
+        assert payload["error_type"] == "upstream_transport_error"
+        assert "5 identical attempts" in payload["error"]
+        assert payload["retry_policy"] == {"max_attempts": 5, "same_parameters": True}
+        assert len(payload["retry_attempts"]) == 5
+        assert payload["parameters"] == {
+            "prompt": "draw cat",
+            "aspect_ratio": "square",
+            "size": "1024x1024",
+            "quality": "high",
+            "output_format": "png",
+            "model": "gpt-image-2",
+        }
+
+    def test_dispatch_stops_retrying_after_transient_error_then_success(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from hermes_cli import plugins as plugins_module
+        from agent import image_gen_registry as registry_module
+
+        provider = _ScriptedProvider([
+            ConnectionError("Connection reset by peer"),
+            {
+                "success": True,
+                "image": "/tmp/recovered.png",
+                "provider": "scripted",
+                "model": "gpt-image-2",
+                "prompt": "draw cat",
+                "aspect_ratio": "square",
+            },
+        ])
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "scripted")
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_model", lambda: "gpt-image-2")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda force=False: None)
+        monkeypatch.setattr(registry_module, "get_provider", lambda name: provider if name == "scripted" else None)
+
+        payload = json.loads(image_generation_tool._dispatch_to_plugin_provider(
+            "draw cat",
+            "square",
+            {"size": "1024x1024", "quality": "high"},
+        ))
+
+        assert len(provider.calls) == 2
+        assert provider.calls[0] == provider.calls[1]
+        assert payload["success"] is True
+        assert payload["image"] == "/tmp/recovered.png"
+        assert payload["retry_policy"] == {"max_attempts": 5, "same_parameters": True}
+        assert len(payload["retry_attempts"]) == 1
+
+    def test_dispatch_does_not_retry_non_transport_provider_errors(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from hermes_cli import plugins as plugins_module
+        from agent import image_gen_registry as registry_module
+
+        provider = _ScriptedProvider([
+            {
+                "success": False,
+                "image": None,
+                "provider": "scripted",
+                "model": "gpt-image-2",
+                "prompt": "draw cat",
+                "aspect_ratio": "square",
+                "error": "Invalid size parameter",
+                "error_type": "invalid_argument",
+            }
+        ])
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "scripted")
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_model", lambda: "gpt-image-2")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda force=False: None)
+        monkeypatch.setattr(registry_module, "get_provider", lambda name: provider if name == "scripted" else None)
+
+        payload = json.loads(image_generation_tool._dispatch_to_plugin_provider("draw cat", "square"))
+
+        assert len(provider.calls) == 1
+        assert payload["success"] is False
+        assert payload["error_type"] == "invalid_argument"
+        assert "retry_attempts" not in payload
