@@ -6,9 +6,25 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping
+from typing import Any, Dict, Mapping
 
 
+AUDIT_SCHEMA_VERSION = 1
+REQUIRED_AUDIT_KEYS = {
+    "schema_version",
+    "ts",
+    "session_id",
+    "task_id",
+    "tool_call_id",
+    "tool_name",
+    "mode",
+    "decision",
+    "allowlisted",
+    "duration_ms",
+    "args_shape",
+    "result_chars",
+    "reason",
+}
 SENSITIVE_KEY_PARTS = (
     "api_key",
     "apikey",
@@ -64,6 +80,7 @@ def build_audit_event(
     duration_ms: int | float | None = None,
 ) -> Dict[str, Any]:
     event = {
+        "schema_version": AUDIT_SCHEMA_VERSION,
         "ts": utc_now_iso(),
         "session_id": session_id or "",
         "task_id": task_id or "",
@@ -72,15 +89,33 @@ def build_audit_event(
         "mode": mode,
         "decision": decision,
         "allowlisted": bool(allowlisted),
-        "duration_ms": duration_ms if duration_ms is not None else 0,
+        "duration_ms": _safe_duration(duration_ms),
         "args_shape": redact_args(args),
         "result_chars": result_char_count(result),
         "reason": reason,
     }
+    validate_audit_event(event)
     return event
 
 
+def validate_audit_event(event: Mapping[str, Any]) -> None:
+    missing = REQUIRED_AUDIT_KEYS.difference(event.keys())
+    if missing:
+        raise ValueError(f"audit event missing required keys: {sorted(missing)}")
+    if event.get("schema_version") != AUDIT_SCHEMA_VERSION:
+        raise ValueError("unsupported Volt V2 adapter audit schema_version")
+    if not isinstance(event.get("args_shape"), Mapping):
+        raise ValueError("audit event args_shape must be an object")
+    if not isinstance(event.get("allowlisted"), bool):
+        raise ValueError("audit event allowlisted must be boolean")
+    if not isinstance(event.get("duration_ms"), int):
+        raise ValueError("audit event duration_ms must be integer")
+    if not isinstance(event.get("result_chars"), int):
+        raise ValueError("audit event result_chars must be integer")
+
+
 def write_audit_event(audit_path: str | Path, event: Mapping[str, Any]) -> None:
+    validate_audit_event(event)
     path = Path(audit_path).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
@@ -93,10 +128,23 @@ def read_jsonl_events(path: str | Path) -> list[dict[str, Any]]:
     if not p.exists():
         return []
     events: list[dict[str, Any]] = []
-    for line in p.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            events.append(json.loads(line))
+    for line_number, line in enumerate(p.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        event = json.loads(line)
+        validate_audit_event(event)
+        events.append(event)
     return events
+
+
+def _safe_duration(duration_ms: int | float | None) -> int:
+    if duration_ms is None:
+        return 0
+    try:
+        duration = int(duration_ms)
+    except Exception:
+        return 0
+    return max(duration, 0)
 
 
 def _redact_value(key: str, value: Any) -> Any:
