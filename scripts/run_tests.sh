@@ -24,10 +24,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ── Activate venv ───────────────────────────────────────────────────────────
-# Prefer a .venv in the current tree, fall back to the main checkout's venv
-# (useful for worktrees where we don't always duplicate the venv).
+# Prefer the installed Hermes venv. Keep .venv as a fallback for worktrees or
+# contributors that intentionally use the upstream development layout.
 VENV=""
-for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
+for candidate in "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv" "$REPO_ROOT/.venv"; do
   if [ -f "$candidate/bin/activate" ]; then
     VENV="$candidate"
     break

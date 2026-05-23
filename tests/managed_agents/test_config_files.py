@@ -24,7 +24,6 @@ def test_managed_agents_config_loads_all_declared_runtime_agents():
         "pirlo",
         "intelligence",
         "ambrosini",
-        "openclaw",
         "agent-tars",
         "hermes-internal",
         "kanban",
@@ -33,6 +32,7 @@ def test_managed_agents_config_loads_all_declared_runtime_agents():
     assert registry.get("codex").permission is PermissionMode.READ_ONLY
     assert registry.get("ambrosini").permission is PermissionMode.READ_ONLY
     assert not registry.get("deepseek-tui").allows_risk(RiskLevel.R4)
+    assert "visual_gui_automation" in registry.get("agent-tars").capabilities
 
 
 def test_managed_agents_policy_config_loads_and_enforces_priority():

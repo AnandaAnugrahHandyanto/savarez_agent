@@ -64,22 +64,13 @@ agents:
     capabilities: [review, validation, risk_assessment, release_gate]
     risk_allowed: [R0, R1, R2, R3, R4]
 
-  - agent_id: openclaw
-    name: OpenClaw
-    role: desktop_operator
-    tools: [desktop, file]
-    permission: ask
-    can_delegate: false
-    capabilities: [desktop_control, app_operation, screenshot]
-    risk_allowed: [R0, R1, R2]
-
   - agent_id: agent-tars
     name: Agent TARS
     role: desktop_operator
     tools: [desktop, browser]
     permission: ask
     can_delegate: false
-    capabilities: [desktop_control, browser_operation, gui_workflow]
+    capabilities: [desktop_control, app_operation, screenshot, macos_automation, visual_gui_automation, browser_gui_operation, browser_operation, gui_workflow]
     risk_allowed: [R0, R1, R2]
 
   - agent_id: hermes-internal
