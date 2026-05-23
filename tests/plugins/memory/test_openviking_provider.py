@@ -755,59 +755,6 @@ def test_sync_turn_tracks_writer_under_session_id():
 
 
 # ---------------------------------------------------------------------------
-# on_memory_write: same late-capture hazard as sync_turn — worker must use
-# the session id snapshotted at call time, not re-read self._session_id.
-# Block inside the stub ctor (BEFORE the f-string for the post path is
-# evaluated) so the rotation deterministically beats the f-string.
-# ---------------------------------------------------------------------------
-
-def test_on_memory_write_captures_session_id_at_call_time():
-    import threading
-
-    provider = OpenVikingMemoryProvider()
-    provider._client = MagicMock()
-    provider._endpoint = "http://test"
-    provider._api_key = ""
-    provider._account = "acct"
-    provider._user = "usr"
-    provider._agent = "hermes"
-    provider._session_id = "old-sid"
-
-    in_ctor = threading.Event()
-    release = threading.Event()
-    done = threading.Event()
-    captured_paths = []
-
-    class StubClient:
-        def __init__(self, *a, **kw):
-            in_ctor.set()
-            release.wait(timeout=2.0)
-
-        def post(self, path, payload=None, **kwargs):
-            captured_paths.append(path)
-            done.set()
-            return {}
-
-    import plugins.memory.openviking as _mod
-    real_client_cls = _mod._VikingClient
-    _mod._VikingClient = StubClient
-    try:
-        provider.on_memory_write("add", "viking://memories/x", "remember this")
-        assert in_ctor.wait(timeout=2.0), "worker never entered ctor"
-        # Rotate provider's session id while the worker is parked in the ctor,
-        # BEFORE it evaluates the f-string for the post path. If the worker
-        # reads self._session_id inside the closure, it will now see "new-sid".
-        provider._session_id = "new-sid"
-        release.set()
-        assert done.wait(timeout=2.0), "worker never reached post()"
-    finally:
-        _mod._VikingClient = real_client_cls
-
-    # The write must target the OLD session id captured at call time.
-    assert captured_paths == ["/api/v1/sessions/old-sid/messages"]
-
-
-# ---------------------------------------------------------------------------
 # Prefetch staleness: a prefetch worker that finishes AFTER a session switch
 # must drop its result instead of repopulating the new session with stale
 # recall from the old generation. Bump the generation directly (rather than

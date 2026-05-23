@@ -48,6 +48,25 @@ _DEFAULT_ENDPOINT = "http://127.0.0.1:1933"
 _TIMEOUT = 30.0
 _REMOTE_RESOURCE_PREFIXES = ("http://", "https://", "git@", "ssh://", "git://")
 
+# Maps the viking_remember `category` enum to a viking:// subdirectory.
+# Keep in sync with REMEMBER_SCHEMA.parameters.properties.category.enum.
+_CATEGORY_SUBDIR_MAP = {
+    "preference": "preferences",
+    "entity": "entities",
+    "event": "events",
+    "case": "cases",
+    "pattern": "patterns",
+}
+_DEFAULT_MEMORY_SUBDIR = "preferences"
+
+# Maps the built-in memory tool's `target` ("user" vs "memory") to a subdir
+# for on_memory_write mirroring. User profile facts → preferences; agent
+# notes / observations → patterns. Anything unknown falls back to the default.
+_MEMORY_WRITE_TARGET_SUBDIR_MAP = {
+    "user": "preferences",
+    "memory": "patterns",
+}
+
 
 # ---------------------------------------------------------------------------
 # Process-level atexit safety net — ensures pending sessions are committed
@@ -733,15 +752,24 @@ class OpenVikingMemoryProvider(MemoryProvider):
             old_session_id, new_id, parent_session_id, reset,
         )
 
-    def on_memory_write(self, action: str, target: str, content: str) -> None:
-        """Mirror built-in memory writes to OpenViking as explicit memories."""
+    def _build_memory_uri(self, subdir: str) -> str:
+        """Build a viking:// memory URI under the configured user/subdir."""
+        slug = uuid.uuid4().hex[:12]
+        return f"viking://user/{self._user}/memories/{subdir}/mem_{slug}.md"
+
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Mirror built-in memory writes to OpenViking via content/write."""
         if not self._client or action != "add" or not content:
             return
 
-        # Snapshot the sid so a delayed worker can't write into a rotated session.
-        sid = str(self._session_id or "").strip()
-        if not sid:
-            return
+        subdir = _MEMORY_WRITE_TARGET_SUBDIR_MAP.get(target, _DEFAULT_MEMORY_SUBDIR)
+        uri = self._build_memory_uri(subdir)
 
         def _write():
             try:
@@ -749,16 +777,16 @@ class OpenVikingMemoryProvider(MemoryProvider):
                     self._endpoint, self._api_key,
                     account=self._account, user=self._user, agent=self._agent,
                 )
-                client.post(f"/api/v1/sessions/{sid}/messages", {
-                    "role": "user",
-                    "parts": [
-                        {"type": "text", "text": f"[Memory note — {target}] {content}"},
-                    ],
+                client.post("/api/v1/content/write", {
+                    "uri": uri,
+                    "content": content,
+                    "mode": "create",
                 })
             except Exception as e:
                 logger.debug("OpenViking memory mirror failed: %s", e)
 
-        self._spawn_writer(sid, _write, name="openviking-memwrite")
+        t = threading.Thread(target=_write, daemon=True, name="openviking-memwrite")
+        t.start()
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [SEARCH_SCHEMA, READ_SCHEMA, BROWSE_SCHEMA, REMEMBER_SCHEMA, ADD_RESOURCE_SCHEMA]
@@ -992,24 +1020,27 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if not content:
             return tool_error("content is required")
 
-        # Store as a session message that will be extracted during commit.
-        # The category hint helps OpenViking's extraction classify correctly.
         category = args.get("category", "")
-        text = f"[Remember] {content}"
-        if category:
-            text = f"[Remember — {category}] {content}"
+        subdir = _CATEGORY_SUBDIR_MAP.get(category, _DEFAULT_MEMORY_SUBDIR)
+        uri = self._build_memory_uri(subdir)
 
-        self._client.post(f"/api/v1/sessions/{self._session_id}/messages", {
-            "role": "user",
-            "parts": [
-                {"type": "text", "text": text},
-            ],
-        })
-
-        return json.dumps({
-            "status": "stored",
-            "message": "Memory recorded. Will be extracted and indexed on session commit.",
-        })
+        # Write directly via content/write API.
+        # This creates the file, stores the content, and queues vector indexing
+        # in a single call — no dependency on session commit / VLM extraction.
+        try:
+            result = self._client.post("/api/v1/content/write", {
+                "uri": uri,
+                "content": content,
+                "mode": "create",
+            })
+            written = result.get("result", {}).get("written_bytes", 0)
+            return json.dumps({
+                "status": "stored",
+                "message": f"Memory stored ({written}b) and queued for vector indexing.",
+            })
+        except Exception as e:
+            logger.error("OpenViking content/write failed: %s", e)
+            return tool_error(f"Failed to store memory: {e}")
 
     def _tool_add_resource(self, args: dict) -> str:
         url = args.get("url", "")

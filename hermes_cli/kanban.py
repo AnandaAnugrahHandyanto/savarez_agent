@@ -1,6 +1,6 @@
 """CLI for the Hermes Kanban board — ``hermes kanban …`` subcommand.
 
-Exposes the full 15-verb surface documented in the design spec
+Exposes the full Kanban command surface documented in the design spec
 (``docs/hermes-kanban-v1-spec.pdf``).  All DB work is delegated to
 ``kanban_db``.  This module adds:
 
@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_swarm as ks
 from hermes_cli.profiles import get_active_profile_name, get_profile_dir, seed_profile_skills
 
 
@@ -35,6 +36,7 @@ _STATUS_ICONS = {
     "todo":     "◻",
     "ready":    "▶",
     "running":  "●",
+    "scheduled":"⏱",
     "blocked":  "⊘",
     "done":     "✓",
     "archived": "—",
@@ -65,6 +67,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "tenant": t.tenant,
         "workspace_kind": t.workspace_kind,
         "workspace_path": t.workspace_path,
+        "branch_name": t.branch_name,
         "created_by": t.created_by,
         "created_at": t.created_at,
         "started_at": t.started_at,
@@ -72,29 +75,59 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "result": t.result,
         "skills": list(t.skills) if t.skills else [],
         "max_retries": t.max_retries,
+        "session_id": t.session_id,
+        "workflow_template_id": t.workflow_template_id,
+        "current_step_key": t.current_step_key,
     }
+
+
+def _run_state_kwargs(args: argparse.Namespace) -> Optional[dict[str, str]]:
+    st = getattr(args, "state_type", None)
+    sn = getattr(args, "state_name", None)
+    if (st is None) != (sn is None):
+        return None
+    if st is None:
+        return {}
+    return {"state_type": st, "state_name": sn}
 
 
 def _parse_workspace_flag(value: str) -> tuple[str, Optional[str]]:
     """Parse ``--workspace`` into ``(kind, path|None)``.
 
-    Accepts: ``scratch``, ``worktree``, ``dir:<path>``.
+    Accepts: ``scratch``, ``worktree``, ``worktree:<path>``, ``dir:<path>``.
     """
     if not value:
         return ("scratch", None)
     v = value.strip()
     if v in {"scratch", "worktree"}:
         return (v, None)
-    if v.startswith("dir:"):
-        path = v[len("dir:"):].strip()
+    for prefix, kind in (("dir:", "dir"), ("worktree:", "worktree")):
+        if not v.startswith(prefix):
+            continue
+        path = v[len(prefix):].strip()
         if not path:
             raise argparse.ArgumentTypeError(
-                "--workspace dir: requires a path after the colon"
+                f"--workspace {prefix} requires a path after the colon"
             )
-        return ("dir", os.path.expanduser(path))
+        return (kind, os.path.expanduser(path))
     raise argparse.ArgumentTypeError(
-        f"unknown --workspace value {value!r}: use scratch, worktree, or dir:<path>"
+        f"unknown --workspace value {value!r}: use scratch, worktree, "
+        "worktree:<path>, or dir:<path>"
     )
+
+
+def _parse_branch_flag(value: Optional[str]) -> Optional[str]:
+    """Normalize an optional branch name from ``kanban create --branch``."""
+    if value is None:
+        return None
+    branch = value.strip()
+    if not branch:
+        raise argparse.ArgumentTypeError("--branch requires a non-empty name")
+    if branch.startswith("-"):
+        raise argparse.ArgumentTypeError("--branch must not start with '-'")
+    if any(ch.isspace() for ch in branch):
+        raise argparse.ArgumentTypeError("--branch must not contain whitespace")
+    return branch
 
 
 def _check_dispatcher_presence() -> tuple[bool, str]:
@@ -276,7 +309,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_create.add_argument("--parent", action="append", default=[],
                           help="Parent task id (repeatable)")
     p_create.add_argument("--workspace", default="scratch",
-                          help="scratch | worktree | dir:<path> (default: scratch)")
+                          help="scratch | worktree | worktree:<path> | dir:<path> "
+                               "(default: scratch)")
+    p_create.add_argument("--branch", default=None,
+                          help="Branch name for worktree tasks, e.g. wt/t6-wire")
     p_create.add_argument("--tenant", default=None, help="Tenant namespace")
     p_create.add_argument("--priority", type=int, default=0, help="Priority tiebreaker")
     p_create.add_argument("--triage", action="store_true",
@@ -313,6 +349,27 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "to skip the brief running-to-blocked transition.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
+    # --- swarm ---
+    p_swarm = sub.add_parser(
+        "swarm",
+        help="Create a Kanban Swarm v1 graph (parallel workers → verifier → synthesizer)",
+    )
+    p_swarm.add_argument("goal", help="Swarm goal / final outcome")
+    p_swarm.add_argument(
+        "--worker",
+        action="append",
+        default=[],
+        metavar="PROFILE:TITLE[:SKILL,SKILL]",
+        help="Parallel worker card (repeatable)",
+    )
+    p_swarm.add_argument("--verifier", required=True, help="Verifier profile")
+    p_swarm.add_argument("--synthesizer", required=True, help="Synthesizer/writer profile")
+    p_swarm.add_argument("--tenant", default=None, help="Tenant namespace")
+    p_swarm.add_argument("--priority", type=int, default=0, help="Priority tiebreaker")
+    p_swarm.add_argument("--created-by", default=None, help="Creator/anchor profile")
+    p_swarm.add_argument("--idempotency-key", default=None, help="Dedup key for the root card")
+    p_swarm.add_argument("--json", action="store_true", help="Emit JSON output")
+
     # --- list ---
     p_list = sub.add_parser("list", aliases=["ls"], help="List tasks")
     p_list.add_argument("--mine", action="store_true",
@@ -321,14 +378,48 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_list.add_argument("--status", default=None,
                         choices=sorted(kb.VALID_STATUSES))
     p_list.add_argument("--tenant", default=None)
+    p_list.add_argument("--session", default=None,
+                        help="Filter by originating chat/agent session id "
+                             "(set on tasks created from inside an ACP loop)")
     p_list.add_argument("--archived", action="store_true",
                         help="Include archived tasks")
     p_list.add_argument("--json", action="store_true")
+    p_list.add_argument(
+        "--sort",
+        default=None,
+        choices=sorted(kb.VALID_SORT_ORDERS.keys()),
+        help="Sort order for listed tasks (default: priority)",
+    )
+    p_list.add_argument(
+        "--workflow-template-id",
+        default=None,
+        metavar="ID",
+        help="Restrict to tasks with this workflow_template_id",
+    )
+    p_list.add_argument(
+        "--step-key",
+        default=None,
+        dest="current_step_key",
+        metavar="KEY",
+        help="Restrict to tasks with this current_step_key",
+    )
 
     # --- show ---
     p_show = sub.add_parser("show", help="Show a task with comments + events")
     p_show.add_argument("task_id")
     p_show.add_argument("--json", action="store_true")
+    p_show.add_argument(
+        "--state-type",
+        choices=("status", "outcome"),
+        default=None,
+        help="With --state-name: filter listed runs by task_runs column",
+    )
+    p_show.add_argument(
+        "--state-name",
+        default=None,
+        metavar="VALUE",
+        help="With --state-type: keep runs whose column equals this value",
+    )
 
     # --- assign ---
     p_assign = sub.add_parser("assign", help="Assign or reassign a task")
@@ -450,7 +541,13 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_block.add_argument("--ids", nargs="+", default=None,
                          help="Additional task ids to block with the same reason (bulk mode)")
 
-    p_unblock = sub.add_parser("unblock", help="Return one or more blocked tasks to ready")
+    p_schedule = sub.add_parser("schedule", help="Park one or more tasks in Scheduled (waiting on time, not human input)")
+    p_schedule.add_argument("task_id")
+    p_schedule.add_argument("reason", nargs="*", help="Reason/timing note (also appended as a comment)")
+    p_schedule.add_argument("--ids", nargs="+", default=None,
+                            help="Additional task ids to schedule with the same reason (bulk mode)")
+
+    p_unblock = sub.add_parser("unblock", help="Return one or more blocked/scheduled tasks to ready")
     p_unblock.add_argument("task_ids", nargs="+")
 
     p_archive = sub.add_parser("archive", help="Archive one or more tasks")
@@ -575,6 +672,18 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_runs.add_argument("task_id")
     p_runs.add_argument("--json", action="store_true")
+    p_runs.add_argument(
+        "--state-type",
+        choices=("status", "outcome"),
+        default=None,
+        help="With --state-name: filter runs by task_runs column",
+    )
+    p_runs.add_argument(
+        "--state-name",
+        default=None,
+        metavar="VALUE",
+        help="With --state-type: keep runs whose column equals this value",
+    )
 
     # --- heartbeat (worker liveness signal) ---
     p_hb = sub.add_parser(
@@ -772,6 +881,7 @@ def kanban_command(args: argparse.Namespace) -> int:
     handlers = {
         "init":     _cmd_init,
         "create":   _cmd_create,
+        "swarm":    _cmd_swarm,
         "list":     _cmd_list,
         "ls":       _cmd_list,
         "show":     _cmd_show,
@@ -787,6 +897,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "complete": _cmd_complete,
         "edit":     _cmd_edit,
         "block":    _cmd_block,
+        "schedule": _cmd_schedule,
         "unblock":  _cmd_unblock,
         "archive":  _cmd_archive,
         "tail":     _cmd_tail,
@@ -1153,7 +1264,15 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
 
 
 def _cmd_create(args: argparse.Namespace) -> int:
-    ws_kind, ws_path = _parse_workspace_flag(args.workspace)
+    try:
+        ws_kind, ws_path = _parse_workspace_flag(args.workspace)
+        branch_name = _parse_branch_flag(getattr(args, "branch", None))
+    except argparse.ArgumentTypeError as exc:
+        print(f"kanban: {exc}", file=sys.stderr)
+        return 2
+    if branch_name and ws_kind != "worktree":
+        print("kanban: --branch is only valid with --workspace worktree", file=sys.stderr)
+        return 2
     try:
         max_runtime = _parse_duration(getattr(args, "max_runtime", None))
     except ValueError as exc:
@@ -1176,6 +1295,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             created_by=args.created_by or _profile_author(),
             workspace_kind=ws_kind,
             workspace_path=ws_path,
+            branch_name=branch_name,
             tenant=args.tenant,
             priority=args.priority,
             parents=tuple(args.parent or ()),
@@ -1206,6 +1326,37 @@ def _cmd_create(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_swarm(args: argparse.Namespace) -> int:
+    try:
+        workers = [ks.parse_worker_arg(raw) for raw in (args.worker or [])]
+    except ValueError as exc:
+        print(f"kanban swarm: {exc}", file=sys.stderr)
+        return 2
+    if not workers:
+        print("kanban swarm: at least one --worker is required", file=sys.stderr)
+        return 2
+    with kb.connect() as conn:
+        created = ks.create_swarm(
+            conn,
+            goal=args.goal,
+            workers=workers,
+            verifier_assignee=args.verifier,
+            synthesizer_assignee=args.synthesizer,
+            tenant=args.tenant,
+            created_by=args.created_by or _profile_author(),
+            priority=args.priority,
+            idempotency_key=getattr(args, "idempotency_key", None),
+        )
+    if getattr(args, "json", False):
+        print(json.dumps(created.as_dict(), indent=2, ensure_ascii=False))
+    else:
+        print(f"Swarm root: {created.root_id}")
+        print("Workers: " + ", ".join(created.worker_ids))
+        print(f"Verifier: {created.verifier_id}")
+        print(f"Synthesizer: {created.synthesizer_id}")
+    return 0
+
+
 def _cmd_list(args: argparse.Namespace) -> int:
     assignee = args.assignee
     if args.mine and not assignee:
@@ -1219,7 +1370,11 @@ def _cmd_list(args: argparse.Namespace) -> int:
             assignee=assignee,
             status=args.status,
             tenant=args.tenant,
+            session_id=args.session,
             include_archived=args.archived,
+            order_by=getattr(args, "sort", None),
+            workflow_template_id=args.workflow_template_id,
+            current_step_key=args.current_step_key,
         )
     if getattr(args, "json", False):
         print(json.dumps([_task_to_dict(t) for t in tasks], indent=2, ensure_ascii=False))
@@ -1248,6 +1403,13 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
 
 def _cmd_show(args: argparse.Namespace) -> int:
+    rsk = _run_state_kwargs(args)
+    if rsk is None:
+        print(
+            "kanban show: pass both --state-type and --state-name, or omit both",
+            file=sys.stderr,
+        )
+        return 2
     with kb.connect() as conn:
         task = kb.get_task(conn, args.task_id)
         if not task:
@@ -1257,7 +1419,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
         events = kb.list_events(conn, args.task_id)
         parents = kb.parent_ids(conn, args.task_id)
         children = kb.child_ids(conn, args.task_id)
-        runs = kb.list_runs(conn, args.task_id)
+        runs = kb.list_runs(conn, args.task_id, **rsk)
         # Workers hand off via ``task_runs.summary`` (kanban-worker skill);
         # ``tasks.result`` is left NULL unless the caller explicitly passed
         # ``result=``. Surfacing the latest summary here keeps ``show`` from
@@ -1310,8 +1472,12 @@ def _cmd_show(args: argparse.Namespace) -> int:
         print(f"  tenant:    {task.tenant}")
     print(f"  workspace: {task.workspace_kind}" +
           (f" @ {task.workspace_path}" if task.workspace_path else ""))
+    if task.branch_name:
+        print(f"  branch:    {task.branch_name}")
     if task.skills:
         print(f"  skills:    {', '.join(task.skills)}")
+    if task.model_override:
+        print(f"  model:     {task.model_override}")
     # Effective retry threshold. Show the per-task override if set,
     # otherwise the dispatcher's resolved value from config (or the
     # default if config doesn't set it either). Helps operators see
@@ -1751,6 +1917,28 @@ def _cmd_block(args: argparse.Namespace) -> int:
     return 0 if not failed else 1
 
 
+def _cmd_schedule(args: argparse.Namespace) -> int:
+    reason = " ".join(args.reason).strip() if args.reason else None
+    author = _profile_author()
+    ids = [args.task_id] + list(getattr(args, "ids", None) or [])
+    failed: list[str] = []
+    with kb.connect() as conn:
+        for tid in ids:
+            if reason:
+                kb.add_comment(conn, tid, author, f"SCHEDULED: {reason}")
+            if not kb.schedule_task(
+                conn,
+                tid,
+                reason=reason,
+                expected_run_id=_worker_run_id_for(tid),
+            ):
+                failed.append(tid)
+                print(f"cannot schedule {tid}", file=sys.stderr)
+            else:
+                print(f"Scheduled {tid}" + (f": {reason}" if reason else ""))
+    return 0 if not failed else 1
+
+
 def _cmd_unblock(args: argparse.Namespace) -> int:
     ids = list(args.task_ids or [])
     if not ids:
@@ -1761,7 +1949,7 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
         for tid in ids:
             if not kb.unblock_task(conn, tid):
                 failed.append(tid)
-                print(f"cannot unblock {tid} (not blocked?)", file=sys.stderr)
+                print(f"cannot unblock {tid} (not blocked/scheduled?)", file=sys.stderr)
             else:
                 print(f"Unblocked {tid}")
     return 0 if not failed else 1
@@ -1826,6 +2014,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "reclaimed": res.reclaimed,
             "crashed": res.crashed,
             "timed_out": res.timed_out,
+            "stale": res.stale,
             "auto_blocked": res.auto_blocked,
             "promoted": res.promoted,
             "spawned": [
@@ -1843,6 +2032,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     print(f"Timed out:    {len(res.timed_out)}")
     if res.timed_out:
         print(f"  {', '.join(res.timed_out)}")
+    print(f"Stale:        {len(res.stale)}")
+    if res.stale:
+        print(f"  {', '.join(res.stale)}")
     print(f"Auto-blocked: {len(res.auto_blocked)}")
     if res.auto_blocked:
         print(f"  {', '.join(res.auto_blocked)}")
@@ -1957,13 +2149,13 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             return
         did_work = (
             res.reclaimed or res.crashed or res.timed_out or res.promoted
-            or res.spawned or res.auto_blocked
+            or res.spawned or res.auto_blocked or res.stale
         )
         if did_work:
             print(
                 f"[{_fmt_ts(int(time.time()))}] "
                 f"reclaimed={res.reclaimed} crashed={len(res.crashed)} "
-                f"timed_out={len(res.timed_out)} "
+                f"timed_out={len(res.timed_out)} stale={len(res.stale)} "
                 f"promoted={res.promoted} spawned={len(res.spawned)} "
                 f"auto_blocked={len(res.auto_blocked)}",
                 flush=True,
@@ -2058,7 +2250,7 @@ def _cmd_stats(args: argparse.Namespace) -> int:
         print(json.dumps(stats, indent=2, ensure_ascii=False))
         return 0
     print("By status:")
-    for k in ("triage", "todo", "ready", "running", "blocked", "done"):
+    for k in ("triage", "todo", "scheduled", "ready", "running", "blocked", "done"):
         print(f"  {k:8s}  {stats['by_status'].get(k, 0)}")
     if stats["by_assignee"]:
         print("\nBy assignee:")
@@ -2133,8 +2325,15 @@ def _cmd_log(args: argparse.Namespace) -> int:
 
 def _cmd_runs(args: argparse.Namespace) -> int:
     """Show attempt history for a task."""
+    rsk = _run_state_kwargs(args)
+    if rsk is None:
+        print(
+            "kanban runs: pass both --state-type and --state-name, or omit both",
+            file=sys.stderr,
+        )
+        return 2
     with kb.connect() as conn:
-        runs = kb.list_runs(conn, args.task_id)
+        runs = kb.list_runs(conn, args.task_id, **rsk)
     if getattr(args, "json", False):
         print(json.dumps([
             {
@@ -2387,7 +2586,7 @@ Common subcommands:
   `create <title>…`     Create a task (auto-subscribes you to events)
   `comment <id> <msg>`  Append a comment
   `complete <id>…`      Mark task(s) done
-  `block <id> [reason]` Mark blocked; `unblock <id>` to revive
+  `block <id> [reason]` Mark blocked; `schedule <id> [reason]` parks time-delay work; `unblock <id>` to revive
   `assign <id> <profile>`  Reassign
   `boards list`         Show all boards
   `assignees`           Known profiles + counts
@@ -2435,6 +2634,15 @@ def run_slash(rest: str) -> str:
                 _choice.prog = f"/kanban {_name}"
                 _choice.exit_on_error = False  # type: ignore[attr-defined]
 
+    def _usage_for_error() -> str:
+        if tokens:
+            for _action in kanban_parser._actions:
+                if isinstance(_action, argparse._SubParsersAction):
+                    subparser = _action.choices.get(tokens[0])
+                    if subparser is not None:
+                        return subparser.format_usage().rstrip()
+        return kanban_parser.format_usage().rstrip()
+
     buf_out = io.StringIO()
     buf_err = io.StringIO()
     # ``-h`` / ``--help`` makes argparse print to stdout and SystemExit(0).
@@ -2452,7 +2660,7 @@ def run_slash(rest: str) -> str:
         body = err or out
         return f"⚠ /kanban usage error\n{body}" if body else "⚠ /kanban usage error"
     except argparse.ArgumentError as exc:
-        return f"⚠ /kanban usage error: {exc}"
+        return f"⚠ /kanban usage error\n{_usage_for_error()}\n{exc}"
 
     with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
         try:
