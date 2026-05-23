@@ -127,7 +127,8 @@ All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes
 
 The local Memory Fabric foundations include deterministic, read-only modules for
 benchmarking, retrieval fusion, bi-temporal fact reasoning, and contradiction
-classification, compiler candidates, and review-only memory block candidates.
+classification, compiler candidates, review-only memory block candidates, and a
+read-only review queue for those block candidates.
 
 Contradiction Engine v0.1 lives in `agent.memory_contradiction_engine`. It
 classifies fact relationships as `supports`, `updates`, `contradicts`,
@@ -140,6 +141,11 @@ Memory Blocks v0.1 lives in `agent.memory_blocks`. It creates deterministic
 `review_required` candidates such as `procedural_rules`, with `proposal_only`
 mutation policy and explicit proof that no memory, graph, config, proposal, or
 operation-ledger write is performed.
+
+Memory Block Review Queue v0.1 lives in `agent.memory_block_review_queue`. It
+wraps block candidates as deterministic `pending_review` queue items with
+priority, risk, validation, recommendation, source ids, and explicit read-only
+policy; it does not apply blocks or create proposals or ledger events.
 
 ---
 

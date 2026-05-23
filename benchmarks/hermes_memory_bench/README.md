@@ -29,6 +29,7 @@ python -m benchmarks.hermes_memory_bench.run --suite smoke --output /tmp/hermes-
 - `contradiction_engine`
 - `memory_compiler`
 - `memory_blocks`
+- `memory_block_review_queue`
 - `latency_ms`
 
 ## Hybrid Retrieval Fusion v0.1
@@ -126,6 +127,25 @@ allowlists, create proposals, or create operation-ledger events.
 The smoke suite includes `memory_blocks`, proving that a compiler procedure
 candidate becomes a review-only `procedural_rules` block candidate while the
 JSON report schema remains stable.
+
+## Memory Block Review Queue v0.1
+
+Memory Block Review Queue v0.1 lives in
+`agent.memory_block_review_queue`. It wraps Memory Block candidates in
+deterministic `pending_review` queue items so humans or agents can inspect them
+later without applying blocks or creating any durable side effects.
+
+Queue items include a deterministic `queue_item_id`, block identity, project
+scope, priority, risk level, source pattern and fact ids, block validation,
+recommended action, an immutable block snapshot, and explicit read-only policy.
+Priority is deterministic: invalid blocks are highest, safety policy blocks are
+high risk, methodology and procedural rules are medium risk, persona and
+collaboration style blocks are medium risk, and project context and current task
+state blocks are low risk.
+
+The smoke suite includes `memory_block_review_queue`, proving that a
+`procedural_rules` block candidate becomes a `pending_review` queue item while
+the JSON report schema remains stable.
 
 ## Report Schema
 

@@ -15,6 +15,11 @@ from agent.memory_bitemporal_fact_graph import (
 from agent.memory_contradiction_engine import explain_contradiction_group, group_contradictions
 from agent.memory_compiler import MEMORY_COMPILER_POLICY, compile_memory_patterns
 from agent.memory_blocks import MEMORY_BLOCK_POLICY, compile_blocks_from_compiler_result
+from agent.memory_block_review_queue import (
+    MEMORY_BLOCK_REVIEW_QUEUE_POLICY,
+    build_review_queue,
+    summarize_review_queue,
+)
 from agent.memory_retrieval_fusion import fuse_memory_retrieval
 
 
@@ -31,6 +36,7 @@ DIMENSIONS = (
     "contradiction_engine",
     "memory_compiler",
     "memory_blocks",
+    "memory_block_review_queue",
     "latency_ms",
 )
 POLICY = {
@@ -235,6 +241,20 @@ def _answer_case(case: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             "memory_blocks": blocks,
             "candidate_count": len(memories),
             "policy": dict(MEMORY_BLOCK_POLICY),
+        }
+
+    if dimension == "memory_block_review_queue":
+        compiler_result = compile_memory_patterns(memories, project_scope=case.get("project_scope"))
+        blocks = compile_blocks_from_compiler_result(compiler_result, project_scope=case.get("project_scope"))
+        queue = build_review_queue(blocks, reviewer=case.get("reviewer"))
+        item = queue[0] if queue else {}
+        return item.get("status", ""), {
+            "compiler": compiler_result,
+            "memory_blocks": blocks,
+            "review_queue": queue,
+            "summary": summarize_review_queue(queue),
+            "candidate_count": len(memories),
+            "policy": dict(MEMORY_BLOCK_REVIEW_QUEUE_POLICY),
         }
 
     selected = _newest(memories)
