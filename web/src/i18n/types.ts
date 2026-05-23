@@ -186,6 +186,7 @@ export interface Translations {
   // ── Sessions page ──
   sessions: {
     title: string;
+    overview: string;
     searchPlaceholder: string;
     noSessions: string;
     noMatch: string;
@@ -446,6 +447,8 @@ export interface Translations {
     providersConfigured: string;
     replaceCurrentValue: string;
     showAdvanced: string;
+    showLess: string;
+    showMore: string;
     showValue: string;
   };
 
