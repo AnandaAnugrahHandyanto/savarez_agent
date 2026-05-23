@@ -67,12 +67,16 @@ class TestFailoverReason:
 
 
 # ── Test: ClassifiedError ──────────────────────────────────────────────
+
 class TestClassifiedError:
-    @pytest.mark.parametrize("reason", list(FailoverReason))
-    def test_is_auth_property(self, reason):
-        e = ClassifiedError(reason=reason)
-        expected = reason in {FailoverReason.auth, FailoverReason.auth_permanent}
-        assert e.is_auth == expected, f"Expected is_auth={expected} for {reason}"
+    def test_is_auth_property(self):
+        for reason in FailoverReason:
+
+            e = ClassifiedError(reason=reason)
+            if reason in {FailoverReason.auth, FailoverReason.auth_permanent}:
+                assert e.is_auth is True, f"Expected is_auth=True for {reason}"
+            else:
+                assert e.is_auth is False, f"Expected is_auth=False for {reason}"
 
     def test_defaults(self):
         e = ClassifiedError(reason=FailoverReason.unknown)

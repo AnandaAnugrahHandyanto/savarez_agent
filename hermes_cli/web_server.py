@@ -231,10 +231,6 @@ async def auth_middleware(request: Request, call_next):
                 status_code=401,
                 content={"detail": "Unauthorized"},
             )
-
-    if path.startswith("/api/plugins/"):
-        _mount_plugin_api_routes()
-
     return await call_next(request)
 
 
@@ -3317,12 +3313,9 @@ async def events_ws(ws: WebSocket) -> None:
         await ws.close(code=4400)
         return
 
-    # Register the subscriber in the same critical section as accept().
-    # This guarantees websocket_connect() only returns after the channel
-    # subscription is live, avoiding a connect/publish race where the first
-    # broadcast can be dropped.
+    await ws.accept()
+
     async with _event_lock:
-        await ws.accept()
         _event_channels.setdefault(channel, set()).add(ws)
 
     try:
@@ -3344,17 +3337,13 @@ async def events_ws(ws: WebSocket) -> None:
                     _event_channels.pop(channel, None)
 
 
-_PREFIX_ALLOWED_CHARS: frozenset = frozenset(
-    "/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~-"
-)
-
-
 def _normalise_prefix(raw: Optional[str]) -> str:
     """Normalise an X-Forwarded-Prefix header value.
 
     Returns a string like ``"/hermes"`` (no trailing slash) or ``""`` when
-    no prefix is set / the header is malformed. The value is injected into
-    HTML and JavaScript, so keep it to a relative URL path prefix only.
+    no prefix is set / the header is malformed. We deliberately reject
+    anything containing ``..`` or non-printable bytes so a hostile proxy
+    can't inject HTML via the prefix.
     """
     if not raw:
         return ""
@@ -3364,11 +3353,9 @@ def _normalise_prefix(raw: Optional[str]) -> str:
     if not p.startswith("/"):
         p = "/" + p
     p = p.rstrip("/")
-    if not p:
+    if "//" in p or ".." in p or any(c in p for c in ('"', "'", "<", ">", " ", "\n", "\r", "\t")):
         return ""
     if len(p) > 64:
-        return ""
-    if "//" in p or ".." in p or any(c not in _PREFIX_ALLOWED_CHARS for c in p):
         return ""
     return p
 
@@ -3770,6 +3757,25 @@ async def set_dashboard_theme(body: ThemeSetBody):
 # ---------------------------------------------------------------------------
 
 
+def _dashboard_plugin_is_enabled(name: str, directory_name: str) -> bool:
+    """Return whether a dashboard plugin is allowed to load.
+
+    Dashboard extensions can execute Python through their ``api`` file, so
+    they must honor the same explicit opt-in gate as general plugins.
+    """
+    try:
+        from hermes_cli.plugins import _get_disabled_plugins, _get_enabled_plugins
+
+        disabled = _get_disabled_plugins()
+        if name in disabled or directory_name in disabled:
+            return False
+
+        enabled = _get_enabled_plugins()
+        return enabled is not None and (name in enabled or directory_name in enabled)
+    except Exception:
+        return False
+
+
 def _discover_dashboard_plugins() -> list:
     """Scan enabled plugins/*/dashboard/manifest.json for dashboard extensions.
 
@@ -3780,20 +3786,6 @@ def _discover_dashboard_plugins() -> list:
     """
     plugins = []
     seen_names: set = set()
-
-    # Dashboard extensions can execute Python through their ``api`` file.
-    # Treat user/project plugins as opt-in via ``plugins.enabled``. For
-    # bundled (repo-shipped) dashboard plugins, allow them when the opt-in
-    # allow-list isn't configured yet so the dashboard has a functional
-    # baseline in fresh installs and in tests that run with no config.yaml.
-    try:
-        from hermes_cli.plugins import _get_disabled_plugins, _get_enabled_plugins
-
-        disabled_plugins = _get_disabled_plugins()
-        enabled_plugins = _get_enabled_plugins()
-    except Exception:
-        disabled_plugins = set()
-        enabled_plugins = None
 
     from hermes_cli.plugins import get_bundled_plugins_dir
     bundled_root = get_bundled_plugins_dir()
@@ -3817,12 +3809,7 @@ def _discover_dashboard_plugins() -> list:
             try:
                 data = json.loads(manifest_file.read_text(encoding="utf-8"))
                 name = data.get("name", child.name)
-                if name in disabled_plugins or child.name in disabled_plugins:
-                    continue
-                if enabled_plugins is None:
-                    if source != "bundled":
-                        continue
-                elif name not in enabled_plugins and child.name not in enabled_plugins:
+                if not _dashboard_plugin_is_enabled(str(name), child.name):
                     continue
                 if name in seen_names:
                     continue
@@ -3871,7 +3858,6 @@ def _discover_dashboard_plugins() -> list:
 
 # Cache discovered plugins per-process (refresh on explicit re-scan).
 _dashboard_plugins_cache: Optional[list] = None
-_plugin_api_routes_mounted = False
 
 
 def _get_dashboard_plugins(force_rescan: bool = False) -> list:
@@ -4203,19 +4189,14 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
     return FileResponse(target, media_type=media_type)
 
 
-def _mount_plugin_api_routes(force_rescan: bool = False):
+def _mount_plugin_api_routes():
     """Import and mount backend API routes from plugins that declare them.
 
     Each plugin's ``api`` field points to a Python file that must expose
     a ``router`` (FastAPI APIRouter).  Routes are mounted under
     ``/api/plugins/<name>/``.
     """
-    global _plugin_api_routes_mounted
-
-    if _plugin_api_routes_mounted and not force_rescan:
-        return
-
-    for plugin in _get_dashboard_plugins(force_rescan=force_rescan):
+    for plugin in _get_dashboard_plugins():
         api_file_name = plugin.get("_api_file")
         if not api_file_name:
             continue
@@ -4250,11 +4231,9 @@ def _mount_plugin_api_routes(force_rescan: bool = False):
         except Exception as exc:
             _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)
 
-    _plugin_api_routes_mounted = True
-
 
 # Mount plugin API routes before the SPA catch-all.
-_mount_plugin_api_routes(force_rescan=True)
+_mount_plugin_api_routes()
 
 mount_spa(app)
 

@@ -1635,7 +1635,6 @@ class TelegramAdapter(BasePlatformAdapter):
         content: str,
         *,
         finalize: bool = False,
-        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Edit a previously sent Telegram message.
 
@@ -1654,7 +1653,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # without round-tripping a doomed edit.
         if utf16_len(content) > self.MAX_MESSAGE_LENGTH:
             return await self._edit_overflow_split(
-                chat_id, message_id, content, finalize=finalize, metadata=metadata,
+                chat_id, message_id, content, finalize=finalize,
             )
 
         try:
@@ -1699,7 +1698,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name, utf16_len(content), self.MAX_MESSAGE_LENGTH,
                 )
                 return await self._edit_overflow_split(
-                    chat_id, message_id, content, finalize=finalize, metadata=metadata,
+                    chat_id, message_id, content, finalize=finalize,
                 )
             # Flood control / RetryAfter — short waits are retried inline,
             # long waits return a failure immediately so streaming can fall back
@@ -1743,7 +1742,6 @@ class TelegramAdapter(BasePlatformAdapter):
         content: str,
         *,
         finalize: bool,
-        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Split an oversized edit across the existing message + continuations.
 
@@ -1815,54 +1813,25 @@ class TelegramAdapter(BasePlatformAdapter):
         # fallback, mirroring send().
         continuation_ids: list[str] = []
         prev_id = message_id
-        thread_id = self._metadata_thread_id(metadata)
         for chunk in chunks[1:]:
             sent_msg = None
             for use_markdown in (True, False) if finalize else (False,):
                 try:
                     text = self.format_message(chunk) if use_markdown else chunk
-                    reply_to_id = int(prev_id) if prev_id else None
-                    thread_kwargs = self._thread_kwargs_for_send(
-                        chat_id,
-                        thread_id,
-                        metadata,
-                        reply_to_message_id=reply_to_id,
-                    )
                     sent_msg = await self._bot.send_message(
                         chat_id=int(chat_id),
                         text=text,
                         parse_mode=ParseMode.MARKDOWN_V2 if use_markdown else None,
-                        reply_to_message_id=reply_to_id,
-                        **thread_kwargs,
+                        reply_to_message_id=int(prev_id) if prev_id else None,
                     )
                     break
                 except Exception as send_err:
-                    err_lower = str(send_err).lower()
-                    retry_without_dm_topic_anchor = self._should_retry_without_dm_topic_reply_anchor(
-                        send_err,
-                        metadata,
-                        reply_to_id,
-                    )
-                    if (
-                        "reply message not found" in err_lower
-                        or "message to be replied not found" in err_lower
-                    ):
+                    if "reply message not found" in str(send_err).lower():
                         # Drop the reply anchor and try again.
                         try:
-                            no_reply_kwargs = (
-                                {}
-                                if retry_without_dm_topic_anchor
-                                else self._thread_kwargs_for_send(
-                                    chat_id,
-                                    thread_id,
-                                    metadata,
-                                    reply_to_message_id=None,
-                                )
-                            )
                             sent_msg = await self._bot.send_message(
                                 chat_id=int(chat_id),
                                 text=chunk,
-                                **no_reply_kwargs,
                             )
                             break
                         except Exception as _retry_err:
@@ -2003,12 +1972,7 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return SendResult(success=False, error=str(e))
 
-    async def _send_message_with_thread_fallback(
-        self,
-        *,
-        metadata: Optional[Dict[str, Any]] = None,
-        **kwargs,
-    ):
+    async def _send_message_with_thread_fallback(self, **kwargs):
         """Send a Telegram message, retrying once without message_thread_id
         if Telegram returns 'Message thread not found'.
 
@@ -2025,10 +1989,7 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             return await self._bot.send_message(**kwargs)
         except Exception as send_err:
-            allow_dm_fallback = bool(metadata and metadata.get("telegram_dm_topic_reply_fallback"))
             if (
-                allow_dm_fallback
-                and
                 message_thread_id is not None
                 and self._is_bad_request_error(send_err)
                 and self._is_thread_not_found_error(send_err)
@@ -2067,7 +2028,6 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id = self._metadata_thread_id(metadata)
             reply_to_id = self._reply_to_message_id_for_send(None, metadata)
             msg = await self._send_message_with_thread_fallback(
-                metadata=metadata,
                 chat_id=int(chat_id),
                 text=text,
                 parse_mode=ParseMode.MARKDOWN,
@@ -2147,7 +2107,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             )
 
-            msg = await self._send_message_with_thread_fallback(metadata=metadata, **kwargs)
+            msg = await self._send_message_with_thread_fallback(**kwargs)
 
             # Store session_key keyed by approval_id for the callback handler
             self._approval_state[approval_id] = session_key
@@ -2199,7 +2159,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             )
 
-            msg = await self._send_message_with_thread_fallback(metadata=metadata, **kwargs)
+            msg = await self._send_message_with_thread_fallback(**kwargs)
             self._slash_confirm_state[confirm_id] = session_key
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -2258,7 +2218,6 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id = metadata.get("thread_id") if metadata else None
             reply_to_id = self._reply_to_message_id_for_send(None, metadata)
             msg = await self._send_message_with_thread_fallback(
-                metadata=metadata,
                 chat_id=int(chat_id),
                 text=text,
                 parse_mode=ParseMode.MARKDOWN,
