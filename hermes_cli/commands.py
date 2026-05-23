@@ -196,6 +196,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
                gateway_only=True, args_hint="[page]"),
+    CommandDef("palette", "Open the quick-action command palette", "Info",
+               gateway_only=True),
     CommandDef("help", "Show available commands", "Info"),
     CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
                gateway_only=True),
@@ -219,6 +221,54 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("quit", "Exit the CLI (use --delete to also remove session history)", "Exit",
                cli_only=True, aliases=("exit",), args_hint="[--delete]"),
 ]
+
+
+# Gateway quick actions shown by the Discord/Slack/Telegram command palette.
+# Keep this metadata platform-neutral; each adapter renders it using its own
+# native controls and dispatches the selected slash back through resolve_command
+# + gateway/run.py rather than implementing per-platform command behavior.
+GATEWAY_QUICK_ACTION_COMMANDS: tuple[str, ...] = (
+    "status",
+    "usage",
+    "help",
+    "model",
+    "agents",
+    "profile",
+    "whoami",
+    "insights",
+    "new",
+    "retry",
+    "undo",
+    "stop",
+    "compress",
+    "fast",
+    "yolo",
+)
+
+GATEWAY_QUICK_ACTION_CONFIRM_COMMANDS: frozenset[str] = frozenset({"new", "undo", "stop", "yolo"})
+
+GATEWAY_QUICK_ACTION_LABELS: dict[str, str] = {
+    "status": "Status",
+    "usage": "Usage",
+    "help": "Help",
+    "model": "Model",
+    "agents": "Agents",
+    "profile": "Profile",
+    "whoami": "Who Am I",
+    "insights": "Insights",
+    "new": "New",
+    "retry": "Retry",
+    "undo": "Undo",
+    "stop": "Stop",
+    "compress": "Compress",
+    "fast": "Fast",
+    "yolo": "YOLO",
+}
+
+
+def gateway_quick_action_label(command: str) -> str:
+    """Return the display label for a command-palette quick action."""
+    return GATEWAY_QUICK_ACTION_LABELS.get(command, command.replace("-", " ").title())
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +389,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "deny",
         "help",
         "new",
+        "palette",
         "profile",
         "queue",
         "restart",

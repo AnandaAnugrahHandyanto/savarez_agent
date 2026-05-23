@@ -681,6 +681,9 @@ class SlackAdapter(BasePlatformAdapter):
             ):
                 self._app.action(_action_id)(self._handle_slash_confirm_action)
 
+            # Register Block Kit action handler for command-palette quick actions.
+            self._app.action("hermes_palette_action")(self._handle_palette_action)
+
             # Start Socket Mode handler in background
             self._handler = AsyncSocketModeHandler(self._app, app_token, proxy=proxy_url)
             _apply_slack_proxy(self._handler.client, proxy_url)
@@ -2236,6 +2239,271 @@ class SlackAdapter(BasePlatformAdapter):
             self._reacting_message_ids.add(ts)
 
         await self.handle_message(msg_event)
+
+    def _build_palette_blocks(self, commands_text: str, quick_actions: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+        """Build Slack Block Kit blocks for the command palette."""
+        text = self.format_message(commands_text)
+        if len(text) > 2900:
+            text = text[:2897] + "..."
+        blocks: List[Dict[str, Any]] = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Command Palette*\n{text}",
+                },
+            },
+        ]
+        from hermes_cli.commands import GATEWAY_QUICK_ACTION_CONFIRM_COMMANDS
+
+        for idx in range(0, len(quick_actions), 5):
+            row = quick_actions[idx:idx + 5]
+            blocks.append(
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {
+                                "type": "plain_text",
+                                "text": item.get("label") or item.get("command", ""),
+                            },
+                            "action_id": "hermes_palette_action",
+                            "value": item.get("command", ""),
+                            **(
+                                {"style": "danger"}
+                                if item.get("command") in GATEWAY_QUICK_ACTION_CONFIRM_COMMANDS
+                                else {}
+                            ),
+                        }
+                        for item in row
+                        if item.get("command")
+                    ],
+                }
+            )
+        return blocks
+
+    async def send_command_palette(
+        self,
+        source: Any,
+        commands_text: str,
+        quick_actions: List[Dict[str, str]],
+    ) -> SendResult:
+        """Send a Slack-native command palette with Block Kit buttons."""
+        if not self._app:
+            return SendResult(success=False, error="Not connected")
+        chat_id = getattr(source, "chat_id", None)
+        if not chat_id:
+            return SendResult(success=False, error="Missing chat_id")
+        blocks = self._build_palette_blocks(commands_text, quick_actions)
+        text = "Hermes command palette"
+
+        # Prefer replacing Slack's slash-command ephemeral ack when /palette was
+        # invoked as a slash. If the response_url POST fails, fall back to a
+        # normal channel message so the palette is still usable.
+        slash_ctx = self._pop_slash_context(str(chat_id))
+        if slash_ctx and slash_ctx.get("response_url"):
+            payload = {
+                "response_type": "ephemeral",
+                "replace_original": True,
+                "text": text,
+                "blocks": blocks,
+            }
+            try:
+                async with aiohttp.ClientSession(trust_env=True) as session:
+                    async with session.post(
+                        slash_ctx["response_url"],
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as resp:
+                        if resp.status == 200:
+                            return SendResult(success=True, message_id=None)
+                        body = await resp.text()
+                        logger.warning(
+                            "[Slack] palette response_url POST returned %s: %s",
+                            resp.status,
+                            body[:200],
+                        )
+            except Exception as exc:
+                logger.warning("[Slack] palette response_url POST failed: %s", exc)
+
+        try:
+            post_kwargs: Dict[str, Any] = {
+                "channel": str(chat_id),
+                "text": text,
+                "blocks": blocks,
+            }
+            thread_ts = getattr(source, "thread_id", None)
+            if thread_ts:
+                post_kwargs["thread_ts"] = thread_ts
+            result = await self._get_client(str(chat_id)).chat_postMessage(**post_kwargs)
+            return SendResult(success=True, message_id=result.get("ts", ""), raw_response=result)
+        except Exception as exc:
+            logger.error("[Slack] send_command_palette failed: %s", exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
+    async def _send_palette_confirmation(
+        self,
+        channel_id: str,
+        user_id: str,
+        command: str,
+        body: Dict[str, Any],
+    ) -> None:
+        """Ask for a second click before sensitive palette actions run."""
+        prompts = {
+            "new": "Start a fresh Hermes session for this Slack context?",
+            "undo": "Undo the last user/assistant exchange in this Slack context?",
+            "stop": "Stop all running background processes for this Hermes instance?",
+            "yolo": "Enable YOLO mode for this session and skip dangerous-command approvals?",
+        }
+        prompt = prompts.get(command, f"Run /{command}?")
+        blocks = [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*Confirm /{command}*\n\n{prompt}"},
+            },
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Confirm"},
+                        "style": "danger",
+                        "action_id": "hermes_palette_action",
+                        "value": f"confirm:{command}",
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Cancel"},
+                        "action_id": "hermes_palette_action",
+                        "value": f"cancel:{command}",
+                    },
+                ],
+            },
+        ]
+        response_url = str(body.get("response_url") or "")
+        if response_url:
+            try:
+                async with aiohttp.ClientSession(trust_env=True) as session:
+                    async with session.post(
+                        response_url,
+                        json={
+                            "response_type": "ephemeral",
+                            "replace_original": False,
+                            "text": prompt,
+                            "blocks": blocks,
+                        },
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as resp:
+                        if resp.status == 200:
+                            return
+                        logger.warning(
+                            "[Slack] palette confirm response_url returned %s: %s",
+                            resp.status,
+                            (await resp.text())[:200],
+                        )
+            except Exception as exc:
+                logger.warning("[Slack] palette confirm response_url failed: %s", exc)
+
+        await self._get_client(channel_id).chat_postEphemeral(
+            channel=channel_id,
+            user=user_id,
+            text=prompt,
+            blocks=blocks,
+        )
+
+    async def _handle_palette_action(self, ack, body, action) -> None:
+        """Handle a Slack command-palette quick-action button."""
+        await ack()
+        raw_value = str(action.get("value") or "").strip()
+        confirmed = False
+        if raw_value.startswith("cancel:"):
+            return
+        if raw_value.startswith("confirm:"):
+            confirmed = True
+            raw_value = raw_value.split(":", 1)[1]
+        command = raw_value.strip().lstrip("/")
+        from hermes_cli.commands import (
+            GATEWAY_QUICK_ACTION_COMMANDS,
+            GATEWAY_QUICK_ACTION_CONFIRM_COMMANDS,
+            resolve_command,
+        )
+        if command not in GATEWAY_QUICK_ACTION_COMMANDS or resolve_command(command) is None:
+            logger.warning("[Slack] Ignoring unknown palette action: %s", command)
+            return
+
+        channel_id = body.get("channel", {}).get("id", "")
+        if not channel_id:
+            return
+        is_dm = channel_id.startswith("D")
+        if not is_dm:
+            allowed_channels = self._slack_allowed_channels()
+            if allowed_channels and channel_id not in allowed_channels:
+                logger.warning("[Slack] Ignoring palette click in non-allowed channel: %s", channel_id)
+                return
+
+        user = body.get("user", {}) or {}
+        user_id = str(user.get("id") or "")
+        user_name = str(user.get("name") or user.get("username") or "unknown")
+
+        allowed_csv = os.getenv("SLACK_ALLOWED_USERS", "").strip()
+        if allowed_csv:
+            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+            if "*" not in allowed_ids and user_id not in allowed_ids:
+                logger.warning(
+                    "[Slack] Unauthorized palette click by %s (%s) — ignoring",
+                    user_name,
+                    user_id,
+                )
+                return
+
+        if command in GATEWAY_QUICK_ACTION_CONFIRM_COMMANDS and not confirmed:
+            await self._send_palette_confirmation(channel_id, user_id, command, body)
+            return
+
+        message = body.get("message", {}) or {}
+        msg_ts = message.get("ts", "")
+        container = body.get("container", {}) or {}
+        is_ephemeral = bool(container.get("is_ephemeral"))
+        thread_ts = message.get("thread_ts")
+        if not thread_ts and not is_ephemeral:
+            if is_dm:
+                if self._dm_top_level_threads_as_sessions():
+                    thread_ts = msg_ts
+            else:
+                thread_ts = msg_ts
+        from gateway.platforms.base import resolve_channel_prompt, resolve_channel_skills
+        source = self.build_source(
+            chat_id=channel_id,
+            chat_name=channel_id,
+            chat_type="dm" if is_dm else "group",
+            user_id=user_id,
+            user_name=user_name,
+            thread_id=thread_ts,
+        )
+        event = MessageEvent(
+            text=f"/{command}",
+            message_type=MessageType.COMMAND,
+            source=source,
+            raw_message=body,
+            message_id=msg_ts,
+            channel_prompt=resolve_channel_prompt(self.config.extra, channel_id, None),
+            auto_skill=resolve_channel_skills(self.config.extra, channel_id, None),
+        )
+        if confirmed:
+            setattr(event, "preconfirmed_destructive", True)
+
+        response_url = str(body.get("response_url") or "")
+        if response_url and user_id and channel_id:
+            self._slash_command_contexts[(channel_id, user_id)] = {
+                "response_url": response_url,
+                "ts": time.monotonic(),
+            }
+        token = _slash_user_id.set(user_id or None)
+        try:
+            await self.handle_message(event)
+        finally:
+            _slash_user_id.reset(token)
 
     # ----- Approval button support (Block Kit) -----
 

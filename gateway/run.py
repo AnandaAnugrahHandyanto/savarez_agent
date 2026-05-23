@@ -6942,6 +6942,8 @@ class GatewayRunner:
                     return await self._handle_help_command(event)
                 if _cmd_def_inner.name == "commands":
                     return await self._handle_commands_command(event)
+                if _cmd_def_inner.name == "palette":
+                    return await self._handle_palette_command(event)
                 if _cmd_def_inner.name == "profile":
                     return await self._handle_profile_command(event)
                 if _cmd_def_inner.name == "update":
@@ -7179,6 +7181,9 @@ class GatewayRunner:
 
         if canonical == "commands":
             return await self._handle_commands_command(event)
+
+        if canonical == "palette":
+            return await self._handle_palette_command(event)
         
         if canonical == "profile":
             return await self._handle_profile_command(event)
@@ -7234,6 +7239,8 @@ class GatewayRunner:
         if canonical == "undo":
             async def _do_undo():
                 return await self._handle_undo_command(event)
+            if getattr(event, "preconfirmed_destructive", False):
+                return await _do_undo()
             return await self._maybe_confirm_destructive_slash(
                 event=event,
                 command="undo",
@@ -9858,6 +9865,36 @@ class GatewayRunner:
             "\n".join(lines),
             getattr(getattr(event, "source", None), "platform", None),
         )
+
+    async def _handle_palette_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /palette — show native quick-action controls when possible."""
+        from hermes_cli.commands import (
+            GATEWAY_QUICK_ACTION_COMMANDS,
+            gateway_quick_action_label,
+        )
+
+        palette_text = (
+            "Choose from the quick actions below. Buttons run through the normal "
+            "slash-command pipeline; New, Undo, Stop, and YOLO ask for confirmation first."
+        )
+        quick_actions = [
+            {
+                "command": command,
+                "label": gateway_quick_action_label(command),
+            }
+            for command in GATEWAY_QUICK_ACTION_COMMANDS
+        ]
+        adapter = self.adapters.get(event.source.platform)
+        send_palette = getattr(adapter, "send_command_palette", None) if adapter else None
+        if callable(send_palette):
+            try:
+                result = await send_palette(event.source, palette_text, quick_actions)
+                if result and getattr(result, "success", False):
+                    return None
+            except Exception as exc:
+                logger.warning("Failed to render native command palette: %s", exc, exc_info=True)
+        labels = ", ".join(f"/{item['command']}" for item in quick_actions)
+        return f"{palette_text}\n\nQuick actions: {labels}"
 
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model for this session.

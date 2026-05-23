@@ -22,6 +22,10 @@ import time
 from collections import defaultdict
 from typing import Callable, Dict, List, Optional, Any, Tuple
 
+import sys
+from pathlib import Path as _Path
+sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+
 logger = logging.getLogger(__name__)
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
@@ -31,41 +35,19 @@ _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 
-DISCORD_QUICK_ACTION_COMMANDS: tuple[str, ...] = (
-    "status",
-    "usage",
-    "help",
-    "model",
-    "agents",
-    "profile",
-    "whoami",
-    "insights",
-    "new",
-    "retry",
-    "yolo",
+from hermes_cli.commands import (
+    GATEWAY_QUICK_ACTION_COMMANDS,
+    GATEWAY_QUICK_ACTION_CONFIRM_COMMANDS,
+    gateway_quick_action_label,
 )
-DISCORD_QUICK_ACTION_CONFIRM_COMMANDS: frozenset[str] = frozenset({"new", "yolo"})
 
-_DISCORD_QUICK_ACTION_LABELS: dict[str, str] = {
-    "status": "Status",
-    "usage": "Usage",
-    "help": "Help",
-    "model": "Model",
-    "agents": "Agents",
-    "profile": "Profile",
-    "whoami": "Who Am I",
-    "insights": "Insights",
-    "new": "New",
-    "retry": "Retry",
-    "yolo": "YOLO",
-}
+DISCORD_QUICK_ACTION_COMMANDS: tuple[str, ...] = GATEWAY_QUICK_ACTION_COMMANDS
+DISCORD_QUICK_ACTION_CONFIRM_COMMANDS: frozenset[str] = GATEWAY_QUICK_ACTION_CONFIRM_COMMANDS
 
 
 def _quick_action_label(command_name: str) -> str:
     """Return the Discord button label for a V1 quick action."""
-    return _DISCORD_QUICK_ACTION_LABELS.get(
-        command_name, command_name.replace("-", " ").title(),
-    )
+    return gateway_quick_action_label(command_name)
 
 
 def _quick_action_row(command_name: str) -> int:
@@ -74,13 +56,7 @@ def _quick_action_row(command_name: str) -> int:
         index = DISCORD_QUICK_ACTION_COMMANDS.index(command_name)
     except ValueError:
         return 0
-    if index < 3:
-        return 0
-    if index < 6:
-        return 1
-    if index < 8:
-        return 2
-    return 3
+    return min(index // 3, 4)
 
 try:
     import discord
@@ -93,10 +69,6 @@ except ImportError:
     DiscordMessage = Any
     Intents = Any
     commands = None
-
-import sys
-from pathlib import Path as _Path
-sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 import re
@@ -2975,20 +2947,14 @@ class DiscordAdapter(BasePlatformAdapter):
             return
 
         await interaction.response.defer(ephemeral=False)
-        # Reuse the existing /commands renderer for the textual command list,
-        # but keep the interactive palette on its own Discord slash command.
-        event = self._build_slash_event(interaction, f"/commands {page}".strip())
-
-        text = "Hermes Quick Actions"
-        try:
-            if self._message_handler:
-                response = await self._message_handler(event)
-                response, _ephemeral_ttl = self._unwrap_ephemeral(response)
-                if response:
-                    text = str(response)
-        except Exception as exc:
-            logger.warning("Discord /palette quick-action render failed: %s", exc, exc_info=True)
-            text = "Hermes Quick Actions"
+        # /palette is a compact quick-action entrypoint, not a /commands alias.
+        # Keep command execution in the normal shared slash path via the buttons,
+        # but do not synthesize /commands just to render the palette body.
+        text = (
+            "Hermes Quick Actions\n\n"
+            "Choose from the quick actions below. Buttons run through the normal "
+            "slash-command pipeline; New, Undo, Stop, and YOLO ask for confirmation first."
+        )
 
         view = CommandQuickActionsView(self)
         formatted = self.format_message(text)

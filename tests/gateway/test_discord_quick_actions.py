@@ -13,6 +13,7 @@ from gateway.platforms.discord import (
     _quick_action_label,
     _quick_action_row,
 )
+from hermes_cli.commands import GATEWAY_QUICK_ACTION_COMMANDS
 
 
 EXPECTED_V1_COMMANDS = {
@@ -26,11 +27,16 @@ EXPECTED_V1_COMMANDS = {
     "insights",
     "new",
     "retry",
+    "undo",
+    "stop",
+    "compress",
+    "fast",
     "yolo",
 }
 
 
-def test_discord_quick_actions_v1_command_set():
+def test_discord_quick_actions_use_shared_gateway_command_set():
+    assert DISCORD_QUICK_ACTION_COMMANDS == GATEWAY_QUICK_ACTION_COMMANDS
     assert set(DISCORD_QUICK_ACTION_COMMANDS) == EXPECTED_V1_COMMANDS
 
 
@@ -46,11 +52,15 @@ def test_discord_quick_actions_order_is_stable_for_v1_layout():
         "insights",
         "new",
         "retry",
+        "undo",
+        "stop",
+        "compress",
+        "fast",
         "yolo",
     )
 
 
-def test_discord_quick_actions_excludes_arg_and_risky_commands():
+def test_discord_quick_actions_excludes_arg_and_risky_commands_not_in_palette():
     excluded = {
         "commands",
         "reset",
@@ -59,7 +69,6 @@ def test_discord_quick_actions_excludes_arg_and_risky_commands():
         "steer",
         "goal",
         "rollback",
-        "stop",
         "restart",
         "update",
         "approve",
@@ -68,8 +77,8 @@ def test_discord_quick_actions_excludes_arg_and_risky_commands():
     assert excluded.isdisjoint(DISCORD_QUICK_ACTION_COMMANDS)
 
 
-def test_discord_quick_actions_confirm_new_and_yolo():
-    assert DISCORD_QUICK_ACTION_CONFIRM_COMMANDS == frozenset({"new", "yolo"})
+def test_discord_quick_actions_confirm_destructive_actions():
+    assert DISCORD_QUICK_ACTION_CONFIRM_COMMANDS == frozenset({"new", "undo", "stop", "yolo"})
 
 
 @pytest.mark.parametrize(
@@ -85,6 +94,10 @@ def test_discord_quick_actions_confirm_new_and_yolo():
         ("insights", "Insights"),
         ("new", "New"),
         ("retry", "Retry"),
+        ("undo", "Undo"),
+        ("stop", "Stop"),
+        ("compress", "Compress"),
+        ("fast", "Fast"),
         ("yolo", "YOLO"),
     ],
 )
@@ -97,8 +110,13 @@ def test_discord_quick_action_rows_match_v1_layout():
     rows = {command: _quick_action_row(command) for command in DISCORD_QUICK_ACTION_COMMANDS}
     assert [cmd for cmd, row in rows.items() if row == 0] == ["status", "usage", "help"]
     assert [cmd for cmd, row in rows.items() if row == 1] == ["model", "agents", "profile"]
-    assert [cmd for cmd, row in rows.items() if row == 2] == ["whoami", "insights"]
-    assert [cmd for cmd, row in rows.items() if row == 3] == ["new", "retry", "yolo"]
+    assert [cmd for cmd, row in rows.items() if row == 2] == ["whoami", "insights", "new"]
+    assert [cmd for cmd, row in rows.items() if row == 3] == ["retry", "undo", "stop"]
+    assert [cmd for cmd, row in rows.items() if row == 4] == ["compress", "fast", "yolo"]
+
+
+def test_discord_quick_action_rows_stay_within_discord_v1_limit():
+    assert max(_quick_action_row(command) for command in DISCORD_QUICK_ACTION_COMMANDS) <= 4
 
 
 @pytest.mark.asyncio

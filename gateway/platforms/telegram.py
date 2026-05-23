@@ -2497,6 +2497,65 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_slash_confirm failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_command_palette(
+        self,
+        source: Any,
+        commands_text: str,
+        quick_actions: list[Dict[str, str]],
+    ) -> SendResult:
+        """Render the command palette as a Telegram inline keyboard."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        chat_id = getattr(source, "chat_id", None)
+        if chat_id is None:
+            return SendResult(success=False, error="Missing chat_id")
+
+        try:
+            text = self.format_message(
+                commands_text if len(commands_text) <= 3800 else commands_text[:3800] + "..."
+            )
+            rows = []
+            for idx in range(0, len(quick_actions), 2):
+                row = []
+                for item in quick_actions[idx:idx + 2]:
+                    command = str(item.get("command") or "").strip().lstrip("/")
+                    if not command:
+                        continue
+                    row.append(
+                        InlineKeyboardButton(
+                            str(item.get("label") or command),
+                            callback_data=f"qa:{command}",
+                        )
+                    )
+                if row:
+                    rows.append(row)
+            keyboard = InlineKeyboardMarkup(rows) if rows else None
+            metadata = {"thread_id": getattr(source, "thread_id", None)}
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": text,
+                "parse_mode": ParseMode.MARKDOWN_V2,
+                "reply_markup": keyboard,
+                **self._link_preview_kwargs(),
+            }
+            thread_id = self._metadata_thread_id(metadata)
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
+            kwargs["reply_to_message_id"] = reply_to_id
+            kwargs.update(
+                self._thread_kwargs_for_send(
+                    str(chat_id),
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode,
+                )
+            )
+            msg = await self._send_message_with_thread_fallback(**kwargs)
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_command_palette failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
     async def send_clarify(
         self,
         chat_id: str,
@@ -2891,6 +2950,124 @@ class TelegramAdapter(BasePlatformAdapter):
             # Catch-all (e.g. page counter button "mx:noop")
             await query.answer()
 
+    async def _send_palette_confirmation(
+        self,
+        query: Any,
+        command: str,
+        chat_id: str,
+        thread_id: Optional[str],
+    ) -> None:
+        """Ask for a second click before sensitive palette actions run."""
+        prompts = {
+            "new": "Start a fresh Hermes session for this Telegram context?",
+            "undo": "Undo the last user/assistant exchange in this Telegram context?",
+            "stop": "Stop all running background processes for this Hermes instance?",
+            "yolo": "Enable YOLO mode for this session and skip dangerous-command approvals?",
+        }
+        prompt = prompts.get(command, f"Run /{command}?")
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("Confirm", callback_data=f"qa:confirm:{command}"),
+                InlineKeyboardButton("Cancel", callback_data=f"qa:cancel:{command}"),
+            ]
+        ])
+        kwargs: Dict[str, Any] = {
+            "chat_id": int(chat_id),
+            "text": prompt,
+            "reply_markup": keyboard,
+            **self._link_preview_kwargs(),
+        }
+        query_message = getattr(query, "message", None)
+        metadata = {"thread_id": thread_id}
+        reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
+        if reply_to_id is None and query_message is not None:
+            reply_to_id = getattr(query_message, "message_id", None)
+        kwargs["reply_to_message_id"] = reply_to_id
+        kwargs.update(
+            self._thread_kwargs_for_send(
+                chat_id,
+                thread_id,
+                metadata,
+                reply_to_message_id=reply_to_id,
+                reply_to_mode=self._reply_to_mode,
+            )
+        )
+        await self._send_message_with_thread_fallback(**kwargs)
+
+    def _palette_callback_location_allowed(self, message: Any) -> bool:
+        """Apply location gates that callback queries bypass in normal handlers."""
+        if message is None:
+            return False
+        thread_id = getattr(message, "message_thread_id", None)
+        if thread_id is not None:
+            try:
+                if int(thread_id) in self._telegram_ignored_threads():
+                    return False
+            except (TypeError, ValueError):
+                logger.warning("[%s] Ignoring non-numeric Telegram callback thread_id: %r", self.name, thread_id)
+                return False
+
+        if not self._is_group_chat(message):
+            return True
+
+        allowed_topics = self._telegram_allowed_topics()
+        if allowed_topics:
+            topic_id = str(thread_id) if thread_id is not None else self._GENERAL_TOPIC_THREAD_ID
+            if topic_id not in allowed_topics:
+                return False
+
+        chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
+        allowed = self._telegram_allowed_chats()
+        if allowed and chat_id_str not in allowed:
+            return False
+        return True
+
+    def _palette_callback_context(
+        self,
+        message: Any,
+        chat_type_value: str,
+    ) -> tuple[str, Optional[str], Optional[str], Optional[str]]:
+        """Mirror normal Telegram source/topic normalization for callbacks."""
+        source_chat_type = "dm"
+        if chat_type_value in {"group", "supergroup"}:
+            source_chat_type = "group"
+        elif chat_type_value == "channel":
+            source_chat_type = "channel"
+
+        chat = getattr(message, "chat", None)
+        thread_id_raw = getattr(message, "message_thread_id", None)
+        is_topic_message = bool(getattr(message, "is_topic_message", False))
+        is_forum_group = getattr(chat, "is_forum", False) is True
+        thread_id_str: Optional[str] = None
+        if thread_id_raw is not None:
+            if source_chat_type == "group" and (is_topic_message or is_forum_group):
+                thread_id_str = str(thread_id_raw)
+            elif source_chat_type == "dm" and is_topic_message:
+                thread_id_str = str(thread_id_raw)
+        if source_chat_type == "group" and thread_id_str is None and is_forum_group:
+            thread_id_str = self._GENERAL_TOPIC_THREAD_ID
+
+        chat_topic = None
+        topic_skill = None
+        chat_id = str(getattr(chat, "id", ""))
+        if source_chat_type == "dm" and thread_id_str:
+            topic_info = self._get_dm_topic_info(chat_id, thread_id_str)
+            if topic_info:
+                chat_topic = topic_info.get("name")
+                topic_skill = topic_info.get("skill")
+        elif source_chat_type == "group" and thread_id_str:
+            group_topics_config: list = self.config.extra.get("group_topics", [])
+            for chat_entry in group_topics_config:
+                if str(chat_entry.get("chat_id", "")) == chat_id:
+                    for topic in chat_entry.get("topics", []):
+                        tid = topic.get("thread_id")
+                        if tid is not None and str(tid) == thread_id_str:
+                            chat_topic = topic.get("name")
+                            topic_skill = topic.get("skill")
+                            break
+                    break
+        return source_chat_type, thread_id_str, chat_topic, topic_skill
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -2911,6 +3088,94 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)
+            return
+
+        # --- Command-palette quick actions (qa:<command>, qa:confirm:<command>) ---
+        if data.startswith("qa:"):
+            raw_value = data.split(":", 1)[1].strip()
+            confirmed = False
+            if raw_value.startswith("cancel:"):
+                await query.answer(text="Cancelled.")
+                return
+            if raw_value.startswith("confirm:"):
+                confirmed = True
+                raw_value = raw_value.split(":", 1)[1]
+            command = raw_value.strip().lstrip("/")
+            from hermes_cli.commands import (
+                GATEWAY_QUICK_ACTION_COMMANDS,
+                GATEWAY_QUICK_ACTION_CONFIRM_COMMANDS,
+                resolve_command,
+            )
+            if command not in GATEWAY_QUICK_ACTION_COMMANDS or resolve_command(command) is None:
+                await query.answer(text="Unknown palette action.")
+                return
+            if not query_message or query_chat_id is None:
+                await query.answer(text="Palette context is unavailable.")
+                return
+            if not self._palette_callback_location_allowed(query_message):
+                await query.answer(text="This palette is not available in this chat/topic.")
+                return
+
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to use this action.")
+                return
+
+            chat_type_value = str(getattr(query_chat_type, "value", query_chat_type) or "").split(".")[-1].lower()
+            source_chat_type, thread_id_str, chat_topic, topic_skill = self._palette_callback_context(
+                query_message,
+                chat_type_value,
+            )
+
+            if command in GATEWAY_QUICK_ACTION_CONFIRM_COMMANDS and not confirmed:
+                await query.answer(text=f"Confirm /{command} to continue.")
+                await self._send_palette_confirmation(
+                    query,
+                    command,
+                    str(query_chat_id),
+                    thread_id_str,
+                )
+                return
+
+            await query.answer(text=f"Running /{command}…")
+
+            from gateway.platforms.base import resolve_channel_prompt, resolve_channel_skills
+            source = self.build_source(
+                chat_id=str(query_chat_id),
+                chat_name=getattr(getattr(query_message, "chat", None), "title", None),
+                chat_type=source_chat_type,
+                user_id=caller_id,
+                user_name=query_user_name,
+                thread_id=thread_id_str,
+                chat_topic=chat_topic,
+                message_id=str(getattr(query_message, "message_id", "")),
+            )
+            event = MessageEvent(
+                text=f"/{command}",
+                message_type=MessageType.COMMAND,
+                source=source,
+                raw_message=query,
+                message_id=str(getattr(query_message, "message_id", "")),
+                channel_prompt=resolve_channel_prompt(
+                    self.config.extra,
+                    thread_id_str or str(query_chat_id),
+                    str(query_chat_id) if thread_id_str else None,
+                ),
+                auto_skill=topic_skill or resolve_channel_skills(
+                    self.config.extra,
+                    thread_id_str or str(query_chat_id),
+                    str(query_chat_id) if thread_id_str else None,
+                ),
+            )
+            if confirmed:
+                setattr(event, "preconfirmed_destructive", True)
+            await self.handle_message(event)
             return
 
         # --- Gmail-triage callbacks (gt:verb:arg) ---
