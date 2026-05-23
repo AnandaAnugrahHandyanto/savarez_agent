@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { BottomSheet } from "@nous-research/ui/ui/components/bottom-sheet";
-import { Typography } from "@nous-research/ui/ui/components/typography";
+import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { useI18n } from "@/i18n/context";
 import { LOCALE_META } from "@/i18n";
