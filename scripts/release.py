@@ -47,6 +47,7 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 AUTHOR_MAP = {
     # teknium (multiple emails)
     "teknium1@gmail.com": "teknium1",
+    "erhanyasarx@gmail.com": "erhnysr",
     "30366221+WorldWriter@users.noreply.github.com": "WorldWriter",
     "dafeng@DafengdeMacBook-Pro.local": "WorldWriter",
     "anadi.jaggia@gmail.com": "Jaggia",
@@ -372,6 +373,7 @@ AUTHOR_MAP = {
     "bloodcarter@gmail.com": "bloodcarter",
     "scott@scotttrinh.com": "scotttrinh",
     "quocanh261997@gmail.com": "quocanh261997",
+    "savanne.kham@protonmail.com": "savanne-kham",  # PR #28958 salvage (strip tool_name for strict providers)
     # contributors (from noreply pattern)
     "david.vv@icloud.com": "davidvv",
     "wangqiang@wangqiangdeMac-mini.local": "xiaoqiang243",
@@ -680,7 +682,7 @@ AUTHOR_MAP = {
     "hmbown@gmail.com": "Hmbown",
     "iacobs@m0n5t3r.info": "m0n5t3r",
     "jiayuw794@gmail.com": "JiayuuWang",
-    "jonny@nousresearch.com": "jquesnelle",
+    "jonny@nousresearch.com": "yoniebans",
     "jake@nousresearch.com": "simpolism",
     "juan.ovalle@mistral.ai": "jjovalle99",
     "julien.talbot@ergonomia.re": "Julientalbot",
