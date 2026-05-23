@@ -32,6 +32,7 @@ python -m benchmarks.hermes_memory_bench.run --suite smoke --output /tmp/hermes-
 - `memory_block_review_queue`
 - `memory_review_decision_gate`
 - `memory_proposal_draft_builder`
+- `memory_proposal_governance_gate`
 - `latency_ms`
 
 ## Hybrid Retrieval Fusion v0.1
@@ -185,6 +186,25 @@ The smoke suite includes `memory_proposal_draft_builder`, proving that an
 approved procedural rules decision candidate becomes a
 `draft_review_required` proposal draft candidate without creating a real
 proposal.
+
+## Memory Proposal Governance Gate v0.1
+
+Memory Proposal Governance Gate v0.1 lives in
+`agent.memory_proposal_governance_gate`. It validates proposal draft candidates
+and creates deterministic `governance_review_required` governance submission
+candidates for manual governed proposal creation.
+
+Only valid drafts with `proposal_status: draft_review_required` can produce
+valid submission candidates. Invalid drafts, missing payload previews, or
+missing source evidence produce invalid candidates with explicit reasons. The
+gate preserves payload previews, source ids, draft validation, source draft
+snapshots, routing, and read-only policy. It does not submit to governance,
+create real proposals, apply proposal drafts, persist approvals, write memory,
+write the Memory Graph, modify config, or create operation-ledger events.
+
+The smoke suite includes `memory_proposal_governance_gate`, proving that a
+valid proposal draft becomes a `governance_review_required` submission
+candidate without creating a real proposal or governance submission record.
 
 ## Report Schema
 

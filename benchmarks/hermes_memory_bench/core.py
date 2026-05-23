@@ -30,6 +30,11 @@ from agent.memory_proposal_draft_builder import (
     create_memory_proposal_draft,
     summarize_memory_proposal_drafts,
 )
+from agent.memory_proposal_governance_gate import (
+    MEMORY_PROPOSAL_GOVERNANCE_GATE_POLICY,
+    create_governance_submission_candidate,
+    summarize_governance_submission_candidates,
+)
 from agent.memory_retrieval_fusion import fuse_memory_retrieval
 
 
@@ -49,6 +54,7 @@ DIMENSIONS = (
     "memory_block_review_queue",
     "memory_review_decision_gate",
     "memory_proposal_draft_builder",
+    "memory_proposal_governance_gate",
     "latency_ms",
 )
 POLICY = {
@@ -305,6 +311,32 @@ def _answer_case(case: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             "created_real_proposal": False,
             "created_operation_event": False,
             "policy": dict(MEMORY_PROPOSAL_DRAFT_POLICY),
+        }
+
+    if dimension == "memory_proposal_governance_gate":
+        compiler_result = compile_memory_patterns(memories, project_scope=case.get("project_scope"))
+        blocks = compile_blocks_from_compiler_result(compiler_result, project_scope=case.get("project_scope"))
+        queue = build_review_queue(blocks, reviewer=case.get("reviewer"))
+        decisions = [evaluate_review_queue_item(item, reviewer=case.get("reviewer")) for item in queue]
+        drafts = [create_memory_proposal_draft(decision, author=case.get("author")) for decision in decisions]
+        submissions = [
+            create_governance_submission_candidate(draft, reviewer=case.get("governance_reviewer"))
+            for draft in drafts
+        ]
+        submission = submissions[0] if submissions else {}
+        return submission.get("submission_status", ""), {
+            "compiler": compiler_result,
+            "memory_blocks": blocks,
+            "review_queue": queue,
+            "decision_candidates": decisions,
+            "proposal_draft_candidates": drafts,
+            "governance_submission_candidates": submissions,
+            "summary": summarize_governance_submission_candidates(submissions),
+            "candidate_count": len(memories),
+            "created_real_proposal": False,
+            "created_operation_event": False,
+            "submitted_to_governance": False,
+            "policy": dict(MEMORY_PROPOSAL_GOVERNANCE_GATE_POLICY),
         }
 
     selected = _newest(memories)

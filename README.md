@@ -153,6 +153,12 @@ It turns queue items into decision candidates only: `approve_to_proposal`,
 create proposals, write memory, write graph state, modify config, or create
 operation-ledger events.
 
+Memory Proposal Governance Gate v0.1 lives in
+`agent.memory_proposal_governance_gate`. It validates proposal draft candidates
+and creates read-only `governance_review_required` submission candidates for
+manual governed proposal creation without submitting, approving, persisting, or
+creating real proposals or operation-ledger events.
+
 ---
 
 ## Migrating from OpenClaw
