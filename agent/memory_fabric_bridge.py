@@ -651,9 +651,7 @@ def memory_orchestration_routing_metrics() -> dict[str, Any]:
         "has_three_or_more_agents": len(agent_ids) >= 3,
         "has_route_binding": len(route_bindings) >= 1,
         "has_auto_precheck_profile": len(profile_ids) >= 1,
-        "has_operation_activity": (
-            operation_routing_event_count + gate_decision_count + auto_precheck_operation_count
-        ) >= 1,
+        "has_explicit_routing_operation_event": operation_routing_event_count >= 1,
     }
     routing_readiness_score = round(sum(1 for value in evidence_checks.values() if value) / len(evidence_checks), 3)
     gaps = _orchestration_routing_gaps(evidence_checks)
@@ -674,6 +672,7 @@ def memory_orchestration_routing_metrics() -> dict[str, Any]:
         "auto_precheck_profile_count": len(profile_ids),
         "auto_precheck_agent_ids": auto_precheck_agent_ids,
         "operation_routing_event_count": operation_routing_event_count,
+        "has_explicit_routing_operation_event": operation_routing_event_count >= 1,
         "gate_decision_count": gate_decision_count,
         "auto_precheck_operation_count": auto_precheck_operation_count,
         "client_counts": dict(sorted(client_counts.items())),
@@ -1728,6 +1727,7 @@ def _memory_evolution_evidence(
         "routing_agent_count": _safe_int(routing_metrics.get("agent_count")),
         "routing_route_binding_count": _safe_int(routing_metrics.get("route_binding_count")),
         "routing_operation_event_count": _safe_int(routing_metrics.get("operation_routing_event_count")),
+        "has_explicit_routing_operation_event": _safe_int(routing_metrics.get("operation_routing_event_count")) >= 1,
         "routing_gate_decision_count": _safe_int(routing_metrics.get("gate_decision_count")),
         "routing_auto_precheck_operation_count": _safe_int(routing_metrics.get("auto_precheck_operation_count")),
         "recall_quality_evaluation_ready": recall_quality.get("readiness") == "ready",
@@ -1769,6 +1769,7 @@ def _tier_readiness(tier: Mapping[str, Any], evidence: Mapping[str, Any]) -> dic
         criteria.append(("Cross-system boundary allowlists are explicitly reviewed", bool(evidence.get("boundary_allowlists_reviewed"))))
     if level >= 11:
         criteria.append(("Memory orchestration has active routing metrics", bool(evidence.get("active_routing_metrics"))))
+        criteria.append(("Memory orchestration has explicit route/routing/orchestration operation evidence", bool(evidence.get("has_explicit_routing_operation_event"))))
     if level >= 12:
         criteria.append(("Policy proposals close automatically after human approval and guarded checks", False))
     if level >= 13:
@@ -1813,7 +1814,7 @@ def _orchestration_routing_gaps(evidence_checks: Mapping[str, bool]) -> list[str
         "has_three_or_more_agents": "OpenClaw has at least 3 configured agents.",
         "has_route_binding": "OpenClaw has at least 1 route binding.",
         "has_auto_precheck_profile": "Hermes memory auto-precheck has at least 1 profile.",
-        "has_operation_activity": "Hermes operation ledger has routing, gate, or auto-precheck activity.",
+        "has_explicit_routing_operation_event": "Hermes operation ledger has at least 1 explicit route/routing/orchestration event.",
     }
     return [label for key, label in labels.items() if not evidence_checks.get(key)]
 
@@ -1828,7 +1829,7 @@ def _orchestration_routing_next_actions(gaps: Iterable[str]) -> list[str]:
     if "auto-precheck" in gap_text:
         actions.append("Keep Star Hub pending until the Hermes memory plugin has an existing auto-precheck profile.")
     if "operation ledger" in gap_text:
-        actions.append("Keep Star Hub pending until the Hermes operation ledger contains routing, gate, or auto-precheck events.")
+        actions.append("Keep Star Hub pending until a governed routing event is recorded in the Hermes operation ledger; do not modify config from this tool.")
     if not actions:
         actions.append("Continue monitoring routing metrics read-only; do not widen allowlists or enable external automatic recall.")
     return actions[:5]
