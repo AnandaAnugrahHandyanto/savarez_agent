@@ -44,6 +44,9 @@ logger = logging.getLogger(__name__)
 
 KANBAN_LIST_DEFAULT_LIMIT = 50
 KANBAN_LIST_MAX_LIMIT = 200
+KANBAN_REVIEWS_DEFAULT_LIMIT = 50
+KANBAN_REVIEWS_MAX_LIMIT = 200
+KANBAN_LOG_TAIL_MAX_BYTES = 64 * 1024
 
 
 def _profile_has_kanban_toolset() -> bool:
@@ -202,6 +205,27 @@ def _parse_bool_arg(args: dict, name: str, *, default: bool = False):
     if text in {"false", "0", "no"}:
         return False, None
     return default, f"{name} must be a boolean or 'true'/'false'"
+
+
+def _parse_positive_int_arg(
+    args: dict,
+    name: str,
+    *,
+    default: Optional[int] = None,
+    maximum: Optional[int] = None,
+) -> tuple[Optional[int], Optional[str]]:
+    value = args.get(name)
+    if value is None:
+        return default, None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default, f"{name} must be an integer"
+    if parsed < 1:
+        return default, f"{name} must be >= 1"
+    if maximum is not None and parsed > maximum:
+        return default, f"{name} must be <= {maximum}"
+    return parsed, None
 
 
 def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
@@ -387,6 +411,439 @@ def _handle_list(args: dict, **kw) -> str:
     except Exception as e:
         logger.exception("kanban_list failed")
         return tool_error(f"kanban_list: {e}")
+
+
+def _handle_progress(args: dict, **kw) -> str:
+    """Read a task's progress/evidence snapshot without interrupting it."""
+    guard = _require_orchestrator_tool("kanban_progress")
+    if guard:
+        return guard
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error("task_id is required")
+    log_tail_bytes, int_error = _parse_positive_int_arg(
+        args,
+        "log_tail_bytes",
+        default=None,
+        maximum=KANBAN_LOG_TAIL_MAX_BYTES,
+    )
+    if int_error:
+        return tool_error(int_error)
+    include_children, bool_error = _parse_bool_arg(
+        args,
+        "include_children",
+        default=False,
+    )
+    if bool_error:
+        return tool_error(bool_error)
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            snapshot = kb.task_progress_snapshot(
+                conn,
+                str(tid),
+                log_tail_bytes=log_tail_bytes,
+                include_children=include_children,
+                board=board,
+            )
+            if snapshot is None:
+                return tool_error(f"task {tid} not found")
+            return json.dumps(snapshot.to_dict())
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_progress: {e}")
+    except Exception as e:
+        logger.exception("kanban_progress failed")
+        return tool_error(f"kanban_progress: {e}")
+
+
+def _handle_acceptance(args: dict, **kw) -> str:
+    """Read implementation plus review/test follow-up acceptance evidence."""
+    guard = _require_orchestrator_tool("kanban_acceptance")
+    if guard:
+        return guard
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error("task_id is required")
+    log_tail_bytes, int_error = _parse_positive_int_arg(
+        args,
+        "log_tail_bytes",
+        default=None,
+        maximum=KANBAN_LOG_TAIL_MAX_BYTES,
+    )
+    if int_error:
+        return tool_error(int_error)
+    followup_log_tail_bytes, followup_error = _parse_positive_int_arg(
+        args,
+        "followup_log_tail_bytes",
+        default=None,
+        maximum=KANBAN_LOG_TAIL_MAX_BYTES,
+    )
+    if followup_error:
+        return tool_error(followup_error)
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            payload = kb.task_acceptance_snapshot(
+                conn,
+                str(tid),
+                log_tail_bytes=log_tail_bytes,
+                followup_log_tail_bytes=followup_log_tail_bytes,
+                board=board,
+            )
+            if payload is None:
+                return tool_error(f"task {tid} not found")
+            return json.dumps(payload)
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_acceptance: {e}")
+    except Exception as e:
+        logger.exception("kanban_acceptance failed")
+        return tool_error(f"kanban_acceptance: {e}")
+
+
+def _handle_verify(args: dict, **kw) -> str:
+    """Run configured deterministic acceptance checks."""
+    guard = _require_orchestrator_tool("kanban_verify")
+    if guard:
+        return guard
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error("task_id is required")
+    check_names = args.get("checks")
+    if check_names is not None:
+        if not isinstance(check_names, list):
+            return tool_error("checks must be a list of configured check names")
+        check_names = [str(name) for name in check_names]
+    source_run_id, source_error = _parse_positive_int_arg(
+        args,
+        "source_run_id",
+        default=None,
+        maximum=10**12,
+    )
+    if source_error:
+        return tool_error(source_error)
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            payload = kb.run_acceptance_checks(
+                conn,
+                str(tid),
+                check_names=check_names,
+                source_run_id=source_run_id,
+            )
+            return json.dumps(payload)
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_verify: {e}")
+    except Exception as e:
+        logger.exception("kanban_verify failed")
+        return tool_error(f"kanban_verify: {e}")
+
+
+def _handle_advance_acceptance(args: dict, **kw) -> str:
+    """Advance review/test/verify/approval workflow to the next safe point."""
+    guard = _require_orchestrator_tool("kanban_advance_acceptance")
+    if guard:
+        return guard
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error("task_id is required")
+    dispatch, dispatch_error = _parse_bool_arg(args, "dispatch", default=True)
+    if dispatch_error:
+        return tool_error(dispatch_error)
+    dry_run, dry_run_error = _parse_bool_arg(args, "dry_run", default=False)
+    if dry_run_error:
+        return tool_error(dry_run_error)
+    verify, verify_error = _parse_bool_arg(args, "verify", default=True)
+    if verify_error:
+        return tool_error(verify_error)
+    approve, approve_error = _parse_bool_arg(args, "approve", default=True)
+    if approve_error:
+        return tool_error(approve_error)
+    request_changes_on_failure, request_changes_error = _parse_bool_arg(
+        args,
+        "request_changes_on_failure",
+        default=True,
+    )
+    if request_changes_error:
+        return tool_error(request_changes_error)
+    dispatch_max, dispatch_max_error = _parse_positive_int_arg(
+        args,
+        "dispatch_max",
+        default=None,
+        maximum=64,
+    )
+    if dispatch_max_error:
+        return tool_error(dispatch_max_error)
+    reviewer = args.get("reviewer") or os.environ.get("HERMES_PROFILE") or "agent"
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            payload = kb.advance_acceptance_workflow(
+                conn,
+                str(tid),
+                review_assignee=args.get("review_assignee") or "codex-review",
+                test_assignee=args.get("test_assignee") or "codex-test",
+                dispatch=dispatch,
+                dry_run=dry_run,
+                dispatch_max=dispatch_max,
+                verify=verify,
+                approve=approve,
+                request_changes_on_failure=request_changes_on_failure,
+                reviewer=str(reviewer),
+                summary=args.get("summary"),
+                result=args.get("result"),
+                board=board,
+            )
+            return json.dumps(payload)
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_advance_acceptance: {e}")
+    except Exception as e:
+        logger.exception("kanban_advance_acceptance failed")
+        return tool_error(f"kanban_advance_acceptance: {e}")
+
+
+def _handle_advance_goal(args: dict, **kw) -> str:
+    """Advance a decomposed goal/root task and its worker children."""
+    guard = _require_orchestrator_tool("kanban_advance_goal")
+    if guard:
+        return guard
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error("task_id is required")
+    dispatch, dispatch_error = _parse_bool_arg(args, "dispatch", default=True)
+    if dispatch_error:
+        return tool_error(dispatch_error)
+    dry_run, dry_run_error = _parse_bool_arg(args, "dry_run", default=False)
+    if dry_run_error:
+        return tool_error(dry_run_error)
+    verify, verify_error = _parse_bool_arg(args, "verify", default=True)
+    if verify_error:
+        return tool_error(verify_error)
+    approve, approve_error = _parse_bool_arg(args, "approve", default=True)
+    if approve_error:
+        return tool_error(approve_error)
+    request_changes_on_failure, request_changes_error = _parse_bool_arg(
+        args,
+        "request_changes_on_failure",
+        default=True,
+    )
+    if request_changes_error:
+        return tool_error(request_changes_error)
+    dispatch_max, dispatch_max_error = _parse_positive_int_arg(
+        args,
+        "dispatch_max",
+        default=None,
+        maximum=64,
+    )
+    if dispatch_max_error:
+        return tool_error(dispatch_max_error)
+    reviewer = args.get("reviewer") or os.environ.get("HERMES_PROFILE") or "agent"
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            payload = kb.advance_goal_acceptance_workflow(
+                conn,
+                str(tid),
+                review_assignee=args.get("review_assignee") or "codex-review",
+                test_assignee=args.get("test_assignee") or "codex-test",
+                dispatch=dispatch,
+                dry_run=dry_run,
+                dispatch_max=dispatch_max,
+                verify=verify,
+                approve=approve,
+                request_changes_on_failure=request_changes_on_failure,
+                reviewer=str(reviewer),
+                summary=args.get("summary"),
+                result=args.get("result"),
+                board=board,
+            )
+            return json.dumps(payload)
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_advance_goal: {e}")
+    except Exception as e:
+        logger.exception("kanban_advance_goal failed")
+        return tool_error(f"kanban_advance_goal: {e}")
+
+
+def _handle_reviews(args: dict, **kw) -> str:
+    """List review-required external-worker evidence snapshots."""
+    guard = _require_orchestrator_tool("kanban_reviews")
+    if guard:
+        return guard
+    limit, int_error = _parse_positive_int_arg(
+        args,
+        "limit",
+        default=KANBAN_REVIEWS_DEFAULT_LIMIT,
+        maximum=KANBAN_REVIEWS_MAX_LIMIT,
+    )
+    if int_error:
+        return tool_error(int_error)
+    log_tail_bytes, tail_error = _parse_positive_int_arg(
+        args,
+        "log_tail_bytes",
+        default=None,
+        maximum=KANBAN_LOG_TAIL_MAX_BYTES,
+    )
+    if tail_error:
+        return tool_error(tail_error)
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            snapshots = kb.review_required_snapshots(
+                conn,
+                assignee=args.get("assignee"),
+                tenant=args.get("tenant"),
+                worker_lane=args.get("lane"),
+                limit=limit or KANBAN_REVIEWS_DEFAULT_LIMIT,
+                log_tail_bytes=log_tail_bytes,
+                board=board,
+            )
+            return json.dumps({
+                "tasks": [snapshot.to_dict() for snapshot in snapshots],
+                "count": len(snapshots),
+                "limit": limit,
+            })
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_reviews: {e}")
+    except Exception as e:
+        logger.exception("kanban_reviews failed")
+        return tool_error(f"kanban_reviews: {e}")
+
+
+def _handle_review(args: dict, **kw) -> str:
+    """Approve or request changes for review-required worker evidence."""
+    guard = _require_orchestrator_tool("kanban_review")
+    if guard:
+        return guard
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error("task_id is required")
+    decision = args.get("decision")
+    if not decision:
+        return tool_error("decision is required")
+    reviewer = args.get("reviewer") or os.environ.get("HERMES_PROFILE") or "agent"
+    try:
+        kb, conn = _connect(board=args.get("board"))
+        try:
+            snapshot = kb.review_worker_evidence(
+                conn,
+                str(tid),
+                decision=str(decision),
+                reviewer=str(reviewer),
+                comment=args.get("comment"),
+                result=args.get("result"),
+                summary=args.get("summary"),
+            )
+            return json.dumps(snapshot.to_dict())
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_review: {e}")
+    except Exception as e:
+        logger.exception("kanban_review failed")
+        return tool_error(f"kanban_review: {e}")
+
+
+def _handle_plan_review(args: dict, **kw) -> str:
+    """Plan independent review/test worker tasks from implementation evidence."""
+    guard = _require_orchestrator_tool("kanban_plan_review")
+    if guard:
+        return guard
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error("task_id is required")
+    include_review, review_error = _parse_bool_arg(
+        args,
+        "include_review",
+        default=True,
+    )
+    if review_error:
+        return tool_error(review_error)
+    include_test, test_error = _parse_bool_arg(
+        args,
+        "include_test",
+        default=True,
+    )
+    if test_error:
+        return tool_error(test_error)
+    if not include_review and not include_test:
+        return tool_error("at least one of include_review/include_test must be true")
+    dispatch, dispatch_error = _parse_bool_arg(
+        args,
+        "dispatch",
+        default=False,
+    )
+    if dispatch_error:
+        return tool_error(dispatch_error)
+    dry_run, dry_run_error = _parse_bool_arg(
+        args,
+        "dry_run",
+        default=False,
+    )
+    if dry_run_error:
+        return tool_error(dry_run_error)
+    dispatch_max, dispatch_max_error = _parse_positive_int_arg(
+        args,
+        "dispatch_max",
+        default=None,
+        maximum=64,
+    )
+    if dispatch_max_error:
+        return tool_error(dispatch_max_error)
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            plan = kb.plan_review_followups(
+                conn,
+                str(tid),
+                review_assignee=args.get("review_assignee") or "codex-review",
+                test_assignee=args.get("test_assignee") or "codex-test",
+                include_review=include_review,
+                include_test=include_test,
+                created_by=str(args.get("created_by") or "hermes-review-planner"),
+                board=board,
+            )
+            payload = plan.to_dict()
+            if dispatch:
+                followup_ids = [
+                    task_id
+                    for task_id in (plan.review_task_id, plan.test_task_id)
+                    if task_id
+                ]
+                result = kb.dispatch_once(
+                    conn,
+                    dry_run=dry_run,
+                    max_spawn=dispatch_max,
+                    only_task_ids=followup_ids,
+                    board=board,
+                )
+                payload["dispatch"] = result.to_dict()
+            return json.dumps(payload)
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_plan_review: {e}")
+    except Exception as e:
+        logger.exception("kanban_plan_review failed")
+        return tool_error(f"kanban_plan_review: {e}")
 
 
 def _handle_complete(args: dict, **kw) -> str:
@@ -865,6 +1322,396 @@ KANBAN_LIST_SCHEMA = {
     },
 }
 
+KANBAN_PROGRESS_SCHEMA = {
+    "name": "kanban_progress",
+    "description": (
+        "Read a task's external-worker progress/evidence snapshot without "
+        "claiming, reclaiming, heartbeating, or interrupting the worker. "
+        "Returns task state, latest run summary/metadata, latest progress "
+        "event, latest heartbeat, review-required flag, and optional bounded "
+        "worker-log tail. Orchestrator-only; dispatcher-spawned task workers "
+        "never see this tool."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Task id to inspect.",
+            },
+            "log_tail_bytes": {
+                "type": "integer",
+                "description": (
+                    "Optional worker-log tail bytes to include. Max 65536. "
+                    "Omit unless the bounded evidence needs a small log tail."
+                ),
+            },
+            "include_children": {
+                "type": "boolean",
+                "description": (
+                    "When true, include related child/dependency worker "
+                    "progress summaries for a goal/root task. This is "
+                    "read-only and does not interrupt workers."
+                ),
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id"],
+    },
+}
+
+KANBAN_ACCEPTANCE_SCHEMA = {
+    "name": "kanban_acceptance",
+    "description": (
+        "Read bounded implementation evidence plus planned review/test "
+        "follow-up evidence for a review-required task. Use this before "
+        "approving or requesting changes; it reports approval_allowed, "
+        "recommended_action, follow-up gate state, and never replays full "
+        "external-worker sessions. Orchestrator-only."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Implementation task id to inspect.",
+            },
+            "log_tail_bytes": {
+                "type": "integer",
+                "description": "Optional implementation worker-log tail bytes. Max 65536.",
+            },
+            "followup_log_tail_bytes": {
+                "type": "integer",
+                "description": "Optional per-follow-up worker-log tail bytes. Max 65536.",
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id"],
+    },
+}
+
+KANBAN_VERIFY_SCHEMA = {
+    "name": "kanban_verify",
+    "description": (
+        "Run configured deterministic Hermes-side acceptance checks for a "
+        "Kanban task and write bounded results into task_events. The caller "
+        "may choose configured check names, but cannot pass shell command "
+        "strings. Use this after implementation/review/test worker evidence "
+        "and before kanban_review approve when kanban.acceptance_checks is "
+        "configured. Orchestrator-only."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Implementation task id to verify.",
+            },
+            "checks": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional configured acceptance check names. Omit to run "
+                    "all checks under kanban.acceptance_checks."
+                ),
+            },
+            "source_run_id": {
+                "type": "integer",
+                "description": (
+                    "Optional implementation run id to scope the evidence. "
+                    "Defaults to the latest run."
+                ),
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id"],
+    },
+}
+
+KANBAN_ADVANCE_ACCEPTANCE_SCHEMA = {
+    "name": "kanban_advance_acceptance",
+    "description": (
+        "Advance a review-required external-worker implementation task to "
+        "the next safe control-plane point: plan review/test follow-ups, "
+        "optionally dispatch only those follow-ups, run configured Hermes "
+        "acceptance checks when worker evidence is ready, and approve when "
+        "all gates pass. It never waits for or interrupts running workers "
+        "and never replays the full external-worker session. Orchestrator-only."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Implementation task id to advance.",
+            },
+            "review_assignee": {
+                "type": "string",
+                "description": "Review worker lane. Default codex-review.",
+            },
+            "test_assignee": {
+                "type": "string",
+                "description": "Test worker lane. Default codex-test.",
+            },
+            "dispatch": {
+                "type": "boolean",
+                "description": "Whether to run a scoped dispatcher pass. Default true.",
+            },
+            "dry_run": {
+                "type": "boolean",
+                "description": (
+                    "With dispatch=true, report follow-up spawns without "
+                    "claiming tasks. Default false."
+                ),
+            },
+            "dispatch_max": {
+                "type": "integer",
+                "description": "Scoped follow-up spawn cap. Max 64.",
+            },
+            "verify": {
+                "type": "boolean",
+                "description": "Whether to run configured acceptance checks. Default true.",
+            },
+            "approve": {
+                "type": "boolean",
+                "description": "Whether to approve when all gates pass. Default true.",
+            },
+            "request_changes_on_failure": {
+                "type": "boolean",
+                "description": (
+                    "Whether failed review/test or acceptance gates should "
+                    "request bounded changes on the implementation task. "
+                    "Default true."
+                ),
+            },
+            "reviewer": {
+                "type": "string",
+                "description": "Controller/reviewer identity.",
+            },
+            "summary": {
+                "type": "string",
+                "description": "Approval summary if the task reaches approve.",
+            },
+            "result": {
+                "type": "string",
+                "description": "Task result if the task reaches approve.",
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id"],
+    },
+}
+
+KANBAN_ADVANCE_GOAL_SCHEMA = {
+    "name": "kanban_advance_goal",
+    "description": (
+        "Advance a decomposed goal/root task without interrupting workers: "
+        "dispatch ready child implementation tasks, advance review-required "
+        "children through review/test/acceptance, and complete the root once "
+        "all related children are terminal. Orchestrator-only."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Goal/root task id to advance.",
+            },
+            "review_assignee": {
+                "type": "string",
+                "description": "Review worker lane for child follow-ups. Default codex-review.",
+            },
+            "test_assignee": {
+                "type": "string",
+                "description": "Test worker lane for child follow-ups. Default codex-test.",
+            },
+            "dispatch": {
+                "type": "boolean",
+                "description": "Whether to run scoped dispatcher passes. Default true.",
+            },
+            "dry_run": {
+                "type": "boolean",
+                "description": "With dispatch=true, report spawns without claiming tasks.",
+            },
+            "dispatch_max": {
+                "type": "integer",
+                "description": "Scoped child/follow-up spawn cap. Max 64.",
+            },
+            "verify": {
+                "type": "boolean",
+                "description": "Whether to run configured acceptance checks for children. Default true.",
+            },
+            "approve": {
+                "type": "boolean",
+                "description": "Whether to approve child evidence and complete the root when gates pass.",
+            },
+            "request_changes_on_failure": {
+                "type": "boolean",
+                "description": (
+                    "Whether failed child review/test or acceptance gates "
+                    "should request bounded changes on the child task. "
+                    "Default true."
+                ),
+            },
+            "reviewer": {
+                "type": "string",
+                "description": "Controller/reviewer identity.",
+            },
+            "summary": {
+                "type": "string",
+                "description": "Approval/root completion summary if the workflow reaches approve.",
+            },
+            "result": {
+                "type": "string",
+                "description": "Task result if the workflow reaches approve.",
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id"],
+    },
+}
+
+KANBAN_REVIEWS_SCHEMA = {
+    "name": "kanban_reviews",
+    "description": (
+        "List tasks whose latest worker run is waiting for Hermes review "
+        "(`review.required: true`). Use this as the review queue for "
+        "Codex/external-worker lane handoffs. Returns bounded evidence "
+        "snapshots and never replays the full worker session. Orchestrator-only."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "assignee": {
+                "type": "string",
+                "description": "Optional task assignee filter.",
+            },
+            "tenant": {
+                "type": "string",
+                "description": "Optional tenant/project namespace filter.",
+            },
+            "lane": {
+                "type": "string",
+                "description": "Optional worker lane name filter, e.g. codex-deep.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Optional maximum rows to return (default 50, max 200).",
+            },
+            "log_tail_bytes": {
+                "type": "integer",
+                "description": (
+                    "Optional worker-log tail bytes per task. Max 65536. "
+                    "Omit for compact queue reads."
+                ),
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": [],
+    },
+}
+
+KANBAN_REVIEW_SCHEMA = {
+    "name": "kanban_review",
+    "description": (
+        "Resolve a review-required external-worker handoff from bounded "
+        "evidence. If independent review/test follow-ups were planned, "
+        "`approve` requires those follow-ups to have successful worker "
+        "evidence first, then records the reviewer decision and marks the "
+        "task done. `request_changes` writes a reviewer comment and unblocks "
+        "the task for another worker run. Does not read or replay the full "
+        "Codex session. Orchestrator-only."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Review-required task id.",
+            },
+            "decision": {
+                "type": "string",
+                "enum": ["approve", "request_changes"],
+                "description": "Review decision to apply.",
+            },
+            "reviewer": {
+                "type": "string",
+                "description": "Reviewer identity. Defaults to HERMES_PROFILE or agent.",
+            },
+            "comment": {
+                "type": "string",
+                "description": "Required when decision is request_changes.",
+            },
+            "summary": {
+                "type": "string",
+                "description": "Approval summary stored on the completed review run.",
+            },
+            "result": {
+                "type": "string",
+                "description": "Task result text to store when approving.",
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id", "decision"],
+    },
+}
+
+KANBAN_PLAN_REVIEW_SCHEMA = {
+    "name": "kanban_plan_review",
+    "description": (
+        "Create independent review/test worker tasks from a review-required "
+        "implementation task's bounded evidence. Use this instead of having "
+        "Hermes directly judge large code diffs. Idempotent per source run. "
+        "Orchestrator-only."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Implementation task id currently blocked for review.",
+            },
+            "review_assignee": {
+                "type": "string",
+                "description": "Assignee/lane for the review worker. Default codex-review.",
+            },
+            "test_assignee": {
+                "type": "string",
+                "description": "Assignee/lane for the test worker. Default codex-test.",
+            },
+            "include_review": {
+                "type": "boolean",
+                "description": "Whether to create the review follow-up task. Default true.",
+            },
+            "include_test": {
+                "type": "boolean",
+                "description": "Whether to create the test follow-up task. Default true.",
+            },
+            "created_by": {
+                "type": "string",
+                "description": "created_by value for planned follow-up tasks.",
+            },
+            "dispatch": {
+                "type": "boolean",
+                "description": (
+                    "When true, immediately run one dispatcher pass scoped "
+                    "only to the planned review/test follow-up task ids."
+                ),
+            },
+            "dry_run": {
+                "type": "boolean",
+                "description": "With dispatch=true, report spawns without claiming tasks.",
+            },
+            "dispatch_max": {
+                "type": "integer",
+                "description": "With dispatch=true, cap follow-up spawns. Max 64.",
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id"],
+    },
+}
+
 KANBAN_COMPLETE_SCHEMA = {
     "name": "kanban_complete",
     "description": (
@@ -1231,6 +2078,78 @@ registry.register(
     handler=_handle_list,
     check_fn=_check_kanban_orchestrator_mode,
     emoji="📋",
+)
+
+registry.register(
+    name="kanban_progress",
+    toolset="kanban",
+    schema=KANBAN_PROGRESS_SCHEMA,
+    handler=_handle_progress,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="📈",
+)
+
+registry.register(
+    name="kanban_acceptance",
+    toolset="kanban",
+    schema=KANBAN_ACCEPTANCE_SCHEMA,
+    handler=_handle_acceptance,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="🧾",
+)
+
+registry.register(
+    name="kanban_verify",
+    toolset="kanban",
+    schema=KANBAN_VERIFY_SCHEMA,
+    handler=_handle_verify,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="🧪",
+)
+
+registry.register(
+    name="kanban_advance_acceptance",
+    toolset="kanban",
+    schema=KANBAN_ADVANCE_ACCEPTANCE_SCHEMA,
+    handler=_handle_advance_acceptance,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="⏭",
+)
+
+registry.register(
+    name="kanban_advance_goal",
+    toolset="kanban",
+    schema=KANBAN_ADVANCE_GOAL_SCHEMA,
+    handler=_handle_advance_goal,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="⏩",
+)
+
+registry.register(
+    name="kanban_reviews",
+    toolset="kanban",
+    schema=KANBAN_REVIEWS_SCHEMA,
+    handler=_handle_reviews,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="🔎",
+)
+
+registry.register(
+    name="kanban_review",
+    toolset="kanban",
+    schema=KANBAN_REVIEW_SCHEMA,
+    handler=_handle_review,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="✅",
+)
+
+registry.register(
+    name="kanban_plan_review",
+    toolset="kanban",
+    schema=KANBAN_PLAN_REVIEW_SCHEMA,
+    handler=_handle_plan_review,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="🧪",
 )
 
 registry.register(

@@ -27,6 +27,11 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_swarm as ks
 from hermes_cli.profiles import get_active_profile_name, get_profile_dir, seed_profile_skills
 
+try:
+    import yaml
+except Exception:  # pragma: no cover - yaml is a declared runtime dep.
+    yaml = None  # type: ignore[assignment]
+
 
 # ---------------------------------------------------------------------------
 # Small formatting helpers
@@ -73,6 +78,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "started_at": t.started_at,
         "completed_at": t.completed_at,
         "result": t.result,
+        "max_runtime_seconds": t.max_runtime_seconds,
         "skills": list(t.skills) if t.skills else [],
         "max_retries": t.max_retries,
         "session_id": t.session_id,
@@ -89,6 +95,21 @@ def _run_state_kwargs(args: argparse.Namespace) -> Optional[dict[str, str]]:
     if st is None:
         return {}
     return {"state_type": st, "state_name": sn}
+
+
+def _snapshot_to_dict(snapshot: kb.TaskProgressSnapshot) -> dict[str, Any]:
+    return snapshot.to_dict()
+
+
+def _render_progress_items(items: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for item in items:
+        status = str(item.get("status") or "").strip() or "unknown"
+        text = str(item.get("text") or "").strip()
+        index = item.get("index")
+        prefix = f"{index}. " if index is not None else "- "
+        lines.append(f"{prefix}[{status}] {text}")
+    return lines
 
 
 def _parse_workspace_flag(value: str) -> tuple[str, Optional[str]]:
@@ -349,6 +370,39 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "to skip the brief running-to-blocked transition.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
+    # --- goal bridge ---
+    p_goal = sub.add_parser(
+        "goal",
+        help="Create or inspect a Kanban top-level task for a standing goal",
+    )
+    p_goal.add_argument("goal", help="Goal text / complex objective")
+    p_goal.add_argument("--session", default=None, help="Originating session id")
+    p_goal.add_argument("--assignee", default=None, help="Orchestrator assignee")
+    p_goal.add_argument("--workspace", default="scratch",
+                        help="scratch | worktree | worktree:<path> | dir:<path> "
+                             "(inherited by decomposed child tasks)")
+    p_goal.add_argument("--branch", default=None,
+                        help="Branch name for worktree goal tasks, e.g. wt/t6-wire")
+    p_goal.add_argument("--tenant", default=None, help="Tenant namespace")
+    p_goal.add_argument("--priority", type=int, default=0, help="Priority tiebreaker")
+    p_goal.add_argument("--max-runtime", default=None,
+                        help="Per-task runtime cap inherited by decomposed child tasks")
+    p_goal.add_argument("--max-retries", type=int, default=None,
+                        help="Per-task retry breaker inherited by decomposed child tasks")
+    p_goal.add_argument("--created-by", default="goal", help="Creator recorded on the task")
+    p_goal.add_argument("--idempotency-key", default=None, help="Dedup key for the top-level task")
+    p_goal.add_argument(
+        "--decompose",
+        action="store_true",
+        help="Immediately run the Kanban decomposer on the new triage task",
+    )
+    p_goal.add_argument(
+        "--author",
+        default=None,
+        help="Author name recorded on decomposition audit comments",
+    )
+    p_goal.add_argument("--json", action="store_true", help="Emit JSON output")
+
     # --- swarm ---
     p_swarm = sub.add_parser(
         "swarm",
@@ -420,6 +474,279 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         metavar="VALUE",
         help="With --state-type: keep runs whose column equals this value",
     )
+
+    # --- progress ---
+    p_progress = sub.add_parser(
+        "progress",
+        help="Read a task progress/evidence snapshot without interrupting its worker",
+    )
+    p_progress.add_argument("task_id")
+    p_progress.add_argument("--json", action="store_true")
+    p_progress.add_argument(
+        "--log-tail",
+        type=int,
+        default=None,
+        metavar="BYTES",
+        help="Include the last N bytes of the worker log in the snapshot",
+    )
+    p_progress.add_argument(
+        "--children",
+        action="store_true",
+        help="Include related child/dependency worker progress summaries for goal/root tasks",
+    )
+
+    # --- acceptance ---
+    p_acceptance = sub.add_parser(
+        "acceptance",
+        help="Read bounded implementation and review/test follow-up evidence",
+    )
+    p_acceptance.add_argument("task_id")
+    p_acceptance.add_argument("--json", action="store_true")
+    p_acceptance.add_argument(
+        "--log-tail",
+        type=int,
+        default=None,
+        metavar="BYTES",
+        help="Include the last N bytes of the implementation worker log",
+    )
+    p_acceptance.add_argument(
+        "--followup-log-tail",
+        type=int,
+        default=None,
+        metavar="BYTES",
+        help="Include the last N bytes of each follow-up worker log",
+    )
+
+    # --- verify ---
+    p_verify = sub.add_parser(
+        "verify",
+        help="Run configured deterministic acceptance checks for a task",
+    )
+    p_verify.add_argument("task_id")
+    p_verify.add_argument(
+        "checks",
+        nargs="*",
+        help="Configured check names; omitted means all configured checks",
+    )
+    p_verify.add_argument(
+        "--source-run-id",
+        type=int,
+        default=None,
+        help="Implementation run id this verification belongs to",
+    )
+    p_verify.add_argument("--json", action="store_true")
+
+    # --- advance-acceptance ---
+    p_advance = sub.add_parser(
+        "advance-acceptance",
+        help="Advance review/test/verify/approve workflow to the next safe point",
+    )
+    p_advance.add_argument("task_id")
+    p_advance.add_argument("--review-assignee", default="codex-review")
+    p_advance.add_argument("--test-assignee", default="codex-test")
+    p_advance.add_argument(
+        "--no-dispatch",
+        action="store_true",
+        help="Create follow-ups but do not dispatch external workers",
+    )
+    p_advance.add_argument(
+        "--dispatch-max",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Cap scoped follow-up worker spawns",
+    )
+    p_advance.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="With dispatch enabled, report follow-up spawns without claiming tasks",
+    )
+    p_advance.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="Do not run configured Hermes acceptance checks",
+    )
+    p_advance.add_argument(
+        "--no-approve",
+        action="store_true",
+        help="Stop before approving even if all gates are satisfied",
+    )
+    p_advance.add_argument(
+        "--no-request-changes",
+        action="store_true",
+        help=(
+            "When review/test or acceptance gates fail, report the blocked "
+            "gate instead of requesting changes on the implementation task"
+        ),
+    )
+    p_advance.add_argument(
+        "--reviewer",
+        default=None,
+        help="Reviewer/controller name for planned tasks and approval",
+    )
+    p_advance.add_argument(
+        "--summary",
+        default=None,
+        help="Approval summary when the workflow reaches approve",
+    )
+    p_advance.add_argument(
+        "--result",
+        default=None,
+        help="Task result when the workflow reaches approve",
+    )
+    p_advance.add_argument("--json", action="store_true")
+
+    # --- advance-goal ---
+    p_advance_goal = sub.add_parser(
+        "advance-goal",
+        help="Advance a decomposed goal/root task and its worker children",
+    )
+    p_advance_goal.add_argument("task_id")
+    p_advance_goal.add_argument("--review-assignee", default="codex-review")
+    p_advance_goal.add_argument("--test-assignee", default="codex-test")
+    p_advance_goal.add_argument(
+        "--no-dispatch",
+        action="store_true",
+        help="Do not dispatch ready child or follow-up workers",
+    )
+    p_advance_goal.add_argument(
+        "--dispatch-max",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Cap scoped child/follow-up worker spawns",
+    )
+    p_advance_goal.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="With dispatch enabled, report spawns without claiming tasks",
+    )
+    p_advance_goal.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="Do not run configured Hermes acceptance checks for children",
+    )
+    p_advance_goal.add_argument(
+        "--no-approve",
+        action="store_true",
+        help="Stop before approving children or completing the root",
+    )
+    p_advance_goal.add_argument(
+        "--no-request-changes",
+        action="store_true",
+        help=(
+            "When child review/test or acceptance gates fail, report the "
+            "blocked gate instead of requesting changes"
+        ),
+    )
+    p_advance_goal.add_argument(
+        "--reviewer",
+        default=None,
+        help="Reviewer/controller name for planned tasks and approvals",
+    )
+    p_advance_goal.add_argument(
+        "--summary",
+        default=None,
+        help="Approval summary when child/root workflows reach approve",
+    )
+    p_advance_goal.add_argument(
+        "--result",
+        default=None,
+        help="Task result when child/root workflows reach approve",
+    )
+    p_advance_goal.add_argument("--json", action="store_true")
+
+    # --- reviews ---
+    p_reviews = sub.add_parser(
+        "reviews",
+        help="List tasks with external-worker evidence waiting for Hermes review",
+    )
+    p_reviews.add_argument("--assignee", default=None)
+    p_reviews.add_argument("--tenant", default=None)
+    p_reviews.add_argument("--lane", default=None, help="Filter by worker lane name")
+    p_reviews.add_argument("--limit", type=int, default=100)
+    p_reviews.add_argument(
+        "--log-tail",
+        type=int,
+        default=None,
+        metavar="BYTES",
+        help="Include the last N bytes of each worker log in JSON output",
+    )
+    p_reviews.add_argument("--json", action="store_true")
+
+    # --- review ---
+    p_review = sub.add_parser(
+        "review",
+        help="Approve or request changes for review-required worker evidence",
+    )
+    p_review.add_argument("task_id")
+    p_review.add_argument(
+        "decision",
+        choices=("approve", "request-changes", "request_changes"),
+    )
+    p_review.add_argument(
+        "--reviewer",
+        default=None,
+        help="Reviewer name (default: active profile or user)",
+    )
+    p_review.add_argument(
+        "--comment",
+        default=None,
+        help="Review comment; required for request-changes",
+    )
+    p_review.add_argument(
+        "--result",
+        default=None,
+        help="Result text to store when approving. Defaults to the approval summary.",
+    )
+    p_review.add_argument(
+        "--summary",
+        default=None,
+        help="Approval summary stored as the completed review run summary.",
+    )
+    p_review.add_argument("--json", action="store_true")
+
+    # --- plan-review ---
+    p_plan_review = sub.add_parser(
+        "plan-review",
+        help="Create independent review/test worker tasks from review-required evidence",
+    )
+    p_plan_review.add_argument("task_id")
+    p_plan_review.add_argument("--review-assignee", default="codex-review")
+    p_plan_review.add_argument("--test-assignee", default="codex-test")
+    p_plan_review.add_argument(
+        "--review-only",
+        action="store_true",
+        help="Create only the review follow-up task",
+    )
+    p_plan_review.add_argument(
+        "--test-only",
+        action="store_true",
+        help="Create only the test follow-up task",
+    )
+    p_plan_review.add_argument(
+        "--created-by",
+        default="hermes-review-planner",
+        help="created_by value for the follow-up tasks",
+    )
+    p_plan_review.add_argument(
+        "--dispatch",
+        action="store_true",
+        help="Immediately run one dispatcher pass for the planned follow-up tasks only",
+    )
+    p_plan_review.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="With --dispatch, report which follow-up tasks would be spawned without claiming",
+    )
+    p_plan_review.add_argument(
+        "--dispatch-max",
+        type=int,
+        default=None,
+        metavar="N",
+        help="With --dispatch, cap the number of follow-up workers spawned",
+    )
+    p_plan_review.add_argument("--json", action="store_true")
 
     # --- assign ---
     p_assign = sub.add_parser("assign", help="Assign or reassign a task")
@@ -702,6 +1029,43 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_asg.add_argument("--json", action="store_true")
 
+    # --- worker-lanes ---
+    p_lanes = sub.add_parser(
+        "worker-lanes",
+        aliases=["lanes"],
+        help="List registered external worker lanes and active worker instances",
+    )
+    p_lanes.add_argument("--json", action="store_true")
+
+    # --- worker-lane-request ---
+    p_lane_req = sub.add_parser(
+        "worker-lane-request",
+        aliases=["lane-request"],
+        help="Validate and optionally enable a skill-generated worker lane request",
+    )
+    p_lane_req.add_argument(
+        "path",
+        nargs="?",
+        default="-",
+        help="JSON/YAML file containing worker_lane_request, or '-' for stdin",
+    )
+    p_lane_req.add_argument(
+        "--enable",
+        action="store_true",
+        help="Enable the validated request in the current process registry",
+    )
+    p_lane_req.add_argument(
+        "--persist",
+        action="store_true",
+        help="Persist the sanitized lane under kanban.worker_lanes in config.yaml",
+    )
+    p_lane_req.add_argument(
+        "--replace",
+        action="store_true",
+        help="Replace an existing lane with the same name",
+    )
+    p_lane_req.add_argument("--json", action="store_true")
+
     # --- context --- (for spawned workers)
     p_ctx = sub.add_parser(
         "context",
@@ -881,10 +1245,19 @@ def kanban_command(args: argparse.Namespace) -> int:
     handlers = {
         "init":     _cmd_init,
         "create":   _cmd_create,
+        "goal":     _cmd_goal,
         "swarm":    _cmd_swarm,
         "list":     _cmd_list,
         "ls":       _cmd_list,
         "show":     _cmd_show,
+        "progress": _cmd_progress,
+        "acceptance": _cmd_acceptance,
+        "verify": _cmd_verify,
+        "advance-acceptance": _cmd_advance_acceptance,
+        "advance-goal": _cmd_advance_goal,
+        "reviews":  _cmd_reviews,
+        "review":   _cmd_review,
+        "plan-review": _cmd_plan_review,
         "assign":   _cmd_assign,
         "reclaim":  _cmd_reclaim,
         "reassign": _cmd_reassign,
@@ -909,6 +1282,10 @@ def kanban_command(args: argparse.Namespace) -> int:
         "runs":     _cmd_runs,
         "heartbeat": _cmd_heartbeat,
         "assignees": _cmd_assignees,
+        "worker-lanes": _cmd_worker_lanes,
+        "lanes": _cmd_worker_lanes,
+        "worker-lane-request": _cmd_worker_lane_request,
+        "lane-request": _cmd_worker_lane_request,
         "notify-subscribe":   _cmd_notify_subscribe,
         "notify-list":        _cmd_notify_list,
         "notify-unsubscribe": _cmd_notify_unsubscribe,
@@ -1254,12 +1631,132 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
         print("(no assignees — create a profile with `hermes -p <name> setup`)")
         return 0
     # Header
-    print(f"{'NAME':20s}  {'ON DISK':8s}  COUNTS")
+    print(f"{'NAME':20s}  {'TYPE':14s}  COUNTS")
     for entry in data:
-        on_disk = "yes" if entry["on_disk"] else "no"
+        if entry.get("worker_lane"):
+            entry_type = entry.get("worker_kind") or "worker_lane"
+        else:
+            entry_type = "profile" if entry["on_disk"] else "unknown"
         counts = entry["counts"] or {}
         count_str = ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "(idle)"
-        print(f"{entry['name']:20s}  {on_disk:8s}  {count_str}")
+        print(f"{entry['name']:20s}  {entry_type:14s}  {count_str}")
+    return 0
+
+
+def _cmd_worker_lanes(args: argparse.Namespace) -> int:
+    with kb.connect() as conn:
+        lanes = [lane.to_dict() for lane in kb.worker_lane_statuses(conn)]
+    if getattr(args, "json", False):
+        print(json.dumps(lanes, indent=2, ensure_ascii=False))
+        return 0
+    if not lanes:
+        print("(no worker lanes registered)")
+        return 0
+    print(f"{'LANE':20s}  {'KIND':12s}  {'ACTIVE':>8s}  {'CAP':>5s}  COUNTS")
+    for lane in lanes:
+        counts = lane.get("counts") or {}
+        count_str = ", ".join(
+            f"{k}={v}" for k, v in sorted(counts.items())
+        ) or "(idle)"
+        max_concurrency = lane.get("max_concurrency")
+        active_count = int(lane.get("active_count") or 0)
+        cap = "-" if max_concurrency is None else str(max_concurrency)
+        print(
+            f"{lane.get('name', '-')[:20]:20s}  "
+            f"{lane.get('kind', '-')[:12]:12s}  "
+            f"{active_count:8d}  {cap:>5s}  {count_str}"
+        )
+        for inst in lane.get("active") or []:
+            run_id = inst.get("run_id") or "-"
+            pid = inst.get("worker_pid") or "-"
+            hb = _fmt_ts(inst["last_heartbeat_at"]) if inst.get("last_heartbeat_at") else "-"
+            model = inst.get("model") or (lane.get("config") or {}).get("model") or "-"
+            print(
+                f"  - {inst.get('task_id', '-'):<10s} "
+                f"run={run_id} pid={pid} model={model} heartbeat={hb}"
+            )
+    return 0
+
+
+def _load_lane_request_payload(path: str) -> dict[str, Any]:
+    raw_path = (path or "-").strip()
+    if raw_path == "-":
+        text = sys.stdin.read()
+    else:
+        text = Path(raw_path).expanduser().read_text(encoding="utf-8")
+    if not text.strip():
+        raise ValueError("worker lane request input is empty")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        if yaml is None:
+            raise ValueError("worker lane request is not JSON and PyYAML is unavailable")
+        data = yaml.safe_load(text)
+    if not isinstance(data, dict):
+        raise ValueError("worker lane request input must be a mapping")
+    req = data.get("worker_lane_request", data)
+    if not isinstance(req, dict):
+        raise ValueError("worker_lane_request must be a mapping")
+    return req
+
+
+def _cmd_worker_lane_request(args: argparse.Namespace) -> int:
+    from hermes_cli.worker_lanes import (
+        enable_worker_lane_request,
+        validate_worker_lane_request,
+    )
+
+    try:
+        req = _load_lane_request_payload(args.path)
+        valid = validate_worker_lane_request(req)
+    except Exception as exc:
+        print(f"kanban worker-lane-request: {exc}", file=sys.stderr)
+        return 1
+
+    enabled = False
+    lane_info = None
+    if getattr(args, "enable", False) or getattr(args, "persist", False):
+        try:
+            lane = enable_worker_lane_request(
+                req,
+                persist=bool(getattr(args, "persist", False)),
+                replace=bool(getattr(args, "replace", False)),
+            )
+        except Exception as exc:
+            print(f"kanban worker-lane-request: {exc}", file=sys.stderr)
+            return 1
+        enabled = True
+        lane_info = {
+            "name": lane.name,
+            "kind": lane.kind,
+            "source": lane.source,
+            "success_policy": lane.success_policy,
+            "max_concurrency": lane.max_concurrency,
+        }
+
+    payload = {
+        "valid": True,
+        "enabled": enabled,
+        "persisted": bool(getattr(args, "persist", False)),
+        "lane": lane_info,
+        "config": valid,
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    status = "enabled" if enabled else "validated"
+    if payload["persisted"]:
+        status += " and persisted"
+    print(f"Worker lane request {status}: {valid['name']}")
+    print(f"  type: {valid['type']}")
+    if valid.get("model"):
+        print(f"  model: {valid['model']}")
+    print(f"  sandbox: {valid['sandbox']}")
+    print(f"  approval: {valid['approval']}")
+    print(f"  max_concurrency: {valid['max_concurrency']}")
+    print(f"  success_policy: {valid['success_policy']}")
+    if not enabled:
+        print("  pass --enable to register it, or --persist to write config.yaml")
     return 0
 
 
@@ -1324,6 +1821,106 @@ def _cmd_create(args: argparse.Namespace) -> int:
             if not running and message:
                 print(f"\n⚠  {message}", file=sys.stderr)
     return 0
+
+
+def _cmd_goal(args: argparse.Namespace) -> int:
+    from hermes_cli.goals import create_kanban_task_from_goal
+
+    try:
+        ws_kind, ws_path = _parse_workspace_flag(getattr(args, "workspace", "scratch"))
+        branch_name = _parse_branch_flag(getattr(args, "branch", None))
+    except argparse.ArgumentTypeError as exc:
+        print(f"kanban goal: {exc}", file=sys.stderr)
+        return 2
+    if branch_name and ws_kind != "worktree":
+        print("kanban goal: --branch is only valid with --workspace worktree", file=sys.stderr)
+        return 2
+    try:
+        max_runtime = _parse_duration(getattr(args, "max_runtime", None))
+    except ValueError as exc:
+        print(f"kanban goal: --max-runtime: {exc}", file=sys.stderr)
+        return 2
+    max_retries = getattr(args, "max_retries", None)
+    if max_retries is not None and max_retries < 1:
+        print(
+            f"kanban goal: --max-retries must be >= 1 (got {max_retries})",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        task_id = create_kanban_task_from_goal(
+            args.goal,
+            session_id=getattr(args, "session", None),
+            assignee=getattr(args, "assignee", None),
+            tenant=getattr(args, "tenant", None),
+            priority=int(getattr(args, "priority", 0) or 0),
+            workspace_kind=ws_kind,
+            workspace_path=ws_path,
+            branch_name=branch_name,
+            max_runtime_seconds=max_runtime,
+            max_retries=max_retries,
+            board=getattr(args, "board", None),
+            created_by=getattr(args, "created_by", None) or "goal",
+            idempotency_key=getattr(args, "idempotency_key", None),
+        )
+    except ValueError as exc:
+        print(f"kanban goal: {exc}", file=sys.stderr)
+        return 2
+
+    outcome = None
+    if getattr(args, "decompose", False):
+        try:
+            from hermes_cli.kanban_decompose import decompose_task
+
+            outcome = decompose_task(
+                task_id,
+                author=getattr(args, "author", None) or getattr(args, "created_by", None) or "goal",
+            )
+        except Exception as exc:
+            print(f"kanban goal: decomposer error: {exc}", file=sys.stderr)
+            return 1
+
+    with kb.connect(board=getattr(args, "board", None)) as conn:
+        task = kb.get_task(conn, task_id)
+        linked_child_ids = kb.child_ids(conn, task_id)
+    created_child_ids = (
+        list(outcome.child_ids or [])
+        if outcome is not None
+        else linked_child_ids
+    )
+    payload = {
+        "task_id": task_id,
+        "task": _task_to_dict(task) if task else None,
+        "decompose": (
+            None
+            if outcome is None
+            else {
+                "ok": outcome.ok,
+                "reason": outcome.reason,
+                "fanout": outcome.fanout,
+                "child_ids": outcome.child_ids or [],
+                "new_title": outcome.new_title,
+            }
+        ),
+        "child_ids": created_child_ids,
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0 if outcome is None or outcome.ok else 1
+
+    if task is None:
+        print(f"Goal task {task_id} created, but could not be reloaded.")
+    else:
+        print(f"Goal task: {task_id}  ({task.status}, assignee={task.assignee or '-'})")
+    if outcome is not None:
+        status = "decomposed" if outcome.ok else "decompose failed"
+        print(f"Decompose: {status} — {outcome.reason}")
+        if outcome.child_ids:
+            print("Children: " + ", ".join(outcome.child_ids))
+    else:
+        print("Next: run `hermes kanban decompose {}` to create child tasks.".format(task_id))
+    return 0 if outcome is None or outcome.ok else 1
 
 
 def _cmd_swarm(args: argparse.Namespace) -> int:
@@ -1571,6 +2168,377 @@ def _cmd_show(args: argparse.Namespace) -> int:
                 print(f"        → {r.summary.splitlines()[0][:160]}")
             if r.error:
                 print(f"        ! {r.error.splitlines()[0][:160]}")
+    return 0
+
+
+def _cmd_progress(args: argparse.Namespace) -> int:
+    with kb.connect() as conn:
+        snapshot = kb.task_progress_snapshot(
+            conn,
+            args.task_id,
+            log_tail_bytes=getattr(args, "log_tail", None),
+            include_children=bool(getattr(args, "children", False)),
+        )
+    if snapshot is None:
+        print(f"no such task: {args.task_id}", file=sys.stderr)
+        return 1
+    payload = _snapshot_to_dict(snapshot)
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    task = payload["task"]
+    run = payload.get("run") or {}
+    print(f"Task {task['id']}: {task['title']}")
+    print(f"  status:    {task['status']}")
+    print(f"  assignee:  {task.get('assignee') or '-'}")
+    print(f"  run:       {run.get('id') or '-'} ({run.get('outcome') or run.get('status') or 'no run'})")
+    if task.get("worker_pid"):
+        print(f"  worker:    pid={task['worker_pid']}")
+    if payload.get("last_heartbeat_event"):
+        hb = payload["last_heartbeat_event"]
+        print(f"  heartbeat: {_fmt_ts(hb['created_at'])}")
+    progress = payload.get("worker_progress") or {}
+    items = progress.get("items") if isinstance(progress, dict) else None
+    if items:
+        print("\nProgress:")
+        for line in _render_progress_items(items):
+            print(f"  {line}")
+    if payload.get("review_required"):
+        print("\nReview: required")
+    verification = payload.get("verification") or {}
+    commands = verification.get("commands") if isinstance(verification, dict) else None
+    if commands:
+        print("\nVerification:")
+        for cmd in commands:
+            print(f"  - {cmd}")
+    worker_lane = payload.get("worker_lane") or {}
+    if worker_lane:
+        lane = worker_lane.get("name") or worker_lane.get("worker_lane")
+        exit_code = worker_lane.get("exit_code")
+        timed_out = worker_lane.get("timed_out")
+        print(f"\nWorker lane: {lane or '-'} exit_code={exit_code} timed_out={timed_out}")
+    last_event = payload.get("last_event")
+    if last_event:
+        print(f"Last event: {last_event['kind']} at {_fmt_ts(last_event['created_at'])}")
+    if payload.get("worker_log_tail"):
+        print("\nWorker log tail:")
+        sys.stdout.write(payload["worker_log_tail"])
+        if not payload["worker_log_tail"].endswith("\n"):
+            sys.stdout.write("\n")
+    child_summary = payload.get("child_summary") or {}
+    children = payload.get("children") or []
+    if child_summary:
+        print("\nChildren:")
+        print(
+            f"  total={child_summary.get('total', 0)} "
+            f"done={child_summary.get('done', 0)} "
+            f"running={child_summary.get('running', 0)} "
+            f"review_required={child_summary.get('review_required', 0)}"
+        )
+        for child in children:
+            ctask = child.get("task") or {}
+            lane_meta = child.get("worker_lane") or {}
+            lane = lane_meta.get("name") or ctask.get("assignee") or "-"
+            run = child.get("run") or {}
+            summary = (run.get("summary") or "").splitlines()[0]
+            print(
+                f"  - {ctask.get('id', '-')} "
+                f"{ctask.get('status', '-')} @{lane}: "
+                f"{ctask.get('title', '')[:80]}"
+            )
+            progress = child.get("worker_progress") or {}
+            items = progress.get("items") if isinstance(progress, dict) else None
+            if items:
+                rendered = "; ".join(_render_progress_items(items[:3]))
+                print(f"      progress: {rendered[:160]}")
+            if child.get("review_required"):
+                print("      review: required")
+            if summary:
+                print(f"      summary: {summary[:160]}")
+    return 0
+
+
+def _cmd_acceptance(args: argparse.Namespace) -> int:
+    with kb.connect() as conn:
+        payload = kb.task_acceptance_snapshot(
+            conn,
+            args.task_id,
+            log_tail_bytes=getattr(args, "log_tail", None),
+            followup_log_tail_bytes=getattr(args, "followup_log_tail", None),
+        )
+    if payload is None:
+        print(f"no such task: {args.task_id}", file=sys.stderr)
+        return 1
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    task = (payload.get("implementation") or {}).get("task") or {}
+    gate = payload.get("review_followup_gate") or {}
+    print(f"Acceptance {task.get('id', args.task_id)}: {task.get('title', '')}")
+    print(f"  status:             {task.get('status', '-')}")
+    print(f"  recommended_action: {payload.get('recommended_action')}")
+    print(f"  approval_allowed:   {payload.get('approval_allowed')}")
+    if gate:
+        print(
+            "  followup_gate:      "
+            f"ready={gate.get('ready')} "
+            f"satisfied={gate.get('satisfied', 0)}/{gate.get('required', 0)}"
+        )
+        for reason in gate.get("blocking_reasons") or []:
+            print(f"    - {reason}")
+    followups = payload.get("followups") or []
+    if followups:
+        print("  followups:")
+        for item in followups:
+            snap = item.get("snapshot") or {}
+            ftask = snap.get("task") or {}
+            gate_item = item.get("gate_item") or {}
+            print(
+                f"    - {item.get('purpose')}: {item.get('task_id')} "
+                f"{ftask.get('status', '-')} state={gate_item.get('state', '-')}"
+            )
+    return 0
+
+
+def _cmd_verify(args: argparse.Namespace) -> int:
+    try:
+        with kb.connect() as conn:
+            payload = kb.run_acceptance_checks(
+                conn,
+                args.task_id,
+                check_names=list(getattr(args, "checks", None) or []) or None,
+                source_run_id=getattr(args, "source_run_id", None),
+            )
+    except ValueError as exc:
+        print(f"kanban verify: {exc}", file=sys.stderr)
+        return 2
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    gate = payload.get("acceptance_check_gate") or {}
+    print(f"Acceptance checks for {args.task_id}:")
+    for item in payload.get("checks") or []:
+        state = "passed" if item.get("passed") else "failed"
+        extra = ""
+        if item.get("timed_out"):
+            extra = " timed_out"
+        elif item.get("error"):
+            extra = f" {item.get('error')}"
+        print(
+            f"  - {item.get('name')}: {state} "
+            f"exit={item.get('exit_code')} duration_ms={item.get('duration_ms')}{extra}"
+        )
+    if gate:
+        print(
+            "  gate: "
+            f"ready={gate.get('ready')} "
+            f"satisfied={gate.get('satisfied', 0)}/{gate.get('required', 0)}"
+        )
+        for reason in gate.get("blocking_reasons") or []:
+            print(f"    - {reason}")
+    return 0
+
+
+def _cmd_advance_acceptance(args: argparse.Namespace) -> int:
+    reviewer = getattr(args, "reviewer", None) or _profile_author()
+    try:
+        with kb.connect() as conn:
+            payload = kb.advance_acceptance_workflow(
+                conn,
+                args.task_id,
+                review_assignee=getattr(args, "review_assignee", None),
+                test_assignee=getattr(args, "test_assignee", None),
+                dispatch=not bool(getattr(args, "no_dispatch", False)),
+                dry_run=bool(getattr(args, "dry_run", False)),
+                dispatch_max=getattr(args, "dispatch_max", None),
+                verify=not bool(getattr(args, "no_verify", False)),
+                approve=not bool(getattr(args, "no_approve", False)),
+                request_changes_on_failure=not bool(
+                    getattr(args, "no_request_changes", False)
+                ),
+                reviewer=reviewer,
+                summary=getattr(args, "summary", None),
+                result=getattr(args, "result", None),
+            )
+    except ValueError as exc:
+        print(f"kanban advance-acceptance: {exc}", file=sys.stderr)
+        return 2
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    final = payload.get("final") or {}
+    print(f"Advanced acceptance for {args.task_id}:")
+    if not payload.get("steps"):
+        print("  - no action")
+    for step in payload.get("steps") or []:
+        print(f"  - {step.get('kind')}")
+    print(f"  recommended_action: {final.get('recommended_action')}")
+    print(f"  approval_allowed:   {final.get('approval_allowed')}")
+    impl_task = ((final.get("implementation") or {}).get("task") or {})
+    print(f"  status:             {impl_task.get('status', '-')}")
+    return 0
+
+
+def _cmd_advance_goal(args: argparse.Namespace) -> int:
+    reviewer = getattr(args, "reviewer", None) or _profile_author()
+    try:
+        with kb.connect() as conn:
+            payload = kb.advance_goal_acceptance_workflow(
+                conn,
+                args.task_id,
+                review_assignee=getattr(args, "review_assignee", None),
+                test_assignee=getattr(args, "test_assignee", None),
+                dispatch=not bool(getattr(args, "no_dispatch", False)),
+                dry_run=bool(getattr(args, "dry_run", False)),
+                dispatch_max=getattr(args, "dispatch_max", None),
+                verify=not bool(getattr(args, "no_verify", False)),
+                approve=not bool(getattr(args, "no_approve", False)),
+                request_changes_on_failure=not bool(
+                    getattr(args, "no_request_changes", False)
+                ),
+                reviewer=reviewer,
+                summary=getattr(args, "summary", None),
+                result=getattr(args, "result", None),
+            )
+    except ValueError as exc:
+        print(f"kanban advance-goal: {exc}", file=sys.stderr)
+        return 2
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    final = payload.get("final") or {}
+    root_task = final.get("task") or {}
+    child_summary = final.get("child_summary") or {}
+    print(f"Advanced goal for {args.task_id}:")
+    if not payload.get("steps"):
+        print("  - no action")
+    for step in payload.get("steps") or []:
+        print(f"  - {step.get('kind')}")
+    print(f"  status:             {root_task.get('status', '-')}")
+    print(f"  children:           {child_summary.get('done', 0)}/{child_summary.get('total', 0)} done")
+    if payload.get("incomplete_children"):
+        print(f"  incomplete:         {len(payload.get('incomplete_children') or [])}")
+    return 0
+
+
+def _cmd_reviews(args: argparse.Namespace) -> int:
+    with kb.connect() as conn:
+        snapshots = kb.review_required_snapshots(
+            conn,
+            assignee=getattr(args, "assignee", None),
+            tenant=getattr(args, "tenant", None),
+            worker_lane=getattr(args, "lane", None),
+            limit=getattr(args, "limit", 100),
+            log_tail_bytes=getattr(args, "log_tail", None),
+        )
+    payload = [_snapshot_to_dict(snapshot) for snapshot in snapshots]
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    if not payload:
+        print("(no review-required worker lane tasks)")
+        return 0
+    print(f"{'TASK':10s}  {'LANE':16s}  {'ASSIGNEE':16s}  {'RUN':>5s}  SUMMARY")
+    for item in payload:
+        task = item.get("task") or {}
+        run = item.get("run") or {}
+        lane_meta = item.get("worker_lane") or {}
+        lane = lane_meta.get("name") or lane_meta.get("worker_lane") or "-"
+        summary = (run.get("summary") or "").splitlines()[0] if run else ""
+        if not summary:
+            review = (item.get("evidence") or {}).get("review") or {}
+            summary = review.get("reason") if isinstance(review, dict) else ""
+        print(
+            f"{task.get('id', '-'):10s}  {lane[:16]:16s}  "
+            f"{(task.get('assignee') or '-')[:16]:16s}  "
+            f"{str(run.get('id') or '-'):>5s}  {summary[:120]}"
+        )
+    print("\nUse `hermes kanban progress <task_id> --json` for full bounded evidence.")
+    return 0
+
+
+def _cmd_review(args: argparse.Namespace) -> int:
+    decision = str(getattr(args, "decision", "")).replace("-", "_")
+    reviewer = getattr(args, "reviewer", None) or _profile_author()
+    try:
+        with kb.connect() as conn:
+            snapshot = kb.review_worker_evidence(
+                conn,
+                args.task_id,
+                decision=decision,
+                reviewer=reviewer,
+                comment=getattr(args, "comment", None),
+                result=getattr(args, "result", None),
+                summary=getattr(args, "summary", None),
+            )
+    except ValueError as exc:
+        print(f"kanban: {exc}", file=sys.stderr)
+        return 2
+    payload = _snapshot_to_dict(snapshot)
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    if decision == "approve":
+        print(f"Approved {args.task_id}; task is now {snapshot.task.status}")
+    else:
+        print(f"Requested changes for {args.task_id}; task is now {snapshot.task.status}")
+    return 0
+
+
+def _cmd_plan_review(args: argparse.Namespace) -> int:
+    review_only = bool(getattr(args, "review_only", False))
+    test_only = bool(getattr(args, "test_only", False))
+    if review_only and test_only:
+        print("kanban plan-review: pass at most one of --review-only/--test-only", file=sys.stderr)
+        return 2
+    try:
+        with kb.connect() as conn:
+            plan = kb.plan_review_followups(
+                conn,
+                args.task_id,
+                review_assignee=getattr(args, "review_assignee", None),
+                test_assignee=getattr(args, "test_assignee", None),
+                include_review=not test_only,
+                include_test=not review_only,
+                created_by=getattr(args, "created_by", None) or "hermes-review-planner",
+            )
+            dispatch_result = None
+            if getattr(args, "dispatch", False):
+                followup_ids = [
+                    tid for tid in (plan.review_task_id, plan.test_task_id) if tid
+                ]
+                dispatch_result = kb.dispatch_once(
+                    conn,
+                    dry_run=bool(getattr(args, "dry_run", False)),
+                    max_spawn=getattr(args, "dispatch_max", None),
+                    only_task_ids=followup_ids,
+                )
+    except ValueError as exc:
+        print(f"kanban plan-review: {exc}", file=sys.stderr)
+        return 2
+    payload = plan.to_dict()
+    if dispatch_result is not None:
+        payload["dispatch"] = dispatch_result.to_dict()
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    print(
+        f"Planned review follow-ups for {plan.source_task_id} "
+        f"(run {plan.source_run_id})"
+    )
+    if plan.review_task_id:
+        state = "existing" if plan.review_task_id in plan.existing else "created"
+        print(f"  review: {plan.review_task_id} @{plan.review_assignee} ({state})")
+    if plan.test_task_id:
+        state = "existing" if plan.test_task_id in plan.existing else "created"
+        print(f"  test:   {plan.test_task_id} @{plan.test_assignee} ({state})")
+    if dispatch_result is not None:
+        print(f"  dispatched: {len(dispatch_result.spawned)}")
+        for tid, who, ws in dispatch_result.spawned:
+            tag = " (dry)" if getattr(args, "dry_run", False) else ""
+            print(f"    - {tid} -> {who} @ {ws or '-'}{tag}")
     return 0
 
 
@@ -2010,20 +2978,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
         )
     if getattr(args, "json", False):
-        print(json.dumps({
-            "reclaimed": res.reclaimed,
-            "crashed": res.crashed,
-            "timed_out": res.timed_out,
-            "stale": res.stale,
-            "auto_blocked": res.auto_blocked,
-            "promoted": res.promoted,
-            "spawned": [
-                {"task_id": tid, "assignee": who, "workspace": ws}
-                for (tid, who, ws) in res.spawned
-            ],
-            "skipped_unassigned": res.skipped_unassigned,
-            "skipped_nonspawnable": res.skipped_nonspawnable,
-        }, indent=2))
+        print(json.dumps(res.to_dict(), indent=2))
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
     print(f"Crashed:      {len(res.crashed)}")
@@ -2050,6 +3005,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
             f"{', '.join(res.skipped_nonspawnable)}"
         )
+    if res.skipped_concurrency:
+        print(f"Skipped (lane concurrency): {', '.join(res.skipped_concurrency)}")
     return 0
 
 
@@ -2590,6 +3547,7 @@ Common subcommands:
   `assign <id> <profile>`  Reassign
   `boards list`         Show all boards
   `assignees`           Known profiles + counts
+  `worker-lanes`        External worker lane capacity + active instances
   `context <id>`        Full worker-context dump
   `runs <id>`           Attempt history
   `log <id>`            Worker log

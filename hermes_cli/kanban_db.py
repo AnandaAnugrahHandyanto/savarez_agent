@@ -107,6 +107,22 @@ _IS_WINDOWS = sys.platform == "win32"
 # ``HERMES_KANBAN_CLAIM_TTL_SECONDS`` to raise the default claim window for
 # long single-call MCP workflows.
 DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
+ACCEPTANCE_CHECK_OUTPUT_TAIL_BYTES = 16 * 1024
+REQUEST_CHANGES_FEEDBACK_BYTES = 12 * 1024
+AUTO_REQUEST_CHANGES_DEFAULT_LIMIT = 2
+ACCEPTANCE_CHECK_DEFAULT_TIMEOUT_SECONDS = 300
+ACCEPTANCE_CHECK_MAX_TIMEOUT_SECONDS = 3600
+_ACCEPTANCE_CHECK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_PROXY_ENV_NAMES = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+)
 
 
 def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
@@ -801,6 +817,149 @@ class Event:
     run_id: Optional[int] = None
 
 
+@dataclass
+class TaskProgressSnapshot:
+    """Read-only task progress view for controllers and dashboards."""
+
+    task: Task
+    run: Optional[Run]
+    worker_progress: Optional[dict]
+    heartbeat_event: Optional[Event]
+    last_event: Optional[Event]
+    review_required: bool
+    evidence: Optional[dict]
+    worker_log_tail: Optional[str]
+    children: Optional[list[dict[str, Any]]] = None
+    child_summary: Optional[dict[str, Any]] = None
+    review_followup_gate: Optional[dict[str, Any]] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        worker_lane = None
+        worker_instance = None
+        verification = None
+        git = None
+        if self.evidence:
+            worker_lane = self.evidence.get("worker_lane")
+            worker_instance = self.evidence.get("worker_instance")
+            verification = self.evidence.get("verification")
+            git = self.evidence.get("git")
+        return {
+            "task": {
+                "id": self.task.id,
+                "title": self.task.title,
+                "assignee": self.task.assignee,
+                "status": self.task.status,
+                "workspace_kind": self.task.workspace_kind,
+                "workspace_path": self.task.workspace_path,
+                "worker_pid": self.task.worker_pid,
+                "current_run_id": self.task.current_run_id,
+                "last_heartbeat_at": self.task.last_heartbeat_at,
+                "session_id": self.task.session_id,
+            },
+            "run": (
+                {
+                    "id": self.run.id,
+                    "status": self.run.status,
+                    "outcome": self.run.outcome,
+                    "summary": self.run.summary,
+                    "error": self.run.error,
+                    "worker_pid": self.run.worker_pid,
+                    "started_at": self.run.started_at,
+                    "ended_at": self.run.ended_at,
+                }
+                if self.run else None
+            ),
+            "worker_progress": self.worker_progress,
+            "last_heartbeat_event": (
+                {
+                    "id": self.heartbeat_event.id,
+                    "created_at": self.heartbeat_event.created_at,
+                    "payload": self.heartbeat_event.payload,
+                    "run_id": self.heartbeat_event.run_id,
+                }
+                if self.heartbeat_event else None
+            ),
+            "last_event": (
+                {
+                    "id": self.last_event.id,
+                    "kind": self.last_event.kind,
+                    "created_at": self.last_event.created_at,
+                    "payload": self.last_event.payload,
+                    "run_id": self.last_event.run_id,
+                }
+                if self.last_event else None
+            ),
+            "review_required": self.review_required,
+            "worker_lane": worker_lane,
+            "worker_instance": worker_instance,
+            "git": git,
+            "verification": verification,
+            "evidence": self.evidence,
+            "worker_log_tail": self.worker_log_tail,
+            "children": self.children,
+            "child_summary": self.child_summary,
+            "review_followup_gate": self.review_followup_gate,
+        }
+
+
+@dataclass
+class ReviewFollowupPlan:
+    """Review/test worker tasks created from implementation evidence."""
+
+    source_task_id: str
+    source_run_id: int
+    review_task_id: Optional[str]
+    test_task_id: Optional[str]
+    created: list[str]
+    existing: list[str]
+    review_assignee: Optional[str]
+    test_assignee: Optional[str]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source_task_id": self.source_task_id,
+            "source_run_id": self.source_run_id,
+            "review_task_id": self.review_task_id,
+            "test_task_id": self.test_task_id,
+            "created": self.created,
+            "existing": self.existing,
+            "review_assignee": self.review_assignee,
+            "test_assignee": self.test_assignee,
+        }
+
+
+@dataclass
+class WorkerLaneStatus:
+    """Read-only operational status for a registered worker lane."""
+
+    name: str
+    kind: str
+    description: str
+    source: str
+    success_policy: str
+    max_concurrency: Optional[int]
+    active_count: int
+    available_capacity: Optional[int]
+    counts: dict[str, int]
+    active: list[dict[str, Any]]
+    config: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "kind": self.kind,
+            "description": self.description,
+            "source": self.source,
+            "success_policy": self.success_policy,
+            "max_concurrency": self.max_concurrency,
+            "active_count": self.active_count,
+            "available_capacity": self.available_capacity,
+            "counts": self.counts,
+            "active": self.active,
+            "config": self.config,
+        }
+
+
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
@@ -954,6 +1113,22 @@ _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 
 
+class KanbanConnection(sqlite3.Connection):
+    """SQLite connection that closes when used as a context manager.
+
+    ``sqlite3.Connection.__exit__`` commits or rolls back but intentionally
+    leaves the connection open. Kanban callers use ``with connect()`` as a
+    short operation boundary across dispatchers and external workers, so close
+    on exit to avoid accumulating stale WAL readers while workers write.
+    """
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return super().__exit__(exc_type, exc, tb)
+        finally:
+            self.close()
+
+
 def _looks_like_tls_record_at(data: bytes, offset: int) -> bool:
     """Return True for a TLS record header at ``data[offset:]``."""
     if len(data) < offset + 5:
@@ -1035,7 +1210,12 @@ def connect(
     path.parent.mkdir(parents=True, exist_ok=True)
     _validate_sqlite_header(path)
     resolved = str(path.resolve())
-    conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
+    conn = sqlite3.connect(
+        str(path),
+        isolation_level=None,
+        timeout=30,
+        factory=KanbanConnection,
+    )
     try:
         conn.row_factory = sqlite3.Row
         with _INIT_LOCK:
@@ -1047,9 +1227,22 @@ def connect(
             # falls back to DELETE with one WARNING so kanban stays usable there.
             # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
             from hermes_state import apply_wal_with_fallback
-            apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("PRAGMA foreign_keys=ON")
+            for attempt in range(5):
+                try:
+                    apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+                    conn.execute("PRAGMA synchronous=NORMAL")
+                    conn.execute("PRAGMA foreign_keys=ON")
+                    break
+                except sqlite3.OperationalError as exc:
+                    msg = str(exc).lower()
+                    transient = (
+                        "database is locked" in msg
+                        or "disk i/o error" in msg
+                        or "locking protocol" in msg
+                    )
+                    if not transient or attempt >= 4:
+                        raise
+                    time.sleep(0.05 * (attempt + 1))
             needs_init = resolved not in _INITIALIZED_PATHS
             if needs_init:
                 # Idempotent: runs CREATE TABLE IF NOT EXISTS + the additive
@@ -1912,6 +2105,2410 @@ def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
     return out
 
 
+def _latest_event(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    kind: Optional[str] = None,
+) -> Optional[Event]:
+    where = "task_id = ?"
+    params: list[Any] = [task_id]
+    if kind is not None:
+        where += " AND kind = ?"
+        params.append(kind)
+    row = conn.execute(
+        f"SELECT * FROM task_events WHERE {where} ORDER BY created_at DESC, id DESC LIMIT 1",
+        tuple(params),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        payload = json.loads(row["payload"]) if row["payload"] else None
+    except Exception:
+        payload = None
+    return Event(
+        id=row["id"],
+        task_id=row["task_id"],
+        kind=row["kind"],
+        payload=payload,
+        created_at=row["created_at"],
+        run_id=(int(row["run_id"]) if "run_id" in row.keys() and row["run_id"] is not None else None),
+    )
+
+
+def task_progress_snapshot(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    log_tail_bytes: Optional[int] = None,
+    board: Optional[str] = None,
+    include_children: bool = False,
+) -> Optional[TaskProgressSnapshot]:
+    """Return a read-only progress/evidence snapshot for ``task_id``.
+
+    This intentionally does not claim, reclaim, heartbeat, or interrupt a
+    worker.  Main agents and dashboards can call it while external workers
+    continue running.
+    """
+    task = get_task(conn, task_id)
+    if task is None:
+        return None
+    run = latest_run(conn, task_id)
+    progress_event = _latest_event(conn, task_id, kind="worker_progress")
+    heartbeat_event = _latest_event(conn, task_id, kind="heartbeat")
+    last_event = _latest_event(conn, task_id)
+    evidence = run.metadata if run and isinstance(run.metadata, dict) else None
+    review_required = bool(
+        evidence
+        and isinstance(evidence.get("review"), dict)
+        and evidence["review"].get("required")
+    )
+    children = None
+    child_summary = None
+    if include_children:
+        children, child_summary = task_children_progress_summary(
+            conn,
+            task_id,
+            board=board,
+        )
+    return TaskProgressSnapshot(
+        task=task,
+        run=run,
+        worker_progress=(
+            progress_event.payload if progress_event and progress_event.payload else None
+        ),
+        heartbeat_event=heartbeat_event,
+        last_event=last_event,
+        review_required=review_required,
+        evidence=evidence,
+        worker_log_tail=read_worker_log(
+            task_id,
+            tail_bytes=log_tail_bytes,
+            board=board,
+        ) if log_tail_bytes else None,
+        children=children,
+        child_summary=child_summary,
+        review_followup_gate=(
+            review_followup_gate_status(conn, task_id, source_run_id=run.id)
+            if run and review_required
+            else None
+        ),
+    )
+
+
+def _compact_progress_event_payload(payload: Optional[dict]) -> Optional[dict]:
+    if not isinstance(payload, dict):
+        return None
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return None
+    compact_items: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        compact: dict[str, Any] = {}
+        if item.get("index") is not None:
+            compact["index"] = item.get("index")
+        if item.get("status") is not None:
+            compact["status"] = str(item.get("status"))[:40]
+        if item.get("text") is not None:
+            compact["text"] = str(item.get("text"))[:400]
+        if compact:
+            compact_items.append(compact)
+        if len(compact_items) >= 10:
+            break
+    return {
+        "lane": str(payload.get("lane"))[:120] if payload.get("lane") else None,
+        "worker_kind": (
+            str(payload.get("worker_kind"))[:120]
+            if payload.get("worker_kind")
+            else None
+        ),
+        "items": compact_items,
+    }
+
+
+def _progress_summary_task_refs(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> list[tuple[str, str]]:
+    refs: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def add(ids: Iterable[str], relationship: str) -> None:
+        for raw_id in ids:
+            related_id = str(raw_id).strip()
+            if not related_id or related_id == task_id or related_id in seen:
+                continue
+            seen.add(related_id)
+            refs.append((related_id, relationship))
+
+    add(child_ids(conn, task_id), "child")
+
+    decomposed = _latest_event(conn, task_id, kind="decomposed")
+    payload = decomposed.payload if decomposed else None
+    if isinstance(payload, dict):
+        raw_child_ids = payload.get("child_ids")
+        if isinstance(raw_child_ids, list):
+            add(
+                (
+                    child_id
+                    for child_id in raw_child_ids
+                    if isinstance(child_id, str)
+                ),
+                "decomposed_child",
+            )
+
+    current_run = latest_run(conn, task_id)
+    current_review_required = False
+    if current_run and isinstance(current_run.metadata, dict):
+        review_meta = current_run.metadata.get("review")
+        current_review_required = (
+            isinstance(review_meta, dict) and bool(review_meta.get("required"))
+        )
+    if current_run and current_review_required:
+        followup_refs = _review_followup_refs(
+            conn,
+            task_id,
+            source_run_id=current_run.id,
+        )
+    else:
+        followup_refs = []
+    for ref in followup_refs:
+        add([ref["task_id"]], ref["relationship"])
+
+    if not refs:
+        add(parent_ids(conn, task_id), "dependency")
+
+    return refs
+
+
+def task_children_progress_summary(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    board: Optional[str] = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Return related worker progress summaries without mutating workers.
+
+    Direct child links cover ordinary parent->child graphs. Decomposed goal
+    roots currently wait on worker tasks by linking those tasks as parents of
+    the root, so the decomposed event's child_ids (or direct parents as a
+    fallback) are also summarized for goal/root progress queries.
+    """
+    refs = _progress_summary_task_refs(conn, task_id)
+    children: list[dict[str, Any]] = []
+    status_counts: dict[str, int] = {}
+    relationship_counts: dict[str, int] = {}
+    lanes: dict[str, int] = {}
+    review_required = 0
+    progress_items_total = 0
+    running = 0
+    done = 0
+
+    for child_id, relationship in refs:
+        snap = task_progress_snapshot(
+            conn,
+            child_id,
+            board=board,
+            include_children=False,
+        )
+        if snap is None:
+            continue
+        t = snap.task
+        status_counts[t.status] = status_counts.get(t.status, 0) + 1
+        relationship_counts[relationship] = relationship_counts.get(relationship, 0) + 1
+        if t.status == "running":
+            running += 1
+        if t.status == "done":
+            done += 1
+        if snap.review_required:
+            review_required += 1
+        worker_lane = None
+        if snap.evidence and isinstance(snap.evidence.get("worker_lane"), dict):
+            worker_lane = snap.evidence["worker_lane"]
+        elif t.assignee:
+            worker_lane = {"name": t.assignee}
+        lane_name = (
+            worker_lane.get("name")
+            if isinstance(worker_lane, dict)
+            else None
+        )
+        if lane_name:
+            lanes[lane_name] = lanes.get(lane_name, 0) + 1
+
+        progress = _compact_progress_event_payload(snap.worker_progress)
+        items = progress.get("items") if progress else []
+        progress_items_total += len(items)
+        run = snap.run
+        children.append({
+            "task": {
+                "id": t.id,
+                "title": t.title,
+                "assignee": t.assignee,
+                "status": t.status,
+                "worker_pid": t.worker_pid,
+                "current_run_id": t.current_run_id,
+                "last_heartbeat_at": t.last_heartbeat_at,
+                "workspace_kind": t.workspace_kind,
+                "workspace_path": t.workspace_path,
+            },
+            "relationship": relationship,
+            "run": (
+                {
+                    "id": run.id,
+                    "status": run.status,
+                    "outcome": run.outcome,
+                    "summary": run.summary,
+                    "error": run.error,
+                    "worker_pid": run.worker_pid,
+                    "started_at": run.started_at,
+                    "ended_at": run.ended_at,
+                }
+                if run else None
+            ),
+            "worker_lane": worker_lane,
+            "worker_progress": progress,
+            "last_heartbeat_event": (
+                {
+                    "id": snap.heartbeat_event.id,
+                    "created_at": snap.heartbeat_event.created_at,
+                    "run_id": snap.heartbeat_event.run_id,
+                    "payload": snap.heartbeat_event.payload,
+                }
+                if snap.heartbeat_event else None
+            ),
+            "last_event": (
+                {
+                    "id": snap.last_event.id,
+                    "kind": snap.last_event.kind,
+                    "created_at": snap.last_event.created_at,
+                    "run_id": snap.last_event.run_id,
+                }
+                if snap.last_event else None
+            ),
+            "review_required": snap.review_required,
+            "verification": (
+                snap.evidence.get("verification")
+                if snap.evidence and isinstance(snap.evidence, dict)
+                else None
+            ),
+        })
+
+    summary = {
+        "total": len(children),
+        "done": done,
+        "running": running,
+        "review_required": review_required,
+        "status_counts": status_counts,
+        "relationship_counts": relationship_counts,
+        "lanes": lanes,
+        "progress_items": progress_items_total,
+    }
+    return children, summary
+
+
+def review_required_snapshots(
+    conn: sqlite3.Connection,
+    *,
+    assignee: Optional[str] = None,
+    tenant: Optional[str] = None,
+    worker_lane: Optional[str] = None,
+    limit: int = 100,
+    log_tail_bytes: Optional[int] = None,
+    board: Optional[str] = None,
+) -> list[TaskProgressSnapshot]:
+    """Return read-only snapshots for tasks waiting on Hermes review.
+
+    Review-required state is intentionally inferred from structured run
+    metadata, not from the full worker transcript. This lets controllers and
+    dashboards list Codex/external-worker handoffs without interrupting a
+    running worker or replaying its complete session.
+    """
+    clauses = ["t.status != 'archived'", "r.metadata IS NOT NULL"]
+    params: list[Any] = []
+    if assignee:
+        clauses.append("t.assignee = ?")
+        params.append(_canonical_assignee(assignee))
+    if tenant:
+        clauses.append("t.tenant = ?")
+        params.append(tenant)
+    max_rows = max(1, int(limit or 100))
+    q = (
+        "SELECT t.id, r.metadata, r.ended_at, r.started_at "
+        "FROM task_runs r "
+        "JOIN tasks t ON t.id = r.task_id "
+        "JOIN ("
+        "  SELECT task_id, MAX(id) AS max_id FROM task_runs GROUP BY task_id"
+        ") latest ON latest.task_id = r.task_id AND latest.max_id = r.id "
+        f"WHERE {' AND '.join(clauses)} "
+        "ORDER BY COALESCE(r.ended_at, r.started_at) DESC, r.id DESC "
+    )
+    snapshots: list[TaskProgressSnapshot] = []
+    lane_filter = (worker_lane or "").strip()
+    for row in conn.execute(q, tuple(params)):
+        try:
+            meta = json.loads(row["metadata"]) if row["metadata"] else {}
+        except Exception:
+            continue
+        if not isinstance(meta, dict):
+            continue
+        review = meta.get("review")
+        if not (isinstance(review, dict) and review.get("required")):
+            continue
+        if lane_filter:
+            lane_meta = meta.get("worker_lane") or {}
+            lane_name = (
+                lane_meta.get("name")
+                if isinstance(lane_meta, dict)
+                else None
+            )
+            if lane_name != lane_filter:
+                continue
+        snapshot = task_progress_snapshot(
+            conn,
+            row["id"],
+            log_tail_bytes=log_tail_bytes,
+            board=board,
+        )
+        if snapshot is not None and snapshot.review_required:
+            snapshots.append(snapshot)
+            if len(snapshots) >= max_rows:
+                break
+    return snapshots
+
+
+def _review_required_snapshot_for_decision(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> TaskProgressSnapshot:
+    snapshot = task_progress_snapshot(conn, task_id)
+    if snapshot is None:
+        raise ValueError(f"unknown task {task_id}")
+    if snapshot.task.status != "blocked":
+        raise ValueError(f"task {task_id} is not blocked for review")
+    if snapshot.run is None or not snapshot.review_required:
+        raise ValueError(f"task {task_id} has no review-required worker evidence")
+    return snapshot
+
+
+def _review_followup_refs(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    source_run_id: Optional[int] = None,
+) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    filter_source_run_id = int(source_run_id) if source_run_id is not None else None
+    rows = conn.execute(
+        "SELECT run_id, payload FROM task_events WHERE task_id = ? AND kind = ? "
+        "ORDER BY created_at ASC, id ASC",
+        (task_id, "worker_review_followups_planned"),
+    ).fetchall()
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"]) if row["payload"] else None
+        except Exception:
+            payload = None
+        if not isinstance(payload, dict):
+            continue
+        raw_source_run_id = payload.get("source_run_id")
+        if raw_source_run_id is None:
+            raw_source_run_id = row["run_id"]
+        try:
+            event_source_run_id = (
+                int(raw_source_run_id) if raw_source_run_id is not None else None
+            )
+        except (TypeError, ValueError):
+            event_source_run_id = None
+        if (
+            filter_source_run_id is not None
+            and event_source_run_id != filter_source_run_id
+        ):
+            continue
+        for purpose, relationship, key in (
+            ("review", "review_followup", "review_task_id"),
+            ("test", "test_followup", "test_task_id"),
+        ):
+            followup_task_id = payload.get(key)
+            if not isinstance(followup_task_id, str) or not followup_task_id.strip():
+                continue
+            followup_task_id = followup_task_id.strip()
+            dedupe = (purpose, followup_task_id)
+            if dedupe in seen:
+                continue
+            seen.add(dedupe)
+            refs.append({
+                "purpose": purpose,
+                "relationship": relationship,
+                "task_id": followup_task_id,
+                "source_run_id": event_source_run_id,
+            })
+    return refs
+
+
+def _followup_run_has_success_evidence(run: Optional[Run]) -> bool:
+    if run is None:
+        return False
+    if run.outcome == "completed" and run.status == "done":
+        return True
+    if not isinstance(run.metadata, dict):
+        return False
+    lane_meta = run.metadata.get("worker_lane")
+    if not isinstance(lane_meta, dict):
+        return False
+    if lane_meta.get("exit_code") != 0:
+        return False
+    if lane_meta.get("timed_out") or lane_meta.get("binary_missing"):
+        return False
+    review = run.metadata.get("review")
+    if isinstance(review, dict) and review.get("required"):
+        return True
+    if run.outcome == "completed":
+        return True
+    return False
+
+
+_FOLLOWUP_VERDICT_LINE_RE = re.compile(
+    r"(?i)^\s*verdict\s*:\s*(?:[-*]\s*)?([a-z][a-z_-]*)\b"
+)
+_FOLLOWUP_VERDICT_HEADER_RE = re.compile(r"(?i)^\s*verdict\s*:\s*$")
+_FOLLOWUP_VERDICT_BULLET_RE = re.compile(r"^\s*[-*]?\s*([a-z][a-z_-]*)\b")
+
+
+def _extract_followup_verdict_from_text(text: str) -> Optional[str]:
+    lines = text.splitlines()
+    verdicts: list[str] = []
+    for index, line in enumerate(lines):
+        match = _FOLLOWUP_VERDICT_LINE_RE.match(line)
+        if match:
+            verdicts.append(match.group(1).strip().lower().replace("-", "_"))
+            continue
+        if _FOLLOWUP_VERDICT_HEADER_RE.match(line):
+            for next_line in lines[index + 1 : index + 4]:
+                if not next_line.strip():
+                    continue
+                bullet = _FOLLOWUP_VERDICT_BULLET_RE.match(next_line)
+                if bullet:
+                    verdicts.append(
+                        bullet.group(1).strip().lower().replace("-", "_")
+                    )
+                break
+    return verdicts[-1] if verdicts else None
+
+
+def _extract_followup_verdict(run: Optional[Run]) -> Optional[str]:
+    if run is None or not isinstance(run.metadata, dict):
+        return None
+    candidates: list[str] = []
+    lane_meta = run.metadata.get("worker_lane")
+    if isinstance(lane_meta, dict):
+        tail = lane_meta.get("output_tail")
+        if isinstance(tail, str):
+            candidates.append(tail)
+    verification = run.metadata.get("verification")
+    if isinstance(verification, dict):
+        summary = verification.get("summary")
+        if isinstance(summary, str):
+            candidates.append(summary)
+    for text in candidates:
+        verdict = _extract_followup_verdict_from_text(text)
+        if verdict:
+            return verdict
+    return None
+
+
+def _followup_verdict_accepts_purpose(
+    purpose: str,
+    verdict: Optional[str],
+) -> bool:
+    if not verdict:
+        # Older non-Codex/Hermes follow-up workers may only have exit metadata.
+        # Preserve that compatibility while newer Codex receipts get stricter
+        # semantic gating when they emit a structured verdict.
+        return True
+    if purpose == "review":
+        return verdict in {"approve", "approved"}
+    if purpose == "test":
+        return verdict in {"pass", "passed"}
+    return verdict in {"approve", "approved", "pass", "passed"}
+
+
+def _effective_auto_request_changes_limit(task: Task) -> tuple[int, str]:
+    if task.max_retries is not None:
+        return max(1, int(task.max_retries)), "task"
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        raw = ((cfg or {}).get("kanban") or {}).get("failure_limit")
+        if raw is not None:
+            return max(1, int(raw)), "config"
+    except Exception:
+        pass
+    return AUTO_REQUEST_CHANGES_DEFAULT_LIMIT, "default"
+
+
+def _auto_request_changes_count(conn: sqlite3.Connection, task_id: str) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM task_events "
+        "WHERE task_id = ? AND kind = ?",
+        (task_id, "worker_review_auto_request_changes"),
+    ).fetchone()
+    return int(row["n"] if row else 0)
+
+
+def _auto_request_changes_guard(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> Optional[dict[str, Any]]:
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    limit, limit_source = _effective_auto_request_changes_limit(task)
+    used = _auto_request_changes_count(conn, task_id)
+    if used < limit:
+        return None
+    payload = {
+        "limit": limit,
+        "limit_source": limit_source,
+        "used": used,
+        "reason": "automatic request-changes retry limit reached",
+    }
+    existing = conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? AND kind = ? LIMIT 1",
+        (task_id, "worker_review_auto_retry_exhausted"),
+    ).fetchone()
+    if existing is None:
+        with write_txn(conn):
+            _append_event(conn, task_id, "worker_review_auto_retry_exhausted", payload)
+    return payload
+
+
+def _bounded_text(value: Any, *, max_bytes: int) -> str:
+    if value is None:
+        return ""
+    text = value if isinstance(value, str) else str(value)
+    data = text.encode("utf-8", errors="replace")
+    if len(data) <= max_bytes:
+        return text
+    return data[-max_bytes:].decode("utf-8", errors="replace")
+
+
+def _load_acceptance_check_configs() -> dict[str, dict[str, Any]]:
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+    except Exception as exc:
+        _log.debug("Could not load config for acceptance checks: %s", exc)
+        return {}
+    raw = ((cfg or {}).get("kanban") or {}).get("acceptance_checks") or {}
+    if not isinstance(raw, dict):
+        _log.warning(
+            "kanban.acceptance_checks must be a mapping; got %s",
+            type(raw).__name__,
+        )
+        return {}
+    checks: dict[str, dict[str, Any]] = {}
+    for raw_name, raw_cfg in raw.items():
+        try:
+            name = str(raw_name).strip().lower()
+            if not _ACCEPTANCE_CHECK_ID_RE.match(name):
+                raise ValueError(
+                    "name must match [a-z0-9][a-z0-9_-]{0,63}"
+                )
+            if not isinstance(raw_cfg, dict):
+                raise ValueError("config must be a mapping")
+            argv = raw_cfg.get("argv")
+            if not isinstance(argv, list) or not argv:
+                raise ValueError("argv must be a non-empty list")
+            clean_argv = [str(part) for part in argv]
+            if not clean_argv[0].strip():
+                raise ValueError("argv[0] cannot be empty")
+            timeout_raw = raw_cfg.get(
+                "timeout_seconds",
+                ACCEPTANCE_CHECK_DEFAULT_TIMEOUT_SECONDS,
+            )
+            timeout = int(timeout_raw)
+            if timeout < 1 or timeout > ACCEPTANCE_CHECK_MAX_TIMEOUT_SECONDS:
+                raise ValueError(
+                    "timeout_seconds must be between 1 and "
+                    f"{ACCEPTANCE_CHECK_MAX_TIMEOUT_SECONDS}"
+                )
+            description = str(raw_cfg.get("description") or "")
+            checks[name] = {
+                "name": name,
+                "description": description,
+                "argv": clean_argv,
+                "timeout_seconds": timeout,
+            }
+        except Exception as exc:
+            _log.warning("Skipping acceptance check %r: %s", raw_name, exc)
+    return checks
+
+
+def _acceptance_check_workspace(task: Task) -> Optional[Path]:
+    if task.workspace_kind in {"dir", "worktree"} and task.workspace_path:
+        return Path(task.workspace_path).expanduser().resolve()
+    return None
+
+
+def _acceptance_check_event_runs(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    source_run_id: Optional[int],
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT id, run_id, payload, created_at FROM task_events "
+        "WHERE task_id = ? AND kind = ? "
+        "ORDER BY created_at ASC, id ASC",
+        (task_id, "acceptance_check_completed"),
+    ).fetchall()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if source_run_id is not None and row["run_id"] != source_run_id:
+            continue
+        try:
+            payload = json.loads(row["payload"]) if row["payload"] else None
+        except Exception:
+            payload = None
+        if not isinstance(payload, dict):
+            continue
+        payload = dict(payload)
+        payload.setdefault("event_id", row["id"])
+        payload.setdefault("created_at", row["created_at"])
+        payload.setdefault("source_run_id", row["run_id"])
+        out.append(payload)
+    return out
+
+
+def acceptance_check_gate_status(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    source_run_id: Optional[int] = None,
+    required_checks: Optional[list[str]] = None,
+) -> Optional[dict[str, Any]]:
+    """Return deterministic gate state for Hermes-run acceptance checks."""
+    configured = _load_acceptance_check_configs()
+    required = [
+        str(name).strip().lower()
+        for name in (required_checks if required_checks is not None else configured.keys())
+        if str(name).strip()
+    ]
+    deduped_required = list(dict.fromkeys(required))
+    if not deduped_required:
+        return None
+
+    runs_by_name: dict[str, dict[str, Any]] = {}
+    for run in _acceptance_check_event_runs(
+        conn,
+        task_id,
+        source_run_id=source_run_id,
+    ):
+        name = str(run.get("name") or "").strip().lower()
+        if name:
+            runs_by_name[name] = run
+
+    items: list[dict[str, Any]] = []
+    satisfied = 0
+    failed = 0
+    missing = 0
+    for name in deduped_required:
+        cfg = configured.get(name)
+        run = runs_by_name.get(name)
+        item: dict[str, Any] = {
+            "name": name,
+            "configured": cfg is not None,
+        }
+        if cfg is not None:
+            item["description"] = cfg.get("description") or ""
+            item["argv"] = cfg.get("argv")
+            item["timeout_seconds"] = cfg.get("timeout_seconds")
+        if run is not None:
+            item["run"] = run
+            item["state"] = "satisfied" if run.get("passed") else "failed"
+            if run.get("passed"):
+                satisfied += 1
+            else:
+                failed += 1
+        elif cfg is None:
+            item["state"] = "missing"
+            item["failure_reason"] = "acceptance check is not configured"
+            missing += 1
+        else:
+            item["state"] = "missing"
+            missing += 1
+        items.append(item)
+
+    ready = bool(items) and satisfied == len(items)
+    blocking: list[str] = []
+    if missing:
+        blocking.append(f"{missing} missing")
+    if failed:
+        blocking.append(f"{failed} failed")
+    if not blocking and not ready:
+        blocking.append("acceptance checks incomplete")
+    return {
+        "required": len(items),
+        "ready": ready,
+        "satisfied": satisfied,
+        "failed": failed,
+        "missing": missing,
+        "items": items,
+        "blocking_reasons": blocking,
+    }
+
+
+def run_acceptance_check(
+    conn: sqlite3.Connection,
+    task_id: str,
+    check_name: str,
+    *,
+    source_run_id: Optional[int] = None,
+) -> dict[str, Any]:
+    """Run one configured deterministic acceptance check for a task.
+
+    The command argv comes only from trusted local config
+    ``kanban.acceptance_checks``. Callers choose a check name; they do not pass
+    executable shell strings. Output is bounded before being written to the
+    Kanban event log.
+    """
+    task = get_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"unknown task {task_id}")
+    name = str(check_name or "").strip().lower()
+    if not _ACCEPTANCE_CHECK_ID_RE.match(name):
+        raise ValueError("invalid acceptance check name")
+    checks = _load_acceptance_check_configs()
+    cfg = checks.get(name)
+    if cfg is None:
+        raise ValueError(f"acceptance check {name!r} is not configured")
+    workspace = _acceptance_check_workspace(task)
+    if workspace is None:
+        raise ValueError(
+            f"task {task_id} has no dir/worktree workspace for acceptance checks"
+        )
+    if not workspace.exists() or not workspace.is_dir():
+        raise ValueError(f"acceptance check workspace does not exist: {workspace}")
+
+    run_id = source_run_id
+    if run_id is None:
+        run = latest_run(conn, task_id)
+        if run is not None:
+            run_id = run.id
+    argv = [str(part) for part in cfg["argv"]]
+    timeout = int(cfg["timeout_seconds"])
+    env = dict(os.environ)
+    for key in _PROXY_ENV_NAMES:
+        env.pop(key, None)
+
+    started = time.time()
+    timed_out = False
+    try:
+        proc = subprocess.run(
+            argv,
+            cwd=str(workspace),
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            shell=False,
+        )
+        exit_code: Optional[int] = int(proc.returncode)
+        stdout_bytes = len((proc.stdout or "").encode("utf-8", errors="replace"))
+        stderr_bytes = len((proc.stderr or "").encode("utf-8", errors="replace"))
+        stdout_tail = _bounded_text(proc.stdout, max_bytes=ACCEPTANCE_CHECK_OUTPUT_TAIL_BYTES)
+        stderr_tail = _bounded_text(proc.stderr, max_bytes=ACCEPTANCE_CHECK_OUTPUT_TAIL_BYTES)
+        error = None
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        exit_code = None
+        raw_stdout = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else exc.stdout
+        raw_stderr = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else exc.stderr
+        stdout_bytes = len((raw_stdout or "").encode("utf-8", errors="replace"))
+        stderr_bytes = len((raw_stderr or "").encode("utf-8", errors="replace"))
+        stdout_tail = _bounded_text(raw_stdout, max_bytes=ACCEPTANCE_CHECK_OUTPUT_TAIL_BYTES)
+        stderr_tail = _bounded_text(raw_stderr, max_bytes=ACCEPTANCE_CHECK_OUTPUT_TAIL_BYTES)
+        error = f"timed out after {timeout}s"
+    except FileNotFoundError as exc:
+        exit_code = None
+        stdout_tail = ""
+        stderr_tail = ""
+        stdout_bytes = 0
+        stderr_bytes = 0
+        error = f"binary missing: {exc.filename or argv[0]}"
+    duration_ms = int((time.time() - started) * 1000)
+    payload = {
+        "name": name,
+        "description": cfg.get("description") or "",
+        "argv": argv,
+        "workspace": str(workspace),
+        "source_run_id": run_id,
+        "exit_code": exit_code,
+        "timed_out": timed_out,
+        "passed": bool(exit_code == 0 and not timed_out and not error),
+        "duration_ms": duration_ms,
+        "stdout_tail": stdout_tail,
+        "stderr_tail": stderr_tail,
+        "output_truncated": (
+            stdout_bytes > ACCEPTANCE_CHECK_OUTPUT_TAIL_BYTES
+            or stderr_bytes > ACCEPTANCE_CHECK_OUTPUT_TAIL_BYTES
+        ),
+    }
+    if error:
+        payload["error"] = error
+    with write_txn(conn):
+        _append_event(
+            conn,
+            task_id,
+            "acceptance_check_completed",
+            payload,
+            run_id=run_id,
+        )
+    return payload
+
+
+def run_acceptance_checks(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    check_names: Optional[list[str]] = None,
+    source_run_id: Optional[int] = None,
+) -> dict[str, Any]:
+    configured = _load_acceptance_check_configs()
+    names = [
+        str(name).strip().lower()
+        for name in (check_names if check_names is not None else configured.keys())
+        if str(name).strip()
+    ]
+    names = list(dict.fromkeys(names))
+    if not names:
+        raise ValueError("no acceptance checks requested or configured")
+    runs = [
+        run_acceptance_check(
+            conn,
+            task_id,
+            name,
+            source_run_id=source_run_id,
+        )
+        for name in names
+    ]
+    gate = acceptance_check_gate_status(
+        conn,
+        task_id,
+        source_run_id=source_run_id,
+        required_checks=names,
+    )
+    return {
+        "task_id": task_id,
+        "source_run_id": source_run_id,
+        "checks": runs,
+        "acceptance_check_gate": gate,
+    }
+
+
+def review_followup_gate_status(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    source_run_id: Optional[int] = None,
+) -> Optional[dict[str, Any]]:
+    """Return deterministic approval-gate state for planned review/test tasks."""
+    refs = _review_followup_refs(conn, task_id, source_run_id=source_run_id)
+    if not refs:
+        return None
+    items: list[dict[str, Any]] = []
+    missing = 0
+    pending = 0
+    running = 0
+    failed = 0
+    satisfied = 0
+    for ref in refs:
+        followup_task = get_task(conn, ref["task_id"])
+        run = latest_run(conn, ref["task_id"]) if followup_task else None
+        item: dict[str, Any] = {
+            "purpose": ref["purpose"],
+            "relationship": ref["relationship"],
+            "task_id": ref["task_id"],
+            "source_run_id": ref.get("source_run_id"),
+        }
+        if followup_task is None:
+            item["state"] = "missing"
+            item["status"] = "missing"
+            missing += 1
+        else:
+            item.update({
+                "status": followup_task.status,
+                "assignee": followup_task.assignee,
+                "current_run_id": followup_task.current_run_id,
+            })
+            if run is not None:
+                item["run"] = {
+                    "id": run.id,
+                    "status": run.status,
+                    "outcome": run.outcome,
+                    "summary": run.summary,
+                    "ended_at": run.ended_at,
+                }
+                if isinstance(run.metadata, dict):
+                    lane_meta = run.metadata.get("worker_lane")
+                    if isinstance(lane_meta, dict):
+                        item["worker_lane"] = {
+                            "name": lane_meta.get("name"),
+                            "kind": lane_meta.get("kind"),
+                            "exit_code": lane_meta.get("exit_code"),
+                            "timed_out": lane_meta.get("timed_out"),
+                            "binary_missing": lane_meta.get("binary_missing"),
+                        }
+                    verification = run.metadata.get("verification")
+                    if isinstance(verification, dict):
+                        item["verification"] = verification
+            verdict = _extract_followup_verdict(run)
+            if verdict:
+                item["verdict"] = verdict
+            if _followup_run_has_success_evidence(
+                run
+            ) and _followup_verdict_accepts_purpose(ref["purpose"], verdict):
+                item["state"] = "satisfied"
+                satisfied += 1
+            elif (
+                _followup_run_has_success_evidence(run)
+                and not _followup_verdict_accepts_purpose(ref["purpose"], verdict)
+            ):
+                item["state"] = "failed"
+                item["failure_reason"] = (
+                    f"{ref['purpose']} follow-up verdict {verdict!r} "
+                    "does not satisfy the gate"
+                )
+                failed += 1
+            elif followup_task.status == "running":
+                item["state"] = "running"
+                running += 1
+            elif followup_task.status in {"ready", "todo", "scheduled", "triage"}:
+                item["state"] = "pending"
+                pending += 1
+            elif run is not None and (
+                run.outcome in {"crashed", "timed_out", "spawn_failed", "gave_up"}
+                or (
+                    isinstance(run.metadata, dict)
+                    and isinstance(run.metadata.get("worker_lane"), dict)
+                    and (
+                        run.metadata["worker_lane"].get("exit_code") not in {None, 0}
+                        or run.metadata["worker_lane"].get("timed_out")
+                        or run.metadata["worker_lane"].get("binary_missing")
+                    )
+                )
+            ):
+                item["state"] = "failed"
+                failed += 1
+            else:
+                item["state"] = "pending"
+                pending += 1
+        items.append(item)
+    required = len(items)
+    ready = required > 0 and satisfied == required
+    blocking: list[str] = []
+    if missing:
+        blocking.append(f"{missing} missing")
+    if pending:
+        blocking.append(f"{pending} pending")
+    if running:
+        blocking.append(f"{running} running")
+    if failed:
+        blocking.append(f"{failed} failed")
+    if not blocking and not ready:
+        blocking.append("follow-up evidence incomplete")
+    return {
+        "required": required,
+        "ready": ready,
+        "satisfied": satisfied,
+        "pending": pending,
+        "running": running,
+        "failed": failed,
+        "missing": missing,
+        "items": items,
+        "blocking_reasons": blocking,
+    }
+
+
+def _acceptance_source_run_id(snapshot: TaskProgressSnapshot) -> Optional[int]:
+    if snapshot.evidence and isinstance(snapshot.evidence.get("review"), dict):
+        source_run_id = snapshot.evidence["review"].get("source_run_id")
+        try:
+            if source_run_id is not None:
+                return int(source_run_id)
+        except (TypeError, ValueError):
+            pass
+    return snapshot.run.id if snapshot.run else None
+
+
+def task_acceptance_snapshot(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    log_tail_bytes: Optional[int] = None,
+    followup_log_tail_bytes: Optional[int] = None,
+    board: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """Return bounded implementation + follow-up evidence for final review.
+
+    This is the control-plane read used by main agents and dashboards before
+    approving or requesting changes. It intentionally works from structured
+    Kanban evidence and bounded log tails, not from complete external-worker
+    sessions.
+    """
+    implementation = task_progress_snapshot(
+        conn,
+        task_id,
+        log_tail_bytes=log_tail_bytes,
+        include_children=False,
+        board=board,
+    )
+    if implementation is None:
+        return None
+    source_run_id = _acceptance_source_run_id(implementation)
+    gate = (
+        review_followup_gate_status(
+            conn,
+            task_id,
+            source_run_id=source_run_id,
+        )
+        if source_run_id is not None
+        else None
+    )
+    acceptance_check_gate = acceptance_check_gate_status(
+        conn,
+        task_id,
+        source_run_id=source_run_id,
+    )
+    followups: list[dict[str, Any]] = []
+    for ref in _review_followup_refs(conn, task_id, source_run_id=source_run_id):
+        snap = task_progress_snapshot(
+            conn,
+            ref["task_id"],
+            log_tail_bytes=followup_log_tail_bytes,
+            include_children=False,
+            board=board,
+        )
+        followups.append({
+            "purpose": ref["purpose"],
+            "relationship": ref["relationship"],
+            "task_id": ref["task_id"],
+            "source_run_id": ref.get("source_run_id"),
+            "gate_item": next(
+                (
+                    item for item in (gate or {}).get("items", [])
+                    if item.get("task_id") == ref["task_id"]
+                    and item.get("purpose") == ref["purpose"]
+                ),
+                None,
+            ),
+            "snapshot": snap.to_dict() if snap else None,
+        })
+
+    review_meta = (
+        implementation.evidence.get("review")
+        if implementation.evidence
+        and isinstance(implementation.evidence.get("review"), dict)
+        else {}
+    )
+    review_required = implementation.review_required
+    review_decision = review_meta.get("decision") if isinstance(review_meta, dict) else None
+    approval_allowed = bool(
+        review_required
+        and (gate is None or gate.get("ready"))
+        and (
+            acceptance_check_gate is None
+            or acceptance_check_gate.get("ready")
+        )
+    )
+    request_changes_allowed = bool(review_required)
+    followups_planned = gate is not None
+    if review_decision == "approved" or implementation.task.status == "done":
+        recommended_action = "done"
+    elif review_decision == "changes_requested":
+        recommended_action = "wait_for_implementation"
+    elif (
+        review_required
+        and acceptance_check_gate
+        and acceptance_check_gate.get("failed")
+    ):
+        recommended_action = "request_changes_or_rerun_acceptance_checks"
+    elif review_required and not followups_planned:
+        recommended_action = "plan_review_followups"
+    elif review_required and gate and gate.get("failed"):
+        recommended_action = "request_changes_or_replan_followups"
+    elif review_required and gate and not gate.get("ready"):
+        recommended_action = "wait_for_followups"
+    elif (
+        review_required
+        and acceptance_check_gate
+        and not acceptance_check_gate.get("ready")
+    ):
+        recommended_action = "run_acceptance_checks"
+    elif approval_allowed:
+        recommended_action = "review_followup_evidence"
+    elif implementation.task.status == "running":
+        recommended_action = "wait_for_implementation"
+    elif implementation.task.status == "blocked":
+        recommended_action = "inspect_blocked_task"
+    else:
+        recommended_action = "none"
+
+    return {
+        "task_id": task_id,
+        "source_run_id": source_run_id,
+        "implementation": implementation.to_dict(),
+        "followups": followups,
+        "review_followup_gate": gate,
+        "acceptance_check_gate": acceptance_check_gate,
+        "followups_planned": followups_planned,
+        "approval_allowed": approval_allowed,
+        "request_changes_allowed": request_changes_allowed,
+        "recommended_action": recommended_action,
+        "review_strategy": {
+            "review_full_session": False,
+            "evidence_scope": (
+                "bounded Kanban metadata, worker receipts, progress events, "
+                "verification summaries, and optional log tails"
+            ),
+        },
+    }
+
+
+def advance_acceptance_workflow(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    review_assignee: Optional[str] = "codex-review",
+    test_assignee: Optional[str] = "codex-test",
+    dispatch: bool = True,
+    dry_run: bool = False,
+    dispatch_max: Optional[int] = None,
+    verify: bool = True,
+    approve: bool = True,
+    request_changes_on_failure: bool = True,
+    reviewer: str = "hermes-controller",
+    summary: Optional[str] = None,
+    result: Optional[str] = None,
+    board: Optional[str] = None,
+) -> dict[str, Any]:
+    """Advance a review-required external-worker task to the next safe point.
+
+    This is the deterministic control-plane workflow for implementation tasks
+    handed off by external coding lanes. It never waits for or interrupts a
+    running worker. Instead it performs only immediately-safe steps:
+
+    * create missing review/test follow-up tasks;
+    * optionally run a scoped dispatcher pass for pending follow-ups;
+    * run configured Hermes acceptance checks once review/test evidence is
+      ready;
+    * request changes when review/test or acceptance gates deterministically
+      fail;
+    * approve when every configured gate is satisfied.
+    """
+
+    steps: list[dict[str, Any]] = []
+    initial = task_acceptance_snapshot(conn, task_id, board=board)
+    if initial is None:
+        raise ValueError(f"unknown task {task_id}")
+
+    def _current() -> dict[str, Any]:
+        current = task_acceptance_snapshot(conn, task_id, board=board)
+        if current is None:
+            raise ValueError(f"unknown task {task_id}")
+        return current
+
+    snapshot = initial
+    implementation = snapshot.get("implementation") or {}
+    implementation_task = implementation.get("task") or {}
+    if implementation_task.get("status") == "done":
+        return {
+            "task_id": task_id,
+            "steps": steps,
+            "initial": initial,
+            "final": snapshot,
+            "advanced": False,
+        }
+    if implementation_task.get("status") == "running":
+        steps.append({
+            "kind": "wait_for_implementation",
+            "reason": "implementation worker is still running",
+        })
+        return {
+            "task_id": task_id,
+            "steps": steps,
+            "initial": initial,
+            "final": snapshot,
+            "advanced": False,
+        }
+    if not (implementation.get("review_required") or snapshot.get("request_changes_allowed")):
+        steps.append({
+            "kind": "inspect_task",
+            "reason": "task is not waiting on review-required worker evidence",
+        })
+        return {
+            "task_id": task_id,
+            "steps": steps,
+            "initial": initial,
+            "final": snapshot,
+            "advanced": False,
+        }
+
+    source_run_id = snapshot.get("source_run_id")
+
+    def _request_changes_for_failed_gate(
+        *,
+        reason: str,
+        gate_key: str,
+        gate: dict[str, Any],
+        comment: str,
+    ) -> dict[str, Any]:
+        guard = _auto_request_changes_guard(conn, task_id)
+        if guard is not None:
+            steps.append({
+                "kind": "blocked",
+                "reason": "automatic request-changes retry limit reached",
+                "auto_request_changes": guard,
+                gate_key: gate,
+            })
+            return _current()
+        reviewed = review_worker_evidence(
+            conn,
+            task_id,
+            decision="request_changes",
+            reviewer=reviewer or "hermes-controller",
+            comment=comment,
+        )
+        with write_txn(conn):
+            _append_event(
+                conn,
+                task_id,
+                "worker_review_auto_request_changes",
+                {
+                    "reviewer": reviewer or "hermes-controller",
+                    "reason": reason,
+                    "gate_key": gate_key,
+                    "source_run_id": reviewed.run.id if reviewed.run else None,
+                },
+                run_id=reviewed.run.id if reviewed.run else None,
+            )
+        steps.append({
+            "kind": "request_changes",
+            "reason": reason,
+            gate_key: gate,
+            "snapshot": reviewed.to_dict(),
+        })
+        return _current()
+
+    if snapshot.get("recommended_action") == "plan_review_followups":
+        plan = plan_review_followups(
+            conn,
+            task_id,
+            review_assignee=review_assignee,
+            test_assignee=test_assignee,
+            include_review=bool(review_assignee),
+            include_test=bool(test_assignee),
+            created_by=reviewer or "hermes-controller",
+            board=board,
+        )
+        steps.append({"kind": "plan_review_followups", "plan": plan.to_dict()})
+        followup_ids = [
+            tid for tid in (plan.review_task_id, plan.test_task_id) if tid
+        ]
+        if dispatch and followup_ids:
+            dispatch_result = dispatch_once(
+                conn,
+                dry_run=dry_run,
+                max_spawn=dispatch_max,
+                only_task_ids=followup_ids,
+                board=board,
+            )
+            steps.append({
+                "kind": "dispatch_followups",
+                "dispatch": dispatch_result.to_dict(),
+            })
+        snapshot = _current()
+        # Follow-up workers run asynchronously. Stop here unless the gate is
+        # already satisfied because tests or non-spawning flows finished them
+        # before this call returned.
+        gate = snapshot.get("review_followup_gate")
+        if gate and not gate.get("ready"):
+            return {
+                "task_id": task_id,
+                "steps": steps,
+                "initial": initial,
+                "final": snapshot,
+                "advanced": bool(steps),
+            }
+
+    gate = snapshot.get("review_followup_gate")
+    if gate and not gate.get("ready"):
+        if gate.get("failed"):
+            if request_changes_on_failure:
+                snapshot = _request_changes_for_failed_gate(
+                    reason="review/test follow-up gate failed",
+                    gate_key="review_followup_gate",
+                    gate=gate,
+                    comment=_review_followup_failure_comment(gate),
+                )
+                return {
+                    "task_id": task_id,
+                    "steps": steps,
+                    "initial": initial,
+                    "final": snapshot,
+                    "advanced": bool(steps),
+                }
+            steps.append({
+                "kind": "blocked",
+                "reason": "review/test follow-up gate failed",
+                "review_followup_gate": gate,
+            })
+            return {
+                "task_id": task_id,
+                "steps": steps,
+                "initial": initial,
+                "final": snapshot,
+                "advanced": bool(steps),
+            }
+        if dispatch:
+            followup_ids = [
+                item.get("task_id")
+                for item in gate.get("items") or []
+                if item.get("task_id")
+                and item.get("state") in {"pending", "missing"}
+            ]
+            followup_ids = [str(tid) for tid in followup_ids if tid]
+            if followup_ids:
+                dispatch_result = dispatch_once(
+                    conn,
+                    dry_run=dry_run,
+                    max_spawn=dispatch_max,
+                    only_task_ids=followup_ids,
+                    board=board,
+                )
+                steps.append({
+                    "kind": "dispatch_followups",
+                    "dispatch": dispatch_result.to_dict(),
+                })
+                snapshot = _current()
+        gate = snapshot.get("review_followup_gate") or {}
+        if gate.get("failed"):
+            if request_changes_on_failure:
+                snapshot = _request_changes_for_failed_gate(
+                    reason="review/test follow-up gate failed",
+                    gate_key="review_followup_gate",
+                    gate=gate,
+                    comment=_review_followup_failure_comment(gate),
+                )
+                return {
+                    "task_id": task_id,
+                    "steps": steps,
+                    "initial": initial,
+                    "final": snapshot,
+                    "advanced": bool(steps),
+                }
+            steps.append({
+                "kind": "blocked",
+                "reason": "review/test follow-up gate failed",
+                "review_followup_gate": gate,
+            })
+            return {
+                "task_id": task_id,
+                "steps": steps,
+                "initial": initial,
+                "final": snapshot,
+                "advanced": bool(steps),
+            }
+        if gate.get("ready") is not True:
+            return {
+                "task_id": task_id,
+                "steps": steps,
+                "initial": initial,
+                "final": snapshot,
+                "advanced": bool(steps),
+            }
+
+    acceptance_gate = snapshot.get("acceptance_check_gate")
+    if acceptance_gate and not acceptance_gate.get("ready"):
+        if acceptance_gate.get("failed"):
+            if request_changes_on_failure:
+                snapshot = _request_changes_for_failed_gate(
+                    reason="Hermes acceptance check gate failed",
+                    gate_key="acceptance_check_gate",
+                    gate=acceptance_gate,
+                    comment=_acceptance_check_failure_comment(acceptance_gate),
+                )
+                return {
+                    "task_id": task_id,
+                    "steps": steps,
+                    "initial": initial,
+                    "final": snapshot,
+                    "advanced": bool(steps),
+                }
+            steps.append({
+                "kind": "blocked",
+                "reason": "Hermes acceptance check gate failed",
+                "acceptance_check_gate": acceptance_gate,
+            })
+            return {
+                "task_id": task_id,
+                "steps": steps,
+                "initial": initial,
+                "final": snapshot,
+                "advanced": bool(steps),
+            }
+        if verify:
+            verify_payload = run_acceptance_checks(
+                conn,
+                task_id,
+                source_run_id=(
+                    int(source_run_id) if source_run_id is not None else None
+                ),
+            )
+            steps.append({
+                "kind": "run_acceptance_checks",
+                "verify": verify_payload,
+            })
+            snapshot = _current()
+        acceptance_gate = snapshot.get("acceptance_check_gate") or {}
+        if acceptance_gate.get("failed"):
+            if request_changes_on_failure:
+                snapshot = _request_changes_for_failed_gate(
+                    reason="Hermes acceptance check gate failed",
+                    gate_key="acceptance_check_gate",
+                    gate=acceptance_gate,
+                    comment=_acceptance_check_failure_comment(acceptance_gate),
+                )
+                return {
+                    "task_id": task_id,
+                    "steps": steps,
+                    "initial": initial,
+                    "final": snapshot,
+                    "advanced": bool(steps),
+                }
+            steps.append({
+                "kind": "blocked",
+                "reason": "Hermes acceptance check gate failed",
+                "acceptance_check_gate": acceptance_gate,
+            })
+            return {
+                "task_id": task_id,
+                "steps": steps,
+                "initial": initial,
+                "final": snapshot,
+                "advanced": bool(steps),
+            }
+        if acceptance_gate.get("ready") is not True:
+            return {
+                "task_id": task_id,
+                "steps": steps,
+                "initial": initial,
+                "final": snapshot,
+                "advanced": bool(steps),
+            }
+
+    if snapshot.get("approval_allowed") and approve:
+        reviewed = review_worker_evidence(
+            conn,
+            task_id,
+            decision="approve",
+            reviewer=reviewer or "hermes-controller",
+            result=result,
+            summary=summary or "external worker evidence accepted",
+        )
+        steps.append({
+            "kind": "approve",
+            "snapshot": reviewed.to_dict(),
+        })
+        snapshot = _current()
+
+    return {
+        "task_id": task_id,
+        "steps": steps,
+        "initial": initial,
+        "final": snapshot,
+        "advanced": bool(steps),
+    }
+
+
+def _dispatch_spawn_count(payload: dict[str, Any]) -> int:
+    spawned = payload.get("spawned") if isinstance(payload, dict) else None
+    return len(spawned) if isinstance(spawned, list) else 0
+
+
+def _advance_child_spawn_count(payload: dict[str, Any]) -> int:
+    total = 0
+    for step in payload.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        dispatch_payload = step.get("dispatch")
+        if isinstance(dispatch_payload, dict):
+            total += _dispatch_spawn_count(dispatch_payload)
+    return total
+
+
+def _remaining_dispatch_budget(
+    dispatch_max: Optional[int],
+    used: int,
+) -> Optional[int]:
+    if dispatch_max is None:
+        return None
+    return max(0, int(dispatch_max) - int(used))
+
+
+def advance_goal_acceptance_workflow(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    review_assignee: Optional[str] = "codex-review",
+    test_assignee: Optional[str] = "codex-test",
+    dispatch: bool = True,
+    dry_run: bool = False,
+    dispatch_max: Optional[int] = None,
+    verify: bool = True,
+    approve: bool = True,
+    request_changes_on_failure: bool = True,
+    reviewer: str = "hermes-controller",
+    summary: Optional[str] = None,
+    result: Optional[str] = None,
+    board: Optional[str] = None,
+) -> dict[str, Any]:
+    """Advance a top-level goal/root task and its worker children.
+
+    This is the root-level control-plane loop for `/goal`/decomposed tasks.
+    It never waits for or interrupts running workers. It can dispatch ready
+    child implementation tasks, advance review-required children through the
+    bounded evidence workflow, and mark the root done once every related child
+    is done or archived.
+    """
+
+    steps: list[dict[str, Any]] = []
+    child_advances: list[dict[str, Any]] = []
+    dispatch_used = 0
+
+    initial_snapshot = task_progress_snapshot(
+        conn,
+        task_id,
+        include_children=True,
+        board=board,
+    )
+    if initial_snapshot is None:
+        raise ValueError(f"unknown task {task_id}")
+    if initial_snapshot.task.status == "done":
+        return {
+            "task_id": task_id,
+            "steps": steps,
+            "child_advances": child_advances,
+            "initial": initial_snapshot.to_dict(),
+            "final": initial_snapshot.to_dict(),
+            "advanced": False,
+        }
+
+    refs = _progress_summary_task_refs(conn, task_id)
+    child_ids_for_dispatch = [child_id for child_id, _relationship in refs]
+    if not child_ids_for_dispatch:
+        steps.append({
+            "kind": "inspect_goal",
+            "reason": "goal/root task has no related child worker tasks",
+        })
+        return {
+            "task_id": task_id,
+            "steps": steps,
+            "child_advances": child_advances,
+            "initial": initial_snapshot.to_dict(),
+            "final": initial_snapshot.to_dict(),
+            "advanced": False,
+        }
+
+    if dispatch:
+        remaining = _remaining_dispatch_budget(dispatch_max, dispatch_used)
+        if remaining is None or remaining > 0:
+            dispatch_result = dispatch_once(
+                conn,
+                dry_run=dry_run,
+                max_spawn=remaining,
+                only_task_ids=child_ids_for_dispatch,
+                board=board,
+            )
+            dispatch_payload = dispatch_result.to_dict()
+            dispatch_used += _dispatch_spawn_count(dispatch_payload)
+            if (
+                dispatch_payload.get("spawned")
+                or dispatch_payload.get("promoted")
+                or dispatch_payload.get("skipped_unassigned")
+                or dispatch_payload.get("skipped_nonspawnable")
+                or dispatch_payload.get("skipped_concurrency")
+                or dispatch_payload.get("respawn_guarded")
+                or dispatch_payload.get("auto_blocked")
+                or dispatch_payload.get("timed_out")
+                or dispatch_payload.get("crashed")
+                or dispatch_payload.get("stale")
+            ):
+                steps.append({
+                    "kind": "dispatch_goal_children",
+                    "dispatch": dispatch_payload,
+                })
+
+    for child_id, relationship in refs:
+        snap = task_progress_snapshot(
+            conn,
+            child_id,
+            include_children=False,
+            board=board,
+        )
+        if snap is None or snap.task.status in {"done", "archived"}:
+            continue
+        if snap.task.status == "running":
+            steps.append({
+                "kind": "wait_for_child",
+                "task_id": child_id,
+                "relationship": relationship,
+                "reason": "child worker is still running",
+            })
+            continue
+        if not snap.review_required:
+            continue
+        remaining = _remaining_dispatch_budget(dispatch_max, dispatch_used)
+        child_payload = advance_acceptance_workflow(
+            conn,
+            child_id,
+            review_assignee=review_assignee,
+            test_assignee=test_assignee,
+            dispatch=dispatch and (remaining is None or remaining > 0),
+            dry_run=dry_run,
+            dispatch_max=remaining,
+            verify=verify,
+            approve=approve,
+            request_changes_on_failure=request_changes_on_failure,
+            reviewer=reviewer,
+            summary=summary,
+            result=result,
+            board=board,
+        )
+        dispatch_used += _advance_child_spawn_count(child_payload)
+        child_advances.append({
+            "task_id": child_id,
+            "relationship": relationship,
+            "advance": child_payload,
+        })
+        if child_payload.get("steps"):
+            steps.append({
+                "kind": "advance_child_acceptance",
+                "task_id": child_id,
+                "relationship": relationship,
+                "steps": child_payload.get("steps") or [],
+                "recommended_action": (
+                    (child_payload.get("final") or {}).get("recommended_action")
+                ),
+            })
+
+    recompute_ready(conn)
+    final_snapshot = task_progress_snapshot(
+        conn,
+        task_id,
+        include_children=True,
+        board=board,
+    )
+    if final_snapshot is None:
+        raise ValueError(f"unknown task {task_id}")
+
+    children = final_snapshot.children or []
+    incomplete_children = [
+        {
+            "task_id": ((child.get("task") or {}).get("id")),
+            "status": ((child.get("task") or {}).get("status")),
+            "relationship": child.get("relationship"),
+            "review_required": child.get("review_required"),
+        }
+        for child in children
+        if ((child.get("task") or {}).get("status")) not in {"done", "archived"}
+    ]
+    if not incomplete_children and approve and final_snapshot.task.status != "done":
+        root = get_task(conn, task_id)
+        if root and root.status in {"ready", "running", "blocked"}:
+            completion_summary = (
+                summary
+                or f"Goal accepted after {len(children)} worker child task(s) completed"
+            )
+            completion_result = result or completion_summary
+            completed = complete_task(
+                conn,
+                task_id,
+                result=completion_result,
+                summary=completion_summary,
+            )
+            if completed:
+                steps.append({
+                    "kind": "complete_goal",
+                    "child_count": len(children),
+                })
+                final_snapshot = task_progress_snapshot(
+                    conn,
+                    task_id,
+                    include_children=True,
+                    board=board,
+                )
+        elif root and root.status != "done":
+            steps.append({
+                "kind": "wait_for_goal_ready",
+                "status": root.status,
+                "reason": "all known children are terminal but the root is not ready",
+            })
+
+    final_payload = final_snapshot.to_dict() if final_snapshot else None
+    if steps:
+        try:
+            with write_txn(conn):
+                _append_event(
+                    conn,
+                    task_id,
+                    "goal_acceptance_advanced",
+                    {
+                        "reviewer": reviewer,
+                        "dispatch_used": dispatch_used,
+                        "step_kinds": [step.get("kind") for step in steps],
+                        "incomplete_children": incomplete_children,
+                    },
+                )
+        except Exception:
+            pass
+
+    return {
+        "task_id": task_id,
+        "steps": steps,
+        "child_advances": child_advances,
+        "initial": initial_snapshot.to_dict(),
+        "final": final_payload,
+        "incomplete_children": incomplete_children,
+        "dispatch_used": dispatch_used,
+        "advanced": bool(steps or child_advances),
+    }
+
+
+def _require_acceptance_check_gate_ready(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    source_run_id: Optional[int] = None,
+) -> Optional[dict[str, Any]]:
+    gate = acceptance_check_gate_status(
+        conn,
+        task_id,
+        source_run_id=source_run_id,
+    )
+    if gate is None or gate.get("ready"):
+        return gate
+    reasons = ", ".join(gate.get("blocking_reasons") or ["acceptance checks incomplete"])
+    raise ValueError(
+        f"acceptance check gate is not satisfied for {task_id}: {reasons}"
+    )
+
+
+def _require_review_followup_gate_ready(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    source_run_id: Optional[int] = None,
+) -> Optional[dict[str, Any]]:
+    gate = review_followup_gate_status(
+        conn,
+        task_id,
+        source_run_id=source_run_id,
+    )
+    if gate is None or gate.get("ready"):
+        return gate
+    reasons = ", ".join(gate.get("blocking_reasons") or ["follow-up evidence incomplete"])
+    raise ValueError(
+        f"review follow-up gate is not satisfied for {task_id}: {reasons}"
+    )
+
+
+def _release_review_followup_dependency_links(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    source_run_id: Optional[int],
+) -> list[str]:
+    released: list[str] = []
+    refs = _review_followup_refs(conn, task_id, source_run_id=source_run_id)
+    for ref in refs:
+        cur = conn.execute(
+            "DELETE FROM task_links WHERE parent_id = ? AND child_id = ?",
+            (ref["task_id"], task_id),
+        )
+        if cur.rowcount:
+            released.append(ref["task_id"])
+    return released
+
+
+def _metadata_text_lines(value: Any, *, limit: int = 20) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        return [str(v)[:400] for v in value[:limit]]
+    if isinstance(value, str) and value.strip():
+        return [line[:400] for line in value.strip().splitlines()[:limit]]
+    return []
+
+
+def _review_followup_failure_comment(gate: dict[str, Any]) -> str:
+    """Build bounded feedback for a failed independent review/test gate."""
+    lines = [
+        "Review/test follow-up gate failed for the current implementation run.",
+        "Hermes is requesting changes using bounded follow-up evidence; it is not replaying full worker sessions.",
+        "",
+        "Failed follow-ups:",
+    ]
+    failed_items = [
+        item for item in (gate.get("items") or [])
+        if isinstance(item, dict) and item.get("state") == "failed"
+    ]
+    if not failed_items:
+        reasons = ", ".join(str(r) for r in (gate.get("blocking_reasons") or []))
+        lines.append(f"- gate failed: {reasons or 'follow-up evidence incomplete'}")
+    for item in failed_items[:8]:
+        purpose = item.get("purpose") or "follow-up"
+        task_id = item.get("task_id") or "-"
+        lines.append(f"- {purpose} task {task_id}: {item.get('failure_reason') or 'failed'}")
+        lines.append(f"  status: {item.get('status') or '-'}")
+        lines.append(f"  verdict: {item.get('verdict') or '-'}")
+        lane = item.get("worker_lane")
+        if isinstance(lane, dict):
+            lines.append(
+                "  worker_lane: "
+                f"{lane.get('name') or '-'} "
+                f"kind={lane.get('kind') or '-'} "
+                f"exit={lane.get('exit_code')} "
+                f"timed_out={bool(lane.get('timed_out'))} "
+                f"binary_missing={bool(lane.get('binary_missing'))}"
+            )
+        run = item.get("run")
+        if isinstance(run, dict):
+            lines.append(
+                "  run: "
+                f"id={run.get('id') or '-'} "
+                f"status={run.get('status') or '-'} "
+                f"outcome={run.get('outcome') or '-'}"
+            )
+            for line in _metadata_text_lines(run.get("summary"), limit=3):
+                lines.append(f"  run_summary: {line}")
+        verification = item.get("verification")
+        if isinstance(verification, dict):
+            commands = _metadata_text_lines(verification.get("commands"), limit=4)
+            if commands:
+                lines.append("  verification_commands:")
+                lines.extend(f"    - {line}" for line in commands)
+            summary_lines = _metadata_text_lines(verification.get("summary"), limit=8)
+            if summary_lines:
+                lines.append("  verification_summary:")
+                lines.extend(f"    {line}" for line in summary_lines)
+    return _bounded_text(
+        "\n".join(lines).strip(),
+        max_bytes=REQUEST_CHANGES_FEEDBACK_BYTES,
+    )
+
+
+def _acceptance_check_failure_comment(gate: dict[str, Any]) -> str:
+    """Build bounded feedback for failed or missing Hermes acceptance checks."""
+    lines = [
+        "Hermes acceptance check gate failed for the current implementation run.",
+        "Hermes is requesting changes using deterministic check output tails only.",
+        "",
+        "Failed or missing checks:",
+    ]
+    failed_items = [
+        item for item in (gate.get("items") or [])
+        if isinstance(item, dict) and item.get("state") in {"failed", "missing"}
+    ]
+    if not failed_items:
+        reasons = ", ".join(str(r) for r in (gate.get("blocking_reasons") or []))
+        lines.append(f"- gate failed: {reasons or 'acceptance checks incomplete'}")
+    for item in failed_items[:8]:
+        name = item.get("name") or "acceptance-check"
+        state = item.get("state") or "failed"
+        lines.append(f"- {name}: {state}")
+        if item.get("failure_reason"):
+            lines.append(f"  reason: {item.get('failure_reason')}")
+        description = item.get("description")
+        if description:
+            lines.append(f"  description: {str(description)[:400]}")
+        argv_lines = _metadata_text_lines(item.get("argv"), limit=8)
+        if argv_lines:
+            lines.append("  argv:")
+            lines.extend(f"    - {line}" for line in argv_lines)
+        run = item.get("run")
+        if isinstance(run, dict):
+            lines.append(
+                "  result: "
+                f"exit={run.get('exit_code')} "
+                f"timed_out={bool(run.get('timed_out'))} "
+                f"passed={bool(run.get('passed'))}"
+            )
+            if run.get("error"):
+                lines.append(f"  error: {str(run.get('error'))[:400]}")
+            for key in ("stdout_tail", "stderr_tail"):
+                tail_lines = _metadata_text_lines(run.get(key), limit=12)
+                if tail_lines:
+                    lines.append(f"  {key}:")
+                    lines.extend(f"    {line}" for line in tail_lines)
+            if run.get("output_truncated"):
+                lines.append("  output_truncated: true")
+    return _bounded_text(
+        "\n".join(lines).strip(),
+        max_bytes=REQUEST_CHANGES_FEEDBACK_BYTES,
+    )
+
+
+def _review_followup_body(
+    snapshot: TaskProgressSnapshot,
+    *,
+    purpose: str,
+) -> str:
+    evidence = snapshot.evidence or {}
+    worker_lane = evidence.get("worker_lane") if isinstance(evidence, dict) else {}
+    git_meta = evidence.get("git") if isinstance(evidence, dict) else {}
+    verification = evidence.get("verification") if isinstance(evidence, dict) else {}
+    review = evidence.get("review") if isinstance(evidence, dict) else {}
+    changed_files = (
+        git_meta.get("changed_files")
+        if isinstance(git_meta, dict)
+        else None
+    )
+    verification_commands = (
+        verification.get("commands")
+        if isinstance(verification, dict)
+        else None
+    )
+    worker_tail = (
+        worker_lane.get("output_tail")
+        if isinstance(worker_lane, dict)
+        else None
+    )
+    run = snapshot.run
+    lines = [
+        f"Independent {purpose} task for implementation Kanban task {snapshot.task.id}.",
+        "",
+        "Do not implement new feature work unless explicitly requested by the review/test findings.",
+        "Read the bounded evidence below, inspect the workspace/diff as needed, and write a structured verdict.",
+        "",
+        "## Source task",
+        f"- id: {snapshot.task.id}",
+        f"- title: {snapshot.task.title}",
+        f"- assignee: {snapshot.task.assignee or '-'}",
+        f"- status: {snapshot.task.status}",
+        f"- workspace: {snapshot.task.workspace_kind} @ {snapshot.task.workspace_path or '-'}",
+        f"- source_run_id: {run.id if run else '-'}",
+        "",
+        "## Worker lane evidence",
+        f"- lane: {worker_lane.get('name', '-') if isinstance(worker_lane, dict) else '-'}",
+        f"- kind: {worker_lane.get('kind', '-') if isinstance(worker_lane, dict) else '-'}",
+        f"- exit_code: {worker_lane.get('exit_code', '-') if isinstance(worker_lane, dict) else '-'}",
+        f"- timed_out: {worker_lane.get('timed_out', '-') if isinstance(worker_lane, dict) else '-'}",
+        f"- review_reason: {review.get('reason', '-') if isinstance(review, dict) else '-'}",
+        "",
+        "## Changed files",
+    ]
+    changed_lines = _metadata_text_lines(changed_files)
+    lines.extend([f"- {line}" for line in changed_lines] or ["- (none recorded)"])
+    lines.extend(["", "## Diff summary"])
+    diff_summary = (
+        git_meta.get("diff_summary")
+        if isinstance(git_meta, dict)
+        else None
+    )
+    lines.extend(_metadata_text_lines(diff_summary, limit=40) or ["(none recorded)"])
+    lines.extend(["", "## Verification evidence"])
+    lines.extend([f"- command: {line}" for line in _metadata_text_lines(verification_commands)] or ["- (none recorded)"])
+    verification_summary = (
+        verification.get("summary")
+        if isinstance(verification, dict)
+        else None
+    )
+    if verification_summary:
+        lines.extend(["", "### Verification summary"])
+        lines.extend(_metadata_text_lines(verification_summary, limit=40))
+    if worker_tail:
+        lines.extend(["", "## Worker output tail"])
+        lines.extend(_metadata_text_lines(worker_tail, limit=80))
+    if purpose == "review":
+        lines.extend([
+            "",
+            "## Required review output",
+            "Return findings grouped by file/hunk where possible.",
+            "State one verdict: approve, request_changes, or blocked.",
+            "Do not mark the implementation task done; Hermes will consume your evidence.",
+        ])
+    else:
+        lines.extend([
+            "",
+            "## Required test output",
+            "Run or define deterministic verification commands when possible.",
+            "State one verdict: pass, fail, or blocked.",
+            "Do not mark the implementation task done; Hermes will consume your evidence.",
+        ])
+    return "\n".join(lines)
+
+
+def _review_followup_event_payload(plan: ReviewFollowupPlan) -> dict[str, Any]:
+    return {
+        "source_run_id": plan.source_run_id,
+        "review_task_id": plan.review_task_id,
+        "test_task_id": plan.test_task_id,
+        "created": list(plan.created),
+        "existing": list(plan.existing),
+        "review_assignee": plan.review_assignee,
+        "test_assignee": plan.test_assignee,
+    }
+
+
+def plan_review_followups(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    review_assignee: Optional[str] = "codex-review",
+    test_assignee: Optional[str] = "codex-test",
+    include_review: bool = True,
+    include_test: bool = True,
+    created_by: str = "hermes-review-planner",
+    board: Optional[str] = None,
+) -> ReviewFollowupPlan:
+    """Create independent review/test worker tasks for implementation evidence.
+
+    The source task must be blocked with ``review.required`` metadata. This
+    helper is deterministic and idempotent per source run: repeated calls return
+    the same child task ids instead of duplicating review/test work.
+    """
+    snapshot = _review_required_snapshot_for_decision(conn, task_id)
+    assert snapshot.run is not None
+    source_run_id = snapshot.run.id
+    if not include_review and not include_test:
+        raise ValueError("at least one follow-up type must be requested")
+
+    review_name = _canonical_assignee(review_assignee) if review_assignee else None
+    test_name = _canonical_assignee(test_assignee) if test_assignee else None
+    if include_review and not review_name:
+        raise ValueError("review_assignee is required when include_review is true")
+    if include_test and not test_name:
+        raise ValueError("test_assignee is required when include_test is true")
+
+    created: list[str] = []
+    existing: list[str] = []
+    review_task_id: Optional[str] = None
+    test_task_id: Optional[str] = None
+
+    if include_review:
+        key = f"review-followup:{task_id}:{source_run_id}:review"
+        preexisting = conn.execute(
+            "SELECT id FROM tasks WHERE idempotency_key = ? "
+            "AND status != 'archived' ORDER BY created_at DESC LIMIT 1",
+            (key,),
+        ).fetchone()
+        review_task_id = create_task(
+            conn,
+            title=f"Review implementation evidence for {task_id}",
+            body=_review_followup_body(snapshot, purpose="review"),
+            assignee=review_name,
+            created_by=created_by,
+            workspace_kind=snapshot.task.workspace_kind,
+            workspace_path=snapshot.task.workspace_path,
+            branch_name=snapshot.task.branch_name,
+            tenant=snapshot.task.tenant,
+            priority=snapshot.task.priority,
+            max_runtime_seconds=snapshot.task.max_runtime_seconds,
+            max_retries=snapshot.task.max_retries,
+            session_id=snapshot.task.session_id,
+            idempotency_key=key,
+            board=board,
+        )
+        if preexisting:
+            existing.append(review_task_id)
+        else:
+            created.append(review_task_id)
+        link_tasks(conn, review_task_id, task_id)
+
+    if include_test:
+        key = f"review-followup:{task_id}:{source_run_id}:test"
+        preexisting = conn.execute(
+            "SELECT id FROM tasks WHERE idempotency_key = ? "
+            "AND status != 'archived' ORDER BY created_at DESC LIMIT 1",
+            (key,),
+        ).fetchone()
+        test_task_id = create_task(
+            conn,
+            title=f"Verify implementation evidence for {task_id}",
+            body=_review_followup_body(snapshot, purpose="test"),
+            assignee=test_name,
+            created_by=created_by,
+            workspace_kind=snapshot.task.workspace_kind,
+            workspace_path=snapshot.task.workspace_path,
+            branch_name=snapshot.task.branch_name,
+            tenant=snapshot.task.tenant,
+            priority=snapshot.task.priority,
+            max_runtime_seconds=snapshot.task.max_runtime_seconds,
+            max_retries=snapshot.task.max_retries,
+            session_id=snapshot.task.session_id,
+            idempotency_key=key,
+            board=board,
+        )
+        if preexisting:
+            existing.append(test_task_id)
+        else:
+            created.append(test_task_id)
+        link_tasks(conn, test_task_id, task_id)
+
+    plan = ReviewFollowupPlan(
+        source_task_id=task_id,
+        source_run_id=source_run_id,
+        review_task_id=review_task_id,
+        test_task_id=test_task_id,
+        created=created,
+        existing=existing,
+        review_assignee=review_name if include_review else None,
+        test_assignee=test_name if include_test else None,
+    )
+    with write_txn(conn):
+        _append_event(
+            conn,
+            task_id,
+            "worker_review_followups_planned",
+            _review_followup_event_payload(plan),
+            run_id=source_run_id,
+        )
+    return plan
+
+
+def _review_decision_metadata(
+    evidence: Optional[dict],
+    *,
+    decision: str,
+    reviewer: str,
+    reviewed_at: int,
+    source_run_id: int,
+    comment: Optional[str] = None,
+) -> dict:
+    updated = dict(evidence or {})
+    review = updated.get("review")
+    if not isinstance(review, dict):
+        review = {}
+    else:
+        review = dict(review)
+    review.update(
+        {
+            "required": False,
+            "decision": decision,
+            "reviewer": reviewer,
+            "reviewed_at": reviewed_at,
+            "source_run_id": source_run_id,
+        }
+    )
+    if comment:
+        review["comment"] = comment
+    updated["review"] = review
+    return updated
+
+
+def review_worker_evidence(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    decision: str,
+    reviewer: str = "user",
+    comment: Optional[str] = None,
+    result: Optional[str] = None,
+    summary: Optional[str] = None,
+) -> TaskProgressSnapshot:
+    """Approve or request changes for review-required external-worker evidence.
+
+    This is the controlled review bridge for Codex/external-worker lanes. It
+    operates on the bounded evidence stored in ``task_runs.metadata`` and
+    ``task_events``; it does not read or replay the full worker transcript.
+    """
+    normalized_decision = decision.strip().lower().replace("-", "_")
+    if normalized_decision not in {"approve", "request_changes"}:
+        raise ValueError("decision must be approve or request_changes")
+    reviewer_name = (reviewer or "user").strip() or "user"
+    review_comment = (comment or "").strip()
+    if normalized_decision == "request_changes" and not review_comment:
+        raise ValueError("review comment is required when requesting changes")
+
+    snapshot = _review_required_snapshot_for_decision(conn, task_id)
+    assert snapshot.run is not None  # for type checkers; guaranteed above.
+    source_run_id = snapshot.run.id
+    now = int(time.time())
+    metadata = _review_decision_metadata(
+        snapshot.evidence,
+        decision="approved" if normalized_decision == "approve" else "changes_requested",
+        reviewer=reviewer_name,
+        reviewed_at=now,
+        source_run_id=source_run_id,
+        comment=review_comment or None,
+    )
+    lane_meta = metadata.get("worker_lane") if isinstance(metadata, dict) else None
+    event_payload = {
+        "reviewer": reviewer_name,
+        "source_run_id": source_run_id,
+        "worker_lane": lane_meta if isinstance(lane_meta, dict) else None,
+    }
+    followup_gate = None
+    acceptance_check_gate = None
+    if normalized_decision == "approve":
+        followup_gate = _require_review_followup_gate_ready(
+            conn,
+            task_id,
+            source_run_id=source_run_id,
+        )
+        acceptance_check_gate = _require_acceptance_check_gate_ready(
+            conn,
+            task_id,
+            source_run_id=source_run_id,
+        )
+    if followup_gate is not None:
+        event_payload["review_followup_gate"] = followup_gate
+    if acceptance_check_gate is not None:
+        event_payload["acceptance_check_gate"] = acceptance_check_gate
+    if review_comment:
+        event_payload["comment"] = review_comment
+
+    if normalized_decision == "request_changes":
+        with write_txn(conn):
+            # Re-check inside the write transaction before mutating state.
+            current = _review_required_snapshot_for_decision(conn, task_id)
+            assert current.run is not None
+            if current.run.id != source_run_id:
+                raise ValueError(f"task {task_id} review evidence changed")
+            conn.execute(
+                "UPDATE task_runs SET metadata = ? WHERE id = ?",
+                (json.dumps(metadata, ensure_ascii=False), source_run_id),
+            )
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (task_id, reviewer_name, review_comment, now),
+            )
+            _append_event(
+                conn,
+                task_id,
+                "commented",
+                {"author": reviewer_name, "len": len(review_comment)},
+            )
+            _append_event(
+                conn,
+                task_id,
+                "worker_review_changes_requested",
+                event_payload,
+                run_id=source_run_id,
+            )
+            released_followups = _release_review_followup_dependency_links(
+                conn,
+                task_id,
+                source_run_id=source_run_id,
+            )
+            if released_followups:
+                _append_event(
+                    conn,
+                    task_id,
+                    "worker_review_followup_gate_released",
+                    {
+                        "source_run_id": source_run_id,
+                        "followup_task_ids": released_followups,
+                    },
+                    run_id=source_run_id,
+                )
+            if not _unblock_task_in_txn(
+                conn,
+                task_id,
+                event_payload={
+                    "review_decision": "changes_requested",
+                    "reviewer": reviewer_name,
+                    "source_run_id": source_run_id,
+                },
+            ):
+                raise ValueError(f"cannot unblock {task_id} after review")
+        refreshed = task_progress_snapshot(conn, task_id)
+        if refreshed is None:
+            raise ValueError(f"unknown task {task_id}")
+        return refreshed
+
+    review_summary = (
+        summary
+        or result
+        or f"approved worker evidence from run {source_run_id}"
+    )
+    review_result = result or review_summary
+    with write_txn(conn):
+        current = _review_required_snapshot_for_decision(conn, task_id)
+        assert current.run is not None
+        if current.run.id != source_run_id:
+            raise ValueError(f"task {task_id} review evidence changed")
+        followup_gate = _require_review_followup_gate_ready(
+            conn,
+            task_id,
+            source_run_id=source_run_id,
+        )
+        acceptance_check_gate = _require_acceptance_check_gate_ready(
+            conn,
+            task_id,
+            source_run_id=source_run_id,
+        )
+        if followup_gate is not None:
+            event_payload["review_followup_gate"] = followup_gate
+        if acceptance_check_gate is not None:
+            event_payload["acceptance_check_gate"] = acceptance_check_gate
+        conn.execute(
+            "UPDATE task_runs SET metadata = ? WHERE id = ?",
+            (json.dumps(metadata, ensure_ascii=False), source_run_id),
+        )
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET status       = 'done',
+                   result       = ?,
+                   completed_at = ?,
+                   claim_lock   = NULL,
+                   claim_expires= NULL,
+                   worker_pid   = NULL,
+                   current_run_id = NULL
+             WHERE id = ?
+               AND status = 'blocked'
+            """,
+            (review_result, now, task_id),
+        )
+        if cur.rowcount != 1:
+            raise ValueError(f"cannot approve {task_id} after review")
+        approved_run_id = _synthesize_ended_run(
+            conn,
+            task_id,
+            outcome="completed",
+            summary=review_summary,
+            metadata=metadata,
+        )
+        event_payload["target_run_id"] = approved_run_id
+        _append_event(
+            conn,
+            task_id,
+            "worker_review_approved",
+            event_payload,
+            run_id=approved_run_id,
+        )
+        _append_event(
+            conn,
+            task_id,
+            "completed",
+            {"result_len": len(review_result), "summary": review_summary[:400]},
+            run_id=approved_run_id,
+        )
+    _clear_failure_counter(conn, task_id)
+    recompute_ready(conn)
+    _cleanup_workspace(conn, task_id)
+    refreshed = task_progress_snapshot(conn, task_id)
+    if refreshed is None:
+        raise ValueError(f"unknown task {task_id}")
+    return refreshed
+
+
 def _append_event(
     conn: sqlite3.Connection,
     task_id: str,
@@ -1934,6 +4531,19 @@ def _append_event(
         "VALUES (?, ?, ?, ?, ?)",
         (task_id, run_id, kind, pl, now),
     )
+
+
+def record_task_event(
+    conn: sqlite3.Connection,
+    task_id: str,
+    kind: str,
+    payload: Optional[dict] = None,
+    *,
+    run_id: Optional[int] = None,
+) -> None:
+    """Public helper for trusted external worker wrappers to emit events."""
+    with write_txn(conn):
+        _append_event(conn, task_id, kind, payload, run_id=run_id)
 
 
 def _end_run(
@@ -3034,6 +5644,7 @@ def block_task(
     *,
     reason: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    metadata: Optional[dict] = None,
 ) -> bool:
     """Transition ``running -> blocked``."""
     with write_txn(conn):
@@ -3070,6 +5681,7 @@ def block_task(
             conn, task_id,
             outcome="blocked", status="blocked",
             summary=reason,
+            metadata=metadata,
         )
         # Synthesize a run when blocking a never-claimed task so the
         # reason is preserved in attempt history.
@@ -3078,9 +5690,65 @@ def block_task(
                 conn, task_id,
                 outcome="blocked",
                 summary=reason,
+                metadata=metadata,
             )
-        _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
+        payload = {"reason": reason}
+        if metadata:
+            payload["metadata"] = metadata
+        _append_event(conn, task_id, "blocked", payload, run_id=run_id)
         return True
+
+
+def _unblock_task_in_txn(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    event_payload: Optional[dict] = None,
+) -> bool:
+    """Transition ``blocked``/``scheduled`` -> ready or todo inside a txn."""
+    now = int(time.time())
+    stale = conn.execute(
+        "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
+        (task_id,),
+    ).fetchone()
+    if stale and stale["current_run_id"]:
+        conn.execute(
+            """
+            UPDATE task_runs
+               SET status = 'reclaimed', outcome = 'reclaimed',
+                   summary = COALESCE(summary, 'invariant recovery on unblock'),
+                   ended_at = ?,
+                   claim_lock = NULL, claim_expires = NULL, worker_pid = NULL
+             WHERE id = ? AND ended_at IS NULL
+            """,
+            (now, int(stale["current_run_id"])),
+        )
+    # Re-gate on parent completion before flipping 'blocked' back to
+    # 'ready'. Unconditionally setting status='ready' here bypasses the
+    # parent-completion invariant (the dispatcher trusts that column);
+    # if parents are still in progress the task must wait in 'todo'
+    # until recompute_ready picks it up. RCA: Bug 2 at
+    # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
+    undone_parents = conn.execute(
+        "SELECT 1 FROM task_links l "
+        "JOIN tasks p ON p.id = l.parent_id "
+        "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    new_status = "todo" if undone_parents else "ready"
+    cur = conn.execute(
+        "UPDATE tasks SET status = ?, current_run_id = NULL, "
+        "consecutive_failures = 0, last_failure_error = NULL "
+        "WHERE id = ? AND status IN ('blocked', 'scheduled')",
+        (new_status, task_id),
+    )
+    if cur.rowcount != 1:
+        return False
+    payload = {"status": new_status} if new_status != "ready" else None
+    if event_payload:
+        payload = {**(payload or {}), **event_payload}
+    _append_event(conn, task_id, "unblocked", payload)
+    return True
 
 
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
@@ -3093,50 +5761,8 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     runs invariant (``current_run_id IS NULL`` ⇔ run row in terminal
     state) holds for the rest of this function's lifetime.
     """
-    now = int(time.time())
     with write_txn(conn):
-        stale = conn.execute(
-            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
-            (task_id,),
-        ).fetchone()
-        if stale and stale["current_run_id"]:
-            conn.execute(
-                """
-                UPDATE task_runs
-                   SET status = 'reclaimed', outcome = 'reclaimed',
-                       summary = COALESCE(summary, 'invariant recovery on unblock'),
-                       ended_at = ?,
-                       claim_lock = NULL, claim_expires = NULL, worker_pid = NULL
-                 WHERE id = ? AND ended_at IS NULL
-                """,
-                (now, int(stale["current_run_id"])),
-            )
-        # Re-gate on parent completion before flipping 'blocked' back to
-        # 'ready'. Unconditionally setting status='ready' here bypasses the
-        # parent-completion invariant (the dispatcher trusts that column);
-        # if parents are still in progress the task must wait in 'todo'
-        # until recompute_ready picks it up. RCA: Bug 2 at
-        # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
-        undone_parents = conn.execute(
-            "SELECT 1 FROM task_links l "
-            "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
-            (task_id,),
-        ).fetchone()
-        new_status = "todo" if undone_parents else "ready"
-        cur = conn.execute(
-            "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "consecutive_failures = 0, last_failure_error = NULL "
-            "WHERE id = ? AND status IN ('blocked', 'scheduled')",
-            (new_status, task_id),
-        )
-        if cur.rowcount != 1:
-            return False
-        _append_event(
-            conn, task_id, "unblocked",
-            {"status": new_status} if new_status != "ready" else None,
-        )
-        return True
+        return _unblock_task_in_txn(conn, task_id)
 
 
 def specify_triage_task(
@@ -3323,13 +5949,23 @@ def decompose_triage_task(
     child_ids: list[str] = []
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant FROM tasks WHERE id = ?", (task_id,)
+            "SELECT id, status, priority, workspace_kind, workspace_path, "
+            "branch_name, tenant, max_runtime_seconds, max_retries, session_id "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
         ).fetchone()
         if root_row is None:
             return None
         if root_row["status"] != "triage":
             return None
         tenant = root_row["tenant"]
+        root_workspace_kind = root_row["workspace_kind"] or "scratch"
+        root_workspace_path = root_row["workspace_path"]
+        root_branch_name = root_row["branch_name"]
+        root_priority = int(root_row["priority"] or 0)
+        root_max_runtime = root_row["max_runtime_seconds"]
+        root_max_retries = root_row["max_retries"]
+        root_session_id = root_row["session_id"]
 
         # Create children. Status is 'todo' regardless of parents — we
         # link them under the root AFTER creation so the dispatcher
@@ -3342,22 +5978,43 @@ def decompose_triage_task(
             assignee = _canonical_assignee(child.get("assignee"))
             conn.execute(
                 "INSERT INTO tasks "
-                "(id, title, body, assignee, status, workspace_kind, "
-                " tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', 'scratch', ?, ?, ?)",
+                "(id, title, body, assignee, status, priority, workspace_kind, "
+                " workspace_path, branch_name, tenant, created_at, created_by, "
+                " max_runtime_seconds, max_retries, session_id) "
+                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
                     body if isinstance(body, str) else None,
                     assignee,
+                    root_priority,
+                    root_workspace_kind,
+                    root_workspace_path,
+                    root_branch_name,
                     tenant,
                     now,
                     (author or "decomposer"),
+                    root_max_runtime,
+                    root_max_retries,
+                    root_session_id,
                 ),
             )
             _append_event(
                 conn, new_id, "created",
-                {"by": author or "decomposer", "from_decompose_of": task_id},
+                {
+                    "by": author or "decomposer",
+                    "from_decompose_of": task_id,
+                    "assignee": assignee,
+                    "status": "todo",
+                    "tenant": tenant,
+                    "workspace_kind": root_workspace_kind,
+                    "workspace_path": root_workspace_path,
+                    "branch_name": root_branch_name,
+                    "priority": root_priority,
+                    "max_runtime_seconds": root_max_runtime,
+                    "max_retries": root_max_retries,
+                    "session_id": root_session_id,
+                },
             )
             child_ids.append(new_id)
 
@@ -3418,6 +6075,16 @@ def decompose_triage_task(
             {
                 "child_ids": child_ids,
                 "root_assignee": root_assignee,
+                "inherited": {
+                    "workspace_kind": root_workspace_kind,
+                    "workspace_path": root_workspace_path,
+                    "branch_name": root_branch_name,
+                    "tenant": tenant,
+                    "priority": root_priority,
+                    "max_runtime_seconds": root_max_runtime,
+                    "max_retries": root_max_retries,
+                    "session_id": root_session_id,
+                },
             },
         )
 
@@ -3695,6 +6362,9 @@ class DispatchResult:
     operator-actionable failure. Tracked separately so health telemetry
     can distinguish "real stuck" (nothing spawned but spawnable work
     available) from "correctly idle" (nothing spawnable in the queue)."""
+    skipped_concurrency: list[str] = field(default_factory=list)
+    """Ready/review task ids skipped because their worker lane's
+    max_concurrency is already saturated."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -3710,6 +6380,27 @@ class DispatchResult:
     Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
     ``"recent_success"`` (completed run within guard window),
     ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "reclaimed": self.reclaimed,
+            "crashed": self.crashed,
+            "timed_out": self.timed_out,
+            "stale": self.stale,
+            "auto_blocked": self.auto_blocked,
+            "promoted": self.promoted,
+            "spawned": [
+                {"task_id": tid, "assignee": who, "workspace": ws}
+                for (tid, who, ws) in self.spawned
+            ],
+            "skipped_unassigned": self.skipped_unassigned,
+            "skipped_nonspawnable": self.skipped_nonspawnable,
+            "skipped_concurrency": self.skipped_concurrency,
+            "respawn_guarded": [
+                {"task_id": tid, "reason": reason}
+                for (tid, reason) in self.respawn_guarded
+            ],
+        }
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -4530,7 +7221,14 @@ def _record_spawn_failure(
     )
 
 
-def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
+def _set_worker_pid(
+    conn: sqlite3.Connection,
+    task_id: str,
+    pid: int,
+    *,
+    worker_lane: Optional[str] = None,
+    worker_kind: Optional[str] = None,
+) -> None:
     """Record the spawned child's pid + emit a ``spawned`` event.
 
     The event's payload carries the pid so a human reading ``hermes kanban
@@ -4548,7 +7246,12 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
                 "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
                 (int(pid), run_id),
             )
-        _append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
+        payload: dict[str, Any] = {"pid": int(pid)}
+        if worker_lane:
+            payload["worker_lane"] = worker_lane
+        if worker_kind:
+            payload["worker_kind"] = worker_kind
+        _append_event(conn, task_id, "spawned", payload, run_id=run_id)
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
@@ -4644,7 +7347,7 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     """Return True iff there is at least one ready+assigned+unclaimed task
-    whose assignee maps to a real Hermes profile.
+    whose assignee maps to a real Hermes profile or registered worker lane.
 
     Used by the gateway- and CLI-embedded dispatchers' health telemetry to
     decide whether ``0 spawned`` is a "stuck" condition (real spawnable
@@ -4664,19 +7367,28 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     if not rows:
         return False
     try:
-        from hermes_cli.profiles import profile_exists  # local import: avoids cycle
+        from hermes_cli.worker_lanes import (
+            register_configured_worker_lanes,
+            resolve_worker_assignee,
+        )
+        register_configured_worker_lanes()
     except Exception:
-        # Can't introspect — assume spawnable, preserve legacy behavior.
-        return True
+        resolve_worker_assignee = None  # type: ignore[assignment]
     for row in rows:
-        if profile_exists(row["assignee"]):
+        if resolve_worker_assignee is None:
+            # Can't introspect — assume spawnable, preserve legacy behavior.
             return True
+        try:
+            if resolve_worker_assignee(row["assignee"], refresh_config=False).spawnable:
+                return True
+        except Exception:
+            continue
     return False
 
 
 def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     """Return True iff there is at least one review+assigned+unclaimed task
-    whose assignee maps to a real Hermes profile.
+    whose assignee maps to a real Hermes profile or registered worker lane.
 
     Mirror of :func:`has_spawnable_ready` for the review column —
     used by the health telemetry to decide whether the dispatcher
@@ -4690,13 +7402,30 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     if not rows:
         return False
     try:
-        from hermes_cli.profiles import profile_exists  # local import: avoids cycle
+        from hermes_cli.worker_lanes import (
+            register_configured_worker_lanes,
+            resolve_worker_assignee,
+        )
+        register_configured_worker_lanes()
     except Exception:
-        return True
+        resolve_worker_assignee = None  # type: ignore[assignment]
     for row in rows:
-        if profile_exists(row["assignee"]):
+        if resolve_worker_assignee is None:
             return True
+        try:
+            if resolve_worker_assignee(row["assignee"], refresh_config=False).spawnable:
+                return True
+        except Exception:
+            continue
     return False
+
+
+def _running_count_for_assignee(conn: sqlite3.Connection, assignee: str) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) FROM tasks WHERE status = 'running' AND assignee = ?",
+        (_canonical_assignee(assignee),),
+    ).fetchone()
+    return int(row[0] if row else 0)
 
 
 def dispatch_once(
@@ -4710,6 +7439,7 @@ def dispatch_once(
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     stale_timeout_seconds: int = 0,
     board: Optional[str] = None,
+    only_task_ids: Optional[Iterable[str]] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -4738,6 +7468,8 @@ def dispatch_once(
     ``spawn_fn`` defaults to ``_default_spawn``. Tests pass a stub.
     ``board`` pins workspace/log/db resolution for this tick to a specific
     board. When omitted, the current-board resolution chain is used.
+    ``only_task_ids`` narrows spawn attempts to those task IDs while still
+    running the normal lifecycle maintenance at the start of the tick.
     """
     # Reap zombie children from previously spawned workers.
     # The gateway-embedded dispatcher is the parent of every worker spawned
@@ -4788,6 +7520,14 @@ def dispatch_once(
         result.auto_blocked.extend(_crash_auto_blocked)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn)
+    try:
+        from hermes_cli.worker_lanes import (
+            register_configured_worker_lanes,
+            resolve_worker_assignee,
+        )
+        register_configured_worker_lanes()
+    except Exception:
+        resolve_worker_assignee = None  # type: ignore[assignment]
 
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full
@@ -4804,11 +7544,19 @@ def dispatch_once(
             ).fetchone()[0]
         )
 
+    only_ids = (
+        {str(tid).strip() for tid in only_task_ids if str(tid).strip()}
+        if only_task_ids is not None
+        else None
+    )
+
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
+    if only_ids is not None:
+        ready_rows = [row for row in ready_rows if row["id"] in only_ids]
     # Honour kanban.max_in_progress: if the board already has enough running
     # tasks, skip spawning this tick so slow workers (local LLMs,
     # resource-constrained hosts) can finish what they have before more tasks
@@ -4824,27 +7572,35 @@ def dispatch_once(
         if max_spawn is None or max_spawn > remaining:
             max_spawn = remaining
     spawned = 0
+    lane_spawned: dict[str, int] = {}
     for row in ready_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
-        # Skip ready tasks whose assignee is not a real Hermes profile.
-        # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
-        # with "Profile 'X' does not exist" when the assignee names a
-        # control-plane lane (e.g. an interactive Claude Code terminal
-        # like ``orion-cc`` / ``orion-research``) rather than a Hermes
-        # profile. Those task lanes are pulled by terminals via
-        # ``claim_task`` directly and should NEVER auto-spawn — the
-        # subprocess would crash on startup, get reaped as a zombie,
-        # the task would loop back to ``ready`` on next tick, and we'd
-        # burn CPU forever (#kanban-dispatcher-crash-loop 2026-05-05).
-        try:
-            from hermes_cli.profiles import profile_exists  # local import: avoids cycle
-        except Exception:
-            profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row["assignee"]):
+        # Resolve before claiming so non-spawnable control-plane lanes stay in
+        # ready instead of being handed to the profile fallback. Historically
+        # this guard only checked ``profile_exists`` because `_default_spawn`
+        # runs ``hermes -p <assignee>``; without the guard, assignees such as
+        # interactive terminal lanes would crash on startup, loop back to ready,
+        # and burn dispatcher cycles. The resolver preserves that behavior while
+        # adding registered external worker lanes ahead of Hermes profiles.
+        if resolve_worker_assignee is None:
+            assignee_resolution = None
+        else:
+            try:
+                assignee_resolution = resolve_worker_assignee(
+                    row["assignee"],
+                    refresh_config=False,
+                )
+            except Exception:
+                result.skipped_nonspawnable.append(row["id"])
+                continue
+        if (
+            assignee_resolution is not None
+            and assignee_resolution.kind == "skipped_nonspawnable"
+        ):
             # Bucket separately from skipped_unassigned: the operator
             # cannot fix this by assigning a profile (the assignee IS the
             # intended owner — a terminal lane). Health telemetry uses
@@ -4853,6 +7609,18 @@ def dispatch_once(
             # of human-pulled work.
             result.skipped_nonspawnable.append(row["id"])
             continue
+        lane = (
+            assignee_resolution.lane
+            if assignee_resolution is not None
+            and assignee_resolution.kind == "worker_lane"
+            else None
+        )
+        if lane is not None and lane.max_concurrency is not None:
+            lane_running = _running_count_for_assignee(conn, lane.name)
+            lane_local = lane_spawned.get(lane.name, 0) if dry_run else 0
+            if lane_running + lane_local >= int(lane.max_concurrency):
+                result.skipped_concurrency.append(row["id"])
+                continue
         # Respawn guard: refuse to re-spawn when useful work is already
         # in-flight/recent, or when the last failure is a deterministic
         # blocker (quota / auth). The guard defers the spawn this tick so
@@ -4876,6 +7644,8 @@ def dispatch_once(
             continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
+            if lane is not None:
+                lane_spawned[lane.name] = lane_spawned.get(lane.name, 0) + 1
             continue
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
@@ -4892,7 +7662,9 @@ def dispatch_once(
             continue
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
-        _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+        _spawn = spawn_fn if spawn_fn is not None else (
+            lane.spawn_fn if lane is not None else _default_spawn
+        )
         try:
             # Back-compat: older spawn_fn signatures accept only
             # (task, workspace). Test stubs in the suite rely on that.
@@ -4907,7 +7679,13 @@ def dispatch_once(
             except (TypeError, ValueError):
                 pid = _spawn(claimed, str(workspace))
             if pid:
-                _set_worker_pid(conn, claimed.id, int(pid))
+                _set_worker_pid(
+                    conn,
+                    claimed.id,
+                    int(pid),
+                    worker_lane=(lane.name if lane is not None else None),
+                    worker_kind=(lane.kind if lane is not None else None),
+                )
             # NOTE: we intentionally do NOT reset consecutive_failures
             # here. A successful spawn proves the worker can start but
             # doesn't prove the run will succeed. Under unified
@@ -4939,21 +7717,47 @@ def dispatch_once(
         "WHERE status = 'review' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
+    if only_ids is not None:
+        review_rows = [row for row in review_rows if row["id"] in only_ids]
     for row in review_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
-        try:
-            from hermes_cli.profiles import profile_exists
-        except Exception:
-            profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row["assignee"]):
+        if resolve_worker_assignee is None:
+            assignee_resolution = None
+        else:
+            try:
+                assignee_resolution = resolve_worker_assignee(
+                    row["assignee"],
+                    refresh_config=False,
+                )
+            except Exception:
+                result.skipped_nonspawnable.append(row["id"])
+                continue
+        if (
+            assignee_resolution is not None
+            and assignee_resolution.kind == "skipped_nonspawnable"
+        ):
             result.skipped_nonspawnable.append(row["id"])
             continue
+        lane = (
+            assignee_resolution.lane
+            if assignee_resolution is not None
+            and assignee_resolution.kind == "worker_lane"
+            else None
+        )
+        if lane is not None and lane.max_concurrency is not None:
+            lane_running = _running_count_for_assignee(conn, lane.name)
+            lane_local = lane_spawned.get(lane.name, 0) if dry_run else 0
+            if lane_running + lane_local >= int(lane.max_concurrency):
+                result.skipped_concurrency.append(row["id"])
+                continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
+            if lane is not None:
+                lane_spawned[lane.name] = lane_spawned.get(lane.name, 0) + 1
             continue
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
@@ -4975,8 +7779,11 @@ def dispatch_once(
         # appends task.skills via --skills.  Setting task.skills here
         # means the review agent gets both kanban-worker (lifecycle)
         # and sdlc-review (review logic: AC verification, merge, etc.).
-        claimed.skills = ["sdlc-review"]
-        _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+        if lane is None:
+            claimed.skills = ["sdlc-review"]
+        _spawn = spawn_fn if spawn_fn is not None else (
+            lane.spawn_fn if lane is not None else _default_spawn
+        )
         try:
             import inspect
             try:
@@ -4988,7 +7795,13 @@ def dispatch_once(
             except (TypeError, ValueError):
                 pid = _spawn(claimed, str(workspace))
             if pid:
-                _set_worker_pid(conn, claimed.id, int(pid))
+                _set_worker_pid(
+                    conn,
+                    claimed.id,
+                    int(pid),
+                    worker_lane=(lane.name if lane is not None else None),
+                    worker_kind=(lane.kind if lane is not None else None),
+                )
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
         except Exception as exc:
@@ -5500,17 +8313,19 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     Order:
       1. Task title (mandatory).
       2. Task body (optional opening post, capped at 8 KB).
-      3. Prior attempts on THIS task (most recent ``_CTX_MAX_PRIOR_ATTEMPTS``
+      3. Latest requested-changes feedback, when the current task is a retry
+         after Hermes/controller review asked for changes.
+      4. Prior attempts on THIS task (most recent ``_CTX_MAX_PRIOR_ATTEMPTS``
          shown; older attempts collapsed into a one-line summary).
          Each attempt's ``summary`` / ``error`` / ``metadata`` capped at
          ``_CTX_MAX_FIELD_BYTES`` each.
-      4. Structured handoff results of every done parent task. Prefers
+      5. Structured handoff results of every done parent task. Prefers
          ``run.summary`` / ``run.metadata`` when the parent was executed
          via a run; falls back to ``task.result`` for older data. Same
          per-field cap.
-      5. Cross-task role history for the assignee (most recent 5
+      6. Cross-task role history for the assignee (most recent 5
          completed runs on other tasks).
-      6. Comment thread (most recent ``_CTX_MAX_COMMENTS`` shown, older
+      7. Comment thread (most recent ``_CTX_MAX_COMMENTS`` shown, older
          collapsed).
 
     All caps exist so worker prompts stay bounded even on pathological
@@ -5556,12 +8371,49 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
         lines.append(_cap(task.body, _CTX_MAX_BODY_BYTES))
         lines.append("")
 
+    all_prior = [r for r in list_runs(conn, task_id) if r.ended_at is not None]
+    latest_change_request: Optional[Run] = None
+    latest_change_meta: Optional[dict[str, Any]] = None
+    for run in reversed(all_prior):
+        metadata = run.metadata if isinstance(run.metadata, dict) else None
+        review = metadata.get("review") if isinstance(metadata, dict) else None
+        if not isinstance(review, dict):
+            continue
+        if review.get("decision") == "changes_requested":
+            latest_change_request = run
+            latest_change_meta = review
+            break
+    if latest_change_request is not None and latest_change_meta is not None:
+        lines.append("## Requested changes to address before finishing")
+        lines.append(
+            "This task was reopened after review. Address the feedback below, "
+            "then run focused verification and include the result in your receipt."
+        )
+        reviewer = latest_change_meta.get("reviewer") or "reviewer"
+        reviewed_at = latest_change_meta.get("reviewed_at")
+        if isinstance(reviewed_at, (int, float)):
+            reviewed_at_text = time.strftime(
+                "%Y-%m-%d %H:%M",
+                time.localtime(int(reviewed_at)),
+            )
+        else:
+            reviewed_at_text = "-"
+        lines.append(
+            f"- reviewer: {reviewer}; source_run_id: "
+            f"{latest_change_meta.get('source_run_id') or latest_change_request.id}; "
+            f"reviewed_at: {reviewed_at_text}"
+        )
+        comment = latest_change_meta.get("comment")
+        if isinstance(comment, str) and comment.strip():
+            lines.append("")
+            lines.append(_cap(comment, _CTX_MAX_COMMENT_BYTES))
+        lines.append("")
+
     # Prior attempts — show closed runs so a retrying worker sees the
     # history. Skip the currently-active run (that's this worker).
     # Cap at _CTX_MAX_PRIOR_ATTEMPTS most-recent closed runs; older
     # attempts get collapsed into a one-line marker so the worker knows
     # more exist without bloating the prompt.
-    all_prior = [r for r in list_runs(conn, task_id) if r.ended_at is not None]
     # list_runs returns ascending by started_at; "most recent" = last N
     if len(all_prior) > _CTX_MAX_PRIOR_ATTEMPTS:
         omitted = len(all_prior) - _CTX_MAX_PRIOR_ATTEMPTS
@@ -6141,6 +8993,19 @@ def known_assignees(conn: sqlite3.Connection) -> list[dict]:
       the whole board.
     """
     on_disk = set(list_profiles_on_disk())
+    worker_lane_names: set[str] = set()
+    worker_lane_kinds: dict[str, str] = {}
+    try:
+        from hermes_cli.worker_lanes import (
+            list_worker_lanes,
+            register_configured_worker_lanes,
+        )
+        register_configured_worker_lanes()
+        for lane in list_worker_lanes():
+            worker_lane_names.add(lane.name)
+            worker_lane_kinds[lane.name] = lane.kind
+    except Exception:
+        pass
 
     # Count tasks per (assignee, status), excluding archived.
     counts: dict[str, dict[str, int]] = {}
@@ -6151,15 +9016,168 @@ def known_assignees(conn: sqlite3.Connection) -> list[dict]:
     ):
         counts.setdefault(row["assignee"], {})[row["status"]] = int(row["n"])
 
-    names = sorted(on_disk | set(counts.keys()))
+    names = sorted(on_disk | worker_lane_names | set(counts.keys()))
     return [
         {
             "name": name,
             "on_disk": name in on_disk,
+            "worker_lane": name in worker_lane_names,
+            "worker_kind": worker_lane_kinds.get(name),
             "counts": counts.get(name, {}),
         }
         for name in names
     ]
+
+
+_WORKER_LANE_SAFE_CONFIG_KEYS = {
+    "type",
+    "model",
+    "sandbox",
+    "approval",
+    "timeout_seconds",
+}
+
+
+def _safe_worker_lane_config(config: Any) -> dict[str, Any]:
+    """Return non-secret, operator-useful lane config fields only."""
+    if not isinstance(config, dict):
+        return {}
+    return {
+        key: config[key]
+        for key in sorted(_WORKER_LANE_SAFE_CONFIG_KEYS)
+        if config.get(key) is not None
+    }
+
+
+def worker_lane_statuses(conn: sqlite3.Connection) -> list[WorkerLaneStatus]:
+    """Return registered worker lanes with current board occupancy.
+
+    This is a read-only operator view. It refreshes configured lanes, counts
+    tasks assigned to each lane, and exposes active run/task identity without
+    reading full worker logs or Codex sessions.
+    """
+    try:
+        from hermes_cli.worker_lanes import (
+            list_worker_lanes,
+            register_configured_worker_lanes,
+        )
+        register_configured_worker_lanes()
+        lanes = list_worker_lanes()
+    except Exception:
+        lanes = []
+
+    names = [lane.name for lane in lanes]
+    counts_by_lane: dict[str, dict[str, int]] = {name: {} for name in names}
+    active_by_lane: dict[str, list[dict[str, Any]]] = {name: [] for name in names}
+    if names:
+        placeholders = ",".join("?" for _ in names)
+        for row in conn.execute(
+            "SELECT assignee, status, COUNT(*) AS n FROM tasks "
+            "WHERE status != 'archived' AND assignee IN "
+            f"({placeholders}) GROUP BY assignee, status",
+            tuple(names),
+        ):
+            counts_by_lane.setdefault(row["assignee"], {})[row["status"]] = int(row["n"])
+
+        rows = conn.execute(
+            """
+            SELECT
+                t.id AS task_id,
+                t.title AS title,
+                t.assignee AS assignee,
+                t.status AS task_status,
+                t.workspace_kind AS workspace_kind,
+                t.workspace_path AS workspace_path,
+                t.worker_pid AS task_worker_pid,
+                t.current_run_id AS current_run_id,
+                t.last_heartbeat_at AS task_last_heartbeat_at,
+                r.id AS run_id,
+                r.status AS run_status,
+                r.outcome AS outcome,
+                r.worker_pid AS run_worker_pid,
+                r.claim_lock AS claim_lock,
+                r.claim_expires AS claim_expires,
+                r.started_at AS started_at,
+                r.last_heartbeat_at AS run_last_heartbeat_at,
+                r.max_runtime_seconds AS max_runtime_seconds,
+                r.metadata AS metadata
+            FROM tasks t
+            LEFT JOIN task_runs r ON r.id = t.current_run_id
+            WHERE t.status = 'running'
+              AND t.assignee IN ({})
+            ORDER BY t.started_at ASC, t.created_at ASC, t.id ASC
+            """.format(placeholders),
+            tuple(names),
+        ).fetchall()
+        for row in rows:
+            meta: dict[str, Any] = {}
+            if row["metadata"]:
+                try:
+                    parsed = json.loads(row["metadata"])
+                    if isinstance(parsed, dict):
+                        meta = parsed
+                except Exception:
+                    meta = {}
+            lane_meta = meta.get("worker_lane") if isinstance(meta, dict) else None
+            instance_meta = meta.get("worker_instance") if isinstance(meta, dict) else None
+            active_by_lane.setdefault(row["assignee"], []).append({
+                "task_id": row["task_id"],
+                "title": row["title"],
+                "status": row["task_status"],
+                "run_id": row["run_id"] or row["current_run_id"],
+                "run_status": row["run_status"],
+                "outcome": row["outcome"],
+                "worker_pid": (
+                    row["run_worker_pid"]
+                    if row["run_worker_pid"] is not None
+                    else row["task_worker_pid"]
+                ),
+                "claim_lock": row["claim_lock"],
+                "claim_expires": row["claim_expires"],
+                "started_at": row["started_at"],
+                "last_heartbeat_at": (
+                    row["run_last_heartbeat_at"]
+                    if row["run_last_heartbeat_at"] is not None
+                    else row["task_last_heartbeat_at"]
+                ),
+                "max_runtime_seconds": row["max_runtime_seconds"],
+                "workspace_kind": row["workspace_kind"],
+                "workspace_path": row["workspace_path"],
+                "model": (
+                    instance_meta.get("model")
+                    if isinstance(instance_meta, dict)
+                    else (
+                        lane_meta.get("model")
+                        if isinstance(lane_meta, dict)
+                        else None
+                    )
+                ),
+            })
+
+    statuses: list[WorkerLaneStatus] = []
+    for lane in lanes:
+        active = active_by_lane.get(lane.name, [])
+        max_concurrency = lane.max_concurrency
+        active_count = len(active)
+        available_capacity = (
+            None
+            if max_concurrency is None
+            else max(0, int(max_concurrency) - active_count)
+        )
+        statuses.append(WorkerLaneStatus(
+            name=lane.name,
+            kind=lane.kind,
+            description=lane.description,
+            source=lane.source,
+            success_policy=lane.success_policy,
+            max_concurrency=max_concurrency,
+            active_count=active_count,
+            available_capacity=available_capacity,
+            counts=counts_by_lane.get(lane.name, {}),
+            active=active,
+            config=_safe_worker_lane_config(lane.config),
+        ))
+    return statuses
 
 
 # ---------------------------------------------------------------------------

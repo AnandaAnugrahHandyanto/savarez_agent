@@ -358,6 +358,84 @@ def test_goal_command_dispatches_in_cli_registry_helpers():
     assert "/goal" in session_cmds
 
 
+def test_create_kanban_task_from_goal_bridge_is_opt_in_and_idempotent(hermes_home):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.goals import create_kanban_task_from_goal
+
+    tid1 = create_kanban_task_from_goal(
+        "refactor worker lanes",
+        session_id="goal-session-1",
+        assignee="orchestrator",
+        tenant="dev",
+        priority=7,
+    )
+    tid2 = create_kanban_task_from_goal(
+        "refactor worker lanes",
+        session_id="goal-session-1",
+        assignee="orchestrator",
+        tenant="dev",
+        priority=7,
+    )
+
+    assert tid2 == tid1
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid1)
+    assert task.status == "triage"
+    assert task.assignee == "orchestrator"
+    assert task.session_id == "goal-session-1"
+    assert task.tenant == "dev"
+    assert task.priority == 7
+    assert "refactor worker lanes" in task.body
+
+
+def test_create_kanban_task_from_goal_accepts_workspace_for_decomposition(
+    hermes_home, tmp_path,
+):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.goals import create_kanban_task_from_goal
+
+    workspace = tmp_path / "repo"
+    tid = create_kanban_task_from_goal(
+        "ship repo change",
+        session_id="goal-session-2",
+        assignee="orchestrator",
+        workspace_kind="dir",
+        workspace_path=str(workspace),
+        max_runtime_seconds=900,
+        max_retries=2,
+    )
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    assert task.status == "triage"
+    assert task.workspace_kind == "dir"
+    assert task.workspace_path == str(workspace)
+    assert task.max_runtime_seconds == 900
+    assert task.max_retries == 2
+    assert task.session_id == "goal-session-2"
+
+
+def test_run_kanban_goal_bridge_creates_task_with_session(hermes_home):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.goals import run_kanban_goal_bridge
+
+    out = run_kanban_goal_bridge(
+        "'ship worker lanes' --assignee orchestrator --json",
+        session_id="goal-create-session",
+    )
+    payload = json.loads(out)
+
+    assert payload["task"]["status"] == "triage"
+    assert payload["task"]["assignee"] == "orchestrator"
+    assert payload["task"]["session_id"] == "goal-create-session"
+    with kb.connect() as conn:
+        task = kb.get_task(conn, payload["task_id"])
+    assert task is not None
+    assert "ship worker lanes" in task.body
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Auto-pause on consecutive judge parse failures
 # ──────────────────────────────────────────────────────────────────────

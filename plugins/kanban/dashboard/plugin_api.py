@@ -142,6 +142,8 @@ BOARD_COLUMNS: list[str] = [
 
 
 _CARD_SUMMARY_PREVIEW_CHARS = 200
+_WORKER_EVIDENCE_LOG_TAIL_MAX_BYTES = 64 * 1024
+_WORKER_REVIEW_QUEUE_MAX_LIMIT = 200
 
 
 def _task_dict(
@@ -470,6 +472,18 @@ def get_board(
                 "AND status != 'archived' ORDER BY assignee"
             )
         ]
+        assignee_details = kanban_db.known_assignees(conn)
+        assignee_detail_names = {entry["name"] for entry in assignee_details}
+        for name in assignees:
+            if name not in assignee_detail_names:
+                assignee_details.append({
+                    "name": name,
+                    "on_disk": False,
+                    "worker_lane": False,
+                    "worker_kind": None,
+                    "counts": {},
+                })
+        assignee_details.sort(key=lambda entry: entry["name"])
 
         return {
             "columns": [
@@ -477,6 +491,7 @@ def get_board(
             ],
             "tenants": tenants,
             "assignees": assignees,
+            "assignee_details": assignee_details,
             "latest_event_id": int(latest_event_id),
             "now": int(time.time()),
         }
@@ -544,6 +559,399 @@ def get_task(
         }
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# External worker progress / review evidence
+# ---------------------------------------------------------------------------
+
+@router.get("/tasks/{task_id}/progress")
+def get_task_progress(
+    task_id: str,
+    log_tail: Optional[int] = Query(
+        None,
+        ge=1,
+        le=_WORKER_EVIDENCE_LOG_TAIL_MAX_BYTES,
+        description="Include the last N bytes of the worker log",
+    ),
+    children: bool = Query(
+        False,
+        description="Include related child/dependency worker progress summaries",
+    ),
+    board: Optional[str] = Query(None),
+):
+    """Read a task's worker progress/evidence snapshot without mutating it."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        snapshot = kanban_db.task_progress_snapshot(
+            conn,
+            task_id,
+            log_tail_bytes=log_tail,
+            include_children=children,
+            board=board,
+        )
+        if snapshot is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        return snapshot.to_dict()
+    finally:
+        conn.close()
+
+
+@router.get("/tasks/{task_id}/acceptance")
+def get_task_acceptance(
+    task_id: str,
+    log_tail: Optional[int] = Query(
+        None,
+        ge=1,
+        le=_WORKER_EVIDENCE_LOG_TAIL_MAX_BYTES,
+        description="Include the last N bytes of the implementation worker log",
+    ),
+    followup_log_tail: Optional[int] = Query(
+        None,
+        ge=1,
+        le=_WORKER_EVIDENCE_LOG_TAIL_MAX_BYTES,
+        description="Include the last N bytes of each follow-up worker log",
+    ),
+    board: Optional[str] = Query(None),
+):
+    """Read bounded implementation plus review/test follow-up evidence."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        payload = kanban_db.task_acceptance_snapshot(
+            conn,
+            task_id,
+            log_tail_bytes=log_tail,
+            followup_log_tail_bytes=followup_log_tail,
+            board=board,
+        )
+        if payload is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        return payload
+    finally:
+        conn.close()
+
+
+@router.get("/reviews")
+def list_review_required(
+    assignee: Optional[str] = Query(None),
+    tenant: Optional[str] = Query(None),
+    lane: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=_WORKER_REVIEW_QUEUE_MAX_LIMIT),
+    log_tail: Optional[int] = Query(
+        None,
+        ge=1,
+        le=_WORKER_EVIDENCE_LOG_TAIL_MAX_BYTES,
+        description="Include the last N bytes of each worker log",
+    ),
+    board: Optional[str] = Query(None),
+):
+    """List tasks waiting for Hermes review of external-worker evidence."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        snapshots = kanban_db.review_required_snapshots(
+            conn,
+            assignee=assignee,
+            tenant=tenant,
+            worker_lane=lane,
+            limit=limit,
+            log_tail_bytes=log_tail,
+            board=board,
+        )
+        return {
+            "tasks": [snapshot.to_dict() for snapshot in snapshots],
+            "count": len(snapshots),
+            "limit": limit,
+        }
+    finally:
+        conn.close()
+
+
+@router.get("/worker-lanes")
+def list_worker_lanes(board: Optional[str] = Query(None)):
+    """List registered worker lanes with current board occupancy."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        lanes = kanban_db.worker_lane_statuses(conn)
+        return {
+            "lanes": [lane.to_dict() for lane in lanes],
+            "count": len(lanes),
+            "now": int(time.time()),
+        }
+    finally:
+        conn.close()
+
+
+class ReviewTaskBody(BaseModel):
+    decision: str = Field(
+        ...,
+        description="'approve' or 'request_changes'",
+    )
+    reviewer: Optional[str] = None
+    comment: Optional[str] = None
+    result: Optional[str] = None
+    summary: Optional[str] = None
+
+
+class PlanReviewBody(BaseModel):
+    review_assignee: Optional[str] = "codex-review"
+    test_assignee: Optional[str] = "codex-test"
+    include_review: bool = True
+    include_test: bool = True
+    created_by: Optional[str] = "hermes-review-planner"
+    dispatch: bool = False
+    dry_run: bool = False
+    dispatch_max: Optional[int] = Field(default=None, ge=1, le=64)
+
+
+class VerifyTaskBody(BaseModel):
+    checks: Optional[list[str]] = Field(
+        default=None,
+        description="Configured acceptance check names; omitted means all checks",
+    )
+    source_run_id: Optional[int] = Field(default=None, ge=1)
+
+
+class AdvanceAcceptanceBody(BaseModel):
+    review_assignee: Optional[str] = "codex-review"
+    test_assignee: Optional[str] = "codex-test"
+    dispatch: bool = True
+    dry_run: bool = False
+    dispatch_max: Optional[int] = Field(default=None, ge=1, le=64)
+    verify: bool = True
+    approve: bool = True
+    request_changes_on_failure: bool = True
+    reviewer: Optional[str] = None
+    summary: Optional[str] = None
+    result: Optional[str] = None
+
+
+class AdvanceGoalBody(AdvanceAcceptanceBody):
+    pass
+
+
+class WorkerLaneRequestBody(BaseModel):
+    worker_lane_request: dict[str, Any] = Field(
+        ...,
+        description="Skill/operator proposed worker lane request object",
+    )
+    enable: bool = False
+    persist: bool = False
+    replace: bool = False
+
+
+@router.post("/tasks/{task_id}/review")
+def review_task_evidence(
+    task_id: str,
+    payload: ReviewTaskBody,
+    board: Optional[str] = Query(None),
+):
+    """Approve or request changes for bounded worker-lane evidence."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        try:
+            snapshot = kanban_db.review_worker_evidence(
+                conn,
+                task_id,
+                decision=payload.decision,
+                reviewer=payload.reviewer or "dashboard",
+                comment=payload.comment,
+                result=payload.result,
+                summary=payload.summary,
+            )
+        except ValueError as exc:
+            msg = str(exc)
+            status_code = 404 if msg.startswith("unknown task ") else 400
+            raise HTTPException(status_code=status_code, detail=msg)
+        return snapshot.to_dict()
+    finally:
+        conn.close()
+
+
+@router.post("/tasks/{task_id}/plan-review")
+def plan_task_review_followups(
+    task_id: str,
+    payload: PlanReviewBody,
+    board: Optional[str] = Query(None),
+):
+    """Create independent review/test worker tasks for implementation evidence."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        try:
+            plan = kanban_db.plan_review_followups(
+                conn,
+                task_id,
+                review_assignee=payload.review_assignee or "codex-review",
+                test_assignee=payload.test_assignee or "codex-test",
+                include_review=payload.include_review,
+                include_test=payload.include_test,
+                created_by=payload.created_by or "hermes-review-planner",
+                board=board,
+            )
+            out = plan.to_dict()
+            if payload.dispatch:
+                followup_ids = [
+                    tid for tid in (plan.review_task_id, plan.test_task_id) if tid
+                ]
+                result = kanban_db.dispatch_once(
+                    conn,
+                    dry_run=payload.dry_run,
+                    max_spawn=payload.dispatch_max,
+                    only_task_ids=followup_ids,
+                    board=board,
+                )
+                out["dispatch"] = result.to_dict()
+        except ValueError as exc:
+            msg = str(exc)
+            status_code = 404 if msg.startswith("unknown task ") else 400
+            raise HTTPException(status_code=status_code, detail=msg)
+        return out
+    finally:
+        conn.close()
+
+
+@router.post("/tasks/{task_id}/verify")
+def verify_task_acceptance(
+    task_id: str,
+    payload: VerifyTaskBody,
+    board: Optional[str] = Query(None),
+):
+    """Run configured deterministic acceptance checks for a task."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        try:
+            return kanban_db.run_acceptance_checks(
+                conn,
+                task_id,
+                check_names=payload.checks,
+                source_run_id=payload.source_run_id,
+            )
+        except ValueError as exc:
+            msg = str(exc)
+            status_code = 404 if msg.startswith("unknown task ") else 400
+            raise HTTPException(status_code=status_code, detail=msg)
+    finally:
+        conn.close()
+
+
+@router.post("/tasks/{task_id}/advance-acceptance")
+def advance_task_acceptance(
+    task_id: str,
+    payload: AdvanceAcceptanceBody,
+    board: Optional[str] = Query(None),
+):
+    """Advance review/test/verify/approval workflow to the next safe point."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        try:
+            return kanban_db.advance_acceptance_workflow(
+                conn,
+                task_id,
+                review_assignee=payload.review_assignee or "codex-review",
+                test_assignee=payload.test_assignee or "codex-test",
+                dispatch=payload.dispatch,
+                dry_run=payload.dry_run,
+                dispatch_max=payload.dispatch_max,
+                verify=payload.verify,
+                approve=payload.approve,
+                request_changes_on_failure=payload.request_changes_on_failure,
+                reviewer=payload.reviewer or "dashboard",
+                summary=payload.summary,
+                result=payload.result,
+                board=board,
+            )
+        except ValueError as exc:
+            msg = str(exc)
+            status_code = 404 if msg.startswith("unknown task ") else 400
+            raise HTTPException(status_code=status_code, detail=msg)
+    finally:
+        conn.close()
+
+
+@router.post("/tasks/{task_id}/advance-goal")
+def advance_goal_acceptance(
+    task_id: str,
+    payload: AdvanceGoalBody,
+    board: Optional[str] = Query(None),
+):
+    """Advance a decomposed goal/root task and its worker children."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        try:
+            return kanban_db.advance_goal_acceptance_workflow(
+                conn,
+                task_id,
+                review_assignee=payload.review_assignee or "codex-review",
+                test_assignee=payload.test_assignee or "codex-test",
+                dispatch=payload.dispatch,
+                dry_run=payload.dry_run,
+                dispatch_max=payload.dispatch_max,
+                verify=payload.verify,
+                approve=payload.approve,
+                request_changes_on_failure=payload.request_changes_on_failure,
+                reviewer=payload.reviewer or "dashboard",
+                summary=payload.summary,
+                result=payload.result,
+                board=board,
+            )
+        except ValueError as exc:
+            msg = str(exc)
+            status_code = 404 if msg.startswith("unknown task ") else 400
+            raise HTTPException(status_code=status_code, detail=msg)
+    finally:
+        conn.close()
+
+
+@router.post("/worker-lane-requests")
+def submit_worker_lane_request(payload: WorkerLaneRequestBody):
+    """Validate and optionally enable/persist a worker lane request.
+
+    Model/skill output is accepted only as a request object. Execution config
+    still goes through the deterministic worker-lane validator; arbitrary shell
+    commands remain rejected.
+    """
+    from hermes_cli.worker_lanes import enable_worker_lane_request, validate_worker_lane_request
+
+    try:
+        valid = validate_worker_lane_request(payload.worker_lane_request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    enabled = False
+    lane_info = None
+    if payload.enable or payload.persist:
+        try:
+            lane = enable_worker_lane_request(
+                payload.worker_lane_request,
+                persist=payload.persist,
+                replace=payload.replace,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        enabled = True
+        lane_info = {
+            "name": lane.name,
+            "kind": lane.kind,
+            "source": lane.source,
+            "success_policy": lane.success_policy,
+            "max_concurrency": lane.max_concurrency,
+        }
+
+    return {
+        "valid": True,
+        "enabled": enabled,
+        "persisted": payload.persist,
+        "lane": lane_info,
+        "config": valid,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -244,6 +244,21 @@
     return `${url}${sep}board=${encodeURIComponent(board)}`;
   }
 
+  function assigneeName(entry) {
+    return typeof entry === "string" ? entry : entry && entry.name || "";
+  }
+
+  function assigneeLabel(entry) {
+    if (typeof entry === "string") return entry;
+    if (!entry) return "";
+    const name = entry.name || "";
+    if (entry.worker_lane) {
+      return `${name} [${entry.worker_kind || "lane"}]`;
+    }
+    if (entry.on_disk) return name;
+    return `${name} [ad hoc]`;
+  }
+
   // The SDK's Select component fires ``onValueChange(value)`` directly
   // (it's a shadcn-style popup, not a native <select>). Older plugin
   // code calls ``onChange({target: {value}})`` which silently never
@@ -467,8 +482,10 @@
     const [board, setBoard] = useState(() => readSelectedBoard() || null);
     const [boardList, setBoardList] = useState([]);      // [{slug, name, counts, ...}]
     const [showNewBoard, setShowNewBoard] = useState(false);
+    const [showLaneRequest, setShowLaneRequest] = useState(false);
 
     const [kanbanBoard, setKanbanBoard] = useState(null);  // the grid data
+    const [workerLanes, setWorkerLanes] = useState(null);
     // Alias so the rest of the function can keep using `board` semantically
     // for the grid data (card columns + tenants + assignees) without
     // colliding with the selected-board slug above. History: the old
@@ -540,6 +557,28 @@
         .finally(function () { setLoading(false); });
     }, [tenantFilter, includeArchived, board]);
 
+    const loadWorkerLanes = useCallback(function () {
+      return SDK.fetchJSON(withBoard(`${API}/worker-lanes`, board))
+        .then(function (data) {
+          setWorkerLanes((data && data.lanes) || []);
+        })
+        .catch(function () {
+          setWorkerLanes([]);
+        });
+    }, [board]);
+
+    const submitWorkerLaneRequest = useCallback(function (payload) {
+      return SDK.fetchJSON(`${API}/worker-lane-requests`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }).then(function (res) {
+        loadWorkerLanes();
+        loadBoard();
+        return res;
+      });
+    }, [loadWorkerLanes, loadBoard]);
+
     // --- load list of boards for the switcher ------------------------------
     const loadBoardList = useCallback(function () {
       return SDK.fetchJSON(withBoard(`${API}/boards`, board))
@@ -582,6 +621,8 @@
       };
     }, [loadBoard]);
 
+    useEffect(function () { loadWorkerLanes(); }, [loadWorkerLanes]);
+
     // --- WebSocket ---------------------------------------------------------
     useEffect(function () {
       if (!boardData) return undefined;
@@ -611,6 +652,7 @@
             const msg = JSON.parse(ev.data);
             if (msg && Array.isArray(msg.events) && msg.events.length > 0) {
               cursorRef.current = msg.cursor || cursorRef.current;
+              loadWorkerLanes();
               // Stamp per-task signal so the TaskDrawer can reload itself.
               setTaskEventTick(function (prev) {
                 const next = Object.assign({}, prev);
@@ -995,6 +1037,16 @@
           boardData,
           onOpen: setSelectedTaskId,
         }),
+        h(WorkerLaneRoster, {
+          lanes: workerLanes,
+          onRefresh: loadWorkerLanes,
+          onRequestLane: function () { setShowLaneRequest(true); },
+          timeAgo: timeAgo,
+        }),
+        showLaneRequest ? h(WorkerLaneRequestDialog, {
+          onCancel: function () { setShowLaneRequest(false); },
+          onSubmit: submitWorkerLaneRequest,
+        }) : null,
         h(BoardToolbar, {
           board: boardData,
           tenantFilter, setTenantFilter,
@@ -1004,14 +1056,20 @@
           search, setSearch,
           onNudgeDispatch: function () {
             SDK.fetchJSON(withBoard(`${API}/dispatch?max=8`, board), { method: "POST" })
-              .then(loadBoard)
+              .then(function () {
+                loadBoard();
+                loadWorkerLanes();
+              })
               .catch(function (e) { setError(String(e.message || e)); });
           },
-          onRefresh: loadBoard,
+          onRefresh: function () {
+            loadBoard();
+            loadWorkerLanes();
+          },
         }),
        selectedIds.size > 0 ? h(BulkActionBar, {
          count: selectedIds.size,
-         assignees: (boardData && boardData.assignees) || [],
+         assignees: (boardData && (boardData.assignee_details || boardData.assignees)) || [],
          onApply: applyBulk,
          onClear: clearSelected,
          onSelectAllVisible: selectAllVisible,
@@ -1043,7 +1101,7 @@
           onRefresh: loadBoard,
           renderMarkdown: renderMd,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
-          assignees: (boardData && boardData.assignees) || [],
+          assignees: (boardData && (boardData.assignee_details || boardData.assignees)) || [],
           eventTick: taskEventTick[selectedTaskId] || 0,
         }) : null,
       ),
@@ -1956,7 +2014,7 @@
   function BoardToolbar(props) {
     const { t } = useI18n();
     const tenants = (props.board && props.board.tenants) || [];
-    const assignees = (props.board && props.board.assignees) || [];
+    const assignees = (props.board && (props.board.assignee_details || props.board.assignees)) || [];
     return h("div", { className: "flex flex-wrap items-end gap-3" },
       h("div", { className: "flex flex-col gap-1",
                  title: "Fuzzy-match tasks by id, title, or description. Matches across all columns." },
@@ -1990,7 +2048,8 @@
         }, selectChangeHandler(props.setAssigneeFilter)),
           h(SelectOption, { value: "" }, tx(t, "allProfiles", "All profiles")),
           assignees.map(function (a) {
-            return h(SelectOption, { key: a, value: a }, a);
+            const name = assigneeName(a);
+            return h(SelectOption, { key: name, value: name }, assigneeLabel(a));
           }),
         ),
       ),
@@ -2031,6 +2090,315 @@
         size: "sm",
         title: "Clear all active filters (search, tenant, assignee, archived).",
       }, tx(t, "clearFilters", "Clear filters")),
+    );
+  }
+
+  function WorkerLaneRoster(props) {
+    const { t } = useI18n();
+    const lanes = props.lanes;
+    const [expanded, setExpanded] = useState(false);
+    if (!lanes) return null;
+    const visible = expanded ? lanes : lanes.slice(0, 3);
+    const totalActive = lanes.reduce(function (n, lane) {
+      return n + Number(lane.active_count || 0);
+    }, 0);
+    const fmtCounts = function (counts) {
+      counts = counts || {};
+      const parts = [];
+      ["ready", "running", "blocked", "review"].forEach(function (key) {
+        if (counts[key]) parts.push(`${key} ${counts[key]}`);
+      });
+      return parts.length ? parts.join(" · ") : "idle";
+    };
+    const fmtCap = function (lane) {
+      if (lane.max_concurrency === null || lane.max_concurrency === undefined) {
+        return `${lane.active_count || 0}/∞`;
+      }
+      return `${lane.active_count || 0}/${lane.max_concurrency}`;
+    };
+    return h("div", {
+      className: "hermes-kanban-worker-lanes",
+      title: "Registered external worker lanes. This view is read-only and never interrupts running workers.",
+    },
+      h("div", { className: "hermes-kanban-worker-lanes-head" },
+        h("div", null,
+          h("div", { className: "hermes-kanban-worker-lanes-title" },
+            tx(t, "workerLanes", "Worker lanes")),
+          h("div", { className: "hermes-kanban-worker-lanes-sub" },
+            `${lanes.length} lane${lanes.length === 1 ? "" : "s"} · ${totalActive} active`),
+        ),
+        h("div", { className: "hermes-kanban-worker-lanes-actions" },
+          lanes.length > 3
+            ? h("button", {
+                type: "button",
+                className: "hermes-kanban-edit-link",
+                onClick: function () { setExpanded(function (v) { return !v; }); },
+              }, expanded ? "show less" : `show ${lanes.length - 3} more`)
+            : null,
+          h("button", {
+            type: "button",
+            className: "hermes-kanban-edit-link",
+            onClick: props.onRequestLane,
+            title: "Validate, enable, or persist an approved worker lane request",
+          }, "request lane"),
+          h("button", {
+            type: "button",
+            className: "hermes-kanban-edit-link",
+            onClick: props.onRefresh,
+            title: "Refresh worker lane status",
+          }, "refresh"),
+        ),
+      ),
+      h("div", { className: "hermes-kanban-worker-lanes-grid" },
+        visible.map(function (lane) {
+          const active = lane.active || [];
+          const model = lane.config && lane.config.model ? lane.config.model : "";
+          return h("div", { key: lane.name, className: "hermes-kanban-worker-lane-card" },
+            h("div", { className: "hermes-kanban-worker-lane-top" },
+              h("span", { className: "hermes-kanban-worker-lane-name" }, lane.name),
+              h("span", {
+                className: lane.available_capacity === 0
+                  ? "hermes-kanban-worker-lane-cap hermes-kanban-worker-lane-cap--full"
+                  : "hermes-kanban-worker-lane-cap",
+                title: "active / max concurrency",
+              }, fmtCap(lane)),
+            ),
+            h("div", { className: "hermes-kanban-worker-lane-meta" },
+              h("span", null, lane.kind || "worker_lane"),
+              model ? h("span", null, model) : null,
+              lane.success_policy ? h("span", null, lane.success_policy) : null,
+            ),
+            h("div", { className: "hermes-kanban-worker-lane-counts" },
+              fmtCounts(lane.counts)),
+            active.length
+              ? h("div", { className: "hermes-kanban-worker-lane-active" },
+                  active.slice(0, 3).map(function (inst) {
+                    const hb = inst.last_heartbeat_at && props.timeAgo
+                      ? props.timeAgo(inst.last_heartbeat_at)
+                      : "";
+                    return h("div", { key: `${inst.task_id}:${inst.run_id || ""}`, className: "hermes-kanban-worker-lane-instance" },
+                      h("code", null, inst.task_id || "-"),
+                      h("span", null, `run ${inst.run_id || "-"}`),
+                      inst.worker_pid ? h("span", null, `pid ${inst.worker_pid}`) : null,
+                      hb ? h("span", null, hb) : null,
+                    );
+                  }),
+                  active.length > 3
+                    ? h("div", { className: "hermes-kanban-worker-lane-more" },
+                        `+${active.length - 3} more active`)
+                    : null,
+                )
+              : null,
+          );
+        }),
+      ),
+    );
+  }
+
+  function WorkerLaneRequestDialog(props) {
+    const { t } = useI18n();
+    const [name, setName] = useState("");
+    const [model, setModel] = useState("gpt-5.5");
+    const [sandbox, setSandbox] = useState("workspace-write");
+    const [approval, setApproval] = useState("never");
+    const [maxConcurrency, setMaxConcurrency] = useState("1");
+    const [timeoutSeconds, setTimeoutSeconds] = useState("");
+    const [reason, setReason] = useState("");
+    const [enable, setEnable] = useState(false);
+    const [persist, setPersist] = useState(false);
+    const [replace, setReplace] = useState(false);
+    const [submitting, setSubmitting] = useState(false);
+    const [result, setResult] = useState(null);
+    const [err, setErr] = useState(null);
+
+    function normaliseName(value) {
+      return String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]/g, "-")
+        .replace(/^[^a-z0-9]+/, "")
+        .slice(0, 64);
+    }
+
+    function buildPayload() {
+      const req = {
+        name: normaliseName(name),
+        type: "codex_cli",
+        model: model,
+        sandbox: sandbox,
+        approval: approval,
+        max_concurrency: Number(maxConcurrency || 1),
+        success_policy: "block_for_review",
+      };
+      if (timeoutSeconds.trim()) req.timeout_seconds = Number(timeoutSeconds);
+      if (reason.trim()) req.reason = reason.trim();
+      return {
+        enable: !!enable || !!persist,
+        persist: !!persist,
+        replace: !!replace,
+        worker_lane_request: req,
+      };
+    }
+
+    function onSubmit(ev) {
+      if (ev) ev.preventDefault();
+      const payload = buildPayload();
+      if (!payload.worker_lane_request.name) {
+        setErr("lane name is required");
+        return;
+      }
+      setSubmitting(true);
+      setErr(null);
+      setResult(null);
+      props.onSubmit(payload).then(function (res) {
+        setResult(res);
+      }).catch(function (e) {
+        setErr(parseApiErrorMessage(e));
+      }).then(function () {
+        setSubmitting(false);
+      });
+    }
+
+    return h("div", {
+      className: "hermes-kanban-dialog-backdrop",
+      onClick: function (e) { if (e.target === e.currentTarget) props.onCancel(); },
+    },
+      h("form", {
+        className: "hermes-kanban-dialog hermes-kanban-worker-lane-request-dialog",
+        onSubmit: onSubmit,
+      },
+        h("div", { className: "hermes-kanban-dialog-title" },
+          tx(t, "workerLaneRequest", "Worker lane request")),
+        h("div", { className: "text-xs text-muted-foreground mb-2" },
+          "Validate operator-approved Codex lane config. The command is fixed by Hermes; this form never accepts shell strings."),
+        h("div", { className: "hermes-kanban-worker-lane-request-grid" },
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs" }, "Lane name"),
+            h(Input, {
+              value: name,
+              onChange: function (e) { setName(normaliseName(e.target.value)); },
+              placeholder: "codex-deep",
+              autoFocus: true,
+              className: "h-8",
+              autoCapitalize: "none",
+              autoCorrect: "off",
+              spellCheck: false,
+            }),
+          ),
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs" }, "Model"),
+            h(Select, Object.assign({
+              value: model,
+              className: "h-8",
+            }, selectChangeHandler(setModel)),
+              ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"].map(function (m) {
+                return h(SelectOption, { key: m, value: m }, m);
+              }),
+            ),
+          ),
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs" }, "Sandbox"),
+            h(Select, Object.assign({
+              value: sandbox,
+              className: "h-8",
+            }, selectChangeHandler(setSandbox)),
+              ["workspace-write", "read-only"].map(function (s) {
+                return h(SelectOption, { key: s, value: s }, s);
+              }),
+            ),
+          ),
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs" }, "Approval"),
+            h(Select, Object.assign({
+              value: approval,
+              className: "h-8",
+            }, selectChangeHandler(setApproval)),
+              ["never", "on-request", "on-failure", "untrusted"].map(function (a) {
+                return h(SelectOption, { key: a, value: a }, a);
+              }),
+            ),
+          ),
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs" }, "Max concurrency"),
+            h(Input, {
+              type: "number",
+              min: "1",
+              max: "8",
+              value: maxConcurrency,
+              onChange: function (e) { setMaxConcurrency(e.target.value); },
+              className: "h-8",
+            }),
+          ),
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs" }, "Timeout seconds"),
+            h(Input, {
+              type: "number",
+              min: "1",
+              value: timeoutSeconds,
+              onChange: function (e) { setTimeoutSeconds(e.target.value); },
+              placeholder: "optional",
+              className: "h-8",
+            }),
+          ),
+        ),
+        h("div", { className: "flex flex-col gap-1 mt-3" },
+          h(Label, { className: "text-xs" }, "Reason"),
+          h("textarea", {
+            className: "hermes-kanban-textarea hermes-kanban-worker-lane-request-reason",
+            value: reason,
+            rows: 3,
+            onChange: function (e) { setReason(e.target.value); },
+            placeholder: "Why this lane is needed",
+          }),
+        ),
+        h("div", { className: "hermes-kanban-worker-lane-request-options" },
+          h("label", { className: "flex items-center gap-2 text-xs" },
+            h(Checkbox, {
+              checked: enable,
+              onCheckedChange: function (checked) { setEnable(checked === true); },
+            }),
+            "Enable now"),
+          h("label", { className: "flex items-center gap-2 text-xs" },
+            h(Checkbox, {
+              checked: persist,
+              onCheckedChange: function (checked) {
+                const on = checked === true;
+                setPersist(on);
+                if (on) setEnable(true);
+              },
+            }),
+            "Persist to config"),
+          h("label", { className: "flex items-center gap-2 text-xs" },
+            h(Checkbox, {
+              checked: replace,
+              onCheckedChange: function (checked) { setReplace(checked === true); },
+            }),
+            "Replace existing"),
+        ),
+        err ? h("div", { className: "text-xs text-destructive mt-2" }, err) : null,
+        result ? h("div", { className: "hermes-kanban-worker-lane-request-result" },
+          h("div", null,
+            result.enabled
+              ? `Enabled ${result.lane && result.lane.name ? result.lane.name : "lane"}`
+              : `Validated ${result.config && result.config.name ? result.config.name : "lane"}`),
+          h("code", null, JSON.stringify(result.config || {}, null, 2)),
+        ) : null,
+        h("div", { className: "hermes-kanban-dialog-actions" },
+          h(Button, {
+            type: "button",
+            onClick: props.onCancel,
+            size: "sm",
+            disabled: submitting,
+          }, tx(t, "close", "Close")),
+          h(Button, {
+            type: "submit",
+            size: "sm",
+            disabled: submitting || !normaliseName(name),
+          }, submitting
+            ? tx(t, "submitting", "Submitting…")
+            : (enable || persist ? "Validate + enable" : "Validate only")),
+        ),
+      ),
     );
   }
 
@@ -2120,7 +2488,8 @@
           h(SelectOption, { value: "" }, "— reassign —"),
           h(SelectOption, { value: "__none__" }, "(unassign)"),
           props.assignees.map(function (a) {
-            return h(SelectOption, { key: a, value: a }, a);
+            const name = assigneeName(a);
+            return h(SelectOption, { key: name, value: name }, assigneeLabel(a));
           }),
         ),
         h(Button, {
@@ -2946,6 +3315,7 @@
           homeBusy: homeBusy,
           onToggleHomeSub: toggleHomeSubscription,
           onRefresh: props.onRefresh,
+          onReload: load,
         }) : null,
         data ? h("div", { className: "hermes-kanban-drawer-comment-row" },
           h(Input, {
@@ -3105,6 +3475,13 @@
         }),
       ),
       h(WorkerLogSection, { taskId: t.id, boardSlug: props.boardSlug }),
+      h(WorkerEvidenceSection, {
+        taskId: t.id,
+        boardSlug: props.boardSlug,
+        eventTick: events.length ? events[events.length - 1].id : 0,
+        onRefresh: props.onRefresh,
+        onReload: props.onReload,
+      }),
       h(RunHistorySection, { runs: props.data.runs || [] }),
     );
   }
@@ -3228,6 +3605,194 @@
             tx(t, "logTruncated", "(showing last 100 KB — full log at "),
             data.path,
             tx(t, "logAt", ")"))
+        : null,
+    );
+  }
+
+  // Bounded external-worker evidence. This reads the kanban progress snapshot
+  // endpoint only; it does not claim, heartbeat, or interrupt a running worker.
+  function WorkerEvidenceSection(props) {
+    const { t } = useI18n();
+    const [state, setState] = useState({ loading: false, data: null, err: null, busy: null });
+
+    const load = useCallback(function () {
+      setState(function (prev) {
+        return Object.assign({}, prev, { loading: true, err: null });
+      });
+      return SDK.fetchJSON(
+        withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/progress?log_tail=65536`, props.boardSlug)
+      ).then(function (d) {
+        setState({ loading: false, data: d, err: null, busy: null });
+      }).catch(function (e) {
+        setState(function (prev) {
+          return Object.assign({}, prev, { loading: false, err: parseApiErrorMessage(e), busy: null });
+        });
+      });
+    }, [props.taskId, props.boardSlug]);
+
+    useEffect(function () { load(); }, [load, props.eventTick]);
+
+    const data = state.data;
+    const evidence = (data && data.evidence) || {};
+    const workerLane = (data && data.worker_lane) || evidence.worker_lane || null;
+    const progress = data && data.worker_progress;
+    const progressItems = progress && Array.isArray(progress.items) ? progress.items : [];
+    const verification = (data && data.verification) || evidence.verification || null;
+    const git = (data && data.git) || evidence.git || null;
+    const hasEvidence = !!(
+      workerLane ||
+      data && data.review_required ||
+      progressItems.length ||
+      verification ||
+      git ||
+      data && data.worker_log_tail
+    );
+
+    const doReview = function (decision) {
+      let body = { decision: decision };
+      if (decision === "approve") {
+        const summary = window.prompt(
+          tx(t, "workerEvidenceApproveSummary",
+            "Review summary for this worker handoff (optional):"),
+          "bounded evidence accepted",
+        );
+        if (summary === null) return;
+        if (summary.trim()) body.summary = summary.trim();
+      } else {
+        const comment = window.prompt(
+          tx(t, "workerEvidenceChangesComment",
+            "What should the worker change before approval?"),
+          "",
+        );
+        if (comment === null) return;
+        if (!comment.trim()) {
+          window.alert(tx(t, "workerEvidenceChangesRequired",
+            "A comment is required when requesting changes."));
+          return;
+        }
+        body.comment = comment.trim();
+      }
+      setState(function (prev) {
+        return Object.assign({}, prev, { busy: decision, err: null });
+      });
+      return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/review`, props.boardSlug), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then(function (d) {
+        setState({ loading: false, data: d, err: null, busy: null });
+        if (props.onReload) props.onReload();
+        if (props.onRefresh) props.onRefresh();
+      }).catch(function (e) {
+        setState(function (prev) {
+          return Object.assign({}, prev, { busy: null, err: parseApiErrorMessage(e) });
+        });
+      });
+    };
+
+    if (!state.loading && !state.err && !hasEvidence) return null;
+
+    return h("div", { className: "hermes-kanban-section hermes-kanban-worker-evidence" },
+      h("div", { className: "hermes-kanban-section-head-row" },
+        h("span", { className: "hermes-kanban-section-head" },
+          tx(t, "workerEvidence", "Worker evidence")),
+        data && data.review_required
+          ? h("span", { className: "hermes-kanban-review-pill" },
+              tx(t, "reviewRequired", "review required"))
+          : null,
+        h("button", {
+          type: "button",
+          onClick: load,
+          className: "hermes-kanban-edit-link",
+          title: tx(t, "refreshWorkerEvidence", "Refresh worker evidence"),
+        }, "refresh"),
+      ),
+      state.loading
+        ? h("div", { className: "text-xs text-muted-foreground" },
+            tx(t, "loadingWorkerEvidence", "Loading worker evidence…"))
+        : null,
+      state.err ? h("div", { className: "text-xs text-destructive" }, state.err) : null,
+      workerLane
+        ? h("div", { className: "hermes-kanban-worker-evidence-grid" },
+            h(MetaRow, { label: tx(t, "lane", "Lane"), value: workerLane.name || "(unknown)" }),
+            h(MetaRow, { label: tx(t, "kind", "Kind"), value: workerLane.kind || "(unknown)" }),
+            workerLane.exit_code !== undefined && workerLane.exit_code !== null
+              ? h(MetaRow, { label: tx(t, "exitCode", "Exit code"), value: String(workerLane.exit_code) })
+              : null,
+            workerLane.timed_out
+              ? h(MetaRow, { label: tx(t, "timedOut", "Timed out"), value: "true" })
+              : null,
+          )
+        : null,
+      progressItems.length
+        ? h("div", { className: "hermes-kanban-worker-progress-list" },
+            h("div", { className: "hermes-kanban-run-meta-label" },
+              tx(t, "progress", "Progress")),
+            progressItems.map(function (item, idx) {
+              const status = item.status || "pending";
+              return h("div", {
+                key: item.index || idx,
+                className: cn("hermes-kanban-worker-progress-item",
+                  `hermes-kanban-worker-progress-item--${status}`),
+              },
+                h("span", { className: "hermes-kanban-worker-progress-status" },
+                  status === "done" ? "[x]" : status === "running" ? "[>]" : "[ ]"),
+                h("span", null, item.text || ""));
+            }),
+          )
+        : null,
+      verification
+        ? h("details", { className: "hermes-kanban-run-meta-block", open: true },
+            h("summary", { className: "hermes-kanban-run-meta-label" },
+              tx(t, "verification", "Verification")),
+            Array.isArray(verification.commands) && verification.commands.length
+              ? h("ul", { className: "hermes-kanban-worker-command-list" },
+                  verification.commands.map(function (cmd, idx) {
+                    return h("li", { key: idx }, h("code", null, cmd));
+                  }))
+              : null,
+            verification.summary
+              ? h("pre", { className: "hermes-kanban-pre hermes-kanban-worker-evidence-pre" },
+                  verification.summary)
+              : null,
+          )
+        : null,
+      git
+        ? h("details", { className: "hermes-kanban-run-meta-block" },
+            h("summary", { className: "hermes-kanban-run-meta-label" },
+              tx(t, "gitEvidence", "Git evidence")),
+            h("pre", { className: "hermes-kanban-pre hermes-kanban-worker-evidence-pre" },
+              JSON.stringify(git, null, 2)),
+          )
+        : null,
+      data && data.worker_log_tail
+        ? h("details", { className: "hermes-kanban-run-meta-block" },
+            h("summary", { className: "hermes-kanban-run-meta-label" },
+              tx(t, "boundedLogTail", "Bounded log tail")),
+            h("pre", { className: "hermes-kanban-pre hermes-kanban-worker-evidence-pre" },
+              data.worker_log_tail),
+          )
+        : null,
+      data && data.review_required
+        ? h("div", { className: "hermes-kanban-worker-review-actions" },
+            h(Button, {
+              size: "sm",
+              onClick: function () { doReview("approve"); },
+              disabled: !!state.busy,
+              title: tx(t, "approveWorkerEvidence", "Approve bounded worker evidence"),
+            }, state.busy === "approve"
+              ? tx(t, "approving", "Approving…")
+              : tx(t, "approve", "Approve")),
+            h(Button, {
+              size: "sm",
+              variant: "outline",
+              onClick: function () { doReview("request_changes"); },
+              disabled: !!state.busy,
+              title: tx(t, "requestWorkerChanges", "Request changes from the worker"),
+            }, state.busy === "request_changes"
+              ? tx(t, "requestingChanges", "Requesting…")
+              : tx(t, "requestChanges", "Request changes")),
+          )
         : null,
     );
   }

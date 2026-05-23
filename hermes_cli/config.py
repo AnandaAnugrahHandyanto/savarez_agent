@@ -1560,6 +1560,18 @@ DEFAULT_CONFIG = {
         # worker process (if still running host-locally) is terminated
         # before the reclaim.  0 disables stale detection entirely.
         "dispatch_stale_timeout_seconds": 14400,
+        # External worker lanes keyed by assignee name. The dispatcher resolves
+        # assignee strings in this order: configured/plugin worker lane, Hermes
+        # profile, skipped_nonspawnable. Codex CLI is the first built-in adapter.
+        "worker_lanes": {},
+        # Named deterministic commands Hermes can run itself during final
+        # acceptance. CLI/tool/API callers select these by name; they cannot
+        # pass arbitrary shell command strings at runtime. Each entry is:
+        #   my-check:
+        #     argv: ["python3", "-m", "pytest", "-q"]
+        #     timeout_seconds: 300
+        #     description: "unit test suite"
+        "acceptance_checks": {},
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.
@@ -3301,7 +3313,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
-    "sessions",
+    "sessions", "kanban",
 }
 
 # Valid fields inside a custom_providers list entry

@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shlex
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
@@ -277,6 +278,89 @@ def clear_goal(session_id: str) -> None:
         return
     state.status = "cleared"
     save_goal(session_id, state)
+
+
+def create_kanban_task_from_goal(
+    goal: str,
+    *,
+    session_id: Optional[str] = None,
+    assignee: Optional[str] = None,
+    tenant: Optional[str] = None,
+    priority: int = 0,
+    workspace_kind: str = "scratch",
+    workspace_path: Optional[str] = None,
+    branch_name: Optional[str] = None,
+    max_runtime_seconds: Optional[int] = None,
+    max_retries: Optional[int] = None,
+    board: Optional[str] = None,
+    created_by: str = "goal",
+    idempotency_key: Optional[str] = None,
+) -> str:
+    """Create or return the Kanban top-level task for a standing goal.
+
+    This is a bridge point for future `/goal create "..." -> Kanban`
+    orchestration. It deliberately does not alter the existing session-level
+    `/goal` semantics; callers opt in by invoking this helper.
+    """
+    clean_goal = (goal or "").strip()
+    if not clean_goal:
+        raise ValueError("goal text is empty")
+    if idempotency_key is None and session_id:
+        idempotency_key = f"goal:{session_id}:{clean_goal}"
+
+    from hermes_cli import kanban_db as kb
+
+    body = (
+        "Goal created from a Hermes standing goal.\n\n"
+        "## Goal\n"
+        f"{clean_goal}\n\n"
+        "## Orchestration\n"
+        "This top-level task is intended for a future orchestrator to "
+        "decompose into child tasks assigned to Kanban worker lanes."
+    )
+    with kb.connect(board=board) as conn:
+        return kb.create_task(
+            conn,
+            title=f"Goal: {clean_goal[:120]}",
+            body=body,
+            assignee=assignee,
+            created_by=created_by,
+            workspace_kind=workspace_kind,
+            workspace_path=workspace_path,
+            branch_name=branch_name,
+            tenant=tenant,
+            priority=priority,
+            triage=True,
+            idempotency_key=idempotency_key,
+            max_runtime_seconds=max_runtime_seconds,
+            max_retries=max_retries,
+            session_id=session_id,
+            board=board,
+        )
+
+
+def run_kanban_goal_bridge(rest: str, *, session_id: Optional[str] = None) -> str:
+    """Run the opt-in ``/goal create`` -> Kanban bridge.
+
+    ``/goal <text>`` keeps its existing Ralph-loop meaning. This helper powers
+    only the explicit ``/goal create ...`` form by reusing the canonical
+    ``/kanban goal`` parser/handler, so CLI, gateway, and TUI surfaces stay in
+    sync with ``hermes kanban goal``.
+    """
+    text = (rest or "").strip()
+    if not text:
+        return "Usage: /goal create <objective> [--assignee NAME] [--decompose]"
+    tokens = shlex.split(text)
+    flag_start = next((i for i, token in enumerate(tokens) if token.startswith("-")), len(tokens))
+    objective = " ".join(tokens[:flag_start]).strip()
+    if not objective:
+        return "Usage: /goal create <objective> [--assignee NAME] [--decompose]"
+    tokens = [objective] + tokens[flag_start:]
+    if session_id and "--session" not in tokens:
+        tokens.extend(["--session", session_id])
+    from hermes_cli.kanban import run_slash as run_kanban_slash
+
+    return run_kanban_slash("goal " + shlex.join(tokens))
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -758,5 +842,7 @@ __all__ = [
     "load_goal",
     "save_goal",
     "clear_goal",
+    "create_kanban_task_from_goal",
+    "run_kanban_goal_bridge",
     "judge_goal",
 ]

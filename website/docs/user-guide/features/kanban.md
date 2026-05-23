@@ -14,7 +14,7 @@ Hermes Kanban is a durable task board, shared across all your Hermes profiles, t
 
 The board has two front doors, both backed by the same `~/.hermes/kanban.db`:
 
-- **Agents drive the board through a dedicated `kanban_*` toolset** — `kanban_show`, `kanban_list`, `kanban_complete`, `kanban_block`, `kanban_heartbeat`, `kanban_comment`, `kanban_create`, `kanban_link`, `kanban_unblock`. The dispatcher spawns each worker with these tools already in its schema; orchestrator profiles can also enable the `kanban` toolset explicitly. The model reads and routes tasks by calling tools directly, *not* by shelling out to `hermes kanban`. See [How workers interact with the board](#how-workers-interact-with-the-board) below.
+- **Agents drive the board through a dedicated `kanban_*` toolset** — `kanban_show`, `kanban_list`, `kanban_progress`, `kanban_reviews`, `kanban_review`, `kanban_complete`, `kanban_block`, `kanban_heartbeat`, `kanban_comment`, `kanban_create`, `kanban_link`, `kanban_unblock`. The dispatcher spawns each worker with task-scoped tools already in its schema; orchestrator profiles can also enable the `kanban` toolset explicitly for board routing and review. The model reads and routes tasks by calling tools directly, *not* by shelling out to `hermes kanban`. See [How workers interact with the board](#how-workers-interact-with-the-board) below.
 - **You (and scripts, and cron) drive the board through `hermes kanban …`** on the CLI, `/kanban …` as a slash command, or the dashboard. These are for humans and automation — the places without a tool-calling model behind them.
 
 Both surfaces route through the same `kanban_db` layer, so reads see a consistent view and writes can't drift. The rest of this page shows CLI examples because they're easy to copy-paste, but every CLI verb has a tool-call equivalent the model uses.
@@ -237,6 +237,9 @@ hermes kanban block    t_abc "need input" --ids t_def t_hij
 |---|---|---|
 | `kanban_show` | Read the current task (title, body, prior attempts, parent handoffs, comments, full pre-formatted `worker_context`). Defaults to the env's task id. | — |
 | `kanban_list` | List task summaries with filters for `assignee`, `status`, `tenant`, archived visibility, and limit. Intended for orchestrators discovering board work. | — |
+| `kanban_progress` | (Orchestrators) read a task's latest worker progress, heartbeat, bounded evidence, and optional log tail without interrupting it. | `task_id` |
+| `kanban_reviews` | (Orchestrators) list review-required external-worker evidence snapshots, optionally filtered by assignee, tenant, or lane. | — |
+| `kanban_review` | (Orchestrators) approve bounded worker evidence or request changes. | `task_id`, `decision` |
 | `kanban_complete` | Finish with `summary` + `metadata` structured handoff. | at least one of `summary` / `result` |
 | `kanban_block` | Escalate for human input with a `reason`. | `reason` |
 | `kanban_heartbeat` | Signal liveness during long operations. Pure side-effect. | — |
@@ -280,7 +283,7 @@ kanban_create(
 kanban_complete(summary="decomposed into 2 research tasks + 1 writer; linked dependencies")
 ```
 
-The "(Orchestrators)" tools — `kanban_list`, `kanban_create`, `kanban_link`, `kanban_unblock`, and `kanban_comment` on foreign tasks — are available through the same toolset; the convention (enforced by the `kanban-orchestrator` skill) is that worker profiles don't fan out or route unrelated work, and orchestrator profiles don't execute implementation work. Dispatcher-spawned workers are still task-scoped for destructive lifecycle operations and cannot mutate unrelated tasks.
+The "(Orchestrators)" tools — `kanban_list`, `kanban_progress`, `kanban_reviews`, `kanban_review`, `kanban_create`, `kanban_link`, `kanban_unblock`, and `kanban_comment` on foreign tasks — are available through the same toolset; the convention (enforced by the `kanban-orchestrator` skill) is that worker profiles don't fan out, route unrelated work, or review external-worker handoffs, and orchestrator profiles don't execute implementation work. Dispatcher-spawned workers are still task-scoped for destructive lifecycle operations and cannot mutate unrelated tasks.
 
 ### Why tools instead of shelling to `hermes kanban`
 
@@ -531,8 +534,10 @@ All routes are mounted under `/api/plugins/kanban/` and protected by the dashboa
 |---|---|---|
 | `GET` | `/board?tenant=<name>&include_archived=…` | Full board grouped by status column, plus tenants + assignees for filter dropdowns |
 | `GET` | `/tasks/:id` | Task + comments + events + links |
+| `GET` | `/tasks/:id/progress?log_tail=<bytes>` | Read-only worker progress/evidence snapshot for one task, including latest heartbeat/progress event and an optional bounded worker-log tail |
 | `POST` | `/tasks` | Create (wraps `kanban_db.create_task`, accepts `triage: bool` and `parents: [id, …]`) |
 | `PATCH` | `/tasks/:id` | Status / assignee / priority / title / body / result |
+| `POST` | `/tasks/:id/review` | Approve review-required external-worker evidence or request changes using bounded metadata, not the full worker session |
 | `POST` | `/tasks/bulk` | Apply the same patch (status / archive / assignee / priority) to every id in `ids`. Per-id failures reported without aborting siblings |
 | `POST` | `/tasks/:id/comments` | Append a comment |
 | `POST` | `/tasks/:id/specify` | Run the triage specifier — auxiliary LLM fleshes out the task body and promotes it from `triage` to `todo`. Returns `{ok, task_id, reason, new_title}`; `ok=false` with a human-readable reason on "not in triage" / no aux client / LLM error is a 200, not a 4xx |
@@ -542,6 +547,9 @@ All routes are mounted under `/api/plugins/kanban/` and protected by the dashboa
 | `POST` | `/profiles/:name/describe-auto` | Generate a description for a profile via `auxiliary.profile_describer`. Persists with `description_auto: true` so the dashboard can surface a "review" badge. |
 | `GET` | `/orchestration` | Read the kanban orchestration settings (`orchestrator_profile`, `default_assignee`, `auto_decompose`) plus the *resolved* effective values after fallbacks. |
 | `PUT` | `/orchestration` | Update one or more of the three orchestration keys in `config.yaml`. Validates that non-empty profile names actually exist. |
+| `GET` | `/worker-lanes` | List registered external worker lanes, current capacity, per-status counts, and active task/run/pid instances without reading worker sessions |
+| `POST` | `/worker-lane-requests` | Validate and optionally enable/persist a skill-generated or dashboard-submitted worker lane request through the deterministic allowlist validator. |
+| `GET` | `/reviews?lane=<name>&limit=<n>&log_tail=<bytes>` | List review-required external-worker handoffs, optionally filtered by assignee, tenant, or worker lane |
 | `POST` | `/links` | Add a dependency (`parent_id` → `child_id`) |
 | `DELETE` | `/links?parent_id=…&child_id=…` | Remove a dependency |
 | `POST` | `/dispatch?max=…&dry_run=…` | Nudge the dispatcher — skip the 60 s wait |
@@ -622,8 +630,12 @@ hermes kanban tail <id>                                # follow a single task's 
 hermes kanban watch [--assignee P] [--tenant T]        # live stream ALL events to the terminal
         [--kinds completed,blocked,…] [--interval SECS]
 hermes kanban heartbeat <id> [--note "..."]            # worker liveness signal for long ops
+hermes kanban progress <id> [--json] [--log-tail N]    # read-only worker progress/evidence
+hermes kanban reviews [--lane L] [--json]              # review-required worker evidence queue
+hermes kanban review <id> approve|request-changes      # approve evidence or request fixes
 hermes kanban runs <id> [--json]                       # attempt history (one row per run)
 hermes kanban assignees [--json]                       # profiles on disk + per-assignee task counts
+hermes kanban worker-lanes [--json]                    # external lane capacity + active instances
 hermes kanban dispatch [--dry-run] [--max N]           # one-shot pass
         [--failure-limit N] [--json]
 hermes kanban daemon --force                           # DEPRECATED — standalone dispatcher (use `hermes gateway start` instead)
@@ -654,6 +666,7 @@ Every `hermes kanban <action>` verb is also reachable as `/kanban <action>` — 
 /kanban list
 /kanban show t_abcd
 /kanban create "write launch post" --assignee writer --parent t_research
+/kanban goal "ship the new onboarding flow" --assignee orchestrator --decompose
 /kanban comment t_abcd "looks good, ship it"
 /kanban unblock t_abcd
 /kanban dispatch --max 3
@@ -671,7 +684,8 @@ This is the whole point of the separation:
 
 - A worker blocks waiting on a peer → you send `/kanban unblock t_abcd` from your phone and the dispatcher picks the peer up on its next tick. The blocked worker isn't interrupted — it just stops being blocked.
 - You spot a card that needs human context → `/kanban comment t_xyz "use the 2026 schema, not 2025"` lands on the task thread and the *next* run of that task will read it in `kanban_show()`.
-- You want to know what your fleet is doing without stopping the orchestrator → `/kanban list --mine` or `/kanban stats` inspects the board without touching your main conversation.
+- You want to know what your fleet is doing without stopping the orchestrator → `/kanban list --mine`, `/kanban progress t_xyz --json`, `/kanban reviews --json`, or `/kanban stats` inspects the board without touching your main conversation.
+- You have reviewed a Codex/external-worker handoff → `/kanban review t_xyz approve` marks the bounded evidence accepted, or `/kanban review t_xyz request-changes --comment "add the missing test"` comments and returns the card to the lane.
 
 ### Auto-subscribe on `/kanban create` (gateway only)
 

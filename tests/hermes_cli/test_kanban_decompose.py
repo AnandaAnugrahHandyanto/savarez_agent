@@ -21,12 +21,16 @@ from hermes_cli import kanban_decompose as decomp
 
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
+    from hermes_cli.worker_lanes import clear_worker_lanes
+
+    clear_worker_lanes()
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
-    return home
+    yield home
+    clear_worker_lanes()
 
 
 def _fake_aux_response(content: str):
@@ -112,6 +116,89 @@ def test_decompose_with_fanout_creates_children(kanban_home):
     assert c1.status == "todo"
     assert c0.assignee == "researcher"
     assert c1.assignee == "engineer"
+
+
+def test_decompose_can_route_children_to_worker_lanes(kanban_home):
+    from hermes_cli.worker_lanes import WorkerLane, register_worker_lane
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ship with codex", triage=True)
+
+    register_worker_lane(WorkerLane(
+        name="codex-deep",
+        kind="codex_cli",
+        description="Codex CLI lane for deep code implementation",
+        spawn_fn=lambda *args, **kwargs: None,
+        max_concurrency=1,
+        source="test",
+    ))
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "implementation should go to codex",
+        "tasks": [
+            {
+                "title": "Implement the change",
+                "body": "Modify the code and report evidence.",
+                "assignee": "codex-deep",
+                "parents": [],
+            },
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "fallback"])
+    client = _mock_client_returning(llm_payload)
+    for p in patches:
+        p.start()
+    try:
+        with patch(
+            "agent.auxiliary_client.get_text_auxiliary_client",
+            return_value=(client, "test-model"),
+        ), _patch_extra_body(), patch(
+            "hermes_cli.kanban_decompose._load_config",
+            return_value={
+                "kanban": {
+                    "orchestrator_profile": "orchestrator",
+                    "default_assignee": "fallback",
+                }
+            },
+        ):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.child_ids and len(outcome.child_ids) == 1
+    with kb.connect() as conn:
+        child = kb.get_task(conn, outcome.child_ids[0])
+    assert child.assignee == "codex-deep"
+
+    call = client.chat.completions.create.call_args
+    messages = call.kwargs["messages"]
+    user_msg = messages[1]["content"]
+    assert "codex-deep [codex_cli]" in user_msg
+    assert "Codex CLI lane for deep code implementation" in user_msg
+
+
+def test_decompose_roster_keeps_worker_lanes_when_profile_listing_fails(kanban_home):
+    from hermes_cli.worker_lanes import WorkerLane, register_worker_lane
+
+    register_worker_lane(WorkerLane(
+        name="codex-only",
+        kind="codex_cli",
+        description="Codex lane available without profile discovery",
+        spawn_fn=lambda *args, **kwargs: None,
+        source="test",
+    ))
+
+    with patch(
+        "hermes_cli.profiles.list_profiles",
+        side_effect=RuntimeError("profile registry unavailable"),
+    ):
+        roster, valid = decomp._build_roster()
+
+    assert "codex-only" in valid
+    assert any(entry["name"] == "codex-only" for entry in roster)
 
 
 def test_decompose_fanout_false_assigns_default_when_unassigned(kanban_home):

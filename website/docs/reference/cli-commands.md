@@ -386,7 +386,7 @@ Multi-profile, multi-project collaboration board. Each install can host many boa
 |------|---------|
 | `--board <slug>` | Operate on a specific board. Defaults to the current board (set via `hermes kanban boards switch`, the `HERMES_KANBAN_BOARD` env var, or `default`). |
 
-**This is the human / scripting surface.** Agent workers spawned by the dispatcher drive the board through a dedicated `kanban_*` [toolset](/docs/user-guide/features/kanban#how-workers-interact-with-the-board) (`kanban_show`, `kanban_complete`, `kanban_block`, `kanban_create`, `kanban_link`, `kanban_comment`, `kanban_heartbeat`; orchestrator profiles also get `kanban_list` and `kanban_unblock`) instead of shelling to `hermes kanban`. Workers have `HERMES_KANBAN_BOARD` pinned in their env so they physically cannot see other boards.
+**This is the human / scripting surface.** Agent workers spawned by the dispatcher drive the board through a dedicated `kanban_*` [toolset](/docs/user-guide/features/kanban#how-workers-interact-with-the-board) (`kanban_show`, `kanban_complete`, `kanban_block`, `kanban_create`, `kanban_link`, `kanban_comment`, `kanban_heartbeat`; orchestrator profiles also get `kanban_list`, `kanban_progress`, `kanban_reviews`, `kanban_review`, and `kanban_unblock`) instead of shelling to `hermes kanban`. Workers have `HERMES_KANBAN_BOARD` pinned in their env so they physically cannot see other boards.
 
 | Action | Purpose |
 |--------|---------|
@@ -411,6 +411,12 @@ Multi-profile, multi-project collaboration board. Each install can host many boa
 | `unblock <id>` | Return a blocked or scheduled task to ready (or `todo` if dependencies are still open). |
 | `archive <id>` | Hide from default list. `gc` will remove scratch workspaces. |
 | `tail <id>` | Follow a task's event stream. |
+| `progress <id>` | Read a task's latest worker progress, heartbeat, bounded evidence, and optional log tail without claiming or interrupting it. Flags: `--json`, `--log-tail`. |
+| `advance-acceptance <id>` | Advance a review-required external-worker task without interrupting workers: plan/dispatch review and test follow-ups, run configured acceptance checks, request bounded changes when a gate fails, and approve only when all gates pass. Flags: `--review-assignee`, `--test-assignee`, `--no-dispatch`, `--dispatch-max`, `--dry-run`, `--no-verify`, `--no-approve`, `--no-request-changes`, `--reviewer`, `--summary`, `--result`, `--json`. |
+| `advance-goal <id>` | Advance a decomposed goal/root task without interrupting workers: dispatch ready child tasks, advance review-required children through review/test/acceptance, request bounded changes for failed child gates, and complete the root when all child gates pass. Flags mirror `advance-acceptance`: `--review-assignee`, `--test-assignee`, `--no-dispatch`, `--dispatch-max`, `--dry-run`, `--no-verify`, `--no-approve`, `--no-request-changes`, `--reviewer`, `--summary`, `--result`, `--json`. |
+| `reviews` | List tasks whose latest worker run is waiting for Hermes review (`review.required: true`). Flags: `--assignee`, `--tenant`, `--lane`, `--limit`, `--log-tail`, `--json`. |
+| `review <id> approve\|request-changes` | Resolve a review-required worker handoff from bounded evidence. `approve` marks the task done; `request-changes` writes a reviewer comment and unblocks the task for another worker run. Flags: `--reviewer`, `--comment`, `--summary`, `--result`, `--json`. |
+| `worker-lanes` / `lanes` | List registered external worker lanes, current active/max concurrency, per-status counts, and active task/run/pid instances. `--json` for machine output. |
 | `dispatch` | One dispatcher pass on the active board. Flags: `--dry-run`, `--max N`, `--failure-limit N`, `--json`. |
 | `context <id>` | Print the full context a worker would see (title + body + parent results + comments). |
 | `specify <id>` / `specify --all` | Flesh out a triage-column task into a concrete spec (title + body with goal, approach, acceptance criteria) via the auxiliary LLM, then promote it to `todo`. Flags: `--tenant` (scope `--all` to one tenant), `--author`, `--json`. Configure the model under `auxiliary.triage_specifier` in `config.yaml`. |

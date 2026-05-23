@@ -116,6 +116,40 @@ def test_goal_set_returns_send_with_notice(server, session):
     assert mgr.state.status == "active"
 
 
+def test_goal_create_routes_to_kanban_without_setting_standing_goal(server, session):
+    sid = "sid-goal-create"
+    session_key = "tui-goal-create-session"
+    server._sessions[sid] = {
+        "session_key": session_key,
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+        "attached_images": [],
+        "cols": 120,
+    }
+    r = _call(
+        server,
+        "command.dispatch",
+        name="goal",
+        arg="create 'build a kanban bridge' --assignee orchestrator",
+        session_id=sid,
+    )
+    result = r["result"]
+    assert result["type"] == "exec"
+    assert "Goal task:" in result["output"]
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.goals import GoalManager
+
+    with kb.connect() as conn:
+        tasks = kb.list_tasks(conn, status="triage")
+    assert len(tasks) == 1
+    assert tasks[0].assignee == "orchestrator"
+    assert tasks[0].session_id == session_key
+    assert GoalManager(session_key).state is None
+
+
 def test_goal_pause_after_set(server, session):
     sid, session_key, _ = session
     _call(server, "command.dispatch", name="goal", arg="write a story", session_id=sid)

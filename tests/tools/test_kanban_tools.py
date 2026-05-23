@@ -111,9 +111,17 @@ def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_p
     assert {
         "kanban_list",
         "kanban_unblock",
+        "kanban_progress",
+        "kanban_acceptance",
+        "kanban_verify",
+        "kanban_advance_acceptance",
+        "kanban_advance_goal",
+        "kanban_reviews",
+        "kanban_review",
+        "kanban_plan_review",
     }.isdisjoint(kanban), (
         f"Board-routing tools leaked into worker schema: "
-        f"{kanban & {'kanban_list', 'kanban_unblock'}}"
+        f"{kanban & {'kanban_list', 'kanban_unblock', 'kanban_progress', 'kanban_acceptance', 'kanban_verify', 'kanban_advance_acceptance', 'kanban_advance_goal', 'kanban_reviews', 'kanban_review', 'kanban_plan_review'}}"
     )
 
 
@@ -135,6 +143,14 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
     kanban = {n for n in names if n and n.startswith("kanban_")}
     expected = {
         "kanban_list",
+        "kanban_progress",
+        "kanban_acceptance",
+        "kanban_verify",
+        "kanban_advance_acceptance",
+        "kanban_advance_goal",
+        "kanban_reviews",
+        "kanban_review",
+        "kanban_plan_review",
         "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
         "kanban_unblock",
@@ -288,6 +304,628 @@ def test_list_rejects_bad_include_archived(monkeypatch, worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_list({"include_archived": "sometimes"})
     assert "include_archived must be" in json.loads(out).get("error", "")
+
+
+def test_progress_reads_snapshot_without_interrupting_worker(monkeypatch, worker_env):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        run_id = task.current_run_id
+        kb.record_task_event(
+            conn,
+            worker_env,
+            "worker_progress",
+            {"lane": "codex-deep", "items": [{"index": 1, "status": "done", "text": "mock"}]},
+            run_id=run_id,
+        )
+        before = kb.get_task(conn, worker_env)
+    finally:
+        conn.close()
+
+    out = kt._handle_progress({"task_id": worker_env})
+    d = json.loads(out)
+
+    conn = kb.connect()
+    try:
+        after = kb.get_task(conn, worker_env)
+    finally:
+        conn.close()
+    assert d["task"]["id"] == worker_env
+    assert d["task"]["status"] == "running"
+    assert d["worker_progress"]["items"][0]["text"] == "mock"
+    assert after.status == "running"
+    assert after.claim_lock == before.claim_lock
+
+
+def test_progress_include_children_summarizes_decomposed_goal(monkeypatch, worker_env):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        root = kb.create_task(conn, title="tool goal", triage=True)
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[
+                {"title": "implement", "assignee": "codex-fast"},
+                {"title": "review", "assignee": "codex-deep"},
+            ],
+            author="planner",
+        )
+        assert child_ids is not None
+        running_id, review_id = child_ids
+
+        running = kb.claim_task(conn, running_id, claimer="worker:fast")
+        assert running is not None
+        kb.record_task_event(
+            conn,
+            running_id,
+            "worker_progress",
+            {"lane": "codex-fast", "items": [{"index": 1, "status": "running", "text": "mock"}]},
+            run_id=running.current_run_id,
+        )
+        reviewing = kb.claim_task(conn, review_id, claimer="worker:deep")
+        assert reviewing is not None
+        assert kb.block_task(
+            conn,
+            review_id,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=reviewing.current_run_id,
+            metadata={
+                "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+                "verification": {"commands": ["pytest -q"], "summary": "passed"},
+                "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+            },
+        )
+        before = kb.get_task(conn, running_id)
+    finally:
+        conn.close()
+
+    out = kt._handle_progress({"task_id": root, "include_children": True})
+    d = json.loads(out)
+
+    conn = kb.connect()
+    try:
+        after = kb.get_task(conn, running_id)
+    finally:
+        conn.close()
+
+    assert d["task"]["id"] == root
+    assert d["child_summary"]["total"] == 2
+    assert d["child_summary"]["running"] == 1
+    assert d["child_summary"]["review_required"] == 1
+    assert d["child_summary"]["relationship_counts"]["decomposed_child"] == 2
+    by_id = {child["task"]["id"]: child for child in d["children"]}
+    assert by_id[running_id]["worker_progress"]["items"][0]["text"] == "mock"
+    assert by_id[review_id]["worker_lane"]["name"] == "codex-deep"
+    assert after.status == "running"
+    assert after.claim_lock == before.claim_lock
+
+
+def test_progress_schema_exposes_include_children():
+    from tools import kanban_tools as kt
+
+    assert kt.KANBAN_PROGRESS_SCHEMA["parameters"]["properties"]["include_children"]["type"] == "boolean"
+
+
+def test_reviews_lists_review_required_worker_evidence(monkeypatch, worker_env, tmp_path):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="tool review queue",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+        non_review = kb.create_task(conn, title="ordinary", assignee="codex-deep")
+        assert non_review
+    finally:
+        conn.close()
+
+    out = kt._handle_reviews({"lane": "codex-deep", "limit": 5})
+    d = json.loads(out)
+
+    ids = [item["task"]["id"] for item in d["tasks"]]
+    assert ids == [tid]
+    assert d["count"] == 1
+    assert d["tasks"][0]["worker_lane"]["name"] == "codex-deep"
+    assert d["tasks"][0]["verification"]["commands"] == ["pytest -q"]
+
+
+def test_review_tool_approve_and_request_changes(monkeypatch, worker_env, tmp_path):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.setenv("HERMES_PROFILE", "reviewer-profile")
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    def make_review_task(title: str) -> str:
+        metadata = {
+            "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+            "verification": {"commands": ["pytest -q"], "summary": "passed"},
+            "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+        }
+        tid = kb.create_task(
+            conn,
+            title=title,
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path / title),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+        return tid
+
+    conn = kb.connect()
+    try:
+        approve_tid = make_review_task("approve")
+        changes_tid = make_review_task("changes")
+    finally:
+        conn.close()
+
+    approved = json.loads(kt._handle_review({
+        "task_id": approve_tid,
+        "decision": "approve",
+        "summary": "bounded evidence accepted",
+    }))
+    changes = json.loads(kt._handle_review({
+        "task_id": changes_tid,
+        "decision": "request_changes",
+        "comment": "add a focused regression test",
+    }))
+
+    assert approved["task"]["status"] == "done"
+    assert approved["evidence"]["review"]["decision"] == "approved"
+    assert approved["evidence"]["review"]["reviewer"] == "reviewer-profile"
+    assert changes["task"]["status"] == "ready"
+    assert changes["review_required"] is False
+    conn = kb.connect()
+    try:
+        comments = kb.list_comments(conn, changes_tid)
+        events = kb.list_events(conn, changes_tid)
+    finally:
+        conn.close()
+    assert "focused regression test" in comments[-1].body
+    assert any(event.kind == "worker_review_changes_requested" for event in events)
+
+
+def test_review_tools_reject_worker_context(worker_env):
+    from tools import kanban_tools as kt
+
+    for handler, args in [
+        (kt._handle_progress, {"task_id": worker_env}),
+        (kt._handle_acceptance, {"task_id": worker_env}),
+        (kt._handle_reviews, {}),
+        (kt._handle_review, {"task_id": worker_env, "decision": "approve"}),
+        (kt._handle_plan_review, {"task_id": worker_env}),
+    ]:
+        out = handler(args)
+        assert "orchestrator-only" in json.loads(out).get("error", "")
+
+
+def test_plan_review_tool_creates_review_and_test_followups(monkeypatch, worker_env, tmp_path):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "git": {"changed_files": ["app.py"], "diff_summary": " app.py | 4 ++++"},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="tool plan review",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+    finally:
+        conn.close()
+
+    out = kt._handle_plan_review({
+        "task_id": tid,
+        "review_assignee": "codex-review",
+        "test_assignee": "codex-test",
+    })
+    d = json.loads(out)
+
+    conn = kb.connect()
+    try:
+        review_task = kb.get_task(conn, d["review_task_id"])
+        test_task = kb.get_task(conn, d["test_task_id"])
+    finally:
+        conn.close()
+
+    assert set(d["created"]) == {d["review_task_id"], d["test_task_id"]}
+    assert review_task.assignee == "codex-review"
+    assert test_task.assignee == "codex-test"
+    assert "app.py" in review_task.body
+    assert "pytest -q" in test_task.body
+
+    acceptance = json.loads(kt._handle_acceptance({"task_id": tid}))
+    assert acceptance["recommended_action"] == "wait_for_followups"
+    assert acceptance["approval_allowed"] is False
+    assert acceptance["review_followup_gate"]["pending"] == 2
+    assert [item["purpose"] for item in acceptance["followups"]] == ["review", "test"]
+
+    early = json.loads(kt._handle_review({
+        "task_id": tid,
+        "decision": "approve",
+        "summary": "too early",
+    }))
+    assert "review follow-up gate is not satisfied" in early["error"]
+
+
+def test_plan_review_tool_dispatch_dry_run_scopes_to_followups(
+    monkeypatch,
+    worker_env,
+    tmp_path,
+):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import profiles
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="tool plan review dispatch",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        unrelated = kb.create_task(
+            conn,
+            title="unrelated",
+            assignee="alice",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+    finally:
+        conn.close()
+
+    out = kt._handle_plan_review({
+        "task_id": tid,
+        "dispatch": True,
+        "dry_run": True,
+    })
+    d = json.loads(out)
+    spawned_ids = {item["task_id"] for item in d["dispatch"]["spawned"]}
+
+    conn = kb.connect()
+    try:
+        unrelated_task = kb.get_task(conn, unrelated)
+    finally:
+        conn.close()
+
+    assert spawned_ids == {d["review_task_id"], d["test_task_id"]}
+    assert unrelated_task.status == "ready"
+
+
+def test_verify_tool_runs_configured_acceptance_check(
+    monkeypatch,
+    worker_env,
+    tmp_path,
+):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "ok.txt").write_text("ok\n", encoding="utf-8")
+    (tmp_path / ".hermes" / "config.yaml").write_text(
+        "toolsets:\n"
+        "  - kanban\n"
+        "kanban:\n"
+        "  acceptance_checks:\n"
+        "    exact-file:\n"
+        "      argv: [python3, -c, \"from pathlib import Path; "
+        "assert Path('ok.txt').read_text() == 'ok\\\\n'\"]\n",
+        encoding="utf-8",
+    )
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="tool verify",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+    finally:
+        conn.close()
+
+    payload = json.loads(kt._handle_verify({"task_id": tid, "checks": ["exact-file"]}))
+    acceptance = json.loads(kt._handle_acceptance({"task_id": tid}))
+
+    assert payload["checks"][0]["passed"] is True
+    assert acceptance["acceptance_check_gate"]["ready"] is True
+
+
+def test_advance_acceptance_tool_dry_run_plans_scoped_followups(
+    monkeypatch,
+    worker_env,
+    tmp_path,
+):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import profiles
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="tool advance acceptance",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        unrelated = kb.create_task(
+            conn,
+            title="unrelated",
+            assignee="alice",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+    finally:
+        conn.close()
+
+    out = kt._handle_advance_acceptance({
+        "task_id": tid,
+        "dry_run": True,
+    })
+    d = json.loads(out)
+    plan = d["steps"][0]["plan"]
+    spawned_ids = {item["task_id"] for item in d["steps"][1]["dispatch"]["spawned"]}
+
+    conn = kb.connect()
+    try:
+        unrelated_task = kb.get_task(conn, unrelated)
+        review_task = kb.get_task(conn, plan["review_task_id"])
+        test_task = kb.get_task(conn, plan["test_task_id"])
+    finally:
+        conn.close()
+
+    assert [step["kind"] for step in d["steps"]] == [
+        "plan_review_followups",
+        "dispatch_followups",
+    ]
+    assert spawned_ids == {plan["review_task_id"], plan["test_task_id"]}
+    assert unrelated_task.status == "ready"
+    assert review_task.status == "ready"
+    assert test_task.status == "ready"
+
+
+def test_advance_acceptance_tool_requests_changes_on_failed_followup(
+    monkeypatch,
+    worker_env,
+    tmp_path,
+):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="tool request changes",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+        plan = kb.plan_review_followups(conn, tid)
+        review = kb.claim_task(conn, plan.review_task_id, claimer="worker:codex-review")
+        assert review is not None
+        assert kb.block_task(
+            conn,
+            plan.review_task_id,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=review.current_run_id,
+            metadata={
+                "worker_lane": {"name": "codex-review", "kind": "codex_cli", "exit_code": 0},
+                "verification": {"summary": "Verdict: request_changes"},
+                "review": {"required": True},
+            },
+        )
+        test = kb.claim_task(conn, plan.test_task_id, claimer="worker:codex-test")
+        assert test is not None
+        assert kb.block_task(
+            conn,
+            plan.test_task_id,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=test.current_run_id,
+            metadata={
+                "worker_lane": {"name": "codex-test", "kind": "codex_cli", "exit_code": 0},
+                "verification": {"summary": "Verdict: pass"},
+                "review": {"required": True},
+            },
+        )
+    finally:
+        conn.close()
+
+    out = kt._handle_advance_acceptance({
+        "task_id": tid,
+        "dispatch": False,
+        "reviewer": "tool-controller",
+    })
+    d = json.loads(out)
+
+    conn = kb.connect()
+    try:
+        task_after = kb.get_task(conn, tid)
+        comments = kb.list_comments(conn, tid)
+    finally:
+        conn.close()
+
+    assert d["steps"][0]["kind"] == "request_changes"
+    assert d["steps"][0]["review_followup_gate"]["failed"] == 1
+    assert task_after.status == "ready"
+    assert comments[-1].author == "tool-controller"
+    assert "Review/test follow-up gate failed" in comments[-1].body
+
+
+def test_advance_goal_tool_dry_run_dispatches_only_goal_children(
+    monkeypatch,
+    worker_env,
+    tmp_path,
+):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import profiles
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    conn = kb.connect()
+    try:
+        root = kb.create_task(
+            conn,
+            title="tool goal",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+            triage=True,
+        )
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[{"title": "implement", "assignee": "codex-deep"}],
+            author="planner",
+        )
+        assert child_ids is not None
+        unrelated = kb.create_task(
+            conn,
+            title="unrelated",
+            assignee="alice",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+    finally:
+        conn.close()
+
+    out = kt._handle_advance_goal({
+        "task_id": root,
+        "dry_run": True,
+    })
+    d = json.loads(out)
+    spawned_ids = {item["task_id"] for item in d["steps"][0]["dispatch"]["spawned"]}
+
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, child_ids[0])
+        unrelated_task = kb.get_task(conn, unrelated)
+    finally:
+        conn.close()
+
+    assert d["steps"][0]["kind"] == "dispatch_goal_children"
+    assert spawned_ids == {child_ids[0]}
+    assert child.status == "ready"
+    assert unrelated_task.status == "ready"
 
 
 def test_complete_happy_path(worker_env):

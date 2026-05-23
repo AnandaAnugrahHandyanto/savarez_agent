@@ -9000,6 +9000,18 @@ class HermesCLI:
             _cprint(f"  {mgr.status_line()}")
             return
 
+        if lower == "create" or lower.startswith("create "):
+            try:
+                from hermes_cli.goals import run_kanban_goal_bridge
+
+                sid = self.current_session_id or ""
+                out = run_kanban_goal_bridge(arg.split(None, 1)[1] if " " in arg else "", session_id=sid)
+            except Exception as exc:
+                out = f"kanban goal bridge failed: {exc}"
+            for line in (out or "").splitlines() or ["(no output)"]:
+                _cprint(f"  {line}")
+            return
+
         if lower == "pause":
             state = mgr.pause(reason="user-paused")
             if state is None:

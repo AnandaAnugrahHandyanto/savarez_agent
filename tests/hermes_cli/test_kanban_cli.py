@@ -395,6 +395,755 @@ def test_run_slash_reassign_with_reclaim_flag(kanban_home):
     assert "newbie" in out2
 
 
+def test_run_slash_progress_json_is_read_only(kanban_home):
+    import re
+    import time
+    import secrets
+
+    out1 = kc.run_slash("create 'external progress' --assignee codex-deep")
+    m = re.search(r"(t_[a-f0-9]+)", out1)
+    tid = m.group(1)
+
+    with kb.connect() as conn:
+        lock = secrets.token_hex(4)
+        now = int(time.time())
+        conn.execute(
+            "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
+            "worker_pid=?, current_run_id=NULL WHERE id=?",
+            (lock, now + 3600, 4242, tid),
+        )
+        cur = conn.execute(
+            "INSERT INTO task_runs (task_id, profile, status, claim_lock, "
+            "claim_expires, worker_pid, started_at) VALUES (?, ?, 'running', ?, ?, ?, ?)",
+            (tid, "codex-deep", lock, now + 3600, 4242, now),
+        )
+        run_id = cur.lastrowid
+        conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (run_id, tid))
+        kb.record_task_event(
+            conn,
+            tid,
+            "worker_progress",
+            {"lane": "codex-deep", "items": [{"index": 1, "status": "done", "text": "mock"}]},
+            run_id=run_id,
+        )
+        before = kb.get_task(conn, tid)
+
+    payload = json.loads(kc.run_slash(f"progress {tid} --json"))
+
+    with kb.connect() as conn:
+        after = kb.get_task(conn, tid)
+    assert payload["task"]["status"] == "running"
+    assert payload["task"]["worker_pid"] == 4242
+    assert payload["worker_progress"]["items"][0]["text"] == "mock"
+    assert after.status == "running"
+    assert after.claim_lock == before.claim_lock
+
+
+def test_run_slash_progress_children_json_summarizes_goal_workers(kanban_home):
+    with kb.connect() as conn:
+        root = kb.create_task(conn, title="goal", triage=True)
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[
+                {"title": "implement", "assignee": "codex-fast"},
+                {"title": "review", "assignee": "codex-deep"},
+            ],
+            author="planner",
+        )
+        assert child_ids is not None
+        running_id, review_id = child_ids
+
+        running = kb.claim_task(conn, running_id, claimer="worker:fast")
+        assert running is not None
+        kb.record_task_event(
+            conn,
+            running_id,
+            "worker_progress",
+            {"lane": "codex-fast", "items": [{"index": 1, "status": "running", "text": "mock"}]},
+            run_id=running.current_run_id,
+        )
+        reviewing = kb.claim_task(conn, review_id, claimer="worker:deep")
+        assert reviewing is not None
+        assert kb.block_task(
+            conn,
+            review_id,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=reviewing.current_run_id,
+            metadata={
+                "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+                "verification": {"commands": ["pytest -q"], "summary": "passed"},
+                "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+            },
+        )
+        before = kb.get_task(conn, running_id)
+
+    payload = json.loads(kc.run_slash(f"progress {root} --children --json"))
+
+    with kb.connect() as conn:
+        after = kb.get_task(conn, running_id)
+
+    assert payload["task"]["id"] == root
+    assert payload["child_summary"]["total"] == 2
+    assert payload["child_summary"]["running"] == 1
+    assert payload["child_summary"]["review_required"] == 1
+    assert payload["child_summary"]["relationship_counts"]["decomposed_child"] == 2
+    by_id = {child["task"]["id"]: child for child in payload["children"]}
+    assert by_id[running_id]["worker_progress"]["items"][0]["text"] == "mock"
+    assert by_id[review_id]["worker_lane"]["name"] == "codex-deep"
+    assert by_id[review_id]["verification"]["commands"] == ["pytest -q"]
+    assert after.status == "running"
+    assert after.claim_lock == before.claim_lock
+
+
+def test_run_slash_reviews_lists_review_required_evidence(
+    kanban_home, tmp_path,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "git": {"changed_files": ["hermes_cli/kanban.py"], "diff_summary": "+2 -0"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="external review",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+
+    payload = json.loads(kc.run_slash("reviews --json"))
+    assert [item["task"]["id"] for item in payload] == [tid]
+    assert payload[0]["worker_lane"]["name"] == "codex-deep"
+    assert payload[0]["verification"]["commands"] == ["pytest -q"]
+    assert payload[0]["evidence"]["review"]["required"] is True
+
+    human = kc.run_slash("reviews --lane codex-deep")
+    assert tid in human
+    assert "codex-deep" in human
+    assert "review-required: Codex completed" in human
+
+
+def test_run_slash_worker_lanes_lists_active_instances(kanban_home):
+    from hermes_cli.worker_lanes import WorkerLane, clear_worker_lanes, register_worker_lane
+
+    clear_worker_lanes()
+    register_worker_lane(WorkerLane(
+        name="codex-deep",
+        kind="codex_cli",
+        description="Deep Codex lane",
+        spawn_fn=lambda task, workspace, **kwargs: 5100,
+        max_concurrency=2,
+        source="test",
+        config={"type": "codex_cli", "model": "gpt-5.5", "secret": "hidden"},
+    ))
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="active lane task", assignee="codex-deep")
+        res = kb.dispatch_once(conn, max_spawn=1)
+        assert res.spawned[0][0] == tid
+
+    payload = json.loads(kc.run_slash("worker-lanes --json"))
+
+    assert payload[0]["name"] == "codex-deep"
+    assert payload[0]["active_count"] == 1
+    assert payload[0]["available_capacity"] == 1
+    assert payload[0]["active"][0]["task_id"] == tid
+    assert payload[0]["active"][0]["worker_pid"] == 5100
+    assert payload[0]["config"]["model"] == "gpt-5.5"
+    assert "secret" not in payload[0]["config"]
+
+    human = kc.run_slash("worker-lanes")
+    assert "codex-deep" in human
+    assert tid in human
+    assert "ACTIVE" in human
+
+
+def test_run_slash_review_approve_completes_review_required_task(
+    kanban_home, tmp_path,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="approve via slash",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+
+    payload = json.loads(kc.run_slash(
+        f"review {tid} approve --reviewer ralph --summary 'bounded evidence approved' --json"
+    ))
+
+    assert payload["task"]["status"] == "done"
+    assert payload["evidence"]["review"]["decision"] == "approved"
+    assert payload["evidence"]["review"]["reviewer"] == "ralph"
+    assert payload["review_required"] is False
+
+
+def test_run_slash_review_request_changes_unblocks_for_next_worker(
+    kanban_home, tmp_path,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "failed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="request changes via slash",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+
+    out = kc.run_slash(
+        f"review {tid} request-changes --reviewer ralph "
+        "--comment 'add a focused regression test'"
+    )
+
+    assert f"Requested changes for {tid}" in out
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        comments = kb.list_comments(conn, tid)
+        events = kb.list_events(conn, tid)
+    assert task.status == "ready"
+    assert "focused regression test" in comments[-1].body
+    assert any(event.kind == "worker_review_changes_requested" for event in events)
+
+
+def test_run_slash_plan_review_json_creates_followups(
+    kanban_home, tmp_path,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "git": {"changed_files": ["hermes_cli/kanban.py"], "diff_summary": "+2 -0"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="plan review via slash",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+
+    payload = json.loads(kc.run_slash(
+        f"plan-review {tid} --review-assignee codex-review "
+        "--test-assignee codex-test --json"
+    ))
+
+    with kb.connect() as conn:
+        review_task = kb.get_task(conn, payload["review_task_id"])
+        test_task = kb.get_task(conn, payload["test_task_id"])
+        progress = kb.task_progress_snapshot(conn, tid, include_children=True)
+        repeated = json.loads(kc.run_slash(f"plan-review {tid} --json"))
+
+    assert set(payload["created"]) == {payload["review_task_id"], payload["test_task_id"]}
+    assert payload["existing"] == []
+    assert review_task.status == "ready"
+    assert test_task.status == "ready"
+    assert review_task.assignee == "codex-review"
+    assert test_task.assignee == "codex-test"
+    assert "hermes_cli/kanban.py" in review_task.body
+    assert "pytest -q" in test_task.body
+    assert progress.child_summary["relationship_counts"]["review_followup"] == 1
+    assert progress.child_summary["relationship_counts"]["test_followup"] == 1
+    assert progress.review_followup_gate["ready"] is False
+    assert progress.review_followup_gate["pending"] == 2
+    assert repeated["created"] == []
+    assert set(repeated["existing"]) == {payload["review_task_id"], payload["test_task_id"]}
+
+    acceptance = json.loads(kc.run_slash(f"acceptance {tid} --json"))
+    assert acceptance["recommended_action"] == "wait_for_followups"
+    assert acceptance["approval_allowed"] is False
+    assert acceptance["review_followup_gate"]["pending"] == 2
+    assert [item["purpose"] for item in acceptance["followups"]] == ["review", "test"]
+
+    out = kc.run_slash(
+        f"review {tid} approve --reviewer ralph --summary 'too early' --json"
+    )
+    assert "review follow-up gate is not satisfied" in out
+
+
+def test_run_slash_plan_review_dispatch_dry_run_scopes_to_followups(
+    kanban_home,
+    tmp_path,
+    all_assignees_spawnable,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="plan and dispatch followups via slash",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        unrelated = kb.create_task(
+            conn,
+            title="unrelated",
+            assignee="alice",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+
+    payload = json.loads(kc.run_slash(
+        f"plan-review {tid} --dispatch --dry-run --json"
+    ))
+    spawned_ids = {item["task_id"] for item in payload["dispatch"]["spawned"]}
+
+    with kb.connect() as conn:
+        unrelated_task = kb.get_task(conn, unrelated)
+        review_task = kb.get_task(conn, payload["review_task_id"])
+        test_task = kb.get_task(conn, payload["test_task_id"])
+
+    assert spawned_ids == {payload["review_task_id"], payload["test_task_id"]}
+    assert unrelated_task.status == "ready"
+    assert review_task.status == "ready"
+    assert test_task.status == "ready"
+
+
+def test_run_slash_verify_runs_configured_acceptance_check(
+    kanban_home,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "ok.txt").write_text("ok\n", encoding="utf-8")
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n"
+        "  acceptance_checks:\n"
+        "    exact-file:\n"
+        "      argv: [python3, -c, \"from pathlib import Path; "
+        "assert Path('ok.txt').read_text() == 'ok\\\\n'\"]\n",
+        encoding="utf-8",
+    )
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="verify via slash",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+
+    payload = json.loads(kc.run_slash(f"verify {tid} exact-file --json"))
+    acceptance = json.loads(kc.run_slash(f"acceptance {tid} --json"))
+
+    assert payload["checks"][0]["name"] == "exact-file"
+    assert payload["checks"][0]["passed"] is True
+    assert acceptance["acceptance_check_gate"]["ready"] is True
+
+
+def test_run_slash_advance_acceptance_dry_run_plans_scoped_followups(
+    kanban_home,
+    tmp_path,
+    all_assignees_spawnable,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="advance via slash",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        unrelated = kb.create_task(
+            conn,
+            title="unrelated",
+            assignee="alice",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+
+    payload = json.loads(kc.run_slash(
+        f"advance-acceptance {tid} --dry-run --json"
+    ))
+    plan = payload["steps"][0]["plan"]
+    spawned_ids = {item["task_id"] for item in payload["steps"][1]["dispatch"]["spawned"]}
+
+    with kb.connect() as conn:
+        unrelated_task = kb.get_task(conn, unrelated)
+        review_task = kb.get_task(conn, plan["review_task_id"])
+        test_task = kb.get_task(conn, plan["test_task_id"])
+
+    assert [step["kind"] for step in payload["steps"]] == [
+        "plan_review_followups",
+        "dispatch_followups",
+    ]
+    assert spawned_ids == {plan["review_task_id"], plan["test_task_id"]}
+    assert unrelated_task.status == "ready"
+    assert review_task.status == "ready"
+    assert test_task.status == "ready"
+    assert payload["final"]["recommended_action"] == "wait_for_followups"
+
+
+def test_run_slash_advance_acceptance_no_request_changes_reports_blocked(
+    kanban_home,
+    tmp_path,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="advance via slash no request changes",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+        plan = kb.plan_review_followups(conn, tid)
+        review = kb.claim_task(conn, plan.review_task_id, claimer="worker:codex-review")
+        assert review is not None
+        assert kb.block_task(
+            conn,
+            plan.review_task_id,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=review.current_run_id,
+            metadata={
+                "worker_lane": {"name": "codex-review", "kind": "codex_cli", "exit_code": 0},
+                "verification": {"summary": "Verdict: request_changes"},
+                "review": {"required": True},
+            },
+        )
+        test = kb.claim_task(conn, plan.test_task_id, claimer="worker:codex-test")
+        assert test is not None
+        assert kb.block_task(
+            conn,
+            plan.test_task_id,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=test.current_run_id,
+            metadata={
+                "worker_lane": {"name": "codex-test", "kind": "codex_cli", "exit_code": 0},
+                "verification": {"summary": "Verdict: pass"},
+                "review": {"required": True},
+            },
+        )
+
+    payload = json.loads(kc.run_slash(
+        f"advance-acceptance {tid} --no-request-changes --json"
+    ))
+
+    with kb.connect() as conn:
+        task_after = kb.get_task(conn, tid)
+        comments = kb.list_comments(conn, tid)
+
+    assert payload["steps"][0]["kind"] == "blocked"
+    assert payload["steps"][0]["review_followup_gate"]["failed"] == 1
+    assert task_after.status == "blocked"
+    assert comments == []
+
+
+def test_run_slash_advance_goal_dry_run_scopes_child_dispatch(
+    kanban_home,
+    tmp_path,
+    all_assignees_spawnable,
+):
+    with kb.connect() as conn:
+        root = kb.create_task(
+            conn,
+            title="goal via slash",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+            triage=True,
+        )
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[{"title": "implement", "assignee": "codex-deep"}],
+            author="planner",
+        )
+        assert child_ids is not None
+        unrelated = kb.create_task(
+            conn,
+            title="unrelated",
+            assignee="alice",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+
+    payload = json.loads(kc.run_slash(
+        f"advance-goal {root} --dry-run --json"
+    ))
+    spawned_ids = {item["task_id"] for item in payload["steps"][0]["dispatch"]["spawned"]}
+
+    with kb.connect() as conn:
+        child = kb.get_task(conn, child_ids[0])
+        unrelated_task = kb.get_task(conn, unrelated)
+
+    assert payload["steps"][0]["kind"] == "dispatch_goal_children"
+    assert spawned_ids == {child_ids[0]}
+    assert child.status == "ready"
+    assert unrelated_task.status == "ready"
+    assert payload["final"]["task"]["status"] == "todo"
+
+
+def test_run_slash_worker_lane_request_validates_without_enabling(
+    kanban_home, tmp_path,
+):
+    from hermes_cli.worker_lanes import get_worker_lane
+
+    req = tmp_path / "lane.yaml"
+    req.write_text(
+        "worker_lane_request:\n"
+        "  name: codex-cli-request\n"
+        "  type: codex_cli\n"
+        "  model: gpt-5.4-mini\n"
+        "  sandbox: workspace-write\n"
+        "  approval: never\n"
+        "  max_concurrency: 1\n"
+        "  success_policy: block_for_review\n",
+        encoding="utf-8",
+    )
+
+    payload = json.loads(kc.run_slash(f"worker-lane-request {req} --json"))
+
+    assert payload["valid"] is True
+    assert payload["enabled"] is False
+    assert payload["config"]["name"] == "codex-cli-request"
+    assert get_worker_lane("codex-cli-request") is None
+
+
+def test_run_slash_worker_lane_request_persist_enables_config_lane(
+    kanban_home, tmp_path,
+):
+    from hermes_cli.worker_lanes import get_worker_lane
+    from hermes_cli.config import read_raw_config
+
+    req = tmp_path / "lane.json"
+    req.write_text(json.dumps({
+        "worker_lane_request": {
+            "name": "codex-persisted",
+            "type": "codex_cli",
+            "model": "gpt-5.5",
+            "sandbox": "workspace-write",
+            "approval": "never",
+            "max_concurrency": 1,
+            "success_policy": "block_for_review",
+            "reason": "approved by test",
+        }
+    }), encoding="utf-8")
+
+    payload = json.loads(kc.run_slash(f"worker-lane-request {req} --persist --json"))
+
+    assert payload["enabled"] is True
+    assert payload["persisted"] is True
+    lane = get_worker_lane("codex-persisted")
+    assert lane is not None
+    assert lane.source == "config"
+    stored = read_raw_config()["kanban"]["worker_lanes"]["codex-persisted"]
+    assert stored["type"] == "codex_cli"
+    assert stored["model"] == "gpt-5.5"
+    assert "reason" not in stored
+
+
+def test_run_slash_worker_lane_request_rejects_shell_command(
+    kanban_home, tmp_path,
+):
+    req = tmp_path / "lane.json"
+    req.write_text(json.dumps({
+        "name": "codex-bad",
+        "type": "codex_cli",
+        "command": "codex exec -",
+    }), encoding="utf-8")
+
+    out = kc.run_slash(f"worker-lane-request {req} --json")
+
+    assert "may not include executable command fields" in out
+
+
+def test_run_slash_goal_creates_top_level_task(kanban_home):
+    payload = json.loads(kc.run_slash(
+        "goal 'refactor the worker lane bridge' "
+        "--session sess-goal-1 --assignee orchestrator --tenant dev "
+        "--priority 3 --workspace dir:/tmp/hermes-goal-repo "
+        "--max-runtime 15m --max-retries 2 --json"
+    ))
+
+    assert payload["task"]["status"] == "triage"
+    assert payload["task"]["assignee"] == "orchestrator"
+    assert payload["task"]["session_id"] == "sess-goal-1"
+    assert payload["task"]["tenant"] == "dev"
+    assert payload["task"]["priority"] == 3
+    assert payload["task"]["workspace_kind"] == "dir"
+    assert payload["task"]["workspace_path"] == "/tmp/hermes-goal-repo"
+    assert payload["task"]["max_runtime_seconds"] == 900
+    assert payload["task"]["max_retries"] == 2
+    assert payload["decompose"] is None
+    assert payload["child_ids"] == []
+
+    payload2 = json.loads(kc.run_slash(
+        "goal 'refactor the worker lane bridge' "
+        "--session sess-goal-1 --assignee orchestrator --json"
+    ))
+    assert payload2["task_id"] == payload["task_id"]
+
+
+def test_run_slash_goal_can_decompose_to_worker_lane(kanban_home, monkeypatch):
+    from unittest.mock import MagicMock
+    from hermes_cli.worker_lanes import WorkerLane, clear_worker_lanes, register_worker_lane
+
+    clear_worker_lanes()
+    register_worker_lane(WorkerLane(
+        name="codex-deep",
+        kind="codex_cli",
+        description="Codex CLI lane for implementation work",
+        spawn_fn=lambda *args, **kwargs: None,
+        source="test",
+    ))
+
+    resp = MagicMock()
+    resp.choices = [MagicMock()]
+    resp.choices[0].message.content = json.dumps({
+        "fanout": True,
+        "rationale": "implementation can go to codex",
+        "tasks": [
+            {
+                "title": "Implement worker lane bridge",
+                "body": "Change code and provide evidence.",
+                "assignee": "codex-deep",
+                "parents": [],
+            }
+        ],
+    })
+    fake_client = MagicMock()
+    fake_client.chat.completions.create = MagicMock(return_value=resp)
+    monkeypatch.setattr(
+        "agent.auxiliary_client.get_text_auxiliary_client",
+        lambda *a, **kw: (fake_client, "test-model"),
+    )
+    monkeypatch.setattr(
+        "agent.auxiliary_client.get_auxiliary_extra_body",
+        lambda *a, **kw: {},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.kanban_decompose._load_config",
+        lambda: {"kanban": {"orchestrator_profile": "orchestrator", "default_assignee": "fallback"}},
+    )
+    monkeypatch.setattr("hermes_cli.profiles.list_profiles", lambda: [])
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda name: name == "orchestrator")
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "orchestrator")
+
+    payload = json.loads(kc.run_slash(
+        "goal 'ship codex worker lane orchestration' "
+        "--assignee orchestrator --workspace dir:/tmp/hermes-goal-repo "
+        "--max-runtime 20m --max-retries 2 --decompose --json"
+    ))
+
+    assert payload["task"]["status"] == "todo"
+    assert payload["decompose"]["ok"] is True
+    assert payload["decompose"]["fanout"] is True
+    assert len(payload["child_ids"]) == 1
+    with kb.connect() as conn:
+        child = kb.get_task(conn, payload["child_ids"][0])
+    assert child.assignee == "codex-deep"
+    assert child.status == "ready"
+    assert child.workspace_kind == "dir"
+    assert child.workspace_path == "/tmp/hermes-goal-repo"
+    assert child.max_runtime_seconds == 1200
+    assert child.max_retries == 2
+
+
 # ---------------------------------------------------------------------------
 # /kanban specify — slash surface (same entry point CLI + gateway use)
 # ---------------------------------------------------------------------------
