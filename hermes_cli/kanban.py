@@ -25,6 +25,7 @@ from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_swarm as ks
+from hermes_cli import kanban_reconciler as krec
 from hermes_cli.profiles import get_active_profile_name, get_profile_dir, seed_profile_skills
 
 
@@ -477,6 +478,19 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Emit JSON (structured) instead of the default human table",
     )
 
+    # --- reconcile (read-only deterministic stalled-transition actions) ---
+    p_reconcile = sub.add_parser(
+        "reconcile",
+        help="Classify stalled-transition actions without mutating the board",
+    )
+    p_reconcile.add_argument("--json", action="store_true", help="Emit structured JSON")
+    p_reconcile.add_argument(
+        "--ready-age-seconds",
+        type=int,
+        default=15 * 60,
+        help="Classify ready/review tasks older than this threshold (default: 900)",
+    )
+
     # --- link / unlink ---
     p_link = sub.add_parser("link", help="Add a parent->child dependency")
     p_link.add_argument("parent_id")
@@ -871,12 +885,13 @@ def kanban_command(args: argparse.Namespace) -> int:
     # HERMES_HOME. Previously only `init` and `daemon` triggered
     # schema creation; `create` / `list` / every other command would
     # error out on a fresh install.
-    try:
-        kb.init_db()
-    except Exception as exc:
-        print(f"kanban: could not initialize database: {exc}", file=sys.stderr)
-        _restore_board_env()
-        return 1
+    if action != "reconcile":
+        try:
+            kb.init_db()
+        except Exception as exc:
+            print(f"kanban: could not initialize database: {exc}", file=sys.stderr)
+            _restore_board_env()
+            return 1
 
     handlers = {
         "init":     _cmd_init,
@@ -890,6 +905,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "reassign": _cmd_reassign,
         "diagnostics": _cmd_diagnostics,
         "diag":     _cmd_diagnostics,
+        "reconcile": _cmd_reconcile,
         "link":     _cmd_link,
         "unlink":   _cmd_unlink,
         "claim":    _cmd_claim,
@@ -935,6 +951,19 @@ def kanban_command(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
+
+
+def _cmd_reconcile(args: argparse.Namespace) -> int:
+    result = krec.run_reconciler(
+        board=getattr(args, "board", None),
+        ready_age_seconds=max(1, int(getattr(args, "ready_age_seconds", 900) or 900)),
+    )
+    if getattr(args, "json", False):
+        print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+    else:
+        print(krec.format_reconcile_text(result))
+    return 1 if result.get("error") else 0
+
 
 def _profile_author() -> str:
     """Best-effort author name for an interactive CLI call."""
