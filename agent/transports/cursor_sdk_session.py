@@ -39,7 +39,6 @@ class TurnResult:
     run_id: Optional[str] = None
     agent_id: Optional[str] = None
     should_retire: bool = False
-    usage: Optional[dict[str, int]] = None
 
 
 def _bridge_launch_needs_workaround() -> bool:
@@ -244,7 +243,7 @@ class CursorSDKSession:
         model: str = "composer-2.5",
         on_event: Optional[Callable[[Any], None]] = None,
         progress_callback: Optional[Callable[[str], None]] = None,
-        usage_callback: Optional[Callable[[Mapping[str, Any]], None]] = None,
+        tool_progress_callback: Optional[Callable[..., None]] = None,
     ) -> None:
         self._cwd = cwd or os.getcwd()
         self._api_key = (api_key or os.environ.get("CURSOR_API_KEY") or "").strip()
@@ -252,9 +251,9 @@ class CursorSDKSession:
         self._model_selection = build_cursor_model_selection(self._model)
         self._on_event = on_event
         self._progress_callback = progress_callback
-        self._usage_callback = usage_callback
-        self._latest_usage: Optional[Mapping[str, Any]] = None
+        self._tool_progress_callback = tool_progress_callback
         self._agent: Any = None
+        self._active_tool_calls: dict[str, dict[str, Any]] = {}
         self._agent_cm: Any = None
         self._sdk_client: Any = None
         self._bridge: Any = None
@@ -269,6 +268,101 @@ class CursorSDKSession:
             self._progress_callback(text)
         except Exception:
             pass
+
+    @staticmethod
+    def _tool_call_key(call_id: str, name: str) -> str:
+        return call_id or name or "tool"
+
+    @staticmethod
+    def _normalize_tool_args(raw: Any) -> dict[str, Any]:
+        if isinstance(raw, dict):
+            return raw
+        if raw is None:
+            return {}
+        return {"input": raw}
+
+    def _notify_idle_progress(self) -> None:
+        if self._active_tool_calls:
+            return
+        self._notify_progress("⚕ Cursor agent working…")
+
+    def _notify_tool_started(
+        self,
+        *,
+        call_id: str,
+        name: str,
+        args: Any = None,
+    ) -> None:
+        key = self._tool_call_key(call_id, name)
+        if key in self._active_tool_calls:
+            return
+        normalized_args = self._normalize_tool_args(args)
+        self._active_tool_calls[key] = {
+            "name": name,
+            "args": normalized_args,
+            "start": time.monotonic(),
+        }
+        callback = self._tool_progress_callback
+        if callback is None:
+            return
+        try:
+            callback(
+                "tool.started",
+                function_name=name,
+                function_args=normalized_args,
+                preview=name,
+            )
+        except Exception:
+            pass
+
+    def _notify_tool_completed(
+        self,
+        *,
+        call_id: str,
+        name: str,
+        is_error: bool = False,
+    ) -> None:
+        key = self._tool_call_key(call_id, name)
+        entry = self._active_tool_calls.pop(key, None)
+        if entry is None:
+            return
+        tool_name = name or entry.get("name") or "tool"
+        args = (entry or {}).get("args") or {}
+        duration = 0.0
+        if entry and entry.get("start"):
+            duration = max(0.0, time.monotonic() - float(entry["start"]))
+        callback = self._tool_progress_callback
+        if callback is not None:
+            try:
+                callback(
+                    "tool.completed",
+                    function_name=tool_name,
+                    function_args=args,
+                    duration=duration,
+                    is_error=is_error,
+                )
+            except Exception:
+                pass
+        if not self._active_tool_calls:
+            self._notify_idle_progress()
+
+    def _handle_tool_call_message(self, msg: Any) -> None:
+        if isinstance(msg, dict):
+            status = str(msg.get("status") or "").strip().lower()
+            call_id = str(msg.get("call_id") or "")
+            name = str(msg.get("name") or "tool")
+            args = msg.get("args")
+        else:
+            status = str(getattr(msg, "status", "") or "").strip().lower()
+            call_id = str(getattr(msg, "call_id", "") or "")
+            name = str(getattr(msg, "name", "") or "tool")
+            args = getattr(msg, "args", None)
+        if status == "running":
+            self._notify_tool_started(call_id=call_id, name=name, args=args)
+        elif status in {"completed", "error"}:
+            self._notify_tool_completed(
+                call_id=call_id, name=name, is_error=(status == "error")
+            )
 
     def _resolve_sdk_client(self) -> Any:
         if self._sdk_client is not None:
@@ -398,25 +492,27 @@ class CursorSDKSession:
             except Exception:
                 pass
 
-    def _handle_cursor_delta(self, update: Any, result: TurnResult) -> None:
-        """Capture context usage from Cursor interaction updates (via on_delta)."""
+    def _handle_cursor_delta(self, update: Any) -> None:
+        """Mirror Cursor low-level tool events into Hermes tool_progress_callback."""
         update_type = str(getattr(update, "type", "") or "")
-        if update_type == "turn-ended":
-            usage = getattr(update, "usage", None)
-            if isinstance(usage, Mapping) and usage:
-                self._latest_usage = usage
-                from agent.transports.cursor_usage import cursor_turn_usage_to_hermes
-
-                result.usage = cursor_turn_usage_to_hermes(usage)
-                if self._usage_callback is not None:
-                    try:
-                        self._usage_callback(usage)
-                    except Exception:
-                        pass
-            return
-        if update_type == "token-delta":
-            # Output token chunks only; context size comes from turn-ended usage.
-            return
+        if update_type == "tool-call-started":
+            call_id = str(getattr(update, "call_id", "") or "")
+            tool_call = getattr(update, "tool_call", None) or {}
+            if isinstance(tool_call, Mapping):
+                name = str(tool_call.get("name") or tool_call.get("toolName") or "tool")
+                args = tool_call.get("args") or tool_call.get("input")
+            else:
+                name = str(getattr(tool_call, "name", "") or "tool")
+                args = getattr(tool_call, "args", None) or getattr(tool_call, "input", None)
+            self._notify_tool_started(call_id=call_id, name=name, args=args)
+        elif update_type == "tool-call-completed":
+            call_id = str(getattr(update, "call_id", "") or "")
+            tool_call = getattr(update, "tool_call", None) or {}
+            if isinstance(tool_call, Mapping):
+                name = str(tool_call.get("name") or tool_call.get("toolName") or "tool")
+            else:
+                name = str(getattr(tool_call, "name", "") or "tool")
+            self._notify_tool_completed(call_id=call_id, name=name)
 
     def _run_turn_worker(
         self,
@@ -434,7 +530,7 @@ class CursorSDKSession:
             send_options = SendOptions(
                 model=self._model_selection,
                 mcp_servers=mcp_servers or None,
-                on_delta=lambda update: self._handle_cursor_delta(update, result),
+                on_delta=self._handle_cursor_delta,
             )
             run = self._agent.send(user_input, send_options)
             self._active_run = run
@@ -457,16 +553,7 @@ class CursorSDKSession:
                 else:
                     msg_type = str(getattr(message, "type", "") or "")
                 if msg_type == "tool_call":
-                    name = ""
-                    status = ""
-                    if isinstance(message, dict):
-                        name = str(message.get("name") or "tool")
-                        status = str(message.get("status") or "")
-                    else:
-                        name = str(getattr(message, "name", "") or "tool")
-                        status = str(getattr(message, "status", "") or "")
-                    if status == "running":
-                        self._notify_progress(f"⚕ Cursor: {name}…")
+                    self._handle_tool_call_message(message)
                 elif msg_type == "status":
                     status_text = ""
                     if isinstance(message, dict):
@@ -519,6 +606,7 @@ class CursorSDKSession:
             result.should_retire = True
         finally:
             self._active_run = None
+            self._active_tool_calls.clear()
             if not result.final_text and result.projected_messages:
                 for msg in reversed(result.projected_messages):
                     if msg.get("role") == "assistant" and msg.get("content"):
@@ -552,7 +640,8 @@ class CursorSDKSession:
         servers = mcp_servers if mcp_servers is not None else build_hermes_tools_mcp_servers()
         holder: dict[str, Any] = {}
         startup_holder: dict[str, Any] = {}
-        self._notify_progress("⚕ Cursor agent working…")
+        self._active_tool_calls.clear()
+        self._notify_idle_progress()
 
         deadline = time.monotonic() + max(5.0, float(turn_timeout or _DEFAULT_TURN_TIMEOUT))
         pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cursor-sdk")
@@ -576,7 +665,6 @@ class CursorSDKSession:
                     )
                     result.should_retire = True
                     break
-                self._notify_progress("⚕ Cursor agent working…")
                 try:
                     future.result(timeout=_POLL_INTERVAL_S)
                 except FuturesTimeoutError:
