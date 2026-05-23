@@ -53,12 +53,15 @@ class TestDeepSeekThinkingWireShape:
         assert top_level == {"reasoning_effort": "high"}
 
     @pytest.mark.parametrize("effort", ["low", "medium", "high"])
-    def test_standard_efforts_pass_through(self, deepseek_profile, effort):
+    def test_standard_efforts_normalize_to_high(self, deepseek_profile, effort):
+        """DeepSeek API only accepts 'high' and 'max' for reasoning_effort.
+        Per docs: 'low and medium are mapped to high'.
+        """
         _, top_level = deepseek_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": effort},
             model="deepseek-v4-pro",
         )
-        assert top_level == {"reasoning_effort": effort}
+        assert top_level == {"reasoning_effort": "high"}
 
     @pytest.mark.parametrize("effort", ["xhigh", "max", "MAX", "  Max  "])
     def test_xhigh_and_max_normalize_to_max(self, deepseek_profile, effort):

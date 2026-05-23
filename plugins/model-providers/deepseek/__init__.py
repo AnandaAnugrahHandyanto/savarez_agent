@@ -69,7 +69,8 @@ class DeepSeekProfile(ProviderProfile):
         if not enabled:
             return extra_body, top_level
 
-        # Effort mapping.  Pass low/medium/high through; xhigh/max → max.
+        # Effort mapping. DeepSeek only accepts "high" and "max" for reasoning_effort.
+        # Per docs: "low and medium are mapped to high, and xhigh is mapped to max".
         # When no effort is set we omit reasoning_effort so DeepSeek applies
         # its server default (currently high).
         if isinstance(reasoning_config, dict):
@@ -77,7 +78,8 @@ class DeepSeekProfile(ProviderProfile):
             if effort in {"xhigh", "max"}:
                 top_level["reasoning_effort"] = "max"
             elif effort in {"low", "medium", "high"}:
-                top_level["reasoning_effort"] = effort
+                # low/medium → high (per DeepSeek API compatibility)
+                top_level["reasoning_effort"] = "high"
 
         return extra_body, top_level
 
