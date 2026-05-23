@@ -455,5 +455,55 @@
         }
       }
     ]
+  },
+  {
+    "id": "memory_proposal_draft_builder_review_required",
+    "dimension": "memory_proposal_draft_builder",
+    "description": "Approved decision candidate becomes a review-required proposal draft candidate.",
+    "query": "Can Hermes Memory Fabric draft a proposal candidate without creating a real proposal?",
+    "project_scope": "memory-fabric",
+    "reviewer": "memory-fabric-reviewer",
+    "author": "memory-fabric-author",
+    "expected_answer": "draft_review_required",
+    "memories": [
+      {
+        "fact_id": "proposal-draft-procedure-1",
+        "subject": "Hermes Memory Fabric",
+        "predicate": "procedure",
+        "object": "create read-only proposal draft candidates",
+        "project_id": "memory-fabric",
+        "source_episode_id": "episode-memory-proposal-draft-builder-a",
+        "provenance": "bench:memory-proposal-draft-builder:a",
+        "confidence": 0.92,
+        "valid_from": "2026-05-23T00:00:00Z",
+        "system_created_at": "2026-05-23T09:00:00Z",
+        "governance": {
+          "read_only": true,
+          "would_write_memory": false,
+          "would_modify_config": false,
+          "would_write_graph": false,
+          "does_not_create_operation_events": true
+        }
+      },
+      {
+        "fact_id": "proposal-draft-procedure-2",
+        "subject": "Hermes Memory Fabric",
+        "predicate": "procedure",
+        "object": "create read-only proposal draft candidates",
+        "project_id": "memory-fabric",
+        "source_episode_id": "episode-memory-proposal-draft-builder-b",
+        "provenance": "bench:memory-proposal-draft-builder:b",
+        "confidence": 0.91,
+        "valid_from": "2026-05-23T00:00:00Z",
+        "system_created_at": "2026-05-23T10:00:00Z",
+        "governance": {
+          "read_only": true,
+          "would_write_memory": false,
+          "would_modify_config": false,
+          "would_write_graph": false,
+          "does_not_create_operation_events": true
+        }
+      }
+    ]
   }
 ]

@@ -25,6 +25,11 @@ from agent.memory_review_decision_gate import (
     evaluate_review_queue_item,
     summarize_review_decisions,
 )
+from agent.memory_proposal_draft_builder import (
+    MEMORY_PROPOSAL_DRAFT_POLICY,
+    create_memory_proposal_draft,
+    summarize_memory_proposal_drafts,
+)
 from agent.memory_retrieval_fusion import fuse_memory_retrieval
 
 
@@ -43,6 +48,7 @@ DIMENSIONS = (
     "memory_blocks",
     "memory_block_review_queue",
     "memory_review_decision_gate",
+    "memory_proposal_draft_builder",
     "latency_ms",
 )
 POLICY = {
@@ -279,6 +285,26 @@ def _answer_case(case: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             "created_real_proposal": False,
             "created_operation_event": False,
             "policy": dict(MEMORY_REVIEW_DECISION_GATE_POLICY),
+        }
+
+    if dimension == "memory_proposal_draft_builder":
+        compiler_result = compile_memory_patterns(memories, project_scope=case.get("project_scope"))
+        blocks = compile_blocks_from_compiler_result(compiler_result, project_scope=case.get("project_scope"))
+        queue = build_review_queue(blocks, reviewer=case.get("reviewer"))
+        decisions = [evaluate_review_queue_item(item, reviewer=case.get("reviewer")) for item in queue]
+        drafts = [create_memory_proposal_draft(decision, author=case.get("author")) for decision in decisions]
+        draft = drafts[0] if drafts else {}
+        return draft.get("proposal_status", ""), {
+            "compiler": compiler_result,
+            "memory_blocks": blocks,
+            "review_queue": queue,
+            "decision_candidates": decisions,
+            "proposal_draft_candidates": drafts,
+            "summary": summarize_memory_proposal_drafts(drafts),
+            "candidate_count": len(memories),
+            "created_real_proposal": False,
+            "created_operation_event": False,
+            "policy": dict(MEMORY_PROPOSAL_DRAFT_POLICY),
         }
 
     selected = _newest(memories)

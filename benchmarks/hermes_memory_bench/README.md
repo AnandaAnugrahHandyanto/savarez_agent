@@ -31,6 +31,7 @@ python -m benchmarks.hermes_memory_bench.run --suite smoke --output /tmp/hermes-
 - `memory_blocks`
 - `memory_block_review_queue`
 - `memory_review_decision_gate`
+- `memory_proposal_draft_builder`
 - `latency_ms`
 
 ## Hybrid Retrieval Fusion v0.1
@@ -164,6 +165,26 @@ modify config, or create operation-ledger events.
 The smoke suite includes `memory_review_decision_gate`, proving that a sourced
 `procedural_rules` queue item becomes an `approve_to_proposal` decision
 candidate without creating a real proposal.
+
+## Memory Proposal Draft Builder v0.1
+
+Memory Proposal Draft Builder v0.1 lives in
+`agent.memory_proposal_draft_builder`. It converts approved review decision
+candidates into deterministic `draft_review_required` proposal draft candidates
+for a separate governed proposal flow.
+
+Only `approve_to_proposal` decisions can produce valid drafts.
+`request_more_evidence`, `reject`, `defer`, and invalid decision candidates
+produce invalid draft candidates with explicit reasons. Drafts preserve the
+block payload preview, source pattern ids, source fact ids, source decision
+snapshot, validation, next-step recommendation, routing, and read-only policy.
+The builder does not create real proposals, persist approvals, write memory,
+write the Memory Graph, modify config, or create operation-ledger events.
+
+The smoke suite includes `memory_proposal_draft_builder`, proving that an
+approved procedural rules decision candidate becomes a
+`draft_review_required` proposal draft candidate without creating a real
+proposal.
 
 ## Report Schema
 
