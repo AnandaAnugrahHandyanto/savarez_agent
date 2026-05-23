@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 _MD_TABLE_SEPARATOR_RE = re.compile(r"^\s*\|[-|: ]+\|\s*$")
@@ -120,7 +120,10 @@ def _parse_markdown_table_to_card_element(table_text: str) -> Dict[str, Any]:
     }
 
 
-def _build_card_with_table_payload(content: str) -> str:
+def _build_card_with_table_payload(
+    content: str,
+    sheet_url: Optional[str] = None,
+) -> str:
     """Build a Feishu interactive card (JSON 2.0) preserving markdown tables.
 
     Splits ``content`` at each markdown table block: prose around the table
@@ -128,22 +131,34 @@ def _build_card_with_table_payload(content: str) -> str:
     ``tag: "table"`` element. Renders as sortable / paginated table UI on
     Lark V7.4+ clients instead of the previously-broken md-table fallback
     that produced blank messages.
+
+    When ``sheet_url`` is supplied, a "Open in Lark Sheet" button (rendered
+    as a bold markdown link, schema-safe across Lark client versions) is
+    appended right after the **first** table. Multiple tables in one
+    message still get hints + raw source, but only the first table maps
+    to a Sheets-API-backed spreadsheet (single-message single-sheet to
+    keep the API call count predictable).
     """
     segments = _split_content_at_tables(content)
     elements: List[Dict[str, Any]] = []
+    table_index = 0
     for seg_kind, seg_text in segments:
         if seg_kind == "table":
             elements.append(_parse_markdown_table_to_card_element(seg_text))
-            # Native client UX hint: educate users about Feishu's built-in
-            # cell-copy gestures, plus the raw-markdown fallback they can
-            # long-press select. Lightweight zero-dependency enhancement —
-            # later iterations can replace this with a "Save to Sheet"
-            # button once OAuth scopes (sheets:spreadsheet) are granted.
-            elements.append(_build_table_hint_element())
-            # Append the raw markdown source itself so long-press select +
-            # copy works for the entire table at once on mobile clients
-            # that don't expose per-cell copy.
+            is_first_table = table_index == 0
+            attached_sheet = sheet_url if is_first_table else None
+            if attached_sheet:
+                # Visible CTA right after the table — markdown link is the
+                # most schema-portable button surface (no ``tag: "button"``
+                # field-name guessing across Card JSON v1 / v2).
+                elements.append(_build_sheet_open_element(attached_sheet))
+            # Hint text adapts to whether the sheet CTA is present.
+            elements.append(
+                _build_table_hint_element(has_sheet=bool(attached_sheet))
+            )
+            # Raw markdown source for long-press select + paste workflows.
             elements.append(_build_raw_source_disclosure(seg_text))
+            table_index += 1
         elif seg_text.strip():
             elements.append({"tag": "markdown", "content": seg_text})
     if not elements:
@@ -188,22 +203,44 @@ _SCOUT_FEISHU_FRAGMENT = (
 )
 
 
-_TABLE_HINT_CONTENT = (
+_TABLE_HINT_NO_SHEET = (
     "💡 **复制 / 下载提示** · 长按 cell 复制单元格 · "
     "长按下方原始数据可全选复制并粘贴到飞书表格 / Excel · "
-    "「保存到飞书表格」按钮 v3 上线中"
+    "「保存到飞书表格」按钮需 sheets:spreadsheet OAuth scope (v3 上线中)"
+)
+
+_TABLE_HINT_WITH_SHEET = (
+    "💡 长按 cell 复制单元格 · 长按下方原始数据全选复制 · "
+    "点击上方 📊 按钮在飞书表格中查看 / 编辑 / 分享 / 导出 CSV"
 )
 
 
-def _build_table_hint_element() -> Dict[str, Any]:
-    """Inline markdown hint educating users about native Feishu copy gestures.
+def _build_table_hint_element(has_sheet: bool = False) -> Dict[str, Any]:
+    """Inline markdown hint educating users about copy / download paths.
 
-    Lightweight zero-dependency enhancement: explains that Feishu desktop
-    + mobile clients already support long-press copy on table cells, and
-    points to the raw-markdown disclosure block that follows for full
-    table copy / paste workflows.
+    When the card carries a Lark Sheet CTA (``has_sheet=True``), the hint
+    points users to the button and drops the "v3 coming soon" caveat.
+    Otherwise it explains the long-press fallback and flags that the
+    Sheet button is pending OAuth scope provisioning.
     """
-    return {"tag": "markdown", "content": _TABLE_HINT_CONTENT}
+    content = _TABLE_HINT_WITH_SHEET if has_sheet else _TABLE_HINT_NO_SHEET
+    return {"tag": "markdown", "content": content}
+
+
+def _build_sheet_open_element(sheet_url: str) -> Dict[str, Any]:
+    """Render the "Open in Lark Sheet" CTA as a bold markdown link.
+
+    A markdown link works across both Card JSON 1.0 and 2.0 renderers
+    without depending on the ``tag: "button"`` field-name (which differs
+    between schema versions and Lark client builds). The cell rendering
+    is clickable on every Lark client + browser surface.
+    """
+    return {
+        "tag": "markdown",
+        "content": (
+            f"[**📊 在飞书表格中打开 · 编辑 · 分享 · 导出 CSV**]({sheet_url})"
+        ),
+    }
 
 
 def _build_raw_source_disclosure(table_text: str) -> Dict[str, Any]:
@@ -223,23 +260,34 @@ def _build_raw_source_disclosure(table_text: str) -> Dict[str, Any]:
 
 
 def _run_selfcheck() -> int:
+    # === Case A: no sheet_url — v2 layout (hint + raw source only) ===
     raw = _build_card_with_table_payload(_SCOUT_FEISHU_FRAGMENT)
     card = json.loads(raw)
-
-    # Structural assertions
     assert card["schema"] == "2.0", f"expected schema 2.0, got {card['schema']!r}"
     elements = card["body"]["elements"]
     tags = [e["tag"] for e in elements]
-    # Order: intro-markdown / table / hint-markdown / raw-source-markdown / footer-markdown
     assert tags == [
         "markdown", "table", "markdown", "markdown", "markdown"
-    ], f"unexpected element order: {tags}"
+    ], f"case A: unexpected element order: {tags}"
+    assert "长按 cell 复制单元格" in elements[2]["content"], "case A: hint missing copy text"
+    assert "v3 上线中" in elements[2]["content"], "case A: hint should flag v3 pending"
+    assert elements[3]["content"].startswith("```markdown"), "case A: raw-source missing fence"
+    assert "| 关键词 |" in elements[3]["content"], "case A: raw-source missing original table"
 
-    # Hint element must contain the copy-affordance educational text.
-    assert "长按 cell 复制单元格" in elements[2]["content"], "hint element missing copy text"
-    # Raw-source disclosure must be a fenced markdown block preserving pipes.
-    assert elements[3]["content"].startswith("```markdown"), "raw-source missing fence"
-    assert "| 关键词 |" in elements[3]["content"], "raw-source missing original table"
+    # === Case B: with sheet_url — v3 layout (CTA button + adjusted hint) ===
+    mock_url = "https://feishu.cn/sheets/shtcnMOCKTOKEN12345"
+    raw_b = _build_card_with_table_payload(_SCOUT_FEISHU_FRAGMENT, sheet_url=mock_url)
+    card_b = json.loads(raw_b)
+    elements_b = card_b["body"]["elements"]
+    tags_b = [e["tag"] for e in elements_b]
+    # Order: intro / table / sheet-cta / hint / raw-source / footer
+    assert tags_b == [
+        "markdown", "table", "markdown", "markdown", "markdown", "markdown"
+    ], f"case B: unexpected element order: {tags_b}"
+    assert mock_url in elements_b[2]["content"], "case B: sheet-cta missing URL"
+    assert "📊" in elements_b[2]["content"], "case B: sheet-cta missing button emoji"
+    assert "v3 上线中" not in elements_b[3]["content"], "case B: hint should drop v3-pending caveat"
+    assert "点击上方 📊 按钮" in elements_b[3]["content"], "case B: hint should reference CTA"
 
     table = elements[1]
     assert len(table["columns"]) == 4, f"expected 4 columns, got {len(table['columns'])}"
