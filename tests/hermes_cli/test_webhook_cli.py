@@ -3,6 +3,7 @@
 import json
 import os
 import pytest
+import stat
 from argparse import Namespace
 from pathlib import Path
 
@@ -144,6 +145,49 @@ class TestPersistence:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("broken{{{")
         assert _load_subscriptions() == {}
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are platform-specific")
+    def test_save_creates_secret_file_owner_only_under_permissive_umask(self):
+        old_umask = os.umask(0o022)
+        try:
+            _save_subscriptions({"demo": {"secret": "TOPSECRET", "prompt": "x"}})
+        finally:
+            os.umask(old_umask)
+
+        path = _subscriptions_path()
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert "TOPSECRET" in path.read_text(encoding="utf-8")
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are platform-specific")
+    def test_save_preserves_owner_only_mode_on_update(self):
+        _save_subscriptions({"demo": {"secret": "FIRST", "prompt": "x"}})
+        path = _subscriptions_path()
+        path.chmod(0o600)
+
+        old_umask = os.umask(0o022)
+        try:
+            _save_subscriptions({"demo": {"secret": "SECOND", "prompt": "x"}})
+        finally:
+            os.umask(old_umask)
+
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert "SECOND" in path.read_text(encoding="utf-8")
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are platform-specific")
+    def test_save_narrows_existing_broad_secret_file_mode(self):
+        path = _subscriptions_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"demo":{"secret":"OLD"}}', encoding="utf-8")
+        path.chmod(0o644)
+
+        old_umask = os.umask(0o022)
+        try:
+            _save_subscriptions({"demo": {"secret": "NEWSECRET", "prompt": "x"}})
+        finally:
+            os.umask(old_umask)
+
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert "NEWSECRET" in path.read_text(encoding="utf-8")
 
 
 class TestWebhookEnabledGate:
