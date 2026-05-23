@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { applyPrintableInsert } from '../components/textInput.js'
+import { applyPrintableInsert, shouldRouteMultiCharInputAsPaste } from '../components/textInput.js'
 
 describe('applyPrintableInsert', () => {
   it('applies non-bracketed multi-character bursts immediately', () => {
@@ -25,5 +25,16 @@ describe('applyPrintableInsert', () => {
   it('rejects control or escape-bearing input', () => {
     expect(applyPrintableInsert('abc', 3, '\x1b[200~pasted')).toBeNull()
     expect(applyPrintableInsert('abc', 3, '\t')).toBeNull()
+  })
+})
+
+describe('shouldRouteMultiCharInputAsPaste', () => {
+  it('keeps newline-bearing chunks on the paste path', () => {
+    expect(shouldRouteMultiCharInputAsPaste('hello\nworld')).toBe(true)
+    expect(shouldRouteMultiCharInputAsPaste('hello\r\nworld'.replace(/\r\n/g, '\n'))).toBe(true)
+  })
+
+  it('treats repeated printable key bursts as immediate input', () => {
+    expect(shouldRouteMultiCharInputAsPaste('xxxxx')).toBe(false)
   })
 })

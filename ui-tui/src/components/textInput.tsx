@@ -120,6 +120,8 @@ export function applyPrintableInsert(
   }
 }
 
+export const shouldRouteMultiCharInputAsPaste = (text: string): boolean => text.includes('\n')
+
 function prevPos(s: string, p: number) {
   const pos = snapPos(s, p)
   let prev = 0
@@ -1095,6 +1097,16 @@ export function TextInput({
         }
 
         if (text.length > 1 || text.includes('\n')) {
+          if (shouldRouteMultiCharInputAsPaste(text)) {
+            flushKeyBurst()
+
+            if (!emitPaste({ cursor: c, text, value: v })) {
+              commit(ins(v, c, text), c + text.length)
+            }
+
+            return
+          }
+
           const inserted = applyPrintableInsert(v, c, text, range)
 
           if (!inserted) {
