@@ -179,14 +179,14 @@ class _DelegatedOAuthTokenProvider:
     def _load_tokens(self) -> dict[str, Any]:
         import os as _os
         if _os.path.exists(self._token_path):
-            with open(self._token_path) as f:
+            with open(self._token_path, encoding="utf-8") as f:
                 return json.load(f)
         return {}
 
     def _save_tokens(self, tokens: dict[str, Any]) -> None:
         import os as _os
         _os.makedirs(_os.path.dirname(self._token_path) or ".", exist_ok=True)
-        with open(self._token_path, "w") as f:
+        with open(self._token_path, "w", encoding="utf-8") as f:
             json.dump(tokens, f, indent=2)
 
     async def get_access_token(self, *, force_refresh: bool = False) -> str:
@@ -234,7 +234,7 @@ class _DelegatedOAuthTokenProvider:
             return new_tokens["access_token"]
 
     def clear_cache(self) -> None:
-        return None>>>>>>> 6bb0902f7 (feat(teams-pipeline): stale job recovery, skip re-resolution, sink error isolation, CLI config loading)
+        pass
 
 
 class _StaticAccessTokenProvider:
