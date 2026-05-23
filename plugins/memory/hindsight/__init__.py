@@ -436,6 +436,24 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
         env_values["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = str(
             _parse_int_setting(idle_timeout, _DEFAULT_IDLE_TIMEOUT)
         )
+
+    # Preserve Hindsight embedding-provider overrides for the embedded daemon.
+    # These are needed for OpenAI-compatible embedding endpoints such as
+    # Ollama's /v1/embeddings serving nomic-embed-text. Without this pass-through,
+    # the daemon falls back to its local SentenceTransformer model and can trip
+    # embedding-dimension mismatches against an existing database.
+    for env_key in (
+        "HINDSIGHT_API_EMBEDDINGS_PROVIDER",
+        "HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL",
+        "HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL",
+        "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY",
+    ):
+        value = config.get(env_key)
+        if value is None:
+            value = os.environ.get(env_key)
+        if value is not None and value != "":
+            env_values[env_key] = str(value)
+
     return env_values
 
 

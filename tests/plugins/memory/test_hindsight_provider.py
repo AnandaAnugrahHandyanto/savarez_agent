@@ -273,6 +273,21 @@ class TestConfig:
 
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "42"
 
+    def test_embedded_profile_env_preserves_embedding_overrides_from_config(self):
+        env = _build_embedded_profile_env({
+            "llm_provider": "ollama",
+            "llm_model": "gemma3:4b",
+            "HINDSIGHT_API_EMBEDDINGS_PROVIDER": "openai",
+            "HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL": "nomic-embed-text",
+            "HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL": "http://jetson02.local:11434/v1",
+            "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY": "ollama",
+        })
+
+        assert env["HINDSIGHT_API_EMBEDDINGS_PROVIDER"] == "openai"
+        assert env["HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL"] == "nomic-embed-text"
+        assert env["HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL"] == "http://jetson02.local:11434/v1"
+        assert env["HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY"] == "ollama"
+
     def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
         captured = {}
 
