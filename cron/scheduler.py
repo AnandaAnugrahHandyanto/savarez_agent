@@ -595,9 +595,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
     # in config.yaml for clean output.
     wrap_response = True
+    mirror_to_session_enabled = False
     try:
         user_cfg = load_config()
-        wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
+        cron_cfg = user_cfg.get("cron", {})
+        wrap_response = cron_cfg.get("wrap_response", True)
+        mirror_to_session_enabled = cron_cfg.get("mirror_to_session", False)
     except Exception:
         pass
 
@@ -726,7 +729,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                     # Mirror cron output to target session so the main agent
                     # sees it in conversation history on next user message.
-                    mirror_to_session(platform_name, chat_id, content, source_label="cron", thread_id=thread_id)
+                    if mirror_to_session_enabled:
+                        mirror_to_session(platform_name, chat_id, content, source_label="cron", thread_id=thread_id)
                     delivered = True
             except Exception as e:
                 logger.warning(
@@ -763,7 +767,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
             # Mirror cron output to target session so the main agent
             # sees it in conversation history on next user message.
-            mirror_to_session(platform_name, chat_id, content, source_label="cron", thread_id=thread_id)
+            if mirror_to_session_enabled:
+                mirror_to_session(platform_name, chat_id, content, source_label="cron", thread_id=thread_id)
 
     if delivery_errors:
         return "; ".join(delivery_errors)
