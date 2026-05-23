@@ -316,6 +316,20 @@ Rust integration test proving `Registry::new` auto-registers Hermes-backed
 tools in jcode's own native registry definitions and executes one through
 `Registry::execute`.
 
+Materialize a runnable local supertool workspace:
+
+```bash
+scripts/jcode_supertool_workspace.py --jcode /absolute/path/to/jcode \
+  --output /absolute/path/to/local-supertool
+cd /absolute/path/to/local-supertool
+./run-jcode-supertool.sh --help
+```
+
+That command prepares a patched jcode workspace, copies the native Hermes tool
+crate into jcode, writes `supertool.env` with
+`JCODE_HERMES_SERVICE_COMMAND_JSON`, and emits a launcher that starts jcode with
+Hermes tools loaded through the Rust registry path.
+
 Run the contract fixture gate:
 
 ```bash
@@ -363,6 +377,9 @@ manifest with the pinned Hermes/jcode state. Its contract check validates
 crate plus registration hook is the practical path for combining jcode's Rust
 hot path with Hermes integrations while still being able to pull future
 upstream updates cleanly.
+
+Inside that scaffold, run `scripts/jcode_supertool_workspace.py` to prepare the
+actual patched jcode host workspace for local use.
 
 ## Current Limits
 

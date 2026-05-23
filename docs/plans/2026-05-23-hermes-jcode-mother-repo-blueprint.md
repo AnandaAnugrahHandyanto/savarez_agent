@@ -233,13 +233,15 @@ For every Hermes or jcode bump:
 9. Run `scripts/jcode_native_tool_check.py --jcode <jcode checkout>`.
 10. Run `scripts/jcode_native_registration_check.py --jcode <jcode checkout>`.
 11. Run `scripts/jcode_supertool_registry_smoke.py --jcode <jcode checkout>`.
-12. Run any mother-repo contract tests against `contracts/*/v*`.
-13. Run smoke routes:
+12. Run `scripts/jcode_supertool_workspace.py --jcode <jcode checkout>
+    --output <workspace>`.
+13. Run any mother-repo contract tests against `contracts/*/v*`.
+14. Run smoke routes:
    - Hermes webhook -> jcode sidecar
    - jcode local task -> Hermes research tool
    - browser/profile task with explicit outbound-action approval
    - memory read/write sync dry run
-14. Record the generated report next to the upstream SHA bump.
+15. Record the generated report next to the upstream SHA bump.
 
 If a contract breaks, prefer one of these in order:
 
@@ -385,6 +387,9 @@ The generated workspace includes:
 - `scripts/jcode_supertool_registry_smoke.py`, which verifies the mother-repo
   Hermes overlay auto-registers native Hermes tools through jcode's
   `Registry::new`
+- `scripts/jcode_supertool_workspace.py`, which materializes a runnable patched
+  jcode workspace with the Hermes native tool crate, `supertool.env`, and
+  `run-jcode-supertool.sh`
 
 Build and smoke the Rust client:
 
@@ -417,6 +422,20 @@ That command applies both jcode patches in a temporary worktree, configures a
 fake Hermes service with `JCODE_HERMES_SERVICE_COMMAND_JSON`, and proves a
 jcode registry created with `Registry::new` can see and execute Hermes-backed
 native tools.
+
+Materialize a runnable jcode-hosted workspace:
+
+```bash
+python3 scripts/jcode_supertool_workspace.py --jcode /path/to/jcode \
+  --output /path/to/local-supertool
+cd /path/to/local-supertool
+./run-jcode-supertool.sh --help
+```
+
+That workspace is the practical local supertool shape: patched jcode remains
+the Rust host, `bridges/jcode-native-hermes-tool` lives inside the jcode
+workspace, and `supertool.env` points registry auto-registration at the Hermes
+service host.
 
 Smoke the no-patch MCP route:
 

@@ -9,6 +9,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -269,6 +270,39 @@ def _supertool_registry_report(jcode_path: Path, *, cargo: bool) -> dict[str, An
     return payload
 
 
+def _supertool_workspace_report(jcode_path: Path) -> dict[str, Any]:
+    script = ROOT / "scripts" / "jcode_supertool_workspace.py"
+    with tempfile.TemporaryDirectory(prefix="jcode-supertool-workspace-report-") as temp:
+        output = Path(temp) / "supertool"
+        completed = _run(
+            [
+                sys.executable,
+                str(script),
+                "--jcode",
+                str(jcode_path),
+                "--output",
+                str(output),
+                "--mode",
+                "copy",
+            ],
+            cwd=ROOT,
+        )
+        try:
+            payload = json.loads(completed.stdout)
+        except json.JSONDecodeError:
+            payload = {
+                "success": False,
+                "error": "failed to parse jcode supertool workspace output",
+                "stdout": completed.stdout,
+            }
+    payload["returncode"] = completed.returncode
+    if completed.stderr:
+        payload["stderr"] = completed.stderr
+    if completed.returncode != 0:
+        payload["success"] = False
+    return payload
+
+
 def _recommendations(report: dict[str, Any]) -> list[str]:
     items: list[str] = []
     contract = report.get("bridge_contract", {})
@@ -292,6 +326,9 @@ def _recommendations(report: dict[str, Any]) -> list[str]:
     supertool_registry = report.get("jcode_supertool_registry", {})
     if isinstance(supertool_registry, dict) and not supertool_registry.get("success"):
         items.append("Fix the jcode-hosted Hermes native registry smoke before pinning upstreams.")
+    supertool_workspace = report.get("jcode_supertool_workspace", {})
+    if isinstance(supertool_workspace, dict) and not supertool_workspace.get("success"):
+        items.append("Fix the runnable jcode supertool workspace preparer before pinning upstreams.")
     smoke = report.get("bridge_smoke")
     if isinstance(smoke, dict) and not smoke.get("success"):
         items.append("Do not bump upstreams until jcode-bridge smoke checks pass.")
@@ -334,6 +371,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             jcode_path,
             cargo=args.supertool_cargo,
         ),
+        "jcode_supertool_workspace": _supertool_workspace_report(jcode_path),
     }
     if args.smoke:
         report["bridge_smoke"] = _smoke_report()
@@ -354,6 +392,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         and bool(report["jcode_native_tool"].get("success"))
         and bool(report["jcode_native_registration"].get("success"))
         and bool(report["jcode_supertool_registry"].get("success"))
+        and bool(report["jcode_supertool_workspace"].get("success"))
         and repos_present
         and graph_reports_present
         and smoke_ok
@@ -524,6 +563,22 @@ def _markdown(report: dict[str, Any]) -> str:
         "| --- | --- |",
     ])
     for check in supertool_registry.get("checks", []):
+        lines.append(f"| {check.get('name')} | {check.get('ok')} |")
+
+    supertool_workspace = report.get("jcode_supertool_workspace", {})
+    lines.extend([
+        "",
+        "## jcode Supertool Workspace",
+        "",
+        f"Success: {supertool_workspace.get('success')}",
+        f"jcode workspace: {supertool_workspace.get('jcode_workspace')}",
+        f"launcher: {supertool_workspace.get('launcher')}",
+        f"env file: {supertool_workspace.get('env_file')}",
+        "",
+        "| Check | OK |",
+        "| --- | --- |",
+    ])
+    for check in supertool_workspace.get("checks", []):
         lines.append(f"| {check.get('name')} | {check.get('ok')} |")
 
     lines.extend([

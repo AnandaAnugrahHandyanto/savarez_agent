@@ -267,7 +267,8 @@ scripts/jcode_bridge_smoke.py
 It covers the contract tool, safety confirmation block, bad jcode JSON
 rejection, `ensure_server` server-backed execution, reverse-service contract
 and safety behavior, the Rust jcode-side client, the stdio MCP wrapper and MCP
-contract, mother-repo scaffold generation, and webhook preflight pass/block
+contract, native jcode registry smoke, runnable supertool workspace
+preparation, mother-repo scaffold generation, and webhook preflight pass/block
 behavior. The native jcode tool scaffold is source-validated by the scaffold
 copy checks and is designed to compile inside a mother repo that has
 `upstreams/jcode` checked out.
@@ -287,7 +288,8 @@ scripts/jcode_bridge_upstream_report.py --smoke --format markdown \
 
 That report records both repo SHAs, dirty-state samples, Graphify summaries,
 Graphify artifact paths/sizes, bridge contract/schema results, reverse-service
-and MCP transport status, latency-probe metrics, native jcode tool status, and
+and MCP transport status, latency-probe metrics, native jcode tool status,
+jcode-hosted registry smoke, runnable supertool workspace preparation, and
 optional smoke results. Use it as the first gate before deciding whether a new
 jcode/Hermes pair is compatible.
 
@@ -300,12 +302,21 @@ python3 /path/to/mother-agent/scripts/check_bridge_contract.py
 
 The scaffold copies the bridge plugin, native jcode Hermes tool crate, portable
 schemas, fixtures, reverse service wrapper, MCP wrapper, generated jcode MCP
-config, latency probe, and plan docs into a separate workspace and records the
-current Hermes/jcode pins in `hermes-jcode.manifest.json`. Its generated
-contract check runs without importing Hermes gateway internals and validates
-`jcode-bridge.v1`, `hermes-service.v1`, and `hermes-mcp.v1`, which proves the
-compatibility boundary can move outside this checkout while the final product
-surface moves into jcode's native Rust tool architecture.
+config, latency probe, runnable supertool workspace preparer, and plan docs into
+a separate workspace and records the current Hermes/jcode pins in
+`hermes-jcode.manifest.json`. Its generated contract check runs without
+importing Hermes gateway internals and validates `jcode-bridge.v1`,
+`hermes-service.v1`, and `hermes-mcp.v1`, which proves the compatibility
+boundary can move outside this checkout while the final product surface moves
+into jcode's native Rust tool architecture.
+
+To materialize the jcode-hosted workspace from the scaffold:
+
+```bash
+python3 /path/to/mother-agent/scripts/jcode_supertool_workspace.py \
+  --jcode /absolute/path/to/jcode \
+  --output /path/to/local-supertool
+```
 
 ## Enabling
 

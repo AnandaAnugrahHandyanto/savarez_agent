@@ -437,6 +437,53 @@ def check_jcode_supertool_registry_smoke() -> dict[str, Any]:
     }
 
 
+def check_jcode_supertool_workspace() -> dict[str, Any]:
+    with tempfile.TemporaryDirectory() as temp:
+        output = Path(temp) / "supertool"
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "jcode_supertool_workspace.py"),
+                "--jcode",
+                str(ROOT / ".codex-research" / "jcode"),
+                "--output",
+                str(output),
+                "--mode",
+                "copy",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        try:
+            payload = json.loads(completed.stdout)
+        except json.JSONDecodeError:
+            payload = {"success": False, "stdout": completed.stdout}
+        launcher = output / "run-jcode-supertool.sh"
+        env_file = output / "supertool.env"
+        registry_source = output / "jcode" / "src" / "tool" / "mod.rs"
+        registry_text = (
+            registry_source.read_text(encoding="utf-8", errors="replace")
+            if registry_source.exists()
+            else ""
+        )
+        return {
+            "ok": (
+                completed.returncode == 0
+                and payload.get("success") is True
+                and launcher.exists()
+                and env_file.exists()
+                and "JCODE_HERMES_SERVICE_COMMAND_JSON"
+                in env_file.read_text(encoding="utf-8")
+                and "default_hermes_toolset" in registry_text
+            ),
+            "payload": payload,
+            "stderr": completed.stderr,
+            "launcher": str(launcher),
+            "env_file": str(env_file),
+        }
+
+
 def check_mother_repo_scaffold() -> dict[str, Any]:
     with tempfile.TemporaryDirectory() as temp:
         output = Path(temp) / "mother"
@@ -530,6 +577,21 @@ def check_mother_repo_scaffold() -> dict[str, Any]:
             capture_output=True,
             check=False,
         )
+        supertool_workspace_completed = subprocess.run(
+            [
+                sys.executable,
+                str(output / "scripts" / "jcode_supertool_workspace.py"),
+                "--jcode",
+                str(ROOT / ".codex-research" / "jcode"),
+                "--output",
+                str(output / "local-supertool"),
+                "--mode",
+                "copy",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
         try:
             payload = json.loads(completed.stdout)
         except json.JSONDecodeError:
@@ -577,6 +639,13 @@ def check_mother_repo_scaffold() -> dict[str, Any]:
                 "success": False,
                 "stdout": supertool_registry_completed.stdout,
             }
+        try:
+            supertool_workspace_payload = json.loads(supertool_workspace_completed.stdout)
+        except json.JSONDecodeError:
+            supertool_workspace_payload = {
+                "success": False,
+                "stdout": supertool_workspace_completed.stdout,
+            }
         config_exists = (output / "configs" / "jcode-mcp.hermes.json").exists()
         patch_exists = (
             output / "patches" / "jcode" / "register-external-toolset.patch"
@@ -615,6 +684,8 @@ def check_mother_repo_scaffold() -> dict[str, Any]:
             and native_registration_payload.get("success") is True
             and supertool_registry_completed.returncode == 0
             and supertool_registry_payload.get("success") is True
+            and supertool_workspace_completed.returncode == 0
+            and supertool_workspace_payload.get("success") is True
             and any(
                 item.get("name") == "hermes_tool"
                 for item in mcp_payload.get("result", {}).get("tools", [])
@@ -635,6 +706,7 @@ def check_mother_repo_scaffold() -> dict[str, Any]:
         "native_check_payload": native_check_payload,
         "native_registration_payload": native_registration_payload,
         "supertool_registry_payload": supertool_registry_payload,
+        "supertool_workspace_payload": supertool_workspace_payload,
         "copied_count": len(result.get("copied", [])),
         "overlay_patch_exists": overlay_patch_exists,
         "native_tool_scaffold": str(native_tool),
@@ -705,6 +777,7 @@ async def run_smokes() -> dict[str, Any]:
         _run_check("hermes_mcp_contract", check_hermes_mcp_contract),
         _run_check("jcode_native_registration_patch", check_jcode_native_registration_patch),
         _run_check("jcode_supertool_registry_smoke", check_jcode_supertool_registry_smoke),
+        _run_check("jcode_supertool_workspace", check_jcode_supertool_workspace),
         _run_check("mother_repo_scaffold", check_mother_repo_scaffold),
     ]
 

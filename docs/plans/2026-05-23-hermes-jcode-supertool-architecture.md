@@ -79,6 +79,11 @@ needed to build it without permanently forking both upstreams:
   runs a Rust integration test that proves `Registry::new` auto-registers
   Hermes-backed tools in jcode's registry definitions and executes one through
   `Registry::execute`.
+- `scripts/jcode_supertool_workspace.py` is the first runnable workspace
+  materializer: it creates a patched jcode workspace, copies in the native
+  Hermes tool crate, writes `supertool.env`, and emits a
+  `run-jcode-supertool.sh` launcher that starts jcode with Hermes tools loaded
+  through the Rust registry path.
 
 ## Migration Path
 

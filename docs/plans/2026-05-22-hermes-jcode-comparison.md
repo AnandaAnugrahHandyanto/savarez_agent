@@ -367,7 +367,11 @@ feel like Hermes and jcode connected side-by-side. The finished tool should be
 jcode-hosted. `bridges/jcode-native-hermes-tool/` is the first scaffold for that
 direction: Hermes research, memory, gateway, and policy capabilities become
 native jcode tools through `jcode_tool_core::Tool`, while Hermes remains the
-Python capability host behind the service contract.
+Python capability host behind the service contract. The first runnable
+materializer is `scripts/jcode_supertool_workspace.py`, which prepares a
+patched jcode workspace, copies in the native Hermes tool crate, writes
+`supertool.env`, and emits `run-jcode-supertool.sh` so the combined tool starts
+from jcode's Rust runtime with Hermes tools auto-registered.
 
 ### Phase 2: Browser bridge
 

@@ -1,12 +1,12 @@
 # Hermes/jcode upstream sync report
 
-Generated: 2026-05-23T20:56:48+00:00
+Generated: 2026-05-23T21:04:54+00:00
 
 ## Repositories
 
 | Repo | Branch | Commit | Dirty |
 | --- | --- | --- | --- |
-| hermes | codex/hermes-jcode-bridge | 6ee0910753ead827cd23f3940378a6b276874d0b | True |
+| hermes | codex/hermes-jcode-bridge | c5c92e1cf8873016fc2df46707591435a0144334 | True |
 | jcode | master | 7951a2ddb91bad10155b911ccd0971de5baeafc8 | True |
 
 ## Graphify
@@ -55,6 +55,7 @@ Success: True
 | hermes_mcp_contract | True |
 | jcode_native_registration_patch | True |
 | jcode_supertool_registry_smoke | True |
+| jcode_supertool_workspace | True |
 | mother_repo_scaffold | True |
 | webhook_preflight_pass | True |
 | webhook_preflight_blocks | True |
@@ -99,10 +100,10 @@ Iterations: 30
 
 | Metric | ms |
 | --- | ---: |
-| min | 0.038 |
-| p50 | 0.042 |
-| p95 | 0.108 |
-| max | 0.123 |
+| min | 0.046 |
+| p50 | 0.05 |
+| p95 | 0.114 |
+| max | 0.124 |
 
 ## jcode Native Hermes Tool
 
@@ -145,7 +146,7 @@ Success: True
 jcode path: /Users/aayu/Workspace/developer/hermes/.codex-research/jcode
 generic patch: /Users/aayu/Workspace/developer/hermes/patches/jcode/register-external-toolset.patch
 Hermes overlay patch: /Users/aayu/Workspace/developer/hermes/patches/jcode/register-hermes-native-toolset.patch
-worktree: /var/folders/t1/lv87zx017jl6tsks2dz22mk00000gn/T/jcode-supertool-registry-p_scn26e/jcode
+worktree: /var/folders/t1/lv87zx017jl6tsks2dz22mk00000gn/T/jcode-supertool-registry-mn4f1ieq/jcode
 
 | Check | OK |
 | --- | --- |
@@ -162,6 +163,31 @@ worktree: /var/folders/t1/lv87zx017jl6tsks2dz22mk00000gn/T/jcode-supertool-regis
 | jcode_test:uses_auto_registration | True |
 | fake_hermes_service:exists | True |
 | cargo:test_jcode_registry_with_hermes_tools | True |
+
+## jcode Supertool Workspace
+
+Success: True
+jcode workspace: /private/var/folders/t1/lv87zx017jl6tsks2dz22mk00000gn/T/jcode-supertool-workspace-report-jmgdupwb/supertool/jcode
+launcher: /private/var/folders/t1/lv87zx017jl6tsks2dz22mk00000gn/T/jcode-supertool-workspace-report-jmgdupwb/supertool/run-jcode-supertool.sh
+env file: /private/var/folders/t1/lv87zx017jl6tsks2dz22mk00000gn/T/jcode-supertool-workspace-report-jmgdupwb/supertool/supertool.env
+
+| Check | OK |
+| --- | --- |
+| jcode_checkout:exists | True |
+| hermes_root:exists | True |
+| service_script:exists | True |
+| patch:exists | True |
+| overlay_patch:exists | True |
+| native_tool:exists | True |
+| jcode_workspace:prepared | True |
+| jcode_patch:applied | True |
+| native_tool:copied_into_jcode | True |
+| jcode_overlay_patch:applied | True |
+| env:writes_service_command | True |
+| launcher:writes_runnable_entrypoint | True |
+| readme:written | True |
+| jcode_registry:auto_registration_configured | True |
+| jcode_cargo:depends_on_native_hermes_tool | True |
 
 ## Recommendations
 

@@ -31,6 +31,7 @@ LATENCY_PROBE = ROOT / "scripts" / "jcode_bridge_latency_probe.py"
 NATIVE_TOOL_CHECK = ROOT / "scripts" / "jcode_native_tool_check.py"
 NATIVE_REGISTRATION_CHECK = ROOT / "scripts" / "jcode_native_registration_check.py"
 SUPERTOOL_REGISTRY_SMOKE = ROOT / "scripts" / "jcode_supertool_registry_smoke.py"
+SUPERTOOL_WORKSPACE = ROOT / "scripts" / "jcode_supertool_workspace.py"
 JCODE_PATCH_DIR = ROOT / "patches" / "jcode"
 PLAN_DOCS = (
     ROOT / "docs" / "plans" / "2026-05-22-hermes-jcode-comparison.md",
@@ -266,6 +267,11 @@ temporary worktree, copies the native Hermes tool crate into jcode, sets
 `JCODE_HERMES_SERVICE_COMMAND_JSON`, and runs a Rust integration test that
 verifies `Registry::new` auto-registers Hermes tools in jcode's native registry
 definitions and executes one through `Registry::execute`.
+
+Use `scripts/jcode_supertool_workspace.py --jcode upstreams/jcode --output
+./local-supertool` to materialize the runnable version: a patched jcode
+workspace, copied native Hermes tool crate, `supertool.env`, and
+`run-jcode-supertool.sh` launcher.
 """
 
 
@@ -401,6 +407,7 @@ def build_manifest(hermes: Path, jcode: Path) -> dict[str, Any]:
             "run scripts/jcode_native_tool_check.py --jcode <jcode checkout>",
             "run scripts/jcode_native_registration_check.py --jcode <jcode checkout>",
             "run scripts/jcode_supertool_registry_smoke.py --jcode <jcode checkout>",
+            "run scripts/jcode_supertool_workspace.py --jcode <jcode checkout> --output <workspace>",
             "run Hermes-side jcode_bridge_smoke.py in the Hermes checkout",
             "generate and archive an upstream-sync report",
         ],
@@ -535,6 +542,12 @@ def scaffold(output: Path, manifest: dict[str, Any], *, force: bool) -> dict[str
         force=force,
     )
     copied.append("scripts/jcode_supertool_registry_smoke.py")
+    _copy_file(
+        SUPERTOOL_WORKSPACE,
+        output / "scripts" / "jcode_supertool_workspace.py",
+        force=force,
+    )
+    copied.append("scripts/jcode_supertool_workspace.py")
     _write_text(
         output / "configs" / "jcode-mcp.hermes.json",
         json.dumps(_jcode_mcp_config(output), indent=2, ensure_ascii=True, sort_keys=True) + "\n",
