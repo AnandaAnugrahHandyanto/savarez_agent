@@ -305,6 +305,67 @@ class TestAdapterInit:
         assert isinstance(agent, FakeAgent)
         assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
 
+    def test_create_agent_pops_colliding_model_from_runtime_kwargs(self, monkeypatch):
+        """Regression test for the model-kwarg collision:
+        `_resolve_runtime_agent_kwargs()` sources `model` from
+        `config.yaml`, so `runtime_kwargs` can carry a `model` key.
+        Before the fix, `AIAgent(model=model, **runtime_kwargs)` then raised
+        `TypeError: AIAgent() got multiple values for keyword argument
+        'model'` and every `POST /v1/chat/completions` returned HTTP 500.
+
+        After the fix, the colliding key is popped out of `runtime_kwargs`
+        before the constructor call, so the explicit `model=model` (from
+        `_resolve_gateway_model()`) wins unambiguously and the request
+        flows. See PR #31139 / issue #10773 for the broader per-request-
+        model design discussion this band-aid sits beneath.
+        """
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        # runtime_kwargs DOES carry a colliding `model` key — this is the
+        # exact shape that triggered the TypeError before the fix.
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openai-codex",
+                "model": "model-from-runtime-kwargs-this-collides",
+            },
+        )
+        monkeypatch.setattr(
+            "gateway.run._resolve_gateway_model",
+            lambda: "model-from-gateway-resolver",
+        )
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_reasoning_config",
+            staticmethod(lambda: {}),
+        )
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_fallback_model",
+            staticmethod(lambda: None),
+        )
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        # This call would raise TypeError before the fix.
+        agent = adapter._create_agent(session_id="api-session")
+
+        assert isinstance(agent, FakeAgent)
+        # The explicit model=model kwarg (from _resolve_gateway_model) wins;
+        # the colliding runtime_kwargs.model was popped before the call.
+        assert captured["model"] == "model-from-gateway-resolver", (
+            "Explicit model=model kwarg must win; runtime_kwargs.model was the "
+            "colliding source that gets popped."
+        )
+        # provider should still come through from runtime_kwargs unaffected.
+        assert captured["provider"] == "openai-codex"
+
 
 # ---------------------------------------------------------------------------
 # Auth checking
