@@ -151,11 +151,17 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
     if not isinstance(platforms, list):
         platforms = [platforms]
     current = sys.platform
+    # FreeBSD is POSIX-compatible; treat it as linux for skill compatibility.
+    if current.startswith("freebsd"):
+        current = "linux"
     running_in_termux = is_termux()
     for platform in platforms:
         normalized = str(platform).lower().strip()
         mapped = PLATFORM_MAP.get(normalized, normalized)
         if current.startswith(mapped):
+            return True
+        # FreeBSD is POSIX-compatible; accept linux-tagged skills.
+        if current.startswith("freebsd") and mapped == "linux":
             return True
         # Termux runs a Linux userland on Android. Accept linux-tagged
         # skills regardless of whether sys.platform is "linux" (pre-3.13
