@@ -451,22 +451,26 @@ def run_conversation(
     # External agent runtimes own the full turn. Hand off before building the
     # Hermes system prompt or running preflight compression.
     if agent.api_mode == "codex_app_server":
-        return agent._run_codex_app_server_turn(
+        result = agent._run_codex_app_server_turn(
             user_message=user_message,
             original_user_message=original_user_message,
             messages=messages,
             effective_task_id=effective_task_id,
             should_review_memory=_should_review_memory,
         )
+        agent._persist_session(result.get("messages") or messages, conversation_history)
+        return result
 
     if agent.api_mode == "cursor_sdk_runtime":
-        return agent._run_cursor_sdk_turn(
+        result = agent._run_cursor_sdk_turn(
             user_message=user_message,
             original_user_message=original_user_message,
             messages=messages,
             effective_task_id=effective_task_id,
             should_review_memory=_should_review_memory,
         )
+        agent._persist_session(result.get("messages") or messages, conversation_history)
+        return result
     
     if not agent.quiet_mode:
         _print_preview = _summarize_user_message_for_log(user_message)

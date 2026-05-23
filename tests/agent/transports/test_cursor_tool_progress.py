@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from agent.transports.cursor_sdk_session import CursorSDKSession
+from agent.transports.cursor_tool_names import (
+    display_cursor_tool_name,
+    resolve_cursor_tool_name,
+)
 
 
 def test_completion_prefers_started_tool_name_over_generic_default():
@@ -24,12 +28,12 @@ def test_pop_falls_back_to_single_active_tool():
 
 
 def test_display_tool_name_strips_mcp_prefix():
-    assert CursorSDKSession._display_tool_name("mcp_hermes-tools_terminal") == "terminal"
-    assert CursorSDKSession._display_tool_name("mcp_notion_notion_search") == "notion_search"
+    assert display_cursor_tool_name("mcp_hermes-tools_terminal") == "terminal"
+    assert display_cursor_tool_name("mcp_notion_notion_search") == "notion_search"
 
 
 def test_parse_mcp_wrapper_resolves_inner_tool_name():
-    _id, name, args = CursorSDKSession._parse_tool_event(
+    _id, name, args = CursorSDKSession._parse_tool_event(  # noqa: SLF001
         call_id="call-mcp-1",
         name="mcp",
         tool_call={
