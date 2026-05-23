@@ -1398,6 +1398,7 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
     Examples:
         /skills search kubernetes
+        /skills recommend review this pull request --top-k 2 --show-scores
         /skills install openai/skills/skill-creator
         /skills install openai/skills/skill-creator --force
         /skills install https://example.com/path/SKILL.md
@@ -1474,6 +1475,54 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
                 query_parts.append(args[i])
                 i += 1
         do_search(" ".join(query_parts), source=source, limit=limit, console=c)
+
+    elif action == "recommend":
+        if not args:
+            c.print("[bold red]Usage:[/] /skills recommend <query> [--top-k N] [--min-score F|--no-min-score] [--show-scores]\n")
+            c.print("[dim]Advisory only: prints suggestions for manual loading; does not load skills.[/]\n")
+            return
+        from hermes_cli import skill_recommend
+
+        top_k = 3
+        min_score = 0.04
+        no_min_score = False
+        show_scores = False
+        query_parts = []
+        i = 0
+        while i < len(args):
+            if args[i] == "--top-k" and i + 1 < len(args):
+                try:
+                    top_k = int(args[i + 1])
+                except ValueError:
+                    pass
+                i += 2
+            elif args[i] == "--min-score" and i + 1 < len(args):
+                try:
+                    min_score = float(args[i + 1])
+                except ValueError:
+                    pass
+                i += 2
+            elif args[i] == "--no-min-score":
+                no_min_score = True
+                i += 1
+            elif args[i] == "--show-scores":
+                show_scores = True
+                i += 1
+            else:
+                query_parts.append(args[i])
+                i += 1
+        query = " ".join(query_parts).strip()
+        if not query:
+            c.print("[bold red]Usage:[/] /skills recommend <query> [--top-k N] [--min-score F|--no-min-score] [--show-scores]\n")
+            c.print("[dim]Advisory only: prints suggestions for manual loading; does not load skills.[/]\n")
+            return
+        payload = skill_recommend.recommend_skills(
+            query,
+            top_k=top_k,
+            min_score=None if no_min_score else min_score,
+            wrapper_path=None,
+        )
+        c.print(skill_recommend.render_recommendations(payload, show_scores=show_scores))
 
     elif action == "install":
         if not args:
@@ -1597,6 +1646,7 @@ def _print_skills_help(console: Console) -> None:
         "[bold]Skills Hub Commands:[/]\n\n"
         "  [cyan]browse[/] [--source official]   Browse all available skills (paginated)\n"
         "  [cyan]search[/] <query>              Search registries for skills\n"
+        "  [cyan]recommend[/] <query>           Advisory; does not load skills\n"
         "  [cyan]install[/] <identifier>        Install a skill (with security scan)\n"
         "  [cyan]inspect[/] <identifier>        Preview a skill without installing\n"
         "  [cyan]list[/] [--source hub|builtin|local] [--enabled-only]\n"
