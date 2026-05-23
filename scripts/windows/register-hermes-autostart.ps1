@@ -186,10 +186,26 @@ foreach ($staleTask in $StaleScheduledTaskNames) {
 $registered = @()
 
 if (-not $GatewayOnly) {
+    $llamaEnv = @{}
+    $dotEnv = Join-Path $env:USERPROFILE ".hermes\.env"
+    if (Test-Path -LiteralPath $dotEnv) {
+        Get-Content -LiteralPath $dotEnv | ForEach-Object {
+            $line = $_.Trim()
+            if (-not $line -or $line.StartsWith('#')) { return }
+            $eq = $line.IndexOf('=')
+            if ($eq -lt 1) { return }
+            $key = $line.Substring(0, $eq).Trim()
+            if ($key -notin @('HERMES_LLAMA_MODEL_PATH', 'HERMES_LLAMA_SERVER_EXE')) { return }
+            $value = $line.Substring($eq + 1).Trim().Trim('"').Trim("'")
+            if ($value) { $llamaEnv[$key] = $value }
+        }
+    }
+
     $registered += Register-HermesScheduledTask `
         -TaskName $LlamaTaskName `
         -Description "Auto-start llama.cpp fallback (RTX 3080, port 8080) at logon" `
         -ScriptPath $LlamaScript `
+        -Env $llamaEnv `
         -DelaySeconds 10
 }
 

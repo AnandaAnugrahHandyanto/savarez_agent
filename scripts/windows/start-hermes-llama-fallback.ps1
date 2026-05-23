@@ -68,6 +68,26 @@ if ($ContextSize -le 0) {
     $ContextSize = Resolve-DefaultContextSize -Profile $GpuProfile
 }
 
+function Import-HermesLlamaEnv {
+    $dotEnv = Join-Path $env:USERPROFILE ".hermes\.env"
+    if (-not (Test-Path -LiteralPath $dotEnv)) { return }
+    Get-Content -LiteralPath $dotEnv | ForEach-Object {
+        $line = $_.Trim()
+        if (-not $line -or $line.StartsWith('#')) { return }
+        $eq = $line.IndexOf('=')
+        if ($eq -lt 1) { return }
+        $key = $line.Substring(0, $eq).Trim()
+        if ($key -notin @('HERMES_LLAMA_MODEL_PATH', 'HERMES_LLAMA_SERVER_EXE')) { return }
+        if (-not [string]::IsNullOrWhiteSpace((Get-Item -Path "Env:$key" -ErrorAction SilentlyContinue).Value)) { return }
+        $value = $line.Substring($eq + 1).Trim().Trim('"').Trim("'")
+        if ($value) { Set-Item -Path "Env:$key" -Value $value }
+    }
+}
+
+Import-HermesLlamaEnv
+$resolved = Resolve-LlamaFallbackDefaults -ServerExe $ServerExe -ModelPath $ModelPath
+$ServerExe = $resolved.ServerExe
+$ModelPath = $resolved.ModelPath
 if (-not (Test-Path -LiteralPath $ServerExe)) {
     throw "llama-server not found: $ServerExe"
 }
