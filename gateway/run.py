@@ -8438,7 +8438,7 @@ class GatewayRunner:
         if denial:
             return denial
 
-        is_create = getattr(parsed_args, "kanban_action", None) == "create"
+        is_create = (getattr(parsed_args, "kanban_action", None) == "create") if parsed_args else False
 
         try:
             output = await asyncio.to_thread(run_slash, text)
