@@ -300,9 +300,21 @@ _PROVIDER_VISION_MODELS: Dict[str, str] = {
 # api.kimi.com/coding (Anthropic Messages wire) which Kimi's own docs
 # describe as having no image_in capability. Vision lives on the separate
 # Kimi Platform (api.moonshot.ai, OpenAI-wire, pay-as-you-go).  See #17076.
+#
+# openai-codex: the ChatGPT-account Responses API endpoint maintains a
+# shifting, undocumented model allow-list and does not reliably accept
+# vision payloads with arbitrary model names (e.g. claude-sonnet-4.6).
+# When `openai-codex` is the user's main provider, vision auto-detection
+# must skip it and fall through to the aggregator chain (OpenRouter/Nous)
+# rather than forwarding the main model and getting a provider rejection
+# like "claude-sonnet-4.6 model is not supported when using Codex with a
+# ChatGPT account".  Users who explicitly set
+# `auxiliary.vision.provider: openai-codex` with a compatible model bypass
+# this skip (they reach resolve_provider_client directly, not this auto path).
 _PROVIDERS_WITHOUT_VISION: frozenset = frozenset({
     "kimi-coding",
     "kimi-coding-cn",
+    "openai-codex",
 })
 
 # OpenRouter app attribution headers (base — always sent).
@@ -3775,8 +3787,9 @@ def get_available_vision_backends() -> List[str]:
         if main_provider in _VISION_AUTO_PROVIDER_ORDER:
             if _strict_vision_backend_available(main_provider):
                 available.append(main_provider)
-        else:
-            client, _ = resolve_provider_client(main_provider, _read_main_model())
+        elif main_provider not in _PROVIDERS_WITHOUT_VISION:
+            client, _ = resolve_provider_client(main_provider, _read_main_model(),
+                                                is_vision=True)
             if client is not None:
                 available.append(main_provider)
     # 2. OpenRouter, 3. Nous — skip if already covered by main provider.
@@ -5028,9 +5041,17 @@ async def async_call_llm(
                 "Vision provider %s unavailable, falling back to auto vision backends",
                 resolved_provider,
             )
+            # Do NOT carry resolved_model into auto fallback: it is specific to the
+            # configured provider (e.g. claude-sonnet-4.6 for anthropic) and must not
+            # be forwarded to an aggregator backend (OpenRouter, Nous) that may not
+            # serve that model.  Preserve the caller's explicit model= argument as-is:
+            # `model` is the raw caller argument (None when not passed), so forwarding
+            # it directly is safe — if the caller did not pass a model, `model` is None
+            # and the auto backend will pick its own default.
+            fallback_model = model
             effective_provider, client, final_model = resolve_vision_provider_client(
                 provider="auto",
-                model=resolved_model,
+                model=fallback_model,
                 async_mode=True,
             )
         if client is None:

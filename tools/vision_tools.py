@@ -914,12 +914,24 @@ async def vision_analyze_tool(
 
 
 def check_vision_requirements() -> bool:
-    """Check if the configured runtime vision path can resolve a client."""
+    """Check if the configured runtime vision path can resolve a client.
+
+    Mirrors the fallback semantics of async_call_llm(task="vision"):
+    if the explicitly configured vision provider is unavailable (e.g. no
+    credentials), fall through to auto vision backends (OpenRouter, Nous)
+    before returning False.  Tool gating must reflect the actual runtime path
+    so the vision tool is not disabled when an auto backend can serve the call.
+    """
     try:
         from agent.auxiliary_client import resolve_vision_provider_client
 
         _provider, client, _model = resolve_vision_provider_client()
-        return client is not None
+        if client is not None:
+            return True
+        # Explicit configured provider returned no client — try auto fallback,
+        # matching the runtime path in async_call_llm(task="vision").
+        _provider2, client2, _model2 = resolve_vision_provider_client(provider="auto")
+        return client2 is not None
     except Exception:
         return False
 

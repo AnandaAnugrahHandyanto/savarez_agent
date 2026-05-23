@@ -510,12 +510,19 @@ class TestVisionRequirements:
         assert isinstance(result, bool)
 
     def test_check_requirements_accepts_codex_auth(self, monkeypatch, tmp_path):
+        # openai-codex as the main provider does NOT satisfy vision requirements
+        # in auto-detect mode: the Codex endpoint rejects arbitrary model names
+        # (e.g. claude-sonnet-4.6) and is therefore in _PROVIDERS_WITHOUT_VISION.
+        # check_vision_requirements() returns False unless OpenRouter/Nous or
+        # another valid vision backend is also configured.
+        # Users who need Codex for vision must set:
+        #   auxiliary.vision.provider: openai-codex
+        #   auxiliary.vision.model: <a Codex-compatible model>
+        # explicitly in config.yaml.
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "auth.json").write_text(
             '{"active_provider":"openai-codex","providers":{"openai-codex":{"tokens":{"access_token":"codex-access-token","refresh_token":"codex-refresh-token"}}}}'
         )
-        # config.yaml must reference the codex provider so vision auto-detect
-        # falls back to the active provider via _read_main_provider().
         (tmp_path / "config.yaml").write_text(
             'model:\n  default: gpt-4o\n  provider: openai-codex\n'
         )
@@ -523,7 +530,87 @@ class TestVisionRequirements:
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
-        assert check_vision_requirements() is True
+        # Codex-only users have no auto-detect vision backend configured.
+        assert check_vision_requirements() is False
+
+    def test_check_requirements_explicit_unavailable_but_auto_available(self, monkeypatch):
+        """Explicit configured provider unavailable + auto (OpenRouter) available => True.
+
+        Scenario: config sets auxiliary.vision.provider=anthropic but no Anthropic
+        credentials are present, while OPENROUTER_API_KEY is set.  async_call_llm
+        falls back to auto backends at runtime, so check_vision_requirements()
+        must also return True to avoid incorrectly gating out the vision tool.
+        """
+        from unittest.mock import MagicMock
+        from agent import auxiliary_client as ac
+
+        fake_openrouter_client = MagicMock()
+
+        def fake_resolve(provider=None, model=None, base_url=None,
+                         api_key=None, async_mode=False):
+            if provider in (None, "anthropic"):
+                # Explicit configured provider — no credentials
+                return "anthropic", None, None
+            if provider == "auto":
+                # Auto fallback resolves to OpenRouter
+                return "openrouter", fake_openrouter_client, "google/gemini-3-flash-preview"
+            return provider, None, None
+
+        # monkeypatch.setattr on the module object works because the
+        # `from agent.auxiliary_client import resolve_vision_provider_client`
+        # inside check_vision_requirements() resolves via sys.modules at call
+        # time and picks up the patched attribute.
+        monkeypatch.setattr(ac, "resolve_vision_provider_client", fake_resolve)
+
+        result = check_vision_requirements()
+
+        assert result is True, (
+            "check_vision_requirements() must return True when explicit provider "
+            "is unavailable but an auto vision backend (OpenRouter) is available"
+        )
+
+    def test_check_requirements_no_backends_at_all(self, monkeypatch):
+        """No explicit provider client AND no auto backends => False.
+
+        Scenario: codex-only / no OpenRouter / no Nous => vision tool disabled.
+        """
+        from unittest.mock import MagicMock
+        from agent import auxiliary_client as ac
+
+        def fake_resolve(provider=None, model=None, base_url=None,
+                         api_key=None, async_mode=False):
+            return (provider or "none"), None, None  # always None client
+
+        monkeypatch.setattr(ac, "resolve_vision_provider_client", fake_resolve)
+
+        result = check_vision_requirements()
+        assert result is False, (
+            "check_vision_requirements() must return False when no vision backend is available"
+        )
+
+    def test_check_requirements_explicit_working_provider(self, monkeypatch):
+        """Explicit configured provider resolves a client => True (fast path, no auto needed)."""
+        from unittest.mock import MagicMock
+        from agent import auxiliary_client as ac
+
+        fake_client = MagicMock()
+        auto_called = []
+
+        def fake_resolve(provider=None, model=None, base_url=None,
+                         api_key=None, async_mode=False):
+            if provider == "auto":
+                auto_called.append(True)
+                return "openrouter", MagicMock(), "some-model"
+            # Explicit provider works fine
+            return "anthropic", fake_client, "claude-opus-4-5"
+
+        monkeypatch.setattr(ac, "resolve_vision_provider_client", fake_resolve)
+
+        result = check_vision_requirements()
+        assert result is True, (
+            "check_vision_requirements() must return True when explicit provider works"
+        )
+        assert not auto_called, "auto fallback must NOT be invoked when explicit provider works"
 
 
 # ---------------------------------------------------------------------------
