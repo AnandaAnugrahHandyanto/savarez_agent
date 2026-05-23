@@ -368,6 +368,49 @@ class TestWorkerSpawnEnv:
         assert env["HERMES_KANBAN_DB"] == str(expected_db)
         expected_ws = fresh_home / "kanban" / "boards" / "spawntest" / "workspaces"
         assert env["HERMES_KANBAN_WORKSPACES_ROOT"] == str(expected_ws)
+        assert env["HERMES_KANBAN_WORKSPACE"] == str(fresh_home / "ws")
+        assert env["TERMINAL_CWD"] == str(fresh_home / "ws")
+
+    def test_default_spawn_overrides_inherited_terminal_cwd(self, fresh_home, monkeypatch):
+        captured = {}
+
+        class FakeProc:
+            pid = 12346
+
+        def fake_popen(cmd, *args, **kwargs):
+            captured["cwd"] = kwargs.get("cwd")
+            captured["env"] = kwargs.get("env", {})
+            return FakeProc()
+
+        monkeypatch.setattr(subprocess, "Popen", fake_popen)
+        monkeypatch.setenv("TERMINAL_CWD", "/Users/montymac/hellp")
+        monkeypatch.setenv("MESSAGING_CWD", "/Users/montymac/hellp")
+
+        workspace = fresh_home / "forge-dummies" / "fizzbuzz"
+        workspace.mkdir(parents=True)
+        task = kb.Task(
+            id="t_cwd",
+            title="worker cwd test",
+            body=None,
+            assignee="reviewer",
+            status="ready",
+            priority=0,
+            created_by="user",
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+        )
+
+        kb._default_spawn(task, str(workspace), board="spawntest")
+
+        assert captured["cwd"] == str(workspace)
+        assert captured["env"]["HERMES_KANBAN_WORKSPACE"] == str(workspace)
+        assert captured["env"]["TERMINAL_CWD"] == str(workspace)
 
     def test_default_board_spawn_keeps_legacy_paths(self, fresh_home, monkeypatch):
         captured = {}

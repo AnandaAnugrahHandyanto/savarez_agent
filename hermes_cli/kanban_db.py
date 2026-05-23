@@ -3953,6 +3953,11 @@ def _default_spawn(
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    # Terminal/file tools read TERMINAL_CWD, not HERMES_KANBAN_WORKSPACE.
+    # Pin it explicitly so profile workers start their tool sandbox in the
+    # task workspace even when the dispatcher/gateway inherited a stale
+    # TERMINAL_CWD or MESSAGING_CWD from its own launch context.
+    env["TERMINAL_CWD"] = workspace
     if task.current_run_id is not None:
         env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
     if task.claim_lock:
