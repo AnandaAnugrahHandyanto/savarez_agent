@@ -1181,7 +1181,36 @@ def connect(
             # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
             from hermes_state import apply_wal_with_fallback
             apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
-            conn.execute("PRAGMA synchronous=NORMAL")
+            # Durability mode. Default `normal` preserves prior behavior
+            # (synchronous=NORMAL — COMMIT returns before WAL frames are
+            # durably on disk; fast, sufficient for single-writer setups).
+            #
+            # `full` enables synchronous=FULL + tighter wal_autocheckpoint
+            # for heartbeat-heavy concurrent-writer workloads (e.g. a
+            # dispatcher process + worker subprocesses both writing event
+            # rows and status updates). With NORMAL, those workloads can
+            # hit a "database disk image is malformed" race where the WAL
+            # header ends up inconsistent with main DB pages. FULL forces
+            # fsync() after every commit — slower writes but durable.
+            # The kanban workload is dispatch-bounded, not write-bounded,
+            # so the perf cost is bounded.
+            #
+            # wal_autocheckpoint=100 (vs default 1000) keeps the WAL small
+            # so the durability window stays short. Heartbeat-heavy review
+            # workloads (50+ events in 5 minutes) can otherwise grow the
+            # WAL to many MB before checkpoint, widening the window where
+            # a worker crash can leave the WAL irreparable.
+            #
+            # Opt in via env var so simpler deployments are not penalized.
+            # See issue #30896 for the repro pattern.
+            sync_mode = os.environ.get(
+                "HERMES_KANBAN_SYNCHRONOUS_MODE", "normal"
+            ).strip().lower()
+            if sync_mode == "full":
+                conn.execute("PRAGMA synchronous=FULL")
+                conn.execute("PRAGMA wal_autocheckpoint=100")
+            else:
+                conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA foreign_keys=ON")
             needs_init = resolved not in _INITIALIZED_PATHS
             if needs_init:
