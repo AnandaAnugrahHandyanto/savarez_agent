@@ -34,7 +34,7 @@ const DIM_OFF = `${ESC}[22m`
 const FWD_DEL_RE = new RegExp(`${ESC}\\[3(?:[~$^]|;)`)
 const PRINTABLE = /^[ -~\u00a0-\uffff]+$/
 const BRACKET_PASTE = new RegExp(`${ESC}?\\[20[01]~`, 'g')
-const KEY_BURST_MS = 16
+const FRAME_BATCH_MS = 16
 const MULTI_CLICK_MS = 500
 
 const invert = (s: string) => INV + s + INV_OFF
@@ -602,7 +602,7 @@ export function TextInput({
       return
     }
 
-    parentChangeTimer.current = setTimeout(flushParentChange, 16)
+    parentChangeTimer.current = setTimeout(flushParentChange, FRAME_BATCH_MS)
   }
 
   const cancelLocalRender = () => {
@@ -620,7 +620,7 @@ export function TextInput({
     localRenderTimer.current = setTimeout(() => {
       localRenderTimer.current = null
       setCur(curRef.current)
-    }, 16)
+    }, FRAME_BATCH_MS)
   }
 
   const canFastEchoBase = () => supportsFastEchoTerminal() && focus && termFocus && !selected && !mask && !!stdout?.isTTY
@@ -743,7 +743,7 @@ export function TextInput({
     keyBurstTimer.current = setTimeout(() => {
       keyBurstTimer.current = null
       flushParentChange()
-    }, KEY_BURST_MS)
+    }, FRAME_BATCH_MS)
   }
 
   const clearSel = () => {
