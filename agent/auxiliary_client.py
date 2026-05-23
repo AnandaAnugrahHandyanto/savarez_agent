@@ -3674,30 +3674,31 @@ def resolve_provider_client(
             try:
                 from hermes_cli.auth import resolve_minimax_oauth_runtime_credentials
                 from agent.anthropic_adapter import build_anthropic_client
-            except ImportError:
+
+                creds = resolve_minimax_oauth_runtime_credentials()
+                if not creds or not creds.get("api_key"):
+                    logger.warning(
+                        "resolve_provider_client: minimax-oauth requested but "
+                        "no credentials found (run: hermes auth add minimax-oauth)"
+                    )
+                    return None, None
+                base_url = str(creds.get("base_url", "")).rstrip("/")
+                api_key = str(creds.get("api_key", ""))
+                default_model = _get_aux_model_for_provider(provider)
+                final_model = _normalize_resolved_model(model or default_model, provider)
+                real_client = build_anthropic_client(api_key, base_url)
+                client = AnthropicAuxiliaryClient(
+                    real_client, final_model, api_key, base_url, is_oauth=True,
+                )
+                if async_mode:
+                    return AsyncAnthropicAuxiliaryClient(client), final_model
+                return client, final_model
+            except Exception as exc:
                 logger.warning(
-                    "resolve_provider_client: minimax-oauth requested but "
-                    "required modules not available"
+                    "resolve_provider_client: minimax-oauth client creation failed: %s",
+                    exc,
                 )
                 return None, None
-            creds = resolve_minimax_oauth_runtime_credentials()
-            if not creds or not creds.get("api_key"):
-                logger.warning(
-                    "resolve_provider_client: minimax-oauth requested but "
-                    "no credentials found (run: hermes auth add minimax-oauth)"
-                )
-                return None, None
-            base_url = str(creds.get("base_url", "")).rstrip("/")
-            api_key = str(creds.get("api_key", ""))
-            default_model = _get_aux_model_for_provider(provider)
-            final_model = _normalize_resolved_model(model or default_model, provider)
-            real_client = build_anthropic_client(api_key, base_url)
-            client = AnthropicAuxiliaryClient(
-                real_client, final_model, api_key, base_url, is_oauth=True,
-            )
-            if async_mode:
-                return AsyncAnthropicAuxiliaryClient(client), final_model
-            return client, final_model
         # Other OAuth providers not directly supported
         logger.warning("resolve_provider_client: OAuth provider %s not "
                        "directly supported, try 'auto'", provider)
