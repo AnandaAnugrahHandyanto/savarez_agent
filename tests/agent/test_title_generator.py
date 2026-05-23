@@ -9,6 +9,7 @@ from agent.title_generator import (
     generate_title,
     generate_refined_title,
     auto_title_session,
+    mark_session_title_manual,
     maybe_auto_title,
     maybe_refine_title,
 )
@@ -238,6 +239,38 @@ class TestMaybeRefineTitle:
 
         gen.assert_not_called()
         assert db.set_titles == []
+
+    def test_manual_rename_after_auto_title_locks_against_refinement(self):
+        db = FakeTitleDB(
+            title="Initial Auto Title",
+            model_config={
+                "title_metadata": {
+                    "title_source": "auto_initial",
+                    "title_locked": False,
+                    "title_turn_count": 1,
+                }
+            },
+        )
+        db.set_session_title("sess-1", "User Manual Title")
+        mark_session_title_manual(db, "sess-1")
+
+        cfg = {
+            "enabled": True,
+            "adaptive_retitle": True,
+            "retitle_after_user_turns": 4,
+            "retitle_auto_titles_only": True,
+            "lock_manual_titles": True,
+        }
+        with patch("agent.title_generator.generate_refined_title") as gen:
+            maybe_refine_title(db, "sess-1", self._history(4), title_config=cfg, run_in_background=False)
+
+        gen.assert_not_called()
+        assert db.title == "User Manual Title"
+        metadata = db.model_config["title_metadata"]
+        assert metadata["title_source"] == "manual"
+        assert metadata["title_locked"] is True
+        assert metadata["title_turn_count"] == 1
+        assert "title_updated_at" in metadata
 
 
 class TestAutoTitleSession:

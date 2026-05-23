@@ -20,15 +20,15 @@ from typing import Any, Dict, Optional
 _DEFAULT_CONTEXT_REFRESH_CONFIG: Dict[str, Any] = {
     "enabled": True,
     "handoff_after_compressions": 2,
-    "mode": "auto_new",
+    "mode": "prepare_only",
     "auto_new_policy": "phase_boundary",
     "require_safe_turn_boundary": True,
     "require_no_running_processes": True,
     "write_session_handoff": True,
-    "write_project_handoff_when_detectable": True,
     "include_sha256": True,
     "max_handoff_lines": 250,
     "handoff_base_dir": "",
+    "auto_new_surfaces": ["cli", "gateway"],
 }
 
 
@@ -160,6 +160,31 @@ This is an automatic context refresh handoff created after repeated context comp
 """
 
 
+def _limit_handoff_lines(content: str, max_lines: int) -> str:
+    """Bound handoff length while preserving the action/safety sections."""
+    if max_lines <= 0:
+        return content
+    lines = content.splitlines()
+    if len(lines) <= max_lines:
+        return content
+
+    required_sections = ("## Next Valid Actions", "## What Not To Do Accidentally")
+    required_start = None
+    for idx, line in enumerate(lines):
+        if line in required_sections:
+            required_start = idx
+            break
+    if required_start is None:
+        return "\n".join(lines[:max_lines]) + "\n"
+
+    required = lines[required_start:]
+    head_budget = max_lines - len(required) - 1
+    if head_budget < 1:
+        return "\n".join(lines[:max_lines]) + "\n"
+    trimmed = lines[:head_budget] + ["..."] + required
+    return "\n".join(trimmed[:max_lines]) + "\n"
+
+
 def _handoff_path(cfg: Dict[str, Any], session_id: str) -> Path:
     return _handoff_base_dir(cfg) / "session-handoffs" / session_id / "AFTER_SESSION_COMPRESSION_HANDOFF.md"
 
@@ -250,6 +275,25 @@ def should_auto_new_after_context_refresh(
     mode = str(pending.get("mode") or cfg.get("mode") or "prepare_only")
     if mode != "auto_new":
         return ContextRefreshDecision(False, f"mode_is_{mode}", pending)
+
+    surface = str(
+        cfg.get("surface")
+        or getattr(agent, "context_refresh_surface", None)
+        or getattr(agent, "platform", None)
+        or "cli"
+    ).strip().lower()
+    supported = cfg.get("auto_new_surfaces", _DEFAULT_CONTEXT_REFRESH_CONFIG["auto_new_surfaces"])
+    if isinstance(supported, str):
+        supported_surfaces = {item.strip().lower() for item in supported.split(",") if item.strip()}
+    elif isinstance(supported, (list, tuple, set)):
+        supported_surfaces = {str(item).strip().lower() for item in supported if str(item).strip()}
+    else:
+        supported_surfaces = {"cli", "gateway"}
+    if surface and surface not in supported_surfaces:
+        return ContextRefreshDecision(False, f"unsupported_surface_{surface}", pending)
+
+    if cfg.get("require_safe_turn_boundary", True) and result is None:
+        return ContextRefreshDecision(False, "safe_turn_boundary_required", pending)
     if not _result_is_completed(result):
         return ContextRefreshDecision(False, "turn_not_completed", pending)
 
@@ -312,28 +356,29 @@ def maybe_prepare_context_refresh_handoff(agent: Any, messages: list, reason: st
         compression_count=compression_count,
         cfg=cfg,
     )
+    content = _limit_handoff_lines(content, int(cfg.get("max_handoff_lines") or 0))
 
     result = write_handoff_file(path, content, session_id)
+    include_sha256 = bool(cfg.get("include_sha256", True))
+    pending = {
+        "handoff_path": str(result.path),
+        "session_id": session_id,
+        "reason": reason,
+        "compression_count": compression_count,
+        "mode": cfg.get("mode", "prepare_only"),
+    }
+    if include_sha256:
+        pending["sha256"] = result.sha256
     setattr(agent, "_context_refresh_handoff_prepared_for_count", compression_count)
-    setattr(
-        agent,
-        "_pending_context_refresh",
-        {
-            "handoff_path": str(result.path),
-            "session_id": session_id,
-            "reason": reason,
-            "compression_count": compression_count,
-            "sha256": result.sha256,
-            "mode": cfg.get("mode", "prepare_only"),
-        },
-    )
+    setattr(agent, "_pending_context_refresh", pending)
 
     notify = getattr(agent, "_emit_warning", None)
     if callable(notify):
+        sha_part = f", sha256 {result.sha256}" if include_sha256 else ""
         notify(
             "Context refresh handoff ready after "
             f"{compression_count} compressions: {result.path} "
-            f"({result.line_count} lines, {result.byte_count} bytes, sha256 {result.sha256}). "
+            f"({result.line_count} lines, {result.byte_count} bytes{sha_part}). "
             f"After /new: {result.resume_prompt}"
         )
     return result

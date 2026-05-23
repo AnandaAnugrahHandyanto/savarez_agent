@@ -4881,6 +4881,8 @@ class HermesCLI:
                     self.agent._ensure_db_session()
                     if self.agent._session_db_created:
                         self._session_db.set_session_title(self.session_id, self._pending_title)
+                        from agent.title_generator import mark_session_title_manual
+                        mark_session_title_manual(self._session_db, self.session_id)
                         _cprint(f"  Session title applied: {self._pending_title}")
                         self._pending_title = None
                     # else: row creation failed transiently — keep _pending_title for retry
@@ -6323,6 +6325,8 @@ class HermesCLI:
                     if sanitized:
                         try:
                             self._session_db.set_session_title(self.session_id, sanitized)
+                            from agent.title_generator import mark_session_title_manual
+                            mark_session_title_manual(self._session_db, self.session_id)
                             self._pending_title = None
                             title = sanitized
                         except ValueError as e:
@@ -8225,6 +8229,8 @@ class HermesCLI:
                             # Session exists in DB — set title directly
                             try:
                                 if self._session_db.set_session_title(self.session_id, new_title):
+                                    from agent.title_generator import mark_session_title_manual
+                                    mark_session_title_manual(self._session_db, self.session_id)
                                     _cprint(f"  Session title set: {new_title}")
                                 else:
                                     _cprint("  Session not found in database.")

@@ -2507,7 +2507,8 @@ class GatewayRunner:
         """Total pending /queue items for a session — slot + overflow."""
         queued_events = getattr(self, "_queued_events", None) or {}
         depth = len(queued_events.get(session_key, []))
-        if adapter is not None and session_key in getattr(adapter, "_pending_messages", {}):
+        pending_messages = getattr(adapter, "_pending_messages", {}) if adapter is not None else {}
+        if isinstance(pending_messages, dict) and session_key in pending_messages:
             depth += 1
         return depth
 
@@ -9089,6 +9090,33 @@ class GatewayRunner:
         pending = agent_result.get("pending_context_refresh")
         if not isinstance(pending, dict):
             return response
+        adapter = self.adapters.get(event.source.platform) if getattr(event, "source", None) else None
+        if self._queue_depth(session_key, adapter=adapter) > 0:
+            logger.debug(
+                "Context refresh auto-new skipped for %s: queued_or_pending_events",
+                session_key or "?",
+            )
+            return response
+        queued_events = getattr(self, "_queued_events", None)
+        if queued_events and queued_events.get(session_key):
+            logger.debug(
+                "Context refresh auto-new skipped for %s: queued_events",
+                session_key or "?",
+            )
+            return response
+        goal_pending = getattr(self, "_goal_continuation_pending", None)
+        if goal_pending and session_key in goal_pending:
+            logger.debug(
+                "Context refresh auto-new skipped for %s: goal_continuation_pending",
+                session_key or "?",
+            )
+            return response
+        if self._goal_continuation_active_for_entry(session_entry):
+            logger.debug(
+                "Context refresh auto-new skipped for %s: goal_continuation_active",
+                session_key or "?",
+            )
+            return response
         try:
             from types import SimpleNamespace
             from agent.session_handoff import (
@@ -9099,7 +9127,10 @@ class GatewayRunner:
             cfg = (_load_gateway_config() or {}).get("context_refresh", {})
             probe_agent = SimpleNamespace(
                 _pending_context_refresh=pending,
-                context_refresh_config=cfg if isinstance(cfg, dict) else {},
+                context_refresh_config={
+                    **(cfg if isinstance(cfg, dict) else {}),
+                    "surface": "gateway",
+                },
             )
             decision = should_auto_new_after_context_refresh(
                 probe_agent,
@@ -9130,10 +9161,6 @@ class GatewayRunner:
                 if old_agent is not None:
                     self._cleanup_agent_resources(old_agent)
             self._evict_cached_agent(session_key)
-
-            queued_events = getattr(self, "_queued_events", None)
-            if queued_events is not None:
-                queued_events.pop(session_key, None)
 
             new_entry = self.session_store.reset_session(session_key)
             if new_entry is None:
@@ -9322,6 +9349,8 @@ class GatewayRunner:
             if sanitized:
                 try:
                     self._session_db.set_session_title(new_entry.session_id, sanitized)
+                    from agent.title_generator import mark_session_title_manual
+                    mark_session_title_manual(self._session_db, new_entry.session_id)
                     header = t("gateway.reset.header_titled", title=sanitized)
                 except ValueError as e:
                     _title_note = t("gateway.reset.title_error_untitled", error=str(e))
@@ -10901,6 +10930,24 @@ class GatewayRunner:
                 self._enqueue_fifo(_quick_key, cont_event, adapter)
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
+
+    def _goal_continuation_active_for_entry(self, session_entry: Any) -> bool:
+        """Conservatively report whether a session has goal follow-up work."""
+        sid = getattr(session_entry, "session_id", None) or ""
+        if not sid:
+            return False
+        try:
+            from hermes_cli.goals import GoalManager
+        except Exception as exc:
+            logger.debug("goal continuation: goals module unavailable: %s", exc)
+            return False
+        try:
+            max_turns_fn = getattr(self, "_goal_max_turns_from_config", None)
+            max_turns = max_turns_fn() if callable(max_turns_fn) else None
+            return bool(GoalManager(session_id=sid, default_max_turns=max_turns).is_active())
+        except Exception as exc:
+            logger.debug("goal continuation active check failed: %s", exc)
+            return True
 
     async def _handle_undo_command(self, event: MessageEvent) -> str:
         """Handle /undo command - remove the last user/assistant exchange."""
@@ -12769,6 +12816,8 @@ class GatewayRunner:
             # Set the title
             try:
                 if self._session_db.set_session_title(session_id, sanitized):
+                    from agent.title_generator import mark_session_title_manual
+                    mark_session_title_manual(self._session_db, session_id)
                     return t("gateway.title.set_to", title=sanitized)
                 else:
                     return t("gateway.title.not_found")

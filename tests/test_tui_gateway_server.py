@@ -884,15 +884,20 @@ def test_session_title_clears_pending_after_persist(monkeypatch):
     class _FakeDB:
         def __init__(self):
             self.title = "old"
+            self.model_config = {}
 
         def get_session_title(self, _key):
             return self.title
 
         def get_session(self, _key):
-            return {"id": _key, "title": self.title}
+            return {"id": _key, "title": self.title, "model_config": self.model_config}
 
         def set_session_title(self, _key, title):
             self.title = title
+            return True
+
+        def merge_session_model_config(self, _key, patch):
+            self.model_config.update(patch)
             return True
 
     db = _FakeDB()
@@ -910,6 +915,9 @@ def test_session_title_clears_pending_after_persist(monkeypatch):
         assert resp["result"]["pending"] is False
         assert resp["result"]["title"] == "fresh"
         assert server._sessions["sid"]["pending_title"] is None
+        metadata = db.model_config["title_metadata"]
+        assert metadata["title_source"] == "manual"
+        assert metadata["title_locked"] is True
     finally:
         server._sessions.pop("sid", None)
 

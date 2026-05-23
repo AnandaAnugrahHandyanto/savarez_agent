@@ -519,15 +519,15 @@ DEFAULT_CONFIG = {
     "context_refresh": {
         "enabled": True,
         "handoff_after_compressions": 2,
-        "mode": "auto_new",
+        "mode": "prepare_only",
         "auto_new_policy": "phase_boundary",
         "require_safe_turn_boundary": True,
         "require_no_running_processes": True,
         "write_session_handoff": True,
-        "write_project_handoff_when_detectable": True,
         "include_sha256": True,
         "max_handoff_lines": 250,
         "handoff_base_dir": "",
+        "auto_new_surfaces": ["cli", "gateway"],
     },
     "agent": {
         "max_turns": 90,

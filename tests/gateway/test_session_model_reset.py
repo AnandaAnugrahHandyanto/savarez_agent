@@ -173,6 +173,142 @@ async def test_auto_context_refresh_skips_interrupted_turn(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_auto_context_refresh_skips_when_queue_has_events(monkeypatch):
+    from gateway.run import GatewayRunner
+
+    runner = _make_runner()
+    runner._evict_cached_agent = MagicMock()
+    runner._set_session_reasoning_override = MagicMock()
+    runner._clear_session_boundary_security_state = MagicMock()
+    runner._is_telegram_topic_lane = MagicMock(return_value=False)
+    session_key = build_session_key(_make_source())
+    queued = [_make_event("queued user message")]
+    runner._queued_events = {session_key: list(queued)}
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {
+            "context_refresh": {
+                "mode": "auto_new",
+                "auto_new_policy": "phase_boundary",
+                "require_no_running_processes": False,
+            }
+        },
+    )
+
+    response = await GatewayRunner._maybe_auto_new_after_context_refresh(
+        runner,
+        _make_event("hello"),
+        {
+            "final_response": "Phase 1 is complete. Next phase will begin with validation.",
+            "completed": True,
+            "pending_context_refresh": {
+                "mode": "auto_new",
+                "session_id": "sess-1",
+                "handoff_path": "/tmp/handoff.md",
+            },
+        },
+        "done",
+        session_key,
+        runner.session_store._entries[session_key],
+    )
+
+    runner.session_store.reset_session.assert_not_called()
+    assert runner._queued_events[session_key] == queued
+    assert response == "done"
+
+
+@pytest.mark.asyncio
+async def test_auto_context_refresh_skips_when_pending_slot_has_event(monkeypatch):
+    from gateway.run import GatewayRunner
+
+    runner = _make_runner()
+    runner._evict_cached_agent = MagicMock()
+    runner._set_session_reasoning_override = MagicMock()
+    runner._clear_session_boundary_security_state = MagicMock()
+    runner._is_telegram_topic_lane = MagicMock(return_value=False)
+    session_key = build_session_key(_make_source())
+    adapter = runner.adapters[Platform.TELEGRAM]
+    pending_event = _make_event("pending follow-up")
+    adapter._pending_messages = {session_key: pending_event}
+    runner._queued_events = {}
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {
+            "context_refresh": {
+                "mode": "auto_new",
+                "auto_new_policy": "phase_boundary",
+                "require_no_running_processes": False,
+            }
+        },
+    )
+
+    response = await GatewayRunner._maybe_auto_new_after_context_refresh(
+        runner,
+        _make_event("hello"),
+        {
+            "final_response": "Phase 1 is complete. Next phase will begin with validation.",
+            "completed": True,
+            "pending_context_refresh": {
+                "mode": "auto_new",
+                "session_id": "sess-1",
+                "handoff_path": "/tmp/handoff.md",
+            },
+        },
+        "done",
+        session_key,
+        runner.session_store._entries[session_key],
+    )
+
+    runner.session_store.reset_session.assert_not_called()
+    assert adapter._pending_messages[session_key] is pending_event
+    assert response == "done"
+
+
+@pytest.mark.asyncio
+async def test_auto_context_refresh_skips_when_goal_continuation_pending(monkeypatch):
+    from gateway.run import GatewayRunner
+
+    runner = _make_runner()
+    runner._evict_cached_agent = MagicMock()
+    runner._set_session_reasoning_override = MagicMock()
+    runner._clear_session_boundary_security_state = MagicMock()
+    runner._is_telegram_topic_lane = MagicMock(return_value=False)
+    runner._queued_events = {}
+    runner._goal_continuation_pending = {build_session_key(_make_source())}
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {
+            "context_refresh": {
+                "mode": "auto_new",
+                "auto_new_policy": "phase_boundary",
+                "require_no_running_processes": False,
+            }
+        },
+    )
+
+    session_key = build_session_key(_make_source())
+    response = await GatewayRunner._maybe_auto_new_after_context_refresh(
+        runner,
+        _make_event("hello"),
+        {
+            "final_response": "Phase 1 is complete. Next phase will begin with validation.",
+            "completed": True,
+            "pending_context_refresh": {
+                "mode": "auto_new",
+                "session_id": "sess-1",
+                "handoff_path": "/tmp/handoff.md",
+            },
+        },
+        "done",
+        session_key,
+        runner.session_store._entries[session_key],
+    )
+
+    runner.session_store.reset_session.assert_not_called()
+    assert response == "done"
+
+
+@pytest.mark.asyncio
 async def test_new_command_clears_session_model_override():
     """/new must remove the session-scoped model override for that session."""
     runner = _make_runner()

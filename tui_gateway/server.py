@@ -2479,6 +2479,8 @@ def _(rid, params: dict) -> dict:
             resolved_title = db.get_session_title(key) or ""
             if fallback:
                 if db.set_session_title(key, fallback):
+                    from agent.title_generator import mark_session_title_manual
+                    mark_session_title_manual(db, key)
                     session["pending_title"] = None
                     resolved_title = fallback
                 else:
@@ -2505,6 +2507,8 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4021, "title required")
     try:
         if db.set_session_title(key, title):
+            from agent.title_generator import mark_session_title_manual
+            mark_session_title_manual(db, key)
             session["pending_title"] = None
             return _ok(rid, {"pending": False, "title": title})
         # rowcount == 0 can mean "same value" as well as "missing row".
@@ -3521,6 +3525,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     _session_key = session.get("session_key") or sid
                     try:
                         if _pdb.set_session_title(_session_key, _pending):
+                            from agent.title_generator import mark_session_title_manual
+                            mark_session_title_manual(_pdb, _session_key)
                             session["pending_title"] = None
                     except ValueError as exc:
                         # Invalid/duplicate title — non-retryable, drop it.

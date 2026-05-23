@@ -5,6 +5,7 @@ across all gateway messenger platforms.
 """
 
 import os
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -69,6 +70,9 @@ class TestHandleTitleCommand:
 
         # Verify in DB
         assert db.get_session_title("test_session_123") == "My Research Project"
+        metadata = json.loads(db.get_session("test_session_123")["model_config"])["title_metadata"]
+        assert metadata["title_source"] == "manual"
+        assert metadata["title_locked"] is True
         db.close()
 
     @pytest.mark.asyncio
@@ -151,6 +155,9 @@ class TestHandleTitleCommand:
         result = await runner._handle_title_command(event)
         assert "helloworld" in result
         assert db.get_session_title("test_session_123") == "helloworld"
+        metadata = json.loads(db.get_session("test_session_123")["model_config"])["title_metadata"]
+        assert metadata["title_source"] == "manual"
+        assert metadata["title_locked"] is True
         db.close()
 
     @pytest.mark.asyncio
@@ -274,6 +281,10 @@ class TestResetCommandWithTitle:
         runner._session_db.set_session_title.assert_called_once_with(
             "sess-new", "Custom Name"
         )
+        runner._session_db.merge_session_model_config.assert_called_once()
+        patch_arg = runner._session_db.merge_session_model_config.call_args.args[1]
+        assert patch_arg["title_metadata"]["title_source"] == "manual"
+        assert patch_arg["title_metadata"]["title_locked"] is True
         # Header reflects the applied title
         assert "Custom Name" in str(result)
 

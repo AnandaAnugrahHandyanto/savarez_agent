@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 from agent.session_handoff import (
+    _DEFAULT_CONTEXT_REFRESH_CONFIG,
     build_context_refresh_resume_note,
     maybe_prepare_context_refresh_handoff,
     should_auto_new_after_context_refresh,
@@ -122,6 +123,117 @@ def test_prepare_only_mode_does_not_auto_new(tmp_path):
 
     assert decision.should_auto_new is False
     assert decision.reason == "mode_is_prepare_only"
+
+
+def test_default_context_refresh_mode_is_prepare_only(tmp_path):
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    assert _DEFAULT_CONTEXT_REFRESH_CONFIG["mode"] == "prepare_only"
+    assert DEFAULT_CONFIG["context_refresh"]["mode"] == "prepare_only"
+    agent = make_agent(tmp_path, compression_count=2, mode="auto_new")
+    agent.context_refresh_config.pop("mode")
+    maybe_prepare_context_refresh_handoff(agent, [], reason="compression_count>=2")
+
+    decision = should_auto_new_after_context_refresh(
+        agent,
+        {
+            "final_response": "Phase 2 is complete. Next phase will begin with validation.",
+            "completed": True,
+        },
+    )
+
+    assert agent._pending_context_refresh["mode"] == "prepare_only"
+    assert decision.should_auto_new is False
+    assert decision.reason == "mode_is_prepare_only"
+
+
+def test_auto_new_is_gated_to_supported_surfaces(tmp_path):
+    agent = make_agent(tmp_path, compression_count=2, mode="auto_new")
+    agent.platform = "tui"
+    maybe_prepare_context_refresh_handoff(agent, [], reason="compression_count>=2")
+
+    decision = should_auto_new_after_context_refresh(
+        agent,
+        {
+            "final_response": "Phase 2 is complete. Next phase will begin with validation.",
+            "completed": True,
+        },
+    )
+
+    assert decision.should_auto_new is False
+    assert decision.reason == "unsupported_surface_tui"
+
+    agent.platform = "acp"
+    decision = should_auto_new_after_context_refresh(
+        agent,
+        {
+            "final_response": "Phase 2 is complete. Next phase will begin with validation.",
+            "completed": True,
+        },
+    )
+    assert decision.should_auto_new is False
+    assert decision.reason == "unsupported_surface_acp"
+
+
+def test_safe_turn_boundary_config_is_consulted(tmp_path):
+    agent = make_agent(tmp_path, compression_count=2, mode="auto_new")
+    agent.context_refresh_config["require_safe_turn_boundary"] = True
+    maybe_prepare_context_refresh_handoff(agent, [], reason="compression_count>=2")
+
+    decision = should_auto_new_after_context_refresh(agent, None)
+
+    assert decision.should_auto_new is False
+    assert decision.reason == "safe_turn_boundary_required"
+
+    agent = make_agent(tmp_path / "unsafe-opt-out", compression_count=2, mode="auto_new")
+    agent.context_refresh_config["require_safe_turn_boundary"] = False
+    agent.context_refresh_config["auto_new_policy"] = "completed_turn"
+    maybe_prepare_context_refresh_handoff(agent, [], reason="compression_count>=2")
+
+    decision = should_auto_new_after_context_refresh(agent, None)
+
+    assert decision.should_auto_new is True
+    assert decision.reason == "safe_turn_boundary"
+
+
+def test_include_sha256_false_suppresses_pending_metadata_and_warning(tmp_path):
+    warnings = []
+    agent = make_agent(tmp_path, compression_count=2, mode="prepare_only")
+    agent.context_refresh_config["include_sha256"] = False
+    agent.warnings = warnings
+    agent._emit_warning = warnings.append
+
+    result = maybe_prepare_context_refresh_handoff(agent, [], reason="compression_count>=2")
+
+    assert result is not None
+    assert result.sha256
+    assert "sha256" not in agent._pending_context_refresh
+    assert warnings
+    assert result.sha256 not in warnings[0]
+
+
+def test_max_handoff_lines_bounds_written_file(tmp_path):
+    agent = make_agent(tmp_path, compression_count=2, mode="prepare_only")
+    agent.context_refresh_config["max_handoff_lines"] = 20
+    messages = [
+        {"role": "user", "content": f"message {idx}"}
+        for idx in range(40)
+    ]
+
+    result = maybe_prepare_context_refresh_handoff(agent, messages, reason="compression_count>=2")
+
+    assert result is not None
+    content = result.path.read_text(encoding="utf-8")
+    assert result.line_count <= 20
+    assert "## Next Valid Actions" in content
+    assert "## What Not To Do Accidentally" in content
+
+
+def test_project_handoff_knob_is_not_declared_until_supported():
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    assert "write_project_handoff_when_detectable" not in _DEFAULT_CONTEXT_REFRESH_CONFIG
+    assert "write_project_handoff_when_detectable" not in DEFAULT_CONFIG["context_refresh"]
 
 
 def test_build_resume_note_for_new_session(tmp_path):

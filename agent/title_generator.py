@@ -129,6 +129,21 @@ def _merge_title_metadata(session_db, session_id: str, metadata: Dict[str, Any])
         logger.debug("Failed to merge session title metadata", exc_info=True)
 
 
+def mark_session_title_manual(session_db, session_id: str) -> None:
+    """Record that the current session title came from explicit user intent."""
+    if not session_db or not session_id:
+        return
+    metadata = _get_title_metadata(session_db, session_id)
+    metadata.update(
+        {
+            "title_source": "manual",
+            "title_locked": True,
+            "title_updated_at": time.time(),
+        }
+    )
+    _merge_title_metadata(session_db, session_id, metadata)
+
+
 def generate_title(
     user_message: str,
     assistant_response: str,
