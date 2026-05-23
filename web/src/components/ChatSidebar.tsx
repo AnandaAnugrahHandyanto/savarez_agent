@@ -31,7 +31,7 @@ import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ProfilePickerDialog } from "@/components/ProfilePickerDialog";
 import { ToolCall, type ToolEntry } from "@/components/ToolCall";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
-import { HERMES_BASE_PATH } from "@/lib/api";
+import { api, HERMES_BASE_PATH } from "@/lib/api";
 
 import { cn } from "@/lib/utils";
 import { AlertCircle, ChevronDown, Crown, RefreshCw } from "lucide-react";
@@ -100,18 +100,10 @@ export function ChatSidebar({
   // Agent Profile state (gated by chatByAgentProfile)
   const [profileOpen, setProfileOpen] = useState(false);
   const [activeProfile, setActiveProfile] = useState<string>("default");
-  const [profiles, setProfiles] = useState<{ name: string }[]>([]);
 
   // Fetch profiles and active profile on mount
   useEffect(() => {
     if (!chatByAgentProfile) return;
-    api
-      .getProfiles()
-      .then((data) => {
-        setProfiles(data.profiles ?? []);
-      })
-      .catch(() => setProfiles([]));
-
     api
       .getAgentMetrics()
       .then((metrics) => {

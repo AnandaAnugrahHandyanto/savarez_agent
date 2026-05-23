@@ -54,7 +54,11 @@ function buildWsUrl(
 // channel — the previous PTY child terminates with the old WS, and its
 // channel auto-evicts when no subscribers remain.
 function generateChannelId(): string {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+  if (
+    typeof crypto !== "undefined" &&
+    crypto &&
+    typeof crypto.randomUUID === "function"
+  ) {
     return crypto.randomUUID();
   }
   return `chat-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
@@ -444,9 +448,20 @@ export default function ChatPage({
     const useWebgl = terminalTierWidthPx(host) >= 768;
     if (useWebgl) {
       try {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => webgl.dispose());
-        term.loadAddon(webgl);
+        let webgl: any = null;
+        try {
+          webgl = new WebglAddon();
+          webgl.onContextLoss(() => webgl.dispose());
+        } catch (ctorErr) {
+          console.warn("[hermes-chat] WebGL addon construction failed", ctorErr);
+        }
+        if (webgl) {
+          try {
+            term.loadAddon(webgl);
+          } catch (loadErr) {
+            console.warn("[hermes-chat] WebGL addon load failed", loadErr);
+          }
+        }
       } catch (err) {
         console.warn(
           "[hermes-chat] WebGL renderer unavailable; falling back to default",

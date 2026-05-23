@@ -19,6 +19,12 @@ const POLL_INTERVAL_MS = 30_000;
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
+// Upper bounds for the mini arc-gauges.  Chosen to cover "normal" developer
+// workloads without the bars maxing out constantly.  Adjust if your agents
+// routinely use >8 GB resident memory or >50 GB disk.
+const MEM_MAX = 8 * 1024;   // 8 GB in MB
+const DISK_MAX = 50 * 1024; // 50 GB in MB
+
 function fmt(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
@@ -31,7 +37,7 @@ function fmtMb(mb: number): string {
 }
 
 /** SVG arc path for a mini donut. cx,cy,radius,startPct,endPct,strokeWidth */
-function arcPath(
+export function arcPath(
   cx: number,
   cy: number,
   r: number,
