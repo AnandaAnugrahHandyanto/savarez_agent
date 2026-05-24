@@ -1,6 +1,7 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
 import json
+import urllib.error
 import os
 from unittest.mock import patch
 
@@ -61,13 +62,18 @@ class _FakeHttpResponse:
 
 @pytest.mark.asyncio
 async def test_webui_notification_reply_starts_api_run_without_waiting_for_completion(monkeypatch):
-    captured = {}
+    captured = []
 
     def fake_urlopen(req, timeout=None):
-        captured["url"] = req.full_url
-        captured["timeout"] = timeout
-        captured["headers"] = dict(req.header_items())
-        captured["body"] = json.loads(req.data.decode("utf-8"))
+        call = {
+            "url": req.full_url,
+            "timeout": timeout,
+            "headers": dict(req.header_items()),
+            "body": json.loads(req.data.decode("utf-8")),
+        }
+        captured.append(call)
+        if req.full_url.endswith("/steer"):
+            raise urllib.error.HTTPError(req.full_url, 404, "not active", {}, None)
         return _FakeHttpResponse()
 
     monkeypatch.setenv("API_SERVER_KEY", "secret-test-key")
@@ -89,15 +95,61 @@ async def test_webui_notification_reply_starts_api_run_without_waiting_for_compl
 
     await adapter._forward_notification_reply_to_api_session(event, route)
 
-    assert captured["url"] == "http://127.0.0.1:18642/v1/runs"
-    assert captured["timeout"] <= 15
-    assert captured["headers"]["X-hermes-session-id"] == "20260524_142634_986d3f"
-    assert captured["headers"]["Authorization"] == "Bearer secret-test-key"
-    assert captured["body"]["session_id"] == "20260524_142634_986d3f"
-    assert captured["body"]["input"].startswith("[Telegram reply/follow-up to Hermes notification]")
+    assert [call["url"] for call in captured] == [
+        "http://127.0.0.1:18642/v1/sessions/20260524_142634_986d3f/steer",
+        "http://127.0.0.1:18642/v1/runs",
+    ]
+    assert captured[0]["timeout"] <= 5
+    assert captured[1]["timeout"] <= 15
+    assert captured[1]["headers"]["X-hermes-session-id"] == "20260524_142634_986d3f"
+    assert captured[1]["headers"]["Authorization"] == "Bearer secret-test-key"
+    assert captured[1]["body"]["session_id"] == "20260524_142634_986d3f"
+    assert captured[1]["body"]["input"].startswith("[Telegram reply/follow-up to Hermes notification]")
     assert len(adapter.sent) == 2
     assert "Forwarding" in adapter.sent[0][1]
     assert "started" in adapter.sent[1][1].lower()
+
+
+@pytest.mark.asyncio
+async def test_webui_notification_reply_steers_active_api_session_before_starting_new_run(monkeypatch):
+    calls = []
+
+    def fake_urlopen(req, timeout=None):
+        calls.append({
+            "url": req.full_url,
+            "timeout": timeout,
+            "headers": dict(req.header_items()),
+            "body": json.loads(req.data.decode("utf-8")),
+        })
+        assert req.full_url == "http://127.0.0.1:18642/v1/sessions/20260524_142634_986d3f/steer"
+        return _FakeHttpResponse(body=b'{"status":"accepted","run_id":"run_active"}')
+
+    monkeypatch.setenv("API_SERVER_KEY", "secret-test-key")
+    monkeypatch.setenv("API_SERVER_PORT", "18642")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    adapter = _StubAdapter()
+    event = MessageEvent(
+        text="ок, правь",
+        source=SessionSource(platform="telegram", chat_id="999", chat_type="dm", user_id="456"),
+        message_id="703",
+        reply_to_text="Need approval?",
+    )
+    route = {
+        "kind": "webui_session",
+        "api_session_id": "20260524_142634_986d3f",
+        "webui_url": "https://hermes.example.com/session/20260524_142634_986d3f",
+    }
+
+    await adapter._forward_notification_reply_to_api_session(event, route)
+
+    assert len(calls) == 1
+    assert calls[0]["headers"]["X-hermes-session-id"] == "20260524_142634_986d3f"
+    assert calls[0]["body"]["input"].startswith("[Telegram reply/follow-up to Hermes notification]")
+    assert len(adapter.sent) == 2
+    assert "Forwarding" in adapter.sent[0][1]
+    assert "active origin WebUI run" in adapter.sent[1][1]
+    assert "run_active" in adapter.sent[1][1]
 
 
 class TestSecretCaptureGuidance:

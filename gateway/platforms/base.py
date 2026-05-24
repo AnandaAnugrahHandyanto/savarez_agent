@@ -18,7 +18,7 @@ import sys
 import time
 import uuid
 from abc import ABC, abstractmethod
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from utils import normalize_proxy_url
 
@@ -3203,39 +3203,52 @@ class BasePlatformAdapter(ABC):
         else:
             text = f"[Telegram semantic follow-up to Hermes notification]\n\n{text}"
 
-        def _start_api_run() -> tuple[bool, str]:
+        def _post_origin_turn() -> tuple[bool, str, bool]:
             import json as _json
             import os as _os
             import urllib.error as _urlerr
             import urllib.request as _urlreq
             api_key = (_os.getenv("API_SERVER_KEY") or _os.getenv("HERMES_API_SERVER_KEY") or "").strip()
             port = (_os.getenv("API_SERVER_PORT") or "8642").strip()
-            payload = _json.dumps({
-                "input": text,
-                "session_id": api_session_id,
-                "model": "Hermes Agent",
-            }).encode("utf-8")
             headers = {"Content-Type": "application/json", "X-Hermes-Session-Id": api_session_id}
             if api_key:
                 headers["Authorization"] = f"Bearer {api_key}"
-            req = _urlreq.Request(f"http://127.0.0.1:{port}/v1/runs", data=payload, headers=headers, method="POST")
-            try:
-                # /v1/runs is the enqueue/start endpoint: it returns 202 as
-                # soon as the origin API/WebUI session has accepted the user
-                # turn.  Do not wait for the agent's final answer here; long
-                # tasks should keep running in the origin process and report
-                # via its normal WebUI/status channels.
-                with _urlreq.urlopen(req, timeout=10) as resp:
+
+            def _request(url: str, payload: dict, timeout: float) -> tuple[int, str]:
+                data = _json.dumps(payload).encode("utf-8")
+                req = _urlreq.Request(url, data=data, headers=headers, method="POST")
+                with _urlreq.urlopen(req, timeout=timeout) as resp:
                     body = resp.read(1000).decode("utf-8", "replace")
                     status = int(getattr(resp, "status", 200) or 200)
-                    return 200 <= status < 300, body
+                    return status, body
+
+            steer_url = f"http://127.0.0.1:{port}/v1/sessions/{quote(api_session_id, safe='')}/steer"
+            try:
+                status, body = _request(steer_url, {"input": text}, timeout=5)
+                if 200 <= status < 300:
+                    return True, body, True
+            except _urlerr.HTTPError as exc:
+                if exc.code not in {404, 409}:
+                    body = exc.read(1000).decode("utf-8", "replace") if exc.fp else ""
+                    return False, f"HTTP {exc.code}: {body[:500]}", False
+            except Exception as exc:
+                return False, f"{type(exc).__name__}: {str(exc)[:500]}", False
+
+            runs_url = f"http://127.0.0.1:{port}/v1/runs"
+            try:
+                status, body = _request(
+                    runs_url,
+                    {"input": text, "session_id": api_session_id, "model": "Hermes Agent"},
+                    timeout=10,
+                )
+                return 200 <= status < 300, body, False
             except _urlerr.HTTPError as exc:
                 body = exc.read(1000).decode("utf-8", "replace") if exc.fp else ""
-                return False, f"HTTP {exc.code}: {body[:500]}"
+                return False, f"HTTP {exc.code}: {body[:500]}", False
             except Exception as exc:
-                return False, f"{type(exc).__name__}: {str(exc)[:500]}"
+                return False, f"{type(exc).__name__}: {str(exc)[:500]}", False
 
-        ok, detail = await asyncio.to_thread(_start_api_run)
+        ok, detail, steered_active = await asyncio.to_thread(_post_origin_turn)
         if ok:
             run_id = ""
             try:
@@ -3244,7 +3257,10 @@ class BasePlatformAdapter(ABC):
                     run_id = str(parsed.get("run_id") or "").strip()
             except Exception:
                 run_id = ""
-            msg = "Reply delivered to the origin WebUI chat and processing started."
+            if steered_active:
+                msg = "Reply delivered to the active origin WebUI run."
+            else:
+                msg = "Reply delivered to the origin WebUI chat and processing started."
             if run_id:
                 msg += f"\nRun: `{run_id}`"
             if webui_url:
