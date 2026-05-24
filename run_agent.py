@@ -1964,11 +1964,10 @@ class AIAgent:
                     list(messages or []),
                     review_memory=True,
                 )
-                _t = threading.Thread(target=_target, daemon=False, name="bg-review-session-end")
+                _t = threading.Thread(target=_target, daemon=True, name="bg-review-session-end")
                 _t.start()
-                # Bounded join: review must not block shutdown indefinitely.
-                # 10s is enough for the model call to begin; daemon=False lets
-                # any remaining work finish naturally after the join returns.
+                # Give the review up to 10s to complete; daemon=True ensures
+                # the process exits cleanly if the thread outlasts the join.
                 _t.join(timeout=10)
             except Exception:
                 pass

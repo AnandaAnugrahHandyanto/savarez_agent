@@ -115,7 +115,7 @@ class TestReviewOnSessionEnd:
 
         assert len(spawned) == 1
         _, kwargs = spawned[0]
-        assert kwargs.get("daemon") is False
+        assert kwargs.get("daemon") is True
         assert kwargs.get("name") == "bg-review-session-end"
         assert captured["review_memory"] is True
         assert captured["messages"] == messages
