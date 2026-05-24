@@ -4812,4 +4812,125 @@ Also excludes `.env` explicitly. ✓
 
 ---
 
-**End Pass #51**
+## Pass #52 – Cloud Provider Integration, Serverless & GPU Deep Dive – 2026-05-24
+
+### 1. AWS Bedrock
+
+**Files:** `agent/bedrock_adapter.py`, `agent/anthropic_adapter.py`
+
+**Credentials:** Uses boto3's default credential chain — no API key management required for AWS-native environments. The chain checks in priority order:
+- `AWS_BEARER_TOKEN_BEDROCK` (Bedrock-specific bearer token)
+- `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` (explicit IAM)
+- `AWS_PROFILE` (named profile → SSO, assume-role)
+- EC2 instance role / ECS task role / Lambda execution role via IMDS (implicit)
+
+`resolve_aws_auth_env_var()` exposes the winning source without minting. `has_aws_credentials()` does a two-tier check — env vars first (fast, no I/O), then boto3's credential resolver for IMDS-based implicit sources. This prevents hangs when not on EC2 (IMDS unreachable).
+
+**Region:** `resolve_bedrock_region()` checks `AWS_REGION` → `AWS_DEFAULT_REGION` → boto3/botocore config (`~/.aws/config` or SSO profile) → hard fallback to `us-east-1`. The boto3 fallback is critical for EU/AP users who configure region in `~/.aws/config` via named profile.
+
+**Timeouts:** `build_anthropic_bedrock_client()` sets `timeout=Timeout(timeout=900.0, connect=10.0)` — 15 min total timeout, 10s connect. The Converse API path uses no explicit timeout on individual calls; boto3 manages connection pooling internally.
+
+**Stale-connection resilience:** `_STALE_LIB_MODULE_PREFIXES = ("urllib3.", "botocore.", "boto3.")` + `is_stale_connection_error()` detects dead connections and `invalidate_runtime_client()` evicts the cached client so the next call reconnects with a fresh pool. This handles NAT timeouts, VPN flaps, and TCP RST.
+
+**Tool-calling denylist:** `_NON_TOOL_CALLING_PATTERNS` includes `deepseek.r1`, `deepseek-r1`, `stability.` (image gen), `cohere.embed`, `amazon.titan-embed`. Unknown models default to tool-capable.
+
+**Claude-on-Bedrock path:** `is_anthropic_bedrock_model()` detects `anthropic.claude-*` IDs with regional prefixes (`us.`, `global.`, `eu.`, `ap.`, `jp.`). For these, `build_anthropic_bedrock_client()` uses the Anthropic SDK's `AnthropicBedrock` class directly (full feature parity — prompt caching, thinking budgets, 1M context via `context-1m-2025-08-07` beta). Non-Claude Bedrock models use the Converse API path (`converse_stream` / `converse`).
+
+**Lazy-loading architecture:** boto3 is a lazy dep — only loaded when Bedrock provider is selected. `ensure("provider.bedrock")` at module level handles on-demand installation so Bedrock works in EKS deployments without baking boto3 into the base image.
+
+### 2. Azure Identity (Entra ID / Managed Identity)
+
+**File:** `agent/azure_identity_adapter.py`
+
+**Credential chain:** Uses `DefaultAzureCredential` from `azure-identity` SDK — the chain is: env service principal → workload identity → managed identity → VS Code → Azure CLI → azd → PowerShell → broker. All Azure-specific config (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_FEDERATED_TOKEN_FILE`, `IDENTITY_ENDPOINT`/`MSI_ENDPOINT`) flows through standard SDK env vars; Hermes only manages `scope` and `exclude_interactive_browser` internally.
+
+**Token refresh:** `build_token_provider()` returns a zero-arg callable that `azure-identity.get_bearer_token_provider()` wraps around the credential. Microsoft recommends this pattern — the SDK calls the callable before every request, so token refresh is transparent. For the Anthropic SDK (which doesn't accept callables for `auth_token`), `build_bearer_http_client()` installs an httpx request event hook that mint-fresh JWT per outbound request.
+
+**EntraIdentityConfig:** A frozen dataclass (hashable, multiprocessing-safe) holds `scope` and `exclude_interactive_browser`. Serializing the config and rebuilding inside workers is the documented pattern for multiprocessing.
+
+**Managed identity detection:** `describe_active_credential()` surfaces which env-var sources are present (`EnvironmentCredential`, `WorkloadIdentityCredential`, `ManagedIdentityCredential`) without minting a token.
+
+**Credential probing:** `has_azure_identity_credentials()` runs `credential.get_token()` under a thread-based timeout (default 10s). Returns False on any error including thread timeout. `describe_active_credential()` returns detailed diagnostics for `hermes doctor`.
+
+**MSI_ENDPOINT / IDENTITY_ENDPOINT:** These are checked for managed identity (App Service, Functions, Container Apps; VMs use IMDS instead).
+
+### 3. Google Cloud
+
+**Files:** `agent/google_oauth.py`, `agent/google_code_assist.py`
+
+**GCP project ID resolution (priority order):** `HERMES_GEMINI_PROJECT_ID` → `GOOGLE_CLOUD_PROJECT` → `GOOGLE_CLOUD_PROJECT_ID`.
+
+**Authentication:** `agent/google_oauth.py` handles OAuth flows with `refresh` field packing the refresh_token together with the resolved GCP project. The scope `https://www.googleapis.com/auth/cloud-platform` is used.
+
+**Lazy import:** Heavy `google-cloud` imports are deferred — `google_oauth` only loads the actual SDK at first adapter use (RELEASE v0.14.0 fix "Defer heavy google-cloud imports in google_chat").
+
+**Google Code Assist:** `agent/google_code_assist.py` validates tier requirements — paid tier access via GCP projects with billing / Workspace / Standard / Enterprise. Raises `GcpProjectIdRequired` if no project ID for paid tiers.
+
+**Pub/Sub for Google Chat:** `tests/gateway/test_google_chat.py` mocks `google.cloud.pubsub_v1` and verifies credential handling from `GOOGLE_APPLICATION_CREDENTIALS`.
+
+### 4. GPU Resource Management
+
+**Files:** `skills/media/heartmula/SKILL.md`, `skills/mlops/evaluation/lm-evaluation-harness/SKILL.md`, `skills/mlops/evaluation/weights-and-biases/references/sweeps.md`, `skills/creative/comfyui/scripts/hardware_check.py`
+
+**CUDA device selection:** Skills that use GPU set device via `--mula_device cuda:0 --codec_device cuda:1` (HeartMuLa) or `--device cuda:0` (lm-evaluation-harness). `torch.cuda.is_available()`, `torch.cuda.device_count()`, `torch.cuda.get_device_name(0)` are used for hardware detection. Multi-GPU uses `CUDA_VISIBLE_DEVICES` env var to pin to specific GPUs.
+
+**Memory tracking:** `torch.cuda.memory_allocated()` and `torch.cuda.memory_reserved()` are logged (WandB sweep refs). HeartMuLa outputs "CUDA memory before unloading" lines to verify GPU usage.
+
+**Multi-GPU strategies:** lm-evaluation-harness docs describe data parallelism (full model per GPU), tensor parallelism (model weights split across GPUs), and pipeline parallelism (layers split). 70B models require multi-GPU or quantization.
+
+**No in-process GPU management in core agent:** The agent core does not directly manage GPU resources. GPU usage is confined to optional skills (HeartMuLa, lm-evaluation-harness, ComfyUI hardware check). There is no `torch.cuda.set_device()` or `CUDA_VISIBLE_DEVICES` management in the main agent loop.
+
+### 5. Modal / Serverless Compatibility
+
+**Files:** `tools/environments/modal.py`, `tools/environments/managed_modal.py`, `tools/environments/base.py`
+
+**multiprocessing usage:** `batch_runner.py` uses `multiprocessing.Pool` for parallel batch processing. `_WORKER_CONFIG` global is set per worker. `batch_runner.py:869` notes "closures are not safely picklable across the multiprocessing.Pool" — a known constraint.
+
+**Modal filesystem:** `ModalEnvironment` uses base64-encoded tar streaming via stdin for file uploads (bypasses 64KB `ARG_MAX_BYTES` exec-arg limit), with 1 MB chunk size. Downloads use `tar cf -` → stdout → write_bytes. Files synced via `FileSyncManager` before each execution and synced back on cleanup. Snapshotting uses `sandbox.snapshot_filesystem.aio()` for hibernation persistence.
+
+**Serverless-incompatible patterns:**
+- `EntraIdentityConfig` is multiprocessing-safe by design (frozen, hashable). `build_token_provider()` is explicitly NOT serializable — workers must rebuild inside their own process (documented).
+- `batch_runner.py`'s `Pool` workers inherit global config but can't share callable token providers — rebuild-inside-worker pattern is used.
+
+**Modal async worker pattern:** `ModalEnvironment` uses `_AsyncWorker` (background thread with its own event loop) to make async Modal SDK calls from synchronous execution contexts. Avoids blocking the main thread during sandbox exec.
+
+**Managed Modal:** `ManagedModalEnvironment` uses a tool-gateway REST API rather than direct Modal SDK — has separate connect/poll/cancel read timeouts.
+
+### 6. Cloud Environment Detection & Metadata API
+
+**File:** `tools/url_safety.py`
+
+**Always-blocked IPs:**
+- `169.254.169.254` — AWS/GCP/Azure/DO/Oracle metadata
+- `169.254.170.2` — AWS ECS task metadata (task IAM creds)
+- `169.254.169.253` — Azure IMDS wire server
+- `fd00:ec2::254` — AWS metadata (IPv6)
+- `100.100.100.200` — Alibaba Cloud metadata
+- IPv4-mapped IPv6 variants (`::ffff:x.x.x.x`)
+
+**Always-blocked networks:** `169.254.0.0/16` (entire link-local range), `::ffff:169.254.0.0/112` (IPv4-mapped link-local).
+
+**Hermes doctor:** `hermes_cli/doctor.py` notes "boto3's IMDS lookup for AWS credentials" as a 2s delay source. Avoids IMDS probe by setting `AWS_EC2_METADATA_DISABLED=true` when not on EC2. The bedrock probe already gates on real env-var creds so IMDS is not reached unnecessarily.
+
+**No proactive cloud detection:** The agent does not have a utility that says "I am running on AWS/GCP/Azure." Cloud detection is implicit — credentials probed via provider-specific mechanisms without an explicit "which cloud am I on?" check.
+
+### Key Findings Summary
+
+| Area | Finding | Severity |
+|------|---------|----------|
+| AWS Bedrock | Stale-connection detection + client eviction is solid | OK |
+| AWS Bedrock | 15-min timeout on AnthropicBedrock client may be too long for some workloads | Low |
+| AWS Bedrock | No env var to override default `us-east-1` fallback without boto3 config file | Low |
+| Azure Entra | `build_token_provider()` not serializable — multiprocessing workers must rebuild (documented) | Design |
+| Azure Entra | Probe thread timeout (10s) prevents hanging on unreachable token service | OK |
+| GCP | No `GOOGLE_APPLICATION_CREDENTIALS` path to file-based creds in core auth — relies on gcloud ADC | Low |
+| GPU | Core agent has no GPU management; all GPU usage is in optional skills | OK |
+| GPU | Multi-GPU via `CUDA_VISIBLE_DEVICES` is skill-level, not agent-level | OK |
+| Modal | multiprocessing Pool + callable token providers need worker-side rebuild (documented limitation) | Design |
+| Modal | File upload uses base64+tar+stdin pipeline to bypass Modal's 64KB exec-arg limit | OK |
+| Cloud metadata | All major cloud metadata IPs are in blocked list with IPv4-mapped IPv6 variants | OK |
+| Cloud metadata | No proactive cloud-platform detection utility; each provider self-reports | Design |
+
+---
+
+**End Pass #52**
