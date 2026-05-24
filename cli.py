@@ -2975,6 +2975,11 @@ class HermesCLI:
             resume: Session ID to resume (restores conversation history from SQLite)
             pass_session_id: Include the session ID in the agent's system prompt
         """
+        # session_id MUST be initialized before any startup-side-effect
+        # helper that references it.  Safe default prevents AttributeError
+        # if a helper runs before the formal assignment below.
+        self.session_id = ""
+
         # Initialize Rich console
         self.console = Console()
         self.config = CLI_CONFIG
@@ -3232,15 +3237,6 @@ class HermesCLI:
         # Never blocks startup on failure.
         _run_state_db_auto_maintenance(self._session_db)
 
-        # Opportunistic OpenViking commit for orphaned sessions — fires at
-        # most once per process lifetime.  Finds sessions left behind by a
-        # killed or crashed Hermes process and sends the finalisation
-        # commit so their memories are extracted.  Never blocks startup.
-        _commit_orphaned_openviking_sessions(
-            self._session_db,
-            current_session_id=self.session_id,
-        )
-
         # Opportunistic shadow-repo cleanup — deletes orphan/stale
         # checkpoint repos under ~/.hermes/checkpoints/.  Opt-in via
         # checkpoints.auto_prune, idempotent via .last_prune marker.
@@ -3257,7 +3253,18 @@ class HermesCLI:
             timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
             short_uuid = uuid.uuid4().hex[:6]
             self.session_id = f"{timestamp_str}_{short_uuid}"
-        
+
+        # Opportunistic OpenViking commit for orphaned sessions — must
+        # run after self.session_id is assigned.  If it fails (e.g.
+        # OpenViking is down), log a warning and continue startup.
+        try:
+            _commit_orphaned_openviking_sessions(
+                self._session_db,
+                current_session_id=getattr(self, "session_id", ""),
+            )
+        except Exception as exc:
+            logger.warning("OpenViking orphan recovery skipped: %s", exc)
+
         # History file for persistent input recall across sessions
         self._history_file = _hermes_home / ".hermes_history"
         self._last_invalidate: float = 0.0  # throttle UI repaints
