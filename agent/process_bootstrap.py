@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import sys
+import urllib.parse
 import urllib.request
 from typing import Optional
 
@@ -142,6 +143,61 @@ def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
     return proxy
 
 
+# ----------------------------------------------------------------------
+# Loopback-safe urlopen — bypasses HTTP_PROXY for 127.0.0.1 / localhost
+# ----------------------------------------------------------------------
+
+
+# Hostnames that should never be routed through HTTP_PROXY. ``::1`` covers
+# IPv6 loopback whether or not the URL wraps it in brackets — urllib
+# normalizes ``http://[::1]/`` to host ``::1``.
+_LOOPBACK_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def is_loopback_url(url: str) -> bool:
+    """Return ``True`` if ``url`` targets a loopback address.
+
+    Detection is conservative: only the three canonical loopback hosts
+    (``127.0.0.1``, ``localhost``, ``::1``) are considered loopback. The
+    full 127.0.0.0/8 range is technically loopback too, but in practice
+    nothing in Hermes binds outside the canonical address; checking the
+    exact set keeps the false-positive rate at zero.
+    """
+    try:
+        host = urllib.parse.urlparse(url).hostname
+    except Exception:
+        return False
+    if not host:
+        return False
+    return host.lower() in _LOOPBACK_HOSTS
+
+
+def loopback_safe_urlopen(url, *args, **kwargs):
+    """Drop-in replacement for ``urllib.request.urlopen`` that bypasses
+    ``HTTP_PROXY`` / ``HTTPS_PROXY`` when the target is a loopback URL.
+
+    When the user's environment configures a local outbound proxy
+    (``HTTP_PROXY=http://127.0.0.1:10808`` is the standard setup for
+    v2ray / clash / corporate egress on Windows in particular), urllib
+    silently routes *loopback* requests through that proxy. The proxy
+    has no way to relay back to a local service on the same host, so it
+    returns 502 / 503 — leaving the user staring at a "service down"
+    error while the local service is in fact running fine.
+
+    Non-loopback URLs fall through to the normal ``urlopen`` path so
+    they continue to honor ``HTTP_PROXY`` / ``HTTPS_PROXY`` / ``NO_PROXY``
+    as configured.
+
+    See #31421 for the upstream context; complementary defensive layers
+    exist in :func:`_get_proxy_for_base_url` (for the OpenAI client) and
+    in ``gateway/platforms/base.py`` (for chat platforms).
+    """
+    if is_loopback_url(url):
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        return opener.open(url, *args, **kwargs)
+    return urllib.request.urlopen(url, *args, **kwargs)
+
+
 def _install_safe_stdio() -> None:
     """Wrap stdout/stderr so best-effort console output cannot crash the agent."""
     for stream_name in ("stdout", "stderr"):
@@ -164,4 +220,6 @@ __all__ = [
     "_install_safe_stdio",
     "_get_proxy_from_env",
     "_get_proxy_for_base_url",
+    "is_loopback_url",
+    "loopback_safe_urlopen",
 ]
