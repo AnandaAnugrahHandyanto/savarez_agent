@@ -33,9 +33,9 @@ DEFAULT_ROUTES: Dict[str, Dict[str, Any]] = {
         "reason": "架构评审类任务的核心价值在主 Agent 的判断力和对 Hermes 全局的把握",
     },
     "code_analysis": {
-        "mode": "pipeline",
+        "mode": "single_agent",
         "capability": "file_reading_analysis",
-        "reason": "代码分析先由当前可用研究/阅读 agent 收集材料，再由主 Agent 分析判断",
+        "reason": "代码分析先由阅读分析 agent 收集材料，主 Agent 基于结果判断",
     },
     "brand_strategy": {
         "mode": "self_execute",
@@ -53,9 +53,9 @@ DEFAULT_ROUTES: Dict[str, Dict[str, Any]] = {
         "reason": "Kimi 已降级，调研默认由 Hermes 内部推理/当前主控能力处理",
     },
     "document": {
-        "mode": "pipeline",
+        "mode": "single_agent",
         "capability": "file_reading_analysis",
-        "reason": "文档类任务先收集素材，再由主 Agent 撰写整合；Kimi 不再是默认素材收集 agent",
+        "reason": "文档类任务由阅读分析 agent 收集素材，主 Agent 负责最终整合",
     },
     "prompt_design": {
         "mode": "self_execute",
@@ -70,8 +70,8 @@ DEFAULT_ROUTES: Dict[str, Dict[str, Any]] = {
     # ── v2.8 新增：五类高频真实任务路由 ──
     "marketing_deck": {
         "mode": "pipeline",
-        "capability": "strategy_decision",
-        "reason": "营销方案类需要主 Agent 策略判断 + DeepSeek Worker 背景资料整理",
+        "capabilities": ["strategy_decision", "web_research"],
+        "reason": "营销方案类需要内部策略判断 + 情报资料收集",
     },
     "file_work": {
         "mode": "single_agent",
@@ -80,8 +80,8 @@ DEFAULT_ROUTES: Dict[str, Dict[str, Any]] = {
     },
     "code_maintenance": {
         "mode": "single_agent",
-        "capability": "code_review",
-        "reason": "代码/系统维护由 Codex CLI 主执行",
+        "capability": "file_modification",
+        "reason": "代码/系统维护先由可写执行 agent 落地，再按需要由 Codex 审查",
     },
     "desktop_operation": {
         "mode": "single_agent",
@@ -110,7 +110,7 @@ TASK_CATEGORY_REQUIRED_CAPABILITY: Dict[str, Optional[str]] = {
     # ── v2.8 新增 ──
     "marketing_deck": "strategy_decision",
     "file_work": "file_reading_analysis",
-    "code_maintenance": "code_review",
+    "code_maintenance": "file_modification",
     "desktop_operation": "desktop_control",
     "conversation": None,
 }
@@ -238,6 +238,41 @@ def _get_routing_rules(registry: dict) -> dict:
     return registry.get("routing_rules", {})
 
 
+def _normalize_agent_alias(value: Any) -> str:
+    return str(value or "").strip().casefold()
+
+
+def _build_agent_alias_map(agents_map: dict) -> dict[str, str]:
+    alias_map: dict[str, str] = {}
+    for agent_id, config in agents_map.items():
+        aliases = [agent_id, config.get("display_name"), config.get("name"), *(config.get("aliases") or [])]
+        for alias in aliases:
+            key = _normalize_agent_alias(alias)
+            if not key:
+                continue
+            existing = alias_map.get(key)
+            if existing and existing != agent_id:
+                logger.warning("Duplicate agent alias %r maps to both %s and %s", alias, existing, agent_id)
+                continue
+            alias_map[key] = agent_id
+    return alias_map
+
+
+def _resolve_agent_alias(agents_map: dict, requested: str | None) -> Optional[str]:
+    if not requested:
+        return None
+    return _build_agent_alias_map(agents_map).get(_normalize_agent_alias(requested))
+
+
+def _available_agent_names(agents_map: dict) -> List[str]:
+    names = []
+    for agent_id, config in agents_map.items():
+        aliases = config.get("aliases") or []
+        common = ", ".join(str(alias) for alias in aliases[:3])
+        names.append(f"{agent_id} ({common})" if common else agent_id)
+    return names
+
+
 @dataclass
 class RoutingDecision:
     """Result of the routing decision process."""
@@ -360,27 +395,37 @@ class AgentRouter:
             routing_basis.append("invalid_risk_level")
             overrides.append("risk_level_normalized")
 
-        # Resolve default agent from registry routing_rules via capability
+        # Resolve default agent(s) from registry routing_rules via capability.
+        capabilities = list(default.get("capabilities") or [])
         capability = default.get("capability")
-        if capability and self._routing_rules:
-            routed_agent = self._routing_rules.get(capability)
-            if routed_agent and routed_agent in self._agents_map:
-                agents = [routed_agent]
-            else:
-                routing_basis.append("registry_missing_route")
+        if capability:
+            capabilities.append(capability)
+        if capabilities and self._routing_rules:
+            for required_capability in capabilities:
+                routed_agent = self._routing_rules.get(required_capability)
+                if routed_agent and routed_agent in self._agents_map:
+                    if routed_agent not in agents:
+                        agents.append(routed_agent)
+                else:
+                    routing_basis.append("registry_missing_route")
 
         # Override 1: user explicitly specifies an agent
         if user_agent_override:
-            if user_agent_override in self._agents_map:
+            resolved_override = _resolve_agent_alias(self._agents_map or {}, user_agent_override)
+            if resolved_override:
                 mode = "single_agent"
-                agents = [user_agent_override]
-                reason = f"用户显式指定使用 {user_agent_override}"
+                agents = [resolved_override]
+                display_name = self._agents_map.get(resolved_override, {}).get("display_name", resolved_override)
+                if resolved_override == user_agent_override:
+                    reason = f"用户显式指定使用 {display_name}"
+                else:
+                    reason = f"用户显式指定使用 {user_agent_override}（{display_name}, canonical_id={resolved_override}）"
                 routing_basis.append("user_override")
                 overrides.append("user_override")
                 user_override_locked = True
             else:
                 logger.warning("Unknown agent override: %s", user_agent_override)
-                available = list(self._agents_map.keys())
+                available = _available_agent_names(self._agents_map or {})
                 return RoutingDecision(
                     mode="review_only",
                     agents=[],
@@ -469,7 +514,7 @@ class AgentRouter:
             return RoutingDecision(
                 mode="review_only",
                 agents=[],
-                reason=f"路由失败：任务类型 {task_category} 需要 agent 但未找到可用 agent（capability={default.get('capability')}）。请检查 agent-registry.json 路由配置。",
+                reason=f"路由失败：任务类型 {task_category} 需要 agent 但未找到可用 agent（capabilities={capabilities}）。请检查 agent-registry.json 路由配置。",
                 routing_basis=routing_basis + ["empty_agent_error"],
                 overrides=overrides + ["empty_agent_error"],
                 fallback_plan="请确认 agent-registry.json routing_rules 中包含对应 capability 的 agent",
@@ -513,7 +558,7 @@ class AgentRouter:
             return "主 Agent 自行完成"
         if mode == "single_agent" and agents:
             agent_name = self._agents_map.get(agents[0], {}).get("display_name", agents[0]) if self._agents_map else agents[0]
-            return f"{agent_name} 失败 → 主 Agent 接管，标记信息不足"
+            return f"{agent_name} (canonical_id={agents[0]}) 失败 → 主 Agent 接管，标记信息不足"
         if mode == "pipeline":
             return "Pipeline 任一步失败 → 主 Agent 接管，Task Card status=partial 或 blocked"
         return "主 Agent 接管"
@@ -563,5 +608,7 @@ class AgentRouter:
     def get_agent_info(self, name: str) -> Optional[Dict[str, Any]]:
         self._ensure_registry()
         if self._agents_map:
-            return self._agents_map.get(name)
+            resolved = _resolve_agent_alias(self._agents_map, name)
+            if resolved:
+                return self._agents_map.get(resolved)
         return _FALLBACK_AGENT_CAPABILITIES.get(name)

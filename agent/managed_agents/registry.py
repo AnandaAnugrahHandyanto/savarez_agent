@@ -79,6 +79,10 @@ def _normalize_str_list(values: Iterable[Any] | None) -> tuple[str, ...]:
     return tuple(str(item).strip() for item in values if str(item).strip())
 
 
+def _normalize_alias_key(value: Any) -> str:
+    return str(value or "").strip().casefold()
+
+
 def _normalize_risk_levels(values: Iterable[Any] | None) -> frozenset[RiskLevel]:
     if not values:
         return frozenset({RiskLevel.R0})
@@ -90,6 +94,9 @@ class AgentSpec:
     agent_id: str
     name: str
     role: str
+    aliases: tuple[str, ...] = ()
+    role_summary: str = ""
+    model_ref: str = ""
     tools: tuple[str, ...] = ()
     permission: PermissionMode = PermissionMode.ASK
     can_delegate: bool = False
@@ -112,10 +119,31 @@ class AgentRegistry:
     source_path: Path | None = None
 
     def get(self, agent_id: str) -> AgentSpec:
+        resolved = self.resolve_agent_id(agent_id)
+        if resolved:
+            agent_id = resolved
         try:
             return self.agents[agent_id]
         except KeyError as exc:
             raise AgentRegistryError(f"Unknown agent_id: {agent_id}") from exc
+
+    def resolve_agent_id(self, value: str | None) -> str | None:
+        if not value:
+            return None
+        return self.alias_map().get(_normalize_alias_key(value))
+
+    def alias_map(self) -> dict[str, str]:
+        mapping: dict[str, str] = {}
+        for agent_id, agent in self.agents.items():
+            for alias in (agent_id, agent.name, *agent.aliases):
+                key = _normalize_alias_key(alias)
+                if not key:
+                    continue
+                existing = mapping.get(key)
+                if existing and existing != agent_id:
+                    raise AgentRegistryError(f"Duplicate alias {alias!r}: {existing} and {agent_id}")
+                mapping[key] = agent_id
+        return mapping
 
     def find_by_capability(self, capability: str) -> list[AgentSpec]:
         return [agent for agent in self.agents.values() if capability in agent.capabilities]
@@ -202,12 +230,18 @@ def _parse_yaml_agent(raw: Mapping[str, Any], *, source_path: Path | None) -> Ag
     permission = PermissionMode.from_raw(raw.get("permission"))
     can_delegate = bool(raw.get("can_delegate", False))
     capabilities = _normalize_str_list(raw.get("capabilities"))
+    aliases = _normalize_str_list(raw.get("aliases"))
+    role_summary = str(raw.get("role_summary") or "").strip()
+    model_ref = str(raw.get("model_ref") or "").strip()
     risk_allowed = _normalize_risk_levels(raw.get("risk_allowed"))
     status = AgentStatus.from_raw(raw.get("status"))
     return AgentSpec(
         agent_id=agent_id,
         name=name,
         role=role,
+        aliases=aliases,
+        role_summary=role_summary,
+        model_ref=model_ref,
         tools=tools,
         permission=permission,
         can_delegate=can_delegate,
@@ -232,6 +266,9 @@ def _parse_legacy_agent(agent_id: str, raw: Mapping[str, Any], *, source_path: P
     permission = PermissionMode.from_raw(profile.get("permission_mode"))
     can_delegate = bool(profile.get("can_delegate", False))
     capabilities = _normalize_str_list(raw.get("capabilities"))
+    aliases = _normalize_str_list(raw.get("aliases"))
+    role_summary = str(raw.get("role_summary") or "").strip()
+    model_ref = str(profile.get("model_ref") or raw.get("model_ref") or "").strip()
     risk_allowed = _normalize_risk_levels(raw.get("risk_allowed"))
     status = AgentStatus.from_raw(raw.get("status"))
 
@@ -239,6 +276,9 @@ def _parse_legacy_agent(agent_id: str, raw: Mapping[str, Any], *, source_path: P
         agent_id=agent_id,
         name=name,
         role=role,
+        aliases=aliases,
+        role_summary=role_summary,
+        model_ref=model_ref,
         tools=tools,
         permission=permission,
         can_delegate=can_delegate,

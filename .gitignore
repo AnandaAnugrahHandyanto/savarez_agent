@@ -1,4 +1,5 @@
 .DS_Store
+.codegraph/
 /venv/
 /_pycache/
 *.pyc*

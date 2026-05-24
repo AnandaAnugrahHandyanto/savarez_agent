@@ -286,7 +286,7 @@ class ManagedAgentRouter:
             return RoutingDecision(
                 task_id=task_id,
                 mode="pipeline",
-                agents=["codex", "claude", "nesta"],
+                agents=["codex", "claude", "hermes-internal"],
                 reason="risk_escalation",
                 matched_rule="high_risk_pipeline",
                 routing_basis=[f"risk_escalation:{risk_value}", f"user_override:{user_override}", "rule:high_risk_pipeline"],
@@ -298,7 +298,8 @@ class ManagedAgentRouter:
                 requires_human_approval=True,
             )
 
-        agent = self.registry.agents.get(user_override)
+        resolved_override = self.registry.resolve_agent_id(user_override)
+        agent = self.registry.agents.get(resolved_override or "")
         if agent is None:
             return RoutingDecision(
                 task_id=task_id,
@@ -334,10 +335,12 @@ class ManagedAgentRouter:
         return RoutingDecision(
             task_id=task_id,
             mode="single_agent" if len(decision.agents) <= 1 else decision.mode,
-            agents=[user_override],
+            agents=[agent.agent_id],
             reason="user_explicit_instruction",
             matched_rule="user_override",
-            routing_basis=[f"user_override:{user_override}"] + [entry for entry in routing_basis if entry != f"user_override:{user_override}"],
+            routing_basis=[f"user_override:{agent.agent_id}"] + [
+                entry for entry in routing_basis if entry != f"user_override:{user_override}"
+            ],
             fallback_used=None,
             risk_level=risk_value,
             require_gate=decision.require_gate,

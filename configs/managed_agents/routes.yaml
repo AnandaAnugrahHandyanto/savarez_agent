@@ -28,7 +28,7 @@ routes:
     when:
       task_category: architecture_change
       risk_level: R3
-    planner: [nesta, codex]
+    planner: [hermes-internal, codex]
     owner_agent: claude
     support_agents: [deepseek-tui]
     reviewers: [codex, ambrosini]
@@ -36,7 +36,7 @@ routes:
   - id: production_or_destructive
     when:
       risk_level: R4
-    planner: [nesta, codex]
+    planner: [hermes-internal, codex]
     requires_human_approval: true
     owner_agent: claude
     reviewers: [ambrosini, codex]

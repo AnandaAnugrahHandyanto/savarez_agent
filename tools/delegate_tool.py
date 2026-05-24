@@ -30,6 +30,8 @@ from concurrent.futures import (
 )
 from typing import Any, Dict, List, Optional
 
+import yaml
+
 from toolsets import TOOLSETS
 from tools import file_state
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
@@ -163,7 +165,6 @@ _MIN_SPAWN_DEPTH = 1
 _MAX_SPAWN_DEPTH_CAP = 3
 
 DEFAULT_AGENT_ID_ENUM = [
-    "nesta",
     "claude",
     "codex",
     "pirlo",
@@ -172,7 +173,41 @@ DEFAULT_AGENT_ID_ENUM = [
     "agent-tars",
     "deepseek-tui",
     "hermes-internal",
-    "kanban",
+    "Hermes 技术翻译官",
+    "技术翻译官",
+    "技术中间层",
+    "技术参谋",
+    "nesta",
+    "Claude 主程执行官",
+    "主程",
+    "主执行人",
+    "代码执行官",
+    "DeepSeek 低成本快工",
+    "低成本快工",
+    "快工",
+    "小改工",
+    "deepseek",
+    "Codex 代码审查官",
+    "代码审查官",
+    "审查官",
+    "架构审查",
+    "Intelligence 情报研究员",
+    "情报研究员",
+    "调研员",
+    "竞品研究",
+    "Pirlo 商业策划师",
+    "商业策划师",
+    "方案策划",
+    "提案策划",
+    "TARS 桌面操作员",
+    "桌面操作员",
+    "GUI 操作员",
+    "截图员",
+    "tars",
+    "Ambrosini 质量门卫",
+    "质量门卫",
+    "验收官",
+    "风险审核",
 ]
 
 
@@ -893,6 +928,113 @@ def _load_agent_registry() -> dict:
         return json.load(f)
 
 
+def _load_model_routing_config() -> dict:
+    try:
+        from hermes_constants import get_hermes_home
+    except Exception:
+        def get_hermes_home():
+            from pathlib import Path
+
+            return Path.home() / ".hermes"
+
+    path = get_hermes_home() / "config" / "models.yaml"
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _resolve_profile_model_ref(model_ref: str) -> dict:
+    ref = str(model_ref or "").strip()
+    if not ref:
+        return {}
+    models = (_load_model_routing_config().get("models") or {})
+    entry = models.get(ref)
+    if not isinstance(entry, dict):
+        raise ValueError(f"Unknown model_ref '{ref}' in models.yaml.")
+
+    provider = str(entry.get("provider") or "").strip() or None
+    model = str(entry.get("model") or "").strip() or None
+    base_url = str(entry.get("base_url") or "").strip() or None
+    api_mode = str(entry.get("api_mode") or "").strip().lower() or None
+    api_key = str(entry.get("api_key") or "").strip() or None
+    api_key_env = str(entry.get("api_key_env") or "").strip()
+    if not api_key and api_key_env:
+        api_key = os.getenv(api_key_env, "").strip() or None
+
+    if provider:
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+            runtime = resolve_runtime_provider(
+                requested=provider,
+                explicit_api_key=api_key,
+                explicit_base_url=base_url,
+                target_model=model,
+            )
+            provider = runtime.get("provider") or provider
+            base_url = runtime.get("base_url") or base_url
+            api_key = runtime.get("api_key") or api_key
+            api_mode = api_mode or runtime.get("api_mode")
+        except Exception as exc:
+            if provider == "openai-codex":
+                raise ValueError(f"Cannot resolve model_ref '{ref}' provider '{provider}': {exc}") from exc
+            if provider == "anthropic":
+                api_mode = api_mode or "anthropic_messages"
+            if provider == "deepseek":
+                api_mode = api_mode or "chat_completions"
+
+    return {
+        "model_ref": ref,
+        "model": model,
+        "provider": provider,
+        "base_url": base_url,
+        "api_key": api_key,
+        "api_mode": api_mode,
+    }
+
+
+def _normalize_agent_alias(value: Any) -> str:
+    return str(value or "").strip().casefold()
+
+
+def _build_agent_alias_map(agents: dict) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for agent_id, cfg in agents.items():
+        names = [agent_id, cfg.get("display_name"), cfg.get("name"), *(cfg.get("aliases") or [])]
+        for name in names:
+            key = _normalize_agent_alias(name)
+            if not key:
+                continue
+            existing = aliases.get(key)
+            if existing and existing != agent_id:
+                raise ValueError(f"Agent alias '{name}' maps to both '{existing}' and '{agent_id}'.")
+            aliases[key] = agent_id
+    return aliases
+
+
+def _format_available_agent_aliases(agents: dict) -> str:
+    parts = []
+    for agent_id, cfg in agents.items():
+        aliases = cfg.get("aliases") or []
+        common = ", ".join(str(alias) for alias in aliases[:4])
+        parts.append(f"{agent_id}" + (f" (aliases: {common})" if common else ""))
+    return "; ".join(parts)
+
+
+def _resolve_agent_id_alias(agent_id: str, agents: Optional[dict] = None) -> str:
+    if agents is None:
+        agents = _load_agent_registry().get("agents", {})
+    resolved = _build_agent_alias_map(agents).get(_normalize_agent_alias(agent_id))
+    if not resolved:
+        raise ValueError(
+            f"Agent '{agent_id}' not found in agent-registry.json. "
+            f"Available agents: {_format_available_agent_aliases(agents)}"
+        )
+    return resolved
+
+
 def _load_subagent_profile(agent_id: str) -> tuple:
     """Return (agent_config, subagent_profile) for a named agent.
 
@@ -901,18 +1043,18 @@ def _load_subagent_profile(agent_id: str) -> tuple:
     """
     registry = _load_agent_registry()
     agents = registry.get("agents", {})
-    agent_config = agents.get(agent_id)
-    if agent_config is None:
-        raise ValueError(
-            f"Agent '{agent_id}' not found in agent-registry.json. "
-            f"Available agents: {list(agents.keys())}"
-        )
+    resolved_agent_id = _resolve_agent_id_alias(agent_id, agents)
+    agent_config = agents.get(resolved_agent_id)
     profile = agent_config.get("subagent_profile")
     if not profile:
         raise ValueError(
-            f"Agent '{agent_id}' has no subagent_profile in agent-registry.json. "
+            f"Agent '{resolved_agent_id}' has no subagent_profile in agent-registry.json. "
             f"Add a 'subagent_profile' field to enable delegate_task(agent_id=...)."
         )
+    agent_config = dict(agent_config)
+    agent_config["id"] = resolved_agent_id
+    if profile.get("model_ref") and not agent_config.get("model_ref"):
+        agent_config["model_ref"] = profile.get("model_ref")
     return agent_config, profile
 
 
@@ -3337,10 +3479,15 @@ def _load_managed_subagent_profile(agent_id: str) -> tuple[Optional[dict], Optio
             from agent.managed_agents.registry import load_agent_registry
 
             registry = load_agent_registry(config_path)
-            agent = registry.agents.get(agent_id)
+            resolved_agent_id = registry.resolve_agent_id(agent_id) or agent_id
+            agent = registry.agents.get(resolved_agent_id)
             if agent is not None:
                 agent_config = {
                     "id": agent.agent_id,
+                    "display_name": agent.name,
+                    "aliases": list(agent.aliases),
+                    "role_summary": agent.role_summary,
+                    "model_ref": agent.model_ref,
                     "type": agent.role,
                     "capabilities": list(agent.capabilities),
                 }
@@ -3351,6 +3498,7 @@ def _load_managed_subagent_profile(agent_id: str) -> tuple[Optional[dict], Optio
                 )
                 profile = {
                     "model": "default",
+                    "model_ref": agent.model_ref,
                     "toolsets": list(agent.tools),
                     "blocked_tools": blocked_tools,
                     "permission_mode": agent.permission.value,
@@ -3419,6 +3567,16 @@ def delegate_task(
     # Managed agents preflight only applies to the named-agent path.
     # If it accepts, we still continue through the legacy execution path.
     if agent_id:
+        try:
+            _managed_config_path = _find_managed_agents_config()
+            if _managed_config_path is not None:
+                from agent.managed_agents.registry import load_agent_registry
+
+                agent_id = load_agent_registry(_managed_config_path).resolve_agent_id(agent_id) or agent_id
+            else:
+                agent_id = _resolve_agent_id_alias(agent_id)
+        except Exception:
+            pass
         _preflight_error = _run_managed_preflight(
             agent_id=agent_id,
             goal=goal or (
@@ -3567,13 +3725,40 @@ def delegate_task(
             # Per-task agent_id — batch mode: each task can specify its own agent
             task_agent_id = t.get("agent_id") if "agent_id" in t else None
             effective_agent_id = task_agent_id or agent_id  # per-task beats top-level
+            if effective_agent_id:
+                try:
+                    _managed_config_path = _find_managed_agents_config()
+                    if _managed_config_path is not None:
+                        from agent.managed_agents.registry import load_agent_registry
+
+                        effective_agent_id = (
+                            load_agent_registry(_managed_config_path).resolve_agent_id(effective_agent_id)
+                            or effective_agent_id
+                        )
+                    else:
+                        effective_agent_id = _resolve_agent_id_alias(effective_agent_id)
+                except Exception:
+                    pass
             task_agent_config = None
             task_profile = None
+            task_creds = dict(creds)
             if effective_agent_id:
                 try:
                     task_agent_config, task_profile = _load_managed_subagent_profile(effective_agent_id)
                     if task_agent_config is None or task_profile is None:
                         task_agent_config, task_profile = _load_subagent_profile(effective_agent_id)
+                    model_ref = ((task_profile or {}).get("model_ref") or (task_agent_config or {}).get("model_ref") or "")
+                    if model_ref:
+                        model_creds = _resolve_profile_model_ref(model_ref)
+                        task_creds.update({
+                            "model": model_creds.get("model") or task_creds.get("model"),
+                            "provider": model_creds.get("provider"),
+                            "base_url": model_creds.get("base_url"),
+                            "api_key": model_creds.get("api_key"),
+                            "api_mode": model_creds.get("api_mode"),
+                            "command": None,
+                            "args": [],
+                        })
                 except ValueError:
                     pass  # fall through: per-task profile load failure → skip agent_id path
             # Per-task blocked_tools — can only add to profile blocked
@@ -3588,21 +3773,21 @@ def delegate_task(
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
                 override_acp_command=t.get("acp_command")
                 or acp_command
-                or creds.get("command"),
+                or task_creds.get("command"),
                 override_acp_args=(
                     task_acp_args
                     if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
+                    else (acp_args if acp_args is not None else task_creds.get("args"))
                 ),
                 role=effective_role,
                 agent_id=effective_agent_id,
@@ -4104,26 +4289,24 @@ def _build_top_level_description() -> str:
         "Only the final summary is returned -- intermediate tool results "
         "never enter your context window.\n\n"
         "NAMED AGENTS (use agent_id — PREFERRED over role/toolsets):\n"
-        "- agent_id='nesta' — Technical analysis and decomposition.\n"
-        "- agent_id='claude' — Code modification, script execution, git ops, file editing. "
+        "- agent_id='hermes-internal' / alias '技术翻译官' / legacy 'nesta' — Technical translation, decomposition, strategy judgment.\n"
+        "- agent_id='claude' / alias '主程' — Complex code modification, script execution, git ops, file editing. "
         "Has 'file'+'terminal' toolsets. Use when the user says \"用 claude\", "
         "\"让 claude 改代码\", or needs to write/edit files or run commands.\n"
-        "- agent_id='codex' — Codex CLI coding executor / code review backup. "
-        "Use when the user says \"用 codex\" or wants Codex-style implementation/review.\n"
-        "- agent_id='intelligence' — Research and competitive intelligence.\n"
-        "- agent_id='agent-tars' — External desktop operator. "
+        "- agent_id='deepseek-tui' / alias '低成本快工' — Low-cost small fixes, tests, and low-risk mechanical work only.\n"
+        "- agent_id='codex' / alias '代码审查官' — Read-only code review and implementation/architecture assessment.\n"
+        "- agent_id='intelligence' / alias '情报研究员' — Research, competitors, and source verification.\n"
+        "- agent_id='agent-tars' / alias '桌面操作员' — External desktop/browser GUI operator. "
         "Use for macOS desktop control, screenshots, app operations.\n"
-        "- agent_id='hermes-internal' — Analysis, decision making, planning. "
-        "Has 'file' toolset, read-only. Use for strategy judgments and design decisions.\n"
-        "- agent_id='deepseek-tui' — Small fixes, test generation, debugging spikes.\n"
-        "- agent_id='ambrosini' — Quality gate and risk review.\n"
-        "- agent_id='pirlo' — Planning, proposals, content structure.\n"
-        "- agent_id='kanban' — Task state tracking.\n\n"
+        "- agent_id='ambrosini' / alias '质量门卫' — Quality gate and risk review.\n"
+        "- agent_id='pirlo' / alias '商业策划师' — Business proposals and content structure.\n"
+        "Kanban is a state-recording service, not a named delegate agent.\n\n"
         "CRITICAL RULE — When to use agent_id:\n"
         "If the user's request contains ANY of these patterns, you MUST use agent_id:\n"
-        "- \"用 nesta\" / \"用 claude\" / \"用 codex\" / \"用 tars\" / \"用 intelligence\" → matching agent_id\n"
+        "- \"用 nesta\" / \"技术翻译官\" / \"技术中间层\" → agent_id='hermes-internal'\n"
+        "- \"用 claude\" / \"主程\" / \"低成本快工\" / \"用 codex\" / \"用 tars\" / \"用 intelligence\" → matching agent_id\n"
         "- \"派 intelligence\" / \"让 intelligence\" / \"叫 intelligence\" → agent_id='intelligence'\n"
-        "- \"agent_id=nesta\" / \"agent_id=claude\" / \"agent_id=codex\" → matching agent_id\n"
+        "- \"agent_id=nesta\" / \"agent_id=claude\" / \"agent_id=codex\" → matching canonical agent_id\n"
         "- \"claude 改\" / \"claude 写\" / \"claude 执行\" → agent_id='claude'\n"
         "- \"codex 审\" / \"codex 改\" / \"codex 实现\" → agent_id='codex'\n"
         "- \"桌面\" / \"截图\" / \"打开 App\" / \"点击\" / \"输入\" with TARS mentioned → agent_id='agent-tars'\n"
@@ -4160,7 +4343,9 @@ def _build_top_level_description() -> str:
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
         "- Results are always returned as an array, one entry per task.\n"
         "- agent_id and role are MUTUALLY EXCLUSIVE. When user names a specific "
-        "agent (nesta, claude, codex, tars, intelligence, ambrosini, pirlo, kanban, deepseek), always use agent_id, never role."
+        "agent or alias (技术翻译官/nesta, claude/主程, codex/代码审查官, tars/桌面操作员, "
+        "intelligence/情报研究员, ambrosini/质量门卫, pirlo/商业策划师, deepseek/低成本快工), "
+        "always use agent_id, never role."
     )
 
 
@@ -4214,7 +4399,7 @@ def _build_role_param_description() -> str:
         "delegate further. 'orchestrator' = can "
         f"use delegate_task to spawn its own workers. {nesting_note} "
         "agent_id and role are mutually exclusive. If the user mentions "
-        "nesta/claude/codex/tars/intelligence/ambrosini/pirlo/kanban/deepseek, use agent_id instead; "
+        "技术翻译官/nesta/claude/主程/codex/tars/intelligence/ambrosini/pirlo/deepseek, use agent_id instead; "
         "do NOT use role."
     )
 
@@ -4342,23 +4527,23 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": DEFAULT_AGENT_ID_ENUM,
                 "description": (
-                    "WHEN TO USE: User mentions a specific agent name (\"用 nesta\", "
-                    "\"派 claude\", \"用 codex\", \"用 tars\", \"agent_id=intelligence\"). "
+                    "WHEN TO USE: User mentions a specific agent name or alias "
+                    "(\"用 技术翻译官\", \"派 主程\", \"用 codex\", \"用 tars\", "
+                    "\"agent_id=intelligence\"). "
                     "This is the PREFERRED way to delegate — each agent has a "
                     "pre-configured profile with the right toolsets, permissions, "
                     "and isolation mode. ALWAYS use agent_id when the user names "
                     "an agent. NEVER translate an agent name into role+toolsets.\n\n"
                     "AGENTS:\n"
-                    "- 'nesta': technical analysis and decomposition\n"
-                    "- 'claude': code editing & command execution (tools: file+terminal)\n"
-                    "- 'codex': Codex CLI coding executor and code review backup\n"
-                    "- 'agent-tars': external desktop operator for macOS/app/screenshot tasks\n"
-                    "- 'intelligence': research and competitive intelligence\n"
-                    "- 'ambrosini': quality gate and risk review\n"
-                    "- 'pirlo': planning, proposals, and content structure\n"
-                    "- 'deepseek-tui': small fixes, test generation, debugging spikes\n"
-                    "- 'kanban': task state tracking\n"
-                    "- 'hermes-internal': analysis & decision making (tools: file, readonly)\n"
+                    "- 'hermes-internal' / '技术翻译官' / legacy 'nesta': technical translation, decomposition, strategy judgment\n"
+                    "- 'claude' / '主程': complex code edits, command execution, git operations\n"
+                    "- 'deepseek-tui' / '低成本快工': small fixes, small tests, low-risk mechanical work only\n"
+                    "- 'codex' / '代码审查官': read-only code review and implementation/architecture assessment\n"
+                    "- 'intelligence' / '情报研究员': research, competitors, source verification\n"
+                    "- 'pirlo' / '商业策划师': commercial proposals, PPT/story structure\n"
+                    "- 'agent-tars' / '桌面操作员': desktop/browser GUI, screenshots, visual validation\n"
+                    "- 'ambrosini' / '质量门卫': high-risk acceptance and final quality gate\n"
+                    "Kanban is a state-recording service, not a named delegate agent.\n"
                     "Mutually exclusive with 'role'. When agent_id is set, "
                     "toolsets/blocked_tools/isolation are auto-configured from "
                     "the registry profile — do not set them manually."
@@ -4450,17 +4635,20 @@ def get_delegation_guidance() -> str:
         toolsets = profile.get("toolsets", [])
         ts_str = ", ".join(toolsets) if toolsets else "inherited"
         agent_lines.append(
-            f"  - agent_id='{aid}': {cfg.get('type', 'worker')} — "
+            f"  - agent_id='{aid}' ({cfg.get('display_name', aid)}): "
+            f"{cfg.get('role_summary') or cfg.get('type', 'worker')} — "
             f"capabilities=[{cap_str}], tools=[{ts_str}]"
         )
 
     agent_list = "\n".join(agent_lines) if agent_lines else (
-        "  - agent_id='nesta': technical analysis and decomposition\n"
-        "  - agent_id='claude': code editing & commands (tools: file+terminal)\n"
-        "  - agent_id='codex': Codex CLI coding executor and code review backup\n"
-        "  - agent_id='agent-tars': external desktop operator for macOS/app/screenshot tasks\n"
-        "  - agent_id='intelligence': research and competitive intelligence\n"
-        "  - agent_id='hermes-internal': analysis & planning (tools: file, readonly)"
+        "  - agent_id='hermes-internal' (Hermes 技术翻译官): technical translation and decomposition\n"
+        "  - agent_id='claude' (Claude 主程执行官): complex code edits and commands\n"
+        "  - agent_id='deepseek-tui' (DeepSeek 低成本快工): low-risk small fixes and tests\n"
+        "  - agent_id='codex' (Codex 代码审查官): read-only review and design assessment\n"
+        "  - agent_id='agent-tars' (TARS 桌面操作员): desktop/browser GUI and screenshots\n"
+        "  - agent_id='intelligence' (Intelligence 情报研究员): research and source verification\n"
+        "  - agent_id='pirlo' (Pirlo 商业策划师): proposals and content structure\n"
+        "  - agent_id='ambrosini' (Ambrosini 质量门卫): quality gate and risk review"
     )
 
     return (
@@ -4470,21 +4658,23 @@ def get_delegation_guidance() -> str:
         "and isolation mode pre-set.\n\n"
         "**CRITICAL — When user mentions an agent name, you MUST use delegate_task "
         "with the agent_id parameter:**\n"
-        "- \"用 nesta\" / \"让 nesta\" / \"派 nesta\" → delegate_task(agent_id='nesta', goal=...)\n"
-        "- \"用 claude\" / \"让 claude\" / \"派 claude\" → delegate_task(agent_id='claude', goal=...)\n"
-        "- \"用 codex\" / \"让 codex\" / \"agent_id=codex\" → delegate_task(agent_id='codex', goal=...)\n"
-        "- \"用 tars\" / \"让 tars\" / \"agent_id=agent-tars\" → delegate_task(agent_id='agent-tars', goal=...)\n"
+        "- \"用 nesta\" / \"技术翻译官\" / \"技术中间层\" → delegate_task(agent_id='hermes-internal', goal=...)\n"
+        "- \"用 claude\" / \"主程\" → delegate_task(agent_id='claude', goal=...)\n"
+        "- \"低成本快工\" / \"deepseek\" → delegate_task(agent_id='deepseek-tui', goal=...)\n"
+        "- \"用 codex\" / \"代码审查官\" → delegate_task(agent_id='codex', goal=...)\n"
+        "- \"用 tars\" / \"桌面操作员\" → delegate_task(agent_id='agent-tars', goal=...)\n"
         "- \"用 intelligence\" / \"让 intelligence\" → delegate_task(agent_id='intelligence', goal=...)\n"
-        "- \"agent_id=nesta\" or \"agent_id=claude\" → delegate_task(agent_id=..., goal=...)\n\n"
+        "- \"商业策划师\" / \"pirlo\" → delegate_task(agent_id='pirlo', goal=...)\n\n"
         "**Available agents:**\n"
         f"{agent_list}\n\n"
         "**Key rules:**\n"
         "1. Use intelligence as the default research route unless the user explicitly names another agent.\n"
-        "2. When the user names claude/codex/tars/nesta/intelligence, use the matching agent_id.\n"
+        "2. Use Hermes 技术翻译官 for the old nesta technical-middle-layer responsibility.\n"
         "3. agent_id and role are mutually exclusive. Use agent_id, not role.\n"
         "4. Never translate a user's agent request into manual toolsets+role.\n"
         "5. Set 'context' to include the user's language preference.\n"
-        "6. Treat Agent TARS as an external desktop operator; verify desktop results with screenshots or command output."
+        "6. Do not use DeepSeek 低成本快工 for complex refactors or high-risk operations.\n"
+        "7. Treat TARS as the desktop/browser GUI operator; verify desktop results with screenshots or command output."
     )
 
 
