@@ -3192,7 +3192,14 @@
   function WorkerLogSection(props) {
     const { t } = useI18n();
     const [state, setState] = useState({ loading: false, data: null, err: null });
-    const load = useCallback(function () {
+    const logPreRef = useRef(null);
+    const scrollAfterLoadRef = useRef(false);
+    const scrollLogToBottom = useCallback(function () {
+      const el = logPreRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    }, []);
+    const load = useCallback(function (scrollToBottom) {
+      scrollAfterLoadRef.current = !!scrollToBottom;
       setState({ loading: true, data: null, err: null });
       SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/log?tail=100000`, props.boardSlug))
         .then(function (d) { setState({ loading: false, data: d, err: null }); })
@@ -3201,7 +3208,13 @@
 
     // Auto-load when the section mounts; the user opened the drawer so the
     // cost is one small HTTP round-trip.
-    useEffect(function () { load(); }, [load]);
+    useEffect(function () { load(false); }, [load]);
+
+    useEffect(function () {
+      if (state.loading || !scrollAfterLoadRef.current) return;
+      scrollAfterLoadRef.current = false;
+      requestAnimationFrame(scrollLogToBottom);
+    }, [state.loading, state.data, scrollLogToBottom]);
 
     const data = state.data;
     let body;
@@ -3215,8 +3228,10 @@
         tx(t, "noWorkerLog",
           "— no worker log yet (task hasn't spawned or log was rotated away) —"));
     } else {
-      body = h("pre", { className: "hermes-kanban-pre hermes-kanban-log" },
-        data.content || "(empty)");
+      body = h("pre", {
+        ref: logPreRef,
+        className: "hermes-kanban-pre hermes-kanban-log",
+      }, data.content || "(empty)");
     }
 
     return h("div", { className: "hermes-kanban-section" },
@@ -3225,7 +3240,7 @@
           tx(t, "workerLog", "Worker log") + (data && data.size_bytes ? ` (${data.size_bytes} B)` : "")),
         h("button", {
           type: "button",
-          onClick: load,
+          onClick: function () { load(true); },
           className: "hermes-kanban-edit-link",
           title: "Refresh log",
         }, "refresh"),
