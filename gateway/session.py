@@ -799,6 +799,11 @@ class SessionStore:
         if self._has_active_processes_fn:
             session_key = self._generate_session_key(source)
             if self._has_active_processes_fn(session_key):
+                import logging as _logging
+                _logging.getLogger(__name__).info(
+                    "Session reset skipped for %s — active background process(es) present",
+                    session_key,
+                )
                 return None
 
         policy = self.config.get_reset_policy(
