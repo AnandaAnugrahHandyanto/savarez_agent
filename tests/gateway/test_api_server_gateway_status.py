@@ -165,9 +165,14 @@ class TestGatewayStatusEnrichedResponse:
         assert isinstance(body["python_version"], str)
         assert body["python_version"].count(".") == 2
 
-        # subsystem_capabilities defaults to an empty list — it is
-        # populated by follow-up subsystem PRs as they land.
-        assert body["subsystem_capabilities"] == []
+        # subsystem_capabilities is a list of subsystem keys that
+        # the runtime actually ships. Detailed entries are asserted
+        # in TestSubsystemCapabilities below; here we just guard
+        # the shape (list of strings).
+        assert isinstance(body["subsystem_capabilities"], list)
+        assert all(
+            isinstance(name, str) for name in body["subsystem_capabilities"]
+        )
 
         # version / openai_sdk_version / released are best-effort:
         # may be null when not installed / no git, but if present
@@ -226,3 +231,70 @@ class TestGatewayStatusEnrichedResponse:
         # python_version comes straight from sys.version_info,
         # not from a fallible lookup — must still be there.
         assert isinstance(body["python_version"], str)
+
+
+class TestSubsystemCapabilities:
+    """`/api/gateway/status.subsystem_capabilities` is the runtime
+    list of optional subsystems the gateway actually ships. The
+    matching ``features.remote_*`` flags in `/v1/capabilities`
+    advertise the *protocol/endpoint* shape; this list answers the
+    distinct question "did the runtime load this subsystem?" for
+    UI-degradation in remote clients."""
+
+    @pytest.mark.asyncio
+    async def test_response_includes_unconditional_subsystems(self):
+        """providers / usage / events ship unconditionally with
+        the add-on endpoints — their keys must always be present
+        in `subsystem_capabilities` once those PRs land."""
+        app = _create_app(_make_adapter())
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/gateway/status")
+            assert resp.status == 200
+            body = await resp.json()
+
+        caps = body["subsystem_capabilities"]
+        for required in ("providers", "usage", "events"):
+            assert required in caps, (
+                f"runtime ships /api/{required} endpoints but "
+                f"{required!r} is missing from subsystem_capabilities"
+            )
+
+    @pytest.mark.asyncio
+    async def test_kanban_presence_tracks_optional_dependency(self):
+        """kanban is conditional on the optional dependency being
+        importable. When `_KANBAN_AVAILABLE` is True it must be in
+        the list; when False it must NOT be."""
+        from gateway.platforms import api_server as api_mod
+
+        # Case 1: kanban available — must be advertised.
+        with patch.object(api_mod, "_KANBAN_AVAILABLE", True):
+            app = _create_app(_make_adapter())
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/api/gateway/status")
+                body = await resp.json()
+            assert "kanban" in body["subsystem_capabilities"]
+
+        # Case 2: kanban unavailable — must NOT be advertised.
+        with patch.object(api_mod, "_KANBAN_AVAILABLE", False):
+            app = _create_app(_make_adapter())
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/api/gateway/status")
+                body = await resp.json()
+            assert "kanban" not in body["subsystem_capabilities"]
+
+    @pytest.mark.asyncio
+    async def test_list_only_contains_keys_we_actually_ship(self):
+        """Defence against drift: every key in the list must come
+        from the known runtime set. A future addition that lands
+        without updating the contract is caught by this test."""
+        app = _create_app(_make_adapter())
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/gateway/status")
+            body = await resp.json()
+
+        known = {"providers", "usage", "events", "kanban"}
+        unknown = set(body["subsystem_capabilities"]) - known
+        assert not unknown, (
+            f"subsystem_capabilities contains keys not in the "
+            f"known runtime set: {sorted(unknown)}"
+        )

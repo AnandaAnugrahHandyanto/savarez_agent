@@ -1481,11 +1481,26 @@ class APIServerAdapter(BasePlatformAdapter):
                 "python_version": _python_runtime_version(),
                 "openai_sdk_version": _openai_sdk_version(),
                 "released": _hermes_agent_released(),
-                # Reserved for follow-up PRs that introduce optional
-                # subsystems (kanban write API, providers list,
-                # recent events, usage summary, …). Empty here,
-                # populated by the matching subsystem PRs as they land.
-                "subsystem_capabilities": [],
+                # Runtime list of optional subsystems this gateway
+                # actually ships. Distinct from
+                # `/v1/capabilities.features.*` (which advertises the
+                # protocol/endpoint shape) — this list is the
+                # "does the runtime have this loaded?" signal for
+                # client-side UI degradation. Order is stable;
+                # presence is the contract, not position.
+                # `kanban` is conditional on the optional dependency
+                # being importable; the other three ship
+                # unconditionally with the add-on endpoints.
+                "subsystem_capabilities": [
+                    name
+                    for name, available in (
+                        ("providers", True),
+                        ("usage", True),
+                        ("events", True),
+                        ("kanban", _KANBAN_AVAILABLE),
+                    )
+                    if available
+                ],
             }
         )
 
