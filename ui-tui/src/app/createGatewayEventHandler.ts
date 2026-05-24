@@ -313,6 +313,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'thinking.delta': {
+        if (!getUiState().busy) {
+          return
+        }
+
         const text = ev.payload?.text
 
         if (text !== undefined) {
@@ -340,6 +344,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         if (p.kind === 'goal') {
           sys(p.text)
+
           const brief = p.text.startsWith('✓')
             ? '✓ goal complete'
             : p.text.startsWith('↻')
@@ -347,8 +352,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
               : p.text.startsWith('⏸')
                 ? '⏸ goal paused'
                 : 'ready'
+
           setStatus(brief)
           restoreStatusAfter(6000)
+
           return
         }
 
@@ -529,6 +536,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'tool.complete': {
         const inlineDiffText =
           ev.payload.inline_diff && getUiState().inlineDiffs ? stripAnsi(String(ev.payload.inline_diff)).trim() : ''
+
         const resultText = ev.payload.result_text ? stripAnsi(String(ev.payload.result_text)) : undefined
 
         if (inlineDiffText) {
