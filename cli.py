@@ -6124,7 +6124,13 @@ class HermesCLI:
         print()
     
     def _list_recent_sessions(self, limit: int = 10) -> list[dict[str, Any]]:
-        """Return recent CLI sessions for in-chat browsing/resume affordances."""
+        """Return recent CLI sessions for in-chat browsing/resume affordances.
+
+        Ordered by last-active time (descending) so the most recently touched
+        session is first — used by ``_show_recent_sessions`` to mark it as
+        ``★ LATEST``. Without this the list is ordered by ``started_at`` and a
+        recently resumed older session can be buried below newer-but-idle ones.
+        """
         if not self._session_db:
             return []
         try:
@@ -6132,6 +6138,7 @@ class HermesCLI:
                 source="cli",
                 exclude_sources=["tool"],
                 limit=limit,
+                order_by_last_active=True,
             )
         except Exception:
             return []
@@ -6154,15 +6161,16 @@ class HermesCLI:
         else:
             print("  Recent sessions:")
         print()
-        print(f"  {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
-        print(f"  {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
-        for session in sessions:
+        print(f"  {'':<2}{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
+        print(f"  {'':<2}{'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
+        for idx, session in enumerate(sessions):
             title = (session.get("title") or "—")[:30]
             preview = (session.get("preview") or "")[:38]
             last_active = _relative_time(session.get("last_active"))
-            print(f"  {title:<32} {preview:<40} {last_active:<13} {session['id']}")
+            marker = "★ " if idx == 0 else "  "
+            print(f"  {marker}{title:<32} {preview:<40} {last_active:<13} {session['id']}")
         print()
-        print("  Use /resume <session id or title> to continue where you left off.")
+        print("  ★ = most recently active. Use /resume <session id or title> to continue where you left off.")
         print()
         return True
 
