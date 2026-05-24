@@ -34,7 +34,9 @@ const applySkin = (s: GatewaySkin) =>
       s.banner_hero ?? '',
       s.tool_prefix ?? '',
       s.help_header ?? ''
-    )
+    ),
+    tickerVerbs: s.spinner?.thinking_verbs,
+    tickerFaces: s.spinner?.thinking_faces,
   })
 
 const dropBgTask = (taskId: string) =>

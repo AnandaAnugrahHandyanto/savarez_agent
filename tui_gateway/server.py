@@ -767,6 +767,8 @@ def resolve_skin() -> dict:
             "banner_hero": skin.banner_hero,
             "tool_prefix": skin.tool_prefix,
             "help_header": (skin.branding or {}).get("help_header", ""),
+            "spinner": skin.spinner,
+            "tool_emojis": skin.tool_emojis,
         }
     except Exception:
         return {}
