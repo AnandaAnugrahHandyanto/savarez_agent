@@ -926,6 +926,7 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
 )
+from gateway.busy_input_policy import load_busy_input_rules, resolve_busy_input_mode
 from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -1554,6 +1555,7 @@ class GatewayRunner:
     # blow up on attribute access.
     _running_agents_ts: Dict[str, float] = {}
     _busy_input_mode: str = "interrupt"
+    _busy_input_rules: list = []
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     _exit_code: Optional[int] = None
     _draining: bool = False
@@ -1580,6 +1582,7 @@ class GatewayRunner:
         self._service_tier = self._load_service_tier()
         self._show_reasoning = self._load_show_reasoning()
         self._busy_input_mode = self._load_busy_input_mode()
+        self._busy_input_rules = self._load_busy_input_rules()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
@@ -2827,6 +2830,19 @@ class GatewayRunner:
         return "interrupt"
 
     @staticmethod
+    def _load_busy_input_rules() -> list:
+        """Load ordered source-aware busy-input policy rules from config.yaml."""
+        return load_busy_input_rules(_load_gateway_runtime_config())
+
+    def _resolve_busy_input_mode(self, event: MessageEvent) -> str:
+        """Resolve effective busy-input mode for a busy-session event."""
+        return resolve_busy_input_mode(
+            event,
+            getattr(self, "_busy_input_mode", "interrupt"),
+            getattr(self, "_busy_input_rules", []),
+        )
+
+    @staticmethod
     def _load_restart_drain_timeout() -> float:
         """Load graceful gateway restart/stop drain timeout in seconds."""
         raw = os.getenv("HERMES_RESTART_DRAIN_TIMEOUT", "").strip()
@@ -2977,7 +2993,7 @@ class GatewayRunner:
         # queueing + interrupting.  If the agent isn't running yet
         # (sentinel) or lacks steer(), or the payload is empty, fall back
         # to queue semantics so nothing is lost.
-        effective_mode = self._busy_input_mode
+        effective_mode = self._resolve_busy_input_mode(event)
         steered = False
         if effective_mode == "steer":
             steer_text = (event.text or "").strip()
@@ -7109,11 +7125,12 @@ class GatewayRunner:
                     if self._queue_during_drain_enabled()
                     else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
                 )
-            if self._busy_input_mode == "queue":
+            effective_mode = self._resolve_busy_input_mode(event)
+            if effective_mode == "queue":
                 logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None
-            if self._busy_input_mode == "steer":
+            if effective_mode == "steer":
                 # Steer mode: inject text into the running agent mid-run via
                 # agent.steer().  Falls back to queue semantics if the payload
                 # is empty, the agent lacks steer(), or steer() rejects.

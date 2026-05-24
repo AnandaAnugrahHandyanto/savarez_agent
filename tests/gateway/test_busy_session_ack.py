@@ -159,6 +159,61 @@ class TestBusySessionAck:
         agent.interrupt.assert_called_once_with("Are you working?")
 
     @pytest.mark.asyncio
+    async def test_source_rule_queues_bot_message_while_global_mode_interrupts(self):
+        """Source-aware rule can queue bot-authored busy messages without changing the global default."""
+        from gateway.busy_input_policy import load_busy_input_rules
+
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        runner._busy_input_rules = load_busy_input_rules(
+            {"display": {"busy_input_rules": [{"platform": "telegram", "is_bot": True, "mode": "queue"}]}}
+        )
+        adapter = _make_adapter()
+
+        event = _make_event(text="worker completion burst")
+        event.source.is_bot = True
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+
+        with patch("gateway.run.merge_pending_message_event") as mock_merge:
+            await runner._handle_active_session_busy_message(event, sk)
+
+        agent.interrupt.assert_not_called()
+        mock_merge.assert_called_once()
+        adapter._send_with_retry.assert_called_once()
+        call_kwargs = adapter._send_with_retry.call_args
+        content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
+        assert "Queued for the next turn" in content
+
+    @pytest.mark.asyncio
+    async def test_source_rule_leaves_human_message_interrupting(self):
+        """Bot queue rules must not weaken human/operator steering defaults."""
+        from gateway.busy_input_policy import load_busy_input_rules
+
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        runner._busy_input_rules = load_busy_input_rules(
+            {"display": {"busy_input_rules": [{"platform": "telegram", "is_bot": True, "mode": "queue"}]}}
+        )
+        adapter = _make_adapter()
+
+        event = _make_event(text="operator correction")
+        event.source.is_bot = False
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {"api_call_count": 1, "max_iterations": 5}
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        agent.interrupt.assert_called_once_with("operator correction")
+
+    @pytest.mark.asyncio
     async def test_queue_mode_suppresses_interrupt_and_updates_ack(self):
         """When busy_input_mode is 'queue', message is queued WITHOUT interrupt."""
         runner, sentinel = _make_runner()

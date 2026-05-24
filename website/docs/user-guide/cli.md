@@ -260,6 +260,25 @@ display:
   busy_input_mode: "steer"   # or "queue" or "interrupt" (default)
 ```
 
+Messaging gateways can also use ordered source rules to override the global mode for specific senders or message classes. The first matching rule wins; invalid rules are ignored. This is useful when human/operator messages should keep interrupting quickly, while bot-authored completion bursts should wait safely:
+
+```yaml
+display:
+  busy_input_mode: interrupt
+  busy_input_rules:
+    - platform: discord
+      is_bot: true
+      mode: queue
+    - platform: discord
+      user_ids: ["123456789"]
+      mode: steer
+    - platform: discord
+      text_prefixes: ["✅", "📊 **Status"]
+      mode: queue
+```
+
+Rule filters are generic: `platform`, `is_bot`, `user_ids`, `chat_ids`, `message_types`, and `text_prefixes`. Rule `mode` accepts `interrupt`, `queue`, or `steer`.
+
 `"queue"` mode is useful when you want to prepare follow-up messages without accidentally canceling in-flight work. `"steer"` mode is useful when you want to redirect the agent mid-task without interrupting — e.g. "actually, also check the tests" while it's still editing code. Unknown values fall back to `"interrupt"`.
 
 `"steer"` has two automatic fallbacks: if the agent hasn't started yet, or if images are attached, the message falls back to `"queue"` behavior so nothing is lost.

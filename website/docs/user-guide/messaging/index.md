@@ -281,6 +281,25 @@ display:
   busy_ack_enabled: true   # set to false to suppress the ⚡/⏳/⏩ chat reply entirely
 ```
 
+For messaging gateways, `display.busy_input_rules` can override the global mode for specific sources. Rules are ordered and generic — no platform workflow is hardcoded:
+
+```yaml
+display:
+  busy_input_mode: interrupt
+  busy_input_rules:
+    - platform: discord
+      is_bot: true
+      mode: queue
+    - platform: discord
+      user_ids: ["123456789"]
+      mode: steer
+    - platform: discord
+      text_prefixes: ["✅", "📊 **Status"]
+      mode: queue
+```
+
+Supported rule filters: `platform`, `is_bot`, `user_ids`, `chat_ids`, `message_types`, and `text_prefixes`. Supported rule modes: `interrupt`, `queue`, and `steer`.
+
 The first time you message a busy agent on any platform, Hermes appends a one-line reminder to the busy-ack explaining the knob (`"💡 First-time tip — …"`). The reminder fires once per install — a flag under `onboarding.seen.busy_input_prompt` latches it. Delete that key to see the tip again.
 
 If you find the busy-ack noisy — especially with voice input or rapid-fire messages — set `display.busy_ack_enabled: false`. Your input is still queued/steered/interrupts as normal, only the chat reply is silenced.
