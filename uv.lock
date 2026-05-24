@@ -1849,11 +1849,14 @@ daytona = [
     { name = "daytona" },
 ]
 dev = [
+    { name = "aiohttp" },
     { name = "debugpy" },
     { name = "mcp" },
+    { name = "ptyprocess", marker = "sys_platform != 'win32'" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
+    { name = "pywinpty", marker = "sys_platform == 'win32'" },
     { name = "ruff" },
     { name = "ty" },
 ]
@@ -1990,6 +1993,7 @@ youtube = [
 [package.metadata]
 requires-dist = [
     { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = "==0.9.0" },
+    { name = "aiohttp", marker = "extra == 'dev'", specifier = "==3.13.3" },
     { name = "aiohttp", marker = "extra == 'homeassistant'", specifier = "==3.13.3" },
     { name = "aiohttp", marker = "extra == 'messaging'", specifier = "==3.13.3" },
     { name = "aiohttp", marker = "extra == 'slack'", specifier = "==3.13.3" },
@@ -2059,6 +2063,7 @@ requires-dist = [
     { name = "parallel-web", marker = "extra == 'parallel-web'", specifier = "==0.4.2" },
     { name = "prompt-toolkit", specifier = "==3.0.52" },
     { name = "psutil", specifier = "==7.2.2" },
+    { name = "ptyprocess", marker = "sys_platform != 'win32' and extra == 'dev'", specifier = "==0.7.0" },
     { name = "ptyprocess", marker = "sys_platform != 'win32' and extra == 'pty'", specifier = "==0.7.0" },
     { name = "pydantic", specifier = "==2.13.4" },
     { name = "pyjwt", extras = ["crypto"], specifier = "==2.12.1" },
@@ -2069,6 +2074,7 @@ requires-dist = [
     { name = "python-osc", marker = "extra == 'vrchat'", specifier = "==1.10.2" },
     { name = "python-telegram-bot", extras = ["webhooks"], marker = "extra == 'messaging'", specifier = "==22.6" },
     { name = "python-telegram-bot", extras = ["webhooks"], marker = "extra == 'termux'", specifier = "==22.6" },
+    { name = "pywinpty", marker = "sys_platform == 'win32' and extra == 'dev'", specifier = "==2.0.15" },
     { name = "pywinpty", marker = "sys_platform == 'win32' and extra == 'pty'", specifier = "==2.0.15" },
     { name = "pyyaml", specifier = "==6.0.3" },
     { name = "qrcode", marker = "extra == 'dingtalk'", specifier = "==7.4.2" },

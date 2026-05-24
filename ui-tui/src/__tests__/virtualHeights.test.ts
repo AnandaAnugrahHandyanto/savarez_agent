@@ -18,10 +18,10 @@ describe('virtual height estimates', () => {
   })
 
   it('uses compound user prompt width when estimating user message wrapping', () => {
-    const msg: Msg = { role: 'user', text: 'x'.repeat(21) }
+    const msg: Msg = { role: 'user', text: 'x'.repeat(24) }
 
-    expect(estimatedMsgHeight(msg, 26, { compact: false, details: false, userPrompt: '❯' })).toBe(3)
-    expect(estimatedMsgHeight(msg, 26, { compact: false, details: false, userPrompt: 'Ψ >' })).toBe(4)
+    expect(estimatedMsgHeight(msg, 31, { compact: false, details: false, userPrompt: '❯' })).toBe(3)
+    expect(estimatedMsgHeight(msg, 31, { compact: false, details: false, userPrompt: 'Ψ >' })).toBe(4)
   })
 
   it('includes detail sections when visible', () => {
@@ -43,7 +43,7 @@ describe('virtual height estimates', () => {
   it('caps wrapped-line counting so giant assistant turns do not block offset rebuilds', () => {
     // wrappedLines is invoked once per uncached message during
     // useVirtualHistory's offset rebuild. Unbounded counting on a long
-    // assistant response (10k+ chars × every row × every rebuild) blocks
+    // assistant response (10k+ chars ÁEevery row ÁEevery rebuild) blocks
     // the UI on cold mount. Cap is ~800 rows; post-mount Yoga
     // measurement converges to the true height regardless.
     const giant = 'x'.repeat(1_000_000)

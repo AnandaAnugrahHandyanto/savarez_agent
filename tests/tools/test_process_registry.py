@@ -2,6 +2,7 @@
 
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -292,7 +293,12 @@ class TestStdinHelpers:
 
         result = registry.close_stdin(s.id)
 
-        pty.sendeof.assert_called_once()
+        if sys.platform == "win32":
+            pty.sendcontrol.assert_called_once_with("z")
+            pty.write.assert_called_once_with("\r")
+            pty.sendeof.assert_not_called()
+        else:
+            pty.sendeof.assert_called_once()
         assert result["status"] == "ok"
 
     def test_close_stdin_allows_eof_driven_process_to_finish(self, registry, tmp_path):
@@ -303,11 +309,13 @@ class TestStdinHelpers:
         lockout (#17959). For interactive stdin → PTY mode is now the only
         supported path.
         """
-        session = registry.spawn_local(
-            'python3 -c "import sys; print(sys.stdin.read().strip())"',
-            cwd=str(tmp_path),
-            use_pty=True,
+        python_cmd = (
+            f"{shlex.quote(Path(sys.executable).as_posix())} "
+            f"-c {shlex.quote('import sys; print(sys.stdin.read().strip())')}"
         )
+        session = registry.spawn_local(python_cmd, cwd=str(tmp_path), use_pty=True)
+        if not session._pty:
+            pytest.skip("PTY backend is not available in this environment")
 
         try:
             time.sleep(0.5)
@@ -835,20 +843,30 @@ class TestKillProcess:
             def terminate(self):
                 terminate_calls.append(("terminate", self.pid))
 
-        import psutil as _psutil
-
         try:
             # Post-#21561: liveness probe routes through
             # ``ProcessRegistry._is_host_pid_alive`` (→
             # ``gateway.status._pid_exists``), and the actual kill on POSIX
             # routes through ``psutil.Process(pid).terminate()``. Neither
             # touches ``os.kill`` directly. Mock both seams.
-            with patch("gateway.status._pid_exists", return_value=True), \
-                 patch.object(_psutil, "Process", side_effect=lambda pid: FakeProcess(pid)):
-                result = registry.kill_process(s.id)
+            if sys.platform == "win32":
+                with patch("gateway.status._pid_exists", return_value=True), \
+                     patch("tools.process_registry.subprocess.run") as taskkill:
+                    result = registry.kill_process(s.id)
 
-            assert result["status"] == "killed"
-            assert ("terminate", 424242) in terminate_calls
+                assert result["status"] == "killed"
+                taskkill.assert_called_once()
+                assert taskkill.call_args.args[0][:4] == ["taskkill", "/PID", "424242", "/T"]
+                assert "/F" in taskkill.call_args.args[0]
+            else:
+                import psutil as _psutil
+
+                with patch("gateway.status._pid_exists", return_value=True), \
+                     patch.object(_psutil, "Process", side_effect=lambda pid: FakeProcess(pid)):
+                    result = registry.kill_process(s.id)
+
+                assert result["status"] == "killed"
+                assert ("terminate", 424242) in terminate_calls
         finally:
             registry._running.pop(s.id, None)
 
@@ -1007,3 +1025,163 @@ def test_drain_notifications_empty_queue():
 
     results = process_registry.drain_notifications()
     assert results == []
+
+
+# ---------------------------------------------------------------------------
+# _terminate_host_pid — cross-platform process-tree termination
+# ---------------------------------------------------------------------------
+
+
+class TestTerminateHostPidWindows:
+    """Windows branch uses ``taskkill /T /F`` — the documented MS tree-kill
+    primitive. We can't use psutil's ``children(recursive=True)`` /
+    ``.terminate()`` path on Windows because (1) Windows doesn't maintain
+    a Unix-style process tree so the walk is unreliable, and (2)
+    ``Process.terminate()`` on Windows is ``TerminateProcess()`` for the
+    target handle only, not the tree.
+    """
+
+    def test_windows_invokes_taskkill_with_tree_and_force_flags(self, monkeypatch):
+        """The Windows branch must shell out to ``taskkill /PID N /T /F``."""
+        from tools import process_registry as pr
+
+        captured = {}
+
+        def fake_run(args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return MagicMock(returncode=0, stderr="", stdout="")
+
+        monkeypatch.setattr(pr, "_IS_WINDOWS", True)
+        monkeypatch.setattr(pr.subprocess, "run", fake_run)
+
+        pr.ProcessRegistry._terminate_host_pid(12345)
+
+        assert captured["args"][0] == "taskkill"
+        assert "/PID" in captured["args"]
+        assert "12345" in captured["args"]
+        assert "/T" in captured["args"], "Tree flag required to reach descendants"
+        assert "/F" in captured["args"], "Force flag required for headless Chromium"
+
+    def test_windows_falls_back_to_os_kill_when_taskkill_missing(self, monkeypatch):
+        """If ``taskkill.exe`` is somehow unavailable, fall back to a bare
+        ``os.kill(pid, SIGTERM)`` so we at least try to kill the parent."""
+        from tools import process_registry as pr
+
+        kill_calls = []
+
+        def fake_run(*args, **kwargs):
+            raise FileNotFoundError("taskkill not found")
+
+        def fake_kill(pid, sig):
+            kill_calls.append((pid, sig))
+
+        monkeypatch.setattr(pr, "_IS_WINDOWS", True)
+        monkeypatch.setattr(pr.subprocess, "run", fake_run)
+        monkeypatch.setattr(pr.os, "kill", fake_kill)
+
+        pr.ProcessRegistry._terminate_host_pid(12345)
+
+        assert kill_calls == [(12345, signal.SIGTERM)]
+
+    def test_windows_does_not_call_psutil(self, monkeypatch):
+        """The Windows branch must NOT exercise the psutil tree-walk
+        (it's unreliable on Windows — see the function docstring)."""
+        from tools import process_registry as pr
+        import psutil
+
+        psutil_calls = []
+
+        class _BoomProcess:
+            def __init__(self, pid):
+                psutil_calls.append(("Process", pid))
+
+            def children(self, recursive=False):
+                psutil_calls.append(("children", recursive))
+                return []
+
+            def terminate(self):
+                psutil_calls.append(("terminate",))
+
+        def fake_run(args, **kwargs):
+            return MagicMock(returncode=0, stderr="", stdout="")
+
+        monkeypatch.setattr(pr, "_IS_WINDOWS", True)
+        monkeypatch.setattr(pr.subprocess, "run", fake_run)
+        monkeypatch.setattr(psutil, "Process", _BoomProcess)
+
+        pr.ProcessRegistry._terminate_host_pid(12345)
+
+        assert psutil_calls == [], (
+            f"Windows branch must not touch psutil, but saw {psutil_calls!r}"
+        )
+
+
+class TestTerminateHostPidPosix:
+    """POSIX branch walks the tree via psutil and SIGTERMs children first."""
+
+    def test_posix_walks_tree_and_terminates_children_then_parent(self, monkeypatch):
+        from tools import process_registry as pr
+        import psutil
+
+        terminate_order = []
+
+        class _FakeChild:
+            def __init__(self, pid):
+                self.pid = pid
+
+            def terminate(self):
+                terminate_order.append(self.pid)
+
+        class _FakeParent:
+            def __init__(self, pid):
+                self.pid = pid
+
+            def children(self, recursive=False):
+                assert recursive is True
+                return [_FakeChild(101), _FakeChild(102), _FakeChild(103)]
+
+            def terminate(self):
+                terminate_order.append(self.pid)
+
+        monkeypatch.setattr(pr, "_IS_WINDOWS", False)
+        monkeypatch.setattr(psutil, "Process", _FakeParent)
+
+        pr.ProcessRegistry._terminate_host_pid(12345)
+
+        assert terminate_order == [101, 102, 103, 12345], (
+            "Children must be terminated before the parent"
+        )
+
+    def test_posix_no_such_process_swallowed(self, monkeypatch):
+        from tools import process_registry as pr
+        import psutil
+
+        def boom(pid):
+            raise psutil.NoSuchProcess(pid)
+
+        monkeypatch.setattr(pr, "_IS_WINDOWS", False)
+        monkeypatch.setattr(psutil, "Process", boom)
+
+        # Must not raise.
+        pr.ProcessRegistry._terminate_host_pid(999999999)
+
+    def test_posix_oserror_falls_back_to_os_kill(self, monkeypatch):
+        from tools import process_registry as pr
+        import psutil
+
+        def boom(pid):
+            raise PermissionError("can't read /proc")
+
+        kill_calls = []
+
+        def fake_kill(pid, sig):
+            kill_calls.append((pid, sig))
+
+        monkeypatch.setattr(pr, "_IS_WINDOWS", False)
+        monkeypatch.setattr(psutil, "Process", boom)
+        monkeypatch.setattr(pr.os, "kill", fake_kill)
+
+        pr.ProcessRegistry._terminate_host_pid(12345)
+
+        assert kill_calls == [(12345, signal.SIGTERM)]

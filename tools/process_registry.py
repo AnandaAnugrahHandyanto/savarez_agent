@@ -434,9 +434,50 @@ class ProcessRegistry:
 
     @staticmethod
     def _terminate_host_pid(pid: int) -> None:
-        """Terminate a host-visible PID without requiring the original process handle."""
+        """Terminate a host-visible PID and its descendants.
+
+        POSIX: walks the process tree with ``psutil`` and SIGTERMs
+        children before the parent so subprocess trees (e.g. Chromium
+        renderers/GPU helpers spawned by an ``agent-browser`` daemon)
+        don't get reparented to init and survive cleanup.
+
+        Windows: shells out to ``taskkill /PID <pid> /T /F``. This is
+        the documented Microsoft primitive for tree-kill and matches the
+        existing convention in ``gateway.status.terminate_pid``. We can't
+        reuse the POSIX psutil path on Windows because:
+
+          1. Windows doesn't maintain a Unix-style process tree —
+             ``psutil.Process.children(recursive=True)`` walks PPID
+             links that go stale when intermediate processes exit, so
+             enumeration is best-effort and misses orphaned descendants.
+          2. ``psutil.Process.terminate()`` on Windows is
+             ``TerminateProcess()`` which kills only the target handle
+             and is a hard kill — there is no Windows equivalent of a
+             SIGTERM that cascades through a process group. (See the
+             warning in ``gateway/status.py::terminate_pid``: "os.kill
+             with SIGTERM is not equivalent to a tree-killing hard stop"
+             on Windows.) Headless Chromium has no GUI window, so the
+             softer ``taskkill /T`` without ``/F`` won't reach it either.
+
+        ``psutil`` is a hard dependency (see ``pyproject.toml``); the
+        bare-``os.kill`` fallback covers OSError / PermissionError on
+        POSIX and a missing ``taskkill.exe`` on Windows (effectively
+        unreachable on real Windows installs, but cheap insurance).
+        """
         if _IS_WINDOWS:
-            os.kill(pid, signal.SIGTERM)
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    creationflags=windows_hide_flags(),
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except (OSError, ProcessLookupError, PermissionError):
+                    pass
             return
 
         import psutil
@@ -1148,10 +1189,14 @@ class ProcessRegistry:
         if session.exited:
             return {"status": "already_exited", "error": "Process has already finished"}
 
-        # PTY mode -- write through pty handle (expects bytes)
+        # PTY mode -- write through pty handle. pywinpty expects str, while
+        # ptyprocess.PtyProcess expects bytes.
         if hasattr(session, '_pty') and session._pty:
             try:
-                pty_data = data.encode("utf-8") if isinstance(data, str) else data
+                if _IS_WINDOWS:
+                    pty_data = data
+                else:
+                    pty_data = data.encode("utf-8") if isinstance(data, str) else data
                 session._pty.write(pty_data)
                 return {"status": "ok", "bytes_written": len(data)}
             except Exception as e:
@@ -1169,6 +1214,9 @@ class ProcessRegistry:
 
     def submit_stdin(self, session_id: str, data: str = "") -> dict:
         """Send data + newline to a running process's stdin (like pressing Enter)."""
+        session = self.get(session_id)
+        if _IS_WINDOWS and session is not None and getattr(session, "_pty", None):
+            return self.write_stdin(session_id, data + "\r")
         return self.write_stdin(session_id, data + "\n")
 
     def close_stdin(self, session_id: str) -> dict:
@@ -1181,6 +1229,10 @@ class ProcessRegistry:
 
         if hasattr(session, '_pty') and session._pty:
             try:
+                if _IS_WINDOWS and hasattr(session._pty, "sendcontrol"):
+                    session._pty.sendcontrol("z")
+                    session._pty.write("\r")
+                    return {"status": "ok", "message": "EOF sent"}
                 session._pty.sendeof()
                 return {"status": "ok", "message": "EOF sent"}
             except Exception as e:
