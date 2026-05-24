@@ -353,3 +353,12 @@ another gate. Shared utilities should reduce duplication, a sandbox executor
 contract should define the only acceptable non-durable write experiment, and
 Subspace / Recall / Dashboard should become the first visible layer over the
 read-only Memory Fabric.
+
+## Appendix: Read-only Candidate Utilities v0.1
+
+The first utility extraction target is
+`agent/memory_read_only_candidate_utils.py`. It is a pure read-only helper module
+for shared policy assertions, preview integrity checks, source lineage copying,
+stable digests, and summary counters. It does not create a gate, executor,
+proposal, token, ledger event, graph write, benchmark dimension, or OpenClaw
+configuration change.
