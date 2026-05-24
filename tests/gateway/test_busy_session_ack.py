@@ -64,6 +64,7 @@ def _make_runner():
     runner._running_agents_ts = {}
     runner._pending_messages = {}
     runner._busy_ack_ts = {}
+    runner._finalizing_sessions = set()
     runner._draining = False
     runner.adapters = {}
     runner.config = MagicMock()
