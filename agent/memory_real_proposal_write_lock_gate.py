@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from copy import deepcopy
 from typing import Any, Mapping
 
+from agent.memory_read_only_candidate_utils import (
+    build_stable_digest,
+    deep_copy_mapping,
+    summarize_candidates,
+    validate_policy_flags,
+)
 from agent.memory_real_proposal_dry_run import (
     MEMORY_REAL_PROPOSAL_DRY_RUN_STATUS,
     explain_real_proposal_dry_run,
@@ -193,9 +197,7 @@ def validate_real_proposal_write_lock_gate(gate: Mapping[str, Any]) -> dict[str,
     for forbidden_key in _FORBIDDEN_TRUE_KEYS:
         if gate.get(forbidden_key) is True:
             errors.append(f"{forbidden_key}_must_be_false_or_absent")
-    for key, expected in MEMORY_REAL_PROPOSAL_WRITE_LOCK_GATE_POLICY.items():
-        if policy.get(key) is not expected:
-            errors.append(f"policy_{key}_must_be_{str(expected).lower()}")
+    errors.extend(validate_policy_flags(policy, MEMORY_REAL_PROPOSAL_WRITE_LOCK_GATE_POLICY))
 
     return {"valid": not errors, "errors": _dedupe(errors)}
 
@@ -273,17 +275,12 @@ def recommend_real_proposal_write_lock_action(gate: Mapping[str, Any]) -> dict[s
 def summarize_real_proposal_write_lock_gates(
     gates: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
 ) -> dict[str, Any]:
-    by_block_type: dict[str, int] = {}
-    by_status: dict[str, int] = {}
+    candidate_summary = summarize_candidates(gates, "gate_status")
     locked_count = 0
     eligible_count = 0
     valid_count = 0
     invalid_count = 0
     for gate in gates:
-        block_type = str(gate.get("block_type"))
-        by_block_type[block_type] = by_block_type.get(block_type, 0) + 1
-        status = str(gate.get("gate_status"))
-        by_status[status] = by_status.get(status, 0) + 1
         if gate.get("gate_status") == MEMORY_REAL_PROPOSAL_WRITE_LOCK_GATE_LOCKED:
             locked_count += 1
         if gate.get("gate_status") == MEMORY_REAL_PROPOSAL_WRITE_LOCK_GATE_ELIGIBLE:
@@ -299,8 +296,8 @@ def summarize_real_proposal_write_lock_gates(
         "eligible_count": eligible_count,
         "valid_count": valid_count,
         "invalid_count": invalid_count,
-        "by_block_type": dict(sorted(by_block_type.items())),
-        "by_status": dict(sorted(by_status.items())),
+        "by_block_type": candidate_summary["by_block_type"],
+        "by_status": candidate_summary["by_status"],
         "policy": dict(MEMORY_REAL_PROPOSAL_WRITE_LOCK_GATE_POLICY),
     }
 
@@ -407,12 +404,11 @@ def _gate_id(gate: Mapping[str, Any]) -> str:
         "dry_run_validation": gate.get("dry_run_validation", {}),
         "policy": gate.get("policy", {}),
     }
-    payload = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str)
-    return f"memory-real-proposal-write-lock-gate:v0.1:{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]}"
+    return build_stable_digest("memory-real-proposal-write-lock-gate:v0.1", identity)
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
-    return deepcopy(dict(value)) if isinstance(value, Mapping) else {}
+    return deep_copy_mapping(value)
 
 
 def _dedupe(values: list[str]) -> list[str]:

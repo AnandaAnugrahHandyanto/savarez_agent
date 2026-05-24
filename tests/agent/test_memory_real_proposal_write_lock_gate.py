@@ -79,6 +79,15 @@ def test_valid_dry_run_creates_eligible_human_approval_token_gate():
     assert gate["next_step_recommendation"]["writes_operation_ledger"] is False
 
 
+def test_valid_write_lock_gate_id_matches_v0_1_baseline():
+    gate = create_real_proposal_write_lock_gate(_dry_run(), operator="write-lock-operator")
+
+    assert (
+        gate["gate_id"]
+        == "memory-real-proposal-write-lock-gate:v0.1:d4fed425e5b7aabe"
+    )
+
+
 def test_invalid_dry_run_creates_locked_gate():
     dry_run = _dry_run(outcome="reject")
 
@@ -149,6 +158,25 @@ def test_preview_integrity_failed_when_preview_only_false_or_written_created_fla
         gate = create_real_proposal_write_lock_gate(dry_run)
         assert gate["gate_status"] == MEMORY_REAL_PROPOSAL_WRITE_LOCK_GATE_LOCKED
         assert gate["lock_reason"] == "preview_integrity_failed"
+
+
+def test_preview_integrity_error_strings_match_v0_1_baseline():
+    dry_run = _dry_run()
+    dry_run["proposal_record_preview"]["preview_only"] = False
+    dry_run["proposal_record_preview"]["created_real_proposal"] = True
+    dry_run["operation_ledger_preview"]["written"] = True
+
+    gate = create_real_proposal_write_lock_gate(dry_run)
+
+    assert gate["lock_reason"] == "preview_integrity_failed"
+    assert gate["gate_validation"] == {
+        "valid": False,
+        "errors": [
+            "proposal_record_preview_must_be_preview_only",
+            "proposal_record_preview_created_real_proposal_must_not_be_true",
+            "operation_ledger_preview_written_must_not_be_true",
+        ],
+    }
 
 
 def test_write_lock_checklist_is_deterministic():
