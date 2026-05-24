@@ -44,5 +44,5 @@ jobs:
         working-directory: website
 
       - name: Build Docusaurus
-        run: npm run build
+        run: npm run docs:check
         working-directory: website

@@ -8,6 +8,8 @@
     "start": "docusaurus start",
     "prebuild": "node scripts/prebuild.mjs",
     "build": "docusaurus build",
+    "predocs:check": "node scripts/prebuild.mjs",
+    "docs:check": "node scripts/check-docs.mjs && HERMES_DOCS_STRICT_LINKS=1 docusaurus build --locale en",
     "swizzle": "docusaurus swizzle",
     "deploy": "docusaurus deploy",
     "clear": "docusaurus clear",

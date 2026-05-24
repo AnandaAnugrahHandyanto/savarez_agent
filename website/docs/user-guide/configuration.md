@@ -910,7 +910,7 @@ Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 
 :::
 
 :::info
-Context compression has its own `compression:` block for thresholds and an `auxiliary.compression:` block for model/provider settings — see [Context Compression](#context-compression) above. The fallback model uses a `fallback_model:` block — see [Fallback Model](/docs/integrations/providers#fallback-model). All three follow the same provider/model/base_url pattern.
+Context compression has its own `compression:` block for thresholds and an `auxiliary.compression:` block for model/provider settings — see [Context Compression](#context-compression) above. Fallbacks use the canonical `fallback_providers:` chain, with legacy `fallback_model:` still accepted for back-compat — see [Fallback Providers](/docs/integrations/providers#fallback-providers). All three follow the same provider/model/base_url pattern.
 :::
 
 ### OpenRouter routing & Pareto Code for auxiliary tasks
