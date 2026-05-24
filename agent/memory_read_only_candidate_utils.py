@@ -122,6 +122,19 @@ def validate_forbidden_true_keys(
     return merge_validation_errors(errors)
 
 
+def validate_forbidden_true_keys_false_or_absent(
+    candidate: Mapping[str, Any],
+    forbidden_keys: Iterable[str] = DEFAULT_FORBIDDEN_TRUE_KEYS,
+) -> list[str]:
+    candidate_mapping = as_mapping(candidate)
+    errors = [
+        f"{key}_must_be_false_or_absent"
+        for key in _iter_keys(forbidden_keys)
+        if candidate_mapping.get(key) is True
+    ]
+    return merge_validation_errors(errors)
+
+
 def validate_policy_flags(
     policy: Mapping[str, Any],
     expected_flags: Mapping[str, bool] = READ_ONLY_POLICY_BASE,
@@ -142,6 +155,23 @@ def validate_preview_integrity(
     forbidden_true_keys: Iterable[str] = DEFAULT_FORBIDDEN_TRUE_KEYS,
 ) -> list[str]:
     return _validate_preview_fields(candidate, preview_fields, forbidden_true_keys)
+
+
+def validate_preview_forbidden_true_keys_false_or_absent(
+    candidate: Mapping[str, Any],
+    preview_fields: Iterable[str] = DEFAULT_PREVIEW_FIELDS,
+    forbidden_true_keys: Iterable[str] = DEFAULT_FORBIDDEN_TRUE_KEYS,
+) -> list[str]:
+    candidate_mapping = as_mapping(candidate)
+    errors: list[str] = []
+    for field in _iter_keys(preview_fields):
+        preview = candidate_mapping.get(field)
+        if not isinstance(preview, Mapping):
+            continue
+        for key in _iter_keys(forbidden_true_keys):
+            if preview.get(key) is True:
+                errors.append(f"{field}_{key}_must_be_false_or_absent")
+    return merge_validation_errors(errors)
 
 
 def validate_write_preview_integrity(
@@ -292,8 +322,10 @@ __all__ = [
     "copy_source_lineage",
     "validate_required_keys",
     "validate_forbidden_true_keys",
+    "validate_forbidden_true_keys_false_or_absent",
     "validate_policy_flags",
     "validate_preview_integrity",
+    "validate_preview_forbidden_true_keys_false_or_absent",
     "validate_write_preview_integrity",
     "build_stable_digest",
     "summarize_candidates",

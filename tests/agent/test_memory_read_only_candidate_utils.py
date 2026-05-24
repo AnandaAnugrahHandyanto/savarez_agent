@@ -19,7 +19,9 @@ from agent.memory_read_only_candidate_utils import (
     merge_validation_errors,
     summarize_candidates,
     validate_forbidden_true_keys,
+    validate_forbidden_true_keys_false_or_absent,
     validate_policy_flags,
+    validate_preview_forbidden_true_keys_false_or_absent,
     validate_preview_integrity,
     validate_required_keys,
     validate_write_preview_integrity,
@@ -142,6 +144,70 @@ def test_validate_forbidden_true_keys_catches_forbidden_true_flags():
     ]
 
 
+def test_validate_forbidden_true_keys_false_or_absent_catches_forbidden_true_flags():
+    candidate = {
+        "writes_operation_ledger": True,
+        "writes_token_files": False,
+        "submitted": None,
+    }
+
+    assert validate_forbidden_true_keys_false_or_absent(candidate) == [
+        "writes_operation_ledger_must_be_false_or_absent"
+    ]
+
+
+def test_validate_forbidden_true_keys_false_or_absent_allows_false_and_absent_flags():
+    candidate = {
+        "writes_operation_ledger": False,
+        "writes_token_files": False,
+        "safe": True,
+    }
+
+    assert validate_forbidden_true_keys_false_or_absent(candidate) == []
+
+
+def test_validate_forbidden_true_keys_false_or_absent_uses_exact_keys_only():
+    candidate = {
+        "created_at": True,
+        "written_confirmation": True,
+        "writes_operation_ledger": True,
+    }
+
+    assert validate_forbidden_true_keys_false_or_absent(
+        candidate,
+        forbidden_keys=("writes_operation_ledger",),
+    ) == ["writes_operation_ledger_must_be_false_or_absent"]
+    assert validate_forbidden_true_keys_false_or_absent(
+        candidate,
+        forbidden_keys=("created_at", "written_confirmation"),
+    ) == [
+        "created_at_must_be_false_or_absent",
+        "written_confirmation_must_be_false_or_absent",
+    ]
+
+
+def test_validate_forbidden_true_keys_false_or_absent_preserves_order_and_dedupes():
+    candidate = {
+        "writes_operation_ledger": True,
+        "writes_token_files": True,
+        "submitted": True,
+    }
+
+    assert validate_forbidden_true_keys_false_or_absent(
+        candidate,
+        forbidden_keys=(
+            "writes_token_files",
+            "submitted",
+            "writes_token_files",
+            "writes_operation_ledger",
+        ),
+    ) == [
+        "writes_token_files_must_be_false_or_absent",
+        "submitted_must_be_false_or_absent",
+        "writes_operation_ledger_must_be_false_or_absent",
+    ]
+
+
 def test_validate_policy_flags_catches_true_and_false_expectations():
     policy = dict(READ_ONLY_POLICY_BASE)
     policy["read_only"] = False
@@ -171,6 +237,103 @@ def test_validate_preview_integrity_catches_forbidden_true_flags_inside_previews
         "approval_token_record_preview_token_issued_must_not_be_true",
         "proposal_record_preview_must_be_preview_only",
         "proposal_record_preview_created_real_proposal_must_not_be_true",
+    ]
+
+
+def test_validate_preview_forbidden_true_keys_false_or_absent_catches_nested_true_flags():
+    candidate = {
+        "approval_token_record_preview": {
+            "preview_only": True,
+            "token_issued": True,
+        },
+        "proposal_record_preview": {
+            "preview_only": False,
+            "created_real_proposal": True,
+        },
+    }
+
+    assert validate_preview_forbidden_true_keys_false_or_absent(candidate) == [
+        "approval_token_record_preview_token_issued_must_be_false_or_absent",
+        "proposal_record_preview_created_real_proposal_must_be_false_or_absent",
+    ]
+
+
+def test_validate_preview_forbidden_true_keys_false_or_absent_allows_false_and_absent_flags():
+    candidate = {
+        "approval_token_record_preview": {
+            "preview_only": False,
+            "token_issued": False,
+        },
+        "proposal_record_preview": {
+            "preview_only": False,
+        },
+    }
+
+    assert validate_preview_forbidden_true_keys_false_or_absent(candidate) == []
+
+
+def test_validate_preview_forbidden_true_keys_false_or_absent_ignores_non_mapping_previews():
+    candidate = {
+        "approval_token_record_preview": ["token_issued", True],
+        "approval_audit_record_preview": None,
+        "proposal_record_preview": "created_real_proposal",
+    }
+
+    assert validate_preview_forbidden_true_keys_false_or_absent(candidate) == []
+
+
+def test_validate_preview_forbidden_true_keys_false_or_absent_uses_exact_keys_only():
+    candidate = {
+        "approval_token_record_preview": {
+            "preview_only": True,
+            "created_at": True,
+            "written_confirmation": True,
+            "token_issued": True,
+        },
+    }
+
+    assert validate_preview_forbidden_true_keys_false_or_absent(
+        candidate,
+        preview_fields=("approval_token_record_preview",),
+        forbidden_true_keys=("token_issued",),
+    ) == [
+        "approval_token_record_preview_token_issued_must_be_false_or_absent"
+    ]
+    assert validate_preview_forbidden_true_keys_false_or_absent(
+        candidate,
+        preview_fields=("approval_token_record_preview",),
+        forbidden_true_keys=("created_at", "written_confirmation"),
+    ) == [
+        "approval_token_record_preview_created_at_must_be_false_or_absent",
+        "approval_token_record_preview_written_confirmation_must_be_false_or_absent",
+    ]
+
+
+def test_validate_preview_forbidden_true_keys_false_or_absent_preserves_order_and_dedupes():
+    candidate = {
+        "approval_token_record_preview": {
+            "token_issued": True,
+            "written": True,
+        },
+        "proposal_record_preview": {
+            "token_issued": True,
+            "written": True,
+        },
+    }
+
+    assert validate_preview_forbidden_true_keys_false_or_absent(
+        candidate,
+        preview_fields=(
+            "proposal_record_preview",
+            "approval_token_record_preview",
+            "proposal_record_preview",
+        ),
+        forbidden_true_keys=("written", "token_issued", "written"),
+    ) == [
+        "proposal_record_preview_written_must_be_false_or_absent",
+        "proposal_record_preview_token_issued_must_be_false_or_absent",
+        "approval_token_record_preview_written_must_be_false_or_absent",
+        "approval_token_record_preview_token_issued_must_be_false_or_absent",
     ]
 
 
@@ -269,8 +432,10 @@ def test_helpers_do_not_write_files_or_create_directories(monkeypatch):
     assert copy_source_lineage(candidate, ("block_type",))
     assert validate_required_keys(candidate, ("status",)) == []
     assert validate_forbidden_true_keys(candidate) == []
+    assert validate_forbidden_true_keys_false_or_absent(candidate) == []
     assert validate_policy_flags(candidate["policy"]) == []
     assert validate_preview_integrity(candidate) == []
+    assert validate_preview_forbidden_true_keys_false_or_absent(candidate) == []
     assert validate_write_preview_integrity(candidate) == []
     assert build_stable_digest("read-only", candidate)
     assert summarize_candidates([candidate], "status")["total"] == 1
@@ -296,8 +461,10 @@ def test_inputs_are_not_mutated():
     copy_source_lineage(candidate, ("source_ids",))
     validate_required_keys(candidate, ("policy", "status"))
     validate_forbidden_true_keys(candidate)
+    validate_forbidden_true_keys_false_or_absent(candidate)
     validate_policy_flags(candidate["policy"])
     validate_preview_integrity(candidate)
+    validate_preview_forbidden_true_keys_false_or_absent(candidate)
     validate_write_preview_integrity(candidate)
     build_stable_digest("read-only", candidate, ignored_keys=("status",))
     summarize_candidates([candidate], "status", type_key="candidate_type")
