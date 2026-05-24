@@ -4180,3 +4180,130 @@ This is documented and intentional. Users control per-subagent limits via `deleg
 
 *Last updated: 2026-05-25T05:00:00Z*
 *Commit at scan: b04760fdb*
+
+
+---
+
+## Pass #48 – Auth, Session & Token Security Deep Dive – 2026-05-25T06:15:00Z
+
+### Finding P48-1: API key storage – plaintext in env/config, no at-rest encryption
+**File:** hermes_cli/config.py (lines 6, 98-146); gateway/run.py (line 128); gateway/platforms/api_server.py (line 675)
+**Severity:** Medium
+**Detail:** API keys for messaging platforms (DINGTALK_CLIENT_SECRET, FEISHU_APP_SECRET, WECOM_CALLBACK_CORP_SECRET, etc.) are read from environment variables or config.yaml extra fields and stored in plaintext in memory as instance attributes. There is no encryption at rest. The .env file approach is documented as intended, but a compromised machine/process can dump all platform credentials from memory. No secret rotation mechanism exists in-code.
+
+**Recommendation:** Document that .env must have filesystem permissions locked down (0600). Consider integrating a secrets manager or adding a secret rotation CLI command.
+
+---
+
+### Finding P48-2: API key logging – potential leak in error/retry paths
+**File:** gateway/run.py (lines 127-134, 221-226)
+**Severity:** Medium
+**Detail:** _GATEWAY_SECRET_PATTERNS defines regexes to redact secrets from log output, applied via _redact_gateway_user_facing_secrets(). However this is best-effort only in _sanitize_gateway_final_response() and _prepare_gateway_status_message(). No guarantee all secret-bearing strings are caught. In wecom_callback.py line 200 the access token URL is logged with "access_token=***" replacement but other error paths may log raw tokens.
+
+**Recommendation:** Audit all logger calls that include URL params, JSON bodies, or HTTP headers. Add integration tests that pass known-secret values and assert they do not appear in logs.
+
+---
+
+### Finding P48-3: Session token generation – timestamp + truncated UUID is predictable
+**File:** gateway/run.py (lines 12839-12844)
+**Severity:** Medium
+**Detail:** Branch session IDs are generated as: `timestamp_str = now.strftime("%Y%m%d_%H%M%S"); short_uuid = _uuid.uuid4().hex[:6]; new_session_id = f"{timestamp_str}_{short_uuid}"`. The UUID v4 uses only 6 hex chars (24 bits of entropy) combined with a timestamp prefix. Truncating to 6 chars reduces effective entropy. Session IDs appear in filesystem paths, URLs, and database rows. Predictable session IDs increase surface for session fixation/enumeration in multi-user deployments.
+
+**Note:** Normal session IDs come from hermes_state.py and appear to use longer UUIDs. The branch path is the weaker variant.
+
+**Recommendation:** Use full uuid.uuid4().hex (32 chars, 128 bits) for branch session IDs.
+
+---
+
+### Finding P48-4: pre_gateway_dispatch hook runs before authorization check
+**File:** gateway/run.py (lines 6623-6662)
+**Severity:** Low (by design, documented)
+**Detail:** pre_gateway_dispatch plugin hook fires for user-originated messages BEFORE the _is_user_authorized() check. Code documents: "Hook runs BEFORE auth so plugins can handle unauthorized senders (e.g. customer handover ingest) without triggering the pairing flow." A compromised plugin could intercept unauthorized messages before the pairing code is offered. If the plugin returns {"action": "skip"}, the message is silently dropped. This is architecturally intentional but worth documenting as a trust boundary.
+
+**Note:** Confirmed present at line 6623 (Pass #47 P23-4).
+
+---
+
+### Finding P48-5: API server refuses to start on network without API key – good defense
+**File:** gateway/platforms/api_server.py (lines 3461-3468)
+**Severity:** Positive finding
+
+---
+
+### Finding P48-6: Webhook HMAC signature validation – uses timing-safe comparison
+**File:** gateway/platforms/webhook.py (lines 669, 674, 682)
+**Severity:** Positive finding
+**Detail:** All webhook signature validations use hmac.compare_digest(): GitHub (line 669), GitLab (line 674), Generic (line 682). Also refuses to start with INSECURE_NO_AUTH bound to non-loopback (lines 161-170).
+
+---
+
+### Finding P48-7: WeCom callback – non-constant-time signature comparison
+**File:** gateway/platforms/wecom_crypto.py (lines 88-91)
+**Severity:** Medium
+**Detail:** WeCom decrypt uses plain != comparison instead of hmac.compare_digest():
+```
+expected = _sha1_signature(self.token, timestamp, nonce, encrypt)
+if expected != msg_signature:
+    raise SignatureError("signature mismatch")
+```
+This exposes a timing oracle. Additionally, _handle_verify in wecom_callback.py (line 246-259) iterates over all apps trying each signature verification, leaking app ordering to attackers.
+
+---
+
+### Finding P48-8: WeCom access token – stored in-memory, no encryption, race on refresh
+**File:** gateway/platforms/wecom_callback.py (lines 385-408, 47, 71)
+**Severity:** Low-Medium
+**Detail:** Access tokens stored in self._access_tokens dict with no encryption. _get_access_token() has a TOCTOU race: two concurrent calls both see expired token and both refresh. Dictionary write is not atomic. Impact is wasted API call, not security breach.
+
+---
+
+### Finding P48-9: Feishu webhook mode – encrypt_key/verification_token stored in memory
+**File:** gateway/platforms/feishu.py (lines 1579-1580)
+**Severity:** Low (by design)
+**Detail:** Feishu's encrypt_key and verification_token are stored as instance attributes and passed to EventDispatcherHandler.builder(). Signature verification is delegated to lark-oapi SDK.
+
+---
+
+### Finding P48-10: DingTalk – client_secret stored in memory, SDK handles auth
+**File:** gateway/platforms/dingtalk.py (lines 185-190)
+**Severity:** Low
+
+---
+
+### Finding P48-11: API server Bearer token – uses hmac.compare_digest
+**File:** gateway/platforms/api_server.py (line 784)
+**Severity:** Positive finding
+
+---
+
+### Finding P48-12: Pairing code generation – uses secrets.choice (cryptographically strong)
+**File:** gateway/pairing.py (lines 40-41, 236, 307)
+**Severity:** Positive finding
+**Detail:** 8-char codes from 32-char alphabet via secrets.choice(), hashed with 16-byte random salt using SHA-256. Approval uses secrets.compare_digest(). Rate limiting (600s), lockout after 5 failed attempts, 1-hour expiry.
+
+---
+
+### Finding P48-13: No OAuth token refresh race condition detected (low severity)
+**File:** gateway/platforms/wecom_callback.py (lines 385-408)
+**Severity:** Low
+**Detail:** _get_access_token() has a race where two concurrent calls both see expired token and both refresh. Dictionary write is not atomic. Impact is wasted API call.
+
+---
+
+### Finding P48-14: Session tokens not used as bearer auth – positive
+**File:** gateway/session.py; hermes_state.py
+**Severity:** Info
+**Detail:** Session IDs are identifiers, not secrets. Authorization is enforced via platform allowlists and pairing store. Session IDs are never used to authenticate API calls. Good architectural choice.
+
+---
+
+### Finding P48-15: No secret rotation mechanism in codebase
+**File:** hermes_cli/config.py; gateway/config.py; gateway/run.py
+**Severity:** Low (operational gap)
+**Detail:** No CLI command or runtime mechanism for rotating secrets. Manual edit + restart required. For enterprise deployments with compliance requirements, this is a process gap.
+
+---
+
+*Pass #48 complete – 15 findings (5 positive, 10 needs attention)*
+*Last updated: 2026-05-25T06:15:00Z*
+*Commit at scan: b04760fdb*
