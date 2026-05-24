@@ -9180,6 +9180,7 @@ class GatewayRunner:
         # Set session title if provided with /new <title>
         _title_arg = event.get_command_args().strip()
         _title_note = ""
+        title_set = False
         if _title_arg and self._session_db and new_entry:
             from hermes_state import SessionDB
             try:
