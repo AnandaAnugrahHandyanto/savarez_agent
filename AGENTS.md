@@ -1009,6 +1009,202 @@ def profile_env(tmp_path, monkeypatch):
 
 ---
 
+## Native Agent Execution (Codex + Claude Code)
+
+This section is the authoritative runtime contract for external coding agents
+(OpenAI Codex CLI, Anthropic Claude Code CLI) assigned work in this repo.
+Agents reading this file MUST follow these rules; orchestrators dispatching
+agents MUST pass this section as context.
+
+### Mandatory Task Workflow
+
+Every non-trivial task (any change > ~10 lines or touching > 1 file) MUST
+follow this sequence.  No step may be skipped silently.
+
+```
+1. INSPECT    Read the files you intend to touch. Run: git status, git log --oneline -5
+2. PLAN       State what you will change (files + functions + rationale) BEFORE writing code
+3. IMPLEMENT  Make changes. Commit atomically: one logical change per commit
+4. TEST       Run: scripts/run_tests.sh [test/path] — verify no regressions
+5. REVIEW     Check your own diff: git diff HEAD~N..HEAD — no unintended changes
+6. SUMMARIZE  Report: changed files, test result (N passed / M failed), any caveats
+```
+
+One-liner tasks (doc fixes, single-function tweaks) may collapse 1-3 into a
+single step but MUST still run tests (step 4) and report (step 6).
+
+### Verification Gates
+
+| Gate | Command | Pass condition |
+|------|---------|----------------|
+| Pre-flight | `git status` + `scripts/run_tests.sh tests/ -q` | Clean working tree OR known baseline; test suite ≥ baseline |
+| Post-implement | `scripts/run_tests.sh [changed test paths] -q` | All targeted tests pass |
+| Regression | `scripts/run_tests.sh -q` | No tests newly failing vs baseline |
+| Pre-commit | `git diff --stat HEAD` | Only expected files changed |
+
+**Baseline rule:** before making any changes, record the test count:
+`scripts/run_tests.sh -q 2>&1 | tail -3`. If you cannot run the full suite,
+at minimum run the tests for the files you are touching.
+
+Always use `scripts/run_tests.sh` — not bare `pytest`. The wrapper enforces
+hermetic environment parity: credentials unset, TZ=UTC, LANG=C.UTF-8, -n 4
+workers. Direct pytest diverges from CI and has caused repeated "works locally,
+fails in CI" incidents.
+
+### Worktree Isolation for Parallel Agents
+
+When multiple agents work in parallel, each MUST have an isolated git worktree
+to prevent race conditions on shared files.
+
+```bash
+# Orchestrator creates one worktree per agent task
+git worktree add -b agent/task-auth  /tmp/wt-auth  main
+git worktree add -b agent/task-db    /tmp/wt-db    main
+
+# Each agent runs entirely inside its own worktree
+# workdir: /tmp/wt-auth  (for the auth agent)
+# workdir: /tmp/wt-db    (for the db agent)
+
+# After completion: push branch, open PR, remove worktree
+git -C /tmp/wt-auth push -u origin agent/task-auth
+git worktree remove /tmp/wt-auth
+```
+
+Serialization rules:
+- Tasks touching the same file → serialize OR isolate via worktrees
+- Migration files (`alembic/versions/`, `**/migrations/`) → ALWAYS serialize
+- Shared manifest files (`pyproject.toml`, `uv.lock`) → assign to ONE agent
+- Run `git diff branch-a..branch-b -- <shared-file>` before merging
+  parallel branches to surface conflicts early
+
+### Context Budget and Compaction Handoff
+
+Agents have a finite context window. Long runs degrade silently above ~70% usage.
+
+| Threshold | Action |
+|-----------|--------|
+| < 70% | Normal operation |
+| 70–85% | Write a handoff checkpoint; continue |
+| > 85% | Write handoff checkpoint, commit all in-progress work, stop |
+
+**Handoff checkpoint format** — write to `.hermes/handoff/agent-<date>.md`:
+
+```markdown
+# Agent Handoff — <ISO date>
+
+## Completed (committed)
+- task-1: <desc> (commit <SHA>)
+- task-2: <desc> (commit <SHA>)
+
+## In-progress (NOT committed)
+- task-3: <desc> — <what was done, what remains>
+- Files modified but not committed: <list>
+
+## Pending (not started)
+- task-4, task-5
+
+## Test status
+pytest: <N> passed, <M> failed (as of last run)
+
+## Open questions
+- <any unresolved decisions>
+
+## Next step
+<single concrete instruction for the resuming agent>
+```
+
+A new agent session resumes by reading the handoff file:
+`read_file(".hermes/handoff/agent-<date>.md")` then continuing.
+
+**Claude Code specific:** use `/compact` before hitting 85%; CLAUDE.md content
+survives compaction. In print mode (`-p`), use session resumption:
+`claude -p "continue" --resume <session_id> --max-turns 10`.
+
+**Codex specific:** use `codex exec resume --last` to re-enter a saved session
+after a context-pressure stop.
+
+### Security and Destructive-Operation Guardrails
+
+**NEVER run without explicit user or orchestrator authorization:**
+
+```
+rm -rf <any path>
+git reset --hard
+git clean -fdx
+git push --force  (or --force-with-lease to an unreviewed ref)
+DROP TABLE / DELETE FROM (without WHERE) in migration scripts
+chmod 777 or chown to non-project users
+curl/wget piped directly to bash
+npm install --ignore-scripts on unknown packages
+```
+
+**Before any destructive bash command:** read it aloud (include it in your
+SUMMARIZE output), confirm the target path is inside the repo worktree,
+and note it explicitly. If there is any ambiguity about scope, stop and ask.
+
+**Dependency changes** (`pyproject.toml`, `requirements*.txt`, `package.json`):
+- Every new PyPI package must have an upper-bound pin: `>=X.Y,<next_major`
+- Run `uv lock` after pyproject.toml edits to regenerate `uv.lock` with hashes
+- Git URL deps must use a commit SHA, not a branch name
+- See "Dependency Pinning Policy" section for full rules
+
+### Multi-Agent Review: Implementer + Independent Reviewer
+
+For any change that touches security-sensitive paths, introduces new tools,
+modifies the agent loop, or changes gateway/platform adapters:
+
+1. **Implementer agent** completes the task and outputs TASK_COMPLETE with
+   changed files and test result.
+2. **Independent reviewer agent** (different context, no access to implementer's
+   reasoning) reads the diff and outputs PASS or FAIL with specifics.
+3. **Orchestrator** compares findings. If reviewer returns FAIL or flags a
+   discrepancy with the implementer's self-report, the orchestrator must resolve
+   before merging.
+
+**Self-reports are not verified facts.** A subagent that claims "all tests pass"
+or "no security issues" may be wrong due to context degradation or hallucination.
+Always verify claims against actual tool output (test exit code, diff content).
+
+Comparison checklist for the orchestrator:
+- Does the diff match what the implementer claimed to change?
+- Did reviewer find anything the implementer omitted from its summary?
+- Are all tests actually passing (check the run_tests.sh output, not just the claim)?
+- For security-sensitive paths: did reviewer flag anything not in implementer's summary?
+
+### Provider and Runtime Quirks
+
+**Codex CLI:**
+- Requires a git repository — fails with "Not a git repository" outside one
+- Always use `pty=true` in Hermes terminal calls; Codex hangs without a PTY
+- Canonical sandbox flag: `-s workspace-write` (old `--full-auto` may not exist)
+- Bypass flag: `--dangerously-bypass-approvals-and-sandbox` (old `--yolo` deprecated)
+- Use `--json` for machine-readable JSONL output; `codex exec -o /tmp/result.txt`
+  to capture final agent message to a file
+- Diagnose auth + PATH issues with `codex doctor` before blaming the task
+- Cap parallel Codex processes at 3; more degrades all via API rate limits
+- Session files: `~/.codex/sessions/`; resume with `codex exec resume --last`
+
+**Claude Code CLI:**
+- Print mode (`-p`) is preferred for automation — skips all interactive dialogs
+- Trust dialog (first visit to dir): press Enter (default = "Yes, I trust")
+- `--dangerously-skip-permissions` dialog defaults to "No, exit" — send Down then
+  Enter to accept; print mode (`-p`) avoids this entirely
+- `--max-turns` only applies in print mode; ignored in interactive sessions
+- `--max-budget-usd` minimum is ~$0.05 (system prompt cache creation alone)
+- Context health: `/context` shows colored grid; degrade thresholds 70% / 85%
+- Use `--bare` for CI/scripting (skips OAuth, hooks, plugins, CLAUDE.md loading)
+- Use `--allowedTools` to scope capabilities: `Read,Edit` for reviews, `Read,Write,Bash` for implementation
+- Worktree support: `claude -w <name>` creates `.claude/worktrees/<name>` automatically
+- Session resumption: `claude --resume <session_id>` or `claude --continue`
+- Subagents / agent teams: define in `.claude/agents/<name>.md` (see `claude --agents`)
+- CLAUDE.md survives `/compact`; use it to preserve project context across compactions
+
+**Hermes Codex provider (`model.provider: openai-codex`):**
+- Uses `~/.hermes/auth.json` via `hermes auth add openai-codex` — separate from `~/.codex/auth.json`
+- `api_mode: codex_responses` in `AIAgent` selects the Responses API path
+
+---
+
 ## Testing
 
 **ALWAYS use `scripts/run_tests.sh`** — do not call `pytest` directly. The script enforces

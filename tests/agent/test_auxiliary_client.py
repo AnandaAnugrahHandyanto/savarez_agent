@@ -2323,7 +2323,152 @@ class TestVisionAutoSkipsKimiCoding:
         assert _PROVIDERS_WITHOUT_VISION == frozenset({
             "kimi-coding",
             "kimi-coding-cn",
+            "openai-codex",  # Codex endpoint rejects non-Codex model names in vision auto-detect
         })
+
+    def test_get_available_vision_backends_excludes_codex(self, monkeypatch):
+        """get_available_vision_backends() must NOT list openai-codex as a vision backend.
+
+        Regression: the else-branch in get_available_vision_backends() was calling
+        resolve_provider_client(main_provider, _read_main_model()) without checking
+        _PROVIDERS_WITHOUT_VISION, so openai-codex (with credentials) was included
+        as if it were a valid vision backend.
+        """
+        from agent.auxiliary_client import get_available_vision_backends
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_provider", lambda: "openai-codex",
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_model", lambda: "claude-sonnet-4.6",
+        )
+        # Even if resolve_provider_client would return a client for codex, it
+        # must not be called for the vision listing — guard with a bomb.
+        monkeypatch.setattr(
+            "agent.auxiliary_client.resolve_provider_client",
+            MagicMock(side_effect=AssertionError(
+                "resolve_provider_client must not be called for openai-codex "
+                "in get_available_vision_backends()"
+            )),
+        )
+        # No OpenRouter/Nous credentials
+        monkeypatch.setattr(
+            "agent.auxiliary_client._strict_vision_backend_available",
+            lambda p: False,
+        )
+
+        backends = get_available_vision_backends()
+        assert "openai-codex" not in backends
+
+
+class TestAsyncCallLlmVisionFallback:
+    """async_call_llm(task='vision') fallback to auto must NOT carry provider-specific model."""
+
+    @pytest.mark.asyncio
+    async def test_fallback_auto_does_not_carry_config_model(self, monkeypatch):
+        """Explicit anthropic+claude-sonnet-4.6 config, anthropic unavailable →
+        fallback to auto must NOT pass claude-sonnet-4.6 to resolve_vision_provider_client.
+
+        Regression: the fallback call was `model=resolved_model` where resolved_model
+        came from config (claude-sonnet-4.6, paired with anthropic). That model was then
+        forwarded to OpenRouter/Nous which do not serve it under the vision endpoint.
+        """
+        import asyncio
+        from agent.auxiliary_client import async_call_llm
+
+        fake_client = AsyncMock()
+        fake_client.chat.completions.create.return_value = _DummyResponse("ok")
+
+        call_log = []
+
+        def fake_resolve_vision(provider=None, model=None, base_url=None,
+                                api_key=None, async_mode=False):
+            call_log.append({"provider": provider, "model": model})
+            if provider == "anthropic":
+                # Simulate missing credentials
+                return "anthropic", None, None
+            if provider == "auto":
+                return "openrouter", fake_client, "google/gemini-3-flash-preview"
+            return provider, None, None
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            lambda task, prov, mod, burl, akey: (
+                "anthropic", "claude-sonnet-4.6", None, None, None
+            ),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client.resolve_vision_provider_client",
+            fake_resolve_vision,
+        )
+
+        await async_call_llm(
+            task="vision",
+            messages=[{"role": "user", "content": "describe this image"}],
+        )
+
+        # First call: explicit provider
+        assert call_log[0]["provider"] == "anthropic"
+        # Second call: auto fallback — must NOT carry claude-sonnet-4.6
+        assert len(call_log) >= 2
+        auto_call = call_log[1]
+        assert auto_call["provider"] == "auto"
+        assert auto_call["model"] != "claude-sonnet-4.6", (
+            "auto fallback must not carry the anthropic-specific model "
+            f"claude-sonnet-4.6 — got model={auto_call['model']!r}"
+        )
+        assert auto_call["model"] is None, (
+            f"auto fallback model should be None (use backend default), "
+            f"got {auto_call['model']!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_fallback_auto_preserves_explicit_caller_model(self, monkeypatch):
+        """When caller passes explicit model= arg distinct from config model, preserve it."""
+        import asyncio
+        from agent.auxiliary_client import async_call_llm
+
+        fake_client = AsyncMock()
+        fake_client.chat.completions.create.return_value = _DummyResponse("ok")
+
+        call_log = []
+
+        def fake_resolve_vision(provider=None, model=None, base_url=None,
+                                api_key=None, async_mode=False):
+            call_log.append({"provider": provider, "model": model})
+            if provider == "anthropic":
+                return "anthropic", None, None
+            if provider == "auto":
+                return "openrouter", fake_client, model or "google/gemini-3-flash-preview"
+            return provider, None, None
+
+        # Config says anthropic+claude-sonnet-4.6, but caller explicitly passes
+        # model="my-custom-vision-model" (different from config model)
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            lambda task, prov, mod, burl, akey: (
+                "anthropic", "my-custom-vision-model", None, None, None
+            ),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client.resolve_vision_provider_client",
+            fake_resolve_vision,
+        )
+
+        await async_call_llm(
+            task="vision",
+            model="my-custom-vision-model",  # explicit caller arg
+            messages=[{"role": "user", "content": "describe this"}],
+        )
+
+        # The caller explicitly passed model="my-custom-vision-model".
+        # `model` is the raw caller argument, so fallback_model = model = "my-custom-vision-model".
+        # The auto fallback receives and forwards it so the user's explicit choice is honoured.
+        auto_call = next(c for c in call_log if c["provider"] == "auto")
+        assert auto_call["model"] == "my-custom-vision-model", (
+            f"explicit caller model should be preserved on auto fallback, "
+            f"got {auto_call['model']!r}"
+        )
 
 
 class TestCodexAuxiliaryAdapterTimeout:

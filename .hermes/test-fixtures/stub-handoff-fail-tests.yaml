@@ -1,0 +1,27 @@
+# stub-handoff-fail-tests.yaml
+# Handoff that FAILS the unit_tests gate — test_results.passed=false.
+# All required schema fields are present (schema validation passes).
+# Used to test that Hermes rejects handoffs with failing tests, even when schema is valid.
+
+task_id: "stub-task-0004"
+agent: claude_code
+completed_at: "2026-05-22T10:15:00Z"
+summary: "Attempted fix for terminal timeout but introduced a regression in test_terminal_cancel."
+changed_files:
+  - src/tools/terminal.py
+  - tests/tools/test_terminal.py
+test_results:
+  command_run: "scripts/run_tests.sh"
+  exit_code: 1
+  stdout_tail: |
+    FAILED tests/tools/test_terminal.py::test_terminal_cancel - AssertionError
+    1 failed, 46 passed in 3.44s
+  passed: false
+eval_evidence:
+  lint_clean: true
+  unit_tests_passed: false
+  diff_size_kb: 3.8
+  no_forbidden_writes: true
+open_issues:
+  - "test_terminal_cancel fails — cancel() call sequence changed, need to revert or fix mock"
+self_assessed_confidence: low

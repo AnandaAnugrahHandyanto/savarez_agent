@@ -1,0 +1,96 @@
+# Eval Matrix — Hybrid Agent Control Plane
+# Maps task types to required gate sets and thresholds.
+# Hermes selects the appropriate row based on task_contract.goal classification.
+# Human-authored. Agents must not modify this file.
+# Governed by: .hermes/plans/2026-05-22_000000-hybrid-agent-control-plane.md
+
+# Gate set shorthand — referenced by task_types below.
+# Expand gate names resolve against gate-taxonomy.yaml.
+gate_sets:
+  minimal:
+    gates:
+      - schema_validation
+      - forbidden_path_writes
+      - diff_size_limit
+      - prompt_artifact_unchanged
+      - cost_cap
+    notes: >
+      Fastest gate set. No dynamic execution required. Use only for
+      docs-only changes to non-prompt-artifact .md files.
+
+  standard:
+    gates:
+      - schema_validation
+      - forbidden_path_writes
+      - diff_size_limit
+      - prompt_artifact_unchanged
+      - lint
+      - unit_tests
+      - cost_cap
+      - human_review
+    notes: >
+      Default for feature, bugfix, refactor tasks. All static gates
+      run first; dynamic gates run only after static gates pass.
+
+  high_assurance:
+    gates:
+      - schema_validation
+      - forbidden_path_writes
+      - diff_size_limit
+      - prompt_artifact_unchanged
+      - lint
+      - unit_tests
+      - integration_tests
+      - security_scan
+      - cost_cap
+      - human_review
+    notes: >
+      Required for security-adjacent changes, prompt artifact changes,
+      and unknown task types. integration_tests is non-blocking in Phase 1;
+      see gate-taxonomy.yaml for blocking promotion schedule.
+
+task_types:
+  docs_only:
+    gate_set: minimal
+    description: >
+      Changes only to .md files outside .hermes/ and prompt artifacts.
+      Files must not include AGENTS.md, CLAUDE.md, CODEX.md, or any
+      .hermes/config/ or .hermes/schemas/ file.
+
+  feature:
+    gate_set: standard
+    description: New functionality in src/ with tests.
+
+  refactor:
+    gate_set: standard
+    description: No new behavior; existing tests must still pass.
+
+  bugfix:
+    gate_set: standard
+    description: Targeted fix; regression test required in handoff.
+
+  security_adjacent:
+    gate_set: high_assurance
+    description: Auth, crypto, input validation, dependency updates, config.
+
+  prompt_artifact_change:
+    gate_set: high_assurance
+    description: >
+      Any change to AGENTS.md, CLAUDE.md, CODEX.md (provisional), .claude/**,
+      .codex/**, .hermes/config/**, .hermes/schemas/**.
+      Escalates automatically; human_review is always blocking.
+    blocked_agents: [claude_code, codex]    # only Hermes/Yoshio may propose these
+    notes: >
+      Agents may NOT produce prompt_artifact_change handoffs. If changed_files
+      contains a prompt artifact and the task type is not prompt_artifact_change,
+      the forbidden_path_writes gate fails and the task is escalated.
+
+  unknown:
+    gate_set: high_assurance               # conservative default
+    description: Task type not recognized or not classifiable.
+
+# Default thresholds (overridable per task contract)
+defaults:
+  diff_size_limit_kb: 500
+  cost_cap_usd: 2.00
+  iteration_cap: 40

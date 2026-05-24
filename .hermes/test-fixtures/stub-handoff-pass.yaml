@@ -1,0 +1,23 @@
+# stub-handoff-pass.yaml
+# Valid handoff — all required fields present; test_results.passed=true.
+# Used in gate tests to verify happy-path schema validation and gate evaluation.
+
+task_id: "stub-task-0001"
+agent: claude_code
+completed_at: "2026-05-22T10:00:00Z"
+summary: "Fixed the off-by-one error in src/tools/terminal.py timeout logic. Added regression test."
+changed_files:
+  - src/tools/terminal.py
+  - tests/tools/test_terminal.py
+test_results:
+  command_run: "scripts/run_tests.sh"
+  exit_code: 0
+  stdout_tail: "...\n47 passed in 3.21s"
+  passed: true
+eval_evidence:
+  lint_clean: true
+  unit_tests_passed: true
+  diff_size_kb: 4.2
+  no_forbidden_writes: true
+open_issues: []
+self_assessed_confidence: high

@@ -1,0 +1,145 @@
+# Handoff Schema v1 — Hybrid Agent Control Plane
+# Agent returns this payload when it considers a task complete.
+# Hermes validates this payload before running eval gates.
+# Human-authored. Agents must not modify this file.
+# Governed by: .hermes/plans/2026-05-22_000000-hybrid-agent-control-plane.md
+
+schema_name: handoff
+schema_version: "1"
+description: >
+  Structured payload emitted by a bounded worker agent (Claude Code or Codex)
+  upon task completion. Hermes validates against this schema before running
+  any gate. Handoffs that fail schema validation are rejected immediately
+  and logged to audit.jsonl; no gate runs on an invalid handoff.
+
+fields:
+  task_id:
+    type: string
+    required: true
+    description: UUID matching the task contract. Must be set by Hermes, not agent.
+
+  agent:
+    type: string
+    required: true
+    enum: [claude_code, codex]
+    description: >
+      Which agent type produced this handoff. Codex is provisional (TBD).
+      See capability-matrix.yaml for confirmed agent status.
+
+  completed_at:
+    type: string
+    format: iso8601
+    required: true
+    description: ISO 8601 timestamp when agent considered task complete.
+
+  summary:
+    type: string
+    required: true
+    max_len: 500
+    description: >
+      One-paragraph imperative summary of what was done. No implementation
+      speculation; only what was actually changed.
+
+  changed_files:
+    type: array
+    items: {type: string}
+    required: true
+    description: >
+      Relative paths from worktree root of every file the agent created,
+      modified, or deleted. Used by forbidden_path_writes and
+      prompt_artifact_unchanged gates. Must be exhaustive — omissions
+      are treated as gate violations.
+
+  test_results:
+    type: object
+    required: false
+    description: >
+      Results of test commands run by the agent before handoff.
+      If not present, unit_tests gate will request re-run.
+    fields:
+      command_run:
+        type: string
+        description: Exact command used (e.g. "scripts/run_tests.sh tests/ -q").
+      exit_code:
+        type: integer
+        description: Exit code of the test command.
+      stdout_tail:
+        type: string
+        max_len: 2000
+        description: Last 2000 chars of test stdout for evidence.
+      passed:
+        type: boolean
+        required: true
+        description: True only if exit_code == 0 and no unexpected failures.
+
+  eval_evidence:
+    type: object
+    required: false
+    description: Pre-computed gate evidence from agent self-assessment.
+    fields:
+      lint_clean:
+        type: boolean
+        description: True if linter exited 0 on changed files.
+      unit_tests_passed:
+        type: boolean
+        description: True if test_results.passed is true.
+      diff_size_kb:
+        type: number
+        description: >
+          Approximate total diff size in KB. Hermes re-computes from actual diff;
+          this is advisory. If agent cannot compute, omit.
+      no_forbidden_writes:
+        type: boolean
+        description: >
+          Agent self-assertion that no forbidden paths were written.
+          Gate still verifies independently from changed_files list.
+
+  open_issues:
+    type: array
+    items: {type: string}
+    required: false
+    description: >
+      Known issues, caveats, or deferred items the agent wants to surface.
+      Does not block gate; Yoshio reviews before merge.
+
+  self_assessed_confidence:
+    type: string
+    required: false
+    enum: [high, medium, low]
+    description: Agent's confidence in correctness of this handoff.
+
+  cost_estimated:
+    type: object
+    required: false
+    description: >
+      Estimated cost for this task. External agent costs are ESTIMATED only
+      (see plan C-5). Do not treat these as exact accounting.
+    fields:
+      tokens_input:
+        type: integer
+      tokens_output:
+        type: integer
+      model:
+        type: string
+      estimated_usd:
+        type: number
+      method:
+        type: string
+        enum: [exact, token_count_estimate]
+        description: How the cost was computed. "exact" only if provider confirmed.
+
+validation_rules:
+  - rule: task_id_not_empty
+    description: task_id must be a non-empty string.
+  - rule: completed_at_iso8601
+    description: completed_at must be a valid ISO 8601 datetime string.
+  - rule: changed_files_no_forbidden
+    description: >
+      Gate forbidden_path_writes checks changed_files against
+      contract.scope.forbidden_paths. Schema validation does not enforce
+      this; gate does.
+  - rule: test_results_passed_if_present
+    description: >
+      If test_results is present, passed must be a boolean.
+      A handoff with test_results.passed=false is schema-valid but
+      will fail the unit_tests gate.

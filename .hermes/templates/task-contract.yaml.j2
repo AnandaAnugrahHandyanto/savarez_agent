@@ -1,0 +1,69 @@
+# Task Contract Template
+# Written by Hermes before agent spawn. Agent receives a read-only copy.
+# Hermes validates handoff against this contract before running any gate.
+# NOTE: Agents must NOT write to this file. It is Hermes-owned.
+
+task_id: {{ task_id }}                   # uuid4
+run_id: {{ run_id }}                     # parent run uuid4
+created_at: {{ created_at }}             # ISO8601
+
+agent: {{ agent }}                       # claude_code | codex
+# CONFIRM: exact model identifiers before first real spawn (see plan task 2.4)
+model: {{ model | default("claude-sonnet-4-5") }}   # CONFIRM model identifier
+
+goal: |
+  {{ goal }}
+
+scope:
+  # Paths relative to worktree root. Hermes checks these via forbidden_path_writes gate.
+  # NOTE: enforcement is advisory in Phase 1/2 (post-hoc gate check, not OS-level prevention).
+  # Full enforcement requires Phase 3 container isolation.
+  allowed_paths:
+{% for path in allowed_paths %}
+    - {{ path }}
+{% endfor %}
+  # These paths must NEVER appear in handoff changed_files. Violation blocks merge.
+  forbidden_paths:
+    - .hermes/
+    - .claude/
+    - .codex/
+    - AGENTS.md
+    - CLAUDE.md
+    - CODEX.md
+{% for path in extra_forbidden_paths | default([]) %}
+    - {{ path }}
+{% endfor %}
+  allowed_operations: [read, write, create, delete]
+  forbidden_operations: [git_push, network_external, install_global]
+
+acceptance_criteria:
+{% for criterion in acceptance_criteria %}
+  - {{ criterion }}
+{% endfor %}
+
+# Gates that must pass before handoff is accepted. Evaluated in order (static first).
+# See .hermes/config/gate-taxonomy.yaml for gate definitions.
+# See .hermes/config/eval-matrix.yaml for task-type gate sets.
+eval_gates:
+  - schema_validation
+  - forbidden_path_writes
+  - prompt_artifact_unchanged
+  - diff_size_limit_kb: {{ diff_size_limit_kb | default(500) }}
+  - lint                  # CONFIRM: actual lint command (ruff? eslint? mypy?)
+  - unit_tests            # CONFIRM: actual test command — scripts/run_tests.sh?
+  - cost_cap
+  - human_review          # MVP: always required before merge
+
+cost_cap_usd: {{ cost_cap_usd | default(2.00) }}
+# NOTE: cost_usd_actual is ESTIMATED (token-count × model-pricing) — see C-5 in plan.
+cost_estimated: true
+
+# Hard iteration cap — agent must handoff before this limit
+iteration_cap: {{ iteration_cap | default(40) }}
+
+handoff_schema_ref: .hermes/schemas/handoff-v1.yaml
+
+# delegate_task does NOT directly spawn Claude Code or Codex. See C-3 in plan.
+# Real agent execution uses terminal() to invoke the CLI. This contract defines
+# the scope; the orchestrator skill handles the actual terminal() call.
+spawn_mechanism: terminal_cli            # terminal_cli | container (Phase 3)

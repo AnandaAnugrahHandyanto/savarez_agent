@@ -18,6 +18,36 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+# ── Test isolation ───────────────────────────────────────────────────────────
+#
+# agent.auxiliary_client holds two module-level dicts:
+#   _aux_unhealthy_until     — provider label → expiry timestamp
+#   _aux_unhealthy_logged_at — provider label → last-log timestamp
+#
+# _mark_provider_unhealthy() is called whenever a provider lacks credentials
+# (e.g. OPENROUTER_API_KEY absent causes a 60-second "openrouter" entry).
+# Tests in other modules (notably test_vision_tools.py) remove env vars and
+# invoke resolve_vision_provider_client(), which triggers _try_openrouter() and
+# leaves "openrouter" in the cache.  _resolve_auto() then skips the patched
+# main provider in Step-1, causing the TestResolveAutoMainFirst tests to see
+# None instead of the mock client.
+#
+# Fix: autouse fixture clears both dicts before and after every test in this
+# module so the health cache is always pristine regardless of run order.
+
+
+@pytest.fixture(autouse=True)
+def _reset_unhealthy_cache():
+    """Clear the auxiliary-client unhealthy cache around every test."""
+    import agent.auxiliary_client as _aux_mod
+
+    _aux_mod._aux_unhealthy_until.clear()
+    _aux_mod._aux_unhealthy_logged_at.clear()
+    yield
+    _aux_mod._aux_unhealthy_until.clear()
+    _aux_mod._aux_unhealthy_logged_at.clear()
+
+
 # ── Text aux tasks — _resolve_auto ──────────────────────────────────────────
 
 
@@ -395,6 +425,123 @@ class TestResolveVisionMainFirst:
         # Explicit "nous" override → uses strict backend, NOT main model path
         assert provider == "nous"
         mock_strict.assert_called_once_with("nous", None)
+
+
+# ── openai-codex vision skip (regression for Telegram OCR failure) ───────────
+
+
+class TestCodexVisionSkip:
+    """openai-codex must be skipped in vision auto-detect (it rejects non-Codex models).
+
+    Regression: when the user's main provider is openai-codex and their main
+    model is claude-sonnet-4.6 (or any non-Codex slug), the vision auto-detect
+    path used to forward that model straight to the Codex endpoint, which
+    rejected it with:
+        "claude-sonnet-4.6 model is not supported when using Codex with a
+         ChatGPT account"
+    Fix: add "openai-codex" to _PROVIDERS_WITHOUT_VISION so auto-detect skips
+    it and falls through to OpenRouter/Nous.
+    """
+
+    def test_codex_main_provider_skipped_in_vision_auto(self):
+        """openai-codex as main provider → vision auto falls through to aggregator."""
+        fallback_client = MagicMock()
+
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="openai-codex",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="claude-sonnet-4.6",
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", None, None, None, None),
+        ), patch(
+            "agent.auxiliary_client._resolve_strict_vision_backend",
+            return_value=(fallback_client, "google/gemini-3-flash-preview"),
+        ) as mock_strict, patch(
+            "agent.auxiliary_client.resolve_provider_client",
+        ) as mock_rpc:
+            from agent.auxiliary_client import resolve_vision_provider_client
+
+            provider, client, model = resolve_vision_provider_client()
+
+        # Must NOT have tried resolve_provider_client with openai-codex + claude-sonnet-4.6
+        for call in mock_rpc.call_args_list:
+            if call.args[0] == "openai-codex":
+                assert call.args[1] != "claude-sonnet-4.6", (
+                    "resolve_provider_client was called with openai-codex + "
+                    "claude-sonnet-4.6 — the Codex endpoint rejects this combo"
+                )
+        # Must have fallen back to a valid vision backend
+        assert client is fallback_client
+        assert provider in {"openrouter", "nous"}
+
+    def test_codex_in_providers_without_vision(self):
+        """openai-codex must be listed in _PROVIDERS_WITHOUT_VISION."""
+        from agent.auxiliary_client import _PROVIDERS_WITHOUT_VISION
+
+        assert "openai-codex" in _PROVIDERS_WITHOUT_VISION, (
+            "openai-codex must be in _PROVIDERS_WITHOUT_VISION to prevent "
+            "vision auto-detect from forwarding non-Codex models to the "
+            "Codex endpoint (which rejects them)"
+        )
+
+    def test_codex_main_provider_vision_does_not_call_rpc_with_main_model(self):
+        """resolve_provider_client must not be called with (openai-codex, main_model) for vision."""
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="openai-codex",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="claude-sonnet-4.6",
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", None, None, None, None),
+        ), patch(
+            "agent.auxiliary_client._resolve_strict_vision_backend",
+            return_value=(MagicMock(), "google/gemini-3-flash-preview"),
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client",
+        ) as mock_rpc:
+            from agent.auxiliary_client import resolve_vision_provider_client
+
+            resolve_vision_provider_client()
+
+        bad_calls = [
+            c for c in mock_rpc.call_args_list
+            if len(c.args) >= 2
+            and c.args[0] == "openai-codex"
+            and c.args[1] == "claude-sonnet-4.6"
+        ]
+        assert not bad_calls, (
+            f"resolve_provider_client called with openai-codex+claude-sonnet-4.6: {bad_calls}"
+        )
+
+    def test_explicit_codex_vision_override_still_reaches_rpc(self):
+        """Explicit auxiliary.vision.provider=openai-codex still reaches codex resolution path.
+
+        Users who deliberately set auxiliary.vision.provider: openai-codex
+        with a compatible model should not be blocked — the skip only applies
+        to the auto-detection path.  The explicit path goes through
+        _get_cached_client → resolve_provider_client("openai-codex", ...).
+        """
+        fake_client = MagicMock()
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("openai-codex", "codex-mini-latest", None, None, None),
+        ), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(fake_client, "codex-mini-latest"),
+        ) as mock_cached:
+            from agent.auxiliary_client import resolve_vision_provider_client
+
+            provider, client, model = resolve_vision_provider_client()
+
+        # Explicit openai-codex: _get_cached_client must be called with "openai-codex"
+        assert mock_cached.called, "_get_cached_client should be called for explicit openai-codex"
+        call_args = mock_cached.call_args
+        assert call_args.args[0] == "openai-codex"
+        assert call_args.args[1] == "codex-mini-latest"
+        assert provider == "openai-codex"
+        assert client is fake_client
 
 
 # ── Constant cleanup ────────────────────────────────────────────────────────
