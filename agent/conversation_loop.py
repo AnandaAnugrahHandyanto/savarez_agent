@@ -213,6 +213,7 @@ def run_conversation(
     # They are initialized in __init__ and must persist across run_conversation
     # calls so that nudge logic accumulates correctly in CLI mode.
     agent.iteration_budget = IterationBudget(agent.max_iterations)
+    agent._auto_continue_on_max_iterations_used = 0
 
     # Log conversation turn start for debugging/observability
     _preview_text = _summarize_user_message_for_log(user_message)
@@ -459,6 +460,7 @@ def run_conversation(
 
     # Main conversation loop
     api_call_count = 0
+    total_api_call_count = 0
     final_response = None
     interrupted = False
     codex_ack_continuations = 0
@@ -529,7 +531,7 @@ def run_conversation(
             should_review_memory=_should_review_memory,
         )
 
-    while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+    while True:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()
 
@@ -540,10 +542,33 @@ def run_conversation(
             if not agent.quiet_mode:
                 agent._safe_print("\n⚡ Breaking out of tool loop due to interrupt...")
             break
-        
+
+        if not agent._budget_grace_call and (
+            api_call_count >= agent.max_iterations
+            or agent.iteration_budget.remaining <= 0
+        ):
+            from agent.chat_completion_helpers import maybe_auto_continue_on_max_iterations
+
+            if maybe_auto_continue_on_max_iterations(agent, messages, api_call_count):
+                api_call_count = 0
+                agent._api_call_count = 0
+                if not agent.quiet_mode:
+                    agent._safe_print(
+                        "\n🔁 Iteration budget exhausted — auto-continuing with a fresh budget..."
+                    )
+                continue
+            _turn_exit_reason = "budget_exhausted"
+            if not agent.quiet_mode:
+                agent._safe_print(
+                    f"\n⚠️  Iteration budget exhausted "
+                    f"({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)"
+                )
+            break
+
         api_call_count += 1
-        agent._api_call_count = api_call_count
-        agent._touch_activity(f"starting API call #{api_call_count}")
+        total_api_call_count += 1
+        agent._api_call_count = total_api_call_count
+        agent._touch_activity(f"starting API call #{total_api_call_count}")
 
         # Grace call: the budget is exhausted but we gave the model one
         # more chance.  Consume the grace flag so the loop exits after
@@ -905,7 +930,7 @@ def run_conversation(
                                 "fallback provider in config.yaml."
                             ),
                             "messages": messages,
-                            "api_calls": api_call_count,
+                            "api_calls": total_api_call_count,
                             "completed": False,
                             "failed": True,
                             "error": _nous_msg,
@@ -1207,7 +1232,7 @@ def run_conversation(
                         return {
                             "messages": messages,
                             "completed": False,
-                            "api_calls": api_call_count,
+                            "api_calls": total_api_call_count,
                             "error": f"Invalid API response after {max_retries} retries: {_failure_hint}",
                             "failed": True  # Mark as failure for filtering
                         }
@@ -1228,7 +1253,7 @@ def run_conversation(
                             return {
                                 "final_response": f"Operation interrupted during retry ({_failure_hint}, attempt {retry_count}/{max_retries}).",
                                 "messages": messages,
-                                "api_calls": api_call_count,
+                                "api_calls": total_api_call_count,
                                 "completed": False,
                                 "interrupted": True,
                             }
@@ -1358,7 +1383,7 @@ def run_conversation(
                         return {
                             "final_response": _exhaust_response,
                             "messages": messages,
-                            "api_calls": api_call_count,
+                            "api_calls": total_api_call_count,
                             "completed": False,
                             "partial": True,
                             "error": _exhaust_error,
@@ -1398,7 +1423,7 @@ def run_conversation(
                             return {
                                 "final_response": partial_response or None,
                                 "messages": messages,
-                                "api_calls": api_call_count,
+                                "api_calls": total_api_call_count,
                                 "completed": False,
                                 "partial": True,
                                 "error": "Response remained truncated after 3 continuation attempts",
@@ -1426,7 +1451,7 @@ def run_conversation(
                             return {
                                 "final_response": None,
                                 "messages": messages,
-                                "api_calls": api_call_count,
+                                "api_calls": total_api_call_count,
                                 "completed": False,
                                 "partial": True,
                                 "error": "Response truncated due to output length limit",
@@ -1443,7 +1468,7 @@ def run_conversation(
                         return {
                             "final_response": None,
                             "messages": rolled_back_messages,
-                            "api_calls": api_call_count,
+                            "api_calls": total_api_call_count,
                             "completed": False,
                             "partial": True,
                             "error": "Response truncated due to output length limit"
@@ -1455,7 +1480,7 @@ def run_conversation(
                         return {
                             "final_response": None,
                             "messages": messages,
-                            "api_calls": api_call_count,
+                            "api_calls": total_api_call_count,
                             "completed": False,
                             "failed": True,
                             "error": "First response truncated due to output length limit"
@@ -2170,7 +2195,7 @@ def run_conversation(
                     return {
                         "final_response": f"Operation interrupted: handling API error ({error_type}: {agent._clean_error_message(str(api_error))}).",
                         "messages": messages,
-                        "api_calls": api_call_count,
+                        "api_calls": total_api_call_count,
                         "completed": False,
                         "interrupted": True,
                     }
@@ -2376,7 +2401,7 @@ def run_conversation(
                         return {
                             "messages": messages,
                             "completed": False,
-                            "api_calls": api_call_count,
+                            "api_calls": total_api_call_count,
                             "error": f"Request payload too large: max compression attempts ({max_compression_attempts}) reached.",
                             "partial": True,
                             "failed": True,
@@ -2407,7 +2432,7 @@ def run_conversation(
                         return {
                             "messages": messages,
                             "completed": False,
-                            "api_calls": api_call_count,
+                            "api_calls": total_api_call_count,
                             "error": "Request payload too large (413). Cannot compress further.",
                             "partial": True,
                             "failed": True,
@@ -2460,7 +2485,7 @@ def run_conversation(
                             return {
                                 "messages": messages,
                                 "completed": False,
-                                "api_calls": api_call_count,
+                                "api_calls": total_api_call_count,
                                 "error": f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached.",
                                 "partial": True,
                                 "failed": True,
@@ -2533,7 +2558,7 @@ def run_conversation(
                         return {
                             "messages": messages,
                             "completed": False,
-                            "api_calls": api_call_count,
+                            "api_calls": total_api_call_count,
                             "error": f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached.",
                             "partial": True,
                             "failed": True,
@@ -2566,7 +2591,7 @@ def run_conversation(
                         return {
                             "messages": messages,
                             "completed": False,
-                            "api_calls": api_call_count,
+                            "api_calls": total_api_call_count,
                             "error": f"Context length exceeded ({approx_tokens:,} tokens). Cannot compress further.",
                             "partial": True,
                             "failed": True,
@@ -2671,7 +2696,7 @@ def run_conversation(
                     return {
                         "final_response": None,
                         "messages": messages,
-                        "api_calls": api_call_count,
+                        "api_calls": total_api_call_count,
                         "completed": False,
                         "failed": True,
                         "error": str(api_error),
@@ -2754,7 +2779,7 @@ def run_conversation(
                     return {
                         "final_response": _final_response,
                         "messages": messages,
-                        "api_calls": api_call_count,
+                        "api_calls": total_api_call_count,
                         "completed": False,
                         "failed": True,
                         "error": _final_summary,
@@ -2796,7 +2821,7 @@ def run_conversation(
                         return {
                             "final_response": f"Operation interrupted: retrying API call after error (retry {retry_count}/{max_retries}).",
                             "messages": messages,
-                            "api_calls": api_call_count,
+                            "api_calls": total_api_call_count,
                             "completed": False,
                             "interrupted": True,
                         }
@@ -2952,7 +2977,7 @@ def run_conversation(
                     return {
                         "final_response": None,
                         "messages": rolled_back_messages,
-                        "api_calls": api_call_count,
+                        "api_calls": total_api_call_count,
                         "completed": False,
                         "partial": True,
                         "error": "Incomplete REASONING_SCRATCHPAD after 2 retries"
@@ -3013,7 +3038,7 @@ def run_conversation(
                 return {
                     "final_response": None,
                     "messages": messages,
-                    "api_calls": api_call_count,
+                    "api_calls": total_api_call_count,
                     "completed": False,
                     "partial": True,
                     "error": "Codex response remained incomplete after 3 continuation attempts",
@@ -3059,7 +3084,7 @@ def run_conversation(
                         return {
                             "final_response": None,
                             "messages": messages,
-                            "api_calls": api_call_count,
+                            "api_calls": total_api_call_count,
                             "completed": False,
                             "partial": True,
                             "error": f"Model generated invalid tool call: {invalid_preview}"
@@ -3126,7 +3151,7 @@ def run_conversation(
                         return {
                             "final_response": None,
                             "messages": messages,
-                            "api_calls": api_call_count,
+                            "api_calls": total_api_call_count,
                             "completed": False,
                             "partial": True,
                             "error": "Response truncated due to output length limit",
@@ -3812,11 +3837,11 @@ def run_conversation(
     _budget_max = agent.iteration_budget.max_total if agent.iteration_budget else 0
 
     _diag_msg = (
-        "Turn ended: reason=%s model=%s api_calls=%d/%d budget=%d/%d "
+        "Turn ended: reason=%s model=%s api_calls_total=%d cycle_api_calls=%d/%d budget=%d/%d "
         "tool_turns=%d last_msg_role=%s response_len=%d session=%s"
     )
     _diag_args = (
-        _turn_exit_reason, agent.model, api_call_count, agent.max_iterations,
+        _turn_exit_reason, agent.model, total_api_call_count, api_call_count, agent.max_iterations,
         _budget_used, _budget_max,
         _turn_tool_count, _last_msg_role, _resp_len,
         agent.session_id or "none",
@@ -3919,7 +3944,7 @@ def run_conversation(
         "final_response": final_response,
         "last_reasoning": last_reasoning,
         "messages": messages,
-        "api_calls": api_call_count,
+        "api_calls": total_api_call_count,
         "completed": completed,
         "turn_exit_reason": _turn_exit_reason,
         "partial": False,  # True only when stopped due to invalid tool calls
