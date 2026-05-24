@@ -500,6 +500,22 @@
     // own task's counter so it reloads itself on live events instead of
     // showing stale data.
     const [taskEventTick, setTaskEventTick] = useState({});
+    // In-flight specify/decompose ops keyed by task id — survives drawer
+    // close/reopen so the button stays on "Specifying…" while the POST runs.
+    const [auxBusy, setAuxBusy] = useState({});
+
+    const markAuxBusy = useCallback(function (taskId, kind) {
+      setAuxBusy(function (prev) {
+        return Object.assign({}, prev, { [taskId]: kind });
+      });
+    }, []);
+    const clearAuxBusy = useCallback(function (taskId) {
+      setAuxBusy(function (prev) {
+        var next = Object.assign({}, prev);
+        delete next[taskId];
+        return next;
+      });
+    }, []);
 
     const cursorRef = useRef(0);
     const reloadTimerRef = useRef(null);
@@ -1045,6 +1061,9 @@
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
           assignees: (boardData && boardData.assignees) || [],
           eventTick: taskEventTick[selectedTaskId] || 0,
+          auxBusy: auxBusy,
+          markAuxBusy: markAuxBusy,
+          clearAuxBusy: clearAuxBusy,
         }) : null,
       ),
     );
@@ -2813,6 +2832,7 @@
     // comment — or fail with a human-readable reason that the UI
     // surfaces inline without treating it as an HTTP error).
     const doSpecify = function () {
+      props.markAuxBusy(props.taskId, "specify");
       return SDK.fetchJSON(
         withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/specify`, boardSlug),
         {
@@ -2824,6 +2844,8 @@
         load();
         props.onRefresh();
         return res;
+      }).finally(function () {
+        props.clearAuxBusy(props.taskId);
       });
     };
 
@@ -2832,6 +2854,7 @@
     // Refreshes both the drawer (so the user sees the root flip to
     // todo) and the board (so the new children appear in the columns).
     const doDecompose = function () {
+      props.markAuxBusy(props.taskId, "decompose");
       return SDK.fetchJSON(
         withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/decompose`, boardSlug),
         {
@@ -2843,6 +2866,8 @@
         load();
         props.onRefresh();
         return res;
+      }).finally(function () {
+        props.clearAuxBusy(props.taskId);
       });
     };
 
@@ -2954,6 +2979,7 @@
           homeBusy: homeBusy,
           onToggleHomeSub: toggleHomeSubscription,
           onRefresh: props.onRefresh,
+          auxKind: (props.auxBusy && props.auxBusy[props.taskId]) || null,
         }) : null,
         data ? h("div", { className: "hermes-kanban-drawer-comment-row" },
           h(Input, {
@@ -3019,6 +3045,7 @@
           onSpecify: props.onSpecify,
           onDecompose: props.onDecompose,
           onOpenTerminal: props.onOpenTerminal,
+          auxKind: props.auxKind,
         }),
       ),
       h(DiagnosticsSection, {
@@ -3578,9 +3605,9 @@
   function StatusActions(props) {
     const { t } = useI18n();
     const task = props.task;
-    const [specifyBusy, setSpecifyBusy] = useState(false);
+    const specifyBusy = props.auxKind === "specify";
+    const decomposeBusy = props.auxKind === "decompose";
     const [specifyMsg, setSpecifyMsg] = useState(null);
-    const [decomposeBusy, setDecomposeBusy] = useState(false);
     const [decomposeMsg, setDecomposeMsg] = useState(null);
     const [terminalBusy, setTerminalBusy] = useState(false);
     const [terminalMsg, setTerminalMsg] = useState(null);
@@ -3600,7 +3627,6 @@
       ? h(Button, {
           onClick: function () {
             if (specifyBusy) return;
-            setSpecifyBusy(true);
             setSpecifyMsg(null);
             props.onSpecify().then(function (res) {
               if (res && res.ok) {
@@ -3619,8 +3645,6 @@
                 ok: false,
                 text: "Specify failed: " + (err.message || String(err)),
               });
-            }).then(function () {
-              setSpecifyBusy(false);
             });
           },
           disabled: specifyBusy,
@@ -3637,7 +3661,6 @@
       ? h(Button, {
           onClick: function () {
             if (decomposeBusy) return;
-            setDecomposeBusy(true);
             setDecomposeMsg(null);
             props.onDecompose().then(function (res) {
               if (res && res.ok) {
@@ -3666,8 +3689,6 @@
                 ok: false,
                 text: "Decompose failed: " + (err.message || String(err)),
               });
-            }).then(function () {
-              setDecomposeBusy(false);
             });
           },
           disabled: decomposeBusy,
