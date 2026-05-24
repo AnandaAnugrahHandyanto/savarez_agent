@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 from getpass import getpass
-import math
 import sys
-import time
 from types import SimpleNamespace
 import uuid
 
@@ -26,6 +24,10 @@ from agent.credential_pool import (
     label_from_token,
     list_custom_pool_providers,
     load_pool,
+)
+from agent.credential_status import (
+    classify_exhausted_status as _classify_exhausted_status,
+    format_exhausted_status as _format_exhausted_status,
 )
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import PROVIDER_REGISTRY
@@ -110,54 +112,6 @@ def _api_key_default_label(count: int) -> str:
 
 def _display_source(source: str) -> str:
     return source.split(":", 1)[1] if source.startswith("manual:") else source
-
-
-def _classify_exhausted_status(entry) -> tuple[str, bool]:
-    code = getattr(entry, "last_error_code", None)
-    reason = str(getattr(entry, "last_error_reason", "") or "").strip().lower()
-    message = str(getattr(entry, "last_error_message", "") or "").strip().lower()
-
-    if code == 429 or any(token in reason for token in ("rate_limit", "usage_limit", "quota", "exhausted")) or any(
-        token in message for token in ("rate limit", "usage limit", "quota", "too many requests")
-    ):
-        return "rate-limited", True
-
-    if code in {401, 403} or any(token in reason for token in ("invalid_token", "invalid_grant", "unauthorized", "forbidden", "auth")) or any(
-        token in message for token in ("unauthorized", "forbidden", "expired", "revoked", "invalid token", "authentication")
-    ):
-        return "auth failed", False
-
-    return "exhausted", True
-
-
-
-def _format_exhausted_status(entry) -> str:
-    if entry.last_status != STATUS_EXHAUSTED:
-        return ""
-    label, show_retry_window = _classify_exhausted_status(entry)
-    reason = getattr(entry, "last_error_reason", None)
-    reason_text = f" {reason}" if isinstance(reason, str) and reason.strip() else ""
-    code = f" ({entry.last_error_code})" if entry.last_error_code else ""
-    if not show_retry_window:
-        return f" {label}{reason_text}{code} (re-auth may be required)"
-    exhausted_until = _exhausted_until(entry)
-    if exhausted_until is None:
-        return f" {label}{reason_text}{code}"
-    remaining = max(0, int(math.ceil(exhausted_until - time.time())))
-    if remaining <= 0:
-        return f" {label}{reason_text}{code} (ready to retry)"
-    minutes, seconds = divmod(remaining, 60)
-    hours, minutes = divmod(minutes, 60)
-    days, hours = divmod(hours, 24)
-    if days:
-        wait = f"{days}d {hours}h"
-    elif hours:
-        wait = f"{hours}h {minutes}m"
-    elif minutes:
-        wait = f"{minutes}m {seconds}s"
-    else:
-        wait = f"{seconds}s"
-    return f" {label}{reason_text}{code} ({wait} left)"
 
 
 def auth_add_command(args) -> None:

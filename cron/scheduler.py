@@ -1491,8 +1491,9 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
             runtime = resolve_runtime_provider(**runtime_kwargs)
         except AuthError as auth_exc:
-            # Primary provider auth failed — try fallback chain before giving up.
-            logger.warning("Job '%s': primary auth failed (%s), trying fallback", job_id, auth_exc)
+            # Primary provider unavailable — try fallback chain before giving up.
+            from hermes_cli.auth import describe_primary_failure
+            logger.warning("Job '%s': %s, trying fallback", job_id, describe_primary_failure(auth_exc))
             fb = _cfg.get("fallback_providers") or _cfg.get("fallback_model")
             fb_list = (fb if isinstance(fb, list) else [fb]) if fb else []
             runtime = None
