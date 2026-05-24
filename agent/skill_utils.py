@@ -196,6 +196,54 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     return _normalize_string_set(skills_cfg.get("disabled"))
 
 
+def get_allowed_skill_names(platform: str | None = None) -> Optional[Set[str]]:
+    """Read optional allowlisted skill names from config.yaml.
+
+    When unset, returns ``None`` so existing Hermes behavior is preserved.
+    Supports both ``skills.allowlist`` and
+    ``skills.platform_allowlist.<platform>``.
+    """
+    config_path = get_config_path()
+    if not config_path.exists():
+        return None
+    try:
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.debug("Could not read skill config %s: %s", config_path, e)
+        return None
+    if not isinstance(parsed, dict):
+        return None
+
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return None
+
+    from gateway.session_context import get_session_env
+    resolved_platform = (
+        platform
+        or os.getenv("HERMES_PLATFORM")
+        or get_session_env("HERMES_SESSION_PLATFORM")
+    )
+    if resolved_platform:
+        platform_allowed = (skills_cfg.get("platform_allowlist") or {}).get(
+            resolved_platform
+        )
+        if platform_allowed is not None:
+            return _normalize_string_set(platform_allowed)
+
+    allowlist = skills_cfg.get("allowlist")
+    if allowlist is None:
+        return None
+    return _normalize_string_set(allowlist)
+
+
+def skill_is_allowed_by_config(name: str, platform: str | None = None) -> bool:
+    allowed = get_allowed_skill_names(platform)
+    if allowed is None:
+        return True
+    return name in allowed
+
+
 def _normalize_string_set(values) -> Set[str]:
     if values is None:
         return set()

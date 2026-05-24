@@ -558,7 +558,11 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     Returns:
         List of skill metadata dicts (name, description, category).
     """
-    from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+    from agent.skill_utils import (
+        get_external_skills_dirs,
+        iter_skill_index_files,
+        skill_is_allowed_by_config,
+    )
 
     skills = []
     seen_names: set = set()
@@ -588,6 +592,8 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
                 name = frontmatter.get("name", skill_dir.name)[:MAX_NAME_LENGTH]
                 if name in seen_names:
+                    continue
+                if not skill_is_allowed_by_config(name):
                     continue
                 if name in disabled:
                     continue
