@@ -500,68 +500,79 @@ def render_dashboard(
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no">
 <meta http-equiv="Content-Security-Policy" content="{html.escape(ACTA_DASHBOARD_CSP, quote=False)}">
 <title>Acta Situation Room</title>
-<meta name="description" content="Your cron command center, redesigned as a Bloomberg-black reading surface.">
+<meta name="description" content="Acta Imperatr situation room: private briefing packets, source provenance, jobs, and archive in a compact operator surface.">
 <style>
-:root {{ color-scheme: dark; --black:#000; --panel:#050505; --panel2:#0b0b0b; --line:#252525; --line-soft:#171717; --text:#fff; --body:#e8e8e8; --muted:#a5a5a5; --faint:#737373; --accent:#f5a400; --green:#57a773; --amber:#f5a400; --red:#d05a4e; --ui:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; --read:'Iowan Old Style','Charter','Source Serif Pro',Georgia,serif; --mono:'SFMono-Regular','Roboto Mono','IBM Plex Mono',Consolas,monospace; }}
+:root {{ color-scheme: dark; --black:#03060b; --bg:#03060b; --bg2:#071018; --panel:rgba(255,255,255,.055); --panel2:rgba(255,255,255,.085); --line:rgba(255,255,255,.105); --line-soft:rgba(255,255,255,.07); --text:#f5f7fb; --body:rgba(245,247,251,.86); --muted:rgba(245,247,251,.66); --faint:rgba(245,247,251,.42); --accent:#756cff; --acta:#756cff; --acta2:#23a7ff; --green:#57a773; --red:#d05a4e; --ui:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; --read:'Iowan Old Style','Charter','Source Serif Pro',Georgia,serif; --mono:'SFMono-Regular','Roboto Mono','IBM Plex Mono',Consolas,monospace; }}
 * {{ box-sizing:border-box; }}
-html {{ width:100%; min-width:320px; overflow-x:hidden; background:#000; }}
-body {{ margin:0; width:100%; min-width:320px; overflow-x:hidden; background:var(--black); color:var(--body); font:14px/1.45 var(--ui); -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; -webkit-text-size-adjust:100%; touch-action:pan-y; }}
+html {{ width:100%; min-width:320px; overflow-x:hidden; background:#03060b; }}
+body {{ margin:0; width:100%; min-width:320px; overflow-x:hidden; background:radial-gradient(circle at 18% 8%, rgba(117,108,255,.20), transparent 30%), radial-gradient(circle at 82% 12%, rgba(35,167,255,.12), transparent 28%), linear-gradient(145deg,#020408,#071018 52%,#030509); color:var(--body); font:14px/1.45 var(--ui); -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; -webkit-text-size-adjust:100%; touch-action:pan-y; }}
+body:before {{ content:""; position:fixed; inset:0; pointer-events:none; opacity:.16; background-image:linear-gradient(rgba(255,255,255,.03) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px); background-size:52px 52px; mask-image:radial-gradient(circle at 50% 34%,black,transparent 78%); }}
 a {{ color:inherit; }}
-.shell {{ min-height:100vh; display:grid; grid-template-columns:210px minmax(0,1fr); background:#000; }}
-.rail {{ border-right:1px solid var(--line); background:#030303; display:flex; flex-direction:column; }}
-.brand {{ height:54px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:10px; padding:0 14px; }}
-.logo {{ width:25px; height:25px; border:1px solid #555; display:grid; place-items:center; font:700 14px var(--read); color:#fff; background:#080808; }}
-.brand b {{ font-size:12px; letter-spacing:.18em; color:#fff; }}
+.shell {{ min-height:100vh; display:grid; grid-template-columns:220px minmax(0,1fr); background:transparent; position:relative; }}
+.rail {{ border-right:1px solid var(--line); background:rgba(3,6,11,.72); backdrop-filter:blur(22px) saturate(145%); display:flex; flex-direction:column; }}
+.brand {{ height:58px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:10px; padding:0 14px; }}
+.logo {{ width:32px; height:32px; border-radius:12px; border:1px solid rgba(255,255,255,.18); display:grid; place-items:center; font:600 18px var(--read); color:#fff; background:linear-gradient(135deg,rgba(117,108,255,.62),rgba(35,167,255,.34)); box-shadow:0 0 24px rgba(117,108,255,.28); }}
+.brand b {{ font:600 20px var(--read); letter-spacing:-.04em; color:#fff; text-transform:none; }}
 .brand small {{ display:block; font:10px var(--mono); color:var(--muted); letter-spacing:.08em; }}
 .nav-side {{ padding:14px 8px; }}
 .nav-side h4 {{ margin:16px 8px 7px; color:var(--faint); font:700 10px var(--mono); letter-spacing:.12em; text-transform:uppercase; }}
-.nav-side a {{ display:flex; align-items:center; gap:8px; color:#c8c8c8; padding:8px; border-radius:1px; text-decoration:none; }}
-.nav-side a.active {{ background:#111; color:#fff; border-left:2px solid var(--accent); padding-left:6px; }}
+.nav-side a {{ display:flex; align-items:center; gap:8px; color:rgba(245,247,251,.72); padding:9px 10px; border-radius:14px; text-decoration:none; }}
+.nav-side a.active {{ background:rgba(117,108,255,.20); color:#fff; border:1px solid rgba(117,108,255,.34); box-shadow:inset 3px 0 0 rgba(35,167,255,.54); padding-left:9px; }}
 .nav-side span {{ margin-left:auto; color:var(--faint); font:10px var(--mono); }}
 .railfoot {{ margin-top:auto; border-top:1px solid var(--line); padding:11px 14px; color:var(--muted); font:11px var(--mono); }}
 .live {{ display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--green); margin-right:7px; }}
 .main {{ min-width:0; }}
-.top {{ height:54px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; padding:0 16px; background:#020202; position:sticky; top:0; z-index:2; }}
-.ticker {{ color:#fff; font:700 12px var(--mono); letter-spacing:.08em; }}
-.ticker em {{ font-style:normal; color:var(--accent); }}
-.search {{ height:30px; flex:1; max-width:520px; border:1px solid var(--line); background:#070707; color:var(--faint); display:flex; align-items:center; padding:0 10px; font:12px var(--mono); }}
-.topstats {{ display:flex; gap:13px; margin-left:auto; }}
-.topstats div {{ font:11px var(--mono); color:var(--muted); }}
-.topstats b {{ color:var(--text); font-weight:600; }}
-.content {{ padding:16px; display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:16px; }}
-.lead {{ display:block; border-bottom:1px solid var(--line); padding-bottom:15px; margin-bottom:0; text-decoration:none; color:inherit; cursor:pointer; position:relative; }}
+.top {{ height:58px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; padding:0 16px; background:rgba(3,6,11,.78); backdrop-filter:blur(22px) saturate(145%); position:sticky; top:0; z-index:2; }}
+.ticker {{ color:#fff; font:800 11px var(--mono); letter-spacing:.11em; }}
+.ticker em {{ font-style:normal; color:var(--acta2); text-shadow:0 0 18px rgba(35,167,255,.32); }}
+.search {{ height:32px; flex:1; max-width:520px; border:1px solid var(--line); border-radius:999px; background:rgba(255,255,255,.045); color:var(--faint); display:flex; align-items:center; padding:0 12px; font:12px var(--mono); }}
+.topstats {{ display:flex; gap:9px; margin-left:auto; }}
+.topstats div {{ font:10px var(--mono); color:var(--muted); border:1px solid var(--line); border-radius:999px; background:rgba(255,255,255,.045); padding:5px 8px; }}
+.topstats b {{ color:var(--text); font-weight:700; }}
+.content {{ padding:18px; display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:18px; }}
+.panel-title {{ display:flex; align-items:center; justify-content:space-between; gap:10px; margin:4px 0 10px; color:#fff; font:800 11px var(--mono); letter-spacing:.12em; text-transform:uppercase; }}
+.panel-title span {{ color:var(--faint); font-weight:600; letter-spacing:.08em; }}
+.lead {{ display:block; border:1px solid var(--line); border-radius:28px; padding:16px; margin-bottom:14px; text-decoration:none; color:inherit; cursor:pointer; position:relative; overflow:hidden; background:linear-gradient(135deg,rgba(117,108,255,.16),rgba(255,255,255,.045)); box-shadow:0 24px 70px rgba(0,0,0,.32); }}
+.lead:before {{ content:""; position:absolute; inset:auto -20% -55% 35%; height:150px; background:radial-gradient(circle,rgba(35,167,255,.18),transparent 65%); pointer-events:none; }}
+.lead > * {{ position:relative; }}
 .lead[aria-disabled='true'] {{ cursor:default; }}
-.lead:hover h1 {{ color:var(--accent); }}
-.label {{ font:700 11px var(--mono); letter-spacing:.12em; color:var(--accent); text-transform:uppercase; }}
-h1 {{ font:700 clamp(34px,4.8vw,52px)/1.02 var(--read); letter-spacing:-.04em; margin:8px 0 10px; color:#fff; max-width:980px; }}
-.lead p {{ font:18px/1.45 var(--read); color:var(--body); max-width:940px; margin:0; }}
-.meta {{ display:flex; flex-wrap:wrap; gap:14px; margin-top:12px; color:var(--muted); font:11px var(--mono); text-transform:uppercase; }}
-.meta b {{ color:#fff; font-weight:600; }}
-.read-dot {{ width:8px; height:8px; border-radius:50%; background:var(--accent); display:inline-block; margin-right:7px; box-shadow:0 0 0 2px rgba(245,164,0,.14); }}
+.lead:hover h1 {{ color:#fff; text-shadow:0 0 18px rgba(117,108,255,.30); }}
+.label {{ font:800 10px var(--mono); letter-spacing:.13em; color:var(--acta2); text-transform:uppercase; }}
+h1 {{ font:600 clamp(32px,4.8vw,54px)/1.02 var(--read); letter-spacing:-.055em; margin:8px 0 10px; color:#fff; max-width:980px; }}
+.lead p {{ font:17px/1.42 var(--read); color:var(--body); max-width:940px; margin:0; }}
+.meta {{ display:flex; flex-wrap:wrap; gap:8px; margin-top:13px; color:var(--muted); font:10px var(--mono); text-transform:uppercase; }}
+.meta span, .meta .ask-label {{ border:1px solid var(--line); border-radius:999px; padding:5px 8px; background:rgba(255,255,255,.045); }}
+.meta b {{ color:#fff; font-weight:700; }}
+.metricrow {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-top:13px; }}
+.metric {{ border:1px solid var(--line); border-radius:16px; padding:8px 10px; background:rgba(0,0,0,.16); }}
+.metric b {{ display:block; color:#fff; font:750 16px var(--ui); }}
+.metric span {{ color:var(--faint); font:800 9px var(--mono); text-transform:uppercase; letter-spacing:.08em; }}
+.read-dot {{ width:8px; height:8px; border-radius:50%; background:var(--acta2); display:inline-block; margin-right:7px; box-shadow:0 0 0 2px rgba(117,108,255,.16),0 0 16px rgba(35,167,255,.28); }}
 .readable.read {{ opacity:.68; }}
 .readable.read .read-dot {{ background:transparent; box-shadow:inset 0 0 0 1px var(--faint); }}
 .readable.read h1, .readable.read h2 {{ color:#c8c8c8; }}
-.feed {{ border-top:1px solid var(--line); }}
-.brief-row {{ display:block; border-bottom:1px solid var(--line-soft); text-decoration:none; color:inherit; cursor:pointer; position:relative; overflow:hidden; background:#000; }}
-.swipe-content {{ display:grid; grid-template-columns:82px minmax(0,1fr) 76px; gap:14px; padding:16px 0; position:relative; z-index:1; background:#000; transition:transform .22s cubic-bezier(.2,.8,.2,1), opacity .18s ease, background .18s ease; will-change:transform; }}
-.swipe-action {{ position:absolute; inset:0 auto 0 0; width:118px; display:flex; align-items:center; padding-left:16px; color:#000; background:var(--accent); font:800 10px var(--mono); letter-spacing:.08em; z-index:0; opacity:0; transition:opacity .12s ease; }}
+.feed {{ display:flex; flex-direction:column; gap:8px; border-top:0; }}
+.brief-row {{ display:block; border:1px solid var(--line); border-radius:18px; text-decoration:none; color:inherit; cursor:pointer; position:relative; overflow:hidden; background:linear-gradient(105deg,rgba(117,108,255,.10),rgba(255,255,255,.04)); }}
+.swipe-content {{ display:grid; grid-template-columns:54px minmax(0,1fr) auto; gap:10px; align-items:center; padding:10px 11px; min-height:72px; position:relative; z-index:1; background:transparent; transition:transform .22s cubic-bezier(.2,.8,.2,1), opacity .18s ease, background .18s ease; will-change:transform; }}
+.swipe-content:before {{ content:""; width:4px; height:44px; border-radius:999px; background:var(--acta); box-shadow:0 0 16px rgba(117,108,255,.45); position:absolute; left:0; top:50%; transform:translateY(-50%); }}
+.swipe-action {{ position:absolute; inset:0 auto 0 0; width:118px; display:flex; align-items:center; padding-left:16px; color:#fff; background:linear-gradient(135deg,var(--acta),var(--acta2)); font:800 10px var(--mono); letter-spacing:.08em; z-index:0; opacity:0; transition:opacity .12s ease; }}
 .brief-row.swiping .swipe-content {{ transition:none; }}
 .brief-row.swipe-peek .swipe-content {{ transform:translateX(92px); }}
 .brief-row.swipe-peek .swipe-action, .brief-row.swiping .swipe-action {{ opacity:1; }}
-.brief-row:hover .swipe-content {{ background:#050505; outline:1px solid var(--line); outline-offset:0; padding-left:10px; padding-right:10px; margin-left:-10px; margin-right:-10px; }}
+.brief-row:hover .swipe-content {{ background:rgba(255,255,255,.045); }}
 .brief-row[aria-disabled='true'] {{ cursor:default; }}
-.priority {{ font:700 11px var(--mono); color:var(--accent); }}
-.silent .priority {{ color:var(--red); }}
-.missing .priority {{ color:var(--red); }}
+.priority {{ font:800 10px var(--mono); color:#fff; border:1px solid rgba(117,108,255,.46); border-radius:999px; background:rgba(117,108,255,.28); padding:5px 7px; text-align:center; justify-self:start; }}
+.silent .priority {{ color:#fff; border-color:rgba(208,90,78,.42); background:rgba(208,90,78,.16); }}
+.missing .priority {{ color:#fff; border-color:rgba(208,90,78,.50); background:rgba(208,90,78,.22); }}
 .paused {{ opacity:.6; }}
-.row-kicker {{ color:var(--muted); font:11px var(--mono); text-transform:uppercase; letter-spacing:.08em; margin-bottom:5px; }}
-h2 {{ font:700 23px/1.1 var(--read); margin:0 0 6px; color:#fff; letter-spacing:-.015em; }}
-.brief-copy p {{ font:16px/1.45 var(--read); color:var(--body); margin:0; max-width:860px; }}
+.row-kicker {{ color:var(--muted); font:10px var(--mono); text-transform:uppercase; letter-spacing:.08em; margin-bottom:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+h2 {{ font:700 20px/1.08 var(--read); margin:0 0 5px; color:#fff; letter-spacing:-.025em; }}
+.brief-copy p {{ font:14px/1.35 var(--ui); color:var(--body); margin:0; max-width:860px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }}
 .source-line {{ font:11px var(--mono); color:var(--muted); margin-top:8px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
-.open-label {{ justify-self:end; align-self:start; border:1px solid var(--line); color:#fff; padding:6px 8px; font:11px var(--mono); background:#080808; }}
-.card-actions {{ justify-self:end; align-self:start; display:flex; gap:7px; align-items:center; }}
-.ask-label {{ border:1px solid var(--accent); color:#000; background:var(--accent); text-decoration:none; padding:6px 8px; font:800 11px var(--mono); }}
-.brief-row:hover .open-label {{ border-color:var(--accent); color:var(--accent); }}
+.open-label {{ justify-self:end; align-self:start; border:1px solid var(--line); border-radius:999px; color:#fff; padding:6px 8px; font:11px var(--mono); background:rgba(255,255,255,.06); }}
+.card-actions {{ justify-self:end; align-self:center; display:flex; gap:7px; align-items:center; }}
+.ask-label {{ border:1px solid rgba(35,167,255,.44); border-radius:999px; color:#fff; background:linear-gradient(135deg,rgba(117,108,255,.70),rgba(35,167,255,.48)); text-decoration:none; padding:6px 8px; font:800 11px var(--mono); }}
+.brief-row:hover .open-label {{ border-color:var(--acta2); color:#fff; }}
 .jobs-panel {{ margin-top:22px; border-top:1px solid var(--line); scroll-margin-top:112px; }}
 .jobs-head {{ display:flex; align-items:flex-end; gap:12px; padding:16px 0 8px; border-bottom:1px solid var(--line-soft); }}
 .jobs-head h2 {{ margin:0; font:800 13px var(--mono); letter-spacing:.12em; text-transform:uppercase; color:#fff; }}
@@ -570,13 +581,13 @@ h2 {{ font:700 23px/1.1 var(--read); margin:0 0 6px; color:#fff; letter-spacing:
 .job-rank {{ color:var(--accent); font:800 11px var(--mono); }}
 .job-main b {{ display:block; color:#fff; font:700 15px/1.2 var(--ui); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
 .job-main span, .job-schedule, .job-last {{ color:var(--muted); font:11px var(--mono); min-width:0; }}
-.thread-link {{ color:var(--accent); text-decoration:none; border-bottom:1px solid rgba(245,164,0,.55); font-weight:800; }}
+.thread-link {{ color:var(--accent); text-decoration:none; border-bottom:1px solid rgba(35,167,255,.55); font-weight:800; }}
 .job-schedule, .job-last {{ display:grid; gap:3px; }}
 .job-schedule em, .job-last em {{ color:var(--faint); font-style:normal; font-size:9px; letter-spacing:.1em; }}
 .job-last time {{ color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
 .job-last small {{ color:var(--accent); font:10px var(--mono); text-transform:uppercase; }}
 .side {{ display:grid; gap:16px; align-content:start; }}
-.card {{ background:var(--panel); border:1px solid var(--line); }}
+.card {{ background:var(--panel); border:1px solid var(--line); border-radius:24px; overflow:hidden; backdrop-filter:blur(18px) saturate(145%); }}
 .card-head {{ height:34px; border-bottom:1px solid var(--line); display:flex; align-items:center; padding:0 10px; font:700 11px var(--mono); letter-spacing:.1em; text-transform:uppercase; color:#fff; }}
 .card-head span {{ margin-left:auto; color:var(--muted); font-weight:400; }}
 .readorder, .audit, .assist {{ padding:10px 12px; }}
@@ -592,16 +603,16 @@ h2 {{ font:700 23px/1.1 var(--read); margin:0 0 6px; color:#fff; letter-spacing:
 .audit-row span {{ display:block; color:var(--muted); font-size:12px; }}
 .prompt {{ font:14px/1.45 var(--read); color:var(--body); border-left:2px solid var(--accent); padding-left:10px; }}
 .chiprow {{ display:flex; flex-wrap:wrap; gap:7px; margin-top:12px; }}
-.chip {{ border:1px solid var(--line); color:var(--muted); font:10px var(--mono); padding:4px 6px; background:#080808; }}
-.date-nav {{ display:flex; gap:8px; flex-wrap:wrap; padding:0 16px 16px; border-bottom:1px solid var(--line); }}
-.nav-link {{ color:var(--muted); text-decoration:none; border:1px solid var(--line); padding:6px 9px; font:11px var(--mono); background:#050505; }}
-.nav-link.primary {{ color:#fff; border-color:var(--accent); }}
+.chip {{ border:1px solid var(--line); border-radius:999px; color:var(--muted); font:10px var(--mono); padding:4px 7px; background:rgba(255,255,255,.045); }}
+.date-nav {{ display:flex; gap:8px; flex-wrap:wrap; padding:0 18px 16px; border-bottom:1px solid var(--line); }}
+.nav-link {{ color:var(--muted); text-decoration:none; border:1px solid var(--line); border-radius:999px; padding:7px 11px; font:11px var(--mono); background:rgba(255,255,255,.045); }}
+.nav-link.primary {{ color:#fff; border-color:rgba(117,108,255,.46); background:rgba(117,108,255,.18); }}
 footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text-align:center; }}
 .mobilebar {{ display:none; }}
-.pull-refresh {{ display:none; position:fixed; left:50%; top:calc(8px + env(safe-area-inset-top, 0px)); transform:translate(-50%,-130%); min-width:150px; padding:9px 12px; border:1px solid var(--line); background:rgba(2,2,2,.96); color:var(--accent); font:800 10px var(--mono); letter-spacing:.12em; text-align:center; z-index:5; opacity:0; transition:transform .18s ease, opacity .18s ease; box-shadow:0 12px 32px rgba(0,0,0,.55); }}
-.pull-refresh.ready {{ color:#000; background:var(--accent); border-color:var(--accent); }}
+.pull-refresh {{ display:none; position:fixed; left:50%; top:calc(8px + env(safe-area-inset-top, 0px)); transform:translate(-50%,-130%); min-width:150px; padding:9px 12px; border:1px solid var(--line); border-radius:999px; background:rgba(3,6,11,.96); color:var(--acta2); font:800 10px var(--mono); letter-spacing:.12em; text-align:center; z-index:5; opacity:0; transition:transform .18s ease, opacity .18s ease; box-shadow:0 12px 32px rgba(0,0,0,.55); }}
+.pull-refresh.ready {{ color:#fff; background:linear-gradient(135deg,var(--acta),var(--acta2)); border-color:transparent; }}
 .pull-refresh.visible {{ opacity:1; transform:translate(-50%,0); }}
-@media (max-width:980px) {{ .pull-refresh {{ display:block; }} .shell {{ display:block; min-width:0; width:100%; }} .rail {{ display:none; }} .main {{ width:100%; min-width:0; }} .top {{ height:50px; padding:0 max(14px, env(safe-area-inset-left, 0px)) 0 max(14px, env(safe-area-inset-left, 0px)); }} .date-nav {{ position:static; background:#000; padding:8px 14px; gap:8px; }} .nav-link {{ min-height:38px; display:inline-flex; align-items:center; padding:0 12px; }} .content {{ display:block; padding:12px 14px calc(132px + env(safe-area-inset-bottom, 0px)); }} .side {{ display:none; }} .topstats {{ display:none; }} .lead {{ padding-bottom:16px; margin-bottom:0; touch-action:pan-y; }} .lead p {{ display:-webkit-box; -webkit-line-clamp:5; -webkit-box-orient:vertical; overflow:hidden; }} .meta {{ gap:9px; }} .feed {{ border-top:0; }} .brief-row {{ min-height:96px; touch-action:pan-y; }} .swipe-content {{ grid-template-columns:42px minmax(0,1fr); gap:8px; min-height:96px; padding:15px 0; touch-action:pan-y; }} .brief-row:hover .swipe-content {{ background:#000; outline:0; padding-left:0; padding-right:0; margin-left:0; margin-right:0; }} .priority {{ font-size:10px; }} .row-kicker {{ font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }} .brief-copy p {{ display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden; }} .source-line {{ display:none; }} .open-label {{ display:none; }} .card-actions {{ grid-column:2; justify-self:start; }} .ask-label {{ padding:5px 7px; font-size:10px; }} .jobs-panel {{ margin-top:18px; scroll-margin-top:100px; }} .jobs-head {{ padding-top:14px; }} .job-row {{ grid-template-columns:34px minmax(0,1fr); gap:8px 10px; padding:13px 0; }} .job-schedule, .job-last {{ grid-column:2; }} .job-main b {{ font-size:14px; }} .search {{ max-width:none; }} .mobilebar {{ display:grid; position:fixed; left:max(10px, env(safe-area-inset-left, 0px)); right:max(10px, env(safe-area-inset-right, 0px)); bottom:calc(14px + env(safe-area-inset-bottom, 0px)); min-height:62px; background:rgba(2,2,2,.96); backdrop-filter:blur(14px); border:1px solid var(--line); grid-template-columns:repeat(4,1fr); z-index:3; box-shadow:0 -10px 24px rgba(0,0,0,.72); opacity:0; transform:translateY(calc(100% + 24px)); pointer-events:none; transition:opacity .18s ease, transform .22s cubic-bezier(.2,.8,.2,1); }} .mobilebar.visible {{ opacity:1; transform:translateY(0); pointer-events:auto; }} .mobilebar a {{ display:grid; place-items:center; min-height:62px; color:#ddd; text-decoration:none; font:11px var(--mono); touch-action:manipulation; -webkit-tap-highlight-color:rgba(245,164,0,.18); }} .mobilebar a:first-child {{ color:var(--accent); }} }}
+@media (max-width:980px) {{ .pull-refresh {{ display:block; }} .shell {{ display:block; min-width:0; width:100%; }} .rail {{ display:none; }} .main {{ width:100%; min-width:0; }} .top {{ height:50px; padding:0 max(14px, env(safe-area-inset-left, 0px)) 0 max(14px, env(safe-area-inset-left, 0px)); }} .date-nav {{ position:static; background:rgba(3,6,11,.82); padding:8px 14px; gap:8px; }} .nav-link {{ min-height:38px; display:inline-flex; align-items:center; padding:0 12px; }} .content {{ display:block; padding:12px 14px calc(132px + env(safe-area-inset-bottom, 0px)); }} .panel-title {{ margin-top:12px; }} .side {{ display:none; }} .topstats {{ display:none; }} .lead {{ padding-bottom:16px; margin-bottom:0; touch-action:pan-y; }} .lead p {{ display:-webkit-box; -webkit-line-clamp:5; -webkit-box-orient:vertical; overflow:hidden; }} .meta {{ gap:9px; }} .feed {{ border-top:0; }} .brief-row {{ min-height:96px; touch-action:pan-y; }} .swipe-content {{ grid-template-columns:42px minmax(0,1fr); gap:8px; min-height:96px; padding:13px 12px; touch-action:pan-y; }} .brief-row:hover .swipe-content {{ background:rgba(255,255,255,.05); outline:0; }} .priority {{ font-size:10px; }} .row-kicker {{ font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }} .brief-copy p {{ display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden; }} .source-line {{ display:none; }} .open-label {{ display:none; }} .card-actions {{ grid-column:2; justify-self:start; }} .ask-label {{ padding:5px 7px; font-size:10px; }} .jobs-panel {{ margin-top:18px; scroll-margin-top:100px; }} .jobs-head {{ padding-top:14px; }} .job-row {{ grid-template-columns:34px minmax(0,1fr); gap:8px 10px; padding:13px 0; }} .job-schedule, .job-last {{ grid-column:2; }} .job-main b {{ font-size:14px; }} .search {{ max-width:none; }} .mobilebar {{ display:grid; position:fixed; left:max(10px, env(safe-area-inset-left, 0px)); right:max(10px, env(safe-area-inset-right, 0px)); bottom:calc(14px + env(safe-area-inset-bottom, 0px)); min-height:62px; background:rgba(2,2,2,.96); backdrop-filter:blur(14px); border:1px solid var(--line); grid-template-columns:repeat(4,1fr); z-index:3; box-shadow:0 -10px 24px rgba(0,0,0,.72); opacity:0; transform:translateY(calc(100% + 24px)); pointer-events:none; transition:opacity .18s ease, transform .22s cubic-bezier(.2,.8,.2,1); }} .mobilebar.visible {{ opacity:1; transform:translateY(0); pointer-events:auto; }} .mobilebar a {{ display:grid; place-items:center; min-height:62px; color:#ddd; text-decoration:none; font:11px var(--mono); touch-action:manipulation; -webkit-tap-highlight-color:rgba(117,108,255,.18); }} .mobilebar a:first-child {{ color:var(--accent); }} }}
 @media (max-width:620px) {{ .top {{ gap:8px; }} .ticker {{ font-size:11px; }} .search {{ display:none; }} h1 {{ font-size:clamp(31px,9vw,42px); max-width:100%; }} .lead p {{ font-size:16px; line-height:1.42; }} h2 {{ font-size:20px; }} .brief-copy p {{ font-size:15px; line-height:1.4; }} }}
 </style>
 </head>
@@ -609,35 +620,36 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
 <div class="pull-refresh" aria-live="polite">PULL TO REFRESH</div>
 <div class="shell">
   <aside class="rail">
-    <div class="brand"><div class="logo">A</div><div><b>ACTA</b><small>SITUATION ROOM</small></div></div>
+    <div class="brand"><div class="logo">A</div><div><b>Acta</b><small>IMPERATR SITUATION ROOM</small></div></div>
     <nav class="nav-side">
       <h4>Today</h4>
       <a class="active" href="/">Briefing Packet <span>{total}</span></a>
-      <a href="/">Operator News <span>{visible}</span></a>
       <a href="/archive">Archive <span>{len(archive_dates)}</span></a>
       <a href="/jobs">Jobs <span>{len(jobs_rows)}</span></a>
-      <h4>System</h4>
-      <a href="/">Source Runs</a>
-      <a href="/">Delivery Routes</a>
-      <a href="/">Audit Trail</a>
+      <a href="/outputs">Outputs <span>{total}</span></a>
+      <h4>Trace</h4>
+      <a href="/jobs">Source Runs <span>{active}</span></a>
+      <a href="/archive">Audit Trail <span>{len(archive_dates)}</span></a>
     </nav>
     <div class="railfoot"><span class="live"></span>LIVE {html.escape(now.strftime('%H:%M UTC'))}<br>DAY {html.escape(day_label)}</div>
   </aside>
   <main class="main">
     <header class="top">
-      <div class="ticker"><em>ACTA</em> / DAILY PACKET</div>
+      <div class="ticker"><em>ACTA</em> / ATTENTION STACK</div>
       <div class="search">Search briefings, sources, jobs, archive…</div>
       <div class="topstats"><div>VISIBLE <b>{visible}</b></div><div>SILENT <b>{silent}</b></div><div>MISSING <b>{missing}</b></div></div>
     </header>
-    <nav class="date-nav"><a class="nav-link primary" href="/">Today</a><a class="nav-link" href="/jobs">Jobs</a><a class="nav-link" href="/archive">Archive</a></nav>
+    <nav class="date-nav"><a class="nav-link primary" href="/">Today</a><a class="nav-link" href="/jobs">Jobs</a><a class="nav-link" href="/archive">Archive</a><a class="nav-link" href="/outputs">Outputs</a></nav>
     <section class="content">
       <div>
         <article class="lead readable unread" data-read-key="{lead_read_key}"{lead_href_attr}>
-          <div class="label"><span class="read-dot"></span><span class="read-state">UNREAD</span> · Read First</div>
+          <div class="label"><span class="read-dot"></span><span class="read-state">UNREAD</span> · Today’s situation · Read First</div>
           <h1>{_safe_text(lead_title)}</h1>
           <p>{_safe_text(lead_excerpt)}</p>
-          <div class="meta"><span>{html.escape(day_label)}</span><span><b>Active:</b> {active}</span><span><b>Status:</b> {visible} fresh / {silent} silent / {missing} missing</span><span>Tap to open</span>{lead_ask_link}</div>
+          <div class="metricrow"><div class="metric"><b>{active}</b><span>active</span></div><div class="metric"><b>{visible}</b><span>fresh</span></div><div class="metric"><b>{missing}</b><span>gaps</span></div></div>
+          <div class="meta"><span>{html.escape(day_label)}</span><span><b>Silent:</b> {silent}</span><span><b>Archive:</b> {len(archive_dates)} days</span><span>Tap to open signed brief</span>{lead_ask_link}</div>
         </article>
+        <div class="panel-title"><b>Attention Stack</b><span>whole-row tap</span></div>
         <section class="feed">
           {''.join(rows)}
         </section>
@@ -651,7 +663,7 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
     <footer>Generated {html.escape(now.isoformat())}. Signed Acta links expire automatically.</footer>
   </main>
 </div>
-<nav class="mobilebar"><a href="/">TODAY</a><a href="/jobs">JOBS</a><a href="/archive">ARCHIVE</a><a href="/">READ</a></nav>
+<nav class="mobilebar"><a href="/">TODAY</a><a href="/jobs">JOBS</a><a href="/archive">ARCHIVE</a><a href="/outputs">OUTPUTS</a></nav>
 <script>
 (function(){{
   var KEY='acta:read:v1';
@@ -801,6 +813,89 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
 """
 
 
+
+def _acta_page_css() -> str:
+    return """
+:root { color-scheme: dark; --black:#03060b; --bg:#03060b; --bg2:#071018; --panel:rgba(255,255,255,.055); --panel2:rgba(255,255,255,.085); --line:rgba(255,255,255,.105); --line-soft:rgba(255,255,255,.07); --text:#f5f7fb; --body:rgba(245,247,251,.86); --muted:rgba(245,247,251,.66); --faint:rgba(245,247,251,.42); --accent:#756cff; --acta:#756cff; --acta2:#23a7ff; --green:#57a773; --red:#d05a4e; --ui:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; --read:'Iowan Old Style','Charter','Source Serif Pro',Georgia,serif; --mono:'SFMono-Regular','Roboto Mono','IBM Plex Mono',Consolas,monospace; }
+* { box-sizing:border-box; }
+html { width:100%; min-width:320px; overflow-x:hidden; background:var(--black); }
+body { margin:0; width:100%; min-width:320px; overflow-x:hidden; background:radial-gradient(circle at 18% 8%, rgba(117,108,255,.20), transparent 30%), radial-gradient(circle at 82% 12%, rgba(35,167,255,.12), transparent 28%), linear-gradient(145deg,#020408,#071018 52%,#030509); color:var(--body); font:14px/1.45 var(--ui); -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; -webkit-text-size-adjust:100%; }
+body:before { content:""; position:fixed; inset:0; pointer-events:none; opacity:.16; background-image:linear-gradient(rgba(255,255,255,.03) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px); background-size:52px 52px; mask-image:radial-gradient(circle at 50% 34%,black,transparent 78%); }
+a { color:inherit; }
+.top { height:58px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; padding:0 16px; background:rgba(3,6,11,.78); backdrop-filter:blur(22px) saturate(145%); position:sticky; top:0; z-index:2; }
+.ticker { color:#fff; font:800 11px var(--mono); letter-spacing:.11em; text-decoration:none; text-transform:uppercase; }
+.ticker em { font-style:normal; color:var(--acta2); text-shadow:0 0 18px rgba(35,167,255,.32); }
+.nav { margin-left:auto; display:flex; gap:8px; }
+.nav a, .quick-nav a, .back { color:rgba(245,247,251,.78); text-decoration:none; border:1px solid var(--line); background:rgba(255,255,255,.045); padding:7px 10px; border-radius:999px; font:11px var(--mono); text-transform:uppercase; letter-spacing:.08em; }
+.nav a.active, .nav a:hover, .quick-nav a.active, .quick-nav a:hover, .back:hover { color:#fff; border-color:rgba(117,108,255,.46); background:rgba(117,108,255,.22); box-shadow:0 0 18px rgba(117,108,255,.16); }
+main { width:min(1180px, calc(100vw - 32px)); margin:0 auto; padding:24px 0 88px; position:relative; }
+.kicker { margin:0; color:var(--acta2); font:800 11px var(--mono); text-transform:uppercase; letter-spacing:.14em; }
+h1 { margin:8px 0 10px; color:var(--text); font:600 clamp(38px,6.5vw,70px)/.95 var(--read); letter-spacing:-.06em; }
+.lede { max-width:780px; margin:0 0 22px; color:var(--body); font:18px/1.5 var(--read); }
+.stats, .quick-nav { display:flex; flex-wrap:wrap; gap:8px; margin:18px 0; }
+.stat, .archive-card, .job-row, .report-shell, .detail-card { border:1px solid var(--line); background:linear-gradient(135deg,rgba(117,108,255,.10),rgba(255,255,255,.04)); border-radius:18px; box-shadow:0 18px 50px rgba(0,0,0,.24); }
+.stat { padding:9px 11px; color:var(--muted); font:11px var(--mono); text-transform:uppercase; }
+.stat b { color:#fff; font-size:14px; margin-left:6px; }
+.jobs-panel { margin-top:20px; border-top:1px solid var(--line); }
+.jobs-head { display:flex; align-items:flex-end; gap:12px; padding:16px 0 8px; border-bottom:1px solid var(--line-soft); }
+.jobs-head h2 { margin:0; font:800 13px var(--mono); letter-spacing:.12em; text-transform:uppercase; color:#fff; }
+.jobs-head span { margin-left:auto; color:var(--muted); font:11px var(--mono); text-transform:uppercase; }
+.job-row { display:grid; grid-template-columns:42px minmax(0,1.2fr) minmax(120px,.7fr) minmax(180px,.9fr); gap:12px; align-items:center; padding:13px 14px; margin:8px 0; position:relative; overflow:hidden; }
+.job-row:before { content:""; width:4px; height:42px; border-radius:999px; background:var(--acta); box-shadow:0 0 16px rgba(117,108,255,.45); position:absolute; left:0; top:50%; transform:translateY(-50%); }
+.job-rank { color:var(--acta2); font:800 11px var(--mono); }
+.job-main b { display:block; color:#fff; font:700 15px/1.2 var(--ui); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.job-main span, .job-schedule, .job-last { color:var(--muted); font:11px var(--mono); min-width:0; }
+.thread-link { color:var(--acta2); text-decoration:none; border-bottom:1px solid rgba(35,167,255,.55); font-weight:800; }
+.job-schedule, .job-last { display:grid; gap:3px; }
+.job-schedule em, .job-last em { color:var(--faint); font-style:normal; font-size:9px; letter-spacing:.1em; }
+.job-last time { color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.job-last small { color:var(--acta2); font:10px var(--mono); text-transform:uppercase; }
+.silent .job-rank, .missing .job-rank { color:var(--red); }
+.prompt { font:14px/1.45 var(--read); color:var(--body); border-left:2px solid var(--accent); padding-left:10px; }
+.grid { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:14px; }
+.archive-card { display:block; text-decoration:none; padding:20px; min-height:120px; }
+.archive-card:hover { border-color:rgba(35,167,255,.55); box-shadow:0 0 28px rgba(35,167,255,.10); }
+.archive-card span { display:block; color:var(--muted); font:800 11px/1 var(--mono); text-transform:uppercase; letter-spacing:.12em; margin-bottom:10px; }
+.archive-card strong { color:var(--text); font:600 26px var(--read); letter-spacing:-.03em; }
+.actions { margin-left:auto; display:flex; gap:8px; align-items:center; }
+.followup { color:#fff; text-decoration:none; border:1px solid rgba(35,167,255,.44); background:linear-gradient(135deg,rgba(117,108,255,.70),rgba(35,167,255,.48)); border-radius:999px; padding:8px 10px; font:800 11px var(--mono); text-transform:uppercase; letter-spacing:.08em; }
+.report-shell { padding:18px; overflow:hidden; }
+h1.report-title { margin:8px 0 12px; max-width:930px; color:var(--text); font:600 clamp(34px,6vw,64px)/.98 var(--read); letter-spacing:-.055em; }
+.meta { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 16px; color:var(--muted); font:11px var(--mono); text-transform:uppercase; }
+.meta span { border:1px solid var(--line); border-radius:999px; padding:6px 8px; background:rgba(255,255,255,.045); }
+.meta b { color:#fff; font-weight:700; }
+article.report-body { border-top:1px solid var(--line); padding-top:14px; color:var(--body); font:16px/1.58 var(--read); }
+.report-section { margin:18px 0; padding:18px 0; border-top:1px solid var(--line-soft); }
+.section-title { display:flex; gap:10px; align-items:flex-start; margin:0 0 10px; color:#fff; font:650 25px/1.08 var(--read); letter-spacing:-.02em; }
+.section-title:before { content:""; flex:0 0 7px; width:7px; height:22px; margin-top:3px; border-radius:999px; background:linear-gradient(180deg,var(--acta),var(--acta2)); box-shadow:0 0 18px rgba(117,108,255,.32); }
+h3 { margin:18px 0 8px; color:#fff; font:700 18px/1.2 var(--ui); }
+p { margin:.78em 0; }
+ul, ol { margin:.75em 0; padding-left:0; list-style:none; }
+li { position:relative; margin:.62em 0; padding-left:22px; }
+li:before { content:""; position:absolute; left:4px; top:.72em; width:6px; height:6px; border-radius:50%; background:var(--acta2); }
+ol { counter-reset:item; }
+ol li { counter-increment:item; padding-left:34px; }
+ol li:before { content:counter(item); top:.05em; left:0; width:22px; height:22px; display:grid; place-items:center; color:#fff; background:linear-gradient(135deg,var(--acta),var(--acta2)); font:800 11px/1 var(--mono); }
+strong { color:#fff; font-weight:700; }
+em { color:#b9dfff; font-style:normal; }
+article a { color:#fff; text-decoration:none; border-bottom:1px solid rgba(35,167,255,.6); }
+pre { overflow-x:auto; background:rgba(0,0,0,.24); border:1px solid var(--line); padding:16px; border-radius:14px; font-size:13px; }
+code { font-family:var(--mono); color:#b9dfff; }
+p code, li code { background:rgba(255,255,255,.055); border:1px solid var(--line); padding:1px 5px; border-radius:6px; }
+footer { color:var(--faint); margin-top:24px; font:12px var(--mono); text-align:center; }
+@media (max-width:760px) { .top { height:50px; padding:0 14px; gap:8px; } .ticker { font-size:11px; } .nav { gap:6px; overflow:auto; } .nav a { min-height:36px; display:inline-flex; align-items:center; white-space:nowrap; padding:0 10px; } main { width:100%; padding:18px 14px 96px; } h1 { font-size:clamp(34px,11vw,50px); } .lede { font-size:16px; } .grid { grid-template-columns:1fr; } .job-row { grid-template-columns:34px minmax(0,1fr); gap:8px 10px; padding:13px 12px; } .job-schedule, .job-last { grid-column:2; } .job-main b { font-size:14px; } .actions { gap:6px; } .followup { max-width:132px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding:7px 9px; } .back { padding:7px 9px; } .report-shell { border-radius:22px; padding:14px; } h1.report-title { font-size:clamp(31px,9vw,45px); } article.report-body { font-size:15.5px; line-height:1.54; } .section-title { font-size:22px; } }
+""".strip()
+
+
+def _acta_top_nav(active: str, label: str) -> str:
+    links = [("/", "Today", "today"), ("/jobs", "Jobs", "jobs"), ("/archive", "Archive", "archive"), ("/outputs", "Outputs", "outputs")]
+    nav = "".join(
+        f'<a class="active" href="{href}">{text}</a>' if key == active else f'<a href="{href}">{text}</a>'
+        for href, text, key in links
+    )
+    return f'<header class="top"><a class="ticker" href="/"><em>ACTA</em> / {html.escape(label.upper())}</a><nav class="nav">{nav}</nav></header>'
+
+
 def render_jobs_page(
     items: Sequence[CronSituationItem],
     generated_at: datetime | None = None,
@@ -819,49 +914,13 @@ def render_jobs_page(
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no">
 <meta http-equiv="Content-Security-Policy" content="{html.escape(CSP, quote=False)}">
 <title>Acta Jobs</title>
-<style>
-:root {{ color-scheme: dark; --bg:#000; --panel:#050505; --line:#252525; --line-soft:#171717; --text:#fff; --body:#e8e8e8; --muted:#a5a5a5; --faint:#737373; --accent:#f5a400; --green:#57a773; --red:#d05a4e; --ui:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; --read:'Iowan Old Style','Charter','Source Serif Pro',Georgia,serif; --mono:'SFMono-Regular','Roboto Mono','IBM Plex Mono',Consolas,monospace; }}
-* {{ box-sizing:border-box; }}
-html {{ width:100%; min-width:320px; overflow-x:hidden; background:#000; }}
-body {{ margin:0; width:100%; min-width:320px; overflow-x:hidden; background:var(--bg); color:var(--body); font:14px/1.45 var(--ui); -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; -webkit-text-size-adjust:100%; }}
-a {{ color:inherit; }}
-.top {{ height:54px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; padding:0 16px; background:#020202; position:sticky; top:0; z-index:2; }}
-.ticker {{ color:#fff; font:700 12px var(--mono); letter-spacing:.08em; text-decoration:none; }}
-.ticker em {{ font-style:normal; color:var(--accent); }}
-.nav {{ margin-left:auto; display:flex; gap:8px; }}
-.nav a {{ color:var(--body); text-decoration:none; border:1px solid var(--line); background:#050505; padding:7px 10px; font:11px var(--mono); text-transform:uppercase; letter-spacing:.08em; }}
-.nav a.active, .nav a:hover {{ color:#000; background:var(--accent); border-color:var(--accent); }}
-main {{ max-width:1180px; margin:0 auto; padding:26px 16px 84px; }}
-.kicker {{ margin:0; color:var(--accent); font:800 11px var(--mono); text-transform:uppercase; letter-spacing:.14em; }}
-h1 {{ margin:8px 0 10px; color:var(--text); font:700 clamp(42px,7vw,78px)/.95 var(--read); letter-spacing:-.06em; }}
-.lede {{ max-width:760px; margin:0 0 22px; color:var(--body); font:18px/1.5 var(--read); }}
-.stats {{ display:flex; flex-wrap:wrap; gap:8px; margin:18px 0 18px; }}
-.stat {{ border:1px solid var(--line); background:#050505; padding:9px 11px; color:var(--muted); font:11px var(--mono); text-transform:uppercase; }}
-.stat b {{ color:#fff; font-size:14px; margin-left:6px; }}
-.jobs-panel {{ border-top:1px solid var(--line); }}
-.jobs-head {{ display:flex; align-items:flex-end; gap:12px; padding:16px 0 8px; border-bottom:1px solid var(--line-soft); }}
-.jobs-head h2 {{ margin:0; font:800 13px var(--mono); letter-spacing:.12em; text-transform:uppercase; color:#fff; }}
-.jobs-head span {{ margin-left:auto; color:var(--muted); font:11px var(--mono); text-transform:uppercase; }}
-.job-row {{ display:grid; grid-template-columns:42px minmax(0,1.2fr) minmax(120px,.7fr) minmax(180px,.9fr); gap:12px; align-items:center; padding:13px 0; border-bottom:1px solid var(--line-soft); }}
-.job-rank {{ color:var(--accent); font:800 11px var(--mono); }}
-.job-main b {{ display:block; color:#fff; font:700 15px/1.2 var(--ui); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
-.job-main span, .job-schedule, .job-last {{ color:var(--muted); font:11px var(--mono); min-width:0; }}
-.thread-link {{ color:var(--accent); text-decoration:none; border-bottom:1px solid rgba(245,164,0,.55); font-weight:800; }}
-.job-schedule, .job-last {{ display:grid; gap:3px; }}
-.job-schedule em, .job-last em {{ color:var(--faint); font-style:normal; font-size:9px; letter-spacing:.1em; }}
-.job-last time {{ color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
-.job-last small {{ color:var(--accent); font:10px var(--mono); text-transform:uppercase; }}
-.silent .job-rank, .missing .job-rank {{ color:var(--red); }}
-.prompt {{ font:14px/1.45 var(--read); color:var(--body); border-left:2px solid var(--accent); padding-left:10px; }}
-footer {{ color:var(--faint); margin-top:24px; font:12px var(--mono); text-align:center; }}
-@media (max-width:760px) {{ .top {{ height:50px; padding:0 14px; }} .nav a {{ min-height:36px; display:inline-flex; align-items:center; }} main {{ padding:18px 14px 88px; }} h1 {{ font-size:clamp(36px,12vw,52px); }} .lede {{ font-size:16px; }} .job-row {{ grid-template-columns:34px minmax(0,1fr); gap:8px 10px; padding:14px 0; }} .job-schedule, .job-last {{ grid-column:2; }} .job-main b {{ font-size:14px; }} }}
-</style>
+<style>{_acta_page_css()}</style>
 </head>
 <body>
-<header class="top"><a class="ticker" href="/"><em>ACTA</em> / JOBS</a><nav class="nav"><a href="/">Today</a><a class="active" href="/jobs">Jobs</a><a href="/archive">Archive</a></nav></header>
+{_acta_top_nav('jobs', 'Jobs')}
 <main>
   <p class="kicker">Acta Situation Room · Operations</p>
-  <h1>Active Cron Jobs</h1>
+  <h1>Source runs.</h1>
   <p class="lede">Operational visibility for active relevant Hermes jobs: schedule, delivery route, latest run timestamp, and freshness status.</p>
   <section class="stats"><div class="stat">Relevant <b>{len(jobs_rows)}</b></div><div class="stat">Fresh <b>{fresh}</b></div><div class="stat">Silent <b>{silent}</b></div><div class="stat">Missing <b>{missing}</b></div></section>
   <section class="jobs-panel">
@@ -888,39 +947,15 @@ def render_archive_index(archive_dates: Sequence[date], generated_at: datetime |
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no">
 <meta http-equiv="Content-Security-Policy" content="{html.escape(CSP, quote=False)}">
 <title>Acta Archive</title>
-<style>
-:root {{ color-scheme: dark; --bg:#000; --panel:#050505; --line:#252525; --text:#fff; --body:#e8e8e8; --muted:#a5a5a5; --accent:#f5a400; --ui:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; --read:'Iowan Old Style','Charter','Source Serif Pro',Georgia,serif; --mono:'SFMono-Regular','Roboto Mono','IBM Plex Mono',Consolas,monospace; }}
-* {{ box-sizing:border-box; }}
-body {{ margin:0; font-family:var(--ui); background:#000; color:var(--body); -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }}
-.top {{ height:54px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; padding:0 16px; background:#020202; position:sticky; top:0; z-index:2; }}
-.ticker {{ color:#fff; font:700 12px var(--mono); letter-spacing:.08em; text-decoration:none; }}
-.ticker em {{ font-style:normal; color:var(--accent); }}
-.nav {{ margin-left:auto; display:flex; gap:8px; }}
-.nav a {{ color:var(--body); text-decoration:none; border:1px solid var(--line); background:#050505; padding:7px 10px; font:11px var(--mono); text-transform:uppercase; letter-spacing:.08em; }}
-.nav a.active, .nav a:hover {{ color:#000; background:var(--accent); border-color:var(--accent); }}
-main {{ max-width:1040px; margin:0 auto; padding:28px 20px 72px; }}
-.kicker {{ color:var(--accent); font:700 11px/1 var(--mono); text-transform:uppercase; letter-spacing:.16em; }}
-h1 {{ margin:8px 0 12px; color:var(--text); font:700 clamp(42px,7vw,76px)/.95 var(--read); letter-spacing:-.06em; }}
-.lede {{ color:var(--body); font:18px/1.55 var(--read); }}
-.quick-nav {{ display:flex; gap:8px; margin:24px 0 28px; }}
-.quick-nav a {{ color:var(--body); text-decoration:none; border:1px solid var(--line); background:#050505; padding:8px 12px; font:12px var(--mono); }}
-.quick-nav a.active {{ color:#000; background:var(--accent); border-color:var(--accent); }}
-.grid {{ display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:14px; }}
-.archive-card {{ text-decoration:none; border:1px solid var(--line); padding:20px; background:var(--panel); }}
-.archive-card:hover {{ border-color:var(--accent); }}
-.archive-card span {{ display:block; color:var(--muted); font:700 11px/1 var(--mono); text-transform:uppercase; letter-spacing:.12em; margin-bottom:10px; }}
-.archive-card strong {{ color:var(--text); font:700 25px var(--read); letter-spacing:-.03em; }}
-footer {{ color:var(--muted); margin-top:24px; font:12px var(--mono); text-align:center; }}
-@media (max-width:760px) {{ .top {{ height:50px; padding:0 14px; }} .nav a {{ min-height:36px; display:inline-flex; align-items:center; }} main {{ padding:22px 14px 88px; }} .grid {{ grid-template-columns:1fr; }} }}
-</style>
+<style>{_acta_page_css()}</style>
 </head>
 <body>
-<header class="top"><a class="ticker" href="/"><em>ACTA</em> / ARCHIVE</a><nav class="nav"><a href="/">Today</a><a href="/jobs">Jobs</a><a class="active" href="/archive">Archive</a></nav></header>
+{_acta_top_nav('archive', 'Archive')}
 <main>
 <p class="kicker">Acta · Archive</p>
 <h1>Previous days.</h1>
-<p class="lede">Browse prior Situation Room snapshots by day.</p>
-<nav class="quick-nav"><a href="/">Today</a><a href="/jobs">Jobs</a><a class="active" href="/archive">Archive</a></nav>
+<p class="lede">Browse prior Situation Room snapshots by day. Historical pages now use the same Imperatr surface as the live feed.</p>
+<nav class="quick-nav"><a href="/">Today</a><a href="/jobs">Jobs</a><a class="active" href="/archive">Archive</a><a href="/outputs">Outputs</a></nav>
 <section class="grid">{cards}</section>
 <footer>Generated {html.escape(now.isoformat())}.</footer>
 </main>
@@ -934,7 +969,7 @@ def render_acta_detail_report(
     metadata: HtmlReportMetadata | Mapping[str, str],
     telegram_url: str | None = None,
 ) -> str:
-    """Render a standalone Acta detail page using the dashboard visual system."""
+    """Render a standalone Acta detail page using the Imperatr Acta visual system."""
     if isinstance(metadata, Mapping):
         meta = HtmlReportMetadata(**{k: str(v) for k, v in metadata.items() if k in HtmlReportMetadata.__annotations__})
     else:
@@ -954,8 +989,9 @@ def render_acta_detail_report(
     if telegram_url:
         followup_link = (
             f'<a class="followup" href="{html.escape(telegram_url, quote=True)}" '
-            'target="_blank" rel="noopener">Ask follow-up in Telegram</a>'
+            'target="_blank" rel="noopener" aria-label="Ask follow-up in Telegram" title="Ask follow-up in Telegram">Ask</a>'
         )
+    actions = f'<div class="actions">{followup_link}<a class="back" href="/outputs">Outputs</a><a class="back" href="/">Back</a></div>'
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -963,59 +999,22 @@ def render_acta_detail_report(
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no">
 <meta http-equiv="Content-Security-Policy" content="{html.escape(CSP, quote=False)}">
 <title>{html.escape(title)} · Acta Situation Room</title>
-<style>
-:root {{ color-scheme:dark; --black:#000; --panel:#050505; --panel2:#0b0b0b; --line:#252525; --line-soft:#171717; --text:#fff; --body:#e8e8e8; --muted:#a5a5a5; --faint:#737373; --accent:#f5a400; --green:#57a773; --red:#d05a4e; --ui:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; --read:'Iowan Old Style','Charter','Source Serif Pro',Georgia,serif; --mono:'SFMono-Regular','Roboto Mono','IBM Plex Mono',Consolas,monospace; }}
-* {{ box-sizing:border-box; }}
-html {{ width:100%; min-width:320px; overflow-x:hidden; background:#000; }}
-body {{ margin:0; width:100%; min-width:320px; overflow-x:hidden; background:var(--black); color:var(--body); font:16px/1.58 var(--read); -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; -webkit-text-size-adjust:100%; }}
-a {{ color:inherit; }}
-.top {{ height:54px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; padding:0 16px; background:#020202; position:sticky; top:0; z-index:2; font-family:var(--ui); }}
-.ticker {{ color:#fff; font:700 12px var(--mono); letter-spacing:.08em; text-decoration:none; }}
-.ticker em {{ font-style:normal; color:var(--accent); }}
-.actions {{ margin-left:auto; display:flex; gap:8px; align-items:center; }}
-.followup {{ color:#000; text-decoration:none; border:1px solid var(--accent); background:var(--accent); padding:7px 10px; font:800 11px var(--mono); text-transform:uppercase; letter-spacing:.08em; }}
-.back {{ color:var(--muted); text-decoration:none; border:1px solid var(--line); background:#050505; padding:7px 10px; font:11px var(--mono); text-transform:uppercase; letter-spacing:.08em; }}
-.back:hover {{ color:#000; background:var(--accent); border-color:var(--accent); }}
-main {{ max-width:980px; margin:0 auto; padding:18px 16px 72px; }}
-.kicker {{ margin:0; color:var(--accent); font:800 11px var(--mono); text-transform:uppercase; letter-spacing:.14em; }}
-h1.report-title {{ margin:8px 0 12px; max-width:900px; color:var(--text); font:700 clamp(36px,6.5vw,68px)/.96 var(--read); letter-spacing:-.055em; }}
-.meta {{ display:flex; flex-wrap:wrap; gap:9px 14px; margin:0 0 20px; color:var(--muted); font:11px var(--mono); text-transform:uppercase; }}
-.meta b {{ color:#fff; font-weight:700; }}
-article {{ border-top:1px solid var(--line); background:#000; padding-top:18px; }}
-.report-section {{ margin:18px 0; padding:18px 0; border-top:1px solid var(--line-soft); }}
-.section-title {{ display:flex; gap:10px; align-items:flex-start; margin:0 0 10px; color:#fff; font:700 25px/1.08 var(--read); letter-spacing:-.02em; }}
-.section-title:before {{ content:""; flex:0 0 7px; width:7px; height:22px; margin-top:3px; background:var(--accent); box-shadow:0 0 18px rgba(245,164,0,.22); }}
-h3 {{ margin:18px 0 8px; color:#fff; font:700 18px/1.2 var(--ui); }}
-p {{ margin:.78em 0; color:var(--body); }}
-ul, ol {{ margin:.75em 0; padding-left:0; list-style:none; }}
-li {{ position:relative; margin:.62em 0; padding-left:22px; }}
-li:before {{ content:""; position:absolute; left:4px; top:.72em; width:6px; height:6px; border-radius:50%; background:var(--accent); }}
-ol {{ counter-reset:item; }}
-ol li {{ counter-increment:item; padding-left:34px; }}
-ol li:before {{ content:counter(item); top:.05em; left:0; width:22px; height:22px; display:grid; place-items:center; color:#000; background:var(--accent); font:800 11px/1 var(--mono); }}
-strong {{ color:#fff; font-weight:700; }}
-em {{ color:#f0d7a0; font-style:normal; }}
-article a {{ color:#fff; text-decoration:none; border-bottom:1px solid rgba(245,164,0,.6); }}
-pre {{ overflow-x:auto; background:#050505; border:1px solid var(--line); padding:16px; font-size:13px; }}
-code {{ font-family:var(--mono); color:#f0d7a0; }}
-p code, li code {{ background:#080808; border:1px solid var(--line); padding:1px 5px; }}
-footer {{ margin-top:24px; border-top:1px solid var(--line); padding-top:14px; color:var(--muted); font:11px var(--mono); display:flex; flex-wrap:wrap; gap:10px 16px; text-transform:uppercase; }}
-footer b {{ color:#fff; }}
-@media (max-width:700px) {{ .top {{ height:50px; padding:0 14px; }} .actions {{ gap:6px; }} .followup {{ max-width:120px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding:7px 9px; }} .back {{ padding:7px 9px; }} main {{ padding:14px 14px 92px; }} h1.report-title {{ font-size:clamp(32px,9vw,46px); }} body {{ font-size:15.5px; line-height:1.54; }} .section-title {{ font-size:22px; }} }}
-</style>
+<style>{_acta_page_css()}</style>
 </head>
 <body>
-<header class="top"><a class="ticker" href="/"><em>ACTA</em> / REPORT</a><div class="actions">{followup_link}<a class="back" href="/">Back to Acta</a></div></header>
+<header class="top"><a class="ticker" href="/"><em>ACTA</em> / BRIEF</a>{actions}</header>
 <main>
-  <p class="kicker">Acta Situation Room · Detail</p>
-  <h1 class="report-title">{html.escape(title)}</h1>
-  <div class="meta">{''.join(footer_bits)}</div>
-  <article>{rendered}</article>
+  <section class="report-shell">
+    <p class="kicker">Acta Situation Room · Source-backed drill-in</p>
+    <h1 class="report-title">{html.escape(title)}</h1>
+    <div class="meta">{''.join(footer_bits)}</div>
+    <article class="report-body">{rendered}</article>
+  </section>
+  <footer>Signed Acta detail. Same app shell, no legacy generated-file UI.</footer>
 </main>
 </body>
 </html>
 """
-
 
 def _detail_body(item: CronSituationItem) -> str:
     if not item.latest_md:

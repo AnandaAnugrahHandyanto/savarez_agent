@@ -100,6 +100,27 @@ def test_dashboard_escapes_content_and_links_artifact(tmp_path: Path):
     assert "Acta Situation Room" in html
 
 
+def test_dashboard_uses_acta_imperatr_suite_board_palette(tmp_path: Path):
+    (tmp_path / "cron" / "output" / "lead").mkdir(parents=True)
+    (tmp_path / "cron" / "jobs.json").write_text(
+        json.dumps([{"id": "lead", "name": "Lead Brief", "schedule": "daily", "deliver": "telegram"}])
+    )
+    (tmp_path / "cron" / "output" / "lead" / "2026-05-19_10-00-00.md").write_text("## Response\n\nMost important")
+
+    html = render_dashboard(collect_situation_items(tmp_path))
+
+    assert "#03060b" in html
+    assert "#756cff" in html
+    assert "#23a7ff" in html
+    assert "Acta Imperatr situation room" in html
+    assert "ATTENTION STACK" in html
+    assert "Today’s situation" in html
+    assert "metricrow" in html
+    assert "Delivery Routes" not in html
+    assert "Bloomberg" not in html
+    assert "Your cron command center" not in html
+
+
 def test_collects_telegram_thread_links_from_delivery_targets(tmp_path: Path):
     home = tmp_path
     (home / "cron" / "output" / "job1").mkdir(parents=True)
@@ -149,7 +170,7 @@ def test_build_dashboard_local_only(tmp_path: Path):
 
     assert url is None
     assert path.exists()
-    assert "Your cron command center" in path.read_text()
+    assert "Acta Imperatr situation room" in path.read_text()
 
 
 def test_available_dates_and_date_filtered_items(tmp_path: Path):
@@ -226,7 +247,9 @@ def test_dashboard_counts_exclude_morning_audio_by_default():
 
     assert "P Morning Audio Briefing" not in html
     assert 'Briefing Packet <span>1</span>' in html
-    assert "<b>Active:</b> 1" in html
+    assert '<div class="metric"><b>1</b><span>active</span></div>' in html
+    assert '<div class="metric"><b>1</b><span>fresh</span></div>' in html
+    assert '<div class="metric"><b>0</b><span>gaps</span></div>' in html
     assert "VISIBLE <b>1</b>" in html
 
 
@@ -372,6 +395,17 @@ def test_dashboard_includes_pull_to_refresh_affordance(tmp_path: Path):
     assert "location.reload()" in html
 
 
+def test_dashboard_exposes_outputs_as_primary_module(tmp_path: Path):
+    (tmp_path / "cron" / "output" / "lead").mkdir(parents=True)
+    (tmp_path / "cron" / "jobs.json").write_text(json.dumps([{"id": "lead", "name": "Lead Brief"}]))
+    (tmp_path / "cron" / "output" / "lead" / "2026-05-19_10-00-00.md").write_text("## Response\n\nMost important")
+
+    html = render_dashboard(collect_situation_items(tmp_path))
+
+    assert 'href="/outputs"' in html
+    assert ">Outputs<" in html or ">OUTPUTS<" in html
+
+
 def test_mobile_bottom_nav_appears_only_after_top_nav_scrolls_out(tmp_path: Path):
     (tmp_path / "cron" / "output" / "lead").mkdir(parents=True)
     (tmp_path / "cron" / "jobs.json").write_text(
@@ -395,9 +429,11 @@ def test_detail_report_uses_acta_situation_room_ui():
     )
 
     assert "Acta Situation Room" in html
-    assert "Back to Acta" in html
+    assert 'href="/outputs"' in html
+    assert ">Back<" in html
     assert "width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no" in html
-    assert "--black:#000" in html
+    assert "--black:#03060b" in html
+    assert "--accent:#756cff" in html
     assert "Important signal." in html
 
 
