@@ -14,6 +14,8 @@ Tests cover:
 
 import asyncio
 import json
+import os
+import stat
 import time
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -127,6 +129,43 @@ class TestResponseStore:
         assert store.get_conversation("chat-a") is None
         # resp_2 mapping should still be intact
         assert store.get_conversation("chat-b") == "resp_2"
+
+    def test_file_store_created_owner_only_under_permissive_umask(self, tmp_path):
+        db_path = tmp_path / "response_store.db"
+        store = None
+        old_umask = os.umask(0o022)
+        try:
+            store = ResponseStore(max_size=10, db_path=str(db_path))
+            store.put(
+                "resp_secret",
+                {
+                    "response": {"id": "resp_secret"},
+                    "conversation_history": [{"role": "tool", "content": "dummy-marker"}],
+                },
+            )
+        finally:
+            os.umask(old_umask)
+            if store is not None:
+                store.close()
+
+        assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
+        assert b"dummy-marker" in db_path.read_bytes()
+        for sidecar in (db_path.with_name(db_path.name + "-wal"), db_path.with_name(db_path.name + "-shm")):
+            if sidecar.exists():
+                assert stat.S_IMODE(sidecar.stat().st_mode) == 0o600
+
+    def test_file_store_narrows_existing_broad_mode(self, tmp_path):
+        db_path = tmp_path / "response_store.db"
+        db_path.write_bytes(b"")
+        db_path.chmod(0o644)
+
+        store = ResponseStore(max_size=10, db_path=str(db_path))
+        try:
+            store.put("resp_1", {"output": "hello"})
+        finally:
+            store.close()
+
+        assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
 
 
 # ---------------------------------------------------------------------------

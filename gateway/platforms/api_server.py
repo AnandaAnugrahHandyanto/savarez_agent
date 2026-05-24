@@ -30,6 +30,7 @@ import hmac
 import json
 import logging
 import os
+from pathlib import Path
 import socket as _socket
 import re
 import sqlite3
@@ -329,6 +330,23 @@ class ResponseStore:
     if the on-disk path is unavailable.
     """
 
+    @staticmethod
+    def _secure_file_mode(path: Optional[str]) -> None:
+        """Force owner-only permissions on the response store and SQLite sidecars."""
+        if not path or path == ":memory:":
+            return
+        for candidate in (Path(path), Path(f"{path}-wal"), Path(f"{path}-shm")):
+            try:
+                if candidate.exists():
+                    candidate.chmod(0o600)
+            except Exception:
+                logger.debug("Failed to restrict response store permissions for %s", candidate, exc_info=True)
+
+    def _commit(self) -> None:
+        """Commit and re-apply owner-only permissions to DB/sidecar files."""
+        self._conn.commit()
+        self._secure_file_mode(self._db_path)
+
     def __init__(self, max_size: int = MAX_STORED_RESPONSES, db_path: str = None):
         self._max_size = max_size
         if db_path is None:
@@ -337,16 +355,20 @@ class ResponseStore:
                 db_path = str(get_hermes_home() / "response_store.db")
             except Exception:
                 db_path = ":memory:"
+        self._db_path = db_path if db_path != ":memory:" else None
         try:
             self._conn = sqlite3.connect(db_path, check_same_thread=False)
+            self._secure_file_mode(self._db_path)
         except Exception:
             self._conn = sqlite3.connect(":memory:", check_same_thread=False)
+            self._db_path = None
         # Use shared WAL-fallback helper so response_store.db degrades
         # gracefully on NFS/SMB/FUSE-mounted HERMES_HOME (same filesystem
         # issue addressed for state.db/kanban.db — see
         # hermes_state._WAL_INCOMPAT_MARKERS).
         from hermes_state import apply_wal_with_fallback
         apply_wal_with_fallback(self._conn, db_label="response_store.db")
+        self._secure_file_mode(self._db_path)
         self._conn.execute(
             """CREATE TABLE IF NOT EXISTS responses (
                 response_id TEXT PRIMARY KEY,
@@ -360,7 +382,7 @@ class ResponseStore:
                 response_id TEXT NOT NULL
             )"""
         )
-        self._conn.commit()
+        self._commit()
 
     def get(self, response_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve a stored response by ID (updates access time for LRU)."""
@@ -373,7 +395,7 @@ class ResponseStore:
             "UPDATE responses SET accessed_at = ? WHERE response_id = ?",
             (time.time(), response_id),
         )
-        self._conn.commit()
+        self._commit()
         return json.loads(row[0])
 
     def put(self, response_id: str, data: Dict[str, Any]) -> None:
@@ -405,7 +427,7 @@ class ResponseStore:
                     f"DELETE FROM responses WHERE response_id IN ({placeholders})",
                     evict_ids,
                 )
-        self._conn.commit()
+        self._commit()
 
     def delete(self, response_id: str) -> bool:
         """Remove a response from the store. Returns True if found and deleted."""
@@ -416,7 +438,7 @@ class ResponseStore:
         cursor = self._conn.execute(
             "DELETE FROM responses WHERE response_id = ?", (response_id,)
         )
-        self._conn.commit()
+        self._commit()
         return cursor.rowcount > 0
 
     def get_conversation(self, name: str) -> Optional[str]:
@@ -432,7 +454,7 @@ class ResponseStore:
             "INSERT OR REPLACE INTO conversations (name, response_id) VALUES (?, ?)",
             (name, response_id),
         )
-        self._conn.commit()
+        self._commit()
 
     def close(self) -> None:
         """Close the database connection."""
