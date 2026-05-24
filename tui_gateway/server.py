@@ -2033,7 +2033,11 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         acp_args=runtime.get("args"),
         credential_pool=runtime.get("credential_pool"),
         quiet_mode=True,
-        verbose_logging=_load_tool_progress_mode() == "verbose",
+        # TUI verbose tool progress is rendered through structured
+        # tool_progress_callback events.  Enabling Python verbose_logging here
+        # installs a DEBUG StreamHandler on stderr, which the TUI surfaces as
+        # gateway.stderr Activity lines during normal turns.
+        verbose_logging=False,
         reasoning_config=_load_reasoning_config(),
         service_tier=_load_service_tier(),
         enabled_toolsets=_load_enabled_toolsets(),
@@ -4020,7 +4024,7 @@ def _(rid, params: dict) -> dict:
             session["tool_progress_mode"] = nv
             agent = session.get("agent")
             if agent is not None:
-                agent.verbose_logging = nv == "verbose"
+                agent.verbose_logging = False
         return _ok(rid, {"key": key, "value": nv})
 
     if key == "yolo":

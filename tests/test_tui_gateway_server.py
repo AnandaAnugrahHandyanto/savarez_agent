@@ -1714,7 +1714,7 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
     assert server._load_cfg()["display"]["sections"]["thinking"] == "hidden"
 
 
-def test_config_set_verbose_updates_session_mode_and_agent(tmp_path, monkeypatch):
+def test_config_set_verbose_keeps_agent_console_logging_off(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     agent = types.SimpleNamespace(verbose_logging=False)
     server._sessions["sid"] = _session(agent=agent)
@@ -1729,7 +1729,7 @@ def test_config_set_verbose_updates_session_mode_and_agent(tmp_path, monkeypatch
 
     assert resp["result"]["value"] == "verbose"
     assert server._sessions["sid"]["tool_progress_mode"] == "verbose"
-    assert agent.verbose_logging is True
+    assert agent.verbose_logging is False
 
 
 def test_config_set_model_uses_live_switch_path(monkeypatch):
