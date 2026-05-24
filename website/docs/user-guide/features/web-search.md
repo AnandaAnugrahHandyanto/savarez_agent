@@ -321,6 +321,53 @@ Unlike index-backed providers (Brave, Tavily, Exa) which return verbatim search-
 
 ---
 
+### Z.AI MCP pilot (Search / Reader / Zread)
+
+Z.AI provides hosted MCP servers for GLM Coding Plan users:
+
+| Server | Endpoint | MCP tool | Closest Hermes capability |
+|--------|----------|----------|---------------------------|
+| Web Search | `https://api.z.ai/api/mcp/web_search_prime/mcp` | `webSearchPrime` | Search/discovery, similar to `web_search` |
+| Web Reader | `https://api.z.ai/api/mcp/web_reader/mcp` | `webReader` | Page reading/extraction, similar to `web_extract` |
+| Zread | `https://api.z.ai/api/mcp/zread/mcp` | `search_doc`, `get_repo_structure`, `read_file` | Open-source repository/documentation intelligence |
+
+Add them under `mcp_servers` to try them as additive MCP tools:
+
+```yaml
+# ~/.hermes/config.yaml
+mcp_servers:
+  zai_web_search:
+    url: "https://api.z.ai/api/mcp/web_search_prime/mcp"
+    headers:
+      Authorization: "Bearer ${ZAI_API_KEY}"
+    timeout: 120
+    connect_timeout: 60
+  zai_web_reader:
+    url: "https://api.z.ai/api/mcp/web_reader/mcp"
+    headers:
+      Authorization: "Bearer ${ZAI_API_KEY}"
+    timeout: 180
+    connect_timeout: 60
+  zai_zread:
+    url: "https://api.z.ai/api/mcp/zread/mcp"
+    headers:
+      Authorization: "Bearer ${ZAI_API_KEY}"
+    timeout: 180
+    connect_timeout: 60
+```
+
+:::caution Secret handling
+Do not paste raw API keys into prompts, docs, logs, or screenshots. The `${ZAI_API_KEY}` form assumes the process environment supplies the key and that your active Hermes build expands environment variables in MCP headers. If it does not, use a local launcher that retrieves the key from your OS credential store and exports `ZAI_API_KEY` before starting Hermes.
+
+On macOS, a Keychain-backed launcher is a good pattern: keep the key in Apple Keychain, resolve it at process startup, export only `ZAI_API_KEY` into the Hermes process environment, and avoid storing the raw value in `config.yaml`.
+:::
+
+:::info MCP tools are not backend replacement
+MCP registration exposes separate tools named like `mcp_zai_web_search_webSearchPrime`; it does not transparently replace Hermes' built-in `web_search` or `web_extract` tools. For seamless replacement, add a web-provider plugin named `zai` that normalizes Z.AI Web Search / Reader responses to Hermes' web provider contracts, then configure `web.search_backend: "zai"` and `web.extract_backend: "zai"`.
+:::
+
+---
+
 ## Configuration
 
 ### Single backend
