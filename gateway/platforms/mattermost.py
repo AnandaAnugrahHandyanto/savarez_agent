@@ -891,22 +891,13 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # Determine message type.
         # Mattermost intercepts /-prefixed messages client-side as slash
-        # commands — they never reach the bot via WebSocket.  Detect known
-        # gateway commands without the / prefix so users can type "help"
-        # (in DMs) or "@bhai help" (in channels) instead.
-        if not message_text.startswith("/"):
-            _first_word = message_text.split(None, 1)[0].lower() if message_text else ""
-            if _first_word:
-                try:
-                    from hermes_cli.commands import is_gateway_known_command
-                    if is_gateway_known_command(_first_word):
-                        message_text = "/" + message_text
-                except Exception:
-                    pass  # best-effort
-
+        # commands — they never reach the bot via WebSocket.  Use a
+        # backslash prefix (\command) instead so users can explicitly
+        # invoke gateway commands without them being intercepted.
         file_ids = post.get("file_ids") or []
         msg_type = MessageType.TEXT
-        if message_text.startswith("/"):
+        if message_text.startswith("\\"):
+            message_text = "/" + message_text[1:]
             msg_type = MessageType.COMMAND
 
         # Download file attachments immediately (URLs require auth headers
