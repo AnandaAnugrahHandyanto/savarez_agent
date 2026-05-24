@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import secrets
+import shutil
 import subprocess
 import sys
 import threading
@@ -533,6 +534,667 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
         except Exception:
             continue
     return False, None
+
+
+_CONTROL_PLANE_CLI_LOCK = threading.Lock()
+
+_CONTROL_PLANE_DISABLED_REASONS = {
+    "supabase_cli_missing": "Supabase CLI not found on server PATH",
+    "control_plane_query_failed": "Control-plane read query failed",
+    "control_plane_invalid_json": "Control-plane query returned invalid JSON",
+    "control_plane_unexpected_shape": "Control-plane query returned an unexpected shape",
+}
+
+
+def _redact_control_plane_error(text: str) -> str:
+    """Return a generic client-safe CLI error without credential details."""
+    if not text:
+        return _CONTROL_PLANE_DISABLED_REASONS["control_plane_query_failed"]
+    return "Control-plane read query failed; check server logs or Supabase CLI link state."
+
+
+def _control_plane_workdir() -> Path:
+    configured = os.environ.get("HERMES_CONTROL_PLANE_WORKDIR")
+    if configured:
+        return Path(configured).expanduser()
+    return get_hermes_home() / "webui-workspace"
+
+
+def _run_supabase_control_plane_read(sql: str) -> Tuple[Optional[List[Dict[str, Any]]], Optional[Dict[str, Any]]]:
+    """Run a read-only Supabase CLI query against the linked control-plane project.
+
+    The browser never receives Supabase credentials. The server shells out to
+    the already-authenticated CLI and returns a disabled state instead of
+    raising if the CLI/link/workdir is unavailable.
+    """
+    supabase = shutil.which("supabase")
+    if not supabase:
+        return None, {
+            "enabled": False,
+            "reason": "supabase_cli_missing",
+            "message": _CONTROL_PLANE_DISABLED_REASONS["supabase_cli_missing"],
+        }
+
+    cmd = [supabase, "db", "query", "--linked", "-o", "json", sql]
+    try:
+        with _CONTROL_PLANE_CLI_LOCK:
+            proc = subprocess.run(
+                cmd,
+                cwd=str(_control_plane_workdir()),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+    except Exception:  # pragma: no cover - defensive around local CLI failures
+        return None, {
+            "enabled": False,
+            "reason": "control_plane_query_failed",
+            "message": _redact_control_plane_error(""),
+        }
+
+    if proc.returncode != 0:
+        return None, {
+            "enabled": False,
+            "reason": "control_plane_query_failed",
+            "message": _redact_control_plane_error(proc.stderr or proc.stdout),
+        }
+
+    stdout = (proc.stdout or "").strip()
+    if stdout.startswith("Initialising login role..."):
+        stdout = stdout.split("\n", 1)[1].strip() if "\n" in stdout else ""
+    try:
+        parsed = json.loads(stdout or "[]")
+    except json.JSONDecodeError:
+        return None, {
+            "enabled": False,
+            "reason": "control_plane_invalid_json",
+            "message": _CONTROL_PLANE_DISABLED_REASONS["control_plane_invalid_json"],
+        }
+    if not isinstance(parsed, list):
+        return None, {
+            "enabled": False,
+            "reason": "control_plane_unexpected_shape",
+            "message": _CONTROL_PLANE_DISABLED_REASONS["control_plane_unexpected_shape"],
+        }
+    return parsed, None
+
+
+def _control_plane_payload_query() -> str:
+    return """
+with latest as (
+  select
+    id::text,
+    report_type,
+    run_ref,
+    status,
+    report_date::text,
+    title,
+    summary_kr,
+    obsidian_ref,
+    paperclip_parent_ref,
+    created_at::text,
+    updated_at::text
+  from hermes_reports.report_runs
+  where report_type = 'morning_brief'
+  order by created_at desc
+  limit 1
+), latest_id as (
+  select id::uuid as id from latest
+), counts as (
+  select jsonb_build_object(
+    'report_runs', (select count(*) from hermes_reports.report_runs),
+    'report_sections', (select count(*) from hermes_reports.report_sections),
+    'source_anchors', (select count(*) from hermes_sources.source_anchors),
+    'delivery_events', (select count(*) from hermes_notify.delivery_events),
+    'audit_events', (select count(*) from hermes_audit.audit_events)
+  ) as payload
+)
+select jsonb_build_object(
+  'enabled', true,
+  'status', 'ok',
+  'mode', 'read_only',
+  'project', 'hermes-control-plane',
+  'updated_at', now()::text,
+  'run', (select to_jsonb(latest) from latest),
+  'sections', coalesce((
+    select jsonb_agg(to_jsonb(s) order by s.section_order)
+    from (
+      select section_key, section_order, title, body_md, judgment_label, created_at::text
+      from hermes_reports.report_sections
+      where report_run_id in (select id from latest_id)
+      order by section_order
+    ) s
+  ), '[]'::jsonb),
+  'sources', coalesce((
+    select jsonb_agg(to_jsonb(src) order by src.created_at)
+    from (
+      select source_ref, source_title, publisher, published_at::text, observed_at::text,
+             timing_label, quality_label, claim_ref, created_at::text
+      from hermes_sources.source_anchors
+      where report_run_id in (select id from latest_id)
+      order by created_at
+    ) src
+  ), '[]'::jsonb),
+  'delivery_events', coalesce((
+    select jsonb_agg(to_jsonb(d) order by d.created_at)
+    from (
+      select
+             channel,
+             case
+               when channel = 'dry_run'
+                    and delivery_status = 'dry_run'
+                    and target_ref like 'telegram://dry-run/%'
+                 then target_ref
+               else '[redacted]'
+             end as target_ref,
+             case
+               when channel = 'dry_run' and delivery_status = 'dry_run'
+                 then payload_summary
+               else null
+             end as payload_summary,
+             delivery_status,
+             delivered_at::text,
+             null::text as error_summary,
+             created_at::text
+      from hermes_notify.delivery_events
+      where report_run_id in (select id from latest_id)
+        and channel = 'dry_run'
+        and delivery_status = 'dry_run'
+      order by created_at
+    ) d
+  ), '[]'::jsonb),
+  'audit_events', coalesce((
+    select jsonb_agg(to_jsonb(a) order by a.created_at)
+    from (
+      select event_type, subject_ref, actor_ref, source_refs, artifact_refs,
+             summary, verification_status, created_at::text
+      from hermes_audit.audit_events
+      where event_type = 'canary_insert'
+      order by created_at desc
+      limit 5
+    ) a
+  ), '[]'::jsonb),
+  'counts', (select payload from counts),
+  'boundaries', jsonb_build_object(
+    'writes_enabled', false,
+    'telegram_send_enabled', false,
+    'obsidian_authority_edit_enabled', false,
+    'cron_change_enabled', false
+  )
+) as payload;
+"""
+
+
+def _morning_brief_v0_status_path() -> Path:
+    return (
+        _control_plane_workdir()
+        / "hera-198-data-architecture-reset"
+        / "gate-b-v0.2-execution-readback.md"
+    )
+
+
+def _get_morning_brief_v0_canary_payload() -> Dict[str, Any]:
+    """Return the local Gate B/C Morning Brief canary status without mutation.
+
+    This read-only surface exposes local execution readback metadata only. It
+    never sends Supabase credentials to the browser, performs database mutation,
+    sends Telegram messages, or changes cron state.
+    """
+    status_path = _morning_brief_v0_status_path()
+    try:
+        status_text = status_path.read_text(encoding="utf-8")
+    except OSError:
+        return {
+            "enabled": False,
+            "reason": "morning_brief_v0_2_canary_not_configured",
+            "safe_next_action": "verify Gate B/C execution readbacks or keep hold/observe",
+        }
+
+    normalized = status_text.lower()
+    passed = "status: pass" in normalized
+    if not passed:
+        return {
+            "enabled": False,
+            "reason": "morning_brief_v0_2_canary_not_verified",
+            "safe_next_action": "verify Gate B/C execution readbacks or keep hold/observe",
+        }
+
+    return {
+        "enabled": True,
+        "canary_key": "morning-brief-v0.2-preview-canary",
+        "report_kind": "morning_brief",
+        "verification_status": "verified",
+        "rollback_status": "ready_not_needed",
+        "gateb_verification_result": "pass",
+        "hermes_direct_db_verification": True,
+        "verification_source": "hermes_supabase_cli_readback",
+        "report_snapshot_ref": "supabase://hermes_projection/morning_brief_cockpit_v1",
+        "preview_payload_present": True,
+        "source_quality_present": True,
+        "safe_next_action": "Gate D WebUI local read-only observation; Telegram send/cron still require separate approval",
+        "boundaries": {
+            "writes_enabled": False,
+            "telegram_send_enabled": False,
+            "obsidian_authority_edit_enabled": False,
+            "cron_change_enabled": False,
+            "webui_mutation_enabled": False,
+        },
+    }
+
+
+def _get_control_plane_morning_brief_payload() -> Dict[str, Any]:
+    rows, disabled = _run_supabase_control_plane_read(_control_plane_payload_query())
+    if disabled is not None:
+        return disabled
+    if not rows:
+        return {
+            "enabled": False,
+            "reason": "control_plane_empty_response",
+            "message": "Control-plane read query returned no rows",
+        }
+    payload = rows[0].get("payload") if isinstance(rows[0], dict) else None
+    if not isinstance(payload, dict):
+        return {
+            "enabled": False,
+            "reason": "control_plane_unexpected_shape",
+            "message": _CONTROL_PLANE_DISABLED_REASONS["control_plane_unexpected_shape"],
+        }
+    return payload
+
+
+_CONTROL_PLANE_SAFETY_PREVIEW_FORBIDDEN_KEYS = frozenset({
+    "target_ref",
+    "provider_message_ref",
+    "error_summary",
+    "provider_error_body",
+    "raw_source_packet",
+    "raw_source_dump",
+    "raw_payload",
+    "private_target_payload",
+})
+
+
+def _control_plane_safety_preview_query() -> str:
+    return """
+select
+  run_ref,
+  title,
+  status,
+  lifecycle_state,
+  report_date::text,
+  source_count,
+  quarantined_source_count,
+  source_safety_state,
+  source_safety_summary_kr,
+  source_safety_refs,
+  latest_channel,
+  latest_delivery_mode,
+  latest_send_result,
+  latest_approval_state,
+  delivery_browser_safe,
+  latest_redaction_class,
+  latest_provider_error_class,
+  notification_action_state,
+  authority_boundary_state,
+  obsidian_ref,
+  paperclip_parent_ref,
+  rollback_available,
+  publish_blocked,
+  publish_block_reason_kr
+from hermes_projection.morning_brief_cockpit_v2
+where run_ref = 'hermes://canary/HERA-198/morning-brief/gate-g-real-source-packet-dry-run'
+order by report_date desc, run_ref desc
+limit 1;
+"""
+
+
+def _strip_control_plane_forbidden_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _strip_control_plane_forbidden_fields(item)
+            for key, item in value.items()
+            if str(key) not in _CONTROL_PLANE_SAFETY_PREVIEW_FORBIDDEN_KEYS
+        }
+    if isinstance(value, list):
+        return [_strip_control_plane_forbidden_fields(item) for item in value]
+    return value
+
+
+def _get_control_plane_safety_preview_payload() -> Dict[str, Any]:
+    rows, disabled = _run_supabase_control_plane_read(_control_plane_safety_preview_query())
+    if disabled is not None:
+        return disabled
+    if not rows:
+        return {
+            "enabled": False,
+            "reason": "control_plane_empty_response",
+            "message": "Control-plane safety-preview query returned no rows",
+        }
+    row = rows[0] if isinstance(rows[0], dict) else None
+    if not isinstance(row, dict):
+        return {
+            "enabled": False,
+            "reason": "control_plane_unexpected_shape",
+            "message": _CONTROL_PLANE_DISABLED_REASONS["control_plane_unexpected_shape"],
+        }
+
+    source_refs = _strip_control_plane_forbidden_fields(row.get("source_safety_refs") or [])
+    return {
+        "enabled": True,
+        "status": "ok",
+        "mode": "read_only_safety_preview",
+        "run": {
+            "run_ref": row.get("run_ref"),
+            "title": row.get("title"),
+            "status": row.get("status"),
+            "lifecycle_state": row.get("lifecycle_state"),
+            "report_date": row.get("report_date"),
+            "paperclip_parent_ref": row.get("paperclip_parent_ref"),
+        },
+        "source_safety": {
+            "state": row.get("source_safety_state"),
+            "source_count": row.get("source_count"),
+            "quarantined_source_count": row.get("quarantined_source_count"),
+            "summary_kr": row.get("source_safety_summary_kr"),
+            "refs": source_refs,
+        },
+        "notification_readiness": {
+            "action_state": row.get("notification_action_state"),
+            "latest_channel": row.get("latest_channel"),
+            "latest_delivery_mode": row.get("latest_delivery_mode"),
+            "latest_send_result": row.get("latest_send_result"),
+            "latest_approval_state": row.get("latest_approval_state"),
+            "delivery_browser_safe": row.get("delivery_browser_safe"),
+            "latest_redaction_class": row.get("latest_redaction_class"),
+            "latest_provider_error_class": row.get("latest_provider_error_class"),
+        },
+        "authority_boundary": {
+            "state": row.get("authority_boundary_state"),
+            "obsidian_ref_present": bool(row.get("obsidian_ref")),
+            "supabase_is_authority": False,
+            "requires_obsidian_merge_review_before_authority": True,
+        },
+        "rollback_readiness": {
+            "available": row.get("rollback_available"),
+            "publish_blocked": row.get("publish_blocked"),
+            "publish_block_reason_kr": row.get("publish_block_reason_kr"),
+        },
+        "boundaries": {
+            "writes_enabled": False,
+            "telegram_send_enabled": False,
+            "obsidian_authority_edit_enabled": False,
+            "cron_change_enabled": False,
+            "webui_mutation_enabled": False,
+        },
+    }
+
+
+_CONTROL_PLANE_COCKPIT_ARTIFACTS = {
+    "gate_d": "gated_latest_run_status.md",
+    "github_watcher_no_agent": "github_watcher_v0_latest_poll_status.md",
+    "supabase_role_boundary": "supabase_obsidian_role_boundary_decision_record.md",
+    "obsidian_merge_review": "obsidian_merge_review_note_creation_result.md",
+}
+
+_CONTROL_PLANE_COCKPIT_SOURCE_REFS = {
+    "gate_d": "artifact://gated_latest_run_status",
+    "github_watcher_no_agent": "artifact://github_watcher_v0_latest_poll_status",
+    "supabase_role_boundary": "artifact://supabase_obsidian_role_boundary_decision_record",
+    "obsidian_merge_review": "artifact://obsidian_merge_review_note_creation_result",
+}
+
+
+def _control_plane_artifacts_dir() -> Path:
+    workdir = _control_plane_workdir()
+    direct = workdir / "artifacts"
+    if direct.exists():
+        return direct
+    nested = workdir / "hermes-control-plane" / "artifacts"
+    if nested.exists():
+        return nested
+    return direct
+
+
+def _safe_read_control_plane_artifact(name: str) -> str:
+    path = _control_plane_artifacts_dir() / name
+    try:
+        if path.stat().st_size > 128_000:
+            return ""
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def _cockpit_boundaries() -> Dict[str, bool]:
+    return {
+        "read_only": True,
+        "action_controls": False,
+        "mutation_controls": False,
+        "telegram_send_enabled": False,
+        "obsidian_authority_edit_enabled": False,
+        "supabase_schema_change_enabled": False,
+        "cron_change_enabled": False,
+    }
+
+
+def _cockpit_disabled() -> Dict[str, Any]:
+    return {
+        "enabled": False,
+        "reason": "control_plane_not_configured",
+        "safe_next_action": "verify control-plane artifact availability or keep observe",
+    }
+
+
+def _classify_cockpit_artifacts() -> Tuple[Dict[str, Dict[str, Any]], List[str]]:
+    texts = {
+        key: _safe_read_control_plane_artifact(filename)
+        for key, filename in _CONTROL_PLANE_COCKPIT_ARTIFACTS.items()
+    }
+    if not any(texts.values()):
+        return {}, list(_CONTROL_PLANE_COCKPIT_ARTIFACTS)
+
+    status_values = {
+        "gate_d": "pass" if "run_status: pass" in texts["gate_d"].lower() else "unknown",
+        "github_watcher_no_agent": "pass" if "status: pass" in texts["github_watcher_no_agent"].lower() else "unknown",
+        "supabase_role_boundary": "recorded" if texts["supabase_role_boundary"] else "missing",
+        "obsidian_merge_review": "complete" if "status: complete" in texts["obsidian_merge_review"].lower() else ("recorded" if texts["obsidian_merge_review"] else "missing"),
+    }
+    summaries = {
+        "gate_d": "Gate D Morning Brief runner artifact is present and read-only.",
+        "github_watcher_no_agent": "GitHub Watcher no-agent artifact is present and read-only.",
+        "supabase_role_boundary": "Supabase/Obsidian role-boundary decision record is present.",
+        "obsidian_merge_review": "Obsidian Merge Review note creation result is present.",
+    }
+    statuses = {
+        key: {
+            "status": value,
+            "safe_summary": summaries[key],
+            "artifact_refs": [f"artifact://{Path(_CONTROL_PLANE_COCKPIT_ARTIFACTS[key]).stem}"],
+        }
+        for key, value in status_values.items()
+    }
+    missing = [key for key, text in texts.items() if not text]
+    return statuses, missing
+
+
+def _get_control_plane_cockpit_summary() -> Dict[str, Any]:
+    statuses, missing = _classify_cockpit_artifacts()
+    if not statuses:
+        return _cockpit_disabled()
+
+    ready = all(
+        panel.get("status") in {"pass", "recorded", "complete"}
+        for panel in statuses.values()
+    )
+    return {
+        "enabled": True,
+        "counts": {
+            "panels": len(_CONTROL_PLANE_COCKPIT_ARTIFACTS),
+            "missing": len(missing),
+        },
+        "status": statuses,
+        "handoff_summary": "Gate D, GitHub Watcher no-agent, Supabase role boundary, and Obsidian Merge Review are exposed as server-side read-only status only.",
+        "safe_next_action": "frontend_api_client_contract_gate" if ready else "observe",
+        "source_refs": list(_CONTROL_PLANE_COCKPIT_SOURCE_REFS.values()),
+        "artifact_refs": [
+            f"artifact://{Path(name).stem}"
+            for name in _CONTROL_PLANE_COCKPIT_ARTIFACTS.values()
+        ],
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
+def _get_control_plane_cockpit_blockers() -> Dict[str, Any]:
+    statuses, missing = _classify_cockpit_artifacts()
+    if not statuses:
+        return _cockpit_disabled()
+
+    blockers = [
+        {
+            "id": f"{key}:artifact_missing",
+            "status": "blocked",
+            "title": key,
+            "detail": "artifact_missing",
+            "safe_next_action": "observe",
+            "artifact_refs": [f"artifact://{Path(_CONTROL_PLANE_COCKPIT_ARTIFACTS[key]).stem}"],
+        }
+        for key in missing
+    ]
+    blockers.extend(
+        {
+            "id": f"{key}:status_{panel.get('status', 'unknown')}",
+            "status": "observe",
+            "title": key,
+            "detail": f"status_{panel.get('status', 'unknown')}",
+            "safe_next_action": "observe",
+            "artifact_refs": panel.get("artifact_refs", []),
+        }
+        for key, panel in statuses.items()
+        if panel.get("status") not in {"pass", "recorded", "complete"}
+        and key not in missing
+    )
+    return {
+        "enabled": True,
+        "blockers": blockers,
+        "boundaries": _cockpit_boundaries(),
+        "safe_next_action": "frontend_api_client_contract_gate" if not blockers else "observe",
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
+def _first_dry_run_target_ref(delivery_events: Any) -> str:
+    if not isinstance(delivery_events, list):
+        return "telegram://dry-run/hera-198"
+    for event in delivery_events:
+        if not isinstance(event, dict):
+            continue
+        if event.get("channel") == "dry_run" and event.get("delivery_status") == "dry_run":
+            target_ref = event.get("target_ref")
+            if (
+                isinstance(target_ref, str)
+                and target_ref.strip().startswith("telegram://dry-run/")
+            ):
+                return target_ref.strip()
+    return "telegram://dry-run/hera-198"
+
+
+def _build_morning_brief_telegram_preview(canary: Dict[str, Any]) -> Dict[str, Any]:
+    run = canary.get("run") if isinstance(canary.get("run"), dict) else {}
+    counts = canary.get("counts") if isinstance(canary.get("counts"), dict) else {}
+    boundaries = canary.get("boundaries") if isinstance(canary.get("boundaries"), dict) else {}
+    delivery_events = canary.get("delivery_events")
+
+    title = str(run.get("title") or "Morning Brief Canary")
+    status = str(run.get("status") or canary.get("status") or "unknown")
+    project = str(canary.get("project") or "hermes-control-plane")
+    target_ref = _first_dry_run_target_ref(delivery_events)
+    report_sections = counts.get("report_sections", len(canary.get("sections") or []))
+    source_anchors = counts.get("source_anchors", len(canary.get("sources") or []))
+    delivery_status = "dry_run"
+    if isinstance(delivery_events, list) and delivery_events:
+        first = delivery_events[0] if isinstance(delivery_events[0], dict) else {}
+        delivery_status = str(first.get("delivery_status") or "dry_run")
+
+    message_text = "\n".join([
+        f"[HERA-198] {title} 준비됨",
+        "",
+        f"상태: {status}",
+        f"대상: {project} read-only canary",
+        f"섹션: {report_sections}",
+        f"소스: {source_anchors}",
+        f"전달상태: {delivery_status}",
+        "",
+        "처리 이유: Supabase control-plane → WebUI cockpit readback 통과 후 Telegram 알림 계약을 실제 발송 전 dry-run으로 검증.",
+    ])
+
+    max_length = 600
+    return {
+        "enabled": True,
+        "status": "ok",
+        "mode": "dry_run_preview",
+        "project": project,
+        "target_ref": target_ref,
+        "channel": "telegram",
+        "send_enabled": False,
+        "write_enabled": False,
+        "message_text": message_text,
+        "message_length": len(message_text),
+        "validation": {
+            "length_ok": len(message_text) <= max_length,
+            "max_length": max_length,
+            "requires_approval_before_send": True,
+            "no_telegram_send_performed": True,
+            "no_supabase_write_performed": True,
+            "no_cron_change_performed": True,
+            "no_obsidian_authority_edit_performed": True,
+        },
+        "source": {
+            "run_ref": run.get("run_ref"),
+            "report_status": status,
+            "control_plane_mode": canary.get("mode"),
+        },
+        "boundaries": {
+            "writes_enabled": False,
+            "telegram_send_enabled": False,
+            "obsidian_authority_edit_enabled": False,
+            "cron_change_enabled": False,
+            **boundaries,
+        },
+    }
+
+
+@app.get("/api/control-plane/morning-brief-v0/canary")
+def get_control_plane_morning_brief_v0_canary():
+    return _get_morning_brief_v0_canary_payload()
+
+
+@app.get("/api/control-plane/morning-brief-canary")
+def get_control_plane_morning_brief_canary():
+    return _get_control_plane_morning_brief_payload()
+
+
+@app.get("/api/control-plane/morning-brief-canary/telegram-preview")
+def get_control_plane_morning_brief_telegram_preview():
+    canary = _get_control_plane_morning_brief_payload()
+    if not canary.get("enabled"):
+        return canary
+    return _build_morning_brief_telegram_preview(canary)
+
+
+@app.get("/api/control-plane/morning-brief-canary/safety-preview")
+def get_control_plane_morning_brief_safety_preview():
+    return _get_control_plane_safety_preview_payload()
+
+
+@app.get("/api/control-plane/cockpit/summary")
+def get_control_plane_cockpit_summary():
+    return _get_control_plane_cockpit_summary()
+
+
+@app.get("/api/control-plane/cockpit/blockers")
+def get_control_plane_cockpit_blockers():
+    return _get_control_plane_cockpit_blockers()
 
 
 @app.get("/api/status")

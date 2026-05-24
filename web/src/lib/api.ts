@@ -68,6 +68,22 @@ async function getSessionToken(): Promise<string> {
 
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getMorningBriefCanary: () =>
+    fetchJSON<MorningBriefCanaryResponse>("/api/control-plane/morning-brief-canary"),
+  getMorningBriefV0Canary: () =>
+    fetchJSON<MorningBriefV0CanaryResponse>("/api/control-plane/morning-brief-v0/canary"),
+  getMorningBriefTelegramPreview: () =>
+    fetchJSON<MorningBriefTelegramPreviewResponse>(
+      "/api/control-plane/morning-brief-canary/telegram-preview",
+    ),
+  getMorningBriefSafetyPreview: () =>
+    fetchJSON<MorningBriefSafetyPreviewResponse>(
+      "/api/control-plane/morning-brief-canary/safety-preview",
+    ),
+  getControlPlaneCockpitSummary: () =>
+    fetchJSON<ControlPlaneCockpitSummaryResponse>("/api/control-plane/cockpit/summary"),
+  getControlPlaneCockpitBlockers: () =>
+    fetchJSON<ControlPlaneCockpitBlockersResponse>("/api/control-plane/cockpit/blockers"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -603,6 +619,264 @@ export interface SessionSearchResult {
 
 export interface SessionSearchResponse {
   results: SessionSearchResult[];
+}
+
+
+export interface MorningBriefRun {
+  id?: string;
+  report_type?: string;
+  run_ref?: string;
+  status?: string;
+  report_date?: string;
+  title?: string;
+  summary_kr?: string | null;
+  obsidian_ref?: string | null;
+  paperclip_parent_ref?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface MorningBriefSection {
+  section_key?: string;
+  section_order?: number;
+  title?: string;
+  body_md?: string;
+  judgment_label?: string | null;
+  created_at?: string;
+}
+
+export interface MorningBriefSourceAnchor {
+  source_ref?: string;
+  source_title?: string | null;
+  publisher?: string | null;
+  published_at?: string | null;
+  observed_at?: string | null;
+  timing_label?: string | null;
+  quality_label?: string | null;
+  claim_ref?: string | null;
+  created_at?: string;
+}
+
+export interface MorningBriefDeliveryEvent {
+  channel?: string;
+  target_ref?: string | null;
+  payload_summary?: string;
+  delivery_status?: string;
+  delivered_at?: string | null;
+  error_summary?: string | null;
+  created_at?: string;
+}
+
+export interface MorningBriefAuditEvent {
+  event_type?: string;
+  subject_ref?: string | null;
+  actor_ref?: string;
+  source_refs?: unknown[];
+  artifact_refs?: unknown[];
+  summary?: string;
+  verification_status?: string | null;
+  created_at?: string;
+}
+
+export interface MorningBriefCanaryResponse {
+  enabled: boolean;
+  reason?: string;
+  message?: string;
+  status?: string;
+  mode?: "read_only" | string;
+  project?: string;
+  updated_at?: string;
+  run?: MorningBriefRun | null;
+  sections?: MorningBriefSection[];
+  sources?: MorningBriefSourceAnchor[];
+  delivery_events?: MorningBriefDeliveryEvent[];
+  audit_events?: MorningBriefAuditEvent[];
+  counts?: Record<string, number>;
+  boundaries?: {
+    writes_enabled?: boolean;
+    telegram_send_enabled?: boolean;
+    obsidian_authority_edit_enabled?: boolean;
+    cron_change_enabled?: boolean;
+  };
+}
+
+export interface MorningBriefV0CanaryResponse {
+  enabled: boolean;
+  reason?: string;
+  safe_next_action?: string;
+  canary_key?: "morning-brief-v0.2-preview-canary" | string;
+  report_kind?: "morning_brief" | string;
+  verification_status?: "verified" | string;
+  rollback_status?: "ready_not_needed" | string;
+  gateb_verification_result?: "pass" | string;
+  hermes_direct_db_verification?: boolean;
+  verification_source?: "hermes_supabase_cli_readback" | string;
+  report_snapshot_ref?: string;
+  preview_payload_present?: boolean;
+  source_quality_present?: boolean;
+  boundaries?: MorningBriefCanaryResponse["boundaries"] & {
+    webui_mutation_enabled?: boolean;
+  };
+}
+
+export interface MorningBriefTelegramPreviewResponse {
+  enabled: boolean;
+  reason?: string;
+  message?: string;
+  status?: string;
+  mode?: "dry_run_preview" | string;
+  project?: string;
+  target_ref?: string;
+  channel?: "telegram" | string;
+  send_enabled?: boolean;
+  write_enabled?: boolean;
+  message_text?: string;
+  message_length?: number;
+  validation?: {
+    length_ok?: boolean;
+    max_length?: number;
+    requires_approval_before_send?: boolean;
+    no_telegram_send_performed?: boolean;
+    no_supabase_write_performed?: boolean;
+    no_cron_change_performed?: boolean;
+    no_obsidian_authority_edit_performed?: boolean;
+  };
+  source?: {
+    run_ref?: string | null;
+    report_status?: string;
+    control_plane_mode?: string;
+  };
+  boundaries?: MorningBriefCanaryResponse["boundaries"];
+}
+
+export interface MorningBriefSafetyRun {
+  run_ref?: string;
+  title?: string;
+  status?: string;
+  lifecycle_state?: string;
+  report_date?: string;
+  paperclip_parent_ref?: string | null;
+}
+
+export interface MorningBriefSourceSafetyRef {
+  claim_key?: string;
+  section_key?: string;
+  source_title?: string | null;
+  publisher?: string | null;
+  source_tier?: string | null;
+  quality_label?: string | null;
+  timing_label?: string | null;
+  is_quarantined?: boolean;
+  quarantine_reason?: string | null;
+}
+
+export interface MorningBriefSourceSafetySummary {
+  state?: "clean" | "has_quarantine" | string;
+  source_count?: number;
+  quarantined_source_count?: number;
+  summary_kr?: string | null;
+  refs?: MorningBriefSourceSafetyRef[];
+}
+
+export interface MorningBriefNotificationReadiness {
+  action_state?: "preview_only" | "blocked" | string;
+  latest_channel?: string | null;
+  latest_delivery_mode?: string | null;
+  latest_send_result?: string | null;
+  latest_approval_state?: string | null;
+  delivery_browser_safe?: boolean | null;
+  latest_redaction_class?: string | null;
+  latest_provider_error_class?: string | null;
+}
+
+export interface MorningBriefAuthorityBoundary {
+  state?: "no_obsidian_ref" | string;
+  obsidian_ref_present?: boolean;
+  supabase_is_authority?: false;
+  requires_obsidian_merge_review_before_authority?: boolean;
+}
+
+export interface MorningBriefRollbackReadiness {
+  available?: boolean;
+  publish_blocked?: boolean;
+  publish_block_reason_kr?: string | null;
+}
+
+export interface MorningBriefSafetyPreviewResponse {
+  enabled: boolean;
+  reason?: string;
+  message?: string;
+  status?: string;
+  mode?: "read_only_safety_preview" | string;
+  run?: MorningBriefSafetyRun;
+  source_safety?: MorningBriefSourceSafetySummary;
+  notification_readiness?: MorningBriefNotificationReadiness;
+  authority_boundary?: MorningBriefAuthorityBoundary;
+  rollback_readiness?: MorningBriefRollbackReadiness;
+  boundaries?: MorningBriefCanaryResponse["boundaries"] & {
+    webui_mutation_enabled?: boolean;
+  };
+}
+
+export interface ControlPlaneCockpitDisabledState {
+  enabled: false;
+  reason: "control_plane_not_configured" | string;
+  message?: string;
+}
+
+export interface ControlPlaneCockpitStatusPanel {
+  status?: string;
+  state?: string;
+  enabled?: boolean;
+  last_status?: string | null;
+  last_run_at?: string | null;
+  next_run_at?: string | null;
+  safe_summary?: string | null;
+  artifact_refs?: string[];
+}
+
+export interface ControlPlaneCockpitSummaryResponse {
+  enabled?: boolean;
+  reason?: string;
+  counts?: Record<string, number>;
+  status?: Record<
+    "gate_d" | "github_watcher_no_agent" | "supabase_role_boundary" | "obsidian_merge_review" | string,
+    ControlPlaneCockpitStatusPanel
+  >;
+  handoff_summary?: string;
+  safe_next_action?: string;
+  source_refs?: string[];
+  artifact_refs?: string[];
+  updated_at?: string;
+}
+
+export interface ControlPlaneCockpitBoundaryFlags {
+  read_only?: boolean;
+  server_side_only?: boolean;
+  session_token_protected?: boolean;
+  public_api_path?: false;
+  browser_side_supabase_secret?: false;
+  direct_browser_to_supabase?: false;
+  action_controls?: false;
+  mutation_controls?: false;
+}
+
+export interface ControlPlaneCockpitBlocker {
+  id: string;
+  status: "blocked" | "hold" | "observe" | "pass" | string;
+  title?: string;
+  detail?: string;
+  safe_next_action?: string;
+  artifact_refs?: string[];
+}
+
+export interface ControlPlaneCockpitBlockersResponse {
+  enabled?: boolean;
+  reason?: string;
+  blockers?: ControlPlaneCockpitBlocker[];
+  boundaries?: ControlPlaneCockpitBoundaryFlags;
+  safe_next_action?: string;
+  updated_at?: string;
 }
 
 // ── Model info types ──────────────────────────────────────────────────
