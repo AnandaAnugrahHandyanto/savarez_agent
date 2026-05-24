@@ -202,7 +202,27 @@ def test_create_task_persists_worktree_branch_name(kanban_home, tmp_path):
     assert "Branch:   wt/t6-wire" in context
 
 
-def test_branch_name_requires_worktree_workspace(kanban_home):
+def test_create_task_worktree_defaults_base_branch(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="worktree task",
+            triage=True,
+            workspace_kind="worktree",
+        )
+        task = kb.get_task(conn, tid)
+    assert task.base_branch == "origin/main"
+
+
+def test_base_branch_requires_worktree_workspace(kanban_home):
+    with pytest.raises(ValueError, match="base_branch"):
+        with kb.connect() as conn:
+            kb.create_task(
+                conn,
+                title="bad",
+                workspace_kind="scratch",
+                base_branch="origin/main",
+            )
     with kb.connect() as conn, pytest.raises(ValueError, match="worktree"):
         kb.create_task(
             conn,
@@ -392,6 +412,7 @@ def test_update_workspace_allowed_for_triage_cards(kanban_home, tmp_path):
             "workspace_kind": "worktree",
             "workspace_path": str(worktree_path),
             "branch_name": "feature/rough-idea",
+            "base_branch": "origin/main",
         }
 
 
@@ -2236,6 +2257,7 @@ def test_migrate_add_optional_columns_tolerates_concurrent_migration(kanban_home
             result TEXT,
             idempotency_key TEXT,
             branch_name TEXT,
+            base_branch TEXT,
             consecutive_failures INTEGER NOT NULL DEFAULT 0,
             worker_pid INTEGER,
             last_failure_error TEXT,

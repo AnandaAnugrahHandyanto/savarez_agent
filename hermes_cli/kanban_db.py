@@ -97,6 +97,21 @@ _log = logging.getLogger(__name__)
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+
+
+def _normalize_base_branch(
+    workspace_kind: str,
+    base_branch: Optional[str],
+) -> Optional[str]:
+    """Return the stored base branch for worktree tasks, else ``None``."""
+    if workspace_kind != "worktree":
+        return None
+    from hermes_cli.kanban_worktree import DEFAULT_WORKTREE_BASE_BRANCH
+
+    text = str(base_branch).strip() if base_branch is not None else ""
+    return text or DEFAULT_WORKTREE_BASE_BRANCH
+
+
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 
@@ -617,6 +632,7 @@ class Task:
     claim_expires: Optional[int]
     tenant: Optional[str]
     branch_name: Optional[str] = None
+    base_branch: Optional[str] = None
     result: Optional[str] = None
     idempotency_key: Optional[str] = None
     # Unified non-success counter. Incremented on any of:
@@ -683,6 +699,7 @@ class Task:
             workspace_kind=row["workspace_kind"],
             workspace_path=row["workspace_path"],
             branch_name=row["branch_name"] if "branch_name" in keys else None,
+            base_branch=row["base_branch"] if "base_branch" in keys else None,
             claim_lock=row["claim_lock"],
             claim_expires=row["claim_expires"],
             tenant=row["tenant"] if "tenant" in keys else None,
@@ -820,6 +837,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     workspace_kind       TEXT NOT NULL DEFAULT 'scratch',
     workspace_path       TEXT,
     branch_name          TEXT,
+    base_branch          TEXT,
     claim_lock           TEXT,
     claim_expires        INTEGER,
     tenant               TEXT,
@@ -1127,6 +1145,8 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(conn, "tasks", "result", "result TEXT")
     if "branch_name" not in cols:
         _add_column_if_missing(conn, "tasks", "branch_name", "branch_name TEXT")
+    if "base_branch" not in cols:
+        _add_column_if_missing(conn, "tasks", "base_branch", "base_branch TEXT")
     if "idempotency_key" not in cols:
         _add_column_if_missing(
             conn, "tasks", "idempotency_key", "idempotency_key TEXT"
@@ -1401,6 +1421,7 @@ def create_task(
     workspace_kind: str = "scratch",
     workspace_path: Optional[str] = None,
     branch_name: Optional[str] = None,
+    base_branch: Optional[str] = None,
     tenant: Optional[str] = None,
     priority: int = 0,
     parents: Iterable[str] = (),
@@ -1451,8 +1472,13 @@ def create_task(
         )
     if branch_name is not None:
         branch_name = str(branch_name).strip() or None
+    if base_branch is not None:
+        base_branch = str(base_branch).strip() or None
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
+    if base_branch and workspace_kind != "worktree":
+        raise ValueError("base_branch is only valid for worktree workspaces")
+    stored_base_branch = _normalize_base_branch(workspace_kind, base_branch)
     parents = tuple(p for p in parents if p)
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
@@ -1568,9 +1594,9 @@ def create_task(
                     INSERT INTO tasks (
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
-                        branch_name, tenant, idempotency_key, max_runtime_seconds,
+                        branch_name, base_branch, tenant, idempotency_key, max_runtime_seconds,
                         skills, max_retries, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -1584,6 +1610,7 @@ def create_task(
                         workspace_kind,
                         workspace_path,
                         branch_name,
+                        stored_base_branch,
                         tenant,
                         idempotency_key,
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
@@ -1607,6 +1634,7 @@ def create_task(
                         "parents": list(parents),
                         "tenant": tenant,
                         "branch_name": branch_name,
+                        "base_branch": stored_base_branch,
                         "skills": list(skills_list) if skills_list else None,
                     },
                 )
@@ -3732,6 +3760,7 @@ def update_task_workspace(
     workspace_kind: str,
     workspace_path: Optional[str] = None,
     branch_name: Optional[str] = None,
+    base_branch: Optional[str] = None,
 ) -> bool:
     """Change the workspace metadata for an un-specified triage task.
 
@@ -3759,42 +3788,59 @@ def update_task_workspace(
         # worktree so the worker gets a fresh isolated directory.
         new_path = None
         new_branch = None
+        new_base = None
     elif workspace_kind == "dir":
         if not new_path:
             raise ValueError("workspace_path is required for dir workspaces")
         new_branch = None
+        new_base = None
     elif workspace_kind == "worktree":
         # A worktree path is optional; resolve_workspace will derive
         # .worktrees/<task_id> when it is omitted.
         pass
+    else:
+        new_base = None
 
     if new_branch and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
+    if base_branch is not None and str(base_branch).strip() and workspace_kind != "worktree":
+        raise ValueError("base_branch is only valid for worktree workspaces")
 
     with write_txn(conn):
         row = conn.execute(
-            "SELECT workspace_kind, workspace_path, branch_name FROM tasks "
+            "SELECT workspace_kind, workspace_path, branch_name, base_branch FROM tasks "
             "WHERE id = ? AND status = 'triage'",
             (task_id,),
         ).fetchone()
         if row is None:
             return False
 
+        if workspace_kind == "worktree":
+            if base_branch is not None:
+                new_base = _normalize_base_branch(workspace_kind, base_branch)
+            else:
+                existing = row["base_branch"] if "base_branch" in row.keys() else None
+                new_base = _normalize_base_branch(workspace_kind, existing)
+        elif workspace_kind != "scratch" and workspace_kind != "dir":
+            new_base = None
+
         old_payload = {
             "workspace_kind": row["workspace_kind"],
             "workspace_path": row["workspace_path"],
             "branch_name": row["branch_name"],
+            "base_branch": row["base_branch"] if "base_branch" in row.keys() else None,
         }
         new_payload = {
             "workspace_kind": workspace_kind,
             "workspace_path": new_path,
             "branch_name": new_branch,
+            "base_branch": new_base if workspace_kind == "worktree" else None,
         }
 
         conn.execute(
             "UPDATE tasks SET workspace_kind = ?, workspace_path = ?, "
-            "branch_name = ? WHERE id = ? AND status = 'triage'",
-            (workspace_kind, new_path, new_branch, task_id),
+            "branch_name = ?, base_branch = ? WHERE id = ? AND status = 'triage'",
+            (workspace_kind, new_path, new_branch, new_payload["base_branch"], task_id),
         )
         _append_event(
             conn,
@@ -5821,6 +5867,8 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
             lines.append(f"Terminal timeout: {effective_terminal_timeout}s")
     if task.branch_name:
         lines.append(f"Branch:   {task.branch_name}")
+    if task.base_branch:
+        lines.append(f"Base:     {task.base_branch}")
     lines.append("")
 
     if task.body and task.body.strip():

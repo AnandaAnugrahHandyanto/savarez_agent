@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -161,6 +162,55 @@ def test_patch_workspace_on_triage_task_before_specification(client, tmp_path):
     assert updated["workspace_kind"] == "worktree"
     assert updated["workspace_path"] == str(tmp_path / "rough-idea")
     assert updated["branch_name"] == "feature/rough-idea"
+    assert updated["base_branch"] == "origin/main"
+
+
+def test_git_branches_endpoint_lists_refs(client, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=str(repo), check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "t@example.com"],
+        cwd=str(repo),
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=str(repo),
+        check=True,
+        capture_output=True,
+    )
+    (repo / "README.md").write_text("hi\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=str(repo), check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init"],
+        cwd=str(repo),
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "branch", "-M", "main"],
+        cwd=str(repo),
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"],
+        cwd=str(repo),
+        check=True,
+        capture_output=True,
+    )
+
+    r = client.get(
+        "/api/plugins/kanban/git/branches",
+        params={"workspace_path": str(repo)},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["default"] == "origin/main"
+    assert "main" in body["branches"]
+    assert "origin/main" in body["branches"]
 
 
 def test_patch_workspace_rejected_after_triage(client, tmp_path):

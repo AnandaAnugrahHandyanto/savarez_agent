@@ -12,6 +12,8 @@ from typing import Any, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_WORKTREE_BASE_BRANCH = "origin/main"
+
 
 def _path_is_within_root(path: Path, root: Path) -> bool:
     try:
@@ -81,6 +83,95 @@ def default_worktree_path(task_id: str, *, repo_root: Optional[Path] = None) -> 
     if root is not None:
         return (root / ".worktrees" / task_id).resolve()
     return (Path.cwd() / ".worktrees" / task_id).resolve()
+
+
+def _git_ref_exists(repo_root: Path, ref: str) -> bool:
+    ref = (ref or "").strip()
+    if not ref:
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            cwd=str(repo_root),
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def resolve_worktree_base_ref(
+    repo_root: Path,
+    base_branch: Optional[str],
+) -> str:
+    """Return a git ref that exists in ``repo_root`` for ``git worktree add``."""
+    ref = (base_branch or "").strip() or DEFAULT_WORKTREE_BASE_BRANCH
+    candidates = [ref]
+    if ref.startswith("origin/"):
+        candidates.append(ref.split("/", 1)[1])
+    elif "/" not in ref:
+        candidates.append(f"origin/{ref}")
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if _git_ref_exists(repo_root, candidate):
+            return candidate
+    raise ValueError(
+        f"git ref {ref!r} not found in repository {repo_root}. "
+        "Fetch remotes or pick another base branch."
+    )
+
+
+def list_git_branches(repo_root: Path) -> list[str]:
+    """List local and remote branch names for a repository."""
+    root = repo_root.resolve()
+    names: list[str] = []
+    seen: set[str] = set()
+
+    def _collect(args: list[str]) -> None:
+        try:
+            result = subprocess.run(
+                args,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=str(root),
+            )
+        except Exception:
+            return
+        if result.returncode != 0:
+            return
+        for line in result.stdout.splitlines():
+            name = line.strip()
+            if not name or name.endswith("/HEAD"):
+                continue
+            if name not in seen:
+                seen.add(name)
+                names.append(name)
+
+    _collect(["git", "branch", "--format=%(refname:short)"])
+    _collect(["git", "branch", "-r", "--format=%(refname:short)"])
+    local = sorted(n for n in names if not n.startswith("origin/"))
+    remote = sorted(n for n in names if n.startswith("origin/"))
+    return local + remote
+
+
+def infer_repo_root_for_branch_list(
+    *,
+    workspace_path: Optional[str] = None,
+) -> Optional[Path]:
+    """Best-effort repo root for dashboard branch pickers."""
+    if workspace_path:
+        candidate = Path(workspace_path).expanduser()
+        if candidate.is_dir():
+            root = git_repo_root(candidate)
+            if root is not None:
+                return root
+    return infer_repo_root_for_worktree(Path.cwd())
 
 
 def _is_usable_worktree(path: Path) -> bool:
@@ -153,6 +244,10 @@ def ensure_worktree_workspace(
         )
 
     branch = (getattr(task, "branch_name", None) or "").strip() or f"wt/{task.id}"
+    base_ref = resolve_worktree_base_ref(
+        root,
+        getattr(task, "base_branch", None),
+    )
     wt_path.parent.mkdir(parents=True, exist_ok=True)
 
     gitignore = root / ".gitignore"
@@ -177,7 +272,7 @@ def ensure_worktree_workspace(
         )
 
     add_new = _run(
-        ["git", "worktree", "add", str(wt_path), "-b", branch, "HEAD"]
+        ["git", "worktree", "add", str(wt_path), "-b", branch, base_ref]
     )
     if add_new.returncode != 0:
         add_existing = _run(["git", "worktree", "add", str(wt_path), branch])

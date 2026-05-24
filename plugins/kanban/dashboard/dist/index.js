@@ -1036,6 +1036,7 @@
         error ? h("div", { className: "text-xs text-destructive px-2" }, error) : null,
         h(BoardColumns, {
           board: filteredBoard,
+          boardSlug: board,
           laneByProfile,
           selectedIds,
           failedIds,
@@ -2252,6 +2253,7 @@
         return h(Column, {
           key: col.name,
           column: col,
+          boardSlug: props.boardSlug,
           laneByProfile: props.laneByProfile,
           selectedIds: props.selectedIds,
           failedIds: props.failedIds,
@@ -2371,6 +2373,7 @@
         colHelp || ""),
       showCreate ? h(InlineCreate, {
         columnName: props.column.name,
+        boardSlug: props.boardSlug,
         allTasks: props.allTasks,
         onSubmit: function (body) {
           props.onCreate(body).then(function () { setShowCreate(false); });
@@ -2603,6 +2606,59 @@
   }
 
   // -------------------------------------------------------------------------
+  // Git branch picker (worktree base branch)
+  // -------------------------------------------------------------------------
+
+  var DEFAULT_WORKTREE_BASE_BRANCH = "origin/main";
+
+  function GitBranchSelect(props) {
+    const [branches, setBranches] = useState([DEFAULT_WORKTREE_BASE_BRANCH]);
+    const [loadError, setLoadError] = useState(null);
+
+    useEffect(function () {
+      var qp = "";
+      if (props.workspacePath && props.workspacePath.trim()) {
+        qp = "?workspace_path=" + encodeURIComponent(props.workspacePath.trim());
+      }
+      SDK.fetchJSON(withBoard(API + "/git/branches" + qp, props.boardSlug))
+        .then(function (res) {
+          var listed = (res && res.branches) || [DEFAULT_WORKTREE_BASE_BRANCH];
+          setBranches(listed);
+          setLoadError(res && res.warning ? res.warning : null);
+        })
+        .catch(function (err) {
+          setBranches([DEFAULT_WORKTREE_BASE_BRANCH]);
+          setLoadError(err.message || String(err));
+        });
+    }, [props.workspacePath, props.boardSlug]);
+
+    var value = props.value || DEFAULT_WORKTREE_BASE_BRANCH;
+    var options = branches.slice();
+    if (options.indexOf(value) === -1) {
+      options.unshift(value);
+    }
+    if (options.indexOf(DEFAULT_WORKTREE_BASE_BRANCH) === -1) {
+      options.unshift(DEFAULT_WORKTREE_BASE_BRANCH);
+    }
+
+    return h("div", { className: "flex flex-col gap-0.5" },
+      props.label ? h("span", { className: "text-[10px] text-muted-foreground" }, props.label) : null,
+      h("select", {
+        value: value,
+        onChange: function (e) { props.onChange(e.target.value); },
+        className: "hermes-kanban-recovery-select hermes-kanban-assignee-select h-7 text-xs",
+        title: props.title || tx(props.t, "baseBranchTitle",
+          "Branch to create the worktree from (local or remote)"),
+      },
+        options.map(function (b) {
+          return h("option", { key: b, value: b }, b);
+        }),
+      ),
+      loadError ? h("span", { className: "text-[10px] text-amber-600" }, loadError) : null,
+    );
+  }
+
+  // -------------------------------------------------------------------------
   // Inline create (with parent selector)
   // -------------------------------------------------------------------------
 
@@ -2619,6 +2675,7 @@
     // input here to save vertical space in the common `scratch` case.
     const [workspaceKind, setWorkspaceKind] = useState("scratch");
     const [workspacePath, setWorkspacePath] = useState("");
+    const [baseBranch, setBaseBranch] = useState(DEFAULT_WORKTREE_BASE_BRANCH);
 
     const submit = function () {
       const trimmed = title.trim();
@@ -2645,9 +2702,12 @@
       }
       const wpTrim = workspacePath.trim();
       if (wpTrim) body.workspace_path = wpTrim;
+      if (workspaceKind === "worktree") {
+        body.base_branch = (baseBranch || DEFAULT_WORKTREE_BASE_BRANCH).trim();
+      }
       props.onSubmit(body);
       setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkills("");
-      setWorkspaceKind("scratch"); setWorkspacePath("");
+      setWorkspaceKind("scratch"); setWorkspacePath(""); setBaseBranch(DEFAULT_WORKTREE_BASE_BRANCH);
     };
 
     const showPathInput = workspaceKind !== "scratch";
@@ -2721,6 +2781,14 @@
           className: "h-7 text-xs flex-1",
         }) : null,
       ),
+      workspaceKind === "worktree" ? h(GitBranchSelect, {
+        t: t,
+        boardSlug: props.boardSlug,
+        workspacePath: workspacePath,
+        value: baseBranch,
+        onChange: setBaseBranch,
+        label: tx(t, "baseBranch", "Base branch"),
+      }) : null,
       h(Select, Object.assign({
         value: parent,
         className: "h-7 text-xs",
@@ -3032,7 +3100,11 @@
           h(AssigneeEditor, { task: t, assignees: props.assignees, onPatch: props.onPatch }),
           h(PriorityEditor, { task: t, onPatch: props.onPatch }),
           t.tenant ? h(MetaRow, { label: tx(i18n, "tenant", "Tenant"), value: t.tenant }) : null,
-          h(WorkspaceEditor, { task: t, onPatch: props.onPatch }),
+          h(WorkspaceEditor, {
+            task: t,
+            boardSlug: props.boardSlug,
+            onPatch: props.onPatch,
+          }),
           (t.skills && t.skills.length > 0) ? h(MetaRow, {
             label: tx(i18n, "skills", "Skills"),
             value: t.skills.join(", "),
@@ -3323,14 +3395,25 @@
     const [kind, setKind] = useState(task.workspace_kind || "scratch");
     const [path, setPath] = useState(task.workspace_path || "");
     const [branch, setBranch] = useState(task.branch_name || "");
+    const [baseBranch, setBaseBranch] = useState(
+      task.base_branch || DEFAULT_WORKTREE_BASE_BRANCH,
+    );
     useEffect(function () {
       setKind(task.workspace_kind || "scratch");
       setPath(task.workspace_path || "");
       setBranch(task.branch_name || "");
-    }, [task.workspace_kind, task.workspace_path, task.branch_name]);
+      setBaseBranch(task.base_branch || DEFAULT_WORKTREE_BASE_BRANCH);
+    }, [task.workspace_kind, task.workspace_path, task.branch_name, task.base_branch]);
 
     const label = tx(t, "workspace", "Workspace");
-    const value = `${task.workspace_kind}${task.workspace_path ? ": " + task.workspace_path : ""}${task.branch_name ? " (" + task.branch_name + ")" : ""}`;
+    var value = task.workspace_kind || "scratch";
+    if (task.workspace_path) value += ": " + task.workspace_path;
+    if (task.workspace_kind === "worktree") {
+      value += " (from " + (task.base_branch || DEFAULT_WORKTREE_BASE_BRANCH) + ")";
+      if (task.branch_name) value += " → " + task.branch_name;
+    } else if (task.branch_name) {
+      value += " (" + task.branch_name + ")";
+    }
     if (task.status !== "triage") {
       return h(MetaRow, { label: label, value: value });
     }
@@ -3349,7 +3432,10 @@
       const trimmedPath = path.trim();
       const trimmedBranch = branch.trim();
       if (trimmedPath) body.workspace_path = trimmedPath;
-      if (kind === "worktree" && trimmedBranch) body.branch_name = trimmedBranch;
+      if (kind === "worktree") {
+        if (trimmedBranch) body.branch_name = trimmedBranch;
+        body.base_branch = (baseBranch || DEFAULT_WORKTREE_BASE_BRANCH).trim();
+      }
       props.onPatch(body).then(function () { setEditing(false); });
     };
     const showPath = kind !== "scratch";
@@ -3361,7 +3447,9 @@
             value: kind,
             onChange: function (e) {
               setKind(e.target.value);
-              if (e.target.value === "scratch") { setPath(""); setBranch(""); }
+              if (e.target.value === "scratch") {
+                setPath(""); setBranch(""); setBaseBranch(DEFAULT_WORKTREE_BASE_BRANCH);
+              }
               if (e.target.value === "dir") setBranch("");
             },
             className: "hermes-kanban-recovery-select hermes-kanban-assignee-select",
@@ -3382,10 +3470,18 @@
             : tx(t, "workspacePathOptional", "workspace path (optional)"),
           className: "h-7 text-xs",
         }) : null,
+        kind === "worktree" ? h(GitBranchSelect, {
+          t: t,
+          boardSlug: props.boardSlug,
+          workspacePath: path,
+          value: baseBranch,
+          onChange: setBaseBranch,
+          label: tx(t, "baseBranch", "Base branch"),
+        }) : null,
         kind === "worktree" ? h(Input, {
           value: branch,
           onChange: function (e) { setBranch(e.target.value); },
-          placeholder: tx(t, "branchNameOptional", "branch name (optional)"),
+          placeholder: tx(t, "branchNameOptional", "new branch name (optional)"),
           className: "h-7 text-xs",
         }) : null,
       ),

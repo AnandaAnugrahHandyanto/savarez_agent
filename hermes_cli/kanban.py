@@ -68,6 +68,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "workspace_kind": t.workspace_kind,
         "workspace_path": t.workspace_path,
         "branch_name": t.branch_name,
+        "base_branch": t.base_branch,
         "created_by": t.created_by,
         "created_at": t.created_at,
         "started_at": t.started_at,
@@ -313,6 +314,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "(default: scratch)")
     p_create.add_argument("--branch", default=None,
                           help="Branch name for worktree tasks")
+    p_create.add_argument("--base-branch", default=None, dest="base_branch",
+                          help="Base branch for worktree tasks (default: origin/main)")
     p_create.add_argument("--tenant", default=None, help="Tenant namespace")
     p_create.add_argument("--priority", type=int, default=0, help="Priority tiebreaker")
     p_create.add_argument("--triage", action="store_true",
@@ -362,6 +365,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "--branch",
         default=None,
         help="Branch name for worktree tasks",
+    )
+    p_workspace.add_argument(
+        "--base-branch",
+        default=None,
+        dest="base_branch",
+        help="Base branch for worktree tasks (default: origin/main)",
     )
 
     # --- swarm ---
@@ -1283,11 +1292,15 @@ def _cmd_create(args: argparse.Namespace) -> int:
     try:
         ws_kind, ws_path = _parse_workspace_flag(args.workspace)
         branch_name = _parse_branch_flag(getattr(args, "branch", None))
+        base_branch = _parse_branch_flag(getattr(args, "base_branch", None))
     except argparse.ArgumentTypeError as exc:
         print(f"kanban: {exc}", file=sys.stderr)
         return 2
     if branch_name and ws_kind != "worktree":
         print("kanban: --branch is only valid with --workspace worktree", file=sys.stderr)
+        return 2
+    if base_branch and ws_kind != "worktree":
+        print("kanban: --base-branch is only valid with --workspace worktree", file=sys.stderr)
         return 2
     try:
         max_runtime = _parse_duration(getattr(args, "max_runtime", None))
@@ -1312,6 +1325,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             workspace_kind=ws_kind,
             workspace_path=ws_path,
             branch_name=branch_name,
+            base_branch=base_branch,
             tenant=args.tenant,
             priority=args.priority,
             parents=tuple(args.parent or ()),
@@ -1346,11 +1360,15 @@ def _cmd_workspace(args: argparse.Namespace) -> int:
     try:
         ws_kind, ws_path = _parse_workspace_flag(args.workspace)
         branch_name = _parse_branch_flag(getattr(args, "branch", None))
+        base_branch = _parse_branch_flag(getattr(args, "base_branch", None))
     except argparse.ArgumentTypeError as exc:
         print(f"kanban: {exc}", file=sys.stderr)
         return 2
     if branch_name and ws_kind != "worktree":
         print("kanban: --branch is only valid with workspace worktree", file=sys.stderr)
+        return 2
+    if base_branch and ws_kind != "worktree":
+        print("kanban: --base-branch is only valid with workspace worktree", file=sys.stderr)
         return 2
     with kb.connect() as conn:
         try:
@@ -1360,6 +1378,7 @@ def _cmd_workspace(args: argparse.Namespace) -> int:
                 workspace_kind=ws_kind,
                 workspace_path=ws_path,
                 branch_name=branch_name,
+                base_branch=base_branch,
             )
         except ValueError as exc:
             print(f"kanban: {exc}", file=sys.stderr)
@@ -1526,6 +1545,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
           (f" @ {task.workspace_path}" if task.workspace_path else ""))
     if task.branch_name:
         print(f"  branch:    {task.branch_name}")
+    if task.base_branch:
+        print(f"  base:      {task.base_branch}")
     if task.skills:
         print(f"  skills:    {', '.join(task.skills)}")
     if task.model_override:

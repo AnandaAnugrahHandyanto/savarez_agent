@@ -36,6 +36,18 @@ class KanbanWorktreeTests(unittest.TestCase):
             check=True,
             capture_output=True,
         )
+        subprocess.run(
+            ["git", "branch", "-M", "main"],
+            cwd=str(root),
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "update-ref", "refs/remotes/origin/main", "HEAD"],
+            cwd=str(root),
+            check=True,
+            capture_output=True,
+        )
 
     def test_ensure_worktree_workspace_creates_git_worktree(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -60,11 +72,29 @@ class KanbanWorktreeTests(unittest.TestCase):
                 claim_expires=None,
                 tenant=None,
                 branch_name="wt/t_test",
+                base_branch="origin/main",
             )
             created = kwt.ensure_worktree_workspace(task, wt_path, repo_root=repo)
             self.assertEqual(created, wt_path.resolve())
             self.assertTrue((wt_path / ".git").exists())
             self.assertTrue((wt_path / "README.md").exists())
+            show = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=str(wt_path),
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertEqual(show.stdout.strip(), "wt/t_test")
+
+    def test_list_git_branches_includes_local_and_remote(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            self._init_repo(repo)
+            branches = kwt.list_git_branches(repo)
+            self.assertIn("main", branches)
+            self.assertIn("origin/main", branches)
 
     def test_apply_kanban_worker_workspace_sets_cwd_and_agent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

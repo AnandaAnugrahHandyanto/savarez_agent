@@ -555,6 +555,7 @@ class CreateTaskBody(BaseModel):
     workspace_kind: str = "scratch"
     workspace_path: Optional[str] = None
     branch_name: Optional[str] = None
+    base_branch: Optional[str] = None
     parents: list[str] = Field(default_factory=list)
     triage: bool = False
     idempotency_key: Optional[str] = None
@@ -576,6 +577,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             workspace_kind=payload.workspace_kind,
             workspace_path=payload.workspace_path,
             branch_name=payload.branch_name,
+            base_branch=payload.base_branch,
             tenant=payload.tenant,
             priority=payload.priority,
             parents=payload.parents,
@@ -607,6 +609,40 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
         conn.close()
 
 
+@router.get("/git/branches")
+def list_git_branches(
+    workspace_path: Optional[str] = Query(None),
+    board: Optional[str] = Query(None),
+):
+    """List local and remote git branches for worktree base-branch pickers."""
+    from hermes_cli.kanban_worktree import (
+        DEFAULT_WORKTREE_BASE_BRANCH,
+        infer_repo_root_for_branch_list,
+        list_git_branches as _list_git_branches,
+    )
+
+    del board  # reserved for future board-scoped repo resolution
+    repo_root = infer_repo_root_for_branch_list(workspace_path=workspace_path)
+    if repo_root is None:
+        return {
+            "branches": [DEFAULT_WORKTREE_BASE_BRANCH],
+            "default": DEFAULT_WORKTREE_BASE_BRANCH,
+            "repo_root": None,
+            "warning": "No git repository found for branch listing",
+        }
+    try:
+        branches = _list_git_branches(repo_root)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if DEFAULT_WORKTREE_BASE_BRANCH not in branches:
+        branches.insert(0, DEFAULT_WORKTREE_BASE_BRANCH)
+    return {
+        "branches": branches,
+        "default": DEFAULT_WORKTREE_BASE_BRANCH,
+        "repo_root": str(repo_root),
+    }
+
+
 # ---------------------------------------------------------------------------
 # PATCH /tasks/:id  (status / assignee / priority / title / body)
 # ---------------------------------------------------------------------------
@@ -622,6 +658,7 @@ class UpdateTaskBody(BaseModel):
     workspace_kind: Optional[str] = None
     workspace_path: Optional[str] = None
     branch_name: Optional[str] = None
+    base_branch: Optional[str] = None
     # Structured handoff fields — forwarded to complete_task when status
     # transitions to 'done'. Dashboard parity with ``hermes kanban
     # complete --summary ... --metadata ...``.
@@ -658,6 +695,7 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     workspace_kind=payload.workspace_kind,
                     workspace_path=payload.workspace_path,
                     branch_name=payload.branch_name,
+                    base_branch=payload.base_branch,
                 )
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
