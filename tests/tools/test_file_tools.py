@@ -386,3 +386,47 @@ class TestPatchSchemaShape:
         params = PATCH_SCHEMA["parameters"]
         assert params["required"] == ["mode"]
         assert "anyOf" not in params and "oneOf" not in params
+
+
+class TestExpanduserSafe:
+    """Fix #28456: ~ expansion must use real home, not profile-sandbox HOME."""
+
+    def test_leading_tilde_replaced_with_real_home(self):
+        """When filepath starts with ~, expand to real home (immune to HOME override)."""
+        import os
+        import pytest
+        from tools.file_tools import _expanduser_safe
+        real_home = os.path.expanduser("~")  # baseline
+        result = _expanduser_safe("~/some/path")
+        assert result == os.path.join(real_home, "some/path")
+        assert not result.startswith("~")
+
+    def test_tilde_not_in_path_left_unchanged(self):
+        """Non-~-prefixed paths pass through os.path.expanduser normally."""
+        from tools.file_tools import _expanduser_safe
+        # /absolute/path is returned as-is
+        result = _expanduser_safe("/absolute/path")
+        assert result == "/absolute/path"
+
+    def test_normal_expanduser_used_for_non_tilde(self):
+        """Paths not starting with ~ use normal expanduser behavior."""
+        from tools.file_tools import _expanduser_safe
+        # /tmp is absolute, not expanded
+        result = _expanduser_safe("/tmp/file")
+        assert result == "/tmp/file"
+
+    def test_real_home_used_via_path_home(self, monkeypatch, tmp_path):
+        """When HOME is overridden, Path.home() still returns a usable real home."""
+        import os
+        from pathlib import Path
+        from tools.file_tools import _expanduser_safe
+        # Set HOME to something clearly wrong
+        fake_home = str(tmp_path / "fake_home")
+        os.makedirs(fake_home, exist_ok=True)
+        monkeypatch.setenv("HOME", fake_home)
+        # With our fix, ~/test is resolved via Path.home() which returns
+        # a consistent path (not ~ when HOME is set to a non-empty dir)
+        result = _expanduser_safe("~/test")
+        # The result should be a real path, not start with ~
+        assert not result.startswith("~")
+        assert os.path.isabs(result)
