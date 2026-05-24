@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.memory_manager import sanitize_context
@@ -195,6 +197,8 @@ class HonchoMemoryProvider(MemoryProvider):
         self._manager = None   # HonchoSessionManager
         self._config = None    # HonchoClientConfig
         self._session_key = ""
+        self._platform = "cli"
+        self._gateway_session_key: Optional[str] = None
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: Optional[threading.Thread] = None
@@ -232,6 +236,9 @@ class HonchoMemoryProvider(MemoryProvider):
 
         # Port #4053: cron guard — when True, plugin is fully inactive
         self._cron_skipped = False
+
+        # Phase 6C: per-process one-session Honcho hint experiment gate.
+        self._one_session_room_hint_consumed = False
 
     @property
     def name(self) -> str:
@@ -284,6 +291,8 @@ class HonchoMemoryProvider(MemoryProvider):
             # ----- Port #4053: cron guard -----
             agent_context = kwargs.get("agent_context", "")
             platform = kwargs.get("platform", "cli")
+            self._platform = str(platform or "cli")
+            self._gateway_session_key = kwargs.get("gateway_session_key")
             if agent_context in {"cron", "flush"} or platform == "cron":
                 logger.debug("Honcho skipped: cron/flush context (agent_context=%s, platform=%s)",
                              agent_context, platform)
@@ -354,6 +363,9 @@ class HonchoMemoryProvider(MemoryProvider):
         """Shared session initialization logic for both eager and lazy paths."""
         from plugins.memory.honcho.client import get_honcho_client
         from plugins.memory.honcho.session import HonchoSessionManager
+
+        self._platform = str(kwargs.get("platform", self._platform) or "cli")
+        self._gateway_session_key = kwargs.get("gateway_session_key")
 
         client = get_honcho_client(cfg)
         self._manager = HonchoSessionManager(
@@ -691,6 +703,56 @@ class HonchoMemoryProvider(MemoryProvider):
 
         return header
 
+    def _one_session_room_hint_prefetch(self, query: str) -> str:
+        """Opt-in one-session tools-mode hint injection for Phase 6C."""
+        if self._one_session_room_hint_consumed:
+            return ""
+        if (os.environ.get("HERMES_HONCHO_ONE_SESSION_HINT") or "").strip().lower() not in {"1", "true", "yes", "on"}:
+            return ""
+
+        only_platform = (os.environ.get("HERMES_HONCHO_ONE_SESSION_HINT_ONLY_PLATFORM") or "").strip()
+        if only_platform and self._platform != only_platform:
+            return ""
+
+        only_session_key = (os.environ.get("HERMES_HONCHO_ONE_SESSION_HINT_ONLY_SESSION_KEY") or "").strip()
+        if only_session_key and (self._gateway_session_key or "") != only_session_key:
+            return ""
+
+        self._one_session_room_hint_consumed = True
+        if self._is_trivial_prompt(query):
+            return ""
+        if not self._manager and not self._ensure_session():
+            return ""
+        if not self._manager or not self._session_key:
+            return ""
+
+        room = (os.environ.get("HERMES_HONCHO_ONE_SESSION_HINT_ROOM") or self._honcho_query_mode(query)).strip()
+        report_root = os.environ.get("HERMES_HONCHO_ONE_SESSION_HINT_REPORT_ROOT")
+        if not report_root:
+            report_root = str(Path(os.environ.get("TMPDIR", "/tmp")) / "hermes-honcho-one-session-hint")
+
+        candidates: list[str] = []
+        try:
+            ctx = self._manager.get_prefetch_context(self._session_key)
+        except Exception as exc:
+            logger.debug("Honcho one-session room hint context fetch failed: %s", exc)
+            ctx = None
+        if isinstance(ctx, dict):
+            for key in ("summary", "representation", "card", "ai_representation", "ai_card"):
+                cleaned = self._clean_context_text(ctx.get(key, ""), query=query)
+                if cleaned:
+                    candidates.extend(line for line in cleaned.splitlines() if line.strip())
+        if not candidates:
+            return ""
+
+        try:
+            from plugins.memory.honcho.room_hint import one_session_honcho_room_hint
+            result = one_session_honcho_room_hint(candidates, room=room, report_root=report_root)
+        except Exception as exc:
+            logger.debug("Honcho one-session room hint build failed: %s", exc)
+            return ""
+        return result.prompt_block if result.would_inject else ""
+
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Return base context (representation + card) plus dialectic supplement.
 
@@ -705,9 +767,10 @@ class HonchoMemoryProvider(MemoryProvider):
         if self._cron_skipped:
             return ""
 
-        # B1: tools-only mode — no auto-injection
+        # B1: tools-only mode — no auto-injection except the explicit Phase 6C
+        # one-session experiment env gate.
         if self._recall_mode == "tools":
-            return ""
+            return self._one_session_room_hint_prefetch(query)
 
         # B5: injection_frequency — if "first-turn" and past first turn, return empty.
         # _turn_count is 1-indexed (first user message = 1), so > 1 means "past first".
