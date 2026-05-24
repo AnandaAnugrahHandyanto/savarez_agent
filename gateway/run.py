@@ -983,9 +983,12 @@ def _resolve_runtime_agent_kwargs() -> dict:
     try:
         runtime = resolve_runtime_provider()
     except AuthError as auth_exc:
-        # Primary provider auth failed (expired token, revoked key, etc.).
-        # Try the fallback provider chain before raising.
-        logger.warning("Primary provider auth failed: %s — trying fallback", auth_exc)
+        # Primary provider unavailable. The structured ``kind`` on AuthError
+        # (rate_limit / auth_failed / exhausted) lets us log something
+        # actionable instead of a generic "auth failed".
+        from hermes_cli.auth import describe_primary_failure
+
+        logger.warning("%s — trying fallback", describe_primary_failure(auth_exc))
         fb_config = _try_resolve_fallback_provider()
         if fb_config is not None:
             return fb_config

@@ -737,16 +737,56 @@ class AuthError(RuntimeError):
         provider: str = "",
         code: Optional[str] = None,
         relogin_required: bool = False,
+        kind: Optional[str] = None,
+        reset_at: Optional[float] = None,
+        retry_after: Optional[float] = None,
     ) -> None:
         super().__init__(message)
         self.provider = provider
         self.code = code
         self.relogin_required = relogin_required
+        # ``kind`` classifies the failure for callers that want structured
+        # logging without parsing the message: "rate_limit", "auth_failed",
+        # "exhausted", or None for generic auth errors.
+        self.kind = kind
+        # ``reset_at`` is a unix timestamp (when the credential becomes usable
+        # again, e.g. after a rate-limit window). ``retry_after`` is seconds.
+        # Either or both may be set; callers should prefer ``reset_at`` when
+        # both are available.
+        self.reset_at = reset_at
+        self.retry_after = retry_after
+
+    @classmethod
+    def from_pool_exhaustion(cls, provider: str, summary: dict) -> "AuthError":
+        """Build an AuthError from a ``summarize_pool_exhaustion`` dict.
+
+        Produces a message that includes the soonest reset time when known,
+        so the gateway logger and CLI can surface actionable information
+        instead of a generic "credentials missing" string.
+        """
+        # Imported locally to avoid a circular import: agent.credential_status
+        # depends on agent.credential_pool, which imports hermes_cli.auth.
+        from agent.credential_status import format_pool_exhaustion_message
+
+        message = format_pool_exhaustion_message(provider, summary)
+        kind = summary.get("kind") or "exhausted"
+        return cls(
+            message,
+            provider=provider,
+            code=f"pool_{kind}",
+            relogin_required=(kind == "auth_failed"),
+            kind=kind,
+            reset_at=summary.get("soonest_reset_at"),
+        )
 
 
 def format_auth_error(error: Exception) -> str:
     """Map auth failures to concise user-facing guidance."""
     if not isinstance(error, AuthError):
+        return str(error)
+
+    if error.kind == "rate_limit":
+        # Message already encodes the reset window; pass through unchanged.
         return str(error)
 
     if error.relogin_required:
@@ -768,6 +808,22 @@ def format_auth_error(error: Exception) -> str:
         return f"{error} Please retry in a few seconds."
 
     return str(error)
+
+
+def describe_primary_failure(error: Exception) -> str:
+    """Build a one-line description of why the primary provider failed.
+
+    Used by callers that log "primary provider unavailable — trying
+    fallback" so the reason is concrete (rate-limited vs auth-failed vs
+    generic) rather than a generic "auth failed".
+    """
+    if not isinstance(error, AuthError):
+        return f"primary provider unavailable: {error}"
+    if error.kind in {"rate_limit", "auth_failed", "exhausted"}:
+        # Pool-exhaustion messages already encode the provider name and
+        # the reason; pass through unchanged with a stable prefix.
+        return f"primary provider {error}"
+    return f"primary provider auth failed: {error}"
 
 
 def _token_fingerprint(token: Any) -> Optional[str]:

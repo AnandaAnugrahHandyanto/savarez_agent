@@ -1335,6 +1335,35 @@ def resolve_runtime_provider(
                 target_model=target_model,
             )
 
+    # If the pool holds entries but none are currently usable (all in
+    # exhaustion cooldown — typically a 429 rate-limit window), raise a
+    # structured AuthError carrying the soonest reset time. Otherwise the
+    # provider-specific fall-throughs below would call into legacy
+    # ``_read_*_tokens`` helpers which read a different storage location
+    # and raise misleading "no credentials stored" errors when the
+    # credential lives only in the pool. The gateway and CLI catch
+    # AuthError and either fall back to another provider or surface this
+    # actionable message to the user.
+    _POOL_EXHAUSTION_PROVIDERS = {
+        "openai-codex",
+        "xai-oauth",
+        "qwen-oauth",
+        "google-gemini-cli",
+        "nous",
+        "anthropic",
+    }
+    if (
+        pool
+        and provider in _POOL_EXHAUSTION_PROVIDERS
+        and pool.has_credentials()
+        and not pool.has_available()
+    ):
+        from agent.credential_status import summarize_pool_exhaustion
+
+        _exhaustion_summary = summarize_pool_exhaustion(pool)
+        if _exhaustion_summary is not None:
+            raise AuthError.from_pool_exhaustion(provider, _exhaustion_summary)
+
     if provider == "nous":
         try:
             creds = resolve_nous_runtime_credentials(

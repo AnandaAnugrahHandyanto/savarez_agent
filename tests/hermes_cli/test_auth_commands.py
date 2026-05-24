@@ -725,7 +725,7 @@ def test_auth_list_shows_exhausted_cooldown(monkeypatch, capsys):
             return None
 
     monkeypatch.setattr("hermes_cli.auth_commands.load_pool", lambda provider: _Pool())
-    monkeypatch.setattr("hermes_cli.auth_commands.time.time", lambda: 1030.0)
+    monkeypatch.setattr("agent.credential_status.time.time", lambda: 1030.0)
 
     class _Args:
         provider = "openrouter"
@@ -759,7 +759,7 @@ def test_auth_list_shows_auth_failure_when_exhausted_entry_is_unauthorized(monke
             return None
 
     monkeypatch.setattr("hermes_cli.auth_commands.load_pool", lambda provider: _Pool())
-    monkeypatch.setattr("hermes_cli.auth_commands.time.time", lambda: 1030.0)
+    monkeypatch.setattr("agent.credential_status.time.time", lambda: 1030.0)
 
     class _Args:
         provider = "openai-codex"
@@ -796,7 +796,7 @@ def test_auth_list_prefers_explicit_reset_time(monkeypatch, capsys):
 
     monkeypatch.setattr("hermes_cli.auth_commands.load_pool", lambda provider: _Pool())
     monkeypatch.setattr(
-        "hermes_cli.auth_commands.time.time",
+        "agent.credential_status.time.time",
         lambda: datetime(2026, 4, 5, 10, 30, tzinfo=timezone.utc).timestamp(),
     )
 

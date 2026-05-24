@@ -4526,11 +4526,12 @@ class HermesCLI:
                         continue
                     try:
                         runtime = resolve_runtime_provider(requested=_fb_provider)
+                        from hermes_cli.auth import describe_primary_failure
                         logger.warning(
-                            "Primary provider auth failed (%s). Falling through to fallback: %s/%s",
-                            _primary_exc, _fb_provider, _fb_model,
+                            "%s. Falling through to fallback: %s/%s",
+                            describe_primary_failure(_primary_exc), _fb_provider, _fb_model,
                         )
-                        _cprint(f"⚠️  Primary auth failed — switching to fallback: {_fb_provider} / {_fb_model}")
+                        _cprint(f"⚠️  {describe_primary_failure(_primary_exc)} — switching to fallback: {_fb_provider} / {_fb_model}")
                         self.requested_provider = _fb_provider
                         self.model = _fb_model
                         _primary_exc = None
