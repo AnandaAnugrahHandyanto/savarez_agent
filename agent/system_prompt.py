@@ -42,6 +42,16 @@ from agent.prompt_builder import (
 )
 
 
+def _is_optimize_api_session(agent: Any) -> bool:
+    """Return True for Unite Optimize product sessions served through API mode."""
+    gateway_session_key = getattr(agent, "_gateway_session_key", None)
+    return (
+        (getattr(agent, "platform", "") or "").lower().strip() == "api_server"
+        and isinstance(gateway_session_key, str)
+        and gateway_session_key.startswith("opt:")
+    )
+
+
 def _ra():
     """Lazy reference to the ``run_agent`` module.
 
@@ -82,23 +92,31 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts: List[str] = []
+    optimize_product_session = _is_optimize_api_session(agent)
 
     # Try SOUL.md as primary identity unless the caller explicitly skipped it.
     # Some execution modes (cron) still want HERMES_HOME persona while keeping
     # cwd project instructions disabled.
     _soul_loaded = False
-    if agent.load_soul_identity or not agent.skip_context_files:
+    if not optimize_product_session and (agent.load_soul_identity or not agent.skip_context_files):
         _soul_content = _r.load_soul_md()
         if _soul_content:
             stable_parts.append(_soul_content)
             _soul_loaded = True
 
     if not _soul_loaded:
-        # Fallback to hardcoded identity
-        stable_parts.append(DEFAULT_AGENT_IDENTITY)
+        if optimize_product_session:
+            stable_parts.append(
+                "You are Optimize Supercomputer, the strategic creative intelligence "
+                "operator inside Unite Optimize."
+            )
+        else:
+            # Fallback to hardcoded identity
+            stable_parts.append(DEFAULT_AGENT_IDENTITY)
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
-    stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+    if not optimize_product_session:
+        stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []
@@ -127,9 +145,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         from agent.prompt_builder import COMPUTER_USE_GUIDANCE
         stable_parts.append(COMPUTER_USE_GUIDANCE)
 
-    nous_subscription_prompt = _r.build_nous_subscription_prompt(agent.valid_tool_names)
-    if nous_subscription_prompt:
-        stable_parts.append(nous_subscription_prompt)
+    if not optimize_product_session:
+        nous_subscription_prompt = _r.build_nous_subscription_prompt(agent.valid_tool_names)
+        if nous_subscription_prompt:
+            stable_parts.append(nous_subscription_prompt)
     # Tool-use enforcement: tells the model to actually call tools instead
     # of describing intended actions.  Controlled by config.yaml
     # agent.tool_use_enforcement:
@@ -201,22 +220,24 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Environment hints (WSL, Termux, etc.) — tell the agent about the
     # execution environment so it can translate paths and adapt behavior.
     # Stable for the lifetime of the process.
-    _env_hints = _r.build_environment_hints()
-    if _env_hints:
-        stable_parts.append(_env_hints)
+    if not optimize_product_session:
+        _env_hints = _r.build_environment_hints()
+        if _env_hints:
+            stable_parts.append(_env_hints)
 
-    platform_key = (agent.platform or "").lower().strip()
-    if platform_key in PLATFORM_HINTS:
-        stable_parts.append(PLATFORM_HINTS[platform_key])
-    elif platform_key:
-        # Check plugin registry for platform-specific LLM guidance
-        try:
-            from gateway.platform_registry import platform_registry
-            _entry = platform_registry.get(platform_key)
-            if _entry and _entry.platform_hint:
-                stable_parts.append(_entry.platform_hint)
-        except Exception:
-            pass
+    if not optimize_product_session:
+        platform_key = (agent.platform or "").lower().strip()
+        if platform_key in PLATFORM_HINTS:
+            stable_parts.append(PLATFORM_HINTS[platform_key])
+        elif platform_key:
+            # Check plugin registry for platform-specific LLM guidance
+            try:
+                from gateway.platform_registry import platform_registry
+                _entry = platform_registry.get(platform_key)
+                if _entry and _entry.platform_hint:
+                    stable_parts.append(_entry.platform_hint)
+            except Exception:
+                pass
 
     # ── Context tier (cwd-dependent, may change between sessions) ─
     context_parts: List[str] = []
@@ -269,11 +290,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # exact wall-clock time via tools when it actually needs it.
     # Credit: @iamfoz (PR #20451).
     timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y')}"
-    if agent.pass_session_id and agent.session_id:
+    if not optimize_product_session and agent.pass_session_id and agent.session_id:
         timestamp_line += f"\nSession ID: {agent.session_id}"
-    if agent.model:
+    if not optimize_product_session and agent.model:
         timestamp_line += f"\nModel: {agent.model}"
-    if agent.provider:
+    if not optimize_product_session and agent.provider:
         timestamp_line += f"\nProvider: {agent.provider}"
     volatile_parts.append(timestamp_line)
 
