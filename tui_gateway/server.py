@@ -272,6 +272,13 @@ def _load_busy_input_mode() -> str:
     return raw if raw in {"queue", "steer", "interrupt"} else "interrupt"
 
 
+def _load_frontdesk_live_enabled() -> bool:
+    orchestration = _load_cfg().get("orchestration")
+    if not isinstance(orchestration, dict):
+        return False
+    return is_truthy_value(orchestration.get("frontdesk_live_enabled"), default=False)
+
+
 def _notify_session_boundary(event_type: str, session_id: str | None) -> None:
     """Fire session lifecycle hooks with CLI parity."""
     try:
@@ -2064,6 +2071,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         "show_reasoning": _load_show_reasoning(),
         "tool_progress_mode": _load_tool_progress_mode(),
         "edit_snapshots": {},
+        "frontdesk_live_enabled": _load_frontdesk_live_enabled(),
         "tool_started_at": {},
         # Pin async event emissions to whichever transport created the
         # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
@@ -2246,6 +2254,7 @@ def _(rid, params: dict) -> dict:
         "attached_images": [],
         "cols": cols,
         "edit_snapshots": {},
+        "frontdesk_live_enabled": _load_frontdesk_live_enabled(),
         "history": [],
         "history_lock": threading.Lock(),
         "history_version": 0,
@@ -2454,7 +2463,7 @@ def _(rid, params: dict) -> dict:
     active = {s.get("session_key") for s in snapshot if s.get("session_key")}
     if target in active:
         return _err(rid, 4023, "cannot delete an active session")
-    sessions_dir = get_hermes_home() / "sessions"
+    sessions_dir = Path(get_hermes_home()) / "sessions"
     try:
         deleted = db.delete_session(target, sessions_dir=sessions_dir)
     except Exception as e:
@@ -3137,6 +3146,55 @@ def _(rid, params: dict) -> dict:
 # ── Methods: prompt ──────────────────────────────────────────────────
 
 
+def _maybe_handle_frontdesk_prompt(
+    sid: str,
+    session: dict,
+    text: Any,
+    *,
+    main_in_flight: bool,
+):
+    """Consume opt-in frontdesk control input before TUI queue/model paths."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    if text.lstrip().startswith("/"):
+        return None
+
+    agent = session.get("agent")
+
+    def _cancel_active(payload: str) -> None:
+        if agent is not None and hasattr(agent, "interrupt"):
+            agent.interrupt(payload)
+
+    def _steer_active(payload: str):
+        if agent is not None and hasattr(agent, "steer"):
+            return agent.steer(payload)
+        return False
+
+    from agent.frontdesk_live import handle_frontdesk_live_input
+
+    result = handle_frontdesk_live_input(
+        session,
+        text,
+        session=session,
+        session_key=session.get("session_key") or sid,
+        source_surface="tui",
+        main_in_flight=main_in_flight,
+        steer_callback=_steer_active if main_in_flight else None,
+        cancel_callback=_cancel_active if main_in_flight else None,
+    )
+    if result is None:
+        return None
+
+    raw = result.message
+    payload = {"text": raw, "usage": {}, "status": "complete"}
+    rendered = render_message(raw, int(session.get("cols", 80) or 80))
+    if rendered:
+        payload["rendered"] = rendered
+    _emit("message.start", sid)
+    _emit("message.complete", sid, payload)
+    return result
+
+
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
     sid, text = params.get("session_id", ""), params.get("text", "")
@@ -3145,7 +3203,23 @@ def _(rid, params: dict) -> dict:
         return err
     with session["history_lock"]:
         if session.get("running"):
+            frontdesk_result = _maybe_handle_frontdesk_prompt(
+                sid,
+                session,
+                text,
+                main_in_flight=True,
+            )
+            if frontdesk_result is not None:
+                return _ok(rid, {"status": "frontdesk"})
             return _err(rid, 4009, "session busy")
+        frontdesk_result = _maybe_handle_frontdesk_prompt(
+            sid,
+            session,
+            text,
+            main_in_flight=False,
+        )
+        if frontdesk_result is not None:
+            return _ok(rid, {"status": "frontdesk"})
         session["running"] = True
 
     _start_agent_build(sid, session)
@@ -6218,9 +6292,22 @@ def _normalize_cdp_url(parsed) -> str:
 
 
 def _failure_messages(url: str, port: int, system: str) -> list[str]:
-    from hermes_cli.browser_connect import manual_chrome_debug_command
+    from hermes_cli.browser_connect import (
+        get_chrome_debug_candidates,
+        manual_chrome_debug_command,
+    )
 
-    command = manual_chrome_debug_command(port, system)
+    # Keep the failure copy aligned with the attempted launch path.  On macOS
+    # manual_chrome_debug_command() can synthesize an `open -a "Google Chrome"`
+    # command even when no launchable executable was found; after an automatic
+    # launch attempt has already failed, that reads like a concrete command for
+    # an executable we did not find.  Treat the empty-candidate case as a clear
+    # install/start hint instead.
+    command = (
+        manual_chrome_debug_command(port, system)
+        if get_chrome_debug_candidates(system)
+        else None
+    )
     hint = (
         ["Start a Chromium-family browser with remote debugging, then retry /browser connect:", command]
         if command
@@ -6428,7 +6515,7 @@ def _(rid, params: dict) -> dict:
                 "title": "Environment",
                 "rows": [
                     ["Working Dir", os.getcwd()],
-                    ["Config File", str(_hermes_home / "config.yaml")],
+                    ["Config File", str(Path(_hermes_home) / "config.yaml")],
                 ],
             },
         ]

@@ -1542,6 +1542,40 @@ def _preserve_queued_followup_history_offset(
     return merged
 
 
+def _classify_incoming(
+    event: Any, *, frontdesk_mode_active: bool = False
+) -> "ControlPlaneDecision":  # type: ignore[name-defined]
+    """Frontdesk control-plane adapter — Phase 2 substrate, no callers wired.
+
+    Duck-typed on *event*: reads ``.text`` (str-like, optional), ``.message_type``
+    (with ``.value`` or ``.name``).  Anything else is treated as missing.  The
+    function returns a :class:`agent.control_plane.ControlPlaneDecision`
+    derived purely from the textual content of the event; the gateway's own
+    queueing / drain / merge semantics are NOT consulted.
+
+    This adapter is **deliberately not yet called from any code path** in the
+    gateway.  Phase 6 (gateway parity) is the first phase that wires it into
+    ``gateway/run.py`` capture (``:2588-2602``) and drain (``:6243-6285``)
+    branches, gated by ``mode.frontdesk.gateway_parity`` config (PRD §12.1 /
+    design review §4.4).  Until then it is *function-only*, callable from
+    tests / replay fixtures / future wiring but invisible to live traffic.
+
+    Hard boundaries this respects (PRD §9.2 / design review §9.2):
+
+    * No mutation of any platform adapter, pending-message slot, or
+      ``MessageEvent``.
+    * No interaction with ``merge_pending_message_event`` semantics.
+    * No process-level side effect (INV-5: zero mid-task gateway restart).
+    """
+    # Lazy import so gateway/run.py module-load cost stays flat and a future
+    # accidental circular import becomes loud rather than silent.
+    from agent.control_plane import classify as _classify
+
+    text_attr = getattr(event, "text", None)
+    text = text_attr if isinstance(text_attr, str) else ""
+    return _classify(text, frontdesk_mode_active=frontdesk_mode_active)
+
+
 class GatewayRunner:
     """
     Main gateway controller.
@@ -1554,6 +1588,7 @@ class GatewayRunner:
     # blow up on attribute access.
     _running_agents_ts: Dict[str, float] = {}
     _busy_input_mode: str = "interrupt"
+    frontdesk_live_enabled: bool = False
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     _exit_code: Optional[int] = None
     _draining: bool = False
@@ -1564,6 +1599,8 @@ class GatewayRunner:
     _stop_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+    _orchestration_status_queries_enabled: bool = False
+    frontdesk_durable_store_enabled: bool = False
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
@@ -1583,6 +1620,20 @@ class GatewayRunner:
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
+        self._orchestration_status_queries_enabled = self._load_orchestration_status_queries_enabled()
+        self.frontdesk_live_enabled = self._load_frontdesk_live_enabled()
+        self.frontdesk_durable_store_enabled = self._load_frontdesk_durable_store_enabled()
+        if self.frontdesk_live_enabled:
+            try:
+                from agent.frontdesk_live import ensure_default_worker_lane
+
+                ensure_default_worker_lane(self)
+                logger.info("Frontdesk live default worker lane registered")
+            except Exception:
+                logger.warning(
+                    "Frontdesk live enabled but default worker lane registration failed",
+                    exc_info=True,
+                )
 
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
@@ -2827,6 +2878,78 @@ class GatewayRunner:
         return "interrupt"
 
     @staticmethod
+    def _load_orchestration_status_queries_enabled() -> bool:
+        """Load the safe natural-language orchestration status-query gate.
+
+        This gateway wiring is intentionally off by default because it intercepts
+        ordinary user text before the main agent sees it.  Operators can enable
+        it with either config.yaml:
+
+            orchestration:
+              status_queries_enabled: true
+
+        or the environment variable HERMES_GATEWAY_ORCHESTRATION_STATUS_QUERIES.
+        The handler is read-only: it formats the per-runner orchestration
+        runtime and never mutates tasks, dispatches workers, or routes follow-ups.
+        """
+        raw = os.getenv("HERMES_GATEWAY_ORCHESTRATION_STATUS_QUERIES", "").strip()
+        if raw:
+            return is_truthy_value(raw, default=False)
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                return is_truthy_value(
+                    cfg_get(cfg, "orchestration", "status_queries_enabled"),
+                    default=False,
+                )
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
+    def _load_frontdesk_live_enabled() -> bool:
+        """Load the opt-in live frontdesk pre-dispatch gate."""
+        raw = os.getenv("HERMES_FRONTDESK_LIVE", "").strip()
+        if raw:
+            return is_truthy_value(raw, default=False)
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                return is_truthy_value(
+                    cfg_get(cfg, "orchestration", "frontdesk_live_enabled"),
+                    default=False,
+                )
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
+    def _load_frontdesk_durable_store_enabled() -> bool:
+        """Load the opt-in durable frontdesk worker-lane bridge gate."""
+        raw = os.getenv("HERMES_FRONTDESK_DURABLE_STORE", "").strip()
+        if raw:
+            return is_truthy_value(raw, default=False)
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                return is_truthy_value(
+                    cfg_get(cfg, "orchestration", "frontdesk_durable_store_enabled"),
+                    default=False,
+                )
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
     def _load_restart_drain_timeout() -> float:
         """Load graceful gateway restart/stop drain timeout in seconds."""
         raw = os.getenv("HERMES_RESTART_DRAIN_TIMEOUT", "").strip()
@@ -2972,6 +3095,31 @@ class GatewayRunner:
             return False  # let default path handle it
 
         running_agent = self._running_agents.get(session_key)
+
+        frontdesk_reply = await self._maybe_handle_frontdesk_live_input(
+            event,
+            session_key=session_key,
+            main_in_flight=running_agent is not None and running_agent is not _AGENT_PENDING_SENTINEL,
+        )
+        if frontdesk_reply is not None:
+            reply_anchor = self._reply_anchor_for_event(event)
+            thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
+            try:
+                await adapter._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=frontdesk_reply,
+                    reply_to=(
+                        reply_anchor
+                        if event.source.platform == Platform.TELEGRAM
+                        and event.source.chat_type == "dm"
+                        and event.source.thread_id
+                        else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
+                    ),
+                    metadata=thread_meta,
+                )
+            except Exception as e:
+                logger.debug("Failed to send frontdesk control reply: %s", e)
+            return True
 
         # Steer mode: inject mid-run via running_agent.steer() instead of
         # queueing + interrupting.  If the agent isn't running yet
@@ -6762,6 +6910,31 @@ class GatewayRunner:
             # clearly moved on.
             _slash_confirm_mod.clear_if_stale(_quick_key)
 
+        # Optional, read-only natural-language status queries are deliberately
+        # disabled while frontdesk-live pre-dispatch is active. In live mode the
+        # status surface is explicit slash syntax only (``/status`` and
+        # ``/frontdesk status``); ordinary questions such as "지금 뭐 하고 있어?"
+        # must remain user prompts when the session is idle, while stop/worker
+        # and active follow-up controls are handled by the live gate below.
+        if not getattr(self, "frontdesk_live_enabled", False):
+            orchestration_status_reply = self._maybe_handle_orchestration_status_query(
+                event,
+                session_key=_quick_key,
+            )
+            if orchestration_status_reply is not None:
+                return orchestration_status_reply
+
+        frontdesk_live_reply = await self._maybe_handle_frontdesk_live_input(
+            event,
+            session_key=_quick_key,
+            main_in_flight=(
+                (running_agent := self._running_agents.get(_quick_key)) is not None
+                and running_agent is not _AGENT_PENDING_SENTINEL
+            ),
+        )
+        if frontdesk_live_reply is not None:
+            return frontdesk_live_reply
+
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
         # are handled with minimal latency.
@@ -7273,6 +7446,9 @@ class GatewayRunner:
 
         if canonical == "status":
             return await self._handle_status_command(event)
+
+        if canonical == "frontdesk":
+            return await self._handle_frontdesk_command(event)
 
         if canonical == "agents":
             return await self._handle_agents_command(event)
@@ -9429,6 +9605,163 @@ class GatewayRunner:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
 
+    def _maybe_handle_orchestration_status_query(
+        self,
+        event: MessageEvent,
+        *,
+        session_key: str,
+    ) -> Optional[str]:
+        """Return orchestration status text for safe natural-language queries.
+
+        This is deliberately a pure read-only gate.  It does not mutate the
+        task registry, attach follow-ups, start workers, cancel work, or call an
+        LLM.  It only intercepts obvious TEXT messages when the feature flag is
+        enabled; slash commands, media/documents, internal events, and ordinary
+        prose all fall through to the existing gateway path.
+        """
+        if not getattr(self, "_orchestration_status_queries_enabled", False):
+            return None
+        if bool(getattr(event, "internal", False)):
+            return None
+        if event.message_type != MessageType.TEXT:
+            return None
+        if event.get_command():
+            return None
+        try:
+            from agent.orchestration_status import looks_like_orchestration_status_query
+        except Exception:
+            return None
+        if not looks_like_orchestration_status_query(event.text):
+            return None
+        try:
+            return self._format_session_scoped_orchestration_overview(session_key)
+        except Exception as exc:
+            logger.warning("Failed to format orchestration status for %s: %s", session_key, exc)
+            return "Orchestration status is temporarily unavailable."
+
+    async def _maybe_handle_frontdesk_live_input(
+        self,
+        event: MessageEvent,
+        *,
+        session_key: str,
+        main_in_flight: bool = False,
+    ) -> Optional[str]:
+        """Consume opt-in frontdesk control input before queue/model dispatch."""
+        if bool(getattr(event, "internal", False)):
+            return None
+        if event.message_type != MessageType.TEXT:
+            return None
+        if event.get_command():
+            return None
+
+        running_agent = self._running_agents.get(session_key)
+
+        def _cancel_active(payload: str) -> None:
+            if running_agent and running_agent is not _AGENT_PENDING_SENTINEL and hasattr(running_agent, "interrupt"):
+                running_agent.interrupt(payload)
+
+        def _steer_active(payload: str):
+            if running_agent and running_agent is not _AGENT_PENDING_SENTINEL and hasattr(running_agent, "steer"):
+                return running_agent.steer(payload)
+            return False
+
+        adapter = self.adapters.get(event.source.platform)
+        loop = asyncio.get_running_loop()
+
+        def _notify_worker_done(payload: str) -> None:
+            if adapter is None:
+                return
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    adapter.send(
+                        chat_id=event.source.chat_id,
+                        content=payload,
+                        metadata=self._thread_metadata_for_source(
+                            event.source,
+                            getattr(event, "message_id", None),
+                        ),
+                    ),
+                    loop,
+                )
+                fut.result(timeout=30)
+            except Exception:
+                logger.debug("Failed to send frontdesk worker completion", exc_info=True)
+
+        from agent.frontdesk_live import handle_frontdesk_live_input
+
+        result = handle_frontdesk_live_input(
+            self,
+            event.text or "",
+            session_key=session_key,
+            source_surface="gateway",
+            main_in_flight=main_in_flight,
+            steer_callback=_steer_active if main_in_flight else None,
+            cancel_callback=_cancel_active if main_in_flight else None,
+            notify_callback=_notify_worker_done,
+        )
+        if result is None:
+            return None
+        return result.message
+
+    def _format_session_scoped_orchestration_overview(self, session_key: str) -> str:
+        """Format an orchestration overview without leaking cross-session workers.
+
+        Phase 6/7 status helpers can format a whole runtime.  A gateway runner,
+        however, serves multiple chats/sessions, and worker lines may include
+        goals/results/errors.  For a natural-language gateway status reply we
+        therefore scope tasks to the requesting session and include only workers
+        linked to those visible tasks (by task_id or by active_worker_id).
+        """
+        from agent.orchestration_runtime import get_or_create_orchestration_runtime
+        from agent.orchestration_status import OrchestrationSnapshot, build_snapshot, format_overview
+
+        runtime = get_or_create_orchestration_runtime(self)
+        task_snapshot = build_snapshot(
+            runtime.task_registry,
+            None,
+            session_key=session_key,
+        )
+        visible_task_ids = {
+            t.get("task_id") for t in task_snapshot.tasks if t.get("task_id")
+        }
+        visible_worker_ids = {
+            t.get("worker_id") for t in task_snapshot.tasks if t.get("worker_id")
+        }
+        worker_snapshot = build_snapshot(None, runtime.worker_registry)
+        visible_workers = [
+            w for w in worker_snapshot.workers
+            if (
+                (w.get("task_id") and w.get("task_id") in visible_task_ids)
+                or (
+                    not w.get("task_id")
+                    and w.get("worker_id")
+                    and w.get("worker_id") in visible_worker_ids
+                )
+            )
+        ]
+        visible_worker_ids_after_filter = {
+            w.get("worker_id") for w in visible_workers if w.get("worker_id")
+        }
+        visible_tasks = []
+        for task in task_snapshot.tasks:
+            task_copy = dict(task)
+            if task_copy.get("worker_id") not in visible_worker_ids_after_filter:
+                task_copy["worker_id"] = None
+                task_copy["worker_kind"] = None
+            visible_tasks.append(task_copy)
+        scoped_snapshot = build_snapshot(visible_tasks, visible_workers)
+        # build_snapshot(list, list) is already JSON-safe, but wrapping as an
+        # explicit snapshot makes the privacy boundary obvious to future edits.
+        return format_overview(
+            OrchestrationSnapshot(
+                tasks=scoped_snapshot.tasks,
+                workers=scoped_snapshot.workers,
+                counts=scoped_snapshot.counts,
+                warnings=scoped_snapshot.warnings,
+            ),
+            compact=True,
+        )
+
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
         source = event.source
@@ -9509,6 +9842,35 @@ class GatewayRunner:
             logger.debug("build_recap failed in /status: %s", exc)
 
         return "\n".join(lines)
+
+    async def _handle_frontdesk_command(self, event: MessageEvent) -> str:
+        """Handle /frontdesk status — report live gate and worker-lane readiness."""
+        args = (event.get_command_args() or "").strip().lower()
+        if args and args not in {"status", ""}:
+            return "Usage: /frontdesk status"
+
+        from agent.frontdesk_live import ensure_default_worker_lane
+        from agent.orchestration_runtime import get_or_create_orchestration_runtime
+
+        live_enabled = bool(getattr(self, "frontdesk_live_enabled", False))
+        if live_enabled:
+            ensure_default_worker_lane(self)
+        runtime = get_or_create_orchestration_runtime(self)
+        lanes = runtime.worker_registry.lane_names()
+        default_lane_available = "main" in lanes
+        current_session_key = self._session_key_for_source(event.source)
+        overview = self._format_session_scoped_orchestration_overview(current_session_key)
+
+        return "\n".join(
+            [
+                "Frontdesk status",
+                f"Frontdesk live: {'enabled' if live_enabled else 'disabled'}",
+                f"Default worker lane: {'available' if default_lane_available else 'missing'}",
+                "Available worker lanes: " + (", ".join(lanes) if lanes else "none"),
+                "",
+                overview,
+            ]
+        )
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""

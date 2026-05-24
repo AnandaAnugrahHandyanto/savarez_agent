@@ -506,6 +506,23 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    "orchestration": {
+        # Conservative, off-by-default gateway wiring for Hermes-as-orchestrator
+        # status questions.  When enabled, obvious natural-language status
+        # queries (for example "지금 뭐 하고 있어?" / "what's running?") are
+        # answered from the read-only orchestration runtime instead of starting
+        # a normal agent turn.  Mutation/worker dispatch/follow-up attachment
+        # remain separate gated phases.
+        "status_queries_enabled": False,
+        # Full live pre-dispatch frontdesk gate. Off by default because it can
+        # consume natural-language inputs before the main model sees them.
+        "frontdesk_live_enabled": False,
+        # Durable SQLite bridge for the live default worker lane. Off by
+        # default; when enabled, worker lifecycle is mirrored into the
+        # FrontdeskStore without replacing the in-memory runtime.
+        "frontdesk_durable_store_enabled": False,
+    },
+
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).
