@@ -1924,6 +1924,8 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -1997,6 +1999,15 @@ def delegate_task(
     except ValueError as exc:
         return tool_error(str(exc))
 
+    # Per-call model/provider override takes priority over delegation config
+    if model is not None:
+        creds["model"] = model
+    if provider is not None:
+        creds["provider"] = provider
+        creds["base_url"] = None
+        creds["api_key"] = None
+        creds["api_mode"] = None
+
     # Normalize to task list
     max_children = _get_max_concurrent_children()
     recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
@@ -2017,7 +2028,7 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role, "model": model, "provider": provider}
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2058,16 +2069,18 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            task_model = t.get("model") if t.get("model") is not None else creds["model"]
+            task_provider = t.get("provider") if t.get("provider") is not None else creds["provider"]
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=task_model,
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
+                override_provider=task_provider,
                 override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
