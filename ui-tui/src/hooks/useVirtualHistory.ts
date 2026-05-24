@@ -16,7 +16,10 @@ const ESTIMATE = 4
 // edge → smaller fiber tree → less buffer-compose work per frame.  HN/CC
 // dev (https://news.ycombinator.com/item?id=46699072) confirmed GC pressure
 // from large JSX trees was their main perf issue post-rewrite.
+// Bumped 20→40: wider buffer pre-mounts more rows so scroll-up through
+// recent history hits already-parsed cache entries.
 const OVERSCAN = 20
+
 // Hard cap on mounted items.  Was 260; profiling showed ~23k live Yoga
 // nodes during sustained PageUp catch-up (renderer p99=106ms).  The
 // viewport+2*overscan = 80 rows of needed coverage = ~25 items at avg 3

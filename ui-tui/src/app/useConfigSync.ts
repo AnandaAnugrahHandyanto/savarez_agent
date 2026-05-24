@@ -183,6 +183,7 @@ export const applyDisplay = (
   patchUiState({
     busyInputMode: normalizeBusyInputMode(d.busy_input_mode),
     compact: !!d.tui_compact,
+    overscan: typeof d.tui_overscan === 'number' && d.tui_overscan > 0 ? d.tui_overscan : 40,
     detailsMode: resolveDetailsMode(d),
     detailsModeCommandOverride: false,
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),
