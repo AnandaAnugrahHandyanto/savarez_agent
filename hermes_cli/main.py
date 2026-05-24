@@ -10239,8 +10239,17 @@ def main():
     auth_spotify.add_argument(
         "spotify_action",
         nargs="?",
-        choices=["login", "status", "logout"],
+        choices=["login", "status", "logout", "list", "route", "set-default", "migrate"],
         default="login",
+        help=(
+            "login: PKCE flow (use --account to store under a named slot). "
+            "status: show current account or --account <id>. "
+            "logout: clear all spotify auth, or just --account <id>. "
+            "list: list configured accounts and routes. "
+            "route: --account <id> --platform <p> --user-id <uid> sets a routing rule. "
+            "set-default: --account <id> sets providers.spotify.default_account. "
+            "migrate: wrap existing legacy state under --account <id>."
+        ),
     )
     auth_spotify.add_argument(
         "--client-id", help="Spotify app client_id (or set HERMES_SPOTIFY_CLIENT_ID)"
@@ -10257,6 +10266,37 @@ def main():
     )
     auth_spotify.add_argument(
         "--timeout", type=float, help="Callback/token exchange timeout in seconds"
+    )
+    # Multi-account routing flags. All optional; legacy single-account login
+    # ignores these.
+    auth_spotify.add_argument(
+        "--account",
+        help="Named Spotify account id, e.g. 'mark' or 'amy'. Lowercase slug.",
+    )
+    auth_spotify.add_argument(
+        "--owner-name",
+        dest="owner_name",
+        help="Human-readable owner label stored on the account state (e.g. 'Mark').",
+    )
+    auth_spotify.add_argument(
+        "--telegram-user-id",
+        dest="telegram_user_id",
+        help="Shortcut for --platform telegram --user-id <id>.",
+    )
+    auth_spotify.add_argument(
+        "--platform",
+        help="Platform for routing rule (e.g. telegram). Default telegram when --user-id is given.",
+    )
+    auth_spotify.add_argument(
+        "--user-id",
+        dest="user_id",
+        help="Platform user id to route to --account.",
+    )
+    auth_spotify.add_argument(
+        "--set-default",
+        dest="set_default",
+        action="store_true",
+        help="On `login`, set this account as the new default (auto-set when no default exists).",
     )
     auth_parser.set_defaults(func=cmd_auth)
 

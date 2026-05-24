@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import shlex
 import ssl
@@ -2358,16 +2359,277 @@ def _refresh_spotify_oauth_state(
     )
 
 
+# ---------------------------------------------------------------------------
+# Spotify multi-account auth state
+#
+# auth.json supports two shapes for providers.spotify:
+#
+#   1. Legacy (single account) — flat token state at providers.spotify:
+#        providers.spotify = {access_token, refresh_token, client_id, ...}
+#      Pre-multi-account installs land here. Resolver returns
+#      account_source="legacy" and account_id=None.
+#
+#   2. v2 (multi-account):
+#        providers.spotify = {
+#            "schema_version": 2,
+#            "default_account": "mark",
+#            "accounts": {"mark": {...}, "amy": {...}},
+#            "routing": {"telegram": {"<user_id>": "<account_id>"}},
+#        }
+#      `hermes auth spotify login --account amy` (and `migrate`) write
+#      this shape. Resolver routes by explicit account, then by
+#      (platform, user_id) → routing lookup, then by env override, then
+#      by default_account.
+#
+# Both shapes coexist forever — no auto-migration on read.
+# ---------------------------------------------------------------------------
+
+_SPOTIFY_ACCOUNT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def _normalize_spotify_account_id(raw: Optional[str]) -> Optional[str]:
+    """Lowercase + validate a Spotify account id slug. Returns None for blank input."""
+    if raw is None:
+        return None
+    account_id = str(raw).strip().lower()
+    if not account_id:
+        return None
+    if not _SPOTIFY_ACCOUNT_ID_RE.match(account_id):
+        raise AuthError(
+            "Spotify account id must match [a-z0-9][a-z0-9_-]{0,63}",
+            provider="spotify",
+            code="spotify_account_id_invalid",
+        )
+    return account_id
+
+
+def _is_spotify_multi_account_state(state: Optional[Dict[str, Any]]) -> bool:
+    """True if providers.spotify is in v2 multi-account shape."""
+    return isinstance(state, dict) and isinstance(state.get("accounts"), dict)
+
+
+def _spotify_accounts(state: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Return the accounts map from v2 provider state, filtered to dict values."""
+    accounts = state.get("accounts")
+    if isinstance(accounts, dict):
+        return {str(k): v for k, v in accounts.items() if isinstance(v, dict)}
+    return {}
+
+
+def _spotify_legacy_state_as_account(state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Treat flat providers.spotify state as a single legacy account.
+
+    Returns a shallow copy of the legacy state if it looks like a token bundle
+    (has access_token or refresh_token), else None. Does not mutate `state`.
+    """
+    if not isinstance(state, dict):
+        return None
+    if "access_token" not in state and "refresh_token" not in state:
+        return None
+    return dict(state)
+
+
+def _ensure_spotify_multi_account_state(
+    provider_state: Dict[str, Any],
+    *,
+    legacy_account_id: str = "default",
+) -> Dict[str, Any]:
+    """Convert legacy flat state into v2 shape (in memory), or normalize v2 keys.
+
+    Used by `hermes auth spotify login --account <id>` and `migrate`. Idempotent.
+    If `provider_state` is already v2, just ensures schema_version/accounts/routing
+    keys exist and returns it. If legacy, wraps its token bundle under
+    accounts[legacy_account_id].
+    """
+    if _is_spotify_multi_account_state(provider_state):
+        provider_state.setdefault("schema_version", 2)
+        provider_state.setdefault("accounts", {})
+        provider_state.setdefault("routing", {})
+        return provider_state
+
+    legacy = _spotify_legacy_state_as_account(provider_state)
+    new_state: Dict[str, Any] = {
+        "schema_version": 2,
+        "default_account": legacy_account_id if legacy else None,
+        "accounts": {},
+        "routing": {},
+    }
+    if legacy:
+        new_state["accounts"][legacy_account_id] = legacy
+    return new_state
+
+
+def _spotify_account_from_source(
+    spotify_provider_state: Dict[str, Any],
+    platform: Optional[str],
+    user_id: Optional[str],
+) -> Optional[str]:
+    """Look up routing[platform][user_id] → account_id. Returns None if not configured."""
+    if not platform or not user_id:
+        return None
+    routing = spotify_provider_state.get("routing")
+    if not isinstance(routing, dict):
+        return None
+    platform_routes = routing.get(str(platform).lower())
+    if not isinstance(platform_routes, dict):
+        return None
+    account_id = platform_routes.get(str(user_id))
+    return _normalize_spotify_account_id(account_id) if account_id else None
+
+
+def _select_spotify_account_state(
+    provider_state: Dict[str, Any],
+    *,
+    account_id: Optional[str] = None,
+    platform: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> Tuple[Optional[str], Dict[str, Any], str]:
+    """Pick which account's token state to use.
+
+    Resolution order:
+        1. Explicit `account_id` arg.
+        2. Source-derived: routing[platform][user_id] (Telegram sender id, etc.)
+        3. HERMES_SPOTIFY_ACCOUNT env var.
+        4. provider_state.default_account.
+        5. Single configured account (degenerate v2 with one entry).
+        6. Legacy flat state (only if no v2 accounts map exists).
+
+    Returns (selected_account_id, token_state_copy, source_label).
+    `selected_account_id` is None in legacy mode. `source_label` is one of:
+    "explicit", "source", "default", "single_configured_account", "legacy".
+    """
+    explicit = _normalize_spotify_account_id(account_id)
+
+    if _is_spotify_multi_account_state(provider_state):
+        accounts = _spotify_accounts(provider_state)
+
+        if explicit:
+            if explicit not in accounts:
+                raise AuthError(
+                    f"Spotify account '{explicit}' is not configured.",
+                    provider="spotify",
+                    code="spotify_account_missing",
+                    relogin_required=True,
+                )
+            return explicit, dict(accounts[explicit]), "explicit"
+
+        routed = _spotify_account_from_source(provider_state, platform, user_id)
+        if routed:
+            if routed not in accounts:
+                raise AuthError(
+                    f"Spotify routing points to missing account '{routed}'. "
+                    "Run `hermes auth spotify login --account` or remove the stale route.",
+                    provider="spotify",
+                    code="spotify_route_account_missing",
+                    relogin_required=True,
+                )
+            return routed, dict(accounts[routed]), "source"
+
+        default_account = _normalize_spotify_account_id(
+            os.getenv("HERMES_SPOTIFY_ACCOUNT") or provider_state.get("default_account")
+        )
+        if default_account and default_account in accounts:
+            return default_account, dict(accounts[default_account]), "default"
+
+        if len(accounts) == 1:
+            only_id, only_state = next(iter(accounts.items()))
+            return only_id, dict(only_state), "single_configured_account"
+
+        raise AuthError(
+            "Multiple Spotify accounts are configured but no account could be "
+            "selected. Set providers.spotify.default_account, add a routing rule, "
+            "or pass account=...",
+            provider="spotify",
+            code="spotify_account_ambiguous",
+        )
+
+    legacy = _spotify_legacy_state_as_account(provider_state)
+    if legacy is not None:
+        if explicit:
+            raise AuthError(
+                "Spotify is in legacy single-account mode; explicit account "
+                "selection requires `hermes auth spotify migrate` or "
+                "`login --account` first.",
+                provider="spotify",
+                code="spotify_legacy_no_named_account",
+            )
+        return None, legacy, "legacy"
+
+    raise AuthError(
+        "Spotify is not authenticated. Run `hermes auth spotify login` first.",
+        provider="spotify",
+        code="spotify_auth_missing",
+        relogin_required=True,
+    )
+
+
+def _store_spotify_selected_account_state(
+    auth_store: Dict[str, Any],
+    *,
+    account_id: Optional[str],
+    selected_state: Dict[str, Any],
+) -> None:
+    """Write refreshed token state back to the right slot.
+
+    v2 mode (account_id is set): updates providers.spotify.accounts[account_id].
+    Legacy mode (account_id is None): replaces flat providers.spotify state.
+    Neither path touches active_provider (set_active=False).
+    """
+    provider_state = _load_provider_state(auth_store, "spotify") or {}
+    if account_id and _is_spotify_multi_account_state(provider_state):
+        provider_state.setdefault("accounts", {})[account_id] = selected_state
+        _store_provider_state(auth_store, "spotify", provider_state, set_active=False)
+    else:
+        _store_provider_state(auth_store, "spotify", selected_state, set_active=False)
+
+
 def resolve_spotify_runtime_credentials(
     *,
+    account_id: Optional[str] = None,
+    platform: Optional[str] = None,
+    user_id: Optional[str] = None,
     force_refresh: bool = False,
     refresh_if_expiring: bool = True,
     refresh_skew_seconds: int = SPOTIFY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
 ) -> Dict[str, Any]:
+    """Resolve Spotify access_token + metadata for the right account.
+
+    Account selection priority (see `_select_spotify_account_state`):
+        explicit account_id > (platform, user_id) routing > env > default >
+        single-configured-account > legacy flat state.
+
+    Refresh writes back only to the selected nested account; legacy mode
+    keeps writing to flat providers.spotify.
+
+    When ``platform`` or ``user_id`` are not passed explicitly, falls back
+    to the gateway's per-task session ContextVars (HERMES_SESSION_PLATFORM
+    / HERMES_SESSION_USER_ID), which are set by gateway.run.set_session_vars
+    around every request/cron tick. This means gateway-origin Spotify tool
+    calls auto-route by sender without any wiring in model_tools or
+    run_agent — the ContextVar is task-local so concurrent messages can't
+    clobber each other. CLI/cron-origin calls leave both unset and fall
+    through to provider default.
+    """
+    # Auto-discover source context from gateway-set ContextVars when the
+    # caller didn't supply it. Empty-string from get_session_env means
+    # "explicitly cleared" — treat as no context so we don't accidentally
+    # route based on a stale clear.
+    if platform is None or user_id is None:
+        try:
+            from gateway.session_context import get_session_env
+            if platform is None:
+                platform = get_session_env("HERMES_SESSION_PLATFORM") or None
+            if user_id is None:
+                user_id = get_session_env("HERMES_SESSION_USER_ID") or None
+        except Exception:
+            # gateway.session_context may not be importable in some test
+            # / packaging configurations; degrade to no source context.
+            pass
+
     with _auth_store_lock():
         auth_store = _load_auth_store()
-        state = _load_provider_state(auth_store, "spotify")
-        if not state:
+        provider_state = _load_provider_state(auth_store, "spotify")
+        if not provider_state:
             raise AuthError(
                 "Spotify is not authenticated. Run `hermes auth spotify` first.",
                 provider="spotify",
@@ -2375,12 +2637,23 @@ def resolve_spotify_runtime_credentials(
                 relogin_required=True,
             )
 
+        selected_account_id, state, account_source = _select_spotify_account_state(
+            provider_state,
+            account_id=account_id,
+            platform=platform,
+            user_id=user_id,
+        )
+
         should_refresh = bool(force_refresh)
         if not should_refresh and refresh_if_expiring:
             should_refresh = _is_expiring(state.get("expires_at"), refresh_skew_seconds)
         if should_refresh:
             state = _refresh_spotify_oauth_state(state)
-            _store_provider_state(auth_store, "spotify", state, set_active=False)
+            _store_spotify_selected_account_state(
+                auth_store,
+                account_id=selected_account_id,
+                selected_state=state,
+            )
             _save_auth_store(auth_store)
 
     access_token = str(state.get("access_token", "") or "").strip()
@@ -2394,6 +2667,8 @@ def resolve_spotify_runtime_credentials(
 
     return {
         "provider": "spotify",
+        "account_id": selected_account_id,
+        "account_source": account_source,
         "access_token": access_token,
         "api_key": access_token,
         "token_type": str(state.get("token_type", "Bearer") or "Bearer"),
@@ -2570,15 +2845,347 @@ def login_spotify_command(args) -> None:
         api_base_url=api_base_url,
     )
 
+    # Multi-account login routing. With --account <id>, store the new token
+    # bundle under providers.spotify.accounts[<id>] (auto-promoting legacy
+    # flat state to v2 along the way). Without --account, preserve legacy
+    # single-account behaviour UNLESS the provider state is already v2,
+    # in which case bail with a clear error rather than silently flatten
+    # the multi-account store back to a single bundle.
+    account_id = _normalize_spotify_account_id(getattr(args, "account", None))
+    owner_name = getattr(args, "owner_name", None) or None
+    # --telegram-user-id is shorthand for --platform telegram --user-id <id>.
+    route_user_id = getattr(args, "user_id", None) or getattr(args, "telegram_user_id", None)
+    route_platform = getattr(args, "platform", None)
+    if route_user_id and not route_platform:
+        route_platform = "telegram"
+    set_default_flag = bool(getattr(args, "set_default", False))
+
     with _auth_store_lock():
         auth_store = _load_auth_store()
-        _store_provider_state(auth_store, "spotify", spotify_state, set_active=False)
+        existing_provider_state = _load_provider_state(auth_store, "spotify") or {}
+
+        if account_id:
+            # v2 storage path.
+            provider_state = _ensure_spotify_multi_account_state(existing_provider_state)
+            if owner_name:
+                spotify_state["owner_name"] = owner_name
+            if route_user_id:
+                spotify_state["owner_platform"] = route_platform
+                spotify_state["owner_user_id"] = str(route_user_id)
+                provider_state.setdefault("routing", {}).setdefault(
+                    str(route_platform).lower(), {}
+                )[str(route_user_id)] = account_id
+            provider_state.setdefault("accounts", {})[account_id] = spotify_state
+            if set_default_flag or not provider_state.get("default_account"):
+                provider_state["default_account"] = account_id
+            _store_provider_state(auth_store, "spotify", provider_state, set_active=False)
+        else:
+            # Legacy single-account login. If the user already has v2 state,
+            # refuse to overwrite — they need to pick which account to update.
+            if _is_spotify_multi_account_state(existing_provider_state):
+                raise SystemExit(
+                    "Spotify is configured in multi-account mode. "
+                    "Pass `--account <id>` to specify which account to log in to "
+                    "(e.g. `hermes auth spotify login --account mark`)."
+                )
+            _store_provider_state(auth_store, "spotify", spotify_state, set_active=False)
+
         saved_to = _save_auth_store(auth_store)
 
     print("Spotify login successful!")
     print(f"  Auth state: {saved_to}")
+    if account_id:
+        print(f"  Account: {account_id}")
+        if route_user_id:
+            print(f"  Routing: {route_platform}:{route_user_id} -> {account_id}")
     print("  Provider state saved under providers.spotify")
     print(f"  Docs: {SPOTIFY_DOCS_URL}")
+
+
+# ---------------------------------------------------------------------------
+# Spotify multi-account CLI subcommands
+# ---------------------------------------------------------------------------
+
+def spotify_status_command(args) -> None:
+    """`hermes auth spotify status [--account <id>]` — provider/account status.
+
+    Without --account: shows whether spotify is logged in (legacy behavior).
+    With --account: shows status of just that account, raising if it's
+    missing from a v2 store.
+    """
+    account_id = _normalize_spotify_account_id(getattr(args, "account", None))
+    provider_state = get_provider_auth_state("spotify")
+    if not provider_state:
+        print("spotify: logged out")
+        return
+
+    if account_id:
+        if not _is_spotify_multi_account_state(provider_state):
+            raise SystemExit(
+                "Spotify is in legacy single-account mode; --account is not "
+                "supported. Run `hermes auth spotify migrate --account <id>` first."
+            )
+        accounts = _spotify_accounts(provider_state)
+        if account_id not in accounts:
+            raise SystemExit(f"Spotify account '{account_id}' is not configured.")
+        state = accounts[account_id]
+        print(f"spotify[{account_id}]: logged in")
+        for key in ("owner_name", "owner_platform", "owner_user_id",
+                    "auth_type", "client_id", "redirect_uri",
+                    "scope", "expires_at", "api_base_url"):
+            value = state.get(key)
+            if value:
+                print(f"  {key}: {value}")
+        return
+
+    # No --account specified: show the whole provider status.
+    if _is_spotify_multi_account_state(provider_state):
+        default_account = provider_state.get("default_account")
+        accounts = _spotify_accounts(provider_state)
+        print(f"spotify: logged in (multi-account, {len(accounts)} account(s))")
+        if default_account:
+            print(f"  default_account: {default_account}")
+        for acct_id, state in accounts.items():
+            label = state.get("owner_name") or acct_id
+            marker = " *" if acct_id == default_account else ""
+            print(f"  - {acct_id} ({label}){marker}")
+        return
+
+    # Legacy flat state — defer to the generic status formatter.
+    status = get_spotify_auth_status()
+    if not status.get("logged_in"):
+        print("spotify: logged out")
+        return
+    print("spotify: logged in")
+    for key in ("auth_type", "client_id", "redirect_uri", "scope",
+                "expires_at", "api_base_url"):
+        value = status.get(key)
+        if value:
+            print(f"  {key}: {value}")
+
+
+def spotify_list_accounts_command(args) -> None:
+    """`hermes auth spotify list` — show all configured accounts and routes."""
+    _ = args  # parser-required arg unused
+    provider_state = get_provider_auth_state("spotify")
+    if not provider_state:
+        print("spotify: not configured")
+        return
+
+    if not _is_spotify_multi_account_state(provider_state):
+        # Legacy single-account display.
+        print("spotify: legacy single-account mode")
+        owner = provider_state.get("owner_name") or "(unnamed)"
+        scope = str(provider_state.get("granted_scope") or provider_state.get("scope") or "")
+        print(f"  owner: {owner}")
+        if scope:
+            print(f"  scope: {scope}")
+        print("  (run `hermes auth spotify migrate --account <id>` to upgrade)")
+        return
+
+    default_account = provider_state.get("default_account")
+    accounts = _spotify_accounts(provider_state)
+    routing = provider_state.get("routing") or {}
+
+    print(f"Spotify accounts ({len(accounts)} configured):")
+    if not accounts:
+        print("  (none)")
+    for acct_id, state in accounts.items():
+        owner = state.get("owner_name") or "(unnamed)"
+        marker = " * default" if acct_id == default_account else ""
+        print(f"  - {acct_id}: {owner}{marker}")
+        if state.get("owner_platform") and state.get("owner_user_id"):
+            print(f"      owner_route: {state['owner_platform']}:{state['owner_user_id']}")
+
+    if isinstance(routing, dict) and routing:
+        print()
+        print("Routing rules:")
+        for platform, platform_routes in routing.items():
+            if not isinstance(platform_routes, dict):
+                continue
+            for user_id, acct_id in platform_routes.items():
+                marker = "" if acct_id in accounts else "  [BROKEN: account missing]"
+                print(f"  {platform}:{user_id} -> {acct_id}{marker}")
+
+
+def spotify_route_account_command(args) -> None:
+    """`hermes auth spotify route --account <id> --platform <p> --user-id <uid>`.
+
+    Adds/updates a routing rule mapping a platform sender to an account.
+    """
+    account_id = _normalize_spotify_account_id(getattr(args, "account", None))
+    if not account_id:
+        raise SystemExit("--account is required (e.g. --account amy).")
+    user_id = getattr(args, "user_id", None) or getattr(args, "telegram_user_id", None)
+    if not user_id:
+        raise SystemExit("--user-id (or --telegram-user-id shortcut) is required.")
+    platform = str(getattr(args, "platform", None) or "telegram").strip().lower()
+    if not platform:
+        raise SystemExit("--platform must be non-empty.")
+
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        provider_state = _load_provider_state(auth_store, "spotify") or {}
+        if not _is_spotify_multi_account_state(provider_state):
+            raise SystemExit(
+                "Spotify is in legacy single-account mode. Run `hermes auth "
+                "spotify migrate --account <id>` first."
+            )
+        accounts = _spotify_accounts(provider_state)
+        if account_id not in accounts:
+            raise SystemExit(f"Spotify account '{account_id}' is not configured.")
+
+        provider_state.setdefault("routing", {}).setdefault(platform, {})[str(user_id)] = account_id
+        _store_provider_state(auth_store, "spotify", provider_state, set_active=False)
+        saved_to = _save_auth_store(auth_store)
+
+    print(f"Routed {platform}:{user_id} -> {account_id}")
+    print(f"  Auth state: {saved_to}")
+
+
+def spotify_set_default_account_command(args) -> None:
+    """`hermes auth spotify set-default --account <id>`."""
+    account_id = _normalize_spotify_account_id(getattr(args, "account", None))
+    if not account_id:
+        raise SystemExit("--account is required (e.g. --account mark).")
+
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        provider_state = _load_provider_state(auth_store, "spotify") or {}
+        if not _is_spotify_multi_account_state(provider_state):
+            raise SystemExit(
+                "Spotify is in legacy single-account mode; no default to set. "
+                "Run `hermes auth spotify migrate --account <id>` first."
+            )
+        accounts = _spotify_accounts(provider_state)
+        if account_id not in accounts:
+            raise SystemExit(f"Spotify account '{account_id}' is not configured.")
+
+        provider_state["default_account"] = account_id
+        _store_provider_state(auth_store, "spotify", provider_state, set_active=False)
+        saved_to = _save_auth_store(auth_store)
+
+    print(f"Default Spotify account set to '{account_id}'")
+    print(f"  Auth state: {saved_to}")
+
+
+def spotify_migrate_legacy_command(args) -> None:
+    """`hermes auth spotify migrate --account <id> [...]`.
+
+    Wraps an existing legacy flat providers.spotify state into the v2 shape
+    under accounts[<id>], without re-running the OAuth flow. Idempotent —
+    if state is already v2, this is a no-op for the existing slot but can
+    still add owner metadata and routing if flags are provided.
+    """
+    account_id = _normalize_spotify_account_id(getattr(args, "account", None))
+    if not account_id:
+        raise SystemExit("--account is required (e.g. --account mark).")
+    owner_name = getattr(args, "owner_name", None) or None
+    route_user_id = getattr(args, "user_id", None) or getattr(args, "telegram_user_id", None)
+    route_platform = getattr(args, "platform", None) or ("telegram" if route_user_id else None)
+    set_default_flag = bool(getattr(args, "set_default", False))
+
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        provider_state = _load_provider_state(auth_store, "spotify") or {}
+        if not provider_state:
+            raise SystemExit(
+                "Spotify is not authenticated. Run `hermes auth spotify login` first."
+            )
+
+        if _is_spotify_multi_account_state(provider_state):
+            print(f"Spotify is already in multi-account mode.")
+        else:
+            provider_state = _ensure_spotify_multi_account_state(
+                provider_state, legacy_account_id=account_id,
+            )
+            print(f"Migrated legacy single-account state to account '{account_id}'.")
+
+        account_state = provider_state.get("accounts", {}).get(account_id)
+        if account_state is None:
+            raise SystemExit(
+                f"After migration, account '{account_id}' is not present. "
+                "Has the legacy state already been migrated under a different id?"
+            )
+
+        if owner_name:
+            account_state["owner_name"] = owner_name
+        if route_user_id:
+            account_state["owner_platform"] = route_platform
+            account_state["owner_user_id"] = str(route_user_id)
+            provider_state.setdefault("routing", {}).setdefault(
+                str(route_platform).lower(), {}
+            )[str(route_user_id)] = account_id
+
+        if set_default_flag or not provider_state.get("default_account"):
+            provider_state["default_account"] = account_id
+
+        _store_provider_state(auth_store, "spotify", provider_state, set_active=False)
+        saved_to = _save_auth_store(auth_store)
+
+    print(f"  Auth state: {saved_to}")
+    if route_user_id:
+        print(f"  Routing: {route_platform}:{route_user_id} -> {account_id}")
+    if provider_state.get("default_account") == account_id:
+        print(f"  Default account: {account_id}")
+
+
+def spotify_logout_command(args) -> None:
+    """`hermes auth spotify logout [--account <id>]`.
+
+    Without --account: clears all Spotify auth (delegates to clear_provider_auth).
+    With --account: removes just that account + any routing rules pointing at it.
+    If the default account is removed, default falls back to another remaining
+    account, or is cleared.
+    """
+    account_id = _normalize_spotify_account_id(getattr(args, "account", None))
+    if not account_id:
+        # Legacy "logout all" behaviour.
+        from hermes_cli.auth_commands import auth_logout_command
+        from types import SimpleNamespace
+        auth_logout_command(SimpleNamespace(provider="spotify"))
+        return
+
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        provider_state = _load_provider_state(auth_store, "spotify") or {}
+        if not _is_spotify_multi_account_state(provider_state):
+            raise SystemExit(
+                "Spotify is in legacy single-account mode; --account is not "
+                "supported. Use plain `hermes auth spotify logout` instead."
+            )
+        accounts = _spotify_accounts(provider_state)
+        if account_id not in accounts:
+            raise SystemExit(f"Spotify account '{account_id}' is not configured.")
+
+        del provider_state["accounts"][account_id]
+
+        # Drop any routing rules pointing at the removed account.
+        routing = provider_state.get("routing")
+        if isinstance(routing, dict):
+            for platform, platform_routes in list(routing.items()):
+                if not isinstance(platform_routes, dict):
+                    continue
+                for user_id, mapped_id in list(platform_routes.items()):
+                    if mapped_id == account_id:
+                        del platform_routes[user_id]
+                if not platform_routes:
+                    del routing[platform]
+
+        # Fix up default_account if we just deleted it.
+        if provider_state.get("default_account") == account_id:
+            remaining = list(provider_state.get("accounts", {}).keys())
+            provider_state["default_account"] = remaining[0] if remaining else None
+
+        _store_provider_state(auth_store, "spotify", provider_state, set_active=False)
+        saved_to = _save_auth_store(auth_store)
+
+    print(f"Removed Spotify account '{account_id}'.")
+    print(f"  Auth state: {saved_to}")
+    if provider_state.get("default_account"):
+        print(f"  New default account: {provider_state['default_account']}")
+    elif not provider_state.get("accounts"):
+        print("  No accounts remain.")
 
 # =============================================================================
 # SSH / remote session detection

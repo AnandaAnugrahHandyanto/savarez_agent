@@ -530,10 +530,27 @@ def auth_spotify_command(args) -> None:
         auth_mod.login_spotify_command(args)
         return
     if action == "status":
-        auth_status_command(SimpleNamespace(provider="spotify"))
+        # Account-aware status. Falls back to generic provider status (no
+        # --account) when no multi-account state is configured, preserving
+        # the legacy single-account UX.
+        auth_mod.spotify_status_command(args)
         return
     if action == "logout":
-        auth_logout_command(SimpleNamespace(provider="spotify"))
+        # Supports `--account <id>` for per-account logout. Without it,
+        # clears all spotify auth (legacy behaviour).
+        auth_mod.spotify_logout_command(args)
+        return
+    if action == "list":
+        auth_mod.spotify_list_accounts_command(args)
+        return
+    if action == "route":
+        auth_mod.spotify_route_account_command(args)
+        return
+    if action == "set-default":
+        auth_mod.spotify_set_default_account_command(args)
+        return
+    if action == "migrate":
+        auth_mod.spotify_migrate_legacy_command(args)
         return
     raise SystemExit(f"Unknown Spotify auth action: {action}")
 
