@@ -91,6 +91,9 @@ def _make_agent(monkeypatch):
     )
     stub.interrupt = _ra.AIAgent.interrupt.__get__(stub)
     stub.clear_interrupt = _ra.AIAgent.clear_interrupt.__get__(stub)
+    stub._tool_guardrails = MagicMock()
+    stub._tool_guardrails.before_call.return_value = MagicMock(allows_execution=True)
+    stub._append_guardrail_observation = lambda _name, _args, result, *, failed: result
     # /steer injection (added in PR #12116) fires after every concurrent
     # tool batch. Stub it as a no-op — this test exercises interrupt
     # fanout, not steer injection.

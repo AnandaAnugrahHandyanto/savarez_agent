@@ -691,6 +691,36 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     return stripped
 
 
+def _blocked_child_toolsets_for_role(role: str) -> List[str]:
+    """Toolsets to subtract after composite expansion for a child role."""
+    blocked = ["clarify", "memory", "code_execution", "messaging"]
+    if role != "orchestrator":
+        blocked.append("delegation")
+    return blocked
+
+
+def _filter_blocked_child_tools(child, role: str) -> None:
+    """Defence-in-depth: remove blocked tool names from the final child schema."""
+    allowed_blocked = {"delegate_task"} if role == "orchestrator" else set()
+    blocked_names = DELEGATE_BLOCKED_TOOLS - allowed_blocked
+    child.tools = [
+        tool
+        for tool in (getattr(child, "tools", None) or [])
+        if tool.get("function", {}).get("name") not in blocked_names
+    ]
+    child.valid_tool_names = {
+        tool["function"]["name"]
+        for tool in child.tools
+        if tool.get("function", {}).get("name")
+    }
+    try:
+        import model_tools as _model_tools
+
+        _model_tools._last_resolved_tool_names = list(child.valid_tool_names)
+    except Exception:
+        pass
+
+
 def _build_child_progress_callback(
     task_index: int,
     goal: str,
@@ -1132,6 +1162,7 @@ def _build_child_agent(
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
         fallback_model=parent_fallback,
         enabled_toolsets=child_toolsets,
+        disabled_toolsets=_blocked_child_toolsets_for_role(effective_role),
         quiet_mode=True,
         ephemeral_system_prompt=child_prompt,
         log_prefix=f"[subagent-{task_index}]",
@@ -1150,6 +1181,7 @@ def _build_child_agent(
         tool_progress_callback=child_progress_cb,
         iteration_budget=None,  # fresh budget per subagent
     )
+    _filter_blocked_child_tools(child, effective_role)
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = child_depth

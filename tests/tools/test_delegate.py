@@ -836,6 +836,78 @@ class TestBlockedTools(unittest.TestCase):
         for tool in ["delegate_task", "clarify", "memory", "send_message", "execute_code"]:
             self.assertIn(tool, DELEGATE_BLOCKED_TOOLS)
 
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_composite_parent_toolset_filters_blocked_child_tools(self, mock_cfg):
+        parent = _make_mock_parent(depth=0)
+        parent.enabled_toolsets = ["hermes-cli"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.tools = [
+                {"function": {"name": "terminal"}},
+                {"function": {"name": "send_message"}},
+                {"function": {"name": "memory"}},
+                {"function": {"name": "execute_code"}},
+                {"function": {"name": "delegate_task"}},
+            ]
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Test composite filtering",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        kwargs = MockAgent.call_args[1]
+        self.assertIn("terminal", kwargs["enabled_toolsets"])
+        self.assertEqual(
+            sorted(kwargs["disabled_toolsets"]),
+            ["clarify", "code_execution", "delegation", "memory", "messaging"],
+        )
+        self.assertEqual(mock_child.valid_tool_names, {"terminal"})
+        for tool in DELEGATE_BLOCKED_TOOLS:
+            self.assertNotIn(tool, mock_child.valid_tool_names)
+
+    @patch("tools.delegate_tool._load_config", return_value={"max_spawn_depth": 2})
+    def test_orchestrator_filters_blocked_tools_but_keeps_delegate_task(self, mock_cfg):
+        parent = _make_mock_parent(depth=0)
+        parent.enabled_toolsets = ["hermes-cli"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.tools = [
+                {"function": {"name": "terminal"}},
+                {"function": {"name": "send_message"}},
+                {"function": {"name": "memory"}},
+                {"function": {"name": "execute_code"}},
+                {"function": {"name": "delegate_task"}},
+            ]
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Test orchestrator filtering",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                role="orchestrator",
+            )
+
+        kwargs = MockAgent.call_args[1]
+        self.assertNotIn("delegation", kwargs["disabled_toolsets"])
+        self.assertIn("delegate_task", mock_child.valid_tool_names)
+        self.assertIn("terminal", mock_child.valid_tool_names)
+        for tool in DELEGATE_BLOCKED_TOOLS - {"delegate_task"}:
+            self.assertNotIn(tool, mock_child.valid_tool_names)
+
     def test_constants(self):
         from tools.delegate_tool import (
             _get_max_spawn_depth, _get_orchestrator_enabled,
@@ -1886,7 +1958,7 @@ class TestDelegateHeartbeat(unittest.TestCase):
         }
 
         def slow_run(**kwargs):
-            time.sleep(0.6)
+            time.sleep(1.0)
             return {"final_response": "done", "completed": True, "api_calls": 3}
 
         child.run_conversation.side_effect = slow_run
@@ -1908,7 +1980,7 @@ class TestDelegateHeartbeat(unittest.TestCase):
         self.assertLess(
             len(touch_calls), 9,
             f"Idle stale detection did not fire: got {len(touch_calls)} "
-            f"touches over 0.6s — expected heartbeat to stop after "
+            f"touches over 1.0s — expected heartbeat to stop after "
             f"~5 stale cycles",
         )
 

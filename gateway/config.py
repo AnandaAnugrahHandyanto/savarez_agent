@@ -165,6 +165,7 @@ class Platform(Enum, metaclass=_PlatformEnumType):
             pseudo._name_ = value.upper().replace("-", "_").replace(" ", "_")
             cls._value2member_map_[value] = pseudo
             cls._member_map_[pseudo._name_] = pseudo
+            type.__setattr__(cls, pseudo._name_, pseudo)
             return pseudo
 
         # Runtime-registered plugins (e.g. user-installed, discovered after
@@ -177,6 +178,7 @@ class Platform(Enum, metaclass=_PlatformEnumType):
                 pseudo._name_ = value.upper().replace("-", "_").replace(" ", "_")
                 cls._value2member_map_[value] = pseudo
                 cls._member_map_[pseudo._name_] = pseudo
+                type.__setattr__(cls, pseudo._name_, pseudo)
                 return pseudo
         except Exception:
             pass
@@ -1883,28 +1885,16 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             pass
 
     # Registry-driven enable for plugin platforms.  Built-ins have explicit
-    # blocks above; plugins expose check_fn() which is the single source of
-    # truth for "are my env vars set?".  When it returns True, ensure the
-    # platform is enabled so start() will create its adapter.  Plugins that
-    # need to seed ``PlatformConfig.extra`` from env vars (e.g. Google Chat's
-    # project_id / subscription_name) can supply ``env_enablement_fn`` on
-    # their PlatformEntry — called here BEFORE adapter construction.
+    # blocks above; plugins can either expose check_fn() or seed an env-only
+    # config via env_enablement_fn().  The latter must run even when optional
+    # runtime deps are absent so config/status can still reflect a configured
+    # platform and report dependency problems separately.
     try:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():
-            try:
-                if not entry.check_fn():
-                    continue
-            except Exception as e:
-                logger.debug("check_fn for %s raised: %s", entry.name, e)
-                continue
-            platform = Platform(entry.name)
-            if platform not in config.platforms:
-                config.platforms[platform] = PlatformConfig()
-            config.platforms[platform].enabled = True
-            # Seed extras from env if the plugin opted in.
+            seed = None
             if entry.env_enablement_fn is not None:
                 try:
                     seed = entry.env_enablement_fn()
@@ -1913,22 +1903,35 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                         "env_enablement_fn for %s raised: %s", entry.name, e
                     )
                     seed = None
-                if isinstance(seed, dict) and seed:
-                    # Extract the home_channel dict (if provided) so we wire it
-                    # up as a proper HomeChannel dataclass.  Everything else is
-                    # merged into ``extra``.
-                    home = seed.pop("home_channel", None)
-                    config.platforms[platform].extra.update(seed)
-                    if isinstance(home, dict) and home.get("chat_id"):
-                        config.platforms[platform].home_channel = HomeChannel(
-                            platform=platform,
-                            chat_id=str(home["chat_id"]),
-                            name=str(home.get("name") or "Home"),
-                            thread_id=(
-                                str(home["thread_id"])
-                                if home.get("thread_id")
-                                else None
-                            ),
-                        )
+            try:
+                check_ok = bool(entry.check_fn())
+            except Exception as e:
+                logger.debug("check_fn for %s raised: %s", entry.name, e)
+                check_ok = False
+            if not check_ok and not (isinstance(seed, dict) and seed):
+                continue
+            platform = Platform(entry.name)
+            if platform not in config.platforms:
+                config.platforms[platform] = PlatformConfig()
+            config.platforms[platform].enabled = True
+            # Seed extras from env if the plugin opted in.
+            if isinstance(seed, dict) and seed:
+                # Extract the home_channel dict (if provided) so we wire it
+                # up as a proper HomeChannel dataclass.  Everything else is
+                # merged into ``extra``.
+                seed = dict(seed)
+                home = seed.pop("home_channel", None)
+                config.platforms[platform].extra.update(seed)
+                if isinstance(home, dict) and home.get("chat_id"):
+                    config.platforms[platform].home_channel = HomeChannel(
+                        platform=platform,
+                        chat_id=str(home["chat_id"]),
+                        name=str(home.get("name") or "Home"),
+                        thread_id=(
+                            str(home["thread_id"])
+                            if home.get("thread_id")
+                            else None
+                        ),
+                    )
     except Exception as e:
         logger.debug("Plugin platform enable pass failed: %s", e)
