@@ -876,7 +876,6 @@ def load_gateway_config() -> GatewayConfig:
                 plat_data, extra = _ensure_platform_extra_dict(platforms_data, plat.value)
                 if enabled_was_explicit:
                     plat_data["enabled"] = platform_cfg["enabled"]
-                if plat == Platform.SLACK and enabled_was_explicit:
                     extra["_enabled_explicit"] = True
                 extra.update(bridged)
 
@@ -1827,7 +1826,10 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             platform = Platform(entry.name)
             if platform not in config.platforms:
                 config.platforms[platform] = PlatformConfig()
-            config.platforms[platform].enabled = True
+            platform_config = config.platforms[platform]
+            if not platform_config.enabled and platform_config.extra.pop("_enabled_explicit", False):
+                continue
+            platform_config.enabled = True
             # Seed extras from env if the plugin opted in.
             if entry.env_enablement_fn is not None:
                 try:

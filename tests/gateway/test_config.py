@@ -413,6 +413,27 @@ class TestLoadGatewayConfig:
             "456": "Therapist mode",
         }
 
+    def test_explicit_discord_disable_survives_plugin_auto_enable(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  enabled: false\n"
+            "  require_mention: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+        monkeypatch.delenv("DISCORD_REQUIRE_MENTION", raising=False)
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.DISCORD].enabled is False
+        assert config.platforms[Platform.DISCORD].token is None
+        assert os.getenv("DISCORD_REQUIRE_MENTION") == "true"
+
     def test_bridges_discord_history_backfill_settings_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
