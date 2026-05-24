@@ -2789,6 +2789,55 @@ def run_conversation(
                     )
                 ) and not is_context_length_error
 
+                # Billing exhaustion is permanent — if credential pool
+                # rotation didn't recover (single-key or all keys exhausted),
+                # retrying against the same depleted account only wastes
+                # tokens and time.  Try fallback once, then abort immediately
+                # instead of burning through max_retries identical 402s.
+                # (#31273)
+                if (
+                    classified.reason == FailoverReason.billing
+                    and not recovered_with_pool
+                    and not is_context_length_error
+                ):
+                    agent._emit_status(f"⚠️ Billing error (HTTP {status_code}) — no pool recovery available")
+                    if agent._try_activate_fallback():
+                        retry_count = 0
+                        compression_attempts = 0
+                        primary_recovery_attempted = False
+                        continue
+                    # No fallback either — surface the error immediately
+                    if api_kwargs is not None:
+                        agent._dump_api_request_debug(
+                            api_kwargs, reason="billing_no_recovery", error=api_error,
+                        )
+                    _bill_summary = agent._summarize_api_error(api_error)
+                    agent._emit_status(
+                        f"❌ Billing error (HTTP {status_code}): {_bill_summary}"
+                    )
+                    agent._vprint(
+                        f"{agent.log_prefix}❌ Billing error (HTTP {status_code}). "
+                        f"Credit exhaustion is permanent — aborting without retry.",
+                        force=True,
+                    )
+                    agent._vprint(f"{agent.log_prefix}   🔌 Provider: {_provider}  Model: {_model}", force=True)
+                    agent._vprint(f"{agent.log_prefix}   💡 Top up your credits and try again.", force=True)
+                    if base_url_host_matches(str(_base), "openrouter.ai"):
+                        agent._vprint(f"{agent.log_prefix}      • Check credits: https://openrouter.ai/settings/credits", force=True)
+                    logger.error(
+                        "%sBilling error (no pool recovery): %s | provider=%s model=%s",
+                        agent.log_prefix, _bill_summary, _provider, _model,
+                    )
+                    agent._persist_session(messages, conversation_history)
+                    return {
+                        "final_response": None,
+                        "messages": messages,
+                        "api_calls": api_call_count,
+                        "completed": False,
+                        "failed": True,
+                        "error": str(api_error),
+                    }
+
                 if is_client_error:
                     # Try fallback before aborting — a different provider
                     # may not have the same issue (rate limit, auth, etc.)
