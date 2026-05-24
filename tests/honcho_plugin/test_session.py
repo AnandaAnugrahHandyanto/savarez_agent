@@ -2155,3 +2155,91 @@ They also preserve consent and fittedness.
         result = provider._clean_context_text(text, query="intimacy and movement")
         assert result.count("chosen closeness") == 1
         assert "consent and fittedness" in result
+
+
+class TestOneSessionHonchoRoomHint:
+    def test_tools_only_env_gate_injects_at_most_one_sanitized_hint(self, monkeypatch, tmp_path):
+        provider = HonchoMemoryProvider()
+        provider._cron_skipped = False
+        provider._recall_mode = "tools"
+        provider._session_key = "test"
+        provider._manager = MagicMock()
+        provider._session_initialized = True
+        provider._manager.get_prefetch_context.return_value = {
+            "summary": "source=honcho raw messages should drop\nEmber wants exact pytest evidence before Hermes gateway changes."
+        }
+
+        monkeypatch.setenv("HERMES_HONCHO_ONE_SESSION_HINT", "1")
+        monkeypatch.setenv("HERMES_HONCHO_ONE_SESSION_HINT_ROOM", "technical")
+        monkeypatch.setenv("HERMES_HONCHO_ONE_SESSION_HINT_REPORT_ROOT", str(tmp_path))
+
+        first = provider.prefetch("check Hermes tests and gateway status", session_id="test")
+        second = provider.prefetch("check Hermes tests and gateway status", session_id="test")
+
+        assert first.count("Room hint") == 1
+        assert "Ember wants exact pytest evidence before Hermes gateway changes." in first
+        assert "source=honcho" not in first
+        assert "raw messages" not in first
+        assert second == ""
+        provider._manager.get_prefetch_context.assert_called_once()
+
+        summary_path = tmp_path / "honcho-room-hint-one-session-summary.json"
+        assert summary_path.exists()
+        assert "Ember wants exact pytest evidence" not in summary_path.read_text()
+
+    def test_tools_only_without_env_gate_remains_no_injection(self):
+        provider = HonchoMemoryProvider()
+        provider._recall_mode = "tools"
+        provider._manager = MagicMock()
+        assert provider.prefetch("check Hermes tests", session_id="test") == ""
+        provider._manager.get_prefetch_context.assert_not_called()
+
+    def test_one_session_gateway_canary_platform_and_session_key_guards_do_not_consume_on_mismatch(self, monkeypatch, tmp_path):
+        provider = HonchoMemoryProvider()
+        provider._cron_skipped = False
+        provider._recall_mode = "tools"
+        provider._session_key = "test"
+        provider._manager = MagicMock()
+        provider._session_initialized = True
+        provider._platform = "telegram"
+        provider._gateway_session_key = "telegram:home"
+        provider._manager.get_prefetch_context.return_value = {
+            "summary": "Ember wants exact pytest evidence before Hermes gateway changes."
+        }
+
+        monkeypatch.setenv("HERMES_HONCHO_ONE_SESSION_HINT", "1")
+        monkeypatch.setenv("HERMES_HONCHO_ONE_SESSION_HINT_ROOM", "technical")
+        monkeypatch.setenv("HERMES_HONCHO_ONE_SESSION_HINT_REPORT_ROOT", str(tmp_path))
+        monkeypatch.setenv("HERMES_HONCHO_ONE_SESSION_HINT_ONLY_PLATFORM", "api_server")
+        monkeypatch.setenv("HERMES_HONCHO_ONE_SESSION_HINT_ONLY_SESSION_KEY", "phase6d-canary")
+
+        assert provider.prefetch("check Hermes tests and gateway status", session_id="test") == ""
+        assert provider._one_session_room_hint_consumed is False
+        provider._manager.get_prefetch_context.assert_not_called()
+
+        provider._platform = "api_server"
+        provider._gateway_session_key = "phase6d-canary"
+        result = provider.prefetch("check Hermes tests and gateway status", session_id="test")
+
+        assert result.count("Room hint") == 1
+        assert "Ember wants exact pytest evidence before Hermes gateway changes." in result
+        assert provider._one_session_room_hint_consumed is True
+        provider._manager.get_prefetch_context.assert_called_once()
+
+    def test_one_session_gateway_canary_session_key_mismatch_does_not_inject(self, monkeypatch, tmp_path):
+        provider = HonchoMemoryProvider()
+        provider._recall_mode = "tools"
+        provider._session_key = "test"
+        provider._manager = MagicMock()
+        provider._session_initialized = True
+        provider._platform = "api_server"
+        provider._gateway_session_key = "wrong-key"
+
+        monkeypatch.setenv("HERMES_HONCHO_ONE_SESSION_HINT", "1")
+        monkeypatch.setenv("HERMES_HONCHO_ONE_SESSION_HINT_REPORT_ROOT", str(tmp_path))
+        monkeypatch.setenv("HERMES_HONCHO_ONE_SESSION_HINT_ONLY_PLATFORM", "api_server")
+        monkeypatch.setenv("HERMES_HONCHO_ONE_SESSION_HINT_ONLY_SESSION_KEY", "phase6d-canary")
+
+        assert provider.prefetch("check Hermes tests and gateway status", session_id="test") == ""
+        assert provider._one_session_room_hint_consumed is False
+        provider._manager.get_prefetch_context.assert_not_called()
