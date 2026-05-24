@@ -959,6 +959,31 @@ class TestRunJobSessionPersistence:
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["enabled_toolsets"] == ["web", "terminal", "file"]
 
+    def test_run_job_keeps_memory_provider_tools_without_memory_context(self, tmp_path):
+        """Cron should expose memory-provider tools (Mycel-style) without
+        opting into ordinary memory context injection / turn sync.
+
+        ``skip_memory=True`` prevents built-in MEMORY.md/USER.md prompt
+        injection, while ``memory_provider_tools_only=True`` lets AIAgent load
+        the configured external memory provider's explicit tools.
+        """
+        job = {
+            "id": "memory-tools-job",
+            "name": "test",
+            "prompt": "use mycel_health if needed",
+        }
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["skip_memory"] is True
+        assert kwargs["memory_provider_tools_only"] is True
+
     def test_run_job_enabled_toolsets_resolves_from_platform_config_when_not_set(self, tmp_path):
         """When a job has no explicit enabled_toolsets, the scheduler now
         resolves them from ``hermes tools`` platform config for ``cron``

@@ -1,6 +1,7 @@
 """Tests for the memory provider interface, manager, and builtin provider."""
 
 import json
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -1060,3 +1061,59 @@ class TestHonchoCadenceTracking:
         p.on_turn_start(2, "second message")
         should_skip = p._injection_frequency == "first-turn" and p._turn_count > 1
         assert should_skip, "Second turn (turn 2) SHOULD be skipped"
+
+
+def test_memory_provider_tools_only_skips_external_memory_turn_sync():
+    """Tools-only memory provider mode exposes explicit tools but must not
+    mirror cron/batch turns into the memory backend automatically.
+    """
+    from run_agent import AIAgent
+
+    memory_manager = MagicMock()
+    agent = AIAgent.__new__(AIAgent)
+    setattr(agent, "_memory_provider_tools_only", True)
+    setattr(agent, "_memory_manager", memory_manager)
+    setattr(agent, "session_id", "cron-session")
+
+    AIAgent._sync_external_memory_for_turn(
+        agent,
+        original_user_message="remember?",
+        final_response="done",
+        interrupted=False,
+    )
+
+    memory_manager.sync_all.assert_not_called()
+    memory_manager.queue_prefetch_all.assert_not_called()
+
+
+def test_skip_memory_can_still_load_memory_provider_tools_only():
+    """skip_memory suppresses built-in memory, but cron tools-only mode still
+    exposes explicit external memory provider tools such as Mycel.
+    """
+    from run_agent import AIAgent
+
+    tool_schema = {
+        "name": "mycel_health",
+        "description": "health",
+        "parameters": {"type": "object", "properties": {}},
+    }
+    provider = FakeMemoryProvider("mycel", tools=[tool_schema])
+
+    with patch("run_agent.get_tool_definitions", return_value=[]), \
+         patch("hermes_cli.config.load_config", return_value={"memory": {"provider": "mycel"}}), \
+         patch("plugins.memory.load_memory_provider", return_value=provider):
+        agent = AIAgent(
+            model="test/model",
+            api_key="test-key",
+            base_url="https://example.invalid/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            memory_provider_tools_only=True,
+        )
+
+    assert getattr(agent, "_memory_store") is None
+    assert getattr(agent, "_memory_provider_tools_only") is True
+    assert "mycel_health" in getattr(agent, "valid_tool_names")
+    assert provider.initialized is True
+    assert provider._init_kwargs["agent_context"] == "memory-tools-only"

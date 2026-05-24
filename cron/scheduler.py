@@ -1462,6 +1462,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             skip_context_files=not bool(_job_workdir),
             load_soul_identity=True,
             skip_memory=True,  # Cron system prompts would corrupt user representations
+            # Keep explicit memory-provider tools (e.g. Mycel) available for jobs
+            # that ask for them, without injecting recalled memory context or
+            # auto-syncing cron turns back into the user's memory backend.
+            memory_provider_tools_only=True,
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,
