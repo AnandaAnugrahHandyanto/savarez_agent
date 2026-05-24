@@ -6777,3 +6777,171 @@ Optional hooks: on_turn_start(), on_session_end(), on_session_switch(), on_pre_c
 - agent/context_engine.py — ContextEngine ABC (212 lines)
 - plugins/memory/mem0/__init__.py — Mem0 provider (373 lines)
 - plugins/memory/honcho/__init__.py — Honcho provider (1328 lines)
+
+## Pass #63 – Kanban, Project Management & Task Tracking Deep Dive – 2026-05-24T20:25:00Z
+
+Scope: hermes_cli/kanban_db.py, hermes_cli/kanban.py, plugins/kanban/dashboard/plugin_api.py, tools/kanban_tools.py
+
+### KANBAN DATABASE SCHEMA
+
+**File:** `hermes_cli/kanban_db.py` (lines 810–947 SCHEMA_SQL)
+
+### K63-1 · task_links has no FK constraints — orphan links silently possible — LOW
+
+**File:** `hermes_cli/kanban_db.py` (SCHEMA_SQL, lines 870–874)
+```
+CREATE TABLE IF NOT EXISTS task_links (
+    parent_id  TEXT NOT NULL,
+    child_id   TEXT NOT NULL,
+    PRIMARY KEY (parent_id, child_id)
+);
+```
+No `REFERENCES tasks(id)` foreign key. Manual `DELETE FROM task_links` is done in `delete_task` and `delete_archived_task` (lines 3766–3768, 3791), which is correct. However, the absence of FK constraints means a bug in any future code path that inserts into `task_links` without validation would silently produce dangling links, and `ON DELETE CASCADE` is not available as a safety net.
+
+### K63-2 · task_runs.current_run_id denormalised but kept consistent — OK
+
+The `tasks.current_run_id` pointer is denormalised (a copy of the live run id), but every state transition function (`claim_task`, `_end_run`, `block_task`, `complete_task`, `archive_task`, `reclaim_task`, `release_stale_claims`) updates both `tasks.current_run_id` and `task_runs` rows together inside the same write_txn. The CAS pattern in `_end_run` (line 2098–2122) only closes a run if `ended_at IS NULL`, preventing double-close. The invariant `current_run_id IS NULL ⇔ run in terminal state` is maintained.
+
+### K63-3 · Backward-compatible migrations use IF NOT EXISTS — safe — OK
+
+`_add_column_if_missing` (line 1232) catches `duplicate column name` and `_guard_existing_db_is_healthy` runs `PRAGMA integrity_check` on existing DBs before schema init, backing up corrupt files. The `_backup_corrupt_db` function (line 1029) confines writes to the original DB's parent directory using resolved paths.
+
+### K63-4 · WAL mode + BEGIN IMMEDIATE for all writes — correct concurrency strategy — OK
+
+`write_txn` (line 1469) always opens `BEGIN IMMEDIATE`. `connect` (line 1135) activates WAL. Comment at line 61–68 explicitly explains why: SQLite serialises writers via WAL lock, so at most one claimer wins any given task. Losers observe `rowcount == 0` and move on without retry loops. Per-board isolation is intentional.
+
+### K63-5 · Idempotency check in create_task outside write_txn — race can produce duplicate rows — LOW
+
+`create_task` (line 1636–1649) checks the idempotency key outside the write txn (for performance). Two concurrent requests with the same key can both pass the check, then both insert. The subsequent lookup stabilises, but two rows briefly exist. Not exploitable for data loss; `idempotency_key` is a dedup hint, not a unique constraint. No action item — design acknowledged in comment.
+
+### K63-6 · _find_missing_parents uses f-string in SQL parameter list — safe — OK
+
+Line 1759:
+```python
+placeholders = ",".join("?" * len(parents))
+rows = conn.execute(
+    f"SELECT id FROM tasks WHERE id IN ({placeholders})",
+    parents,
+).fetchall()
+```
+`placeholders` is built from `len(parents)`, not from any external input. `parents` comes from the caller. Parameterized correctly. Not a SQL injection vector.
+
+### TASK STATE MACHINE
+
+**Files:** `kanban_db.py` (claim_task 2289, complete_task 2854, block_task 3251, promote_task 3307, unblock_task 3377, archive_task 3725, schedule_task 3878)
+
+### K63-7 · Blocked task "sticky" semantics — correctly prevents auto-recovery of worker-initiated blocks — OK
+
+`_has_sticky_block` (line 2191) checks whether the most recent `blocked`/`unblocked` event is `blocked` (worker/operator-initiated). `recompute_ready` (line 2229) skips promotion for sticky-blocked tasks. This correctly implements the pattern from issue #28712: `kanban_block` (human review handoff) should NOT auto-resolve when parents complete, while circuit-breaker blocks (`gave_up` event) should.
+
+### K63-8 · claim_task enforces parent-completion invariant inside the same txn — OK
+
+Lines 2313–2329: inside `write_txn`, if any parent is not `done`/`archived`, the task is demoted from `ready` to `todo` and a `claim_rejected` event is emitted. This prevents a race where `recompute_ready` promoted a task but the parent hasn't committed yet. This is the single enforcement point regardless of which writer set `status='ready'`.
+
+### K63-9 · release_stale_claims discriminates host-local workers vs. remote — OK
+
+`release_stale_claims` (line 2509) checks `host_local = lock.startswith(host_prefix)` and `worker_pid` liveness via `_pid_alive`. If a stale claim's worker is still alive on the same host, it extends the TTL instead of reclaiming, preventing the spawn-then-immediately-reclaim loop (issue #23025).
+
+### K63-10 · No explicit state machine validation — invalid transitions possible via direct SQL — BY_DESIGN
+
+There is no `VALID_TRANSITIONS` matrix enforced in the DB layer. `block_task` accepts `running`/`ready`; `complete_task` accepts `running`/`ready`/`blocked`; `schedule_task` accepts `todo`/`ready`/`running`/`blocked`. An operator who writes `UPDATE tasks SET status = 'done' WHERE id = 't_xxx'` bypasses all logic but also bypasses all safety (no run closure, no event emission). This is documented BY_DESIGN — the CLI/gateway layers go through the API.
+
+### TASK ASSIGNMENT
+
+**File:** `kanban_db.py` (assign_task 1839, reassign_task 2691, _canonical_assignee 1518)
+
+### K63-11 · assignee field has no FK constraint to profiles — tasks can be assigned to non-existent profiles — BY_DESIGN
+
+`_canonical_assignee` (line 1518) normalizes via `normalize_profile_name`, but `assign_task` (line 1839) writes the result to `tasks.assignee` with no existence check. Any string can be stored as assignee. The dispatcher (`dispatch_once`) calls `profile_exists(row["assignee"])` (line 4963) and skips tasks whose assignee is not a real Hermes profile. This is the gating point — the field itself is unconstrained. BY_DESIGN documented in dispatcher code.
+
+### K63-12 · assign_task refuses to reassign a running task — correct — OK
+
+Line 1852: `if row["claim_lock"] is not None and row["status"] == "running": raise RuntimeError(...)`. The `reassign_task` wrapper (line 2691) accepts `reclaim_first=True` to handle this case. This prevents an operator from silently stealing a running task.
+
+### K63-13 · Reassigning resets consecutive_failures — correct recovery semantics — OK
+
+Line 1862: `UPDATE tasks SET assignee = ?, consecutive_failures = 0, last_failure_error = NULL`. When a human explicitly reassigns (recovery action), the new profile should not inherit the previous profile's failure streak. Explicitly documented.
+
+### K63-14 · No isolation between boards in assign operations — OK
+
+Each board has its own `kanban.db`. `kanban_db.connect()` resolves the DB from `HERMES_KANBAN_DB` → `HERMES_KANBAN_BOARD` → `current` file → `default`. Workers see only their board's DB. The dispatcher injects env vars into worker subprocesses to pin them to the correct DB. No cross-board mutation is possible through the API.
+
+### KANBAN API ENDPOINTS
+
+**File:** `plugins/kanban/dashboard/plugin_api.py`
+
+### K63-15 · Dashboard plugin API routes use session-token auth — OK
+
+Lines 64–83: `_check_ws_token` uses `hmac.compare_digest` for constant-time comparison against `_SESSION_TOKEN`. HTTP routes (not WebSocket) live behind the dashboard's plugin-bypass auth middleware. WebSocket routes require `?token=` query param. Documented at lines 14–33.
+
+### K63-16 · Board slug validated before DB access — OK
+
+`_resolve_board` (line 86) calls `kanban_db._normalize_board_slug` and raises `HTTPException(400)` on invalid slugs. Returns `None` when omitted (falls through to active board). Board existence checked for non-default boards, raising `HTTPException(404)`. Prevents enumeration attacks.
+
+### K63-17 · No SQL injection in plugin_api.py handlers — OK
+
+Plugin API uses `kanban_db.connect()` and calls kanban_db functions directly. No raw SQL string construction with external input. Board slug validated through `_normalize_board_slug` before DB access.
+
+### K63-18 · Dashboard plugin uses kanban_db functions directly — no drift between CLI/API/dashboard — OK
+
+Every handler wraps `kanban_db.connect()` → calls kanban_db functions → returns serialized output. Same code paths as CLI and gateway. Explicitly documented at lines 6–8.
+
+### K63-19 · No explicit rate limiting on kanban API endpoints — LOW
+
+The plugin API (FastAPI router) has no per-route rate limiting. The kanban board is a single-user/local tool on a local HTTP socket. Rate limiting exists in the gateway's platform adapters (pairing.py, stream_consumer.py), not in the kanban plugin layer. Not a significant risk for local-only tooling.
+
+### PROJECT/TAG ORGANIZATION
+
+**Files:** `hermes_cli/kanban_db.py` (boards management 476–595), `hermes_cli/kanban.py` (boards subcommand)
+
+### K63-20 · Board slug validator prevents path traversal — OK
+
+`_BOARD_SLUG_RE` (line 160): `^[a-z0-9][a-z0-9\-_]{0,63}$` — lowercase alphanumerics, hyphens, underscores only. No `..`, no `/`, no absolute-looking values. `board_dir` (line 286) uses `boards_root() / slug` and `kanban_db_path` uses the validated slug. Prevents board-name-based path traversal.
+
+### K63-21 · delete_archived_task requires status='archived' before hard delete — safety guard — OK
+
+`delete_archived_task` (line 3751): `SELECT status FROM tasks WHERE id = ?` → checks `status != 'archived'` → returns False. Active/blocked/done tasks must be explicitly archived first. `delete_task` (line 3777) does NOT have this guard — it hard-deletes any status — but it is a separate function not exposed through the CLI.
+
+### K63-22 · remove_board (archive) discards _INITIALIZED_PATHS cache entry before rename — correct — OK
+
+Line 578: `_INITIALIZED_PATHS.discard(str((d / "kanban.db").resolve()))`. A concurrent `connect(board=normed)` after the rename would recreate an empty sqlite file via `mkdir(exist_ok=True)`. Dropping the cache entry ensures the schema init pass re-runs on that fresh file. Race acknowledged in comment at line 575.
+
+### K63-23 · Archived boards move to `_archived/<slug>-<timestamp>/` with collision guard — OK
+
+`remove_board` (line 580–590): `archive_root / f"{normed}-{ts}"` with incrementing suffix on collision. Prevents rapid double-archive collisions. `default` board cannot be removed (line 565).
+
+### K63-24 · No orphan tag system — kanban has no tags, only task attributes — N/A
+
+The kanban schema (`tasks`, `task_links`, `task_comments`, `task_events`, `task_runs`, `kanban_notify_subs`) has no `tags` table. The word "tag" in the kanban context refers to git branches and `idempotency_key` labels, not a separate tagging system. No orphan tag cleanup needed.
+
+### K63-25 · Cascade delete handled explicitly in delete_task / delete_archived_task — OK
+
+Lines 3765–3773 and 3788–3795: manual `DELETE FROM task_links / task_comments / task_events / task_runs / kanban_notify_subs` in the correct order before deleting the task row. The schema does not use `ON DELETE CASCADE` foreign keys (explicit by design per comment at line 3780). All deletes are wrapped in `write_txn` for atomicity.
+
+### SUMMARY
+
+The kanban implementation is well-engineered for a single-node, local-first multi-profile task board. Key strengths:
+
+- WAL mode + `BEGIN IMMEDIATE` is the correct SQLite concurrency strategy for the use case
+- Parent-completion invariant is enforced atomically at claim time, not just at promotion time
+- Sticky-block semantics correctly distinguish worker-initiated blocks from circuit-breaker blocks
+- Claim locking (TTL-based) prevents duplicate worker spawns without distributed lock machinery
+- Board slug validation prevents traversal attacks
+- Dashboard API auth uses `hmac.compare_digest` for token comparison
+- Safe migration strategy with corrupt-DB backup before recreation
+- Cascading deletes handled explicitly in dedicated delete paths
+
+Areas of note (all BY_DESIGN or LOW severity):
+
+- `assignee` field accepts any string; dispatcher is the actual gate via `profile_exists()`
+- No formal state transition matrix; direct SQL bypasses all logic
+- Idempotency check is a hint, not a unique constraint (race acknowledged)
+- `task_links` has no FK constraint (manual cleanup in all delete paths)
+- No rate limiting on kanban API (local tool, single-user assumption)
+
+### Key Files Audited
+
+- `hermes_cli/kanban_db.py` — Core SQLite schema, state machine, claim/complete/block/archive, boards management, dispatch helpers (6579 lines)
+- `hermes_cli/kanban.py` — CLI argparse surface for kanban subcommands (2762 lines)
+- `plugins/kanban/dashboard/plugin_api.py` — Dashboard HTTP/WebSocket API (2217 lines)
+- `tools/kanban_tools.py` — Worker-side kanban tools (MCP interface)
