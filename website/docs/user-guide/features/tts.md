@@ -45,6 +45,12 @@ Convert text to speech with ten providers:
 tts:
   provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper"
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
+  auto_lang: false              # Auto-select a voice from tts.voices by detected language
+  voices:
+    en: "en-US-AvaNeural"
+    ru: "ru-RU-SvetlanaNeural"
+    zh: "zh-CN-XiaoxiaoNeural"
+    fallback: "en-US-AvaNeural"
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
     speed: 1.0                  # Converted to rate percentage (+/-%)
@@ -97,6 +103,20 @@ tts:
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
 
+**Automatic language voices**: Set `tts.auto_lang: true` with a `tts.voices` map to pick a voice from the text's Unicode script before synthesis. Hermes supports lightweight built-in detection for Latin (`en`), Cyrillic (`ru`), Chinese (`zh`), Japanese (`ja`), Korean (`ko`), Arabic (`ar`), Hebrew (`he`), Hindi/Devanagari (`hi`), Thai (`th`), and Greek (`el`). If the detected language is not mapped, `fallback` is used.
+
+Provider-specific maps can override the global map:
+
+```yaml
+tts:
+  provider: openai
+  auto_lang: true
+  openai:
+    voices:
+      en: alloy
+      zh: nova
+      fallback: alloy
+```
 
 ### Input length limits
 
