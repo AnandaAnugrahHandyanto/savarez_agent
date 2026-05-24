@@ -387,6 +387,10 @@ def load_cli_config() -> Dict[str, Any]:
             "enabled": True,      # Auto-compress when approaching context limit
             "threshold": 0.50,    # Compress at 50% of model's context limit
         },
+        "orchestration": {
+            "status_queries_enabled": False,
+            "frontdesk_live_enabled": False,
+        },
         "agent": {
             "max_turns": 90,  # Default max tool-calling iterations (shared with subagents)
             "verbose": False,
@@ -5497,6 +5501,28 @@ class HermesCLI:
         agent_running = getattr(self, "_agent_running", False)
         _cprint(f"  Agent: {'running' if agent_running else 'idle'}")
 
+    def _handle_frontdesk_command(self, cmd: str):
+        """Handle /frontdesk status — show live control-plane readiness."""
+        parts = cmd.strip().split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else "status"
+        if arg and arg != "status":
+            _cprint("  Usage: /frontdesk status")
+            return
+
+        from agent.frontdesk_live import ensure_default_worker_lane
+        from agent.orchestration_runtime import get_or_create_orchestration_runtime
+
+        live_enabled = bool(getattr(self, "frontdesk_live_enabled", False))
+        if live_enabled:
+            ensure_default_worker_lane(self, session_key=getattr(self, "session_id", None))
+        runtime = get_or_create_orchestration_runtime(self)
+        lanes = runtime.worker_registry.lane_names()
+        default_lane_available = "main" in lanes
+        _cprint("  Frontdesk status")
+        _cprint(f"  Frontdesk live: {'enabled' if live_enabled else 'disabled'}")
+        _cprint(f"  Default worker lane: {'available' if default_lane_available else 'missing'}")
+        _cprint("  Available worker lanes: " + (", ".join(lanes) if lanes else "none"))
+
     def _handle_paste_command(self):
         """Handle /paste — explicitly check clipboard for an image.
 
@@ -8349,6 +8375,8 @@ class HermesCLI:
             self._handle_stop_command()
         elif canonical == "agents":
             self._handle_agents_command()
+        elif canonical == "frontdesk":
+            self._handle_frontdesk_command(cmd_original)
         elif canonical == "background":
             self._handle_background_command(cmd_original)
         elif canonical == "queue":
@@ -9477,6 +9505,68 @@ class HermesCLI:
             _cprint(f"  {_DIM}{behavior}{_RST}")
         else:
             _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (session only){_RST}")
+
+    def _classify_busy_input(self, text: str) -> "ControlPlaneDecision":  # type: ignore[name-defined]
+        """Frontdesk control-plane adapter — Phase 2 substrate, no callers wired.
+
+        Returns a :class:`agent.control_plane.ControlPlaneDecision` for *text*
+        derived from the pure-classifier output.  ``frontdesk_mode_active`` is
+        sourced from ``self.frontdesk_mode_enabled`` when that attribute
+        exists; otherwise it defaults to ``False`` so the decision is
+        guaranteed to downgrade WORKER_LANE → MAIN under legacy mode.
+
+        This method is **deliberately not yet called from any code path**.
+        Phase 5 (``/mode frontdesk`` opt-in) is the first phase that wires it
+        into ``cli.py:11634-11650`` (integrated-busy capture) and
+        ``cli.py:8714-8736`` (slash-command dispatch).  Phase 2's job is to
+        land the schema and the classifier so transcript-replay fixtures and
+        unit tests can already be written against a stable contract while the
+        default user-visible behaviour stays bit-identical.
+
+        Hard boundaries this respects (PRD §9.2 / design review §9.2):
+
+        * No mutation of ``self._pending_input``.
+        * No mutation of ``self.busy_input_mode``.
+        * No call into ``self._handle_busy_command`` or
+          ``self._coalesce_pending_integrated_busy_queue``.
+        * No persona / prompt-builder change.
+        """
+        # Lazy import: keeps cli.py module-import cost flat and ensures a future
+        # circular-import regression is loud rather than silent.
+        from agent.control_plane import classify as _classify
+
+        frontdesk_active = bool(getattr(self, "frontdesk_mode_enabled", False))
+        return _classify(text, frontdesk_mode_active=frontdesk_active)
+
+    def _handle_frontdesk_live_input(
+        self,
+        text: str,
+        *,
+        main_in_flight: bool = False,
+    ):
+        """Consume an opt-in frontdesk control input before queue/model paths."""
+        def _cancel_active(_payload: str) -> None:
+            agent = getattr(self, "agent", None)
+            if agent is not None and hasattr(agent, "interrupt"):
+                agent.interrupt(_payload)
+
+        def _steer_active(_payload: str):
+            agent = getattr(self, "agent", None)
+            if agent is not None and hasattr(agent, "steer"):
+                return agent.steer(_payload)
+            return False
+
+        from agent.frontdesk_live import handle_frontdesk_live_input
+
+        return handle_frontdesk_live_input(
+            self,
+            text,
+            session_key=getattr(self, "session_id", None),
+            source_surface="cli",
+            main_in_flight=main_in_flight,
+            steer_callback=_steer_active if main_in_flight else None,
+            cancel_callback=_cancel_active if main_in_flight else None,
+        )
 
     def _handle_fast_command(self, cmd: str):
         """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode)."""
@@ -11243,6 +11333,17 @@ class HermesCLI:
         # leave it False, which is correct — those aren't user interrupts.
         self._last_turn_interrupted = False
 
+        if images is None and isinstance(message, str):
+            frontdesk_result = self._handle_frontdesk_live_input(
+                message,
+                main_in_flight=bool(getattr(self, "_agent_running", False)),
+            )
+            if frontdesk_result is not None:
+                response = frontdesk_result.message
+                if response:
+                    _cprint(response)
+                return response
+
         # Refresh provider credentials if needed (handles key rotation transparently)
         if not self._ensure_runtime_credentials():
             return None
@@ -12388,6 +12489,16 @@ class HermesCLI:
                 event.app.invalidate()
                 # Bundle text + images as a tuple when images are present
                 payload = (text, images) if images else text
+                if not images and text:
+                    frontdesk_result = self._handle_frontdesk_live_input(
+                        text,
+                        main_in_flight=bool(self._agent_running),
+                    )
+                    if frontdesk_result is not None:
+                        if frontdesk_result.message:
+                            _cprint(f"  {_ACCENT}{frontdesk_result.message}{_RST}")
+                        event.app.current_buffer.reset(append_to_history=True)
+                        return
                 if self._agent_running and not (text and _looks_like_slash_command(text)):
                     _effective_mode = self.busy_input_mode
                     if _effective_mode == "steer":
@@ -14053,6 +14164,16 @@ class HermesCLI:
                             if app.is_running:
                                 app.exit()
                         continue
+
+                    if not submit_images and isinstance(user_input, str):
+                        frontdesk_result = self._handle_frontdesk_live_input(
+                            user_input,
+                            main_in_flight=False,
+                        )
+                        if frontdesk_result is not None:
+                            if frontdesk_result.message:
+                                _cprint(frontdesk_result.message)
+                            continue
                     
                     # Expand paste references back to full content
                     _paste_ref_re = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
