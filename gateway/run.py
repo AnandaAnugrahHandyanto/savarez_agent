@@ -14750,6 +14750,7 @@ class GatewayRunner:
         ("compression", "threshold"),
         ("compression", "target_ratio"),
         ("compression", "protect_last_n"),
+        ("agent", "text_verbosity"),
         ("agent", "disabled_toolsets"),
     )
 

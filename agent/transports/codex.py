@@ -51,6 +51,7 @@ class ResponsesApiTransport(ProviderTransport):
             session_id: str | None — used for prompt_cache_key + xAI conv header
             max_tokens: int | None — max_output_tokens
             request_overrides: dict | None — extra kwargs merged in
+            text_verbosity: str | None — OpenAI Responses text.verbosity
             provider: str | None — provider name for backend-specific logic
             base_url: str | None — endpoint URL
             base_url_hostname: str | None — hostname for backend detection
@@ -138,6 +139,14 @@ class ResponsesApiTransport(ProviderTransport):
                 kwargs["include"] = ["reasoning.encrypted_content"]
         elif not is_github_responses and not is_xai_responses:
             kwargs["include"] = []
+
+        text_verbosity = params.get("text_verbosity")
+        if text_verbosity and not is_github_responses and not is_xai_responses:
+            from agent.text_verbosity import parse_text_verbosity
+
+            verbosity = parse_text_verbosity(text_verbosity)
+            if verbosity:
+                kwargs["text"] = {"verbosity": verbosity}
 
         request_overrides = params.get("request_overrides")
         if request_overrides:
