@@ -2937,14 +2937,36 @@ def run_conversation(
                 # For rate limits, respect the Retry-After header if present
                 _retry_after = None
                 if is_rate_limited:
-                    _resp_headers = getattr(getattr(api_error, "response", None), "headers", None)
-                    if _resp_headers and hasattr(_resp_headers, "get"):
-                        _ra_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
-                        if _ra_raw:
-                            try:
-                                _retry_after = min(float(_ra_raw), 120)  # Cap at 2 minutes
-                            except (TypeError, ValueError):
-                                pass
+                    # 1. Respect custom .retry_after attribute on error if present
+                    if hasattr(api_error, "retry_after") and getattr(api_error, "retry_after") is not None:
+                        try:
+                            _retry_after = float(getattr(api_error, "retry_after"))
+                        except (TypeError, ValueError):
+                            pass
+
+                    # 2. Extract reset_at from error_context if present
+                    if not _retry_after and error_context and "reset_at" in error_context:
+                        from agent.credential_pool import _parse_absolute_timestamp
+                        try:
+                            _reset_epoch = _parse_absolute_timestamp(error_context["reset_at"])
+                            if _reset_epoch is not None:
+                                _retry_after = max(0.1, _reset_epoch - time.time())
+                        except Exception:
+                            pass
+
+                    # 3. Fall back to response headers
+                    if not _retry_after:
+                        _resp_headers = getattr(getattr(api_error, "response", None), "headers", None)
+                        if _resp_headers and hasattr(_resp_headers, "get"):
+                            _ra_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
+                            if _ra_raw:
+                                try:
+                                    _retry_after = float(_ra_raw)
+                                except (TypeError, ValueError):
+                                    pass
+
+                    if _retry_after is not None:
+                        _retry_after = min(_retry_after, 120)  # Cap at 2 minutes
                 wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                 if is_rate_limited:
                     agent._emit_status(f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries})...")
