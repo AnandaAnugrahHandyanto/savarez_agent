@@ -2449,7 +2449,7 @@ TTS_SCHEMA = {
         "properties": {
             "text": {
                 "type": "string",
-                "description": "The text to convert to speech. Provider-specific character caps apply and are enforced automatically (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k depending on model); over-long input is truncated."
+                "description": "The text to convert to speech. Provider-specific character caps apply and are enforced automatically (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k depending on model, Cloudflare 5000); over-long input is truncated."
             },
             "output_path": {
                 "type": "string",
