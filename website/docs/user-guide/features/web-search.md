@@ -366,6 +366,20 @@ On macOS, a Keychain-backed launcher is a good pattern: keep the key in Apple Ke
 MCP registration exposes separate tools named like `mcp_zai_web_search_webSearchPrime`; it does not transparently replace Hermes' built-in `web_search` or `web_extract` tools. For seamless replacement, add a web-provider plugin named `zai` that normalizes Z.AI Web Search / Reader responses to Hermes' web provider contracts, then configure `web.search_backend: "zai"` and `web.extract_backend: "zai"`.
 :::
 
+#### Z.AI integration options
+
+Use this decision table when choosing how to adopt Z.AI web capabilities:
+
+| Option | Best for | Seamless `web_search` / `web_extract` replacement | Hermes source changes | Operational cost | Recommendation |
+|--------|----------|---------------------------------------------------|-----------------------|------------------|----------------|
+| MCP pilot | Fast validation of Z.AI Search, Reader, and Zread quality | No — exposes additive `mcp_*` tools | None | Low | Start here to validate credentials, quota, latency, and result quality. |
+| Tavily-shaped local proxy | Older Hermes installs that do not yet have `plugins/web` support | Yes, by configuring `web.backend: "tavily"` and `TAVILY_BASE_URL` | None | Medium — local service or launchd job | Good temporary bridge; keep it local because Hermes will report the backend as Tavily. |
+| Native `plugins/web/zai` provider | Current Hermes with web-provider plugin support | Yes, via `web.search_backend: "zai"` / `web.extract_backend: "zai"` | Add a plugin, not core dispatcher edits | Low | Best durable design once the runtime has plugin support. |
+| Provider-native model search | Provider-specific search inside Codex/GLM model calls | Partial — search is hidden inside the model call, not Hermes tools | Transport/provider changes | Low to medium | Useful later for provider-native modes; not the default web-tool abstraction. |
+| Firecrawl-shaped proxy | Avoiding Hermes edits while impersonating an existing extract backend | Possibly | None | High | Avoid unless necessary; Firecrawl SDK/API shape is broader and more fragile than Tavily's simple REST shape. |
+
+A practical rollout is: MCP pilot first, Tavily-shaped proxy only if the live runtime cannot be upgraded yet, then a native `plugins/web/zai` provider for the long-lived solution. Keep Zread separate from generic `web_extract`: it is repository/documentation intelligence rather than a general page reader.
+
 ---
 
 ## Configuration
