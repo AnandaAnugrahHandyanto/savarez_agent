@@ -925,6 +925,17 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             media_urls=media_urls,
             media_types=media_types,
         )
+
+        # Fire eager typing right here in the webhook handler — before the
+        # background handle_message task spawns — so the typing bubble shows
+        # up in iMessage within ~100ms of webhook receipt instead of waiting
+        # for the agent dispatch pipeline to come online.  handle_message's
+        # own eager_typing call is idempotent and will reuse this task.
+        try:
+            await self._start_eager_typing(session_chat_id)
+        except Exception:
+            logger.debug("[bluebubbles] eager typing start failed", exc_info=True)
+
         task = asyncio.create_task(self.handle_message(event))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)

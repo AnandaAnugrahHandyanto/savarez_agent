@@ -332,6 +332,12 @@ class TelegramAdapter(BasePlatformAdapter):
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     _GENERAL_TOPIC_THREAD_ID = "1"
 
+    # Telegram's sendChatAction typing indicator expires after ~5 seconds.
+    # Match the existing _keep_typing cadence (2.0s) so the eager bubble
+    # stays alive across refreshes without flickering at expiry.  Users can
+    # still override via platforms.telegram.extra.eager_typing_interval.
+    EAGER_TYPING_DEFAULT_INTERVAL: float = 2.0
+
     # Telegram's edit_message applies MarkdownV2 formatting only on the
     # finalize=True path.  Without this flag, stream_consumer._send_or_edit
     # short-circuits when the raw text is unchanged between the last streamed

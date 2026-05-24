@@ -550,6 +550,14 @@ class DiscordAdapter(BasePlatformAdapter):
     # Auto-disconnect from voice channel after this many seconds of inactivity
     VOICE_TIMEOUT = 300
 
+    # Discord's typing indicator expires after ~10s.  send_typing already
+    # spawns a self-refreshing 8s loop internally (see send_typing below),
+    # so 8s here matches that cadence without adding API pressure.  The
+    # eager loop typically only fires send_typing once before handing off
+    # to _keep_typing because subsequent send_typing calls early-return
+    # (chat_id in self._typing_tasks).
+    EAGER_TYPING_DEFAULT_INTERVAL: float = 8.0
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
         self._client: Optional[commands.Bot] = None

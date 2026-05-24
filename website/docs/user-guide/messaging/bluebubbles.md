@@ -110,6 +110,19 @@ Love, like, dislike, laugh, emphasize, and question reactions. Requires the Blue
 ### Typing Indicators
 Shows "typing..." in the iMessage conversation while the agent is processing. Requires Private API.
 
+Enable **eager typing** to fire the bubble the instant a webhook lands — before reasoning and tool calls run — so users see immediate feedback during long thinking phases:
+
+```yaml
+platforms:
+  bluebubbles:
+    extra:
+      eager_typing: true
+      # eager_typing_interval: 8.0          # optional, defaults to 8s
+      # eager_typing_max_iterations: 12     # optional safety ceiling
+```
+
+See [Typing Indicators](./index.md#typing-indicators) for the full reference and per-platform tuning notes.
+
 ### Read Receipts
 Automatically marks messages as read after processing. Requires Private API.
 

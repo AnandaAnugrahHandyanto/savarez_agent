@@ -1323,6 +1323,15 @@ class BasePlatformAdapter(ABC):
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
+        # Eager typing tasks keyed by chat_id — see _start_eager_typing.
+        self._eager_typing_tasks: Dict[str, asyncio.Task] = {}
+
+    # Adapters with short platform-side typing expiry (Telegram/Discord ~5s)
+    # should override these in the subclass so the refresh cadence stays
+    # below the expiry window.  Per-deployment overrides go through
+    # ``platforms.<name>.extra.eager_typing_interval`` in config.yaml.
+    EAGER_TYPING_DEFAULT_INTERVAL: float = 8.0
+    EAGER_TYPING_DEFAULT_MAX_ITERATIONS: int = 12
 
     @property
     def message_len_fn(self) -> Callable[[str], int]:
@@ -2294,6 +2303,185 @@ class BasePlatformAdapter(ABC):
                     pass
             self._typing_paused.discard(chat_id)
 
+    def _eager_typing_enabled(self) -> bool:
+        """Whether eager typing is enabled for this adapter.
+
+        Disabled by default — opt in per platform via
+        ``platforms.<name>.extra.eager_typing: true`` in ``config.yaml``.
+        Adapters that do not override :py:meth:`send_typing` skip eager
+        typing entirely so Email / SMS / Webhook see no behavior change
+        regardless of the config flag.
+        """
+        if type(self).send_typing is BasePlatformAdapter.send_typing:
+            return False
+        return bool(self.config.extra.get("eager_typing", False))
+
+    def _eager_typing_interval(self) -> float:
+        override = self.config.extra.get("eager_typing_interval")
+        if override is not None:
+            try:
+                value = float(override)
+                if value > 0:
+                    return value
+            except (TypeError, ValueError):
+                pass
+        return float(self.EAGER_TYPING_DEFAULT_INTERVAL)
+
+    def _eager_typing_max_iterations(self) -> int:
+        override = self.config.extra.get("eager_typing_max_iterations")
+        if override is not None:
+            try:
+                value = int(override)
+                if value > 0:
+                    return value
+            except (TypeError, ValueError):
+                pass
+        return int(self.EAGER_TYPING_DEFAULT_MAX_ITERATIONS)
+
+    async def _start_eager_typing(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[asyncio.Task]:
+        """Fire-and-refresh a typing indicator during the pre-response phase.
+
+        Called from :py:meth:`handle_message` the moment an inbound event has
+        been parsed so the user sees a typing bubble during the agent's
+        "thinking" phase — before tool calls and reasoning emit any tokens.
+        Returns the task so callers can cancel it when response delivery
+        starts; :py:meth:`_process_message_background` cancels it before the
+        main :py:meth:`_keep_typing` loop takes over so the two never
+        double-fire.
+
+        No-ops (returning ``None``) when :py:meth:`_eager_typing_enabled`
+        returns ``False`` (default) or when no ``chat_id`` is provided.
+        """
+        if not chat_id or not self._eager_typing_enabled():
+            return None
+
+        existing = self._eager_typing_tasks.get(chat_id)
+        if existing is not None and not existing.done():
+            return existing
+        if existing is not None:
+            self._eager_typing_tasks.pop(chat_id, None)
+
+        interval = self._eager_typing_interval()
+        max_iterations = self._eager_typing_max_iterations()
+        send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
+
+        async def _loop() -> None:
+            cancelled = False
+            try:
+                for _ in range(max_iterations):
+                    if chat_id in self._typing_paused:
+                        await asyncio.sleep(interval)
+                        continue
+                    try:
+                        await asyncio.wait_for(
+                            self.send_typing(chat_id, metadata=metadata),
+                            timeout=send_typing_timeout,
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as typing_err:
+                        logger.debug(
+                            "[%s] eager send_typing error (non-fatal): %s",
+                            self.name, typing_err,
+                        )
+                    await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
+            finally:
+                # Natural exit (max_iterations reached, no canceller exists)
+                # must clear platform-side typing state so Discord's self-
+                # refreshing send_typing loop doesn't keep pinging forever
+                # and Matrix's set_typing(timeout=30000) bubble doesn't
+                # linger up to 30s — the issue #6016 class of bug.
+                # On cancel, the canceller is responsible for stop_typing
+                # (so _cancel_eager_typing's suppress_stop flag controls
+                # the handoff flicker case).
+                if not cancelled:
+                    stop_typing_fn = getattr(self, "stop_typing", None)
+                    if stop_typing_fn is not None:
+                        try:
+                            await stop_typing_fn(chat_id)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            logger.debug(
+                                "[%s] eager stop_typing error on natural exit",
+                                self.name, exc_info=True,
+                            )
+
+        task = asyncio.create_task(_loop())
+        self._eager_typing_tasks[chat_id] = task
+        return task
+
+    async def _cancel_eager_typing(
+        self,
+        chat_id: str,
+        *,
+        suppress_stop: bool = False,
+    ) -> None:
+        """Cancel and await cleanup of the eager typing task for ``chat_id``.
+
+        Safe to call from anywhere — no-ops if there is no active eager
+        task.  Bounded by a 0.5s wait so a stuck send_typing inside the
+        eager loop can't stall the caller.
+
+        ``suppress_stop`` skips the post-cancel ``stop_typing`` call.  Pass
+        ``True`` only from the handoff site in ``_process_message_background``
+        where ``_keep_typing`` is about to re-fire ``send_typing`` on the
+        same chat — calling ``stop_typing`` there would briefly clear the
+        platform-side bubble and let it flicker before the next refresh.
+        Every other cancel path (early-exit in ``handle_message``, shutdown,
+        orphaned eager fires) MUST leave ``suppress_stop=False`` so the
+        platform indicator is actually cleared.
+        """
+        if not chat_id:
+            return
+        task = self._eager_typing_tasks.pop(chat_id, None)
+        if task is None or task.done():
+            if not suppress_stop:
+                stop_typing_fn = getattr(self, "stop_typing", None)
+                if stop_typing_fn is not None:
+                    try:
+                        await stop_typing_fn(chat_id)
+                    except Exception:
+                        logger.debug(
+                            "[%s] stop_typing failed during cancel of done/missing eager task",
+                            self.name, exc_info=True,
+                        )
+            return
+        task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=0.5)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+        except Exception:
+            logger.debug(
+                "[%s] _cancel_eager_typing unexpected error",
+                self.name, exc_info=True,
+            )
+        if suppress_stop:
+            return
+        # Belt-and-suspenders: the eager loop's own finally already calls
+        # stop_typing on cancellation, but if the task was wedged past the
+        # 0.5s shield window we still want the platform indicator cleared
+        # before we hand control back to the caller.
+        stop_typing_fn = getattr(self, "stop_typing", None)
+        if stop_typing_fn is not None:
+            try:
+                await stop_typing_fn(chat_id)
+            except Exception:
+                logger.debug(
+                    "[%s] stop_typing failed during eager cancel",
+                    self.name, exc_info=True,
+                )
+
     def pause_typing_for_chat(self, chat_id: str) -> None:
         """Pause typing indicator for a chat (e.g. during approval waits).
 
@@ -2821,109 +3009,84 @@ class BasePlatformAdapter(ABC):
             return
 
         coerce_plaintext_gateway_command(event)
-        
-        session_key = build_session_key(
-            event.source,
-            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-        )
 
-        # On-entry self-heal: if the adapter still has an _active_sessions
-        # entry for this key but the owner task has already exited (done or
-        # cancelled), the lock is stale.  Clear it and fall through to
-        # normal dispatch so the user isn't trapped behind a dead guard —
-        # this is the split-brain tail described in issue #11016.
-        if session_key in self._active_sessions:
-            self._heal_stale_session_lock(session_key)
-
-        # Check if there's already an active handler for this session
-        if session_key in self._active_sessions:
-            # Certain commands must bypass the active-session guard and be
-            # dispatched directly to the gateway runner.  Without this, they
-            # are queued as pending messages and either:
-            #   - leak into the conversation as user text (/stop, /new), or
-            #   - deadlock (/approve, /deny — agent is blocked on Event.wait)
-            #
-            # Dispatch inline: call the message handler directly and send the
-            # response.  Do NOT use _process_message_background — it manages
-            # session lifecycle and its cleanup races with the running task
-            # (see PR #4926).
-            cmd = event.get_command()
-            from hermes_cli.commands import should_bypass_active_session
-
-            if should_bypass_active_session(cmd):
-                # /stop, /new, /reset must cancel the in-flight adapter task
-                # and preserve ordering of queued follow-ups.  Route those
-                # through the dedicated handoff path that serializes
-                # cancellation + runner response + pending drain.
-                if cmd in {"stop", "new", "reset"}:
-                    try:
-                        await self._dispatch_active_session_command(event, session_key, cmd)
-                    except Exception as e:
-                        logger.error(
-                            "[%s] Command '/%s' dispatch failed: %s",
-                            self.name, cmd, e, exc_info=True,
-                        )
-                    return
-
-                # Other bypass commands (/approve, /deny, /status,
-                # /background, /restart) just need direct dispatch — they
-                # don't cancel the running task.
-                logger.debug(
-                    "[%s] Command '/%s' bypassing active-session guard for %s",
-                    self.name, cmd, session_key,
+        # Eager typing: fires immediately so the user sees a typing bubble
+        # during the agent's thinking phase, before _keep_typing starts
+        # inside _process_message_background.  Ownership transfers to the
+        # background task on the spawn path (handed_off=True); the finally
+        # block cancels it for early-exit paths.
+        chat_id_for_typing = getattr(event.source, "chat_id", None)
+        eager_metadata = None
+        if chat_id_for_typing:
+            try:
+                eager_metadata = _thread_metadata_for_source(
+                    event.source, _reply_anchor_for_event(event)
                 )
-                try:
-                    _thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
-                    response = await self._message_handler(event)
-                    _text, _eph_ttl = self._unwrap_ephemeral(response)
-                    if _text:
-                        _r = await self._send_with_retry(
-                            chat_id=event.source.chat_id,
-                            content=_text,
-                            reply_to=_reply_anchor_for_event(event),
-                            metadata=_thread_meta,
-                        )
-                        if _eph_ttl > 0 and _r.success and _r.message_id:
-                            self._schedule_ephemeral_delete(
-                                chat_id=event.source.chat_id,
-                                message_id=_r.message_id,
-                                ttl_seconds=_eph_ttl,
+            except Exception:
+                eager_metadata = None
+            try:
+                await self._start_eager_typing(chat_id_for_typing, metadata=eager_metadata)
+            except Exception:
+                logger.debug(
+                    "[%s] _start_eager_typing failed; continuing without eager typing",
+                    self.name, exc_info=True,
+                )
+        handed_off_to_background = False
+
+        try:
+            session_key = build_session_key(
+                event.source,
+                group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+                thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            )
+
+            # On-entry self-heal: if the adapter still has an _active_sessions
+            # entry for this key but the owner task has already exited (done or
+            # cancelled), the lock is stale.  Clear it and fall through to
+            # normal dispatch so the user isn't trapped behind a dead guard —
+            # this is the split-brain tail described in issue #11016.
+            if session_key in self._active_sessions:
+                self._heal_stale_session_lock(session_key)
+
+            # Check if there's already an active handler for this session
+            if session_key in self._active_sessions:
+                # Certain commands must bypass the active-session guard and be
+                # dispatched directly to the gateway runner.  Without this, they
+                # are queued as pending messages and either:
+                #   - leak into the conversation as user text (/stop, /new), or
+                #   - deadlock (/approve, /deny — agent is blocked on Event.wait)
+                #
+                # Dispatch inline: call the message handler directly and send the
+                # response.  Do NOT use _process_message_background — it manages
+                # session lifecycle and its cleanup races with the running task
+                # (see PR #4926).
+                cmd = event.get_command()
+                from hermes_cli.commands import should_bypass_active_session
+
+                if should_bypass_active_session(cmd):
+                    # /stop, /new, /reset must cancel the in-flight adapter task
+                    # and preserve ordering of queued follow-ups.  Route those
+                    # through the dedicated handoff path that serializes
+                    # cancellation + runner response + pending drain.
+                    if cmd in {"stop", "new", "reset"}:
+                        try:
+                            await self._dispatch_active_session_command(event, session_key, cmd)
+                        except Exception as e:
+                            logger.error(
+                                "[%s] Command '/%s' dispatch failed: %s",
+                                self.name, cmd, e, exc_info=True,
                             )
-                except Exception as e:
-                    logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
-                return
+                        return
 
-            # Clarify text-capture bypass: if the agent is blocked on a
-            # clarify_tool call awaiting a free-form text response (open-
-            # ended clarify, or user picked "Other"), the next non-command
-            # message in this session MUST reach the runner so the
-            # clarify-intercept can resolve it and unblock the agent.
-            #
-            # Without this bypass: the message gets queued in
-            # _pending_messages AND triggers an interrupt, killing the
-            # agent run mid-clarify and discarding the user's answer.
-            # Same shape as the /approve deadlock fix (PR #4926) — both
-            # cases are "agent thread blocked on Event.wait, message must
-            # reach the resolver before being treated as a new turn."
-            if not cmd:
-                try:
-                    from tools import clarify_gateway as _clarify_mod
-                    _has_text_clarify = (
-                        _clarify_mod.get_pending_for_session(session_key) is not None
-                    )
-                except Exception:
-                    _has_text_clarify = False
-
-                if _has_text_clarify:
+                    # Other bypass commands (/approve, /deny, /status,
+                    # /background, /restart) just need direct dispatch — they
+                    # don't cancel the running task.
                     logger.debug(
-                        "[%s] Routing message to clarify text-intercept for %s",
-                        self.name, session_key,
+                        "[%s] Command '/%s' bypassing active-session guard for %s",
+                        self.name, cmd, session_key,
                     )
                     try:
-                        _thread_meta = _thread_metadata_for_source(
-                            event.source, _reply_anchor_for_event(event)
-                        )
+                        _thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
                         response = await self._message_handler(event)
                         _text, _eph_ttl = self._unwrap_ephemeral(response)
                         if _text:
@@ -2940,59 +3103,120 @@ class BasePlatformAdapter(ABC):
                                     ttl_seconds=_eph_ttl,
                                 )
                     except Exception as e:
-                        logger.error(
-                            "[%s] Clarify text-intercept dispatch failed: %s",
-                            self.name, e, exc_info=True,
-                        )
+                        logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
                     return
 
-            if self._busy_session_handler is not None:
-                try:
-                    if await self._busy_session_handler(event, session_key):
+                # Clarify text-capture bypass: if the agent is blocked on a
+                # clarify_tool call awaiting a free-form text response (open-
+                # ended clarify, or user picked "Other"), the next non-command
+                # message in this session MUST reach the runner so the
+                # clarify-intercept can resolve it and unblock the agent.
+                #
+                # Without this bypass: the message gets queued in
+                # _pending_messages AND triggers an interrupt, killing the
+                # agent run mid-clarify and discarding the user's answer.
+                # Same shape as the /approve deadlock fix (PR #4926) — both
+                # cases are "agent thread blocked on Event.wait, message must
+                # reach the resolver before being treated as a new turn."
+                if not cmd:
+                    try:
+                        from tools import clarify_gateway as _clarify_mod
+                        _has_text_clarify = (
+                            _clarify_mod.get_pending_for_session(session_key) is not None
+                        )
+                    except Exception:
+                        _has_text_clarify = False
+
+                    if _has_text_clarify:
+                        logger.debug(
+                            "[%s] Routing message to clarify text-intercept for %s",
+                            self.name, session_key,
+                        )
+                        try:
+                            _thread_meta = _thread_metadata_for_source(
+                                event.source, _reply_anchor_for_event(event)
+                            )
+                            response = await self._message_handler(event)
+                            _text, _eph_ttl = self._unwrap_ephemeral(response)
+                            if _text:
+                                _r = await self._send_with_retry(
+                                    chat_id=event.source.chat_id,
+                                    content=_text,
+                                    reply_to=_reply_anchor_for_event(event),
+                                    metadata=_thread_meta,
+                                )
+                                if _eph_ttl > 0 and _r.success and _r.message_id:
+                                    self._schedule_ephemeral_delete(
+                                        chat_id=event.source.chat_id,
+                                        message_id=_r.message_id,
+                                        ttl_seconds=_eph_ttl,
+                                    )
+                        except Exception as e:
+                            logger.error(
+                                "[%s] Clarify text-intercept dispatch failed: %s",
+                                self.name, e, exc_info=True,
+                            )
                         return
-                except Exception as e:
-                    logger.error("[%s] Busy-session handler failed: %s", self.name, e, exc_info=True)
 
-            # Special case: photo bursts/albums frequently arrive as multiple near-
-            # simultaneous messages. Queue them without interrupting the active run,
-            # then process them immediately after the current task finishes.
-            if event.message_type == MessageType.PHOTO:
-                logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
-                merge_pending_message_event(self._pending_messages, session_key, event)
-                return  # Don't interrupt now - will run after current task completes
+                if self._busy_session_handler is not None:
+                    try:
+                        if await self._busy_session_handler(event, session_key):
+                            return
+                    except Exception as e:
+                        logger.error("[%s] Busy-session handler failed: %s", self.name, e, exc_info=True)
 
-            # Default behavior for non-photo follow-ups: interrupt the running agent.
-            #
-            # Use merge_text=True so rapid TEXT follow-ups (#4469) accumulate
-            # into the single pending slot instead of clobbering each other.
-            # Without merging, three rapid messages "A", "B", "C" land like:
-            #   _pending_messages[k] = A  (interrupts)
-            #   _pending_messages[k] = B  (replaces A before consumer reads)
-            #   _pending_messages[k] = C  (replaces B)
-            # ...and only "C" reaches the next turn.  merge_pending_message_event
-            # already does the right thing for photo/media bursts; the
-            # ``merge_text=True`` flag extends that to plain TEXT events.
-            # Same shape as the Telegram bursty-grace path in gateway/run.py.
-            logger.debug("[%s] New message while session %s is active — triggering interrupt", self.name, session_key)
-            merge_pending_message_event(
-                self._pending_messages,
-                session_key,
-                event,
-                merge_text=True,
-            )
-            # Signal the interrupt (the processing task checks this)
-            self._active_sessions[session_key].set()
-            return  # Don't process now - will be handled after current task finishes
-        
-        # Mark session as active BEFORE spawning background task to close
-        # the race window where a second message arriving before the task
-        # starts would also pass the _active_sessions check and spawn a
-        # duplicate task.  (grammY sequentialize / aiogram EventIsolation
-        # pattern — set the guard synchronously, not inside the task.)
-        # _start_session_processing installs the guard AND the owner-task
-        # mapping atomically so stale-lock detection works.
-        self._start_session_processing(event, session_key)
-    
+                # Special case: photo bursts/albums frequently arrive as multiple near-
+                # simultaneous messages. Queue them without interrupting the active run,
+                # then process them immediately after the current task finishes.
+                if event.message_type == MessageType.PHOTO:
+                    logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
+                    merge_pending_message_event(self._pending_messages, session_key, event)
+                    return  # Don't interrupt now - will run after current task completes
+
+                # Default behavior for non-photo follow-ups: interrupt the running agent.
+                #
+                # Use merge_text=True so rapid TEXT follow-ups (#4469) accumulate
+                # into the single pending slot instead of clobbering each other.
+                # Without merging, three rapid messages "A", "B", "C" land like:
+                #   _pending_messages[k] = A  (interrupts)
+                #   _pending_messages[k] = B  (replaces A before consumer reads)
+                #   _pending_messages[k] = C  (replaces B)
+                # ...and only "C" reaches the next turn.  merge_pending_message_event
+                # already does the right thing for photo/media bursts; the
+                # ``merge_text=True`` flag extends that to plain TEXT events.
+                # Same shape as the Telegram bursty-grace path in gateway/run.py.
+                logger.debug("[%s] New message while session %s is active — triggering interrupt", self.name, session_key)
+                merge_pending_message_event(
+                    self._pending_messages,
+                    session_key,
+                    event,
+                    merge_text=True,
+                )
+                # Signal the interrupt (the processing task checks this)
+                self._active_sessions[session_key].set()
+                return  # Don't process now - will be handled after current task finishes
+
+            # Mark session as active BEFORE spawning background task to close
+            # the race window where a second message arriving before the task
+            # starts would also pass the _active_sessions check and spawn a
+            # duplicate task.  (grammY sequentialize / aiogram EventIsolation
+            # pattern — set the guard synchronously, not inside the task.)
+            # _start_session_processing installs the guard AND the owner-task
+            # mapping atomically so stale-lock detection works.
+            if self._start_session_processing(event, session_key):
+                # Background task owns the eager typing task now.  It will
+                # cancel it before starting the main _keep_typing loop.
+                handed_off_to_background = True
+        finally:
+            if not handed_off_to_background and chat_id_for_typing:
+                try:
+                    await self._cancel_eager_typing(chat_id_for_typing)
+                except Exception:
+                    logger.debug(
+                        "[%s] _cancel_eager_typing failed during handle_message unwind",
+                        self.name, exc_info=True,
+                    )
+
     @staticmethod
     def _get_human_delay() -> float:
         """
@@ -3039,7 +3263,26 @@ class BasePlatformAdapter(ABC):
         # Fall back to a new Event only if the entry was removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
-        
+
+        # Cancel eager typing started by handle_message() before _keep_typing
+        # takes over the refresh.  Without this the two tasks would race on
+        # send_typing for the same chat_id.  suppress_stop=True is critical
+        # here: _keep_typing is about to re-fire send_typing on the next tick,
+        # and a stop_typing call between cancel and re-fire causes a visible
+        # bubble flicker on platforms with persistent typing state (Discord,
+        # Matrix).  Every other _cancel_eager_typing call must keep the
+        # default so orphaned eager fires don't leak stale typing indicators.
+        try:
+            await self._cancel_eager_typing(
+                event.source.chat_id,
+                suppress_stop=True,
+            )
+        except Exception:
+            logger.debug(
+                "[%s] _cancel_eager_typing failed at background-task entry",
+                self.name, exc_info=True,
+            )
+
         # Start continuous typing indicator (refreshes every 2 seconds)
         _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
         _keep_typing_kwargs = {"metadata": _thread_metadata}
@@ -3545,6 +3788,25 @@ class BasePlatformAdapter(ABC):
         self._session_tasks.clear()
         self._pending_messages.clear()
         self._active_sessions.clear()
+        # The eager loop no longer self-stops on cancel (so suppress_stop=True
+        # at the handoff site works), which means shutdown must call
+        # stop_typing explicitly to clear any persistent platform-side bubbles
+        # owned by Matrix / Discord internal refresh loops.
+        eager_chat_ids = list(self._eager_typing_tasks.keys())
+        for chat_id, eager_task in list(self._eager_typing_tasks.items()):
+            if eager_task is not None and not eager_task.done():
+                eager_task.cancel()
+        self._eager_typing_tasks.clear()
+        stop_typing_fn = getattr(self, "stop_typing", None)
+        if stop_typing_fn is not None:
+            for chat_id in eager_chat_ids:
+                try:
+                    await stop_typing_fn(chat_id)
+                except Exception:
+                    logger.debug(
+                        "[%s] stop_typing failed during shutdown drain for %s",
+                        self.name, chat_id, exc_info=True,
+                    )
 
     def has_pending_interrupt(self, session_key: str) -> bool:
         """Check if there's a pending interrupt for a session."""

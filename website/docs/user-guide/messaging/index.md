@@ -294,6 +294,38 @@ When enabled, the bot sends status messages as it works:
 🐍 execute_code...
 ```
 
+## Typing Indicators
+
+On platforms that support a typing indicator (see the **Typing** column in the [Platform Comparison](#platform-comparison)), Hermes already shows "typing…" while it's sending or streaming a response. The agent's "thinking" phase — reasoning, tool calls, model latency — happens *before* any tokens are produced, so on slow turns (10–30 seconds of tool work or long reasoning) the platform can briefly look idle.
+
+Set `eager_typing: true` on a platform's `extra` block to fire the typing indicator the moment the inbound webhook lands, before the agent dispatch pipeline runs. The eager loop hands off to the existing typing refresh once response delivery starts, so the bubble stays visible through the whole turn.
+
+```yaml
+platforms:
+  bluebubbles:
+    enabled: true
+    extra:
+      eager_typing: true              # default: false
+      # eager_typing_interval: 8.0    # optional — defaults to the per-adapter value
+      # eager_typing_max_iterations: 12  # safety ceiling, ~interval * iterations
+  telegram:
+    enabled: true
+    extra:
+      eager_typing: true              # default interval already 2.0s for Telegram
+```
+
+**Per-platform tuning:**
+
+- **BlueBubbles (iMessage)**: default 8 s interval. Needs Private API + helper connected. When the helper is offline, eager typing silently no-ops — there is no degraded mode. BlueBubbles' webhook entrypoint also fires eager typing *before* the agent dispatch task spawns, shaving ~tens of ms off perceived latency.
+- **Telegram**: per-adapter default of **2.0 s** (Telegram's `sendChatAction` expires at ~5 s). No tuning needed — just set `eager_typing: true`.
+- **Discord**: per-adapter default of **8.0 s** matching Discord's internal self-refreshing typing loop. The eager loop typically fires `send_typing` once and then defers to that internal refresh.
+- **Slack / Signal / WhatsApp / Matrix / Feishu / WeCom / Weixin**: support typing indicators with normal one-shot semantics — the default 8 s interval is conservative and works without tuning, but match the platform's expiry window if you observe the bubble flickering.
+- **Email / SMS / Webhook / Mattermost / DingTalk / Home Assistant / MS Graph / QQ / Yuanbao**: either have no typing API or implement `send_typing` as an explicit no-op. Eager typing has no observable effect on these adapters regardless of the config flag — adapters that don't override `send_typing` at all (SMS, Webhook, MS Graph, QQ, API server) are auto-skipped at the gate.
+
+The eager loop always calls `stop_typing` on cancel (whether through the normal handoff to `_keep_typing`, an early-exit path in `handle_message`, or gateway shutdown) so platforms with persistent typing state — Matrix's 30 s `set_typing(timeout)`, Discord's self-refreshing internal loop — don't leak a lingering bubble. There is no observable "typing forever" failure mode if the agent crashes after the eager loop started.
+
+**Defaults**: `eager_typing` defaults to `false` so deployments that don't opt in see no behavioral change. The maximum loop runtime is `eager_typing_interval × eager_typing_max_iterations` (defaults: 96 s) — even if the response handler crashes, the eager loop stops itself.
+
 ## Background Sessions
 
 Run a prompt in a separate background session so the agent works on it independently while your main chat stays responsive:
