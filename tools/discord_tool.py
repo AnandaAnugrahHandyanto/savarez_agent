@@ -28,6 +28,7 @@ actionable guidance the model can relay to the user.
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -291,6 +292,63 @@ def _channel_info(token: str, channel_id: str, **_kwargs: Any) -> str:
     })
 
 
+def _create_channel(
+    token: str,
+    guild_id: str,
+    name: str,
+    channel_type: str = "text",
+    topic: Optional[str] = None,
+    parent_id: Optional[str] = None,
+    **_kwargs: Any,
+) -> str:
+    """Create a channel in a guild."""
+    type_map = {
+        "text": 0,
+        "voice": 2,
+        "category": 4,
+        "announcement": 5,
+        "forum": 15,
+        "media": 16,
+    }
+    normalized_type = (channel_type or "text").strip().lower()
+    if normalized_type not in type_map:
+        return json.dumps({
+            "error": (
+                f"Unsupported channel_type: {channel_type!r}. "
+                f"Allowed: {', '.join(type_map.keys())}"
+            ),
+        })
+
+    normalized_name = (name or "").strip().lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,98}", normalized_name):
+        return json.dumps({
+            "error": (
+                "Invalid channel name. Use 1-99 lowercase letters, numbers, "
+                "hyphens, or underscores, starting with a letter or number."
+            ),
+        })
+
+    body: Dict[str, Any] = {
+        "name": normalized_name,
+        "type": type_map[normalized_type],
+    }
+    if topic and normalized_type in {"text", "announcement", "forum", "media"}:
+        body["topic"] = topic
+    if parent_id and normalized_type != "category":
+        body["parent_id"] = parent_id
+
+    channel = _discord_request("POST", f"/guilds/{guild_id}/channels", token, body=body)
+    return json.dumps({
+        "success": True,
+        "channel_id": channel["id"],
+        "name": channel.get("name"),
+        "type": _channel_type_name(channel.get("type", body["type"])),
+        "guild_id": channel.get("guild_id"),
+        "parent_id": channel.get("parent_id"),
+        "topic": channel.get("topic"),
+    })
+
+
 def _list_roles(token: str, guild_id: str, **_kwargs: Any) -> str:
     """List all roles in a guild."""
     roles = _discord_request("GET", f"/guilds/{guild_id}/roles", token)
@@ -475,6 +533,7 @@ _ACTIONS = {
     "server_info": _server_info,
     "list_channels": _list_channels,
     "channel_info": _channel_info,
+    "create_channel": _create_channel,
     "list_roles": _list_roles,
     "member_info": _member_info,
     "search_members": _search_members,
@@ -502,6 +561,7 @@ _ACTION_MANIFEST: List[Tuple[str, str, str]] = [
     ("server_info", "(guild_id)", "server details + member counts"),
     ("list_channels", "(guild_id)", "all channels grouped by category"),
     ("channel_info", "(channel_id)", "single channel details"),
+    ("create_channel", "(guild_id, name)", "create a channel; optional channel_type, topic, parent_id"),
     ("list_roles", "(guild_id)", "roles sorted by position"),
     ("member_info", "(guild_id, user_id)", "lookup a specific member"),
     ("search_members", "(guild_id, query)", "find members by name prefix"),
@@ -522,6 +582,7 @@ _INTENT_GATED_MEMBERS = frozenset({"member_info", "search_members"})
 _REQUIRED_PARAMS: Dict[str, List[str]] = {
     "server_info": ["guild_id"],
     "list_channels": ["guild_id"],
+    "create_channel": ["guild_id", "name"],
     "list_roles": ["guild_id"],
     "member_info": ["guild_id", "user_id"],
     "search_members": ["guild_id", "query"],
@@ -691,7 +752,20 @@ def _build_schema(
         },
         "name": {
             "type": "string",
-            "description": "New thread name (create_thread).",
+            "description": "New thread name (create_thread) or channel name (create_channel).",
+        },
+        "channel_type": {
+            "type": "string",
+            "enum": ["text", "voice", "category", "announcement", "forum", "media"],
+            "description": "Channel type for create_channel (default text).",
+        },
+        "topic": {
+            "type": "string",
+            "description": "Channel topic for create_channel.",
+        },
+        "parent_id": {
+            "type": "string",
+            "description": "Category parent ID for create_channel.",
         },
         "limit": {
             "type": "integer",
@@ -773,6 +847,10 @@ _ACTION_403_HINT = {
     "create_thread": (
         "Bot lacks CREATE_PUBLIC_THREADS in this channel, or cannot view it."
     ),
+    "create_channel": (
+        "Bot lacks MANAGE_CHANNELS in this server, or the bot role does not have "
+        "access to create channels in the target category."
+    ),
     "add_role": (
         "Either the bot lacks MANAGE_ROLES, or the target role sits higher "
         "than the bot's highest role. Roles can only be assigned below the "
@@ -835,6 +913,9 @@ def _run_discord_action(
     message_id: str = "",
     query: str = "",
     name: str = "",
+    channel_type: str = "text",
+    topic: str = "",
+    parent_id: str = "",
     limit: int = 50,
     before: str = "",
     after: str = "",
@@ -872,6 +953,9 @@ def _run_discord_action(
         "message_id": message_id,
         "query": query,
         "name": name,
+        "channel_type": channel_type,
+        "topic": topic,
+        "parent_id": parent_id,
     }
 
     missing = [p for p in _REQUIRED_PARAMS.get(action, []) if not local_vars.get(p)]
@@ -890,6 +974,9 @@ def _run_discord_action(
             message_id=message_id,
             query=query,
             name=name,
+            channel_type=channel_type,
+            topic=topic or None,
+            parent_id=parent_id or None,
             limit=limit,
             before=before,
             after=after,
@@ -922,6 +1009,7 @@ def discord_admin_handler(action: str, **kwargs) -> str:
 _HANDLER_DEFAULTS = {
     "action": "", "guild_id": "", "channel_id": "", "user_id": "",
     "role_id": "", "message_id": "", "query": "", "name": "",
+    "channel_type": "text", "topic": "", "parent_id": "",
     "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440,
 }
 
