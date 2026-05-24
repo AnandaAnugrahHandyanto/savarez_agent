@@ -6636,3 +6636,144 @@ No issues found.
 | Feishu dedup 24h TTL | Delayed duplicates possible on extended retries | LOW |
 
 **6 GOOD areas, 4 MEDIUM gaps, 4 LOW issues. No CRITICAL.**
+
+
+## Pass #62 – Memory Provider, Curation & Context Management Deep Dive – 2026-05-24
+
+---
+
+### 1. Memory Provider Implementation
+
+**Core abstraction**: agent/memory_provider.py — MemoryProvider ABC.
+
+Required interface:
+- name (property), is_available(), initialize(session_id, **kwargs)
+- system_prompt_block() — static provider info for system prompt
+- prefetch(query, session_id) — synchronous recall, returns context text
+- queue_prefetch(query, session_id) — async background prefetch for next turn
+- sync_turn(user_content, assistant_content, session_id) — async write after each turn
+- get_tool_schemas(), handle_tool_call(), shutdown()
+
+Optional hooks: on_turn_start(), on_session_end(), on_session_switch(), on_pre_compress(), on_memory_write(), on_delegation().
+
+**MemoryManager** (agent/memory_manager.py) is the single orchestrator for all providers:
+- Maintains ordered _providers list (builtin first, one external allowed)
+- Rejects a second external provider with a warning (prevents tool-schema bloat/conflicting backends)
+- build_system_prompt() — concatenates all system_prompt_block() results
+- prefetch_all() — calls prefetch() on all providers, joins results with double-newlines
+- queue_prefetch_all() — fires background prefetch on all providers
+- sync_all() — fires sync_turn() on all providers after each turn
+- on_turn_start(), on_session_switch(), on_pre_compress(), on_memory_write() — fan out to all providers
+
+**Plugin providers** live in plugins/memory/<name>/:
+- mem0 — server-side extraction, semantic search with reranking, user_id/agent_id scoping. Circuit breaker: 5 consecutive failures -> 120s cooldown.
+- honcho — dialectic Q&A, peer cards, conclusions. Complex B1/B5 cost-awareness: recall_mode (context/tools/hybrid), injection_frequency (every-turn/first-turn), context_cadence, dialectic_cadence, dialectic_depth (1-3 passes). Stale thread/result detection. Truncates to context_tokens budget.
+- hindsight, openviking, byterover, supermemory, retaindb, holographic — all implement MemoryProvider
+
+**Built-in memory**: separate from external providers. agent._memory_store with MEMORY.md and USER.md files, loaded into system prompt via format_for_system_prompt() in volatile tier.
+
+**No priority/importance ranking in MemoryProvider ABC or MemoryManager.** All providers return their full prefetch result; ranking is delegated to the external backend (mem0 reranking, Honcho semantic search).
+
+**No stale-data handling in MemoryProvider base.** Honcho has explicit stale-thread detection (age > timeout x 2.0 multiplier -> dead) and stale-result discarding (pending result older than dialectic_cadence x 2 turns -> discarded).
+
+---
+
+### 2. Context Window Management
+
+**Size determination**: agent/context_compressor.py — ContextCompressor:
+- context_length set from model metadata (get_model_context_length())
+- threshold_tokens = max(int(context_length x threshold_percent), MINIMUM_CONTEXT_LENGTH) where threshold_percent = 0.75
+- summary_target_ratio = 0.20 -> summary budget = threshold_tokens x 0.20
+- Minimum summary tokens: 2000, ceiling: 12000
+
+**Overflow detection**: should_compress(prompt_tokens) — true when prompt_tokens >= threshold_tokens. Anti-thrashing: if last 2 compressions saved <10% each, skip compression to avoid infinite loops.
+
+**Trimming/summarization strategy** (in compress()):
+1. _strip_historical_media() — replace image parts in messages before the newest image-bearing user message with placeholders
+2. _prune_old_tool_results() — replace old tool results with 1-line summaries (deduplicates identical reads, truncates large tool_call args)
+3. Protect head (first 3 non-system messages by default) and tail (last 6 messages by default)
+4. Middle section sent to auxiliary LLM for summarization with structured template (SUMMARY_PREFIX preamble + message history)
+5. Summary + tail appended after last protected head message
+
+**Built-in memory not compressed** — on_pre_compress() hook lets providers extract insights before compression discards messages.
+
+---
+
+### 3. Memory Eviction Policy
+
+**No global LRU or time-based expiration in MemoryManager or MemoryProvider ABC.** Eviction is entirely delegated to external provider backends:
+- mem0: managed by Mem0 Platform API (server-side)
+- Honcho: managed by Honcho backend
+- Built-in MEMORY.md/USER.md: no eviction, files persist until user edits
+
+**Stale data handling** (Honcho-specific):
+- _STALE_THREAD_MULTIPLIER = 2.0 — threads older than timeout x 2.0 treated as dead
+- _STALE_RESULT_MULTIPLIER = 2 — pending results older than dialectic_cadence x 2 turns discarded
+- _BACKOFF_MAX = 8 — cap on empty-streak backoff for cadence widening
+
+**Context compression** is the closest thing to eviction: middle messages summarized and replaced with a summary. protect_first_n=3, protect_last_n=6 by default. Anti-thrashing prevents infinite compression loops.
+
+**No importance-based retention** in the core compressor. All middle messages are treated equally for summarization.
+
+---
+
+### 4. Context Injection Order
+
+**System prompt assembly** (agent/system_prompt.py):
+1. stable tier first — SOUL.md/DEFAULT_AGENT_IDENTITY, tool guidance, Nous subscription, computer-use guidance, tool-use enforcement, skills prompt, environment hints, platform hints, model operational guidance
+2. context tier — caller-supplied system_message + context files (AGENTS.md, .cursorrules, etc.) under TERMINAL_CWD
+3. volatile tier — memory store block (MEMORY.md), USER.md block, external memory provider block (_memory_manager.build_system_prompt()), timestamp/session/model/provider line
+
+**Memory context injection** (agent/conversation_loop.py, lines ~610-628, ~799-808):
+- Prefetch happens ONCE before the tool loop (_ext_prefetch_cache = agent._memory_manager.prefetch_all(_query))
+- Cached result reused on every iteration (no re-call on each tool call)
+- Current turn user message: injected as <memory-context>...[/memory-context] block, appended after user's text content
+- Wrapped via build_memory_context_block() which adds fence tags + system note: [System note: The following is recalled memory context, NOT new user input. Treat as authoritative reference data]
+- StreamingContextScrubber handles chunk-boundary split fence tags
+- sanitize_context() strips fence tags and internal context blocks from streaming output
+
+**Injection order in API call**:
+1. System prompt (stable cached string)
+2. Optional ephemeral_system_prompt (API-call-time only, not persisted)
+3. Optional prefill messages
+4. Conversation history (user message with injected memory context at current turn index)
+5. Anthropic prompt caching markers if enabled
+
+**No priority boosting** — all provider prefetch results concatenated equally. Honcho orders: Session Summary -> User Representation -> User Peer Card -> AI Self-Representation -> AI Identity Card.
+
+---
+
+### 5. Multi-Session Memory Isolation
+
+**Session scoping via session_id** passed to all provider methods:
+- initialize(session_id, **kwargs), prefetch(), queue_prefetch(), sync_turn(), on_session_switch() — all carry session_id
+- on_session_switch(new_session_id, parent_session_id, reset) — hook for mid-process session rotation
+
+**Honcho session resolution**:
+- session_key = cfg.resolve_session_name(session_title, session_id, gateway_session_key) or session_id or hermes-default
+- Per-session strategy creates a fresh session per run; memory file migration skipped for per-session strategy
+- Lazy init support for tools-only mode (_ensure_session())
+
+**MemoryManager enforcement**:
+- Only ONE external provider at a time
+- Tool name conflict detection — duplicates logged and ignored
+- on_session_switch() fan-out ensures all providers update per-session state
+
+**Potential cross-session issues**:
+- Honcho session_strategy config: per-session vs workspace-level. Default not confirmed in code.
+- mem0 user_id scoping: if multiple gateway sessions share same user_id, memories are mixed
+- Built-in MEMORY.md/USER.md are file-based, not session-scoped — same files across all sessions unless profile-scoped via HERMES_HOME
+- skip_memory on subagents prevents memory observation, but parent on_delegation() hook notifies providers of subagent completion with child_session_id
+
+---
+
+### Key Files
+
+- agent/memory_provider.py — MemoryProvider ABC (279 lines)
+- agent/memory_manager.py — MemoryManager orchestration (609 lines)
+- agent/conversation_loop.py — prefetch injection at lines ~610-628 and ~799-808
+- agent/context_compressor.py — ContextCompressor compression engine (1749 lines)
+- agent/system_prompt.py — system prompt tier assembly (380 lines)
+- agent/context_engine.py — ContextEngine ABC (212 lines)
+- plugins/memory/mem0/__init__.py — Mem0 provider (373 lines)
+- plugins/memory/honcho/__init__.py — Honcho provider (1328 lines)
