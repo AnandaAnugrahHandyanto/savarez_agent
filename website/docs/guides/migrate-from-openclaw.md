@@ -49,7 +49,8 @@ Reads from `~/.openclaw/` by default. Legacy `~/.clawdbot/` or `~/.moltbot/` dir
 | Workspace instructions | `workspace/AGENTS.md` | `AGENTS.md` in `--workspace-target` | Requires `--workspace-target` flag |
 | Long-term memory | `workspace/MEMORY.md` | `~/.hermes/memories/MEMORY.md` | Parsed into entries, merged with existing, deduped. Uses `§` delimiter. |
 | User profile | `workspace/USER.md` | `~/.hermes/memories/USER.md` | Same entry-merge logic as memory. |
-| Daily memory files | `workspace/memory/*.md` | `~/.hermes/memories/MEMORY.md` | All daily files merged into main memory. |
+| Daily memory files | `workspace/memory/*.md` | `~/.hermes/memories/MEMORY.md` | **Flattened into main memory — per-day structure is not preserved.** All entries from all daily files are parsed and merged into `MEMORY.md`. If you want to keep the day-by-day structure, copy the daily files manually to `~/.hermes/memories/daily/` before migrating. |
+| Session transcripts | `agents/*/sessions/`, `archive/sessions/` | *(not migrated)* | Past conversation transcripts are not imported. Hermes session search (`/recall`) only covers sessions run inside Hermes. OpenClaw sessions remain in `~/.openclaw/` and can be browsed directly if needed. |
 
 Workspace files are also checked at `workspace.default/` and `workspace-main/` as fallback paths (OpenClaw renamed `workspace/` to `workspace-main/` in recent versions, and uses `workspace-{agentId}` for multi-agent setups).
 
@@ -171,7 +172,7 @@ These are saved to `~/.hermes/migration/openclaw/<timestamp>/archive/` for manua
 | Cron jobs | `archive/cron-config.json` | Recreate with `hermes cron create` |
 | Plugins | `archive/plugins-config.json` | See [plugins guide](/docs/user-guide/features/hooks) |
 | Hooks/webhooks | `archive/hooks-config.json` | Use `hermes webhook` or gateway hooks |
-| Memory backend | `archive/memory-backend-config.json` | Configure via `hermes honcho` |
+| Memory backend | `archive/memory-backend-config.json` | Configure via `hermes honcho`. Hermes supports one external memory provider at a time (e.g. Honcho, Mem0, or a custom daily-file plugin) alongside the built-in `MEMORY.md` store — they are mutually exclusive. See [Memory providers](#memory-providers) below. |
 | Skills registry | `archive/skills-registry-config.json` | Use `hermes skills config` |
 | UI/identity | `archive/ui-identity-config.json` | Use `/skin` command |
 | Logging | `archive/logging-diagnostics-config.json` | Set in `config.yaml` logging section |
@@ -212,6 +213,41 @@ OpenClaw config values for tokens and API keys can be in three formats:
 ```
 
 The migration resolves all three formats. For env templates and SecretRef objects with `source: "env"`, it looks up the value in `~/.openclaw/.env` and the `openclaw.json` env sub-object. SecretRef objects with `source: "file"` or `source: "exec"` can't be resolved automatically — the migration warns about these, and those values must be added to Hermes manually via `hermes config set`.
+
+## Memory providers
+
+Hermes has a two-layer memory system:
+
+- **Built-in store** (always active) — `~/.hermes/memories/MEMORY.md` and `USER.md`, managed via the `memory_*` tools and injected into every session.
+- **External provider** (optional, one at a time) — Honcho, Mem0, Supermemory, or a custom plugin. Configured via `memory.provider` in `config.yaml`.
+
+**Only one external provider can be active at a time.** A second plugin registration is silently rejected with a warning in `agent.log`. If you previously ran OpenClaw with Honcho (or another backend), choose which provider you want in Hermes and configure it explicitly — they don't stack.
+
+### If you were using Honcho in OpenClaw
+
+```bash
+# Install and configure the Honcho plugin
+hermes honcho
+
+# Or set manually in config.yaml:
+# memory:
+#   provider: honcho
+```
+
+### If you want to use Hermes's built-in memory only
+
+No action needed — `MEMORY.md`/`USER.md` are always active. Honcho or other plugins are opt-in.
+
+### Daily memory files
+
+OpenClaw's daily `memory/YYYY-MM-DD.md` files are **flattened** into `MEMORY.md` during migration — the per-day structure is lost. If you want to preserve the daily granularity (e.g. for time-bounded recall), copy the files manually before running the migration:
+
+```bash
+mkdir -p ~/.hermes/memories/daily
+cp ~/.openclaw/workspace/memory/daily/*.md ~/.hermes/memories/daily/
+```
+
+A future Hermes memory plugin may support per-day files natively, but that's not part of the current built-in or Honcho flows.
 
 ## After migration
 
