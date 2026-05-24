@@ -147,6 +147,47 @@ class TestToolProgressScrollback:
         cli._on_tool_progress("tool.started", "terminal", "git status", {"command": "git status"})
         assert "git status" in cli._spinner_text
 
+    def test_subagent_start_prints_route_notice(self):
+        """Classic CLI surfaces delegated child route metadata immediately."""
+        cli = _make_cli(tool_progress="all")
+
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress(
+                "subagent.start",
+                preview="inspect repo",
+                goal="inspect repo",
+                model="deepseek-v4-pro",
+                provider="deepseek",
+                reasoning_effort="low",
+                role="leaf",
+                route_reason="delegation provider override",
+            )
+
+        mock_print.assert_called_once()
+        line = mock_print.call_args[0][0]
+        assert "inspect repo" in line
+        assert "delegated · leaf" in line
+        assert "deepseek/deepseek-v4-pro" in line
+        assert "effort low" in line
+        assert "reason delegation provider override" in line
+        assert "delegated · leaf" in cli._spinner_text
+
+    def test_subagent_start_respects_tool_progress_off(self):
+        """Route notices stay quiet when the user disables tool progress."""
+        cli = _make_cli(tool_progress="off")
+
+        with patch.object(_cli_mod, "_cprint") as mock_print:
+            cli._on_tool_progress(
+                "subagent.start",
+                preview="inspect repo",
+                model="deepseek-v4-pro",
+                provider="deepseek",
+                reasoning_effort="low",
+                role="leaf",
+            )
+
+        mock_print.assert_not_called()
+
     def test_spinner_timer_clears_on_completed(self):
         """tool.completed still clears the tool timer."""
         cli = _make_cli(tool_progress="all")

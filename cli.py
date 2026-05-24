@@ -10243,6 +10243,36 @@ class HermesCLI:
         stacked line to scrollback on tool.completed so users can see the
         full history of tool calls (not just the current one in the spinner).
         """
+        if event_type == "subagent.start":
+            # delegate_task emits child lifecycle events through the same
+            # progress callback as ordinary tools.  Classic CLI sessions do
+            # not go through the TUI gateway's subagent event renderer, and
+            # quiet/spinner display can be disabled by config; print a durable
+            # scrollback route notice here so routing is visible in the exact
+            # terminal surface the user is looking at.
+            if self.tool_progress_mode != "off":
+                try:
+                    from tools.delegate_tool import _delegated_route_notice
+
+                    route_notice = _delegated_route_notice(
+                        provider=kwargs.get("provider"),
+                        model=kwargs.get("model"),
+                        reasoning_effort=kwargs.get("reasoning_effort"),
+                        role=kwargs.get("role"),
+                        route_reason=kwargs.get("route_reason"),
+                    )
+                    goal_label = str(kwargs.get("goal") or preview or "").strip()
+                    if goal_label:
+                        short = (goal_label[:72] + "...") if len(goal_label) > 75 else goal_label
+                        _cprint(f"  🔀 {short} · {route_notice}")
+                    else:
+                        _cprint(f"  🔀 {route_notice}")
+                    self._spinner_text = f"🔀 {route_notice}"
+                except Exception:
+                    pass
+            self._invalidate()
+            return
+
         if event_type == "tool.completed":
             self._tool_start_time = 0.0
             # Print stacked scrollback line for "all" / "new" modes
