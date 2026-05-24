@@ -6600,6 +6600,9 @@ class GatewayRunner:
         if canonical == "compress":
             return await self._handle_compress_command(event)
 
+        if canonical == "recall":
+            return await self._handle_recall_command(event)
+
         if canonical == "usage":
             return await self._handle_usage_command(event)
 
@@ -8388,6 +8391,20 @@ class GatewayRunner:
             _tip_line = t("gateway.reset.tip", tip=get_random_tip())
         except Exception:
             _tip_line = ""
+
+        # Append /recall nudge when a prior session exists in this thread
+        try:
+            _session_db = getattr(self, "_session_db", None)
+            if _session_db is not None:
+                _prior_rows = _session_db.search_sessions(source=session_key, limit=2)
+                _has_prior = any(
+                    r.get("id") != (new_entry.session_id if new_entry else None)
+                    for r in _prior_rows
+                )
+                if _has_prior:
+                    _tip_line = (_tip_line or "") + "\n💡 Run /recall to restore context from your prior session."
+        except Exception:
+            pass
 
         if session_info:
             return EphemeralReply(f"{header}\n\n{session_info}{_tip_line}")
@@ -11230,7 +11247,61 @@ class GatewayRunner:
             logger.warning("Manual compress failed: %s", e)
             return t("gateway.compress.failed", error=e)
 
-    async def _get_telegram_topic_capabilities(self, source: SessionSource) -> dict:
+    async def _handle_recall_command(self, event: "MessageEvent") -> str:
+        """Handle /recall — restore context from a prior session or topic search.
+
+        Modes (parsed from args):
+          /recall                → prior session in this thread (default)
+          /recall 3              → last 3 sessions in this thread
+          /recall 24h            → sessions in last 24 hours
+          /recall <phrase>       → FTS5 topic search across all sessions
+          /recall <phrase> 7d    → topic search scoped to last 7 days
+        """
+        import asyncio
+        from gateway.recall import run_recall
+
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        raw_args = (event.get_command_args() or "").strip()
+
+        model, runtime_kwargs = self._resolve_session_agent_runtime(
+            source=source,
+            session_key=session_key,
+        )
+        if not runtime_kwargs.get("api_key"):
+            return "⚠️ No AI provider configured — cannot generate recall summary."
+
+        loop = asyncio.get_running_loop()
+        try:
+            result = await loop.run_in_executor(
+                None,
+                lambda: run_recall(
+                    raw_args,
+                    session_key,
+                    self.session_store,
+                    getattr(self, "_session_db", None),
+                    runtime_kwargs=runtime_kwargs,
+                    model=model,
+                ),
+            )
+        except Exception as e:
+            logger.warning("recall: run_recall failed: %s", e, exc_info=True)
+            return f"⚠️ Recall failed: {e}"
+
+        # Inject context into the current session transcript as a user-role message
+        if result.injected_user_message:
+            try:
+                session_entry = self.session_store.get_or_create_session(source)
+                self.session_store.append_to_transcript(
+                    session_entry.session_id,
+                    {"role": "user", "content": result.injected_user_message},
+                )
+            except Exception:
+                logger.debug("recall: failed to inject message into transcript", exc_info=True)
+
+        return result.reply
+
+    async def _get_telegram_topic_capabilities(self, source: "SessionSource") -> dict:
         """Read Telegram private-topic capability flags via Bot API getMe."""
         adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
         bot = getattr(adapter, "_bot", None)
