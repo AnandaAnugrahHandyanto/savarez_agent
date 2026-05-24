@@ -4511,3 +4511,115 @@ load_dotenv(..., encoding="latin-1")  # fallback
 *Pass #49 complete – 9 findings (1 positive, 8 needs attention)*
 *Last updated: 2026-05-25T06:45:00Z*
 *Commit at scan: b04760fdb*
+
+## Pass #50 – Phase 2 Deep Exhaustion: GitHub Issue Cross-Reference + Deep Pattern Audit — 2026-05-24T12:00:00Z
+
+---
+
+### SECTION A: GitHub Issue Cross-Reference (Recent Fixes Verified in Code)
+
+**A1. [Fix #3bace071b] Sensitive File Permissions — VERIFIED PRESENT**
+
+Commit 3bace071bfadf2d2bec2ee048471a31ec920e3e8 fixed response_store.db (api_server.py) and webhook_subscriptions.json (hermes_cli/webhook.py) mode from 0o644 to 0o600.
+
+Verification:
+- api_server.py:372-391: _tighten_file_permissions() sets chmod(0o600) on DB + WAL + SHM at __init__ time. Try/except OSError with DEBUG logging.
+- hermes_cli/webhook.py:28,55-74: _SUBSCRIPTIONS_FILE_MODE=0o600; tempfile.mkstemp() creates at 0o600; chmod before rename; chmod after rename. Both wrapped in try/except.
+- Finding: Both fixes correctly implemented. No regression.
+- Severity: SECURITY — Info disclosure on shared box
+- Status: VERIFIED FIXED
+
+---
+
+**A2. [Fix #7ab167736] OSV Supply-Chain Audit — VERIFIED PRESENT**
+
+hermes_cli/security_advisories.py (451 lines) and tools/osv_check.py (155 lines) fully implemented. Query OSV.dev for MAL-* advisories; fail-open on network errors; stdlib-only dependencies. User-Agent: hermes-agent-osv-check/1.0.
+Status: VERIFIED IMPLEMENTED
+
+---
+
+**A3. [Fix #dbf73e90f] Webhook Fail-Closed Without Secrets — VERIFIED**
+
+dbf73e90f + 15aa6884a confirmed in git log. Webhook routes now return 403 (not 500) when no HMAC secret configured.
+Status: VERIFIED IN MAIN
+
+---
+
+### SECTION B: Deep-Exhaustion Pattern Checks
+
+**B1. except Exception: pass Blocks — STATUS UPDATE**
+
+| Line | Context | Status |
+|------|---------|--------|
+| 251 | cron scheduler – get_cron_deliver_env_var() silent | STILL PRESENT |
+| 335 | cron scheduler – _iter_auto_delivery_platforms() silent | STILL PRESENT |
+| 395 | cron scheduler – _resolve_delivery_target() silent | STILL PRESENT |
+| 778 | cron scheduler – _script_timeout() WARNING logged | FIXED |
+| 787 | cron scheduler – _script_timeout() WARNING logged | FIXED |
+| 890 | cron scheduler – _run_script() get_subprocess_home() silent | STILL PRESENT |
+
+Finding P50-1 (LOW): 4 remaining silent except Exception:pass in cron/scheduler.py (251,335,395,890). Recommendation: add logger.debug() to match the _script_timeout() pattern.
+
+---
+
+**B2. TODO/FIXME/XXX/HACK — PRIORITY INVENTORY**
+
+yuanbao.py:4680 TODO (T06): feature request only. auxiliary_client.py:4132 TODO(someday): future-facing. No critical FIXMEs in production Python code.
+Finding P50-2 (INFO): No critical FIXMEs found.
+
+---
+
+**B3. Lock Usage Patterns — THREADING LOCK AUDIT**
+
+All threading.Lock() usages verified: gateway/memory_monitor.py:49, model_tools.py:43, cron/jobs.py:44, cli.py:3141,3159,3177. Lazy-init pattern at cli.py:3277-3284 is GIL-safe for immutable assignments.
+Finding P50-3 (INFO): Lock usage is sound. No deadlock risk identified.
+
+---
+
+**B4. global Keyword Usage — GLOBAL STATE POLLUTION**
+
+cron/scheduler.py:171 (global _hermes_home), gateway/status.py:427/444/458 (global _gateway_lock_handle), gateway/memory_monitor.py:158/201 (global _monitor_thread), hermes_time.py:83 (global _cached_tz), gateway/run.py:1651 (global _gateway_runner_ref). All intentional module-level runtime state.
+Finding P50-4 (INFO): No new global abuse. All uses are standard Python patterns.
+
+---
+
+**B5. eval/exec/compile Usage — SECURITY CONTEXT**
+
+Production code: NONE found. Red-teaming skill scripts (skills/red-teaming/godmode/scripts/) still use exec() by design.
+Finding P50-5 (INFO): exec() confirmed only in red-teaming skill (by design). No production eval/exec on untrusted input.
+
+---
+
+**B6. Dynamic Imports — AUDIT**
+
+hermes_cli/memory_setup.py:95 __import__(import_name) – dynamic memory provider import. hermes_cli/doctor.py:473,480 __import__(module) – hardcoded module names in doctor. hermes_cli/claw.py:206-209 importlib.util.spec_from_file_location + exec_module on user-supplied script_path.
+
+Finding P50-6 (MEDIUM): heremes_cli/claw.py exec_module on user-supplied script_path via ACP adapter. The script_path from ACP network data is not validated against an allowlist before loading. If ACP socket is accessible to untrusted actors, arbitrary code execution possible. Recommend validating script_path against HERMES_HOME/acp_adapter/ or similar.
+
+---
+
+### SECTION C: NEW FINDINGS SUMMARY
+
+| ID | Severity | Location | Description |
+|----|----------|----------|-------------|
+| P50-1 | LOW | cron/scheduler.py:251,335,395,890 | 4 remaining silent except Exception:pass in cron job resolution |
+| P50-2 | INFO | codebase-wide | No critical FIXMEs/TODOs found |
+| P50-3 | INFO | cli.py:3277-3284 | Lazy-init Lock is GIL-safe; no deadlock risk |
+| P50-4 | INFO | multiple modules | Global keyword intentional module-level state |
+| P50-5 | INFO | skills/red-teaming/godmode/scripts/ | exec() by design (red-teaming) |
+| P50-6 | MEDIUM | hermes_cli/claw.py:206-209 | exec_module on unvalidated script_path in ACP adapter |
+
+---
+
+### SECTION D: PRIOR FINDING UPDATES
+
+| Prior ID | Description | Current Status |
+|----------|-------------|----------------|
+| P34-1 | Cron scheduler 4x except Exception:pass | PARTIALLY FIXED – 2/4 now log warnings (778,787); 2/4 still silent (251,335,395,890) |
+| F42-7 | exec() in red-teaming godmode scripts | CONFIRMED BY DESIGN |
+| P36-5 | sys.path mutation at import time | STILL PRESENT |
+| P29-9 | No shutdown()/unload() in PluginManager | STILL PRESENT |
+
+---
+
+**End Pass #50**
