@@ -229,6 +229,71 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             )
 
 
+_EMPTY_RESPONSE_SENTINEL = "(empty)"
+
+
+def _ensure_final_response_in_messages(
+    messages: List[Dict],
+    final_response: Optional[str],
+) -> bool:
+    """Inject *final_response* as a structured assistant message when missing.
+
+    Several break paths in :func:`run_conversation` set ``final_response``
+    from already-streamed content (partial-stream recovery, prior-turn
+    fallback, etc.) and exit *without* appending a structured ``{"role":
+    "assistant", "content": ...}`` dict to the ``messages`` list.  The
+    happy text-response path at the bottom of the inner loop *does*
+    append one (via ``_build_assistant_message``), so under normal
+    streaming there's nothing to do here.
+
+    The bridge-worker path (``hermes_bridge.py`` / ``state.db``) flushes
+    persistence by index — ``_flush_messages_to_session_db`` writes
+    ``messages[_last_flushed_db_idx:]``.  When the streaming response
+    never lands as a dict in ``messages``, that slice is empty and the
+    assistant reply silently never reaches the database even though the
+    user *saw* it streamed in the WebUI.  See #31269.
+
+    This helper is the safety net: call it right before the FINAL
+    ``_persist_session`` and any structured assistant turn that was
+    missing gets restored.  Returns ``True`` when an injection happened
+    so callers can log it.
+
+    Skips injection when:
+      * ``final_response`` is ``None`` / empty / whitespace-only;
+      * ``final_response`` equals the ``"(empty)"`` sentinel (handled by
+        the empty-response scaffolding pop);
+      * the trailing ``messages`` entry is already an assistant message
+        whose ``content`` matches ``final_response`` (the happy path).
+
+    Issue #31269.
+    """
+    if not isinstance(final_response, str):
+        return False
+    text = final_response.strip()
+    if not text or text == _EMPTY_RESPONSE_SENTINEL:
+        return False
+
+    if messages and isinstance(messages[-1], dict):
+        last = messages[-1]
+        if last.get("role") == "assistant":
+            existing = last.get("content")
+            if isinstance(existing, str) and existing.strip() == text:
+                return False
+            # Assistant message at tail with tool_calls but no content:
+            # the model called tools and never produced text. Don't
+            # smuggle a recovered partial-stream reply into that turn —
+            # append a fresh assistant turn so the structure stays
+            # ``assistant(tool_calls) → tool(...) → assistant(text)`` —
+            # which is what the bridge then flushes.
+
+    messages.append({
+        "role": "assistant",
+        "content": final_response,
+        "_injected_from_final_response": True,
+    })
+    return True
+
+
 def run_conversation(
     agent,
     user_message: str,
@@ -3960,6 +4025,25 @@ def run_conversation(
     # can replay assistant("(empty)") / recovery nudges and fall into the
     # same empty-response loop again.
     agent._drop_trailing_empty_response_scaffolding(messages)
+
+    # Safety net for #31269: a few break paths above (partial-stream
+    # recovery, prior-turn-content fallback) set ``final_response`` from
+    # already-streamed bytes WITHOUT appending a structured assistant
+    # message dict.  The bridge worker flushes ``state.db`` by index
+    # (``_flush_messages_to_session_db`` writes ``messages[idx:]``) so a
+    # missing dict means the assistant reply silently never reaches the
+    # database — even though the user *saw* it streamed in the WebUI.
+    # Inject here so every persisted session contains the reply the user
+    # was shown.  Idempotent on the happy path (no-op when
+    # ``messages[-1]`` already carries this content).
+    if _ensure_final_response_in_messages(messages, final_response):
+        logger.debug(
+            "Injected streamed final_response into messages tail before "
+            "persistence — exit_reason=%s session=%s len=%d",
+            _turn_exit_reason, agent.session_id or "none",
+            len(final_response or ""),
+        )
+
     agent._persist_session(messages, conversation_history)
 
     # ── Turn-exit diagnostic log ─────────────────────────────────────
