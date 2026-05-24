@@ -80,6 +80,35 @@ def test_latest_followup_does_not_hijack_short_new_tasks(monkeypatch, tmp_path):
     ) is None
 
 
+def test_latest_followup_can_target_webui_api_session_without_platform_source(monkeypatch, tmp_path):
+    monkeypatch.setattr(routes, "_hermes_home", lambda: tmp_path)
+    register_outbound_notification(
+        platform="telegram",
+        chat_id="999",
+        message_ids=["701"],
+        route={
+            "kind": "webui_session",
+            "api_session_id": "20260524_142634_986d3f",
+            "session_id": "20260524_142634_986d3f",
+            "webui_url": "https://hermes.example.com/session/20260524_142634_986d3f",
+        },
+        ttl_seconds=1800,
+        now=time.time(),
+    )
+
+    resolved = resolve_latest_followup(
+        platform="telegram",
+        chat_id="999",
+        text="ок, проверь",
+    )
+
+    assert resolved is not None
+    assert "source" not in resolved
+    assert resolved["route"]["kind"] == "webui_session"
+    assert resolved["route"]["api_session_id"] == "20260524_142634_986d3f"
+    assert resolved["route"]["webui_url"] == "https://hermes.example.com/session/20260524_142634_986d3f"
+
+
 def test_webui_session_url_prefers_explicit_public_url(monkeypatch):
     monkeypatch.setenv("HERMES_WEBUI_PUBLIC_URL", "https://hermes.example.com/base/")
     monkeypatch.setenv("HERMES_WEBUI_PORT", "8788")

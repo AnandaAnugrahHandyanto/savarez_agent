@@ -1082,6 +1082,11 @@ class MessageEvent:
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
 
+    # Metadata-only route for replies/follow-ups to outbound notifications.
+    # Used to bridge Telegram control replies into the originating WebUI/API
+    # session without treating the Telegram DM as the processing workspace.
+    notification_route: Optional[Dict[str, Any]] = None
+
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     
@@ -3160,6 +3165,95 @@ class BasePlatformAdapter(ABC):
 
         await self._drain_pending_after_session_command(session_key, command_guard)
 
+    def _notification_route_webui_url(self, route: Dict[str, Any]) -> Optional[str]:
+        url = route.get("webui_url") if isinstance(route, dict) else None
+        if isinstance(url, str) and url.strip():
+            return url.strip()
+        sid = (route.get("api_session_id") or route.get("session_id")) if isinstance(route, dict) else None
+        if not sid:
+            return None
+        try:
+            from gateway.notification_routes import build_webui_session_url
+            return build_webui_session_url(str(sid))
+        except Exception:
+            return None
+
+    async def _forward_notification_reply_to_api_session(self, event: MessageEvent, route: Dict[str, Any]) -> None:
+        """Forward a notification reply/follow-up into the origin WebUI/API session."""
+        api_session_id = str(route.get("api_session_id") or route.get("session_id") or "").strip()
+        if not api_session_id:
+            return
+        webui_url = self._notification_route_webui_url(route)
+        ack = "Forwarding reply to the origin WebUI chat."
+        if webui_url:
+            ack += f"\nChat: {webui_url}"
+        try:
+            await self._send_with_retry(
+                chat_id=event.source.chat_id,
+                content=ack,
+                reply_to=_reply_anchor_for_event(event),
+                metadata=_thread_metadata_for_source(event.source, _reply_anchor_for_event(event)),
+            )
+        except Exception:
+            logger.debug("[%s] WebUI bridge ack failed", self.name, exc_info=True)
+
+        text = event.text or ""
+        if getattr(event, "reply_to_text", None):
+            text = f"[Telegram reply/follow-up to Hermes notification]\nReplying to: {event.reply_to_text[:500]}\n\n{text}"
+        else:
+            text = f"[Telegram semantic follow-up to Hermes notification]\n\n{text}"
+
+        def _post_to_api() -> tuple[bool, str]:
+            import json as _json
+            import os as _os
+            import urllib.error as _urlerr
+            import urllib.request as _urlreq
+            api_key = (_os.getenv("API_SERVER_KEY") or _os.getenv("HERMES_API_SERVER_KEY") or "").strip()
+            port = (_os.getenv("API_SERVER_PORT") or "8642").strip()
+            payload = _json.dumps({
+                "model": "Hermes Agent",
+                "messages": [{"role": "user", "content": text}],
+                "stream": False,
+            }).encode("utf-8")
+            headers = {"Content-Type": "application/json", "X-Hermes-Session-Id": api_session_id}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            req = _urlreq.Request(f"http://127.0.0.1:{port}/v1/chat/completions", data=payload, headers=headers, method="POST")
+            try:
+                with _urlreq.urlopen(req, timeout=240) as resp:
+                    return True, resp.read(500).decode("utf-8", "replace")
+            except _urlerr.HTTPError as exc:
+                body = exc.read(1000).decode("utf-8", "replace") if exc.fp else ""
+                return False, f"HTTP {exc.code}: {body[:500]}"
+            except Exception as exc:
+                return False, f"{type(exc).__name__}: {str(exc)[:500]}"
+
+        ok, detail = await asyncio.to_thread(_post_to_api)
+        if ok:
+            msg = "Reply forwarded to the origin WebUI chat."
+            if webui_url:
+                msg += f"\nChat: {webui_url}"
+            try:
+                await self._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=msg,
+                    reply_to=_reply_anchor_for_event(event),
+                    metadata=_thread_metadata_for_source(event.source, _reply_anchor_for_event(event)),
+                )
+            except Exception:
+                logger.debug("[%s] WebUI bridge completion ack failed", self.name, exc_info=True)
+        else:
+            logger.warning("[%s] WebUI bridge failed: %s", self.name, detail)
+            try:
+                await self._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content="Could not forward the reply into the WebUI chat; check gateway/API logs.",
+                    reply_to=_reply_anchor_for_event(event),
+                    metadata=_thread_metadata_for_source(event.source, _reply_anchor_for_event(event)),
+                )
+            except Exception:
+                pass
+
     async def handle_message(self, event: MessageEvent) -> None:
         """
         Process an incoming message.
@@ -3172,6 +3266,11 @@ class BasePlatformAdapter(ABC):
             return
 
         coerce_plaintext_gateway_command(event)
+
+        route = getattr(event, "notification_route", None)
+        if isinstance(route, dict) and (route.get("api_session_id") or route.get("kind") == "webui_session"):
+            asyncio.create_task(self._forward_notification_reply_to_api_session(event, route))
+            return
         
         session_key = build_session_key(
             event.source,

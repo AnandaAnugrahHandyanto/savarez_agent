@@ -158,7 +158,20 @@ def _source_from_route(route: Mapping[str, Any]) -> Optional[SessionSource]:
 
 def _sanitize_route(route: Mapping[str, Any]) -> Dict[str, Any]:
     clean: Dict[str, Any] = {}
-    for key in ("kind", "session_key", "session_id", "job_id", "process_id", "repo", "branch", "issue", "pr", "state"):
+    for key in (
+        "kind",
+        "session_key",
+        "session_id",
+        "api_session_id",
+        "webui_url",
+        "job_id",
+        "process_id",
+        "repo",
+        "branch",
+        "issue",
+        "pr",
+        "state",
+    ):
         value = route.get(key)
         if value is not None:
             clean[key] = str(value)
@@ -226,9 +239,12 @@ def _route_if_fresh(route: Mapping[str, Any], *, now: Optional[float] = None) ->
     if expires_at < current:
         return None
     source = _source_from_route(route)
-    if source is None:
+    if source is None and not route.get("api_session_id"):
         return None
-    return {"source": source, "route": dict(route)}
+    result: Dict[str, Any] = {"route": dict(route)}
+    if source is not None:
+        result["source"] = source
+    return result
 
 
 def resolve_exact_reply(
