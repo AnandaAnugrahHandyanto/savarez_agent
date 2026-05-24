@@ -473,13 +473,47 @@ TIPS = [
 ]
 
 
-def get_random_tip(exclude_recent: int = 0) -> str:
+KOREAN_TIPS = [
+    "/background <프롬프트>는 현재 대화를 막지 않고 별도 세션에서 작업을 실행합니다.",
+    "/queue <프롬프트>는 지금 진행 중인 응답을 끊지 않고 다음 턴에 이어서 처리합니다.",
+    "/new 제목을 쓰면 새 세션을 만들면서 바로 이름을 붙일 수 있습니다.",
+    "/resume은 이름 붙인 세션을 다시 이어서 엽니다.",
+    "/model <모델명>으로 세션 중에도 모델을 바꿀 수 있습니다.",
+    "/reasoning high는 중요한 판단에서 사고 깊이를 올립니다. 기본은 medium이면 충분합니다.",
+    "/verbose는 도구 진행 표시를 off → new → all → verbose 순서로 바꿉니다.",
+    "/stop은 에이전트가 띄운 백그라운드 프로세스를 정리합니다.",
+    "/usage는 현재 세션의 토큰·비용·시간을 보여줍니다.",
+    "/profile은 현재 프로필과 Hermes 홈 경로를 확인합니다.",
+    "@file:경로 를 메시지에 넣으면 해당 파일 내용을 바로 참고시킬 수 있습니다.",
+    "@diff는 아직 커밋하지 않은 git 변경분을 컨텍스트로 넣습니다.",
+    "Ctrl+C는 진행 중인 작업을 중단합니다. 2초 안에 두 번 누르면 강제 종료합니다.",
+    "Windows Terminal에서는 줄바꿈에 Alt+Enter 대신 Ctrl+Enter를 쓰는 편이 안전합니다.",
+    "긴 작업은 /background로 보내면 현재 대화는 계속 쓸 수 있습니다.",
+    "비용을 줄이려면 쓰지 않는 toolset과 skill을 꺼두는 게 가장 효과적입니다.",
+    "config.yaml의 display.language를 ko로 두면 게이트웨이 고정 문구가 한국어로 나옵니다.",
+    "이미지·파일은 MEDIA: 태그나 로컬 경로를 포함하면 플랫폼 첨부로 전송됩니다.",
+    "cron은 반복 알림용, OpenClaw 기존 자동화와 겹치면 먼저 영향 범위를 확인하는 게 안전합니다.",
+    "Hermes는 PM/검증, OpenClaw/태기는 백엔드 자동화로 나누면 운영이 깔끔합니다.",
+]
+
+
+def get_random_tip(exclude_recent: int = 0, lang: str | None = None) -> str:
     """Return a random tip string.
 
     Args:
         exclude_recent: not used currently; reserved for future
             deduplication across sessions.
+        lang: optional language override. Korean uses a curated localized corpus;
+            other languages fall back to the full English corpus.
     """
+    try:
+        if lang is None:
+            from agent.i18n import get_language
+            lang = get_language()
+    except Exception:
+        lang = None
+    if str(lang or "").lower() in {"ko", "ko-kr", "korean", "한국어"}:
+        return random.choice(KOREAN_TIPS)
     return random.choice(TIPS)
 
 

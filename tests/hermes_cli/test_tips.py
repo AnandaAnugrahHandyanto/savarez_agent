@@ -1,7 +1,7 @@
 """Tests for hermes_cli/tips.py — random tip display at session start."""
 
 import pytest
-from hermes_cli.tips import TIPS, get_random_tip
+from hermes_cli.tips import KOREAN_TIPS, TIPS, get_random_tip
 
 
 class TestTipsCorpus:
@@ -42,8 +42,12 @@ class TestGetRandomTip:
         assert len(tip) > 0
 
     def test_returns_tip_from_corpus(self):
-        tip = get_random_tip()
+        tip = get_random_tip(lang="en")
         assert tip in TIPS
+
+    def test_returns_korean_tip_when_requested(self):
+        tip = get_random_tip(lang="ko")
+        assert tip in KOREAN_TIPS
 
     def test_randomness(self):
         """Multiple calls should eventually return different tips."""
