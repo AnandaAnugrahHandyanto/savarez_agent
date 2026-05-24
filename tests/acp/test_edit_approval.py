@@ -9,8 +9,10 @@ import tempfile
 from pathlib import Path
 
 from acp_adapter.edit_approval import (
+    DeniedEditReattempt,
     EditProposal,
     build_acp_edit_tool_call,
+    build_acp_write_reattempt_tool_call,
     clear_edit_approval_requester,
     set_edit_approval_requester,
     should_auto_approve_edit,
@@ -43,6 +45,31 @@ def test_acp_permission_tool_call_uses_edit_kind_and_diff_content():
     assert diff.newText == "new\n"
 
 
+def test_acp_write_reattempt_tool_call_uses_execute_kind_and_denied_path_context():
+    proposal = DeniedEditReattempt(
+        tool_name="terminal",
+        path="demo.txt",
+        resolved_path="/tmp/demo.txt",
+        denied_tool_name="write_file",
+        arguments={"command": "python -c 'write demo.txt'"},
+    )
+
+    tool_call = build_acp_write_reattempt_tool_call(proposal)
+
+    assert tool_call.kind == "execute"
+    assert tool_call.status == "pending"
+    assert tool_call.rawInput == {
+        "tool": "terminal",
+        "arguments": proposal.arguments,
+        "denied_path": "demo.txt",
+        "denied_tool": "write_file",
+    }
+    assert "previously denied" in tool_call.title
+    assert "demo.txt" in tool_call.title
+    assert len(tool_call.content) == 1
+    assert "fresh approval" in tool_call.content[0].content.text
+
+
 def test_write_file_rejection_does_not_mutate_existing_file(tmp_path):
     target = tmp_path / "sample.txt"
     target.write_text("before\n", encoding="utf-8")
@@ -62,10 +89,16 @@ def test_write_file_rejection_does_not_mutate_existing_file(tmp_path):
     assert target.read_text(encoding="utf-8") == "before\n"
 
 
-def test_denied_write_file_blocks_terminal_write_to_same_path(tmp_path):
+def test_denied_write_file_prompts_before_terminal_write_to_same_path(tmp_path):
     target = tmp_path / "sample.txt"
     target.write_text("before\n", encoding="utf-8")
-    set_edit_approval_requester(lambda _proposal: False)
+    requests = []
+
+    def decide(proposal):
+        requests.append(proposal)
+        return len(requests) == 2
+
+    set_edit_approval_requester(decide)
 
     denied = json.loads(
         handle_function_call(
@@ -86,15 +119,24 @@ def test_denied_write_file_blocks_terminal_write_to_same_path(tmp_path):
         )
     )
 
-    assert "error" in result
-    assert "denied ACP edit" in result["error"]
-    assert target.read_text(encoding="utf-8") == "before\n"
+    assert result.get("exit_code") == 0
+    assert target.read_text(encoding="utf-8") == "after\n"
+    assert len(requests) == 2
+    assert isinstance(requests[1], DeniedEditReattempt)
+    assert requests[1].tool_name == "terminal"
+    assert requests[1].path == str(target)
 
 
-def test_denied_write_file_blocks_execute_code_write_to_same_path(tmp_path):
+def test_denied_write_file_prompts_before_execute_code_write_to_same_path(tmp_path):
     target = tmp_path / "sample.txt"
     target.write_text("before\n", encoding="utf-8")
-    set_edit_approval_requester(lambda _proposal: False)
+    requests = []
+
+    def decide(proposal):
+        requests.append(proposal)
+        return len(requests) == 2
+
+    set_edit_approval_requester(decide)
 
     denied = json.loads(
         handle_function_call(
@@ -119,9 +161,12 @@ def test_denied_write_file_blocks_execute_code_write_to_same_path(tmp_path):
         )
     )
 
-    assert "error" in result
-    assert "denied ACP edit" in result["error"]
-    assert target.read_text(encoding="utf-8") == "before\n"
+    assert result.get("status") == "success"
+    assert target.read_text(encoding="utf-8") == "after\n"
+    assert len(requests) == 2
+    assert isinstance(requests[1], DeniedEditReattempt)
+    assert requests[1].tool_name == "execute_code"
+    assert requests[1].path == str(target)
 
 
 def test_denied_write_file_still_allows_terminal_read_of_same_path(tmp_path):

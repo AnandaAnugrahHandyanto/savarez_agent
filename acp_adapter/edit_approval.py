@@ -42,7 +42,20 @@ class DeniedEdit:
     tool_name: str
 
 
-EditApprovalRequester = Callable[[EditProposal], bool]
+@dataclass(frozen=True)
+class DeniedEditReattempt:
+    """A write-capable tool call that appears to retry a denied edit path."""
+
+    tool_name: str
+    path: str
+    resolved_path: str
+    denied_tool_name: str
+    arguments: dict[str, Any]
+
+
+EditApprovalRequest = EditProposal | DeniedEditReattempt
+EditApprovalRequester = Callable[[EditApprovalRequest], bool]
+
 
 _EDIT_APPROVAL_REQUESTER: ContextVar[EditApprovalRequester | None] = ContextVar(
     "ACP_EDIT_APPROVAL_REQUESTER",
@@ -243,8 +256,8 @@ def _has_write_intent(text: str) -> bool:
     return any(pattern.search(text) for pattern in _DENIED_EDIT_WRITE_PATTERNS)
 
 
-def _blocked_denied_edit_path(tool_name: str, arguments: dict[str, Any]) -> str | None:
-    """Return the denied path if a write-capable tool tries to mutate it."""
+def _denied_edit_reattempt(tool_name: str, arguments: dict[str, Any]) -> DeniedEditReattempt | None:
+    """Return a fresh approval request if a tool appears to retry a denied edit."""
 
     if tool_name not in DENIED_EDIT_BYPASS_TOOLS:
         return None
@@ -253,7 +266,13 @@ def _blocked_denied_edit_path(tool_name: str, arguments: dict[str, Any]) -> str 
         return None
     for denied in _DENIED_EDITS.get():
         if _mentions_denied_path(text, denied):
-            return denied.path
+            return DeniedEditReattempt(
+                tool_name=tool_name,
+                path=denied.path,
+                resolved_path=denied.resolved_path,
+                denied_tool_name=denied.tool_name,
+                arguments=dict(arguments),
+            )
     return None
 
 
@@ -275,13 +294,20 @@ def maybe_require_edit_approval(tool_name: str, arguments: dict[str, Any]) -> st
         return json.dumps({"error": f"Edit approval denied: could not prepare diff ({exc})"}, ensure_ascii=False)
 
     if proposal is None:
-        denied_path = _blocked_denied_edit_path(tool_name, arguments)
-        if denied_path is not None:
+        reattempt = _denied_edit_reattempt(tool_name, arguments)
+        if reattempt is not None:
+            try:
+                approved = bool(requester(reattempt))
+            except Exception as exc:
+                logger.warning("ACP alternate write approval requester failed: %s", exc)
+                approved = False
+            if approved:
+                return None
             return json.dumps(
                 {
                     "error": (
-                        "Tool call blocked because it attempts to modify a path "
-                        f"from a denied ACP edit approval: {denied_path}"
+                        "Alternate write approval denied by ACP client; "
+                        f"tool was not run for previously denied path: {reattempt.path}"
                     )
                 },
                 ensure_ascii=False,
@@ -323,6 +349,32 @@ def build_acp_edit_tool_call(proposal: EditProposal):
     )
 
 
+def build_acp_write_reattempt_tool_call(proposal: DeniedEditReattempt):
+    """Build the ToolCallUpdate payload for same-path write reattempt approval."""
+
+    import acp
+
+    tool_call_id = f"edit-reattempt-{next(_PERMISSION_REQUEST_IDS)}"
+    text = (
+        f"A previous ACP edit request for `{proposal.path}` was denied. "
+        f"The `{proposal.tool_name}` tool call appears able to modify the same path. "
+        "Run it only with fresh approval."
+    )
+    return acp.update_tool_call(
+        tool_call_id,
+        title=f"Approve previously denied write: {proposal.path}",
+        kind="execute",
+        status="pending",
+        content=[acp.tool_content(acp.text_block(text))],
+        raw_input={
+            "tool": proposal.tool_name,
+            "arguments": proposal.arguments,
+            "denied_path": proposal.path,
+            "denied_tool": proposal.denied_tool_name,
+        },
+    )
+
+
 def make_acp_edit_approval_requester(
     request_permission_fn: Callable,
     loop: asyncio.AbstractEventLoop,
@@ -332,11 +384,11 @@ def make_acp_edit_approval_requester(
 ) -> EditApprovalRequester:
     """Return a sync requester that bridges edit proposals to ACP permissions."""
 
-    def _requester(proposal: EditProposal) -> bool:
+    def _requester(proposal: EditApprovalRequest) -> bool:
         from acp.schema import PermissionOption
         from agent.async_utils import safe_schedule_threadsafe
 
-        if auto_approve_getter is not None:
+        if isinstance(proposal, EditProposal) and auto_approve_getter is not None:
             try:
                 policy, cwd = auto_approve_getter()
                 if should_auto_approve_edit(proposal, policy, cwd):
@@ -349,7 +401,10 @@ def make_acp_edit_approval_requester(
             PermissionOption(option_id="allow_once", kind="allow_once", name="Allow edit"),
             PermissionOption(option_id="deny", kind="reject_once", name="Deny"),
         ]
-        tool_call = build_acp_edit_tool_call(proposal)
+        if isinstance(proposal, EditProposal):
+            tool_call = build_acp_edit_tool_call(proposal)
+        else:
+            tool_call = build_acp_write_reattempt_tool_call(proposal)
         coro = request_permission_fn(
             session_id=session_id,
             tool_call=tool_call,
