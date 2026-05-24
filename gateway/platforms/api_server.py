@@ -9,7 +9,6 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/models                  — lists hermes-agent as an available model
 - GET  /v1/capabilities            — machine-readable API capabilities for external UIs
 - POST /v1/approvals               — resolve pending chat-completions approvals
-- GET  /v1/commands                — list API-client slash commands
 - POST /v1/commands                — execute API-client slash commands
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}           — retrieve current run status
@@ -1019,7 +1018,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
                 "chat_completion_approval": {"method": "POST", "path": "/v1/approvals"},
                 "commands": {"method": "POST", "path": "/v1/commands"},
-                "command_list": {"method": "GET", "path": "/v1/commands"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
                 "runs": {"method": "POST", "path": "/v1/runs"},
                 "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
@@ -1439,34 +1437,6 @@ class APIServerAdapter(BasePlatformAdapter):
             "resolved": resolved,
         })
 
-    async def _handle_list_api_commands(self, request: "web.Request") -> "web.Response":
-        """GET /v1/commands — list slash commands for API clients."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
-
-        try:
-            from hermes_cli.commands import gateway_command_entries
-
-            commands = gateway_command_entries()
-        except Exception as exc:
-            logger.exception("[api_server] command listing failed")
-            return web.json_response(_openai_error(str(exc)), status=500)
-
-        query = request.query.get("q", "").strip().lstrip("/").lower()
-        if query:
-            commands = [
-                command
-                for command in commands
-                if command.get("name", "").lower().startswith(query)
-                or any(str(alias).lower().startswith(query) for alias in command.get("aliases", []))
-            ]
-
-        return web.json_response({
-            "object": "hermes.api_command.list",
-            "data": commands,
-        })
-
     def _get_api_command_gateway(self):
         """Lazily create a gateway dispatcher for API slash commands.
 
@@ -1594,6 +1564,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "object": "hermes.api_command.result",
                 "command": canonical,
                 "content": text,
+                "commands": gateway_command_entries(),
             })
 
         if canonical == "status":
@@ -3844,7 +3815,6 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/approvals", self._handle_chat_approval)
-            self._app.router.add_get("/v1/commands", self._handle_list_api_commands)
             self._app.router.add_post("/v1/commands", self._handle_api_command)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
