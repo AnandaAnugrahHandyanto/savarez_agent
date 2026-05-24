@@ -353,6 +353,85 @@ class TestMediaHelpers:
         with pytest.raises(ValueError, match="placeholder was not replaced"):
             await adapter._load_outbound_media("<path>")
 
+    @pytest.mark.asyncio
+    async def test_load_outbound_media_allows_file_inside_media_dir(self, tmp_path, monkeypatch):
+        from gateway.platforms.wecom import WeComAdapter
+
+        allowed_dir = tmp_path / "media-cache"
+        allowed_dir.mkdir()
+        media_file = allowed_dir / "report.txt"
+        media_file.write_bytes(b"wecom report")
+
+        monkeypatch.setattr(
+            WeComAdapter,
+            "_allowed_outbound_media_dirs",
+            staticmethod(lambda: [allowed_dir.resolve()]),
+        )
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+
+        data, content_type, resolved_name = await adapter._load_outbound_media(
+            media_file.as_uri()
+        )
+
+        assert data == b"wecom report"
+        assert content_type == "text/plain"
+        assert resolved_name == "report.txt"
+
+    @pytest.mark.asyncio
+    async def test_load_outbound_media_rejects_file_outside_media_dirs(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        from gateway.platforms.wecom import WeComAdapter
+
+        allowed_dir = tmp_path / "media-cache"
+        allowed_dir.mkdir()
+        secret_file = tmp_path / "secret.txt"
+        secret_file.write_text("do not upload", encoding="utf-8")
+
+        monkeypatch.setattr(
+            WeComAdapter,
+            "_allowed_outbound_media_dirs",
+            staticmethod(lambda: [allowed_dir.resolve()]),
+        )
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+
+        with pytest.raises(
+            PermissionError,
+            match="outside allowed media directories",
+        ):
+            await adapter._load_outbound_media(secret_file.as_uri())
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(os.name == "nt", reason="symlink permissions vary on Windows")
+    async def test_load_outbound_media_rejects_symlink_escape(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        from gateway.platforms.wecom import WeComAdapter
+
+        allowed_dir = tmp_path / "media-cache"
+        allowed_dir.mkdir()
+        secret_file = tmp_path / "secret.txt"
+        secret_file.write_text("do not upload", encoding="utf-8")
+        symlink_path = allowed_dir / "linked-secret.txt"
+        symlink_path.symlink_to(secret_file)
+
+        monkeypatch.setattr(
+            WeComAdapter,
+            "_allowed_outbound_media_dirs",
+            staticmethod(lambda: [allowed_dir.resolve()]),
+        )
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+
+        with pytest.raises(
+            PermissionError,
+            match="outside allowed media directories",
+        ):
+            await adapter._load_outbound_media(symlink_path.as_uri())
+
 
 class TestMediaUpload:
     @pytest.mark.asyncio
@@ -830,4 +909,3 @@ class TestWeComZombieSessionFix:
         adapter._send_request.assert_awaited_once()
         cmd = adapter._send_request.await_args.args[0]
         assert cmd == APP_CMD_SEND
-
