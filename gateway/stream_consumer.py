@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
-from gateway.platforms.base import _custom_unit_to_cp
+from gateway.platforms.base import MEDIA_DIRECTIVE_RE, _custom_unit_to_cp
 from gateway.config import (
     DEFAULT_STREAMING_EDIT_INTERVAL as _DEFAULT_STREAMING_EDIT_INTERVAL,
     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
@@ -640,11 +640,9 @@ class GatewayStreamConsumer:
             logger.error("Stream consumer error: %s", e)
 
     # Pattern to strip MEDIA:<path> tags (including optional surrounding quotes).
-    # Matches the simple cleanup regex used by the non-streaming path in
-    # gateway/platforms/base.py for post-processing.
-    _MEDIA_RE = re.compile(
-        r'''[`"']?MEDIA:\s*(?:`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)[^\n]+?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
-    )
+    # Shared with the final attachment extraction path so streamed previews and
+    # post-processing stay in sync.
+    _MEDIA_RE = MEDIA_DIRECTIVE_RE
 
     @staticmethod
     def _clean_for_display(text: str) -> str:

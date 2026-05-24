@@ -8,6 +8,7 @@ import pytest
 from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
+    MEDIA_DIRECTIVE_RE,
     MessageEvent,
     MessageType,
     safe_url_for_log,
@@ -334,6 +335,17 @@ class TestExtractMedia:
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert media == [("/private/tmp/company-files-downloads/XM1307HE产品规格书V1.2 .docx", False)]
         assert cleaned == ""
+
+    def test_media_tag_supports_unquoted_paths_with_multiple_spaces(self):
+        content = "MEDIA:/private/tmp/company files/downloads/my file name.docx"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/private/tmp/company files/downloads/my file name.docx", False)]
+        assert cleaned == ""
+
+    def test_stream_display_uses_shared_media_directive_pattern(self):
+        from gateway.stream_consumer import GatewayStreamConsumer
+
+        assert GatewayStreamConsumer._MEDIA_RE is MEDIA_DIRECTIVE_RE
 
     def test_media_tag_strips_extension_after_space_from_stream_display(self):
         from gateway.stream_consumer import GatewayStreamConsumer
