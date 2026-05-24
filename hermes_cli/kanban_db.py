@@ -2836,39 +2836,6 @@ def complete_task(
                 summary=summary if summary is not None else result,
                 metadata=metadata,
             )
-        handoff = (summary if summary is not None else result) or ""
-        handoff = handoff.strip()
-        if handoff or (isinstance(metadata, dict) and metadata):
-            author_row = conn.execute(
-                "SELECT assignee FROM tasks WHERE id = ?", (task_id,),
-            ).fetchone()
-            author = (
-                (author_row["assignee"] if author_row else None)
-                or os.environ.get("HERMES_PROFILE")
-                or "worker"
-            )
-            comment_parts = ["**Completed**"]
-            if handoff:
-                comment_parts.append(handoff)
-            if isinstance(metadata, dict) and metadata:
-                comment_parts.append(
-                    "```json\n"
-                    + json.dumps(metadata, ensure_ascii=False, indent=2)
-                    + "\n```"
-                )
-            comment_body = "\n\n".join(comment_parts).strip()
-            conn.execute(
-                "INSERT INTO task_comments (task_id, author, body, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                (task_id, str(author).strip(), comment_body, now),
-            )
-            _append_event(
-                conn,
-                task_id,
-                "commented",
-                {"author": author, "len": len(comment_body), "source": "completion"},
-                run_id=run_id,
-            )
         # Carry the handoff summary in the event payload so gateway
         # notifiers and dashboard WS consumers can render it without a
         # second SQL round-trip. First line only, 400 char cap — the

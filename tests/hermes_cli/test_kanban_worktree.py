@@ -84,7 +84,7 @@ class KanbanWorktreeTests(unittest.TestCase):
                 os.environ.pop("TERMINAL_CWD", None)
                 os.environ.pop("HERMES_CURSOR_AUX_CWD", None)
 
-    def test_complete_task_adds_completion_comment(self) -> None:
+    def test_complete_task_persists_handoff_on_run_not_comment(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / ".hermes"
             home.mkdir()
@@ -104,12 +104,13 @@ class KanbanWorktreeTests(unittest.TestCase):
                     )
                     self.assertTrue(ok)
                     comments = kb.list_comments(conn, tid)
+                    runs = kb.list_runs(conn, tid)
                 finally:
                     conn.close()
-            self.assertEqual(len(comments), 1)
-            self.assertIn("shipped the fix", comments[0].body)
-            self.assertIn("changed_files", comments[0].body)
-            self.assertEqual(comments[0].author, "worker")
+            self.assertEqual(comments, [])
+            self.assertEqual(len(runs), 1)
+            self.assertIn("shipped the fix", runs[0].summary or "")
+            self.assertEqual(runs[0].metadata.get("changed_files"), ["a.py"])
 
 
 if __name__ == "__main__":
