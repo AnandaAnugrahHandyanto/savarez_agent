@@ -113,7 +113,7 @@ def test_webui_session_url_prefers_explicit_public_url(monkeypatch):
     monkeypatch.setenv("HERMES_WEBUI_PUBLIC_URL", "https://hermes.example.com/base/")
     monkeypatch.setenv("HERMES_WEBUI_PORT", "8788")
 
-    assert build_webui_session_url("abc123") == "https://hermes.example.com/base/session/abc123"
+    assert build_webui_session_url("abc123") == "https://hermes.example.com/base/chat?resume=abc123"
 
 
 def test_webui_session_url_falls_back_to_server_ip_and_port(monkeypatch):
@@ -122,7 +122,7 @@ def test_webui_session_url_falls_back_to_server_ip_and_port(monkeypatch):
     monkeypatch.setenv("HERMES_WEBUI_PORT", "8788")
     monkeypatch.setattr(routes, "_detect_server_ip", lambda: "70.34.246.102")
 
-    assert build_webui_session_url("00cd34bde02b") == "http://70.34.246.102:8788/session/00cd34bde02b"
+    assert build_webui_session_url("00cd34bde02b") == "http://70.34.246.102:8788/chat?resume=00cd34bde02b"
 
 
 def test_webui_session_url_unavailable_without_session_or_host(monkeypatch):
@@ -133,3 +133,17 @@ def test_webui_session_url_unavailable_without_session_or_host(monkeypatch):
 
     assert build_webui_session_url("") is None
     assert build_webui_session_url("abc123") is None
+
+
+def test_webui_session_url_uses_chat_resume_path_not_session_id_path(monkeypatch):
+    """The WebUI router has no ``/session/<id>`` route — only ``/chat?resume=<id>``.
+
+    A stale ``/session/<id>`` link would hit the catch-all and silently bounce
+    the user to ``/sessions``, which presents as the "wrong chat" symptom for
+    Telegram notification replies bridged into a WebUI session.
+    """
+    monkeypatch.setenv("HERMES_WEBUI_PUBLIC_URL", "https://hermes.example.com")
+    url = build_webui_session_url("abc123")
+    assert url is not None
+    assert "/chat?resume=" in url
+    assert "/session/abc123" not in url

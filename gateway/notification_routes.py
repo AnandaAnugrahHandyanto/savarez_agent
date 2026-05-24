@@ -84,6 +84,11 @@ def build_webui_session_url(session_id: Optional[str] = None) -> Optional[str]:
 
     Returns None instead of inventing a link when session id, host, or port is
     unavailable.
+
+    The path is ``/chat?resume=<session_id>`` — the same deep link the WebUI's
+    Sessions page uses to resume a session in its embedded TUI. The earlier
+    ``/session/<id>`` shape does not exist as a React route, so the WebUI's
+    catch-all redirected the user to ``/sessions`` instead of the actual chat.
     """
     sid = (session_id or os.getenv("HERMES_SESSION_ID") or "").strip()
     if not sid:
@@ -96,14 +101,14 @@ def build_webui_session_url(session_id: Optional[str] = None) -> Optional[str]:
         or ""
     ).strip()
     if base:
-        return f"{base.rstrip('/')}/session/{encoded}"
+        return f"{base.rstrip('/')}/chat?resume={encoded}"
     port = (os.getenv("HERMES_WEBUI_PORT") or "").strip()
     if not port:
         return None
     host = _detect_server_ip()
     if not host:
         return None
-    return f"http://{host}:{port}/session/{encoded}"
+    return f"http://{host}:{port}/chat?resume={encoded}"
 
 
 def _load_state() -> Dict[str, Any]:
