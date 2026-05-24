@@ -7017,6 +7017,12 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "background":
                 return await self._handle_background_command(event)
 
+            # /mission is a control-plane command backed by cron jobs. It should
+            # create/list/pause/resume durable work without interrupting the
+            # currently running foreground agent.
+            if _cmd_def_inner and _cmd_def_inner.name == "mission":
+                return await self._handle_mission_command(event)
+
             # /kanban must bypass the guard. It writes to a profile-agnostic
             # DB (kanban.db), not to the running agent's state. In fact
             # /kanban unblock is often the only way to free a worker that
@@ -7414,6 +7420,9 @@ class GatewayRunner:
 
         if canonical == "background":
             return await self._handle_background_command(event)
+
+        if canonical == "mission":
+            return await self._handle_mission_command(event)
 
         if canonical == "steer":
             # No active agent — /steer has no tool call to inject into.
@@ -11696,6 +11705,99 @@ class GatewayRunner:
                 )
             except Exception:
                 pass
+
+    async def _handle_mission_command(self, event: MessageEvent) -> str:
+        """Handle /mission — cron-backed bounded checkpointed work."""
+        from cron.jobs import pause_job, remove_job, resume_job, trigger_job
+        from hermes_cli.missions import (
+            create_mission,
+            format_mission_line,
+            format_mission_status,
+            list_missions,
+            parse_mission_start_args,
+            resolve_mission,
+        )
+
+        raw_args = event.get_command_args().strip()
+        if not raw_args:
+            missions = list_missions(include_disabled=True)
+            if not missions:
+                return (
+                    "Usage: /mission start [--every 30m] [--hours 8] [--name NAME] "
+                    "[--tools terminal,file] [--workdir /abs/path] <objective>\n"
+                    "Other commands: /mission list, status <id>, pause <id>, resume <id>, stop <id>, run <id>"
+                )
+            return "Active missions:\n" + "\n".join(format_mission_line(job) for job in missions)
+
+        parts = raw_args.split(None, 1)
+        subcmd = parts[0].lower()
+        rest = parts[1].strip() if len(parts) > 1 else ""
+
+        if subcmd == "start":
+            try:
+                spec = parse_mission_start_args(rest)
+                job = create_mission(spec, source=event.source)
+            except ValueError as exc:
+                return f"Mission not started: {exc}"
+            except Exception as exc:
+                logger.exception("Failed to create mission")
+                return f"Mission not started: {exc}"
+            repeat = job.get("repeat") or {}
+            job_id = job.get("id")
+            return (
+                f"🛰️ Mission scheduled: {job_id}\n"
+                f"Runs: {repeat.get('times') or '∞'} · Schedule: {job.get('schedule_display')}\n"
+                f"Next: {job.get('next_run_at')}\n"
+                f"Use /mission status {job_id}, /mission pause {job_id}, /mission resume {job_id}, /mission stop {job_id}."
+            )
+
+        if subcmd in {"list", "ls"}:
+            missions = list_missions(include_disabled=True)
+            if not missions:
+                return "No missions found. Start one with /mission start <objective>."
+            return "Missions:\n" + "\n".join(format_mission_line(job) for job in missions)
+
+        if subcmd == "status":
+            if not rest:
+                return "Usage: /mission status <id-or-name>"
+            try:
+                job = resolve_mission(rest)
+            except LookupError as exc:
+                return str(exc)
+            if not job:
+                return f"No mission found for {rest!r}."
+            return format_mission_status(job)
+
+        if subcmd in {"pause", "resume", "stop", "remove", "run"}:
+            if not rest:
+                return f"Usage: /mission {subcmd} <id-or-name>"
+            try:
+                job = resolve_mission(rest)
+            except LookupError as exc:
+                return str(exc)
+            if not job:
+                return f"No mission found for {rest!r}."
+            job_id = job["id"]
+            if subcmd == "pause":
+                updated = pause_job(job_id, reason="paused by /mission")
+                return f"Mission paused: {job_id}" if updated else f"Failed to pause mission: {job_id}"
+            if subcmd == "resume":
+                updated = resume_job(job_id)
+                if not updated:
+                    return f"Failed to resume mission: {job_id}"
+                return f"Mission resumed: {job_id}\nNext: {updated.get('next_run_at')}"
+            if subcmd in {"stop", "remove"}:
+                return f"Mission stopped and removed: {job_id}" if remove_job(job_id) else f"Failed to stop mission: {job_id}"
+            if subcmd == "run":
+                updated = trigger_job(job_id)
+                if not updated:
+                    return f"Failed to trigger mission: {job_id}"
+                return f"Mission triggered for next scheduler tick: {job_id}"
+
+        return (
+            "Usage: /mission start [--every 30m] [--hours 8] <objective>\n"
+            "Other commands: /mission list, status <id>, pause <id>, resume <id>, stop <id>, run <id>"
+        )
 
     async def _handle_reasoning_command(self, event: MessageEvent) -> str:
         """Handle /reasoning command — manage reasoning effort and display toggle.

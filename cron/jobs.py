@@ -835,8 +835,13 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
     )
 
 
-def remove_job(job_id: str) -> bool:
-    """Remove a job by ID or name."""
+def remove_job(job_id: str, *, preserve_output: bool = False) -> bool:
+    """Remove a job by ID or name.
+
+    By default, remove the job's saved output directory with the job record.
+    Set ``preserve_output=True`` for scheduler-managed terminal states where
+    the output was just written as the durable audit/checkpoint artifact.
+    """
     job = resolve_job_ref(job_id)
     if not job:
         return False
@@ -846,10 +851,11 @@ def remove_job(job_id: str) -> bool:
     jobs = [j for j in jobs if j["id"] != canonical_id]
     if len(jobs) < original_len:
         save_jobs(jobs)
-        # Clean up output directory to prevent orphaned dirs accumulating
-        job_output_dir = OUTPUT_DIR / canonical_id
-        if job_output_dir.exists():
-            shutil.rmtree(job_output_dir)
+        if not preserve_output:
+            # Clean up output directory to prevent orphaned dirs accumulating
+            job_output_dir = OUTPUT_DIR / canonical_id
+            if job_output_dir.exists():
+                shutil.rmtree(job_output_dir)
         return True
     return False
 

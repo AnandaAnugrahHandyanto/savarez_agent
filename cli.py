@@ -8356,6 +8356,8 @@ class HermesCLI:
             self._handle_agents_command()
         elif canonical == "background":
             self._handle_background_command(cmd_original)
+        elif canonical == "mission":
+            self._handle_mission_command(cmd_original)
         elif canonical == "queue":
             # Extract prompt after "/queue " or "/q "
             parts = cmd_original.split(None, 1)
@@ -8540,6 +8542,95 @@ class HermesCLI:
         
         return True
     
+    def _handle_mission_command(self, cmd: str):
+        """Handle /mission — cron-backed bounded checkpointed work."""
+        from cron.jobs import pause_job, remove_job, resume_job, trigger_job
+        from hermes_cli.missions import (
+            create_mission,
+            format_mission_line,
+            format_mission_status,
+            list_missions,
+            parse_mission_start_args,
+            resolve_mission,
+        )
+
+        raw_args = cmd.strip().split(None, 1)[1].strip() if len(cmd.strip().split(None, 1)) > 1 else ""
+        if not raw_args:
+            missions = list_missions(include_disabled=True)
+            if not missions:
+                _cprint("  Usage: /mission start [--every 30m] [--hours 8] [--name NAME] [--tools terminal,file] [--workdir /abs/path] <objective>")
+                _cprint("  Other commands: /mission list, status <id>, pause <id>, resume <id>, stop <id>, run <id>")
+                return
+            _cprint("  Missions:")
+            for job in missions:
+                _cprint("  " + format_mission_line(job).replace("\n", "\n  "))
+            return
+
+        parts = raw_args.split(None, 1)
+        subcmd = parts[0].lower()
+        rest = parts[1].strip() if len(parts) > 1 else ""
+
+        if subcmd == "start":
+            try:
+                spec = parse_mission_start_args(rest)
+                job = create_mission(spec, source=None)
+            except Exception as exc:
+                _cprint(f"  Mission not started: {exc}")
+                return
+            repeat = job.get("repeat") or {}
+            _cprint(f"  🛰️ Mission scheduled: {job.get('id')}")
+            _cprint(f"  Runs: {repeat.get('times') or '∞'} · Schedule: {job.get('schedule_display')}")
+            _cprint(f"  Next: {job.get('next_run_at')}")
+            return
+
+        if subcmd in {"list", "ls"}:
+            missions = list_missions(include_disabled=True)
+            if not missions:
+                _cprint("  No missions found. Start one with /mission start <objective>.")
+                return
+            for job in missions:
+                _cprint("  " + format_mission_line(job).replace("\n", "\n  "))
+            return
+
+        if subcmd == "status":
+            if not rest:
+                _cprint("  Usage: /mission status <id-or-name>")
+                return
+            try:
+                job = resolve_mission(rest)
+            except LookupError as exc:
+                _cprint(f"  {exc}")
+                return
+            _cprint(format_mission_status(job) if job else f"  No mission found for {rest!r}.")
+            return
+
+        if subcmd in {"pause", "resume", "stop", "remove", "run"}:
+            if not rest:
+                _cprint(f"  Usage: /mission {subcmd} <id-or-name>")
+                return
+            try:
+                job = resolve_mission(rest)
+            except LookupError as exc:
+                _cprint(f"  {exc}")
+                return
+            if not job:
+                _cprint(f"  No mission found for {rest!r}.")
+                return
+            job_id = job["id"]
+            if subcmd == "pause":
+                _cprint(f"  Mission paused: {job_id}" if pause_job(job_id, reason="paused by /mission") else f"  Failed to pause mission: {job_id}")
+            elif subcmd == "resume":
+                updated = resume_job(job_id)
+                _cprint(f"  Mission resumed: {job_id}\n  Next: {updated.get('next_run_at')}" if updated else f"  Failed to resume mission: {job_id}")
+            elif subcmd in {"stop", "remove"}:
+                _cprint(f"  Mission stopped and removed: {job_id}" if remove_job(job_id) else f"  Failed to stop mission: {job_id}")
+            elif subcmd == "run":
+                _cprint(f"  Mission triggered for next scheduler tick: {job_id}" if trigger_job(job_id) else f"  Failed to trigger mission: {job_id}")
+            return
+
+        _cprint("  Usage: /mission start [--every 30m] [--hours 8] <objective>")
+        _cprint("  Other commands: /mission list, status <id>, pause <id>, resume <id>, stop <id>, run <id>")
+
     def _handle_background_command(self, cmd: str):
         """Handle /background <prompt> — run a prompt in a separate background session.
 

@@ -124,12 +124,13 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.jobs import get_due_jobs, mark_job_run, remove_job, save_job_output, advance_next_run
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
+MISSION_COMPLETE_MARKER = "[MISSION COMPLETE]"
 
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _hermes_home: Path | None = None
@@ -1897,7 +1898,20 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     success = False
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
+                # mark_job_run may already remove a mission on its final scheduled
+                # repeat. remove_job is intentionally called after that and is
+                # tolerated as best-effort/idempotent; save_job_output has already
+                # written the durable output artifact before this point.
                 mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+                mission = job.get("mission") or {}
+                if (
+                    success
+                    and isinstance(mission, dict)
+                    and mission.get("kind") == "hermes_mission_v1"
+                    and str(final_response or "").lstrip().upper().startswith(MISSION_COMPLETE_MARKER)
+                ):
+                    if remove_job(job["id"], preserve_output=True):
+                        logger.info("Mission job '%s' completed early and was removed", job["id"])
                 return True
 
             except Exception as e:
