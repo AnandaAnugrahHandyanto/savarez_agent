@@ -341,7 +341,7 @@ def _exc_str(exc: BaseException) -> str:
 # These are WARNING-level — we log but don't block, since false positives
 # would break legitimate MCP servers.
 _MCP_INJECTION_PATTERNS = [
-    (re.compile(r"ignore\s+(all\s+)?previous\s+instructions", re.I),
+    (re.compile(r"ignore\s+(?:\w+\s+)*(previous|all|above|prior)\s+(?:\w+\s+)*instructions", re.I),
      "prompt override attempt ('ignore previous instructions')"),
     (re.compile(r"you\s+are\s+now\s+a", re.I),
      "identity override attempt ('you are now a...')"),
