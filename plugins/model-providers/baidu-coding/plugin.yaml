@@ -1,0 +1,5 @@
+name: baidu-coding-provider
+kind: model-provider
+version: 1.0.0
+description: Baidu Coding Plan
+author: Nous Research

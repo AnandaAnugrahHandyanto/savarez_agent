@@ -425,6 +425,21 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-4.7",
         "MiniMax-M2.5",
     ],
+    # Baidu Coding Plan
+    # API: https://qianfan.baidubce.com/v2/coding
+    # Coding Plan keys (sk-sp-*) only work with /v2/coding/* endpoints.
+    # Source: https://cloud.baidu.com/doc/qianfan/s/imlg0beiu
+    # ONLY models listed on the Coding Plan page — do NOT add models from
+    # the general model list page (those require standard sk-* keys).
+    "baidu-coding": [
+        "glm-5.1",
+        "glm-5",
+        "deepseek-v3.2",
+        "deepseek-v4-flash",
+        "kimi-k2.5",
+        "minimax-m2.5",
+        "ernie-4.5-turbo",
+    ],
     # Curated HF model list — only agentic models that map to OpenRouter defaults.
     "huggingface": [
         "moonshotai/Kimi-K2.5",
@@ -957,6 +972,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("azure-foundry",  "Azure Foundry",            "Azure Foundry (OpenAI-style or Anthropic-style endpoint — your Azure AI deployment)"),
     ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway"),
     ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (reuses local Qwen CLI login)"),
+    ProviderEntry("baidu-coding",  "Baidu Coding",            "Baidu Coding Plan"),
 ]
 
 # Auto-extend CANONICAL_PROVIDERS with any provider registered in providers/
