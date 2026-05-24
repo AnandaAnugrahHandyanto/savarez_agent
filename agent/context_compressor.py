@@ -957,6 +957,24 @@ class ContextCompressor(ContextEngine):
             "do not preserve their values."
         )
 
+        # Preservation checklist shared by both first-compaction and iterative-update prompts.
+        # This is deliberately explicit because smaller auxiliary models can otherwise
+        # produce fluent but lossy summaries that omit operationally critical details.
+        _preservation_checklist = """Before writing the summary, apply this internal 12-item preservation checklist. Do NOT include the checklist itself; use it to decide what must appear in the structured sections:
+1. Preserve the user's most recent unfulfilled request exactly in ## Active Task.
+2. Preserve numbered rules, safety constraints, approvals, and prohibitions.
+3. Preserve security-sensitive instructions without secret values; redact credentials as [REDACTED].
+4. Preserve exact file paths, repository/worktree names, branches, and working directories.
+5. Preserve exact commands run and their outcomes, including exit status when known.
+6. Preserve modified, created, deleted, or explicitly untested files and their current status.
+7. Preserve test/build/lint results with pass/fail counts and failing test names or errors.
+8. Preserve configuration values, model names, flags, hostnames, ports, and parameters.
+9. Preserve unresolved blockers, warnings, assumptions, and remaining risks.
+10. Preserve running/background processes, server URLs, PIDs/session IDs when relevant.
+11. Preserve user decisions and answered questions so they are not repeated.
+12. Preserve enough exact evidence for the next agent to verify state without guessing.
+If a detail may affect safety, correctness, money, external messages, credentials, files, tests, or user continuity, include it explicitly even when aggressively compressing."""
+
         # Shared structured template (used by both paths).
         _template_sections = f"""## Active Task
 [THE SINGLE MOST IMPORTANT FIELD. Copy the user's most recent request or
@@ -1029,6 +1047,9 @@ PREVIOUS SUMMARY:
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}
 
+PRESERVATION CHECKLIST:
+{_preservation_checklist}
+
 Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled request — this is the most important field for task continuity.
 
 {_template_sections}"""
@@ -1040,6 +1061,9 @@ Create a structured checkpoint summary for the conversation after earlier turns 
 
 TURNS TO SUMMARIZE:
 {content_to_summarize}
+
+PRESERVATION CHECKLIST:
+{_preservation_checklist}
 
 Use this exact structure:
 
