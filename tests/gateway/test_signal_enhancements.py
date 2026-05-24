@@ -380,6 +380,65 @@ class TestGroupInvitePolicy:
 
         assert "joinGroup" in rpc_calls
 
+    @pytest.mark.asyncio
+    async def test_accepted_group_added_to_runtime_allowlist(self, monkeypatch):
+        """After accepting a group invite, the group ID should be added to
+        the runtime allowlist so subsequent messages are not dropped."""
+        adapter = _make_signal_adapter(
+            monkeypatch,
+            allowed_users="+15559999999",
+        )
+
+        # Initially no groups in allowlist
+        assert len(adapter.group_allow_from) == 0
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            return {"success": True}
+
+        adapter._rpc = mock_rpc
+
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+15559999999",
+                "sourceUuid": "66666666-6666-6666-6666-666666666666",
+                "sourceName": "Approved User",
+                "groupV2": {"groupId": "new-group-abc123"},
+            }
+        }
+
+        await adapter._handle_envelope(envelope)
+
+        # Group should now be in the runtime allowlist
+        assert "new-group-abc123" in adapter.group_allow_from
+
+    @pytest.mark.asyncio
+    async def test_failed_join_does_not_add_to_allowlist(self, monkeypatch):
+        """If both joinGroup and updateGroup fail, group should NOT be added
+        to the allowlist."""
+        adapter = _make_signal_adapter(
+            monkeypatch,
+            allowed_users="+15559999999",
+        )
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            raise Exception(f"{method} failed")
+
+        adapter._rpc = mock_rpc
+
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+15559999999",
+                "sourceUuid": "66666666-6666-6666-6666-666666666666",
+                "sourceName": "Approved User",
+                "groupV2": {"groupId": "failed-group-xyz"},
+            }
+        }
+
+        await adapter._handle_envelope(envelope)
+
+        # Group should NOT be in the allowlist since join failed
+        assert "failed-group-xyz" not in adapter.group_allow_from
+
 
 # ---------------------------------------------------------------------------
 # 2.7 Profile Name Setting

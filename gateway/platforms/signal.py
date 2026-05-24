@@ -571,6 +571,15 @@ class SignalAdapter(BasePlatformAdapter):
                             "Signal: failed to accept group invitation for %s",
                             group_v2_invite_id[:12] if group_v2_invite_id else "?",
                         )
+                        return
+
+                # Dynamically add the accepted group to the runtime allowlist
+                # so subsequent messages from this group are not dropped.
+                self.group_allow_from.add(group_v2_invite_id)
+                logger.info(
+                    "Signal: group %s added to runtime allowlist after invite acceptance",
+                    group_v2_invite_id[:12] if group_v2_invite_id else "?",
+                )
                 return  # nothing else to process — no dataMessage
 
         # Get data message — also check editMessage (edited messages contain
