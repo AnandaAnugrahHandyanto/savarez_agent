@@ -740,6 +740,166 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         return tool_error(str(e), success=False)
 
 
+# ── Skill peek (description-only, no full content load) ───────────────────
+
+
+def skill_peek(names: "list[str]", task_id: Optional[str] = None) -> str:
+    """Return name + description only for one or more skills.
+
+    Use this BEFORE skill_view() to decide if a skill is actually relevant
+    to the current task. Reads only frontmatter — does not load the skill body.
+    Much cheaper than skill_view() (~10 tokens vs ~500-2000 tokens per skill).
+
+    Args:
+        names: List of skill names to peek at (max 10).
+        task_id: Optional task identifier.
+
+    Returns:
+        JSON list of {name, description, category, tags} — no full content.
+    """
+    try:
+        if not names:
+            return json.dumps({"success": False, "error": "names must be non-empty list"})
+        names = names[:10]  # hard cap
+        results = []
+        all_skills = _find_all_skills(skip_disabled=False)
+        index = {s.get("name", ""): s for s in all_skills}
+        # also index by path basename for fuzzy match
+        for s in all_skills:
+            index[s.get("name", "").split("/")[-1]] = s
+
+        for name in names:
+            entry = index.get(name)
+            if entry is None:
+                # Try case-insensitive
+                name_lower = name.lower()
+                entry = next(
+                    (s for s in all_skills if s.get("name", "").lower() == name_lower
+                     or s.get("name", "").lower().split("/")[-1] == name_lower),
+                    None,
+                )
+            if entry is None:
+                results.append({"name": name, "found": False, "description": None})
+            else:
+                results.append({
+                    "name": entry.get("name", name),
+                    "found": True,
+                    "description": entry.get("description") or "",
+                    "category": entry.get("category") or "",
+                    "tags": entry.get("tags") or [],
+                    "hint": "Use skill_view(name) to load full content if this skill is needed.",
+                })
+        return json.dumps({"success": True, "skills": results}, ensure_ascii=False)
+    except Exception as e:
+        return tool_error(str(e), success=False)
+
+
+SKILL_PEEK_SCHEMA = {
+    "name": "skill_peek",
+    "description": (
+        "Check name + description for one or more skills without loading their full content. "
+        "Call this BEFORE skill_view() to decide if a skill is actually needed. "
+        "Use when a skill name looks potentially relevant but you're unsure — peek at its "
+        "description first, then load only if confirmed relevant. "
+        "Returns: name, description, category, tags. Does NOT return skill body/instructions."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "names": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "List of skill names to peek at (max 10).",
+            },
+        },
+        "required": ["names"],
+    },
+}
+
+registry.register(
+    name="skill_peek",
+    toolset="skills",
+    schema=SKILL_PEEK_SCHEMA,
+    handler=lambda args, **kw: skill_peek(
+        names=args.get("names", []), task_id=kw.get("task_id")
+    ),
+    check_fn=check_skills_requirements,
+    emoji="🔍",
+)
+
+
+# ── Skill unload (signal agent to release active skill context) ───────────
+
+
+def skill_unload(name: str, task_id: Optional[str] = None) -> str:
+    """Signal that a previously loaded skill is no longer needed.
+
+    Injects a dismissal notice into the conversation so the agent treats
+    the skill as inactive and stops applying its instructions. Use this
+    after completing a task that required a skill — it frees token budget
+    for future tool calls and prevents stale skill instructions from
+    bleeding into unrelated tasks.
+
+    Args:
+        name: Name of the skill to unload.
+        task_id: Optional task identifier.
+
+    Returns:
+        JSON confirmation with skill name and dismissal message.
+    """
+    try:
+        if not name or not name.strip():
+            return json.dumps({"success": False, "error": "name is required"})
+        name = name.strip()
+        return json.dumps(
+            {
+                "success": True,
+                "name": name,
+                "message": (
+                    f"[Skill '{name}' unloaded] The instructions from this skill are now "
+                    "dismissed. Do not continue applying them unless the skill is explicitly "
+                    "reloaded for a new task."
+                ),
+                "hint": "Skill context released. Proceed without its instructions.",
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return tool_error(str(e), success=False)
+
+
+SKILL_UNLOAD_SCHEMA = {
+    "name": "skill_unload",
+    "description": (
+        "Dismiss a previously loaded skill from the active session context. "
+        "Call this after completing any task for which you loaded a skill. "
+        "Prevents stale skill instructions from bleeding into unrelated tasks "
+        "and frees token budget. Always unload skills when the task is done."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Name of the skill to unload (e.g. 'flutter-managing-state').",
+            },
+        },
+        "required": ["name"],
+    },
+}
+
+registry.register(
+    name="skill_unload",
+    toolset="skills",
+    schema=SKILL_UNLOAD_SCHEMA,
+    handler=lambda args, **kw: skill_unload(
+        name=args.get("name", ""), task_id=kw.get("task_id")
+    ),
+    check_fn=check_skills_requirements,
+    emoji="📤",
+)
+
+
 # ── Plugin skill serving ──────────────────────────────────────────────────
 
 
