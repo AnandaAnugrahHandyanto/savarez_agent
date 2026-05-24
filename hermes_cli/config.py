@@ -672,7 +672,7 @@ DEFAULT_CONFIG = {
     "web": {
         "backend": "",           # shared fallback — applies to both search and extract
         "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
-        "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
+        "extract_backend": "",   # per-capability override for web_extract (e.g. "camofox")
     },
 
     "browser": {
@@ -2343,7 +2343,7 @@ OPTIONAL_ENV_VARS = {
         "description": "Camofox browser server URL for local anti-detection browsing (e.g. http://localhost:9377)",
         "prompt": "Camofox server URL",
         "url": "https://github.com/jo-inc/camofox-browser",
-        "tools": ["browser_navigate", "browser_click"],
+        "tools": ["browser_navigate", "browser_click", "web_extract"],
         "password": False,
         "category": "tool",
     },

@@ -117,6 +117,9 @@ import sys
 
 logger = logging.getLogger(__name__)
 
+_SEARCH_BACKENDS = ("parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai")
+_EXTRACT_BACKENDS = _SEARCH_BACKENDS + ("camofox",)
+
 
 # ─── Backend Selection ────────────────────────────────────────────────────────
 
@@ -140,7 +143,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in _SEARCH_BACKENDS:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -197,7 +200,8 @@ def _get_capability_backend(capability: str) -> str:
     """
     cfg = _load_web_config()
     specific = (cfg.get(f"{capability}_backend") or "").lower().strip()
-    if specific and _is_backend_available(specific):
+    allowed = _EXTRACT_BACKENDS if capability == "extract" else _SEARCH_BACKENDS
+    if specific in allowed and _is_backend_available(specific):
         return specific
     return _get_backend()
 
@@ -228,6 +232,15 @@ def _is_backend_available(backend: str) -> bool:
             return has_xai_credentials()
         except Exception:
             return False
+    if backend == "camofox":
+        # Use the registry provider's is_available() for consistent behavior
+        # across the plugin lifecycle (health checks, config, register/unregister)
+        try:
+            from agent.web_search_registry import get_provider
+            provider = get_provider("camofox")
+            return provider is not None and provider.is_available()
+        except Exception:
+            return False
     return False
 
 
@@ -244,6 +257,32 @@ def _ddgs_package_importable() -> bool:
         return True
     except ImportError:
         return False
+
+
+def _policy_blocked_result(url: str, blocked: Dict[str, Any], title: str = "") -> Dict[str, Any]:
+    return {
+        "url": url,
+        "title": title,
+        "content": "",
+        "raw_content": "",
+        "error": blocked["message"],
+        "blocked_by_policy": {
+            "host": blocked["host"],
+            "rule": blocked["rule"],
+            "source": blocked["source"],
+        },
+    }
+
+
+def _unsafe_url_result(url: str, title: str = "") -> Dict[str, Any]:
+    return {
+        "url": url,
+        "title": title,
+        "content": "",
+        "raw_content": "",
+        "error": "Blocked: URL targets a private or internal network address",
+    }
+
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 
@@ -277,6 +316,7 @@ def _web_requires_env() -> list[str]:
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
+        "CAMOFOX_URL",
     ]
 
 
@@ -909,6 +949,7 @@ async def web_extract_tool(
     
     try:
         logger.info("Extracting content from %d URL(s)", len(urls))
+        skip_llm_processing = False
 
         # ── SSRF protection — filter out private/internal URLs before any backend ──
         safe_urls = []
@@ -928,13 +969,13 @@ async def web_extract_tool(
         else:
             backend = _get_extract_backend()
 
-            # All seven providers (brave-free, ddgs, searxng, exa, parallel,
-            # tavily, firecrawl) now live as plugins. The dispatcher is a
-            # registry lookup + delegation. Some providers' extract() is
-            # async (parallel, firecrawl), others sync (exa, tavily) — we
-            # detect coroutine functions and await; sync functions run
-            # inline (the policy gate, SSRF re-check, etc. live inside the
-            # provider itself for the firecrawl per-URL loop).
+            # All extract providers (camofox, brave-free, ddgs, searxng, exa,
+            # parallel, tavily, firecrawl, xai) now live as plugins. The
+            # dispatcher is a registry lookup + delegation. Some providers'
+            # extract() is async (parallel, firecrawl, camofox), others sync
+            # (exa, tavily) — we detect coroutine functions and await; sync
+            # functions run inline (the policy gate, SSRF re-check, etc. live
+            # inside the provider itself for per-URL loops).
             from agent.web_search_registry import (
                 get_active_extract_provider,
                 get_provider as _wsp_get_provider,
@@ -955,8 +996,8 @@ async def web_extract_tool(
                             "error": (
                                 f"{provider.display_name} is a search-only "
                                 "backend and cannot extract URL content. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
+                                "Set web.extract_backend to camofox, "
+                                "firecrawl, tavily, exa, or parallel."
                             ),
                         },
                         ensure_ascii=False,
@@ -968,18 +1009,24 @@ async def web_extract_tool(
                             "success": False,
                             "error": (
                                 "No web extract provider configured. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
+                                "Set web.extract_backend to camofox, "
+                                "firecrawl, tavily, exa, or parallel."
                             ),
                         },
                         ensure_ascii=False,
                     )
 
+            # Check if provider requires LLM post-processing.
+            # Providers like Camofox return deterministic Markdown and
+            # should bypass the auxiliary-model summarization step.
+            if not provider.requires_llm_processing():
+                skip_llm_processing = True
+
             logger.info(
                 "Web extract via %s: %d URL(s)", provider.name, len(safe_urls)
             )
 
-            # Async-or-sync dispatch: parallel + firecrawl have async
+            # Async-or-sync dispatch: parallel + firecrawl + camofox have async
             # extract(); exa + tavily are sync.
             import inspect
             if inspect.iscoroutinefunction(provider.extract):
@@ -1005,8 +1052,10 @@ async def web_extract_tool(
         effective_model = model or _get_default_summarizer_model()
         auxiliary_available = check_auxiliary_model()
         
-        # Process each result with LLM if enabled
-        if use_llm_processing and auxiliary_available:
+        # Process each result with LLM if enabled. Camofox extraction already
+        # returns deterministic cleaned Markdown and intentionally skips LLM
+        # rewriting even when callers pass use_llm_processing=True.
+        if use_llm_processing and auxiliary_available and not skip_llm_processing:
             logger.info("Processing extracted content with LLM (parallel)...")
             debug_call_data["processing_applied"].append("llm_processing")
             
@@ -1078,9 +1127,11 @@ async def web_extract_tool(
                 else:
                     logger.warning("%s (no content to process)", url)
         else:
-            if use_llm_processing and not auxiliary_available:
+            if use_llm_processing and not auxiliary_available and not skip_llm_processing:
                 logger.warning("LLM processing requested but no auxiliary model available, returning raw content")
                 debug_call_data["processing_applied"].append("llm_processing_unavailable")
+            elif skip_llm_processing:
+                debug_call_data["processing_applied"].append("camofox_deterministic_markdown")
             # Print summary of extracted pages for debugging (original behavior)
             for result in response.get('results', []):
                 url = result.get('url', 'Unknown URL')
@@ -1365,14 +1416,18 @@ async def web_crawl_tool(
 
 # Convenience function to check Firecrawl credentials
 def check_web_api_key() -> bool:
-    """Check whether the configured web backend is available."""
-    configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs"}:
+    """Check whether at least one configured web capability backend is available."""
+    cfg = _load_web_config()
+
+    for capability, allowed in (("search", _SEARCH_BACKENDS), ("extract", _EXTRACT_BACKENDS)):
+        specific = (cfg.get(f"{capability}_backend") or "").lower().strip()
+        if specific in allowed and _is_backend_available(specific):
+            return True
+
+    configured = (cfg.get("backend") or "").lower().strip()
+    if configured in _SEARCH_BACKENDS:
         return _is_backend_available(configured)
-    return any(
-        _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs")
-    )
+    return any(_is_backend_available(backend) for backend in _SEARCH_BACKENDS)
 
 
 def check_auxiliary_model() -> bool:

@@ -129,6 +129,17 @@ class WebSearchProvider(abc.ABC):
         """
         return False
 
+    def requires_llm_processing(self) -> bool:
+        """Return True if extracted content should be post-processed by auxiliary LLM.
+
+        Most providers return raw HTML/text that benefits from LLM
+        summarization (extracting key points, reducing token count).
+        Providers that return clean, deterministic content (e.g. Camofox
+        with accessibility-snapshot Markdown) should override this to
+        return False, bypassing the auxiliary-model step.
+        """
+        return True
+
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
         """Execute a web search.
 

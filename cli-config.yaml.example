@@ -317,6 +317,17 @@ browser:
   inactivity_timeout: 120
 
 # =============================================================================
+# Web Tool Configuration
+# =============================================================================
+# Configure web_search and web_extract backend selection.
+# web.backend is the shared fallback for search-capable providers.
+# Use per-capability keys when search and extraction should use different backends.
+web:
+  backend: ""            # shared fallback: firecrawl | searxng | parallel | tavily | exa
+  search_backend: ""     # e.g. "searxng" for self-hosted search
+  extract_backend: ""    # e.g. "camofox" for local browser-backed web_extract
+
+# =============================================================================
 # Tool Loop Guardrails
 # =============================================================================
 # Soft warnings are enabled by default. They append guidance to repeated failed

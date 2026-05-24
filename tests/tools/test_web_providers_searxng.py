@@ -321,7 +321,7 @@ class TestSearXNGOnlyExtractCrawlErrors:
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
         monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
-        monkeypatch.setattr(web_tools, "check_website_access", lambda url: None)
+        monkeypatch.setattr("tools.website_policy.check_website_access", lambda url: None)
         monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
 
         import json
@@ -335,6 +335,9 @@ class TestSearXNGOnlyExtractCrawlErrors:
     def test_web_extract_searxng_returns_clear_error(self, monkeypatch):
         import asyncio
         from tools import web_tools
+        from agent.web_search_registry import register_provider
+        from plugins.web.camofox.provider import CamofoxWebSearchProvider
+        register_provider(CamofoxWebSearchProvider())
 
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "searxng"})
         monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
@@ -349,3 +352,163 @@ class TestSearXNGOnlyExtractCrawlErrors:
         result = json.loads(result_str)
         assert result["success"] is False
         assert "search-only" in result["error"].lower() or "SearXNG" in result["error"]
+
+    def test_web_extract_searxng_search_with_camofox_extract_backend(self, monkeypatch):
+        import asyncio
+        from tools import web_tools
+        from agent.web_search_registry import register_provider
+        from plugins.web.camofox.provider import CamofoxWebSearchProvider
+        register_provider(CamofoxWebSearchProvider())
+
+        async def fake_camofox_extract(self, urls, **kwargs):
+            return [{
+                "url": urls[0],
+                "title": "Example Domain",
+                "content": "# Example Domain\n\n[Learn more](https://iana.org/domains/example)",
+                "raw_content": "# Example Domain\n\n[Learn more](https://iana.org/domains/example)",
+                "metadata": {"extractor": "camofox"},
+            }]
+
+        async def fail_llm_processing(*args, **kwargs):
+            raise AssertionError("Camofox deterministic extraction must skip LLM cleanup")
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
+            "backend": "searxng",
+            "extract_backend": "camofox",
+        })
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        from plugins.web.camofox.provider import CamofoxWebSearchProvider
+        monkeypatch.setattr(CamofoxWebSearchProvider, "is_available", lambda self: True)
+        monkeypatch.setattr(CamofoxWebSearchProvider, "extract", fake_camofox_extract, raising=False)
+        monkeypatch.setattr(web_tools, "check_auxiliary_model", lambda: True)
+        monkeypatch.setattr(web_tools, "process_content_with_llm", fail_llm_processing)
+        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
+
+        result_str = asyncio.get_event_loop().run_until_complete(
+            web_tools.web_extract_tool(["https://example.com/"], use_llm_processing=True)
+        )
+        result = json.loads(result_str)
+
+        assert result["results"][0]["title"] == "Example Domain"
+        assert "# Example Domain" in result["results"][0]["content"]
+        assert "ref=e" not in result["results"][0]["content"]
+
+    def test_search_backend_stays_searxng_when_extract_backend_is_camofox(self, monkeypatch):
+        from tools import web_tools
+        from agent.web_search_registry import register_provider
+        from plugins.web.camofox.provider import CamofoxWebSearchProvider
+        register_provider(CamofoxWebSearchProvider())
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
+            "backend": "searxng",
+            "extract_backend": "camofox",
+        })
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        from plugins.web.camofox.provider import CamofoxWebSearchProvider
+        monkeypatch.setattr(CamofoxWebSearchProvider, "is_available", lambda self: True)
+
+        assert web_tools._get_search_backend() == "searxng"
+
+    def test_camofox_extract_backend_blocks_policy_before_fetch(self, monkeypatch):
+        import asyncio
+        from tools import web_tools
+        from agent.web_search_registry import register_provider
+        from plugins.web.camofox.provider import CamofoxWebSearchProvider
+        register_provider(CamofoxWebSearchProvider())
+
+        def fail_extract_single(url):
+            raise AssertionError("blocked policy URL must not be sent to Camofox")
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"extract_backend": "camofox"})
+        monkeypatch.setattr(CamofoxWebSearchProvider, "is_available", lambda self: True)
+        monkeypatch.setattr("plugins.web.camofox.provider._extract_single", fail_extract_single)
+        monkeypatch.setattr(web_tools, "check_auxiliary_model", lambda: False)
+        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
+        monkeypatch.setattr("tools.website_policy.check_website_access", lambda url: {
+            "message": "Blocked by policy",
+            "host": "example.com",
+            "rule": "example.com",
+            "source": "test",
+        })
+
+        result_str = asyncio.get_event_loop().run_until_complete(
+            web_tools.web_extract_tool(["https://example.com/"])
+        )
+        result = json.loads(result_str)
+
+        assert result["results"][0]["content"] == ""
+        assert result["results"][0]["error"] == "Blocked by policy"
+        assert result["results"][0]["blocked_by_policy"]["host"] == "example.com"
+
+    def test_camofox_extract_backend_blocks_unsafe_final_url(self, monkeypatch):
+        import asyncio
+        from tools import web_tools
+        from agent.web_search_registry import register_provider
+        from plugins.web.camofox.provider import CamofoxWebSearchProvider
+        register_provider(CamofoxWebSearchProvider())
+
+        def fake_extract_single(url):
+            return {
+                "url": "http://127.0.0.1/private",
+                "title": "Private",
+                "content": "secret local content",
+                "raw_content": "secret local content",
+            }
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"extract_backend": "camofox"})
+        monkeypatch.setattr(CamofoxWebSearchProvider, "is_available", lambda self: True)
+        monkeypatch.setattr("plugins.web.camofox.provider._extract_single", fake_extract_single)
+        monkeypatch.setattr(web_tools, "check_auxiliary_model", lambda: False)
+        monkeypatch.setattr("tools.website_policy.check_website_access", lambda url: None)
+        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
+
+        result_str = asyncio.get_event_loop().run_until_complete(
+            web_tools.web_extract_tool(["https://example.com/"])
+        )
+        result = json.loads(result_str)
+
+        assert result["results"][0]["content"] == ""
+        assert "private or internal" in result["results"][0]["error"]
+
+    def test_camofox_extract_backend_blocks_policy_on_final_url(self, monkeypatch):
+        import asyncio
+        from tools import web_tools
+        from agent.web_search_registry import register_provider
+        from plugins.web.camofox.provider import CamofoxWebSearchProvider
+        register_provider(CamofoxWebSearchProvider())
+
+        def fake_extract_single(url):
+            return {
+                "url": "https://example.com/final",
+                "title": "Blocked",
+                "content": "blocked content",
+                "raw_content": "blocked content",
+            }
+
+        def fake_policy(url):
+            if url == "https://example.com/final":
+                return {
+                    "message": "Blocked final URL",
+                    "host": "example.com",
+                    "rule": "/final",
+                    "source": "test",
+                }
+            return None
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"extract_backend": "camofox"})
+        monkeypatch.setattr(CamofoxWebSearchProvider, "is_available", lambda self: True)
+        monkeypatch.setattr("plugins.web.camofox.provider._extract_single", fake_extract_single)
+        monkeypatch.setattr(web_tools, "check_auxiliary_model", lambda: False)
+        monkeypatch.setattr("tools.website_policy.check_website_access", fake_policy)
+        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
+
+        result_str = asyncio.get_event_loop().run_until_complete(
+            web_tools.web_extract_tool(["https://example.com/"])
+        )
+        result = json.loads(result_str)
+
+        assert result["results"][0]["content"] == ""
+        assert result["results"][0]["error"] == "Blocked final URL"
+        assert result["results"][0]["blocked_by_policy"]["host"] == "example.com"
