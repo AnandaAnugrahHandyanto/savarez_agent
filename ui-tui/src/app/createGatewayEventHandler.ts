@@ -1,6 +1,6 @@
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
-import { buildSetupRequiredSections, setupRequiredTitle } from '../content/setup.js'
+import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE, setupRequiredTitle } from '../content/setup.js'
 import type {
   CommandsCatalogResponse,
   ConfigFullResponse,
@@ -320,6 +320,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'thinking.delta': {
+        if (!getUiState().busy) {
+          return
+        }
+
         const text = ev.payload?.text
 
         if (text !== undefined) {
@@ -347,6 +351,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         if (p.kind === 'goal') {
           sys(p.text)
+
           const brief = p.text.startsWith('✓')
             ? '✓ goal complete'
             : p.text.startsWith('↻')
@@ -354,8 +359,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
               : p.text.startsWith('⏸')
                 ? '⏸ goal paused'
                 : 'ready'
+
           setStatus(brief)
           restoreStatusAfter(6000)
+
           return
         }
 
@@ -363,6 +370,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         if (p.kind === 'compressing') {
           sys(p.text)
+
           return
         }
 
@@ -535,6 +543,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'tool.complete': {
         const inlineDiffText =
           ev.payload.inline_diff && getUiState().inlineDiffs ? stripAnsi(String(ev.payload.inline_diff)).trim() : ''
+
         const resultText = ev.payload.result_text ? stripAnsi(String(ev.payload.result_text)) : undefined
 
         if (inlineDiffText) {
@@ -596,7 +605,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         sys(ti('transcript.bgComplete', { taskId: ev.payload.task_id, text: ev.payload.text }))
 
         return
-
       case 'review.summary': {
         // Self-improvement background review emitted a persistent summary
         // of what it saved to memory/skills. Surface it as a system line
@@ -604,6 +612,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // flash. Python-side already formats it as "💾 Self-improvement
         // review: …".
         const text = String(ev.payload?.text ?? '').trim()
+
         if (text) {
           sys(text)
         }
