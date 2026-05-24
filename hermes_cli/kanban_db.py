@@ -3059,8 +3059,18 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         import shutil
         wp = Path(path)
         if wp.is_dir():
-            shutil.rmtree(wp, ignore_errors=True)
-            _log.debug("Removed scratch workspace: %s", wp)
+            scratch_root = workspaces_root().resolve()
+            try:
+                resolved_wp = wp.resolve()
+                resolved_wp.relative_to(scratch_root)
+            except (OSError, ValueError):
+                _log.warning(
+                    "Refusing to remove scratch workspace outside kanban root: %s",
+                    wp,
+                )
+                return
+            shutil.rmtree(resolved_wp, ignore_errors=True)
+            _log.debug("Removed scratch workspace: %s", resolved_wp)
         # Also kill the tmux session for the worker that owned this task,
         # if the tmux session is now dead (worker process exited).
         _cleanup_worker_tmux(conn, task_id)
@@ -6027,6 +6037,16 @@ def board_stats(conn: sqlite3.Connection) -> dict:
         "oldest_ready_age_seconds": oldest_ready_age,
         "now": now,
     }
+
+
+def _safe_int(val) -> Optional[int]:
+    """Best-effort int conversion for persisted task timestamps."""
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return None
 
 
 def _to_epoch(val) -> Optional[int]:
