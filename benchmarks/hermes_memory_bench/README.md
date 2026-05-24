@@ -48,6 +48,8 @@ python -m benchmarks.hermes_memory_bench.run --suite smoke --output /tmp/hermes-
 - `memory_human_approval_token_write_execution_plan`
 - `memory_human_approval_token_write_execution_dry_run`
 - `memory_human_approval_token_write_final_gate`
+- `memory_human_approval_token_real_write_executor_contract`
+- `memory_human_approval_token_real_write_executor_contract_review_gate`
 - `latency_ms`
 
 ## Hybrid Retrieval Fusion v0.1
@@ -549,6 +551,31 @@ write final gate becomes a real-token-write-executor-contract-required
 candidate without issuing a token, persisting approval, invoking or
 implementing the executor, writing token files, writing approval audit, creating
 a real proposal, or creating an operation event.
+
+### Memory Human Approval Token Real Write Executor Contract Review Gate v0.1
+
+Implemented in
+`agent.memory_human_approval_token_real_write_executor_contract_review_gate`.
+It turns a `real_token_write_executor_contract_required` contract candidate into
+a deterministic, read-only contract review outcome candidate.
+
+v0.1 outcomes are `approve_executor_contract`, `request_contract_changes`,
+`reject_contract`, and `defer_contract_review`. Valid required contracts with
+intact previews, executor contract fields, and source evidence are approved
+only for a later implementation plan. Locked or invalid contracts reject;
+missing previews, missing executor contract fields, missing source evidence,
+preview integrity failures, and contract integrity failures request changes.
+The review gate does not implement or invoke a real token write executor, issue
+approval tokens, persist approvals, create real proposals, write proposal files,
+write operation-ledger events, write token files, write approval audit records,
+submit to governance, write memory, write the Memory Graph, or modify config.
+
+The smoke suite includes
+`memory_human_approval_token_real_write_executor_contract_review_gate`, proving
+that a valid contract becomes `approve_executor_contract` without issuing a
+token, persisting approval, creating a real proposal, writing token files,
+writing approval audit, invoking or implementing a real token write executor,
+or creating an operation event.
 
 ## Report Schema
 

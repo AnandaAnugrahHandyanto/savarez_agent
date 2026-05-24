@@ -228,6 +228,12 @@ eligible final-gate candidates into read-only executor contract candidates that
 define future inputs, hard locks, audit fields, rollback rules, and execution
 boundaries without implementing or invoking a real executor.
 
+Memory Human Approval Token Real Write Executor Contract Review Gate v0.1 lives
+in `agent.memory_human_approval_token_real_write_executor_contract_review_gate`.
+It turns executor contract candidates into read-only review outcomes for a
+later implementation plan without issuing tokens, writing files, persisting
+approvals, creating ledger events, or implementing or invoking an executor.
+
 ---
 
 ## Migrating from OpenClaw
