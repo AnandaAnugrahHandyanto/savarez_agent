@@ -4238,9 +4238,13 @@ class GatewayRunner:
             return HomeAssistantAdapter(config)
 
         elif platform == Platform.EMAIL:
-            from gateway.platforms.email import EmailAdapter, check_email_requirements
-            if not check_email_requirements():
-                logger.warning("Email: EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_IMAP_HOST, or EMAIL_SMTP_HOST not set")
+            from gateway.platforms.email import (
+                EmailAdapter,
+                check_email_requirements,
+                has_configured_email_accounts,
+            )
+            if not check_email_requirements() and not has_configured_email_accounts(config):
+                logger.warning("Email: configure EMAIL_ACCOUNTS or EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_IMAP_HOST, and EMAIL_SMTP_HOST")
                 return None
             return EmailAdapter(config)
 
