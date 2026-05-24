@@ -1818,13 +1818,20 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():
+            platform = Platform(entry.name)
+            existing_config = config.platforms.get(platform)
+            if existing_config is not None and existing_config.enabled is False:
+                # Respect an explicit YAML/config disable. A plugin check_fn only
+                # proves dependencies are installed, not that the platform should
+                # be started. This keeps unused bundled integrations from
+                # reconnect-spamming logs when the user disabled them intentionally.
+                continue
             try:
                 if not entry.check_fn():
                     continue
             except Exception as e:
                 logger.debug("check_fn for %s raised: %s", entry.name, e)
                 continue
-            platform = Platform(entry.name)
             if platform not in config.platforms:
                 config.platforms[platform] = PlatformConfig()
             config.platforms[platform].enabled = True
