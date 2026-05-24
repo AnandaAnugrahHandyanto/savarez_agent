@@ -672,6 +672,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._api_command_gateway: Optional[Any] = None
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -1466,6 +1467,85 @@ class APIServerAdapter(BasePlatformAdapter):
             "data": commands,
         })
 
+    def _get_api_command_gateway(self):
+        """Lazily create a gateway dispatcher for API slash commands.
+
+        The API server is an API client surface, not a messaging platform
+        adapter.  Still, slash-command semantics live in ``GatewayRunner``.
+        Reusing that dispatcher keeps /title, /usage, /model, plugin commands,
+        and future registry commands from diverging here.
+        """
+        if self._api_command_gateway is None:
+            from gateway.run import GatewayRunner
+
+            self._api_command_gateway = GatewayRunner()
+        return self._api_command_gateway
+
+    def _make_api_command_event(self, command: str, session_id: str):
+        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.session import SessionSource
+
+        source = SessionSource(
+            platform=Platform.API_SERVER,
+            chat_id=session_id or "default",
+            chat_name="Chrome Extension",
+            chat_type="dm",
+            user_id="chrome-extension",
+            user_name="Chrome Extension",
+        )
+        return MessageEvent(
+            text=command,
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id=f"api-command-{uuid.uuid4().hex[:12]}",
+            internal=True,
+        )
+
+    def _bind_api_command_session(self, runner: Any, event: Any, session_id: str) -> None:
+        """Map the synthetic API source to the chat-completions session id."""
+        if not session_id:
+            return
+        try:
+            from datetime import datetime
+            from gateway.session import SessionEntry
+
+            source = event.source
+            session_key = runner._session_key_for_source(source)
+            store = runner.session_store
+            now = datetime.now()
+            with store._lock:
+                store._ensure_loaded_locked()
+                entry = store._entries.get(session_key)
+                if entry is None:
+                    entry = SessionEntry(
+                        session_key=session_key,
+                        session_id=session_id,
+                        created_at=now,
+                        updated_at=now,
+                        origin=source,
+                        display_name=source.chat_name,
+                        platform=source.platform,
+                        chat_type=source.chat_type,
+                    )
+                    store._entries[session_key] = entry
+                else:
+                    entry.session_id = session_id
+                    entry.updated_at = now
+                    entry.origin = source
+                    entry.display_name = source.chat_name
+                    entry.platform = source.platform
+                    entry.chat_type = source.chat_type
+                store._save()
+        except Exception as exc:
+            logger.debug("[api_server] failed to bind API command session: %s", exc)
+
+    async def _dispatch_api_gateway_command(self, command: str, session_id: str) -> str:
+        runner = self._get_api_command_gateway()
+        event = self._make_api_command_event(command, session_id)
+        self._bind_api_command_session(runner, event, session_id)
+        result = await runner._handle_message(event)
+        return str(result) if result is not None else ""
+
     async def _handle_api_command(self, request: "web.Request") -> "web.Response":
         """POST /v1/commands — execute slash commands for API clients."""
         auth_err = self._check_auth(request)
@@ -1636,13 +1716,18 @@ class APIServerAdapter(BasePlatformAdapter):
             })
 
         if command_def is not None:
+            try:
+                content = await self._dispatch_api_gateway_command(
+                    raw_command,
+                    approval_session_key,
+                )
+            except Exception as exc:
+                logger.exception("[api_server] API slash command dispatch failed for /%s", canonical)
+                return web.json_response(_openai_error(str(exc)), status=500)
             return web.json_response({
                 "object": "hermes.api_command.result",
                 "command": canonical,
-                "content": (
-                    f"`/{canonical}` is recognized by Hermes but is not available "
-                    "through the API server yet."
-                ),
+                "content": content,
             })
 
         return web.json_response({
