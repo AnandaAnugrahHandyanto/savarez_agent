@@ -5,6 +5,7 @@ import errno
 import json
 import logging
 import os
+import re
 import threading
 from pathlib import Path
 
@@ -852,6 +853,26 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
         return tool_error(str(e))
 
 
+def _extract_v4a_patch_paths_for_checks(patch_content: str) -> list[str]:
+    """Return every filesystem path referenced by V4A file operation markers."""
+    paths: list[str] = []
+    for line in patch_content.splitlines():
+        file_match = re.match(
+            r"^\*\*\*\s*(?:Update|Add|Delete)\s+File:\s*(.+)$",
+            line,
+        )
+        if file_match:
+            paths.append(file_match.group(1).strip())
+            continue
+
+        move_match = re.match(r"^\*\*\*\s*Move\s+File:\s*(.+?)\s*->\s*(.+)$", line)
+        if move_match:
+            paths.append(move_match.group(1).strip())
+            paths.append(move_match.group(2).strip())
+
+    return paths
+
+
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
                task_id: str = "default") -> str:
@@ -861,9 +882,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     if path:
         _paths_to_check.append(path)
     if mode == "patch" and patch:
-        import re as _re
-        for _m in _re.finditer(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
-            _paths_to_check.append(_m.group(1).strip())
+        _paths_to_check.extend(_extract_v4a_patch_paths_for_checks(patch))
     for _p in _paths_to_check:
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:

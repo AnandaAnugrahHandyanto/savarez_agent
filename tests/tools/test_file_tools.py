@@ -198,6 +198,35 @@ class TestPatchHandler:
         assert result["status"] == "ok"
         mock_ops.patch_v4a.assert_called_once()
 
+    def test_v4a_path_extraction_includes_move_source_and_destination(self):
+        from tools.file_tools import _extract_v4a_patch_paths_for_checks
+
+        paths = _extract_v4a_patch_paths_for_checks(
+            "*** Begin Patch\n"
+            "*** Update File: app.py\n"
+            "*** Move File: src/config.py -> /etc/hosts\n"
+            "*** End Patch"
+        )
+
+        assert paths == ["app.py", "src/config.py", "/etc/hosts"]
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_mode_blocks_sensitive_move_destination(self, mock_get):
+        from tools.file_tools import patch_tool
+
+        result = json.loads(patch_tool(
+            mode="patch",
+            patch=(
+                "*** Begin Patch\n"
+                "*** Move File: src/config.py -> /etc/hosts\n"
+                "*** End Patch"
+            ),
+        ))
+
+        assert "error" in result
+        assert "sensitive system path" in result["error"]
+        mock_get.assert_not_called()
+
     @patch("tools.file_tools._get_file_ops")
     def test_patch_mode_missing_content_errors(self, mock_get):
         from tools.file_tools import patch_tool
