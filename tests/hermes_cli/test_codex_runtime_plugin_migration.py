@@ -859,7 +859,29 @@ class TestHermesHomeLeakGuard:
         monkeypatch.delenv("HERMES_HOME", raising=False)
         entry = _build_hermes_tools_mcp_entry()
         env = entry.get("env", {})
-        assert "HERMES_HOME" not in env, (
+        assert "HERMES_HOME" not in env
+
+    def test_kanban_worker_env_passthrough(self, monkeypatch):
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "task-99")
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", "/repo/.worktrees/task-99")
+        monkeypatch.setenv("HERMES_PROFILE", "work")
+
+        entry = _build_hermes_tools_mcp_entry()
+        env = entry.get("env", {})
+        assert env.get("HERMES_KANBAN_TASK") == "task-99"
+        assert env.get("HERMES_KANBAN_BOARD") == "default"
+        assert env.get("HERMES_KANBAN_WORKSPACE") == "/repo/.worktrees/task-99"
+        assert env.get("HERMES_PROFILE") == "work"
+        assert "HERMES_MCP_CURSOR_SURFACE" not in env
+
+    def test_cursor_surface_flag_only_for_cursor_entry(self, monkeypatch):
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        codex_entry = _build_hermes_tools_mcp_entry(cursor_surface=False)
+        cursor_entry = _build_hermes_tools_mcp_entry(cursor_surface=True)
+        assert "HERMES_MCP_CURSOR_SURFACE" not in codex_entry.get("env", {})
+        assert codex_entry.get("env", {}).get("HERMES_MCP_CURSOR_SURFACE") is None
+        assert cursor_entry.get("env", {}).get("HERMES_MCP_CURSOR_SURFACE") == "1", (
             f"HERMES_HOME should not be set when env var is unset, got: "
             f"{env.get('HERMES_HOME')!r}"
         )

@@ -244,6 +244,28 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "kanban_link",
 )
 
+# Cursor agents do not have Codex's built-in shell/file tools; expose them
+# via hermes-tools when ``HERMES_MCP_CURSOR_SURFACE=1`` (set by
+# ``build_cursor_mcp_servers``).
+CURSOR_SURFACE_TOOLS: tuple[str, ...] = (
+    "terminal",
+    "read_file",
+    "write_file",
+    "patch",
+    "search_files",
+    "process",
+)
+
+
+def exposed_tools_for_process() -> tuple[str, ...]:
+    """Tool names registered on this MCP server for the current process."""
+    names = list(EXPOSED_TOOLS)
+    flag = os.environ.get("HERMES_MCP_CURSOR_SURFACE", "").strip().lower()
+    if flag in {"1", "true", "yes", "on"}:
+        names.extend(CURSOR_SURFACE_TOOLS)
+    # Preserve order, drop duplicates.
+    return tuple(dict.fromkeys(names))
+
 
 def _build_server() -> Any:
     """Create the FastMCP server with Hermes tools attached. Lazy imports
@@ -281,9 +303,10 @@ def _build_server() -> Any:
         if isinstance(td, dict) and td.get("type") == "function"
     }
 
+    tools_to_expose = exposed_tools_for_process()
     exposed_count = 0
 
-    for name in EXPOSED_TOOLS:
+    for name in tools_to_expose:
         spec = all_defs.get(name)
         if spec is None:
             logger.debug(
@@ -320,7 +343,7 @@ def _build_server() -> Any:
     logger.info(
         "hermes-tools MCP server registered %d/%d tools",
         exposed_count,
-        len(EXPOSED_TOOLS),
+        len(tools_to_expose),
     )
     return mcp
 

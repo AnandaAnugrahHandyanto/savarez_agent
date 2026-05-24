@@ -132,7 +132,7 @@ def build_cursor_mcp_servers(
     from hermes_cli.codex_runtime_plugin_migration import _build_hermes_tools_mcp_entry
 
     pkg_root = _hermes_package_root()
-    hermes_tools = _build_hermes_tools_mcp_entry()
+    hermes_tools = _build_hermes_tools_mcp_entry(cursor_surface=True)
     hermes_tools["cwd"] = pkg_root
 
     servers: dict[str, dict[str, Any]] = {"hermes-tools": hermes_tools}

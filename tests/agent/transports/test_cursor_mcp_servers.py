@@ -19,6 +19,21 @@ def test_hermes_tools_mcp_uses_package_root_cwd():
     assert "agent.transports.hermes_tools_mcp_server" in entry["args"]
 
 
+def test_cursor_mcp_entry_enables_cursor_surface_and_kanban_env(monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-abc")
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", "/tmp/worktree")
+    monkeypatch.setenv("HERMES_PROFILE", "work")
+
+    entry = build_cursor_mcp_servers(hermes_config={})["hermes-tools"]
+    env = entry.get("env", {})
+    assert env.get("HERMES_MCP_CURSOR_SURFACE") == "1"
+    assert env.get("HERMES_KANBAN_TASK") == "task-abc"
+    assert env.get("HERMES_KANBAN_BOARD") == "default"
+    assert env.get("HERMES_KANBAN_WORKSPACE") == "/tmp/worktree"
+    assert env.get("HERMES_PROFILE") == "work"
+
+
 def test_translate_http_mcp_headers_for_cursor():
     translated = _translate_hermes_mcp_for_cursor(
         "notion",

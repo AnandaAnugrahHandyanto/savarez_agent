@@ -101,6 +101,22 @@ class TestModuleSurface:
                 f"{orch_tool!r} missing from codex callback"
             )
 
+    def test_cursor_surface_adds_terminal_and_file_tools(self, monkeypatch):
+        from agent.transports.hermes_tools_mcp_server import (
+            CURSOR_SURFACE_TOOLS,
+            EXPOSED_TOOLS,
+            exposed_tools_for_process,
+        )
+
+        monkeypatch.delenv("HERMES_MCP_CURSOR_SURFACE", raising=False)
+        assert "terminal" not in exposed_tools_for_process()
+        assert "terminal" not in EXPOSED_TOOLS
+
+        monkeypatch.setenv("HERMES_MCP_CURSOR_SURFACE", "1")
+        surface = exposed_tools_for_process()
+        for name in CURSOR_SURFACE_TOOLS:
+            assert name in surface, f"{name!r} missing from cursor MCP surface"
+
 
 class TestToolHandlerBuilder:
     def test_normalize_tool_args_unwraps_legacy_kwargs(self):

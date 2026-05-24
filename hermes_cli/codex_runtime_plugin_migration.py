@@ -554,17 +554,13 @@ def _looks_like_test_tempdir(path: str) -> bool:
     return any(needle in normalized for needle in needles)
 
 
-def _build_hermes_tools_mcp_entry() -> dict:
-    """Build the codex stdio-transport entry that launches Hermes' own
-    tool surface as an MCP server. Codex's subprocess will call back into
-    this for browser/web/delegate_task/vision/memory/skills tools.
+def _mcp_subprocess_context_env(*, cursor_surface: bool = False) -> dict[str, str]:
+    """Env vars for the hermes-tools MCP stdio child process.
 
-    The command runs the worktree's Python via the current sys.executable
-    so a hermes installed under /opt/, /usr/local/, or a venv all work.
-    HERMES_HOME and PYTHONPATH are passed through so the spawned process
-    sees the same config + module layout the user is running."""
-    import sys
-
+    The subprocess must see the same Hermes home, kanban worker scope, and
+    (for Cursor) tool surface flags as the parent CLI so ``get_tool_definitions``
+    registers the same tools the parent agent expects.
+    """
     env: dict[str, str] = {}
     # HERMES_HOME passes through IF SET so the MCP subprocess sees the same
     # config / auth / sessions DB as the parent CLI. Read from os.environ
@@ -589,9 +585,33 @@ def _build_hermes_tools_mcp_entry() -> dict:
     pythonpath = os.environ.get("PYTHONPATH")
     if pythonpath:
         env["PYTHONPATH"] = pythonpath
+    for key, value in os.environ.items():
+        if key.startswith("HERMES_KANBAN_") and value:
+            env[key] = value
+    for key in ("HERMES_PROFILE", "HERMES_TENANT", "TERMINAL_CWD"):
+        value = os.environ.get(key)
+        if value:
+            env[key] = value
     # Quiet mode + redaction defaults so the MCP wire stays clean.
     env["HERMES_QUIET"] = "1"
     env["HERMES_REDACT_SECRETS"] = env.get("HERMES_REDACT_SECRETS", "true")
+    if cursor_surface:
+        env["HERMES_MCP_CURSOR_SURFACE"] = "1"
+    return env
+
+
+def _build_hermes_tools_mcp_entry(*, cursor_surface: bool = False) -> dict:
+    """Build the codex stdio-transport entry that launches Hermes' own
+    tool surface as an MCP server. Codex's subprocess will call back into
+    this for browser/web/delegate_task/vision/memory/skills tools.
+
+    The command runs the worktree's Python via the current sys.executable
+    so a hermes installed under /opt/, /usr/local/, or a venv all work.
+    HERMES_HOME and PYTHONPATH are passed through so the spawned process
+    sees the same config + module layout the user is running."""
+    import sys
+
+    env = _mcp_subprocess_context_env(cursor_surface=cursor_surface)
 
     out: dict[str, Any] = {
         "command": sys.executable,
