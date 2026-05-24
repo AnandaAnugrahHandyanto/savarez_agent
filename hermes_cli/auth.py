@@ -1469,17 +1469,6 @@ def resolve_provider(
     if explicit_api_key or explicit_base_url:
         return "openrouter"
 
-    # Check auth store for an active OAuth provider
-    try:
-        auth_store = _load_auth_store()
-        active = auth_store.get("active_provider")
-        if active and active in PROVIDER_REGISTRY:
-            status = get_auth_status(active)
-            if status.get("logged_in"):
-                return active
-    except Exception as e:
-        logger.debug("Could not detect active auth provider: %s", e)
-
     if has_usable_secret(os.getenv("OPENAI_API_KEY")) or has_usable_secret(os.getenv("OPENROUTER_API_KEY")):
         return "openrouter"
 
@@ -1498,6 +1487,18 @@ def resolve_provider(
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(os.getenv(env_var, "")):
                 return pid
+
+    # Check auth store for an active OAuth provider
+    # Priority: config.yaml > env vars > active_provider > provider-specific keys
+    try:
+        auth_store = _load_auth_store()
+        active = auth_store.get("active_provider")
+        if active and active in PROVIDER_REGISTRY:
+            status = get_auth_status(active)
+            if status.get("logged_in"):
+                return active
+    except Exception as e:
+        logger.debug("Could not detect active auth provider: %s", e)
 
     # AWS Bedrock — detect via boto3 credential chain (IAM roles, SSO, env vars).
     # This runs after API-key providers so explicit keys always win.
