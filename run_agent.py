@@ -1956,6 +1956,22 @@ class AIAgent:
         NOT called per-turn — only at CLI exit, /reset, gateway
         session expiry, etc.
         """
+        if getattr(self, "_memory_review_on_session_end", False):
+            try:
+                from agent.background_review import spawn_background_review_thread
+                _target, _ = spawn_background_review_thread(
+                    self,
+                    list(messages or []),
+                    review_memory=True,
+                )
+                _t = threading.Thread(target=_target, daemon=False, name="bg-review-session-end")
+                _t.start()
+                # Bounded join: review must not block shutdown indefinitely.
+                # 10s is enough for the model call to begin; daemon=False lets
+                # any remaining work finish naturally after the join returns.
+                _t.join(timeout=10)
+            except Exception:
+                pass
         if self._memory_manager:
             try:
                 self._memory_manager.on_session_end(messages or [])
