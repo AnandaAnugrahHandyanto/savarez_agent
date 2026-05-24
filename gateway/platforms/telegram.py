@@ -31,6 +31,7 @@ try:
         CommandHandler,
         CallbackQueryHandler,
         MessageHandler as TelegramMessageHandler,
+        TypeHandler,
         ContextTypes,
         filters,
     )
@@ -49,6 +50,7 @@ except ImportError:
     CommandHandler = Any
     CallbackQueryHandler = Any
     TelegramMessageHandler = Any
+    TypeHandler = None
     HTTPXRequest = Any
     filters = None
     ParseMode = None
@@ -118,7 +120,7 @@ def check_telegram_requirements() -> bool:
     """
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
-    global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
+    global CommandHandler, CallbackQueryHandler, TelegramMessageHandler, TypeHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
         return True
@@ -138,6 +140,7 @@ def check_telegram_requirements() -> bool:
             Application as _App, CommandHandler as _CH,
             CallbackQueryHandler as _CQH,
             MessageHandler as _MH,
+            TypeHandler as _TH,
             ContextTypes as _CT, filters as _filters,
         )
         from telegram.constants import ParseMode as _PM, ChatType as _CtT
@@ -154,6 +157,7 @@ def check_telegram_requirements() -> bool:
     CommandHandler = _CH
     CallbackQueryHandler = _CQH
     TelegramMessageHandler = _MH
+    TypeHandler = _TH
     ContextTypes = _CT
     filters = _filters
     ParseMode = _PM
@@ -425,6 +429,10 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        # Telegram Business/Profile Automation updates are passive inbox data,
+        # not chat prompts. Keep connection-owner mappings so message updates
+        # can be stored in the correct per-account life inbox.
+        self._business_connection_user_chat_ids: Dict[str, str] = {}
         self._polling_error_task: Optional[asyncio.Task] = None
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
@@ -1433,7 +1441,12 @@ class TelegramAdapter(BasePlatformAdapter):
             self._app = builder.build()
             self._bot = self._app.bot
             
-            # Register handlers
+            # Register handlers. Business/Profile Automation updates are
+            # observed in a separate pre-processing group so connection
+            # metadata/deletions are captured, while regular message handlers
+            # still run for non-business updates.
+            if TypeHandler is not None:
+                self._app.add_handler(TypeHandler(Update, self._handle_business_update), group=-1)
             self._app.add_handler(TelegramMessageHandler(
                 filters.TEXT & ~filters.COMMAND,
                 self._handle_text_message
@@ -1683,6 +1696,18 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send a message to a Telegram chat."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+
+        if self._is_own_bot_id(chat_id):
+            logger.warning(
+                "[%s] Refusing to send Telegram message to own bot chat_id=%s",
+                self.name,
+                chat_id,
+            )
+            # Treat as delivered from the gateway's perspective: this is a
+            # permanent routing bug/stale session, not a transient delivery
+            # failure. Returning success prevents retry/fallback loops that
+            # would keep hitting Telegram with an impossible bot-to-bot DM.
+            return SendResult(success=True, message_id=None)
         
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
@@ -4695,6 +4720,10 @@ class TelegramAdapter(BasePlatformAdapter):
         mentioning the bot (``@botname /command``), both of which are
         recognised as mentions by :meth:`_message_mentions_bot`.
         """
+        if self._message_from_own_bot(message):
+            logger.info("[%s] Ignoring Telegram message from own bot", self.name)
+            return False
+
         if not self._is_group_chat(message):
             return True
 
@@ -4786,6 +4815,498 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
+    @staticmethod
+    def _to_plain_dict(value: Any) -> Any:
+        if value is None:
+            return {}
+        to_dict = getattr(value, "to_dict", None)
+        if callable(to_dict):
+            try:
+                return to_dict()
+            except Exception:
+                return {}
+        if isinstance(value, (dict, list, str, int, float, bool)):
+            return value
+        return str(value)
+
+    @classmethod
+    def _payload_shape_only(cls, value: Any, *, _depth: int = 0, _max_depth: int = 5) -> dict[str, Any]:
+        """Return payload key/type shape without storing primitive values.
+
+        Telegram Business live probes need field availability and object shape,
+        not private text, names, file ids, or other raw values. This helper is
+        deliberately value-blind: every primitive becomes only its type name.
+        """
+
+        if value is None or cls._is_unset_mock(value):
+            return {"type": "null"}
+        if _depth >= _max_depth:
+            return {"type": type(value).__name__, "truncated": True}
+
+        if isinstance(value, dict):
+            return {
+                "type": "object",
+                "keys": {
+                    str(key): cls._payload_shape_only(item, _depth=_depth + 1, _max_depth=_max_depth)
+                    for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+                },
+            }
+        if isinstance(value, (list, tuple)):
+            first_shape = (
+                cls._payload_shape_only(value[0], _depth=_depth + 1, _max_depth=_max_depth)
+                if value
+                else None
+            )
+            result: dict[str, Any] = {"type": "list", "length": len(value)}
+            if first_shape is not None:
+                result["first_item"] = first_shape
+            return result
+        if isinstance(value, (str, int, float, bool)):
+            return {"type": type(value).__name__}
+
+        to_dict = getattr(value, "to_dict", None)
+        if callable(to_dict):
+            try:
+                return cls._payload_shape_only(to_dict(), _depth=_depth, _max_depth=_max_depth)
+            except Exception:
+                return {"type": type(value).__name__, "to_dict_error": True}
+        if hasattr(value, "__dict__"):
+            public_attrs = {
+                key: item
+                for key, item in vars(value).items()
+                if not key.startswith("_") and not callable(item)
+            }
+            return cls._payload_shape_only(public_attrs, _depth=_depth, _max_depth=_max_depth)
+        return {"type": type(value).__name__}
+
+    @classmethod
+    def _field_present(cls, obj: Any, attr: str) -> bool:
+        if obj is None or cls._is_unset_mock(obj):
+            return False
+        value = getattr(obj, attr, None)
+        if value is None or cls._is_unset_mock(value):
+            return False
+        if isinstance(value, str):
+            return bool(value)
+        if isinstance(value, (list, tuple, set, dict)):
+            return bool(value)
+        return True
+
+    @classmethod
+    def _text_present(cls, obj: Any, attr: str) -> bool:
+        if obj is None or cls._is_unset_mock(obj):
+            return False
+        value = getattr(obj, attr, None)
+        return bool(value) and not cls._is_unset_mock(value)
+
+    @classmethod
+    def _business_payload_field_availability(cls, update: Any, message: Any) -> dict[str, Any]:
+        sender = getattr(message, "from_user", None) or getattr(message, "sender_chat", None)
+        chat = getattr(message, "chat", None)
+        effective_message = getattr(update, "effective_message", None) or getattr(update, "message", None)
+        media_fields = (
+            "animation",
+            "audio",
+            "contact",
+            "dice",
+            "document",
+            "game",
+            "location",
+            "paid_media",
+            "photo",
+            "poll",
+            "sticker",
+            "story",
+            "venue",
+            "video",
+            "video_note",
+            "voice",
+        )
+        message_fields = {
+            "has_text": cls._text_present(message, "text"),
+            "has_caption": cls._text_present(message, "caption"),
+            "has_entities": cls._field_present(message, "entities"),
+            "has_caption_entities": cls._field_present(message, "caption_entities"),
+            "has_reply_to_message": cls._field_present(message, "reply_to_message"),
+            "has_external_reply": cls._field_present(message, "external_reply"),
+            "has_quote": cls._field_present(message, "quote"),
+            "has_forward_origin": cls._field_present(message, "forward_origin"),
+            "has_media_group_id": cls._field_present(message, "media_group_id"),
+            "has_sender_business_bot": cls._field_present(message, "sender_business_bot"),
+            "has_is_from_offline": cls._field_present(message, "is_from_offline"),
+            "has_edit_date": cls._field_present(message, "edit_date"),
+            "has_business_connection_id": cls._field_present(message, "business_connection_id"),
+        }
+        for field in media_fields:
+            message_fields[f"has_{field}"] = cls._field_present(message, field)
+        return {
+            "update": {
+                "has_business_connection": cls._field_present(update, "business_connection"),
+                "has_business_message": cls._field_present(update, "business_message"),
+                "has_edited_business_message": cls._field_present(update, "edited_business_message"),
+                "has_deleted_business_messages": cls._field_present(update, "deleted_business_messages"),
+                "has_regular_message": cls._field_present(update, "message"),
+                "has_effective_message": effective_message is not None and not cls._is_unset_mock(effective_message),
+                "regular_message_has_business_connection_id": bool(
+                    effective_message and cls._business_connection_id_from_message(effective_message)
+                ),
+            },
+            "chat": {
+                "chat_type": str(getattr(chat, "type", "")) or None,
+                "has_username": cls._field_present(chat, "username"),
+                "has_title": cls._field_present(chat, "title"),
+                "has_full_name": cls._field_present(chat, "full_name"),
+            },
+            "sender": {
+                "has_from_user": sender is not None and not cls._is_unset_mock(sender),
+                "has_username": cls._field_present(sender, "username"),
+                "has_is_bot": cls._field_present(sender, "is_bot"),
+                "has_language_code": cls._field_present(sender, "language_code"),
+                "has_is_premium": cls._field_present(sender, "is_premium"),
+            },
+            "message": message_fields,
+        }
+
+    @classmethod
+    def _business_payload_media_summary(cls, message: Any) -> dict[str, Any]:
+        media_fields = (
+            "animation",
+            "audio",
+            "contact",
+            "document",
+            "location",
+            "paid_media",
+            "photo",
+            "poll",
+            "sticker",
+            "venue",
+            "video",
+            "video_note",
+            "voice",
+        )
+        summary: dict[str, Any] = {}
+        for field in media_fields:
+            value = getattr(message, field, None)
+            if value is None or cls._is_unset_mock(value):
+                continue
+            if isinstance(value, (list, tuple, set, dict)) and not value:
+                continue
+            summary[field] = {"present": True, "count": len(value) if isinstance(value, (list, tuple, set, dict)) else 1}
+        return summary
+
+    @classmethod
+    def _business_payload_reply_summary(cls, message: Any) -> dict[str, Any]:
+        reply = getattr(message, "reply_to_message", None)
+        if reply is None or cls._is_unset_mock(reply):
+            return {}
+        return {
+            "present": True,
+            "message_id": str(getattr(reply, "message_id", "")) or None,
+            "has_text": cls._text_present(reply, "text"),
+            "has_caption": cls._text_present(reply, "caption"),
+        }
+
+    def _business_payload_probe_capture_all(self) -> bool:
+        configured = None
+        if getattr(self.config, "extra", None):
+            configured = self.config.extra.get("business_payload_probe_capture_all")
+        if configured is None:
+            configured = os.getenv("HERMES_TELEGRAM_BUSINESS_PAYLOAD_PROBE", "")
+        if isinstance(configured, str):
+            return configured.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(configured)
+
+    @staticmethod
+    def _business_connection_id_from_message(message: Any) -> Optional[str]:
+        connection_id = getattr(message, "business_connection_id", None)
+        if connection_id is None:
+            return None
+        connection_id = str(connection_id).strip()
+        return connection_id or None
+
+    @staticmethod
+    def _chat_display_name(chat: Any) -> Optional[str]:
+        for attr in ("title", "full_name", "username", "first_name", "name"):
+            value = getattr(chat, attr, None)
+            if value:
+                return str(value)
+        return None
+
+    @staticmethod
+    def _user_display_name(user: Any) -> Optional[str]:
+        for attr in ("full_name", "username", "first_name", "name"):
+            value = getattr(user, attr, None)
+            if value:
+                return str(value)
+        return None
+
+    def _own_bot_id(self) -> Optional[str]:
+        if not self._bot:
+            return None
+        bot_id = getattr(self._bot, "id", None)
+        if bot_id is None:
+            return None
+        return str(bot_id)
+
+    def _is_own_bot_id(self, value: Any) -> bool:
+        own_bot_id = self._own_bot_id()
+        return bool(own_bot_id and value is not None and str(value) == own_bot_id)
+
+    def _message_from_own_bot(self, message: Any) -> bool:
+        sender = getattr(message, "from_user", None)
+        return self._is_own_bot_id(getattr(sender, "id", None))
+
+    @staticmethod
+    def _is_unset_mock(value: Any) -> bool:
+        # Unit-test MagicMock objects fabricate arbitrary attributes on access.
+        # Treat those synthetic placeholders as absent so normal Telegram
+        # messages are not mistaken for Business updates.
+        return type(value).__module__.startswith("unittest.mock")
+
+    def _is_business_update(self, update: Any) -> bool:
+        for attr in (
+            "business_connection",
+            "business_message",
+            "edited_business_message",
+            "deleted_business_messages",
+        ):
+            value = getattr(update, attr, None)
+            if value is not None and not self._is_unset_mock(value):
+                return True
+        msg = self._effective_update_message(update)
+        return bool(msg and not self._is_unset_mock(msg) and self._business_connection_id_from_message(msg))
+
+    def _iter_business_message_payloads(self, update: Any):
+        seen_object_ids: set[int] = set()
+        seen_message_keys: set[tuple[str, str | None, str | None, str | None]] = set()
+
+        def should_yield(update_type: str, message: Any) -> bool:
+            if message is None or self._is_unset_mock(message):
+                return False
+            object_id = id(message)
+            if object_id in seen_object_ids:
+                return False
+
+            connection_id = self._business_connection_id_from_message(message)
+            chat = getattr(message, "chat", None)
+            chat_id = None if chat is None or self._is_unset_mock(chat) else getattr(chat, "id", None)
+            message_id = getattr(message, "message_id", None)
+            message_key = (
+                update_type,
+                str(connection_id) if connection_id is not None else None,
+                str(chat_id) if chat_id is not None else None,
+                str(message_id) if message_id is not None else None,
+            )
+            has_semantic_key = any(part is not None for part in message_key[1:])
+            if has_semantic_key and message_key in seen_message_keys:
+                return False
+
+            seen_object_ids.add(object_id)
+            if has_semantic_key:
+                seen_message_keys.add(message_key)
+            return True
+
+        for attr, update_type in (
+            ("business_message", "business_message"),
+            ("edited_business_message", "edited_business_message"),
+        ):
+            message = getattr(update, attr, None)
+            if should_yield(update_type, message):
+                yield update_type, message
+
+        # Some Bot API/PTB paths expose Business/Profile Automation messages as
+        # the ordinary update.message/effective_message while preserving
+        # Message.business_connection_id. Treat those as business inbox data too;
+        # otherwise owner-sent replies look like authorized prompts and launch
+        # the LLM, while counterpart messages are rejected as unauthorized.
+        for message in (getattr(update, "message", None), self._effective_update_message(update)):
+            if message is None or self._is_unset_mock(message):
+                continue
+            if not self._business_connection_id_from_message(message):
+                continue
+            if should_yield("business_message", message):
+                yield "business_message", message
+
+    def _record_business_connection_update(self, update: Any, business_connection: Any) -> None:
+        connection_id = getattr(business_connection, "id", None)
+        user_chat_id = getattr(business_connection, "user_chat_id", None)
+        if not connection_id or user_chat_id is None:
+            logger.warning("[Telegram Business Inbox] skipping connection store: missing connection or owner id")
+            return
+
+        user = getattr(business_connection, "user", None)
+        try:
+            from gateway.life_inbox_store import LifeInboxStore
+
+            store = LifeInboxStore.for_telegram_user_chat_id(user_chat_id)
+            store.record_business_connection(
+                update_id=getattr(update, "update_id", None),
+                connection_id=str(connection_id),
+                is_enabled=getattr(business_connection, "is_enabled", None),
+                user_chat_id=user_chat_id,
+                user_id=getattr(user, "id", None),
+                username=getattr(user, "username", None),
+                full_name=self._user_display_name(user),
+                rights=self._to_plain_dict(getattr(business_connection, "rights", None)),
+            )
+            self._business_connection_user_chat_ids[str(connection_id)] = str(user_chat_id)
+        except Exception as exc:
+            logger.warning("[Telegram Business Inbox] skipping connection store: %s", exc)
+
+    def _business_owner_for_connection(self, connection_id: Optional[str]) -> Optional[str]:
+        if not connection_id:
+            return None
+        cached = self._business_connection_user_chat_ids.get(connection_id)
+        if cached:
+            return cached
+        try:
+            from gateway.life_inbox_store import resolve_business_connection_user_chat_id
+
+            owner = resolve_business_connection_user_chat_id(connection_id)
+        except Exception:
+            owner = None
+        if owner:
+            self._business_connection_user_chat_ids[connection_id] = str(owner)
+            return str(owner)
+        return None
+
+    def _record_business_message_update(self, update: Any, update_type: str, message: Any) -> None:
+        connection_id = self._business_connection_id_from_message(message)
+        owner_user_chat_id = self._business_owner_for_connection(connection_id)
+        if not owner_user_chat_id:
+            logger.warning("[Telegram Business Inbox] skipping message store: owner mapping unavailable")
+            return
+
+        chat = getattr(message, "chat", None)
+        sender = getattr(message, "from_user", None) or getattr(message, "sender_chat", None)
+        chat_id = getattr(chat, "id", None)
+        sender_id = getattr(sender, "id", None)
+        if self._is_own_bot_id(chat_id) or self._is_own_bot_id(sender_id):
+            # Telegram Business/Profile Automation mirrors the owner's DM with
+            # this very bot as business_message updates too. Those copies are
+            # not life inbox data and would pollute storage with Hermes' own
+            # prompts/responses.
+            logger.debug("[Telegram Business Inbox] skipping own-bot business copy")
+            return
+        text = getattr(message, "text", None) or getattr(message, "caption", None)
+        try:
+            from gateway.life_inbox_store import LifeInboxStore
+
+            store = LifeInboxStore.for_telegram_user_chat_id(owner_user_chat_id)
+            store.record_business_message(
+                update_id=getattr(update, "update_id", None),
+                update_type=update_type,
+                connection_id=connection_id,
+                chat_id=chat_id,
+                chat_type=str(getattr(chat, "type", "")) or None,
+                chat_name=self._chat_display_name(chat),
+                chat_username=getattr(chat, "username", None),
+                message_id=getattr(message, "message_id", None),
+                sender_id=sender_id,
+                sender_name=self._user_display_name(sender),
+                sender_username=getattr(sender, "username", None),
+                sender_is_bot=getattr(sender, "is_bot", None),
+                sender_language_code=getattr(sender, "language_code", None),
+                text=text,
+                message_date=getattr(message, "date", None),
+            )
+            store.record_business_payload_probe_event(
+                update_id=getattr(update, "update_id", None),
+                update_type=update_type,
+                connection_id=connection_id,
+                owner_user_chat_id=owner_user_chat_id,
+                chat_id=chat_id,
+                message_id=getattr(message, "message_id", None),
+                sender_id=sender_id,
+                text=text,
+                message_date=getattr(message, "date", None),
+                field_availability=self._business_payload_field_availability(update, message),
+                payload_shape={
+                    "update": self._payload_shape_only(update),
+                    "message": self._payload_shape_only(message),
+                },
+                media=self._business_payload_media_summary(message),
+                reply_context=self._business_payload_reply_summary(message),
+                capture_all=self._business_payload_probe_capture_all(),
+            )
+        except Exception as exc:
+            logger.warning("[Telegram Business Inbox] skipping message store: %s", exc)
+
+    def _record_deleted_business_messages_update(self, update: Any, deleted: Any) -> None:
+        connection_id = getattr(deleted, "business_connection_id", None)
+        connection_id = str(connection_id).strip() if connection_id is not None else None
+        owner_user_chat_id = self._business_owner_for_connection(connection_id)
+        if not owner_user_chat_id:
+            logger.warning("[Telegram Business Inbox] skipping delete store: owner mapping unavailable")
+            return
+        chat = getattr(deleted, "chat", None)
+        message_ids = getattr(deleted, "message_ids", None) or []
+        try:
+            from gateway.life_inbox_store import LifeInboxStore
+
+            store = LifeInboxStore.for_telegram_user_chat_id(owner_user_chat_id)
+            store.record_deleted_business_messages(
+                update_id=getattr(update, "update_id", None),
+                connection_id=connection_id,
+                chat_id=getattr(chat, "id", None),
+                message_ids=message_ids,
+            )
+            store.record_business_payload_probe_event(
+                update_id=getattr(update, "update_id", None),
+                update_type="deleted_business_messages",
+                connection_id=connection_id,
+                owner_user_chat_id=owner_user_chat_id,
+                chat_id=getattr(chat, "id", None),
+                field_availability={
+                    "update": {
+                        "has_deleted_business_messages": True,
+                        "has_business_message": self._field_present(update, "business_message"),
+                        "has_edited_business_message": self._field_present(update, "edited_business_message"),
+                    },
+                    "deleted_business_messages": {
+                        "has_chat": chat is not None and not self._is_unset_mock(chat),
+                        "message_ids_count": len(message_ids),
+                    },
+                },
+                payload_shape={
+                    "update": self._payload_shape_only(update),
+                    "deleted_business_messages": self._payload_shape_only(deleted),
+                },
+                deleted_message_ids=message_ids,
+                capture_all=self._business_payload_probe_capture_all(),
+            )
+        except Exception as exc:
+            logger.warning("[Telegram Business Inbox] skipping delete store: %s", exc)
+
+    async def _handle_business_update(self, update: Any, context: Any) -> bool:
+        """Persist Telegram Business/Profile Automation updates without replying.
+
+        These updates represent Alen's personal inbox (both incoming messages
+        and Alen's own replies in third-party chats). They are data for the life
+        inbox, not direct prompts to the assistant. Returning True tells normal
+        message handlers to stop before auth/LLM routing.
+        """
+        if not self._is_business_update(update):
+            return False
+        if getattr(update, "_hermes_business_handled", False):
+            return True
+        try:
+            setattr(update, "_hermes_business_handled", True)
+        except Exception:
+            pass
+
+        business_connection = getattr(update, "business_connection", None)
+        if business_connection is not None:
+            self._record_business_connection_update(update, business_connection)
+
+        for update_type, message in self._iter_business_message_payloads(update):
+            self._record_business_message_update(update, update_type, message)
+
+        deleted = getattr(update, "deleted_business_messages", None)
+        if deleted is not None:
+            self._record_deleted_business_messages_update(update, deleted)
+        return True
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -4793,6 +5314,8 @@ class TelegramAdapter(BasePlatformAdapter):
         rapid successive text messages from the same user/chat and aggregate
         them into a single MessageEvent before dispatching.
         """
+        if await self._handle_business_update(update, context):
+            return
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
@@ -4809,6 +5332,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
+        if await self._handle_business_update(update, context):
+            return
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
@@ -4823,6 +5348,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming location/venue pin messages."""
+        if await self._handle_business_update(update, context):
+            return
         msg = self._effective_update_message(update)
         if not msg:
             return
@@ -5000,6 +5527,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
+        if await self._handle_business_update(update, context):
+            return
         if not update.message:
             return
         if not self._should_process_message(update.message):
