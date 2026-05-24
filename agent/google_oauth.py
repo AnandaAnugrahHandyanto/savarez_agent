@@ -571,6 +571,11 @@ def _post_form(url: str, data: Dict[str, str], timeout: float) -> Dict[str, Any]
             f"Google OAuth token request failed: {exc}",
             code="google_oauth_token_network_error",
         ) from exc
+    except json.JSONDecodeError as exc:
+        raise GoogleOAuthError(
+            f"Google OAuth token endpoint returned non-JSON response",
+            code="google_oauth_token_parse_error",
+        ) from exc
 
 
 def exchange_code(

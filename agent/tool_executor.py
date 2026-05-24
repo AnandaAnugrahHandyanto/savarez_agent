@@ -232,7 +232,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 _set_sudo_password_callback(_parent_sudo_cb)
             except Exception:
                 pass
-        start = time.time()
+        start = time.monotonic()
         try:
             result = agent._invoke_tool(
                 function_name,
@@ -245,7 +245,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         except Exception as tool_error:
             result = f"Error executing tool '{function_name}': {tool_error}"
             logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
-        duration = time.time() - start
+        duration = time.monotonic() - start
         is_error, _ = _detect_tool_failure(function_name, result)
         if is_error:
             logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
@@ -297,7 +297,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 # concurrent tool batches. Also check for user interrupts
                 # so we don't block indefinitely when the user sends /stop
                 # or a new message during concurrent tool execution.
-                _conc_start = time.time()
+                _conc_start = time.monotonic()
                 _interrupt_logged = False
                 while True:
                     done, not_done = concurrent.futures.wait(
@@ -326,7 +326,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                         concurrent.futures.wait(not_done, timeout=3.0)
                         break
 
-                    _conc_elapsed = int(time.time() - _conc_start)
+                    _conc_elapsed = int(time.monotonic() - _conc_start)
                     # Heartbeat every ~30s (6 × 5s poll intervals)
                     if _conc_elapsed > 0 and _conc_elapsed % 30 < 6:
                         _still_running = [
@@ -585,7 +585,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             except Exception:
                 pass  # never block tool execution
 
-        tool_start_time = time.time()
+        tool_start_time = time.monotonic()
 
         if _block_msg is not None:
             # Tool blocked by plugin policy — return error without executing.
@@ -603,7 +603,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 merge=function_args.get("merge", False),
                 store=agent._todo_store,
             )
-            tool_duration = time.time() - tool_start_time
+            tool_duration = time.monotonic() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
         elif function_name == "session_search":
@@ -624,7 +624,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     db=session_db,
                     current_session_id=agent.session_id,
                 )
-            tool_duration = time.time() - tool_start_time
+            tool_duration = time.monotonic() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
         elif function_name == "memory":
@@ -651,7 +651,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     )
                 except Exception:
                     pass
-            tool_duration = time.time() - tool_start_time
+            tool_duration = time.monotonic() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
         elif function_name == "clarify":
@@ -661,7 +661,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 choices=function_args.get("choices"),
                 callback=agent.clarify_callback,
             )
-            tool_duration = time.time() - tool_start_time
+            tool_duration = time.monotonic() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
         elif function_name == "delegate_task":
@@ -683,7 +683,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 _delegate_result = function_result
             finally:
                 agent._delegate_spinner = None
-                tool_duration = time.time() - tool_start_time
+                tool_duration = time.monotonic() - tool_start_time
                 cute_msg = _get_cute_tool_message_impl('delegate_task', function_args, tool_duration, result=_delegate_result)
                 if spinner:
                     spinner.stop(cute_msg)
@@ -706,7 +706,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 function_result = json.dumps({"error": f"Context engine tool '{function_name}' failed: {tool_error}"})
                 logger.error("context_engine.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
             finally:
-                tool_duration = time.time() - tool_start_time
+                tool_duration = time.monotonic() - tool_start_time
                 cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_ce_result)
                 if spinner:
                     spinner.stop(cute_msg)
@@ -730,7 +730,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 function_result = json.dumps({"error": f"Memory tool '{function_name}' failed: {tool_error}"})
                 logger.error("memory_manager.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
             finally:
-                tool_duration = time.time() - tool_start_time
+                tool_duration = time.monotonic() - tool_start_time
                 cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_mem_result)
                 if spinner:
                     spinner.stop(cute_msg)
@@ -758,7 +758,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
             finally:
-                tool_duration = time.time() - tool_start_time
+                tool_duration = time.monotonic() - tool_start_time
                 cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_spinner_result)
                 if spinner:
                     spinner.stop(cute_msg)
@@ -776,7 +776,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             except Exception as tool_error:
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
-            tool_duration = time.time() - tool_start_time
+            tool_duration = time.monotonic() - tool_start_time
 
         if isinstance(function_result, str):
             result_preview = function_result if agent.verbose_logging else (
