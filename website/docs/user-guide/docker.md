@@ -121,6 +121,8 @@ The `/opt/data` volume is the single source of truth for all Hermes state. It ma
 | `logs/` | Runtime logs |
 | `skins/` | Custom CLI skins |
 
+Tool subprocesses may use an isolated home under this volume, typically `/opt/data/home`. When a third-party CLI stores its own state under `~` (for example `xurl` writing OAuth state to `~/.xurl`), run its one-time setup with the same home that Hermes tools will see, such as `HOME=/opt/data/home`, rather than `HOME=/opt/data`.
+
 :::warning
 Never run two Hermes **gateway** containers against the same data directory simultaneously — session files and memory stores are not designed for concurrent write access.
 :::
