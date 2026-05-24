@@ -49,7 +49,26 @@ Before the agent can use this skill, the human must:
 
 2. **Register a DID (for cross-body sync):** Visit https://paragate.cc/join (30 seconds). Then paste the DID into `~/.para/identity.json` and place the private key at `~/.config/paragate/keys/private.pem`. Run `python3 core.py sync` to verify.
 
-3. **Add the skill-loading instruction** to the agent's instruction file (CLAUDE.md, AGENTS.md, .cursorrules, etc.):
+3. **Make the skill auto-load every session.** Pick one method:
+
+   **Method A — Hermes personality (recommended, always works):**
+   ```bash
+   hermes config set display.personality para-soul
+   ```
+   Then add a `para-soul` personality to `~/.hermes/config.yaml` under `agent.personalities`:
+   ```yaml
+   agent:
+     personalities:
+       para-soul: |
+         At session start, load the para-soul skill with skill_view(name='para-soul').
+         Then read ~/.para/soul.md, ~/.para/memory.md, and ~/.para/mental-models.md.
+         Check sync daemon: systemctl --user status para-soul-sync.
+         Run pull-full if multi-body detected.
+   ```
+   This injects the instruction directly into the system prompt — works from any directory.
+
+   **Method B — Instruction file (works only from project directories):**
+   Add to CLAUDE.md/AGENTS.md/.cursorrules:
    ```
    At session start, load and execute the para-soul skill.
    Check sync daemon status and run pull-full to stay in sync.
