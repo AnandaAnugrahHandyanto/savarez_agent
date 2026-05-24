@@ -255,6 +255,104 @@ class TestMattermostSend:
 
 
 # ---------------------------------------------------------------------------
+# Reply anchor (thread root_id resolution)
+# ---------------------------------------------------------------------------
+
+class TestMattermostReplyAnchor:
+    """Mattermost rejects POST /posts when root_id points at a non-root post.
+
+    When the triggering post is itself a reply inside a thread, source.thread_id
+    holds the actual thread root id — that's what root_id must be.
+    """
+
+    def test_anchor_first_message_returns_message_id(self):
+        """First message in channel: no thread_id → message_id is the root."""
+        from types import SimpleNamespace
+        from gateway.platforms.base import _reply_anchor_for_event
+
+        event = SimpleNamespace(
+            message_id="root_A",
+            source=SimpleNamespace(
+                platform=Platform.MATTERMOST,
+                chat_type="channel",
+                thread_id=None,
+            ),
+        )
+        assert _reply_anchor_for_event(event) == "root_A"
+
+    def test_anchor_reply_in_thread_returns_thread_root(self):
+        """Follow-up in a thread: anchor must be the root, not the child post id."""
+        from types import SimpleNamespace
+        from gateway.platforms.base import _reply_anchor_for_event
+
+        event = SimpleNamespace(
+            message_id="child_C",
+            source=SimpleNamespace(
+                platform=Platform.MATTERMOST,
+                chat_type="channel",
+                thread_id="root_A",
+            ),
+        )
+        # Returns the thread root, NOT the triggering child post id.
+        assert _reply_anchor_for_event(event) == "root_A"
+
+    def test_anchor_other_platform_unchanged(self):
+        """Mattermost branch must not leak into other platforms."""
+        from types import SimpleNamespace
+        from gateway.platforms.base import _reply_anchor_for_event
+
+        event = SimpleNamespace(
+            message_id="msg_Y",
+            source=SimpleNamespace(
+                platform=Platform.DISCORD,
+                chat_type="channel",
+                thread_id="thread_X",
+            ),
+        )
+        # Discord still uses message_id (no special branch for it).
+        assert _reply_anchor_for_event(event) == "msg_Y"
+
+    @pytest.mark.asyncio
+    async def test_send_in_thread_uses_thread_root_as_root_id(self):
+        """End-to-end: a thread follow-up sends root_id=<root>, not <child>."""
+        from types import SimpleNamespace
+        from gateway.platforms.base import _reply_anchor_for_event
+
+        adapter = _make_adapter()
+        adapter._reply_mode = "thread"
+
+        # Simulate the inbound event for a user follow-up in an existing thread.
+        event = SimpleNamespace(
+            message_id="child_C",
+            source=SimpleNamespace(
+                platform=Platform.MATTERMOST,
+                chat_type="channel",
+                thread_id="root_A",
+            ),
+        )
+        anchor = _reply_anchor_for_event(event)
+        assert anchor == "root_A"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "bot_reply_id"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        adapter._session = MagicMock()
+        adapter._session.post = MagicMock(return_value=mock_resp)
+        adapter._base_url = "https://mm.example.com"
+        adapter._token = "test-token"
+
+        result = await adapter.send("channel_1", "Follow-up reply!", reply_to=anchor)
+        assert result.success is True
+        payload = adapter._session.post.call_args[1]["json"]
+        # Critical: root_id is the thread root, not the triggering child post.
+        assert payload["root_id"] == "root_A"
+        assert payload["root_id"] != "child_C"
+
+
+# ---------------------------------------------------------------------------
 # WebSocket event parsing
 # ---------------------------------------------------------------------------
 
@@ -484,6 +582,110 @@ class TestMattermostMentionBehavior:
             msg = self.adapter.handle_message.call_args[0][0]
             assert "@hermes-bot" not in msg.text
             assert "2+2" in msg.text
+
+
+# ---------------------------------------------------------------------------
+# Slash-command parsing (mobile Mattermost leading-space tolerance)
+# ---------------------------------------------------------------------------
+
+class TestMattermostCommandParsing:
+    """Mobile Mattermost blocks a literal leading "/" in many UI states.
+
+    The adapter tolerates exactly one leading space before "/" and normalizes
+    it away so downstream get_command()/get_command_args() recognize the
+    command. Two or more leading spaces stay as plain text.
+    """
+
+    def setup_method(self):
+        from gateway.platforms.base import MessageType
+        self.MessageType = MessageType
+        self.adapter = _make_adapter()
+        self.adapter._bot_user_id = "bot_user_id"
+        self.adapter._bot_username = "hermes-bot"
+        self.adapter.handle_message = AsyncMock()
+
+    def _make_event(self, message, channel_type="D", channel_id="dm_1"):
+        # Default to DM so mention-gating doesn't interfere.
+        post_data = {
+            "id": f"post_{abs(hash(message))}",
+            "user_id": "user_123",
+            "channel_id": channel_id,
+            "message": message,
+        }
+        return {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": channel_type,
+                "sender_name": "@alice",
+            },
+        }
+
+    async def _dispatch(self, message, **kwargs):
+        await self.adapter._handle_ws_event(self._make_event(message, **kwargs))
+        assert self.adapter.handle_message.called, f"handle_message not called for {message!r}"
+        return self.adapter.handle_message.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_plain_slash_command_dispatches(self):
+        msg = await self._dispatch("/help")
+        assert msg.message_type == self.MessageType.COMMAND
+        assert msg.text == "/help"
+        assert msg.get_command() == "help"
+
+    @pytest.mark.asyncio
+    async def test_single_leading_space_is_normalized(self):
+        msg = await self._dispatch(" /help")
+        assert msg.message_type == self.MessageType.COMMAND
+        # Single leading space stripped so get_command() works.
+        assert msg.text == "/help"
+        assert msg.get_command() == "help"
+
+    @pytest.mark.asyncio
+    async def test_single_leading_space_preserves_args(self):
+        msg = await self._dispatch(" /help foo bar")
+        assert msg.message_type == self.MessageType.COMMAND
+        assert msg.text == "/help foo bar"
+        assert msg.get_command() == "help"
+        assert msg.get_command_args() == "foo bar"
+
+    @pytest.mark.asyncio
+    async def test_two_leading_spaces_stays_text(self):
+        msg = await self._dispatch("  /help")
+        assert msg.message_type == self.MessageType.TEXT
+        # Text passes through untouched (no normalization for ≥2 spaces).
+        assert msg.text == "  /help"
+
+    @pytest.mark.asyncio
+    async def test_tab_prefix_stays_text(self):
+        # Only literal space is tolerated; a tab is not.
+        msg = await self._dispatch("\t/help")
+        assert msg.message_type == self.MessageType.TEXT
+
+    @pytest.mark.asyncio
+    async def test_plain_text_unchanged(self):
+        msg = await self._dispatch("hello there")
+        assert msg.message_type == self.MessageType.TEXT
+        assert msg.text == "hello there"
+
+    @pytest.mark.asyncio
+    async def test_mention_then_command_dispatches_in_channel(self):
+        # In a channel, "@hermes-bot /help" gets the mention stripped to
+        # " /help" (one space from the gap), then normalized to "/help".
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
+            await self.adapter._handle_ws_event(
+                self._make_event(
+                    "@hermes-bot /help",
+                    channel_type="O",
+                    channel_id="chan_456",
+                )
+            )
+        assert self.adapter.handle_message.called
+        msg = self.adapter.handle_message.call_args[0][0]
+        assert msg.message_type == self.MessageType.COMMAND
+        assert msg.text == "/help"
+        assert msg.get_command() == "help"
 
 
 # ---------------------------------------------------------------------------
