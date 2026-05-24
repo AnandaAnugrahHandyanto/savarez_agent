@@ -11,15 +11,15 @@ from hermes_cli.colors import Colors, color
 
 
 def flush_stdin() -> None:
-    """Flush any stray bytes from the stdin input buffer.
+    """Flush stray bytes and restore terminal flags after a curses session.
 
-    Must be called after ``curses.wrapper()`` (or any terminal-mode library
-    like simple_term_menu) returns, **before** the next ``input()`` /
-    ``getpass.getpass()`` call.  ``curses.endwin()`` restores the terminal
-    but does NOT drain the OS input buffer — leftover escape-sequence bytes
-    (from arrow keys, terminal mode-switch responses, or rapid keypresses)
-    remain buffered and silently get consumed by the next ``input()`` call,
-    corrupting user data (e.g. writing ``^[^[`` into .env files).
+    Must be called after ``curses.wrapper()`` returns, before the next
+    ``input()`` call.  ``curses.endwin()`` restores the terminal but does NOT
+    drain the OS input buffer — leftover escape-sequence bytes remain buffered
+    and silently corrupt the next ``input()`` call (e.g. writing ``^[^[`` into
+    .env files).  curses also clears ECHO and ICANON; if ``endwin()`` doesn't
+    fully restore them, the next ``input()`` either shows no keystrokes or
+    returns immediately without waiting for Enter.
 
     On non-TTY stdin (piped, redirected) or Windows, this is a no-op.
     """
@@ -27,7 +27,11 @@ def flush_stdin() -> None:
         if not sys.stdin.isatty():
             return
         import termios
-        termios.tcflush(sys.stdin, termios.TCIFLUSH)
+        fd = sys.stdin.fileno()
+        termios.tcflush(fd, termios.TCIFLUSH)
+        attrs = termios.tcgetattr(fd)
+        attrs[3] |= termios.ECHO | termios.ICANON
+        termios.tcsetattr(fd, termios.TCSADRAIN, attrs)
     except Exception:
         pass
 
