@@ -762,14 +762,47 @@ class TestNewEndpoints:
         (get_hermes_home() / "profiles" / "coder").mkdir(parents=True)
         calls = []
         monkeypatch.setattr(web_server.sys, "platform", "win32")
-        monkeypatch.setattr(web_server.subprocess, "Popen", lambda args, **kwargs: calls.append(args))
+        monkeypatch.setattr(
+            web_server.subprocess,
+            "Popen",
+            lambda args, **kwargs: calls.append((args, kwargs)),
+        )
 
         resp = self.client.post("/api/profiles/coder/open-terminal")
 
         assert resp.status_code == 200
         assert calls
-        assert calls[0][:4] == ["cmd.exe", "/c", "start", ""]
-        assert calls[0][-1] == "coder setup"
+        args, kwargs = calls[0]
+        assert args[:2] == ["cmd.exe", "/k"]
+        assert "coder setup" in args[2]
+        assert kwargs.get("creationflags") == web_server._WIN_CREATE_NEW_CONSOLE
+
+    def test_open_terminal_at_directory_uses_windows_create_new_console(
+        self, monkeypatch, tmp_path,
+    ):
+        import hermes_cli.web_server as web_server
+
+        workspace = tmp_path / "kanban-ws"
+        workspace.mkdir()
+        calls = []
+        monkeypatch.setattr(web_server.sys, "platform", "win32")
+        monkeypatch.setattr(
+            web_server.subprocess,
+            "Popen",
+            lambda args, **kwargs: calls.append((args, kwargs)),
+        )
+
+        result = web_server.open_terminal_at_directory(
+            str(workspace),
+            window_title="kanban task-1",
+        )
+
+        assert result["path"] == str(workspace.resolve())
+        assert calls
+        args, kwargs = calls[0]
+        assert args == ["cmd.exe", "/k"]
+        assert kwargs.get("cwd") == str(workspace.resolve())
+        assert kwargs.get("creationflags") == web_server._WIN_CREATE_NEW_CONSOLE
 
     def test_profiles_create_rejects_invalid_name(self):
         resp = self.client.post("/api/profiles", json={"name": "Has Spaces"})

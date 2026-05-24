@@ -2846,6 +2846,13 @@
       });
     };
 
+    const doOpenTerminal = function () {
+      return SDK.fetchJSON(
+        withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/open-terminal`, boardSlug),
+        { method: "POST" },
+      );
+    };
+
     const addLink = function (parentId) {
       return SDK.fetchJSON(withBoard(`${API}/links`, boardSlug), {
         method: "POST",
@@ -2938,6 +2945,7 @@
           onPatch: doPatch,
           onSpecify: doSpecify,
           onDecompose: doDecompose,
+          onOpenTerminal: doOpenTerminal,
           onAddParent: addLink,
           onRemoveParent: removeLink,
           onAddChild: addChild,
@@ -3010,6 +3018,7 @@
           onPatch: props.onPatch,
           onSpecify: props.onSpecify,
           onDecompose: props.onDecompose,
+          onOpenTerminal: props.onOpenTerminal,
         }),
       ),
       h(DiagnosticsSection, {
@@ -3558,6 +3567,8 @@
     const [specifyMsg, setSpecifyMsg] = useState(null);
     const [decomposeBusy, setDecomposeBusy] = useState(false);
     const [decomposeMsg, setDecomposeMsg] = useState(null);
+    const [terminalBusy, setTerminalBusy] = useState(false);
+    const [terminalMsg, setTerminalMsg] = useState(null);
     const b = function (label, patch, enabled, confirmMsg) {
       return h(Button, {
         onClick: function () { if (enabled !== false) props.onPatch(patch, { confirm: confirmMsg }); },
@@ -3649,8 +3660,38 @@
         }, decomposeBusy ? "Decomposing…" : "⚗ Decompose")
       : null;
 
+    const terminalButton = props.onOpenTerminal
+      ? h(Button, {
+          onClick: function () {
+            if (terminalBusy) return;
+            setTerminalBusy(true);
+            setTerminalMsg(null);
+            props.onOpenTerminal().then(function (res) {
+              const path = (res && res.path) ? res.path : "";
+              setTerminalMsg({
+                ok: true,
+                text: path
+                  ? `Opened terminal in ${path}`
+                  : "Opened terminal in task workspace",
+              });
+            }).catch(function (err) {
+              setTerminalMsg({
+                ok: false,
+                text: "Terminal: " + String(err.message || err),
+              });
+            }).then(function () {
+              setTerminalBusy(false);
+            });
+          },
+          disabled: terminalBusy,
+          size: "sm",
+          title: "Open a terminal in this task's workspace directory",
+        }, terminalBusy ? "Opening…" : "⌨ Terminal")
+      : null;
+
     return h("div", null,
       h("div", { className: "hermes-kanban-actions" },
+        terminalButton,
         specifyButton,
         decomposeButton,
         b("→ triage",  { status: "triage" },   task.status !== "triage"),
@@ -3679,6 +3720,11 @@
           ? "hermes-kanban-msg-ok"
           : "hermes-kanban-msg-err",
       }, decomposeMsg.text) : null,
+      terminalMsg ? h("div", {
+        className: terminalMsg.ok
+          ? "hermes-kanban-msg-ok"
+          : "hermes-kanban-msg-err",
+      }, terminalMsg.text) : null,
     );
   }
 

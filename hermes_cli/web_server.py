@@ -2837,6 +2837,103 @@ def _profile_setup_command(name: str) -> str:
     return "hermes setup" if name == "default" else f"{name} setup"
 
 
+_WIN_CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+
+
+def _spawn_windows_terminal(
+    *,
+    window_title: str,
+    directory: str | None = None,
+    command: str | None = None,
+) -> None:
+    """Open a new interactive ``cmd.exe`` console on Windows."""
+    del window_title  # Windows sets the title from the process; not worth ``start``.
+    popen_kwargs: dict[str, Any] = {}
+    if _WIN_CREATE_NEW_CONSOLE:
+        popen_kwargs["creationflags"] = _WIN_CREATE_NEW_CONSOLE
+    if command:
+        subprocess.Popen(["cmd.exe", "/k", command], **popen_kwargs)
+        return
+    cwd = os.path.abspath(os.path.expanduser(directory)) if directory else None
+    subprocess.Popen(["cmd.exe", "/k"], cwd=cwd, **popen_kwargs)
+
+
+def _spawn_system_terminal(*, window_title: str, command: str) -> None:
+    """Launch the platform default terminal running ``command``."""
+    if sys.platform.startswith("win"):
+        _spawn_windows_terminal(window_title=window_title, command=command)
+        return
+    if sys.platform == "darwin":
+        escaped = command.replace("\\", "\\\\").replace('"', '\\"')
+        applescript = (
+            'tell application "Terminal"\n'
+            "activate\n"
+            f'do script "{escaped}"\n'
+            "end tell"
+        )
+        subprocess.Popen(["osascript", "-e", applescript])
+        return
+
+    terminal_commands = [
+        ("x-terminal-emulator", ["x-terminal-emulator", "-e", "sh", "-lc", command]),
+        ("gnome-terminal", ["gnome-terminal", "--", "sh", "-lc", command]),
+        ("konsole", ["konsole", "-e", "sh", "-lc", command]),
+        ("xfce4-terminal", ["xfce4-terminal", "-e", f"sh -lc '{command}'"]),
+        ("mate-terminal", ["mate-terminal", "-e", f"sh -lc '{command}'"]),
+        ("lxterminal", ["lxterminal", "-e", f"sh -lc '{command}'"]),
+        ("tilix", ["tilix", "-e", "sh", "-lc", command]),
+        ("alacritty", ["alacritty", "-e", "sh", "-lc", command]),
+        ("kitty", ["kitty", "sh", "-lc", command]),
+        ("xterm", ["xterm", "-e", "sh", "-lc", command]),
+    ]
+    for executable, popen_args in terminal_commands:
+        if subprocess.call(
+            ["which", executable],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ) == 0:
+            subprocess.Popen(popen_args)
+            return
+    raise HTTPException(
+        status_code=400,
+        detail="No supported terminal emulator found",
+    )
+
+
+def open_terminal_with_shell_command(command: str, *, window_title: str = "") -> dict[str, str]:
+    """Open a new terminal running an arbitrary shell command string."""
+    title = window_title or "Hermes"
+    _spawn_system_terminal(window_title=title, command=command)
+    return {"command": command, "window_title": title}
+
+
+def open_terminal_at_directory(directory: str, *, window_title: str = "Hermes") -> dict[str, str]:
+    """Open a new terminal with its working directory set to ``directory``."""
+    import shlex
+
+    path = os.path.abspath(os.path.expanduser(str(directory)))
+    if not os.path.isdir(path):
+        raise ValueError(f"directory does not exist: {path}")
+
+    title = window_title or "Hermes"
+    if sys.platform.startswith("win"):
+        _spawn_windows_terminal(window_title=title, directory=path)
+        return {
+            "path": path,
+            "window_title": title,
+            "command": f'cmd.exe /k (cwd={path})',
+        }
+
+    quoted = shlex.quote(path)
+    shell_cmd = (
+        f"cd {quoted} && "
+        f"echo \"Workspace: {path}\" && "
+        f"exec ${{SHELL:-bash}} -l"
+    )
+    _spawn_system_terminal(window_title=title, command=shell_cmd)
+    return {"path": path, "window_title": title, "command": shell_cmd}
+
+
 @app.get("/api/profiles")
 async def list_profiles_endpoint():
     from hermes_cli import profiles as profiles_mod
@@ -2887,44 +2984,7 @@ async def get_profile_setup_command(name: str):
 async def open_profile_terminal_endpoint(name: str):
     try:
         command = _profile_setup_command(name)
-
-        if sys.platform.startswith("win"):
-            subprocess.Popen(["cmd.exe", "/c", "start", "", command])
-        elif sys.platform == "darwin":
-            escaped = command.replace("\\", "\\\\").replace('"', '\\"')
-            applescript = (
-                'tell application "Terminal"\n'
-                "activate\n"
-                f'do script "{escaped}"\n'
-                "end tell"
-            )
-            subprocess.Popen(["osascript", "-e", applescript])
-        else:
-            terminal_commands = [
-                ("x-terminal-emulator", ["x-terminal-emulator", "-e", "sh", "-lc", command]),
-                ("gnome-terminal", ["gnome-terminal", "--", "sh", "-lc", command]),
-                ("konsole", ["konsole", "-e", "sh", "-lc", command]),
-                ("xfce4-terminal", ["xfce4-terminal", "-e", f"sh -lc '{command}'"]),
-                ("mate-terminal", ["mate-terminal", "-e", f"sh -lc '{command}'"]),
-                ("lxterminal", ["lxterminal", "-e", f"sh -lc '{command}'"]),
-                ("tilix", ["tilix", "-e", "sh", "-lc", command]),
-                ("alacritty", ["alacritty", "-e", "sh", "-lc", command]),
-                ("kitty", ["kitty", "sh", "-lc", command]),
-                ("xterm", ["xterm", "-e", "sh", "-lc", command]),
-            ]
-            for executable, popen_args in terminal_commands:
-                if subprocess.call(
-                    ["which", executable],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                ) == 0:
-                    subprocess.Popen(popen_args)
-                    break
-            else:
-                raise HTTPException(
-                    status_code=400,
-                    detail="No supported terminal emulator found",
-                )
+        result = open_terminal_with_shell_command(command, window_title="")
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -2934,7 +2994,7 @@ async def open_profile_terminal_endpoint(name: str):
     except Exception as e:
         _log.exception("POST /api/profiles/%s/open-terminal failed", name)
         raise HTTPException(status_code=500, detail=str(e))
-    return {"ok": True, "command": command}
+    return {"ok": True, **result}
 
 
 @app.patch("/api/profiles/{name}")

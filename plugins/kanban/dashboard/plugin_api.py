@@ -1434,6 +1434,46 @@ def specify_task_endpoint(
     }
 
 
+@router.post("/tasks/{task_id}/open-terminal")
+def open_task_workspace_terminal(
+    task_id: str,
+    board: Optional[str] = Query(None),
+):
+    """Open a local terminal in the task's resolved workspace directory."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        task = kanban_db.get_task(conn, task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        try:
+            workspace = kanban_db._prepare_task_workspace(task, board=board)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"workspace: {exc}") from exc
+        kanban_db.set_workspace_path(conn, task_id, str(workspace))
+    finally:
+        conn.close()
+
+    try:
+        from hermes_cli import web_server as ws
+
+        launch = ws.open_terminal_at_directory(
+            str(workspace),
+            window_title=f"kanban {task_id}",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.exception("open-terminal failed for task %s", task_id)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {"ok": True, "task_id": task_id, "path": launch.get("path"), **launch}
+
+
 class ReassignBody(BaseModel):
     profile: Optional[str] = None  # "" or None = unassign
     reclaim_first: bool = False
