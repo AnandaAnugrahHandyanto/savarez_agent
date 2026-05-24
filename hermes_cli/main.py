@@ -1040,7 +1040,15 @@ def _print_tui_exit_summary(
         db = SessionDB()
         session = db.get_session(target)
         if not session:
-            return
+            # Active session file may have a stale/incorrect ID (TUI sid
+            # differs from DB session_key). Fall back via resume param or
+            # last-session heuristic.
+            target = session_id or _resolve_last_session(source="tui")
+            if not target:
+                return
+            session = db.get_session(target)
+            if not session:
+                return
 
         title = db.get_session_title(target)
         message_count = int(session.get("message_count") or 0)

@@ -110,6 +110,7 @@ export interface SetupStatusResponse {
 // ── Session lifecycle ────────────────────────────────────────────────
 
 export interface SessionCreateResponse {
+  db_session_id?: string
   info?: SessionInfo & { config_warning?: string; credential_warning?: string }
   session_id: string
 }

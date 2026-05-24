@@ -2277,6 +2277,7 @@ def _(rid, params: dict) -> dict:
         rid,
         {
             "session_id": sid,
+            "db_session_id": key,
             "info": {
                 "model": _resolve_model(),
                 "tools": {},
