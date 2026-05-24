@@ -76,6 +76,17 @@ SHUTDOWN_GRACE = 1.0  # seconds between SIGTERM and SIGKILL
 MAX_CONTENT_MODIFIED_RETRIES = 3
 RETRY_BASE_DELAY = 0.5  # 0.5, 1.0, 2.0 — exponential
 
+# StreamReader buffer cap for the LSP child process. asyncio's default
+# 64 KiB limit raises ``LimitOverrunError`` when a single LSP header,
+# JSON-RPC body chunk, or stderr log line exceeds 64 KiB — which is
+# routine for servers like pyright (large completion lists), tsserver
+# (deep type errors), or rust-analyzer (verbose macro expansions).
+# 16 MiB matches the cap used by other line-oriented subprocess
+# integrations in similar tools and is generously above what any
+# real-world LSP message hits in practice.  See #31417 for the
+# upstream-wide audit context.
+LSP_SUBPROCESS_STREAM_LIMIT = 16 * 1024 * 1024
+
 
 def file_uri(path: str) -> str:
     """Return ``file://`` URI for an absolute filesystem path.
@@ -258,6 +269,7 @@ class LSPClient:
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
                 cwd=self._cwd,
+                limit=LSP_SUBPROCESS_STREAM_LIMIT,
             )
         except FileNotFoundError as e:
             raise LSPProtocolError(
