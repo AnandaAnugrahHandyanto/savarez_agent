@@ -427,10 +427,54 @@ class TestIdempotency:
             assert resp1.status == 202
 
             # Backdate the cache entry so it appears expired
-            adapter._seen_deliveries["delivery-456"] = time.time() - 3700
+            adapter._seen_deliveries["idem:delivery-456"] = time.time() - 3700
 
             resp2 = await cli.post("/webhooks/idem", json={"x": 1}, headers=headers)
             assert resp2.status == 202  # re-accepted
+
+    @pytest.mark.asyncio
+    async def test_same_request_id_on_different_routes_is_not_deduped(self):
+        """Route scope must be part of the idempotency key.
+
+        Different webhook routes can legitimately reuse the same upstream
+        request ID; suppressing the second route would drop a real event.
+        """
+        routes = {
+            "route-a": {"secret": _INSECURE_NO_AUTH, "prompt": "a"},
+            "route-b": {"secret": _INSECURE_NO_AUTH, "prompt": "b"},
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            headers = {"X-Request-ID": "shared-req-id"}
+
+            resp1 = await cli.post("/webhooks/route-a", json={"a": 1}, headers=headers)
+            assert resp1.status == 202
+
+            resp2 = await cli.post("/webhooks/route-b", json={"b": 2}, headers=headers)
+            assert resp2.status == 202
+
+    @pytest.mark.asyncio
+    async def test_generated_fallback_ids_are_not_deduped(self):
+        """Headerless requests must not be deduped by time-based fallback IDs."""
+        routes = {"idem": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        with patch("gateway.platforms.webhook.time.time", return_value=1234.567):
+            async with TestClient(TestServer(app)) as cli:
+                resp1 = await cli.post("/webhooks/idem", json={"n": 1})
+                assert resp1.status == 202
+                data1 = await resp1.json()
+
+                resp2 = await cli.post("/webhooks/idem", json={"n": 2})
+                assert resp2.status == 202
+                data2 = await resp2.json()
+
+        assert data1["delivery_id"] != data2["delivery_id"]
 
 
 # ===================================================================
