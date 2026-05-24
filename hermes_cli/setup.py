@@ -2187,27 +2187,46 @@ def _setup_matrix():
             save_env_value("MATRIX_ENCRYPTION", "true")
             print_success("E2EE enabled")
 
-        matrix_pkg = "mautrix[encryption]" if want_e2ee else "mautrix"
-        try:
-            __import__("mautrix")
-        except ImportError:
-            print_info(f"Installing {matrix_pkg}...")
+        install_specs: tuple[str, ...]
+        manual_specs: tuple[str, ...]
+        if want_e2ee:
+            try:
+                from tools.lazy_deps import feature_missing, feature_specs
+
+                install_specs = tuple(feature_missing("platform.matrix"))
+                manual_specs = tuple(feature_specs("platform.matrix"))
+            except Exception:
+                install_specs = ("mautrix[encryption]",)
+                manual_specs = install_specs
+        else:
+            try:
+                __import__("mautrix")
+                install_specs = ()
+            except ImportError:
+                install_specs = ("mautrix",)
+            manual_specs = ("mautrix",)
+
+        install_label = "Matrix E2EE dependencies" if want_e2ee else "mautrix"
+        if install_specs:
+            print_info(f"Installing {install_label}...")
             import subprocess
+
             uv_bin = shutil.which("uv")
             if uv_bin:
                 result = subprocess.run(
-                    [uv_bin, "pip", "install", "--python", sys.executable, matrix_pkg],
+                    [uv_bin, "pip", "install", "--python", sys.executable, *install_specs],
                     capture_output=True, text=True,
                 )
             else:
                 result = subprocess.run(
-                    [sys.executable, "-m", "pip", "install", matrix_pkg],
+                    [sys.executable, "-m", "pip", "install", *install_specs],
                     capture_output=True, text=True,
                 )
             if result.returncode == 0:
-                print_success(f"{matrix_pkg} installed")
+                print_success(f"{install_label} installed")
             else:
-                print_warning(f"Install failed — run manually: pip install '{matrix_pkg}'")
+                quoted_specs = " ".join(f"'{spec}'" for spec in manual_specs)
+                print_warning(f"Install failed — run manually: pip install {quoted_specs}")
                 if result.stderr:
                     print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
 
