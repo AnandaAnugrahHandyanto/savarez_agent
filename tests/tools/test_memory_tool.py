@@ -1,8 +1,10 @@
 """Tests for tools/memory_tool.py — MemoryStore, security scanning, and tool dispatcher."""
 
 import json
-import pytest
 from pathlib import Path
+from typing import Any, cast
+
+import pytest
 
 from tools.memory_tool import (
     MemoryStore,
@@ -11,6 +13,7 @@ from tools.memory_tool import (
     ENTRY_DELIMITER,
     MEMORY_SCHEMA,
 )
+from tools.registry import registry
 
 
 # =========================================================================
@@ -255,6 +258,64 @@ class TestMemoryToolDispatcher:
     def test_remove_requires_old_text(self, store):
         result = json.loads(memory_tool(action="remove", store=store))
         assert result["success"] is False
+
+    def test_replace_accepts_old_string_alias(self, store):
+        store.add("memory", "old stable fact")
+
+        result = json.loads(
+            memory_tool(
+                action="replace",
+                target="memory",
+                old_string="old stable",
+                content="new stable fact",
+                store=store,
+            )
+        )
+
+        assert result["success"] is True
+        assert result["entries"] == ["new stable fact"]
+
+    def test_remove_accepts_old_string_alias(self, store):
+        store.add("memory", "temporary stable fact")
+
+        result = json.loads(
+            memory_tool(
+                action="remove",
+                target="memory",
+                old_string="temporary stable",
+                store=store,
+            )
+        )
+
+        assert result["success"] is True
+        assert result["entries"] == []
+
+    def test_schema_documents_old_string_alias(self):
+        parameters = cast(dict[str, Any], MEMORY_SCHEMA["parameters"])
+        props = cast(dict[str, dict[str, str]], parameters["properties"])
+
+        assert "old_text" in props
+        assert "old_string" in props
+        assert "alias" in props["old_string"]["description"].lower()
+
+    def test_registered_handler_accepts_old_string_alias(self, store):
+        store.add("memory", "handler old fact")
+        handler = registry._tools["memory"].handler
+
+        result = json.loads(
+            handler(
+                {
+                    "action": "replace",
+                    "target": "memory",
+                    "old_string": "handler old",
+                    "content": "handler new fact",
+                },
+                store=store,
+            )
+        )
+
+        assert result["success"] is True
+        assert result["entries"] == ["handler new fact"]
 
 
 # =========================================================================
