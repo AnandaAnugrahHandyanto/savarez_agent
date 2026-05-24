@@ -114,9 +114,12 @@ def test_dashboard_uses_acta_imperatr_suite_board_palette(tmp_path: Path):
     assert "#756cff" in html
     assert "#23a7ff" in html
     assert "Acta Imperatr situation room" in html
-    assert "ATTENTION STACK" in html
-    assert "Today’s situation" in html
-    assert "metricrow" in html
+    assert "ACTA</em> / OUTPUTS" in html
+    assert "open first" in html
+    assert "output-summary" in html
+    assert "metricrow" not in html
+    assert "P2" not in html
+    assert "P3" not in html
     assert "Delivery Routes" not in html
     assert "Bloomberg" not in html
     assert "Your cron command center" not in html
@@ -248,9 +251,8 @@ def test_dashboard_counts_exclude_morning_audio_by_default():
 
     assert "P Morning Audio Briefing" not in html
     assert 'Briefing Packet <span>1</span>' in html
-    assert '<div class="metric"><b>1</b><span>active</span></div>' in html
-    assert '<div class="metric"><b>1</b><span>fresh</span></div>' in html
-    assert '<div class="metric"><b>0</b><span>gaps</span></div>' in html
+    assert '<div class="output-summary"><b>1/1</b><span>fresh</span><span>0 gaps</span></div>' in html
+    assert "metricrow" not in html
     assert "VISIBLE <b>1</b>" in html
 
 
@@ -332,6 +334,12 @@ def test_mobile_dashboard_does_not_duplicate_lead_in_feed(tmp_path: Path):
     assert html.count("<h2>Second Brief</h2>") == 1
     assert "maximum-scale=1" in html
     assert "user-scalable=no" in html
+    assert ".row-kicker { flex-wrap:wrap; overflow:visible" in html
+    assert ".source-line { display:block" in html
+    assert ".source-line { white-space:normal; overflow:visible; text-overflow:clip" in html
+    assert ".lead { grid-template-columns:1fr; }" in html
+    assert ".swipe-content { grid-template-columns:28px minmax(0,1fr); }" in html
+    assert "second · telegram · 2026-05-19T09:00:00+00:00" in html
 
 
 def test_lead_brief_is_clickable_and_read_state_enabled(tmp_path: Path):
@@ -382,6 +390,61 @@ def test_read_state_has_cookie_fallback_and_applies_on_open(tmp_path: Path):
     assert "state[k]=true; save(); apply(el);" in html
 
 
+def test_dashboard_surfaces_confidence_without_changing_read_state():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    now = datetime(2026, 5, 19, 12, tzinfo=timezone.utc)
+    lead = item_cls(
+        job_id="lead",
+        name="Lead Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_11-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 11, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Recent high-confidence signal.",
+    )
+    older = item_cls(
+        job_id="older",
+        name="Older Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-17_11-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 17, 11, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Older still-visible signal.",
+    )
+    silent = item_cls(
+        job_id="silent",
+        name="Silent Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_10-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
+        status="silent",
+        excerpt="No visible response was produced.",
+    )
+
+    html = render_dashboard([lead, older, silent], generated_at=now)
+
+    assert '<span class="read-state">UNREAD</span>' in html
+    assert 'data-read-key="lead:' in html
+    assert 'data-read-key="older:' in html
+    assert "CONF HIGH" in html
+    assert "CONF MED" in html
+    assert "CONF LOW/GAP" in html
+    assert '<span class="confidence-chip">CONF MED</span>' in html
+    assert '<span>OUT</span>' in html
+    assert "#f5a400" not in html
+    assert "amber" not in html.lower()
+    assert "generated-file" not in html.lower()
+
+
 def test_dashboard_includes_pull_to_refresh_affordance(tmp_path: Path):
     (tmp_path / "cron" / "output" / "lead").mkdir(parents=True)
     (tmp_path / "cron" / "jobs.json").write_text(
@@ -417,10 +480,12 @@ def test_mobile_bottom_nav_appears_only_after_top_nav_scrolls_out(tmp_path: Path
     html = render_dashboard(collect_situation_items(tmp_path))
 
     assert '<nav class="date-nav"' in html
-    assert 'class="mobilebar"' in html
+    assert '<nav class="mobilebar"><a href="/">TODAY</a><a href="/jobs">JOBS</a><a href="/archive">ARCHIVE</a><a href="/outputs">OUTPUTS</a></nav>' in html
     assert '.mobilebar.visible' in html
     assert 'IntersectionObserver' in html
     assert "document.querySelector('.date-nav')" in html
+    assert 'background:rgba(2,2,2,.96)' not in html
+    assert 'background:linear-gradient(180deg, rgba(7,16,24,.96), rgba(3,6,11,.94)), radial-gradient(circle at 18% 0%, rgba(117,108,255,.28), transparent 42%), radial-gradient(circle at 86% 20%, rgba(35,167,255,.18), transparent 48%)' in html
 
 
 def test_detail_report_uses_acta_situation_room_ui():
@@ -474,6 +539,52 @@ def test_attach_artifact_urls_reprocesses_markdown_into_acta_detail_ui(tmp_path:
     assert "stale old ui" not in uploaded["html"]
 
 
+def test_attach_artifact_urls_wraps_html_only_artifact_in_acta_detail_ui(tmp_path: Path, monkeypatch):
+    output_dir = tmp_path / "details"
+    html_artifact = tmp_path / "2026-05-19_10-00-00.html"
+    html_artifact.write_text(
+        """
+        <html><head><style>:root { --accent:#f5a400; }</style></head>
+        <body><h1>Generated files</h1><p>Useful HTML-only signal.</p><p>Bloomberg terminal chrome</p></body></html>
+        """
+    )
+    item = collect_situation_items.__globals__["CronSituationItem"](
+        job_id="job1",
+        name="Daily Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=None,
+        latest_html=html_artifact,
+        latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Useful HTML-only signal.",
+        telegram_url="https://t.me/c/3566991387/86",
+    )
+    uploaded = {}
+
+    def fake_publish(path, job, settings):
+        uploaded["html"] = Path(path).read_text()
+        uploaded["path"] = Path(path)
+        return "https://acta.example/r/job1/detail.html"
+
+    monkeypatch.setattr("cron.acta_dashboard.publish_html_artifact", fake_publish)
+
+    linked = attach_artifact_urls([item], {"enabled": True}, output_dir)
+
+    assert linked[0].artifact_url == "https://acta.example/r/job1/detail.html"
+    assert uploaded["path"].parent == output_dir
+    assert uploaded["path"].name == "job1-2026-05-19_10-00-00.html"
+    assert "Acta Situation Room" in uploaded["html"]
+    assert "--black:#03060b" in uploaded["html"]
+    assert "--accent:#756cff" in uploaded["html"]
+    assert "Useful HTML-only signal." in uploaded["html"]
+    assert "Ask follow-up in Telegram" in uploaded["html"]
+    assert "#f5a400" not in uploaded["html"]
+    assert "Generated files" not in uploaded["html"]
+    assert "Bloomberg" not in uploaded["html"]
+
+
 def test_dashboard_links_jobs_to_dedicated_subpage(tmp_path: Path):
     (tmp_path / "cron" / "output" / "active").mkdir(parents=True)
     (tmp_path / "cron" / "jobs.json").write_text(
@@ -499,6 +610,49 @@ def test_archive_index_includes_sticky_navigation_bar():
     assert '<a href="/jobs">Jobs</a>' in html
     assert '<a class="active" href="/archive">Archive</a>' in html
     assert "position:sticky" in html
+
+
+def test_all_acta_modules_share_compact_v9_shell():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    item = item_cls(
+        job_id="lead",
+        name="Lead Brief",
+        schedule="daily",
+        deliver="telegram:-1003566991387:86",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_10-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Most important signed briefing.",
+        artifact_url="https://acta.imperatr.com/r/lead/detail.html?exp=1&sig=abc",
+        telegram_url="https://t.me/c/3566991387/86",
+    )
+    pages = {
+        "today": render_dashboard([item], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc)),
+        "jobs": render_jobs_page([item], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc)),
+        "archive": render_archive_index([date(2026, 5, 19)], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc)),
+        "outputs": render_outputs_page([item], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc)),
+        "detail": render_acta_detail_report(
+            "# Lead Brief\n\nSignal body.",
+            {"job_id": "lead", "job_name": "Lead Brief", "run_time": "2026-05-19T10:00:00+00:00"},
+            telegram_url="https://t.me/c/3566991387/86",
+        ),
+    }
+
+    for name, html in pages.items():
+        assert "#03060b" in html, name
+        assert "#756cff" in html, name
+        assert "#23a7ff" in html, name
+        assert "font:720 clamp" in html, name
+        assert "font:600 clamp(38px,6.5vw,70px)" not in html, name
+        assert "font:600 clamp(34px,6vw,64px)" not in html, name
+        assert "background:linear-gradient(135deg,rgba(117,108,255,.10),rgba(255,255,255,.04))" not in html, name
+        assert "#f5a400" not in html, name
+        assert "amber" not in html.lower(), name
+        assert "Bloomberg" not in html, name
+        assert "Generated files" not in html, name
+        assert "Your cron command center" not in html, name
 
 
 def test_jobs_subpage_shows_active_relevant_last_runs(tmp_path: Path):
@@ -568,11 +722,16 @@ def test_outputs_page_uses_v9_shell_and_signed_source_rows():
         'aria-label="Ask follow-up in Telegram" title="Ask follow-up in Telegram">FOLLOW-UP</a>'
         in html
     )
+    assert "CONF HIGH" in html
+    assert '<span class="confidence-chip">CONF HIGH</span>' in html
     assert "fresh" in html
     assert "daily" in html
     assert "lead" in html
     assert "2026-05-19T10:00:00+00:00" in html
     assert "SOURCE" in html
+    assert ".output-meta { flex-wrap:wrap; overflow:visible; }" in html
+    assert ".output-meta span:nth-child" not in html
+    assert ".output-meta .followup-meta { display:inline-flex; }" in html
     assert "#f5a400" not in html
     assert "Bloomberg" not in html
     assert "generated-file" not in html.lower()
