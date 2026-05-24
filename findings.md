@@ -5061,4 +5061,189 @@ Also excludes `.env` explicitly. ✓
 
 ---
 
-*Pass #53 complete - 6 focus areas covered.*
+## Pass #54 – Documentation, Help Text & CLI Usability Audit – 2026-05-24T21:30:00Z
+
+Scope: CLI help text accuracy, error message quality, documentation accuracy, examples/templates, built-in help hierarchy.
+
+---
+
+### P54-1 · `hermes --help` delegates to subprocess with no timeout — MEDIUM
+
+**File:** `cli.py:8626` (`subprocess.run(cmd)` with `cmd = [sys.executable, '-m', 'hermes', '--help']`)
+**Severity:** MEDIUM
+
+`hermes --help` (and the equivalent `/help` slash command) triggers a fresh Python interpreter subprocess to generate the help text, with no timeout. If the Hermes import path is broken or Python startup is slow, this hangs indefinitely.
+
+**Note:** This was flagged in P45-1 in prior passes, but remains unfixed as of this scan.
+
+**Recommendation:** Add a `timeout=30` to the subprocess call, or inline help generation instead of a subprocess spawn.
+
+---
+
+### P54-2 · No formal error code system — informational gap — LOW
+
+**File:** Project-wide
+**Severity:** LOW
+
+Hermes error messages use varied phrasing: `"✗ {text}"` (cli_output.py), JSON-RPC `-32700` (tui_gateway/entry.py), free-text gateway messages. There is no centralized error code namespace (e.g., `HERMES_ERR_001` style). Users cannot programmatically distinguish error types without parsing message text.
+
+The codebase self-reports "actionable error messages" in RELEASE notes but does not assign error codes or enumerations. The RELEASE_v0.8.0.md explicitly calls out "actionable error messages" as a feature but without a structured code system, grep-based detection is the only option.
+
+**Recommendation:** Consider an enumerated `HermesErrorCode` enum (in `hermes_constants.py` or a new errors module) with a published table in CONTRIBUTING.md mapping codes to causes and resolutions.
+
+---
+
+### P54-3 · CLI help text derived from `COMMAND_REGISTRY` is accurate and consistent — PASS
+
+**File:** `hermes_cli/commands.py`
+**Severity:** N/A (positive finding)
+
+The central `CommandDef` dataclass in `commands.py` is the single source of truth for all slash commands. It is used by:
+- `show_help()` in cli.py (lines 5857–5906) — formats `COMMANDS_BY_CATEGORY`
+- `process_command()` in cli.py — dispatch resolver
+- Gateway `GATEWAY_KNOWN_COMMANDS` frozenset
+- Telegram BotCommands, Slack subcommand mapping, autocomplete
+
+All commands have `name`, `description`, `category`, `aliases`, `args_hint`, and optionally `subcommands`. The schema is consistent and machine-readable. No deprecated flags found in the registry.
+
+**Positive finding:** Help hierarchy is well-structured — commands are categorized (Session, Configuration, Tools & Skills, Info, Exit), include argument hints, and the `cli_only` / `gateway_only` flags correctly gate availability.
+
+---
+
+### P54-4 · `hermes help <command>` uses argparse with `SystemExit` swallow — works correctly — PASS
+
+**File:** `cli.py:7958–7964`
+**Severity:** N/A (positive finding)
+
+When `hermes help <subcommand>` is invoked, argparse is called and catches `SystemExit` (raised by argparse on `--help` or errors) so it doesn't kill the interactive CLI session. The pattern is:
+```python
+except SystemExit:
+    pass  # argparse calls sys.exit() on --help; swallow so we don't kill the session
+```
+
+This is intentional and correct.
+
+---
+
+### P54-5 · README.md is current and accurate — PASS with minor issues
+
+**File:** `README.md`
+
+- Correctly lists `hermes setup --portal` for Nous Portal OAuth flow
+- Quick-start commands (`hermes`, `hermes model`, `hermes tools`, `hermes config set`, `hermes gateway`, `hermes setup`, `hermes update`, `hermes doctor`) match actual CLI commands
+- Windows early-beta disclaimer is present and accurate
+- Termux guide reference is correct
+- No broken external links detected in visible content
+
+**Minor issue:** README section "Skip the API-key collection — Nous Portal" says "One command from a fresh install: `hermes setup --portal`" but the portal setup wizard may require interactive terminal input depending on OAuth provider — not fully non-interactive. This is not a doc error but a usability note.
+
+---
+
+### P54-6 · CONTRIBUTING.md is thorough — PASS
+
+**File:** `CONTRIBUTING.md`
+
+- Correctly documents that new memory providers are no longer accepted into `plugins/memory/` and should be standalone plugins
+- Skill vs. Tool decision tree is clear and actionable
+- Dev setup instructions (`uv venv`, `uv pip install -e ".[all,dev]"`, `npm install`) are accurate
+- Git LFS requirement mentioned
+- Contribution priorities are well-defined
+
+---
+
+### P54-7 · RELEASE notes are comprehensive and linked — PASS
+
+**Files:** `RELEASE_v0.14.0.md` through `RELEASE_v0.2.0.md`
+
+- All 13 RELEASE files present (v0.2.0 through v0.14.0)
+- Each release has PR numbers, descriptions, and severity categorizations
+- v0.14.0 header correctly identifies 808 commits, 633 merged PRs, 165,061 insertions
+- v0.8.0 correctly references "actionable error messages" as a feature with PR #4959
+
+No broken links detected in visible content. PR numbers are well-formed GitHub URLs.
+
+---
+
+### P54-8 · `.env.example` is well-documented — PASS
+
+**File:** `.env.example`
+
+- Clearly separates LLM provider sections with commented headers
+- Notes `LLM_MODEL` is no longer read from .env (kept for reference only) — accurate
+- API key setup instructions with provider URLs
+- Multiple provider examples (OpenRouter, NovitaAI, Google AI Studio, Ollama Cloud, z.ai/GLM)
+
+---
+
+### P54-9 · `cli-config.yaml.example` is comprehensive — PASS with one note
+
+**File:** `cli-config.yaml.example` (1100 lines)
+
+- Well-structured with clear section headers
+- `context_length` vs `max_tokens` distinction is explicitly documented with a warning about the OpenAI/Anthropic naming difference
+- Azure Foundry keyless auth (Entra ID) example is present and accurate
+- Provider aliases (`ollama`, `vllm`, `llamacpp` → `custom`) documented
+- Named provider overrides section
+
+**Note:** The example config is 1100 lines — large for a quick-start but accurate as a reference. No working minimal config is provided separately.
+
+---
+
+### P54-10 · No man pages shipped — LOW (usability gap)
+
+**Files:** None found
+
+Hermes ships no man pages (`.1` files) in the repo or as part of the pip package. The built-in `/help` and `hermes --help` are the only first-class help interfaces. This is acceptable for a CLI tool but means `man hermes` will not work.
+
+**Recommendation:** If man page generation is desired, a target in `scripts/` using `sphinx-man` or similar could generate them from docstrings. Alternatively, a `hermes.1` man page in the repo would enable `man ./hermes.1` for users who prefer man pages.
+
+---
+
+### P54-11 · Error messages in `cli_output.py` lack error codes — LOW
+
+**File:** `hermes_cli/cli_output.py:31–33`
+
+```python
+def print_error(text: str) -> None:
+    """Print a red error message with ✗ prefix."""
+    print(color(f"✗ {text}", Colors.RED))
+```
+
+Errors printed via `print_error` have no code, no suggested action, and no reference to logs or support channels. While these are CLI-facing human messages, adding a lightweight hint (e.g., "Run `hermes doctor` to diagnose" or a code prefix) would make them more actionable.
+
+**Contrast:** The gateway error messages in `tui_gateway/entry.py` use JSON-RPC error codes (`-32700` for parse error), which IS structured. The CLI error path is less structured.
+
+**Recommendation:** For a future pass: consider adding an optional `code=` parameter to `print_error`/`print_warning` so errors can optionally carry a searchable code.
+
+---
+
+### P54-12 · `print_config_warnings()` is called at CLI startup — positive pattern — PASS
+
+**File:** `cli.py:677–681`
+
+```python
+try:
+    from hermes_cli.config import print_config_warnings
+    print_config_warnings()
+```
+
+Config structure validation runs early, printing warnings before the user hits cryptic errors later. This is a good UX pattern — config problems surface at startup with actionable messages rather than failing mid-session.
+
+---
+
+### P54-13 · `gateway/run.py` unknown command message is good — PASS
+
+**File:** `gateway/run.py:7655–7658`
+
+```python
+f"Unknown command `/{command}`. "
+f"Type /commands to see what's available, "
+f"or resend without the leading slash to send "
+f"as a regular message."
+```
+
+The unknown command error tells users what to do next: use `/commands` or resend without slash. This is a good actionable error message pattern.
+
+---
+
+*Pass #54 complete - 13 findings across 5 focus areas.*
