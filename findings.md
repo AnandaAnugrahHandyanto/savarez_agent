@@ -8775,5 +8775,131 @@ hermes_cli/config.py, hermes_cli/env_loader.py, hermes_cli/auth.py, agent/creden
 
 ---
 
-*Pass #72 complete — 2026-05-25T19:00:00Z*
+## Pass #73 – Text Processing, Parsing & Output Formatting Deep Dive – 2026-05-25T19:15:00Z
+
+### 1. Markdown/HTML Rendering Security
+
+#### ✅ XSS Prevention — Good
+- **`gateway/platforms/feishu.py`** (`_escape_markdown_text` at line 454–455): Uses `_MARKDOWN_SPECIAL_CHARS_RE = re.compile(r"([\\`*_{}\[\]()#+\-!|>~])")` to escape all special Markdown characters before rendering. Text is escaped before being wrapped in Markdown syntax (bold/italic/code), preventing injection through content.
+- **`gateway/platforms/feishu.py`** (`_sanitize_fence_language` at line 475–476): Language tag for code fences is stripped of newlines and carriage returns before use — prevents fence-language injection.
+- **`gateway/platforms/helpers.py`** (`strip_markdown` at line 180): Uses pre-compiled regexes for Markdown-to-plaintext stripping. Links are handled as `[label](url)` → preserved as text (no HTML output). No dangerous inline HTML is generated.
+- **`gateway/platforms/feishu.py`** (`_strip_markdown_to_plain_text` at line 512–527): Strips markdown formatting via regex substitution + `strip_markdown()` helper. Adds Feishu-specific patterns (blockquotes, strikethrough, `<u>` tags, horizontal rules). Final fallback to `strip_markdown()`. No HTML output.
+
+#### ✅ HTML Escaping — Good
+- **`gateway/platforms/email.py`** (`_strip_html` at line 163–174): Naive HTML tag stripper for fallback email text extraction. Replaces `<br>`, `<p>` with newlines, then strips all tags with `<[^>]+>`. Also decodes `&nbsp;`, `&amp;`, `&lt;`, `&gt;` entities. Outputs plain text only — no HTML rendering of user content.
+- **`agent/display.py`** (lines 19–21): ANSI color constants defined as string literals (`_RED = "\033[31m"`, `_RESET = "\033[0m"`). Not user-controlled.
+- **No `bleach` or full HTML sanitization library** is used for any platform output. The project consistently strips to plain text rather than rendering HTML, which is a safe default.
+
+#### ✅ No XSS Vectors Found
+No platform adapters render user-supplied Markdown as HTML. All platforms either:
+- Strip to plain text (SMS, iMessage, email fallback)
+- Render as Markdown with proper escaping (Feishu)
+- Forward raw text (Telegram, Discord, Slack, etc.)
+
+#### 🟡 INFO: Rich Output / Markdown Rendering
+- **`tui_gateway/render.py`** (lines 10–49): Rendering bridge that imports `agent.rich_output` for message/diff/stream rendering when available. Falls back to `None` when the module isn't installed (TUI falls back to its own `markdown.tsx`). The `render_message` function catches `TypeError` and general `Exception`, returning `None` gracefully — no unhandled exceptions propagate.
+
+### 2. Terminal Output Formatting
+
+#### ✅ ANSI Sanitization — Good
+- **`agent/display.py`** (lines 33–78, `_diff_ansi()`): ANSI colors resolved lazily from the active skin engine. Defaults to 24-bit RGB (`\033[38;2;R;G;Bm`). Color values are parsed from hex skin config (7-char `#RRGGBB` format only — validated by length and `#` prefix check). Falls back to hardcoded defaults on any error.
+- **`agent/display.py`** (lines 19–25): Color constants (`_RED`, `_RESET`, `_ANSI_RESET`) are hardcoded string literals, not user-controlled.
+- **`cli.py`** (lines 1035–1237): Direct ANSI escape codes (`\033[31m`, `\033[0m`, `\033[32m`, `\033[33m`) used in error/success messages for `--worktree` commands. Codes are hardcoded literals in user-facing print statements, not from external input.
+
+#### ✅ Terminal Injection Prevention — Good
+- **`agent/display.py`** (lines 875–980, `get_cute_tool_message`): Tool preview lines are constructed from parsed JSON args. `_trunc()` converts args to string and limits length. Tool name and action labels are from a fixed `labels` dict (no user input). The only user-derived content in the preview line is safely truncated and limited.
+- **`agent/display.py`** (lines 793–808, `_trim_error`): Error messages trimmed to 48 chars max. Path truncation uses `rsplit('/', 1)[-1]` to extract just the filename. Prevents terminal overflow from long paths. Truncation always adds `...` to indicate cut content.
+
+#### ✅ Output Size Bounds — Good
+- **`agent/display.py`** (lines 87–88, `_MAX_INLINE_DIFF_FILES = 6`, `_MAX_INLINE_DIFF_LINES = 80`): Configured limits for inline diff display.
+- **`agent/display.py`** (lines 97–100): Configurable `tool_preview_length` (0 = no limit) set at startup from config. Tool preview strings have per-type truncation (e.g., 42 chars for commands/queries, 35 chars for paths/domains).
+- **`cron/scheduler.py`** (lines 1021–1024): Cron output truncated to 8000 chars (`_MAX_CONTEXT_CHARS = 8000`) with `[... output truncated ...]` suffix.
+
+#### ✅ AGENTS.md documents ANSI warning
+- **`AGENTS.md`** (line 961): Explicitly warns: "DO NOT use `\033[K` (ANSI erase-to-EOL) in spinner/display code — leaks as literal `?[K` text under `prompt_toolkit`'s `patch_stdout`. Use space-padding."
+
+### 3. Structured Output Parsing
+
+#### ✅ JSON Parsing — Good
+- **`utils.py`** (lines 258–268, `safe_json_loads`): Canonical safe JSON parser. Catches `json.JSONDecodeError`, `TypeError`, and `ValueError`. Returns `default` (typically `None`) on any parse error. Used consistently throughout the codebase.
+- **`cron/scheduler.py`** (line 949): `json.loads(last_line)` guarded by `try/except (json.JSONDecodeError, ValueError)` — returns `True` (gate passes) on parse failure.
+- **`cron/jobs.py`** (line 418): `json.loads(f.read(), strict=False)` — uses `strict=False` to handle bare control characters in string values. Exception caught and returns empty jobs list.
+- **`cron/scheduler.py`** (line 1070): `json.loads(skill_view(skill_name))` with `except (json.JSONDecodeError, TypeError)` — skips invalid skills with warning.
+- **`agent/display.py`** (line 824): `safe_json_loads(result)` used for tool failure detection. Exceptions caught and treated as non-failure.
+
+#### ✅ No Eval/Exec — Good
+- No `eval()` or `exec()` calls found in text processing paths.
+- **`run_agent.py`** line 1590: `_save_session_log` uses `json.loads(log_file.read_text())` — reads entire file on every save to compare message counts. This is a known inefficiency (documented in `pass6_appendix.md`), not a security issue.
+
+#### ✅ YAML Safe Loading — Good
+- **`gateway/config.py`** (line 717): `yaml.safe_load(f) or {}`
+- **`cron/scheduler.py`** (line 1428): `yaml.safe_load(_f) or {}`
+- The codebase consistently uses `yaml.safe_load()` except for:
+  - **`hermes_cli/xai_retirement.py`** (line 207): `YAML(typ="rt")` round-trip loader (documented in Pass #71 findings)
+  - **`agent/skill_utils.py`** (line 79): Uses `CSafeLoader` or `SafeLoader` explicitly (documented as safe in findings)
+
+### 4. Templating Engines & Format String Safety
+
+#### ✅ No Jinja2/Template Injection — Good
+- No Jinja2, Mako, or other template engine imports found in the codebase.
+- No string formatting using `string.Template` with user-supplied templates.
+
+#### ✅ i18n format string — LOW risk, already documented
+- **`agent/i18n.py`** (lines 240–248): `value.format(**format_kwargs)` in `t()` function. Exception handler catches `KeyError`, `IndexError`, `ValueError` and falls back to unformatted string with warning log. Already documented in Pass #37 findings (P37-2/P49-4). Risk is LOW since catalog values are developer-controlled.
+- **`agent/i18n.py`** (line 252): `__all__` exports only safe functions — no template class exposure.
+
+#### ✅ Log format strings use `%s` style — Good
+- All logging uses `%s`-style format strings (via `logging` module), not f-strings or `.format()`. Session IDs and task IDs come from internal AIAgent state, not user input.
+- **`agent/redact.py`** (line 507–509): `RedactingFormatter.format()` calls `super().format(record)` first, then applies `redact_sensitive_text()` to the result — log message is fully constructed before redaction.
+
+### 5. Log Sanitization & PII Exposure Prevention
+
+#### ✅ Comprehensive Secret Redaction — Excellent
+- **`agent/redact.py`** (lines 1–509): Full-featured redaction pipeline. Catches:
+  - Known API key prefixes (sk-, ghp_, github_pat_, xoxb-, AIza..., etc. — 30+ patterns)
+  - ENV assignments (`KEY=secret`)
+  - JSON fields (`"apiKey": "value"`)
+  - Authorization headers (Bearer tokens)
+  - Telegram bot tokens (`bot\d+:***`)
+  - Private key blocks (`-----BEGIN PRIVATE KEY-----...`)
+  - DB connection string passwords (postgres, mysql, mongodb, redis, amqp://user:pass@)
+  - JWT tokens (eyJ... base64 headers)
+  - URL userinfo (`http://user:pass@host`)
+  - URL query string tokens (sensitive param names: access_token, refresh_token, token, api_key, etc.)
+  - HTTP request targets with query params (GET/POST /path?password=...)
+  - Form-urlencoded bodies
+  - Discord mentions (`<@snowflake_id>`)
+  - E.164 phone numbers (`+1234567890` for Signal/WhatsApp)
+
+#### ✅ RedactingFormatter — Good
+- **`agent/redact.py`** (lines 501–509): `RedactingFormatter` wraps any `logging.Formatter` subclass. Format method: construct message via parent `format()`, then apply `redact_sensitive_text()`. Applied to stderr handler in `gateway/run.py` line 18133.
+- Redaction is on-by-default (`_REDACT_ENABLED = os.getenv("HERMES_REDACT_SECRETS", "true").lower() in {"1", "true", "yes", "on"}`). Snapshot at import time — cannot be disabled mid-session via env mutation.
+
+#### ✅ Performance gating — Good
+- **`agent/redact.py`** (lines 443–498): Substring pre-checks gate expensive regex scans. `_has_known_prefix_substring()` checks for presence of any known credential prefix substring before running `_PREFIX_RE`. `_has_http_method_substring()` gates the HTTP access log scanner. Reduces per-record cost from ~5.6µs to ~1.8µs on non-secret text.
+
+#### ✅ mask_secret for display — Good
+- **`agent/redact.py`** (lines 200–244): `mask_secret()` preserves head+tail for debuggability (4+4 chars default, floor=12). Used by `hermes config`, `hermes status`, `hermes dump`. Short tokens (<12 chars) fully masked.
+
+#### ✅ Cron output redaction
+- **`cron/scheduler.py`** (lines 907–912): `redact_sensitive_text()` applied to both `stdout` and `stderr` before any return path (guarded by `try/except`).
+
+### Summary
+
+| Area | Status | Notes |
+|------|--------|-------|
+| Markdown/HTML rendering | ✅ GOOD | Proper escaping, no XSS, no HTML-in-Markdown injection |
+| ANSI terminal formatting | ✅ GOOD | Hardcoded escapes, no user input in color codes, output bounded |
+| JSON parsing | ✅ GOOD | `safe_json_loads` used consistently, no eval/exec |
+| YAML loading | ✅ GOOD | `yaml.safe_load` used throughout (2 known exceptions documented) |
+| Template injection | ✅ GOOD | No Jinja2 or unsafe template engines; i18n format is low-risk |
+| Log sanitization | ✅ EXCELLENT | Comprehensive redaction, RedactingFormatter, on-by-default, performance-gated |
+| Output size bounds | ✅ GOOD | Tool preview truncation, diff limits, cron context truncation |
+| Format string safety | ✅ GOOD | `%s`-style logging throughout, no user input in format strings |
+
+**FINDING: No new issues found in Pass #73. The codebase demonstrates strong text processing and output formatting security hygiene.**
+
+---
+
+*Pass #73 complete — 2026-05-25T19:15:00Z*
 *Commit at scan: 5a51a1f65*
