@@ -169,6 +169,118 @@ def test_denied_write_file_prompts_before_execute_code_write_to_same_path(tmp_pa
     assert requests[1].path == str(target)
 
 
+def test_denied_write_file_blocks_terminal_reattempt_when_fresh_request_denied(tmp_path):
+    target = tmp_path / "sample.txt"
+    target.write_text("before\n", encoding="utf-8")
+    requests = []
+
+    def deny(proposal):
+        requests.append(proposal)
+        return False
+
+    set_edit_approval_requester(deny)
+
+    denied = json.loads(
+        handle_function_call(
+            "write_file",
+            {"path": str(target), "content": "after\n"},
+            task_id="acp-edit-terminal-reattempt-deny",
+        )
+    )
+    assert "Edit approval denied" in denied["error"]
+
+    code = f"from pathlib import Path; Path({str(target)!r}).write_text('after\\n', encoding='utf-8')"
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
+    result = json.loads(
+        handle_function_call(
+            "terminal",
+            {"command": command},
+            task_id="acp-edit-terminal-reattempt-deny",
+        )
+    )
+
+    assert "Alternate write approval denied" in result["error"]
+    assert target.read_text(encoding="utf-8") == "before\n"
+    assert len(requests) == 2
+    assert isinstance(requests[1], DeniedEditReattempt)
+
+
+def test_denied_write_file_fails_closed_when_reattempt_requester_raises(tmp_path):
+    target = tmp_path / "sample.txt"
+    target.write_text("before\n", encoding="utf-8")
+    requests = []
+
+    def disconnect_on_reattempt(proposal):
+        requests.append(proposal)
+        if len(requests) == 2:
+            raise RuntimeError("zed disconnected")
+        return False
+
+    set_edit_approval_requester(disconnect_on_reattempt)
+
+    denied = json.loads(
+        handle_function_call(
+            "write_file",
+            {"path": str(target), "content": "after\n"},
+            task_id="acp-edit-terminal-reattempt-exception",
+        )
+    )
+    assert "Edit approval denied" in denied["error"]
+
+    code = f"from pathlib import Path; Path({str(target)!r}).write_text('after\\n', encoding='utf-8')"
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
+    result = json.loads(
+        handle_function_call(
+            "terminal",
+            {"command": command},
+            task_id="acp-edit-terminal-reattempt-exception",
+        )
+    )
+
+    assert "Alternate write approval denied" in result["error"]
+    assert target.read_text(encoding="utf-8") == "before\n"
+    assert len(requests) == 2
+    assert isinstance(requests[1], DeniedEditReattempt)
+
+
+def test_denied_write_file_prompts_for_shell_quoted_terminal_redirect_to_same_path(tmp_path):
+    target = tmp_path / "quo'te.txt"
+    target.write_text("before\n", encoding="utf-8")
+    requests = []
+
+    def decide(proposal):
+        requests.append(proposal)
+        return len(requests) == 2
+
+    set_edit_approval_requester(decide)
+
+    denied = json.loads(
+        handle_function_call(
+            "write_file",
+            {"path": str(target), "content": "after direct\n"},
+            task_id="acp-edit-terminal-shell-quoted-path",
+        )
+    )
+    assert "Edit approval denied" in denied["error"]
+
+    payload = "after via shell\n"
+    command = f"printf %s {shlex.quote(payload)} > {shlex.quote(str(target))}"
+    result = json.loads(
+        handle_function_call(
+            "terminal",
+            {"command": command},
+            task_id="acp-edit-terminal-shell-quoted-path",
+        )
+    )
+
+    assert result.get("exit_code") == 0
+    assert target.read_text(encoding="utf-8") == "after via shell\n"
+    assert len(requests) == 2
+    assert isinstance(requests[1], DeniedEditReattempt)
+    assert requests[1].tool_name == "terminal"
+    assert requests[1].path == str(target)
+
+
 def test_denied_write_file_still_allows_terminal_read_of_same_path(tmp_path):
     target = tmp_path / "sample.txt"
     target.write_text("before\n", encoding="utf-8")

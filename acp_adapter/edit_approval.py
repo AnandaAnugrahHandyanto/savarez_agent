@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import re
+import shlex
 import tempfile
 from concurrent.futures import TimeoutError as FutureTimeout
 from contextvars import ContextVar, Token
@@ -81,6 +82,8 @@ _DENIED_EDIT_WRITE_PATTERNS = (
     re.compile(r"\b(?:tee|truncate|touch|mv|cp|rm|install)\b"),
     re.compile(r"\b(?:sed|perl)\b[^\n]*\s-i(?:\s|$)", re.DOTALL),
 )
+_SHELL_REDIRECT_OPERATOR = re.compile(r"^(?:\d*|&)?>{1,2}$")
+_SHELL_REDIRECT_ATTACHED = re.compile(r"^(?:\d*|&)?>{1,2}(.+)$")
 
 
 def set_edit_approval_requester(requester: EditApprovalRequester | None) -> Token:
@@ -246,10 +249,52 @@ def _write_capable_tool_text(tool_name: str, arguments: dict[str, Any]) -> str |
     return None
 
 
+def _path_matches_denied_edit(candidate: str, denied: DeniedEdit) -> bool:
+    if not candidate:
+        return False
+    if candidate in {denied.path, denied.resolved_path}:
+        return True
+    try:
+        return _resolved_edit_path(candidate) == denied.resolved_path
+    except (OSError, RuntimeError):
+        return False
+
+
 def _mentions_denied_path(text: str, denied: DeniedEdit) -> bool:
     path_candidates = {denied.path, denied.resolved_path}
     path_candidates.discard("")
     return any(candidate in text for candidate in path_candidates)
+
+
+def _shell_redirection_targets(command: str) -> tuple[str, ...]:
+    """Return obvious shell redirection targets after quote expansion.
+
+    This is not a shell parser; it covers simple redirect forms so shell-quoted
+    denied paths (for example paths containing apostrophes) still require fresh
+    ACP approval instead of bypassing the literal string containment check.
+    """
+
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        return ()
+
+    targets: list[str] = []
+    for index, token in enumerate(tokens):
+        if _SHELL_REDIRECT_OPERATOR.match(token):
+            if index + 1 < len(tokens):
+                targets.append(tokens[index + 1])
+            continue
+        attached = _SHELL_REDIRECT_ATTACHED.match(token)
+        if attached:
+            targets.append(attached.group(1))
+    return tuple(targets)
+
+
+def _terminal_mentions_denied_path(command: str, denied: DeniedEdit) -> bool:
+    if _mentions_denied_path(command, denied):
+        return True
+    return any(_path_matches_denied_edit(target, denied) for target in _shell_redirection_targets(command))
 
 
 def _has_write_intent(text: str) -> bool:
@@ -265,7 +310,12 @@ def _denied_edit_reattempt(tool_name: str, arguments: dict[str, Any]) -> DeniedE
     if not text or not _has_write_intent(text):
         return None
     for denied in _DENIED_EDITS.get():
-        if _mentions_denied_path(text, denied):
+        mentions_denied_path = (
+            _terminal_mentions_denied_path(text, denied)
+            if tool_name == "terminal"
+            else _mentions_denied_path(text, denied)
+        )
+        if mentions_denied_path:
             return DeniedEditReattempt(
                 tool_name=tool_name,
                 path=denied.path,
