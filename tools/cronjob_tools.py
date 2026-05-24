@@ -323,6 +323,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["no_agent"] = True
     if job.get("enabled_toolsets"):
         result["enabled_toolsets"] = job["enabled_toolsets"]
+    if job.get("allow_memory_tools"):
+        result["allow_memory_tools"] = True
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
     if job.get("profile"):
@@ -348,6 +350,7 @@ def cronjob(
     script: Optional[str] = None,
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
+    allow_memory_tools: Optional[bool] = None,
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
     no_agent: Optional[bool] = None,
@@ -415,6 +418,7 @@ def cronjob(
                 script=_normalize_optional_job_value(script),
                 context_from=context_from,
                 enabled_toolsets=enabled_toolsets or None,
+                allow_memory_tools=bool(allow_memory_tools),
                 workdir=_normalize_optional_job_value(workdir),
                 profile=_normalize_optional_job_value(profile),
                 no_agent=_no_agent,
@@ -547,6 +551,8 @@ def cronjob(
                 updates["context_from"] = refs or None
             if enabled_toolsets is not None:
                 updates["enabled_toolsets"] = enabled_toolsets or None
+            if allow_memory_tools is not None:
+                updates["allow_memory_tools"] = bool(allow_memory_tools)
             if workdir is not None:
                 # Empty string clears the field (restores old behaviour);
                 # otherwise pass raw — update_job() validates / normalizes.
@@ -704,6 +710,11 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "items": {"type": "string"},
                 "description": "Optional list of toolset names to restrict the job's agent to (e.g. [\"web\", \"terminal\", \"file\", \"delegation\"]). When set, only tools from these toolsets are loaded, significantly reducing input token overhead. When omitted, all default tools are loaded. Infer from the job's prompt — e.g. use \"web\" if it calls web_search, \"terminal\" if it runs scripts, \"file\" if it reads files, \"delegation\" if it calls delegate_task. On update, pass an empty array to clear."
             },
+            "allow_memory_tools": {
+                "type": "boolean",
+                "default": False,
+                "description": "Optional explicit opt-in for LLM-driven cron jobs that need persistent memory/Honcho tools. Default false: cron still avoids memory/Honcho initialization so autonomous prompts cannot pollute user memory. When true, memory providers/tools are initialized but memory context is NOT injected into the cron system prompt; the job must deliberately call memory/Honcho tools. Requires including the memory toolset if enabled_toolsets restricts tools."
+            },
             "workdir": {
                 "type": "string",
                 "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
@@ -765,6 +776,7 @@ registry.register(
         script=args.get("script"),
         context_from=args.get("context_from"),
         enabled_toolsets=args.get("enabled_toolsets"),
+        allow_memory_tools=args.get("allow_memory_tools"),
         workdir=args.get("workdir"),
         profile=args.get("profile"),
         no_agent=args.get("no_agent"),

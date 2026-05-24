@@ -521,6 +521,7 @@ def create_job(
     script: Optional[str] = None,
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
+    allow_memory_tools: bool = False,
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
     no_agent: bool = False,
@@ -555,6 +556,10 @@ def create_job(
                           When set, only tools from these toolsets are loaded, reducing
                           token overhead. When omitted, all default tools are loaded.
                           Ignored when ``no_agent=True``.
+        allow_memory_tools: When True, initialize memory providers/tools for the
+                          cron agent without injecting memory context into the
+                          system prompt. Defaults False so autonomous cron
+                          prompts cannot pollute user memory accidentally.
         workdir: Optional absolute path.  When set, the job runs as if launched
                 from that directory: AGENTS.md / CLAUDE.md / .cursorrules from
                 that directory are injected into the system prompt, and the
@@ -605,6 +610,7 @@ def create_job(
     normalized_script = normalized_script or None
     normalized_toolsets = [str(t).strip() for t in enabled_toolsets if str(t).strip()] if enabled_toolsets else None
     normalized_toolsets = normalized_toolsets or None
+    normalized_allow_memory_tools = bool(allow_memory_tools)
     normalized_workdir = _normalize_workdir(workdir)
     normalized_profile = _normalize_profile(profile)
     normalized_no_agent = bool(no_agent)
@@ -660,6 +666,7 @@ def create_job(
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
+        "allow_memory_tools": normalized_allow_memory_tools,
         "workdir": normalized_workdir,
         "profile": normalized_profile,
     }
