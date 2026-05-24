@@ -5597,6 +5597,23 @@ class TelegramAdapter(BasePlatformAdapter):
                     or None
                 )
 
+        try:
+            from gateway.notification_routes import resolve_notification_route_for_message
+
+            notification_route = resolve_notification_route_for_message(
+                platform="telegram",
+                chat_id=str(chat.id),
+                text=message.text or message.caption or "",
+                reply_to_message_id=reply_to_id,
+                thread_id=thread_id_str,
+            )
+            if notification_route is not None:
+                routed_source = notification_route.get("source")
+                if routed_source is not None:
+                    source = routed_source
+        except Exception as exc:
+            logger.debug("[%s] notification route resolution skipped: %s", self.name, exc)
+
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt
         _chat_id_str = str(chat.id)
