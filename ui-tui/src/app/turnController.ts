@@ -113,6 +113,7 @@ class TurnController {
   interrupted = false
   lastStatusNote = ''
   persistedToolLabels = new Set<string>()
+  subagentRouteNoticeIds = new Set<string>()
   persistSpawnTree?: (subagents: SubagentProgress[], sessionId: null | string) => Promise<void>
   protocolWarned = false
   reasoningText = ''
@@ -169,6 +170,7 @@ class TurnController {
     this.bufRef = ''
     this.pendingSegmentTools = []
     this.segmentMessages = []
+    this.subagentRouteNoticeIds.clear()
 
     patchTurnState({
       streamPendingTools: [],
@@ -419,6 +421,18 @@ class TurnController {
     })
   }
 
+  recordSubagentRouteNotice(id: string, line: string) {
+    if (this.interrupted || !line || this.subagentRouteNoticeIds.has(id)) {
+      return
+    }
+
+    this.subagentRouteNoticeIds.add(id)
+    this.pushTrail(line)
+    this.pendingSegmentTools = [...this.pendingSegmentTools, line]
+    this.flushPendingToolsIntoLastSegment()
+    this.publishToolState()
+  }
+
   recordError() {
     this.idle()
     this.clearReasoning()
@@ -427,6 +441,7 @@ class TurnController {
     this.segmentMessages = []
     this.turnTools = []
     this.persistedToolLabels.clear()
+    this.subagentRouteNoticeIds.clear()
   }
 
   recordMessageComplete(payload: { rendered?: string; reasoning?: string; text?: string }) {
@@ -722,6 +737,7 @@ class TurnController {
     this.turnTools = []
     this.toolTokenAcc = 0
     this.persistedToolLabels.clear()
+    this.subagentRouteNoticeIds.clear()
     patchTurnState({ activity: [], outcome: '' })
   }
 
@@ -767,6 +783,7 @@ class TurnController {
     this.toolTokenAcc = 0
     this.interrupted = false
     this.persistedToolLabels.clear()
+    this.subagentRouteNoticeIds.clear()
     patchUiState({ busy: true })
     patchTurnState({ activity: [], outcome: '', subagents: [], toolTokens: 0, tools: [], turnTrail: [] })
   }

@@ -160,7 +160,34 @@ def _reasoning_effort_label(config: Any) -> str:
         return ""
     if config.get("enabled") is False:
         return "none"
-    return str(config.get("effort", "") or "")
+    effort = str(config.get("effort") or "").strip()
+    return effort
+
+
+def _delegated_route_notice(
+    *,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
+    role: Optional[str] = None,
+    route_reason: Optional[str] = None,
+) -> str:
+    """Compact delegated-route label for classic CLI scrollback/spinner lines."""
+    parts: List[str] = ["delegated"]
+    if role:
+        parts.append(str(role))
+    provider_label = str(provider or "").strip()
+    model_label = str(model or "").strip() or "inherit"
+    if provider_label and provider_label != "unknown":
+        parts.append(f"{provider_label}/{model_label}")
+    else:
+        parts.append(model_label)
+    effort = str(reasoning_effort or "").strip() or "default"
+    parts.append(f"effort {effort}")
+    reason = str(route_reason or "").strip()
+    if reason:
+        parts.append(f"reason {reason}")
+    return " · ".join(parts)
 
 
 def set_spawn_paused(paused: bool) -> bool:
@@ -786,8 +813,15 @@ def _build_child_progress_callback(
                 short = (
                     (goal_label[:55] + "...") if len(goal_label) > 55 else goal_label
                 )
+                route_notice = _delegated_route_notice(
+                    provider=provider,
+                    model=model,
+                    reasoning_effort=reasoning_effort,
+                    role=role,
+                    route_reason=route_reason,
+                )
                 try:
-                    spinner.print_above(f" {prefix}├─ 🔀 {short}")
+                    spinner.print_above(f" {prefix}├─ 🔀 {short} · {route_notice}")
                 except Exception as e:
                     logger.debug("Spinner print_above failed: %s", e)
             _relay("subagent.start", preview=preview or goal_label or "", **kwargs)

@@ -9,6 +9,7 @@ import type {
   GatewaySkin,
   SessionMostRecentResponse
 } from '../gatewayTypes.js'
+import { subagentDelegationNoticeLabel } from '../lib/route.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatToolCall, stripAnsi } from '../lib/text.js'
@@ -627,11 +628,26 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         return
-
-      case 'subagent.start':
+      case 'subagent.start': {
         turnController.upsertSubagent(ev.payload, c => (isTerminalStatus(c.status) ? {} : { status: 'running' }))
 
+        const notice = subagentDelegationNoticeLabel({
+          model: ev.payload.model,
+          provider: ev.payload.provider,
+          reasoningEffort: ev.payload.reasoning_effort,
+          role: ev.payload.role,
+          routeReason: ev.payload.route_reason
+        })
+
+        const noticeKey = ev.payload.subagent_id || `sa:${ev.payload.task_index}:${ev.payload.goal || 'subagent'}`
+
+        turnController.recordSubagentRouteNotice(noticeKey, notice)
+        setStatus(notice)
+        restoreStatusAfter(4000)
+
         return
+      }
+
       case 'subagent.thinking': {
         const text = String(ev.payload.text ?? '').trim()
 

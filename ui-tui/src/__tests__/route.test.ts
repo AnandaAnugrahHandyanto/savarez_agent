@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { providerModelLabel, sessionRouteLabel, subagentRouteLabel } from '../lib/route.js'
+import { providerModelLabel, sessionRouteLabel, subagentDelegationNoticeLabel, subagentRouteLabel } from '../lib/route.js'
 
 describe('route labels', () => {
   it('formats provider/model labels compactly', () => {
@@ -39,5 +39,18 @@ describe('route labels', () => {
         role: 'leaf'
       })
     ).toBe('delegate_task · deepseek/deepseek v4 pro · effort low · leaf')
+  })
+
+  it('formats delegated child route metadata for CLI-visible notices', () => {
+    expect(
+      subagentDelegationNoticeLabel({
+        executionMode: 'delegate_task',
+        model: 'deepseek-v4-pro',
+        provider: 'deepseek',
+        reasoningEffort: 'low',
+        role: 'leaf',
+        routeReason: 'delegation provider override'
+      })
+    ).toBe('delegated · leaf · deepseek/deepseek v4 pro · effort low · reason delegation provider override')
   })
 })

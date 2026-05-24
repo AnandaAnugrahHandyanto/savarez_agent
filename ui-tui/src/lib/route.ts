@@ -57,3 +57,16 @@ export const subagentRouteLabel = (
   [routeModeLabel(item.executionMode), providerModelLabel(item.provider, item.model), `effort ${normalizedEffortLabel(item.reasoningEffort)}`, item.role]
     .filter(Boolean)
     .join(' · ')
+
+export const subagentDelegationNoticeLabel = (
+  item: Pick<SubagentProgress, 'model' | 'provider' | 'reasoningEffort' | 'role' | 'routeReason'>
+) =>
+  [
+    'delegated',
+    item.role,
+    providerModelLabel(item.provider, item.model),
+    `effort ${normalizedEffortLabel(item.reasoningEffort)}`,
+    item.routeReason ? `reason ${item.routeReason}` : ''
+  ]
+    .filter(Boolean)
+    .join(' · ')

@@ -912,6 +912,34 @@ describe('createGatewayEventHandler', () => {
     })
   })
 
+  it('surfaces delegated child route metadata in the CLI-visible turn trail and final transcript', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+    const expectedNotice = 'delegated · leaf · deepseek/deepseek v4 pro · effort low · reason delegation provider override'
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({
+      payload: {
+        execution_mode: 'delegate_task',
+        goal: 'route child',
+        model: 'deepseek-v4-pro',
+        provider: 'deepseek',
+        reasoning_effort: 'low',
+        role: 'leaf',
+        route_reason: 'delegation provider override',
+        subagent_id: 'sa-route',
+        task_index: 2
+      },
+      type: 'subagent.start'
+    } as any)
+
+    expect(getTurnState().turnTrail).toContain(expectedNotice)
+
+    onEvent({ payload: { text: 'done' }, type: 'message.complete' } as any)
+
+    expect(appended).toContainEqual({ kind: 'trail', role: 'system', text: '', tools: [expectedNotice] })
+  })
+
   it('normalizes unknown subagent.complete statuses to completed', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))

@@ -65,6 +65,38 @@ class TestDelegateRouteMetadata:
             )
         ]
 
+    def test_progress_callback_spinner_surfaces_route_notice_for_classic_cli(self):
+        from tools.delegate_tool import _build_child_progress_callback
+
+        class Spinner:
+            def __init__(self):
+                self.lines = []
+
+            def print_above(self, line):
+                self.lines.append(line)
+
+        spinner = Spinner()
+        parent = types.SimpleNamespace(_delegate_spinner=spinner)
+        callback = _build_child_progress_callback(
+            task_index=0,
+            goal="inspect repo",
+            parent_agent=parent,
+            task_count=1,
+            model="deepseek-v4-pro",
+            provider="deepseek",
+            reasoning_effort="low",
+            role="leaf",
+            execution_mode="delegate_task",
+            route_reason="delegation provider override",
+        )
+
+        assert callback is not None
+        callback("subagent.start", preview="inspect repo")
+
+        assert spinner.lines == [
+            " ├─ 🔀 inspect repo · delegated · leaf · deepseek/deepseek-v4-pro · effort low · reason delegation provider override"
+        ]
+
     def test_active_subagent_snapshot_includes_route_metadata_without_agent_object(self):
         from tools import delegate_tool
 
