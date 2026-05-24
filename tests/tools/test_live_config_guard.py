@@ -258,6 +258,61 @@ def test_live_config_guard_does_not_treat_token_count_fields_as_secrets(
     assert yaml.safe_load(config_path.read_text()) == {"model": {"default": "new-model"}}
 
 
+def test_live_config_guard_does_not_treat_camelcase_token_count_fields_as_secrets(
+    hermes_home: Path,
+):
+    from utils import atomic_yaml_write
+
+    config_path = hermes_home / "config.yaml"
+    config_path.write_text(
+        "model:\n"
+        "  default: old-model\n"
+        "  maxTokens: 4096\n"
+        "  contextTokens: 8192\n"
+        "  promptTokenCount: 128\n"
+        "  completionTokens: 256\n"
+    )
+
+    atomic_yaml_write(
+        config_path,
+        {"model": {"default": "new-model"}},
+        sort_keys=False,
+    )
+
+    assert yaml.safe_load(config_path.read_text()) == {"model": {"default": "new-model"}}
+
+
+def test_live_config_guard_treats_camelcase_token_fields_as_secrets(
+    hermes_home: Path,
+    file_ops: ShellFileOperations,
+):
+    config_path = hermes_home / "config.yaml"
+    old = """channels:
+  telegram:
+    botToken: REALBOTTOKEN123
+  slack:
+    appToken: REALAPPTOKEN123
+  session:
+    refreshToken: REALREFRESHTOKEN123
+    sessionToken: REALSESSIONTOKEN123
+"""
+    new = """channels:
+  telegram: {}
+  slack: {}
+  session: {}
+"""
+    config_path.write_text(old)
+
+    result = file_ops.write_file(str(config_path), new)
+
+    assert result.error
+    assert "channels.telegram.botToken" in result.error
+    assert "channels.slack.appToken" in result.error
+    assert "channels.session.refreshToken" in result.error
+    assert "channels.session.sessionToken" in result.error
+    assert config_path.read_text() == old
+
+
 def test_live_config_guard_refuses_deleting_duplicate_secret_even_if_value_remains(
     hermes_home: Path,
     file_ops: ShellFileOperations,

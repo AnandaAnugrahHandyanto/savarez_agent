@@ -29,8 +29,9 @@ class LiveConfigGuardResult:
 
 _CREDENTIAL_NAME_RE = re.compile(
     r"(?:api[_-]?key|secret|password|credential|private[_-]?key|"
-    r"access[_-]?key|access[_-]?token|auth[_-]?token|oauth[_-]?token|oauth|"
-    r"(?<![A-Za-z0-9])token(?![A-Za-z0-9_-]))",
+    r"access[_-]?key|access[_-]?token|auth[_-]?token|oauth[_-]?token|"
+    r"bot[_-]?token|app[_-]?token|refresh[_-]?token|session[_-]?token|"
+    r"bearer[_-]?token|oauth|(?<![A-Za-z0-9])token(?![A-Za-z0-9_-]))",
     re.IGNORECASE,
 )
 _PLACEHOLDER_RE = re.compile(
