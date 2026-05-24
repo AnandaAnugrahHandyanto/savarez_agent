@@ -525,6 +525,31 @@ issuing a token, persisting approval, invoking the executor, writing token
 files, writing approval audit, creating a real proposal, or creating an
 operation event.
 
+### Memory Human Approval Token Real Write Executor Contract v0.1
+
+Implemented in
+`agent.memory_human_approval_token_real_write_executor_contract`. It turns a
+valid `eligible_for_real_token_write_executor` final gate candidate into a
+deterministic, read-only real token write executor contract candidate with
+`real_token_write_executor_contract_required` status.
+
+Locked or invalid final gates, missing previews, missing source evidence,
+missing final gate checklists, preview integrity failures, and final gate
+integrity failures become locked contract candidates with explicit reasons. The
+contract defines future executor inputs, hard-lock checks, audit fields,
+rollback rules, forbidden side effects, and the execution boundary, but v0.1
+does not implement or invoke a real token write executor, issue approval
+tokens, persist approvals, create real proposals, write proposal files, write
+operation-ledger events, write token files, write approval audit records,
+submit to governance, write memory, write the Memory Graph, or modify config.
+
+The smoke suite includes
+`memory_human_approval_token_real_write_executor_contract`, proving that a valid
+write final gate becomes a real-token-write-executor-contract-required
+candidate without issuing a token, persisting approval, invoking or
+implementing the executor, writing token files, writing approval audit, creating
+a real proposal, or creating an operation event.
+
 ## Report Schema
 
 The runner emits JSON with these top-level fields:

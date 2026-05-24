@@ -222,6 +222,12 @@ executor without invoking that executor, issuing tokens, persisting approvals,
 writing token files, writing approval audit, creating real proposals, or
 creating operation-ledger events.
 
+Memory Human Approval Token Real Write Executor Contract v0.1 lives in
+`agent.memory_human_approval_token_real_write_executor_contract`. It turns
+eligible final-gate candidates into read-only executor contract candidates that
+define future inputs, hard locks, audit fields, rollback rules, and execution
+boundaries without implementing or invoking a real executor.
+
 ---
 
 ## Migrating from OpenClaw

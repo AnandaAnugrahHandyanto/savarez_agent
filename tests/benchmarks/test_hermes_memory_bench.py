@@ -432,3 +432,51 @@ def test_memory_human_approval_token_write_final_gate_smoke_case_is_executor_eli
     assert case["evidence"]["writes_token_files"] is False
     assert case["evidence"]["writes_approval_audit"] is False
     assert case["evidence"]["invokes_real_token_write_executor"] is False
+
+
+def test_memory_human_approval_token_real_write_executor_contract_smoke_case_requires_contract_without_writes():
+    report = run_benchmark("smoke")
+    case = next(
+        case
+        for case in report["cases"]
+        if case["dimension"] == "memory_human_approval_token_real_write_executor_contract"
+    )
+
+    contract = case["evidence"][
+        "human_approval_token_real_write_executor_contract_candidates"
+    ][0]
+    assert case["actual_answer"] == "real_token_write_executor_contract_required"
+    assert contract["contract_validation"] == {"valid": True, "errors": []}
+    assert contract["contract_status"] == "real_token_write_executor_contract_required"
+    assert (
+        contract["routing"]
+        == "real_token_write_executor_contract_review_required_before_implementation"
+    )
+    assert contract["lock_reason"] is None
+    assert "invoke_real_token_write_executor" in contract["executor_forbidden_side_effects"]
+    assert "implement_real_token_write_executor" in contract["executor_forbidden_side_effects"]
+    assert "write_token_files" in contract["executor_forbidden_side_effects"]
+    assert "write_approval_audit_files" in contract["executor_forbidden_side_effects"]
+    assert contract["approval_token_write_payload_preview"]["preview_only"] is True
+    assert contract["approval_token_write_payload_preview"]["token_issued"] is False
+    assert contract["approval_token_write_payload_preview"]["persisted"] is False
+    assert contract["approval_token_write_payload_preview"]["written"] is False
+    assert contract["approval_audit_write_payload_preview"]["preview_only"] is True
+    assert contract["approval_audit_write_payload_preview"]["created_operation_event"] is False
+    assert contract["approval_audit_write_payload_preview"]["writes_approval_audit"] is False
+    assert contract["approval_audit_write_payload_preview"]["writes_operation_ledger"] is False
+    assert contract["token_write_target_paths_preview"]["preview_only"] is True
+    assert contract["token_write_target_paths_preview"]["writes_token_files"] is False
+    assert contract["token_write_target_paths_preview"]["writes_approval_audit"] is False
+    assert contract["token_write_target_paths_preview"]["writes_operation_ledger"] is False
+    assert case["evidence"]["token_issued"] is False
+    assert case["evidence"]["persisted_approval"] is False
+    assert case["evidence"]["approved"] is False
+    assert case["evidence"]["created_real_proposal"] is False
+    assert case["evidence"]["created_operation_event"] is False
+    assert case["evidence"]["writes_proposal_files"] is False
+    assert case["evidence"]["writes_operation_ledger"] is False
+    assert case["evidence"]["writes_token_files"] is False
+    assert case["evidence"]["writes_approval_audit"] is False
+    assert case["evidence"]["invokes_real_token_write_executor"] is False
+    assert case["evidence"]["implements_real_token_write_executor"] is False
