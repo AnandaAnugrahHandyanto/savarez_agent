@@ -170,6 +170,8 @@ Tell them what you created in plain prose, naming the actual profiles you used:
 
 **Forgetting dependency links.** If the task graph says `research -> implement -> review`, do not create all tasks as independent ready cards. Use parent links so implement/review cannot run before their inputs exist.
 
+**Circular blocker remediation links.** When a reviewer/gate card blocks and creates a remediation card for another agent, do **not** make the remediation card a child of the blocked reviewer/gate. That creates a deadlock: the remediation stays `todo` until the gate is done, while the gate cannot finish until remediation runs. The remediation should be runnable immediately (or depend only on the concrete implementation artifact it must modify). After remediation completes, unblock/re-run the gate and reference the remediation evidence in comments. If you discover this anti-pattern, unlink the gate→remediation edge, dispatch the remediation, and record the orchestration correction.
+
 **Reassignment vs. new task.** If a reviewer blocks with "needs changes," create a NEW task linked from the reviewer's task — don't re-run the same task with a stern look. The new task is assigned to the original implementer profile.
 
 **Argument order for links.** `kanban_link(parent_id=..., child_id=...)` — parent first. Mixing them up demotes the wrong task to `todo`.

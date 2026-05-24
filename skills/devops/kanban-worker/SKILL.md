@@ -97,6 +97,8 @@ kanban_complete(
 )
 ```
 
+When a review/gate fails because another specialist must remediate something, do not create a remediation card that depends on the blocked review/gate card itself. That dependency is circular: the remediation cannot run until the gate is done, and the gate cannot pass until remediation runs. Create the remediation as immediately runnable for the right specialist, then block/complete the review with a clear handoff and ask the operator/orchestrator to re-run the gate after remediation evidence is available.
+
 Shape `metadata` so downstream parsers (reviewers, aggregators, schedulers) can use it without re-reading your prose.
 
 ## Claiming cards you actually created
