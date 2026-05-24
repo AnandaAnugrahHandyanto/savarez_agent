@@ -1,0 +1,20 @@
+name: janitor
+version: 1.0.0
+description: "Hermes workflow plugin for senior-engineer code cleanup, TDD proof gates, and daily GitHub repo janitor sweeps."
+author: NousResearch
+kind: standalone
+platforms:
+  - linux
+  - macos
+  - windows
+provides_tools:
+  - janitor_start
+  - janitor_review
+  - janitor_story
+  - janitor_run
+  - janitor_proof
+  - janitor_status
+  - janitor_reset
+  - janitor_daily_prompt
+provides_hooks:
+  - pre_llm_call

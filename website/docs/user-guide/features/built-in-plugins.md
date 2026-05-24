@@ -56,6 +56,7 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | Plugin | Kind | Purpose |
 |---|---|---|
 | `disk-cleanup` | hooks + slash command | Auto-track ephemeral files and clean them on session end |
+| `janitor` | standalone | Senior-engineer code cleanup workflow with TDD proof gates and daily GitHub PR sweep prompts |
 | `observability/langfuse` | hooks | Trace turns / LLM calls / tools to [Langfuse](https://langfuse.com) |
 | `spotify` | backend (7 tools) | Native Spotify playback, queue, search, playlists, albums, library |
 | `google_meet` | standalone | Join Meet calls, live-caption transcription, optional realtime duplex audio |
@@ -66,6 +67,32 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | `kanban/dashboard` | dashboard tab | Kanban board UI for the multi-agent dispatcher — tasks, comments, fan-out, board switching. See [Kanban Multi-Agent](./kanban.md). |
 
 Memory providers (`plugins/memory/*`) and context engines (`plugins/context_engine/*`) are listed separately on [Memory Providers](./memory-providers.md) — they're managed through `hermes memory` and `hermes plugins` respectively. The full per-plugin detail for the two long-running hooks-based plugins follows.
+
+### janitor
+
+Runs senior-engineer cleanup workflows for brittle, vibe-coded, or slop-coded codebases. Janitor exposes a small state machine with explicit stories, execution handoffs, proof evidence, and a Senior Engineer Benchmark scorecard.
+
+**What it adds:**
+
+- Tools: `janitor_start`, `janitor_review`, `janitor_story`, `janitor_run`, `janitor_proof`, `janitor_status`, `janitor_reset`, `janitor_daily_prompt`
+- Slash/CLI command: `/janitor` / `hermes janitor`
+- Plugin skill: `janitor:workflow`
+- A daily GitHub sweep prompt generator for repositories with charges in the last lookback window, with an explicit recent-activity fallback when direct per-repository charge data is unavailable
+
+**TDD rule:** production cleanup must follow RED-GREEN-REFACTOR. The PR body should include what changed, why, RED/GREEN/REFACTOR evidence, tests run, and residual risks.
+
+**Usage:**
+
+```text
+/janitor start --path /repo --symptoms "brittle patches" "Simplify the worker pipeline"
+/janitor story --acceptance "characterization test fails before fix" "Capture current worker retry behavior"
+/janitor proof --test "pytest tests/test_worker.py" --file "src/worker.py"
+/janitor daily-prompt --owner crisweber2600 --lookback-hours 24
+```
+
+**Enabling:** `hermes plugins enable janitor`.
+
+**Disabling again:** `hermes plugins disable janitor`.
 
 ### disk-cleanup
 
