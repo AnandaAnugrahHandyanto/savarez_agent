@@ -46,8 +46,8 @@ def test_setup_path_does_not_clobber_symlinked_venv_entrypoint(tmp_path) -> None
     runs — no systemd or gateway mutation.
     """
     install_source = INSTALL_SH.read_text(encoding="utf-8")
-    install_prelude, _, _ = install_source.rpartition("\nmain\n")
-    assert install_prelude, "expected trailing `main` call in scripts/install.sh"
+    install_prelude, _, _ = install_source.rpartition('\nif [ -n "$ENSURE_DEPS" ]')
+    assert install_prelude, "expected install.sh entry dispatch block"
 
     install_dir = tmp_path / "install"
     home = tmp_path / "home"
