@@ -119,7 +119,7 @@ class TestGenerateTitle:
         generate_title(["hi"], llm_client=mock_client, model="my-model")
         call_kwargs = mock_client.chat.completions.create.call_args[1]
         assert call_kwargs["model"] == "my-model"
-        assert call_kwargs["max_tokens"] == 100
+        assert call_kwargs["max_tokens"] == 512
         assert call_kwargs["temperature"] == 0.3
 
     def test_llm_client_falls_back_to_auxiliary(self):

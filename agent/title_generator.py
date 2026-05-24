@@ -138,8 +138,8 @@ def generate_title(
                 # Qwen-QwQ, etc.) whose thinking tokens consume most of the
                 # budget before the final answer. 100 is too low.
                 kwargs = {"messages": messages, "max_tokens": 512, "temperature": 0.3}
-                if final_model:
-                    kwargs["model"] = final_model
+                if model:
+                    kwargs["model"] = model
                 response = llm_client.chat.completions.create(**kwargs)
             else:
                 # call_llm path — same reasoning applies.
