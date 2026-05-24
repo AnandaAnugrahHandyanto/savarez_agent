@@ -114,7 +114,7 @@ class TestFindStaleDashboardPids:
                 returncode=0,
                 stdout=_ps_line(
                     12345,
-                    "/Users/me/.hermes/hermes-agent/venv/bin/python3 /Users/me/.local/bin/hermes-dashboard",
+                    "/opt/hermes/venv/bin/python3 /opt/hermes/bin/hermes-dashboard",
                 ) + "\n",
                 stderr="",
             )
@@ -129,7 +129,7 @@ class TestFindStaleDashboardPids:
                 returncode=0,
                 stdout="\n".join([
                     _ps_line(11111, "/bin/bash -lc hermes dashboard --status"),
-                    _ps_line(22222, "python3 /Users/me/.local/bin/hermes dashboard --stop"),
+                    _ps_line(22222, "python3 /opt/hermes/bin/hermes dashboard --stop"),
                     _ps_line(33333, "python3 -m hermes_cli.main dashboard --port 9119"),
                 ]) + "\n",
                 stderr="",
@@ -143,7 +143,7 @@ class TestFindStaleDashboardPids:
                 stdout="\n".join([
                     _ps_line(12345, "python3 -m hermes_cli.main dashboard --port 9119"),
                     _ps_line(12346, "hermes dashboard --port 9120 --no-open"),
-                    _ps_line(12347, "python /home/x/hermes_cli/main.py dashboard"),
+                    _ps_line(12347, "python /opt/hermes/src/hermes_cli/main.py dashboard"),
                 ]) + "\n",
                 stderr="",
             )
