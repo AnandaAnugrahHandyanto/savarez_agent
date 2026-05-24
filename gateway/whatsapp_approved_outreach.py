@@ -4,6 +4,7 @@ import json
 import os
 import shlex
 import threading
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -33,6 +34,8 @@ _OUTREACH_PREFIXES = (
     "whatsapp-outreach",
 )
 WHATSAPP_OUTREACH_STATE_SCHEMA_VERSION = 1
+WHATSAPP_OUTREACH_PLAN_WORKFLOW_BINDING_TYPE = "whatsapp_outreach_plan"
+_JSON_PRIMITIVE_TYPES = (str, int, float, bool, type(None))
 
 _OUTREACH_STATE_LOCK = threading.Lock()
 
@@ -79,30 +82,106 @@ def normalize_whatsapp_approved_outreach_request(
     request: dict[str, Any] | None,
 ) -> dict[str, Any]:
     raw_request = request or {}
+    workflow_binding_type = str(raw_request.get("workflow_binding_type") or "").strip()
+    workflow_binding_id = str(raw_request.get("workflow_binding_id") or "").strip()
     normalized = {
         field: (str(raw_request.get(field) or "").strip() or None)
         for field in WHATSAPP_APPROVED_OUTREACH_EXACT_SELECTOR_FIELDS
     }
     selected_fields = [field for field, value in normalized.items() if value]
-    if len(selected_fields) != 1:
+    if not workflow_binding_type and len(selected_fields) != 1:
         raise ValueError("approved outreach requires exactly one exact selector")
 
     operator_objective = str(raw_request.get("operator_objective") or "").strip()
-    if not operator_objective:
+    if bool(workflow_binding_type) != bool(workflow_binding_id):
+        raise ValueError(
+            "workflow_binding_type and workflow_binding_id must be provided together"
+        )
+    if (
+        workflow_binding_type
+        and workflow_binding_type != WHATSAPP_OUTREACH_PLAN_WORKFLOW_BINDING_TYPE
+    ):
+        raise ValueError(f"unsupported workflow_binding_type: {workflow_binding_type}")
+
+    if not operator_objective and not workflow_binding_type:
         raise ValueError("operator_objective is required")
 
     message_text = str(raw_request.get("message_text") or "").strip() or None
+    report_delivery_target = (
+        str(raw_request.get("report_delivery_target") or "").strip() or None
+    )
+    trigger_source = str(raw_request.get("trigger_source") or "").strip()
+    trigger_reference_id = (
+        str(raw_request.get("trigger_reference_id") or "").strip() or None
+    )
+    if not trigger_source:
+        trigger_source = "owner_instruction"
     return {
         **normalized,
-        "operator_objective": operator_objective,
+        "operator_objective": operator_objective or None,
         "message_text": message_text,
-        "trigger_source": "owner_instruction",
+        "report_delivery_target": report_delivery_target,
+        "trigger_source": trigger_source,
+        "trigger_reference_id": trigger_reference_id,
+        "workflow_binding_type": workflow_binding_type or None,
+        "workflow_binding_id": workflow_binding_id or None,
     }
 
 
 def _outreach_store_path(*, base_dir: Path | None = None) -> Path:
     hermes_home = base_dir or get_hermes_home()
     return hermes_home / "gateway" / "whatsapp-approved-outreach-state.json"
+
+
+def _json_safe_value(value: Any) -> Any:
+    if isinstance(value, _JSON_PRIMITIVE_TYPES):
+        return value
+    if isinstance(value, (date, datetime, time)):
+        try:
+            return value.isoformat()
+        except Exception:
+            return None
+    if isinstance(value, dict):
+        return {str(key): _json_safe_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_value(item) for item in value]
+    return None
+
+
+def _json_safe_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, (str, int, float, bool)):
+        text = str(value).strip()
+        return text or None
+    if isinstance(value, (date, datetime, time)):
+        try:
+            text = value.isoformat().strip()
+        except Exception:
+            return None
+        return text or None
+    return None
+
+
+def _safe_instance_attr(value: Any, field_name: str) -> Any:
+    if isinstance(value, dict):
+        return value.get(field_name)
+    value_dict = getattr(value, "__dict__", None)
+    if isinstance(value_dict, dict):
+        return value_dict.get(field_name)
+    return None
+
+
+def _resolve_send_callable(adapter: Any) -> Any:
+    adapter_dict = getattr(adapter, "__dict__", {})
+    send_defined_on_type = any("send" in cls.__dict__ for cls in type(adapter).__mro__)
+    if "send" in adapter_dict or send_defined_on_type:
+        send_callable = getattr(adapter, "send", None)
+        if callable(send_callable):
+            return send_callable
+    if callable(adapter):
+        return adapter
+    return None
 
 
 def _default_outreach_state() -> dict[str, Any]:
@@ -146,7 +225,14 @@ def _write_whatsapp_outreach_state(
 ) -> Path:
     path = _outreach_store_path(base_dir=base_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(state, ensure_ascii=False, indent=2) + "\n"
+    payload = (
+        json.dumps(
+            _json_safe_value(state),
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n"
+    )
     with path.open("w", encoding="utf-8") as handle:
         handle.write(payload)
         handle.flush()
@@ -179,6 +265,69 @@ def _resolved_target_from_execution(execution: dict[str, Any]) -> dict[str, Any]
         "destination_context_type": execution.get("destination_context_type"),
         "destination_chat_id": execution.get("resolved_destination_chat_id"),
         "destination_target_id": execution.get("destination_target_id"),
+    }
+
+
+def _resolve_target_from_preserved_history(
+    selector: dict[str, Any],
+) -> dict[str, Any]:
+    continuity_rows = query_whatsapp_records_any_time(
+        conversation_key=selector.get("conversation_key"),
+        destination_key=selector.get("destination_key"),
+        destination_context_type=selector.get("destination_context_type"),
+        group_chat_id=selector.get("group_chat_id"),
+        dm_counterparty_id=selector.get("dm_counterparty_id"),
+    )
+    if not continuity_rows:
+        return {
+            "resolution_status": "target_not_found",
+            "resolved_target": None,
+        }
+
+    exact_targets: dict[
+        tuple[str | None, str | None, str | None, str | None],
+        dict[str, Any],
+    ] = {}
+    for row in continuity_rows:
+        target_key = tuple(
+            str(row.get(field) or "").strip() or None
+            for field in WHATSAPP_APPROVED_OUTREACH_EXACT_SELECTOR_FIELDS
+        )
+        exact_targets.setdefault(
+            target_key,
+            {
+                "conversation_key": target_key[0],
+                "destination_key": target_key[1],
+                "group_chat_id": target_key[2],
+                "dm_counterparty_id": target_key[3],
+                "destination_context_type": (
+                    str(row.get("destination_context_type") or "").strip() or None
+                ),
+                "destination_chat_id": (
+                    str(row.get("destination_chat_id") or "").strip() or None
+                ),
+                "destination_target_id": (
+                    str(row.get("destination_target_id") or "").strip() or None
+                ),
+            },
+        )
+
+    if len(exact_targets) != 1:
+        return {
+            "resolution_status": "target_not_found",
+            "resolved_target": None,
+        }
+
+    resolved_target = next(iter(exact_targets.values()))
+    if not resolved_target.get("destination_chat_id"):
+        return {
+            "resolution_status": "target_not_found",
+            "resolved_target": None,
+        }
+
+    return {
+        "resolution_status": "resolved",
+        "resolved_target": resolved_target,
     }
 
 
@@ -241,6 +390,139 @@ def _matching_plan_and_target(
             continue
         return plan, plan_target
     return None, None
+
+
+def _blocked_result(*, founder_summary: str, reason: str) -> dict[str, Any]:
+    return _result(
+        workflow_status="blocked",
+        founder_summary=founder_summary,
+        reason=reason,
+    )
+
+
+def _validate_bound_plan_and_target(
+    state: dict[str, Any],
+    *,
+    workflow_binding_id: str,
+    trigger_reference_id: str | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, str | None, str | None]:
+    plan_row = _find_first(state["plans"], "plan_id", workflow_binding_id)
+    if plan_row is None:
+        return (
+            None,
+            None,
+            "WhatsApp approved outreach stayed blocked because the bound approved plan could not be found.",
+            "bound approved plan not found",
+        )
+
+    plan_status = str(plan_row.get("plan_status") or "").strip().lower()
+    if plan_status == "paused":
+        return (
+            None,
+            None,
+            "WhatsApp approved outreach stayed blocked because the bound approved plan is paused.",
+            "bound approved plan is paused",
+        )
+    if plan_status == "cancelled":
+        return (
+            None,
+            None,
+            "WhatsApp approved outreach stayed blocked because the bound approved plan is cancelled.",
+            "bound approved plan is cancelled",
+        )
+    if plan_status not in {"approved", "active"}:
+        return (
+            None,
+            None,
+            "WhatsApp approved outreach stayed blocked because the bound approved plan is unresolved.",
+            "bound approved plan is unresolved",
+        )
+
+    linked_cron_job_id = str(plan_row.get("linked_cron_job_id") or "").strip() or None
+    if not linked_cron_job_id or linked_cron_job_id != trigger_reference_id:
+        return (
+            None,
+            None,
+            "WhatsApp approved outreach stayed blocked because the bound approved plan is unresolved for this cron job.",
+            "bound approved plan is unresolved for this cron job",
+        )
+
+    active_targets = [
+        target
+        for target in state["plan_targets"]
+        if target.get("plan_id") == workflow_binding_id
+        and target.get("target_status") == "active"
+    ]
+    if len(active_targets) != 1:
+        return (
+            None,
+            None,
+            "WhatsApp approved outreach stayed blocked because the bound approved plan does not resolve exactly one active target.",
+            "bound approved plan does not resolve exactly one active target",
+        )
+
+    plan_target_row = active_targets[0]
+    if plan_target_row.get("max_outbound_messages_per_run") != 1:
+        return (
+            None,
+            None,
+            "WhatsApp approved outreach stayed blocked because the bound approved plan exceeds the single-target v1 run limit.",
+            "bound approved plan exceeds the single-target v1 run limit",
+        )
+
+    return plan_row, plan_target_row, None, None
+
+
+def _resolve_bound_plan_request(
+    normalized_request: dict[str, Any], *, state: dict[str, Any]
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
+    workflow_binding_type = normalized_request.get("workflow_binding_type")
+    if workflow_binding_type != WHATSAPP_OUTREACH_PLAN_WORKFLOW_BINDING_TYPE:
+        return normalized_request, None, None
+
+    plan_row, plan_target_row, founder_summary, reason = (
+        _validate_bound_plan_and_target(
+            state,
+            workflow_binding_id=str(normalized_request["workflow_binding_id"]),
+            trigger_reference_id=normalized_request.get("trigger_reference_id"),
+        )
+    )
+    if plan_row is None or plan_target_row is None:
+        return (
+            None,
+            None,
+            _blocked_result(
+                founder_summary=str(founder_summary),
+                reason=str(reason),
+            ),
+        )
+
+    operator_objective = str(
+        plan_target_row.get("target_objective_override") or ""
+    ).strip()
+    if not operator_objective:
+        operator_objective = str(plan_row.get("operator_objective") or "").strip()
+    if not operator_objective:
+        return (
+            None,
+            None,
+            _blocked_result(
+                founder_summary=(
+                    "WhatsApp approved outreach stayed blocked because the bound approved plan has no resolved operator objective."
+                ),
+                reason="bound approved plan has no resolved operator objective",
+            ),
+        )
+
+    return (
+        {
+            **normalized_request,
+            **_exact_selector_from_row(plan_target_row),
+            "operator_objective": operator_objective,
+        },
+        plan_row,
+        None,
+    )
 
 
 def _observable_status_for_execution_status(execution_status: str) -> str:
@@ -391,6 +673,87 @@ def _result(
     }
 
 
+def bind_whatsapp_outreach_plan_to_cron_job(
+    *, plan_id: str, cron_job_id: str
+) -> dict[str, Any]:
+    with _OUTREACH_STATE_LOCK:
+        state = load_whatsapp_outreach_state()
+        plan_row = _find_first(state["plans"], "plan_id", plan_id)
+        if plan_row is None:
+            raise ValueError("bound approved plan not found")
+
+        plan_status = str(plan_row.get("plan_status") or "").strip().lower()
+        if plan_status == "paused":
+            raise ValueError("bound approved plan is paused")
+        if plan_status == "cancelled":
+            raise ValueError("bound approved plan is cancelled")
+        if plan_status not in {"approved", "active"}:
+            raise ValueError("bound approved plan is unresolved")
+
+        active_targets = [
+            target
+            for target in state["plan_targets"]
+            if target.get("plan_id") == plan_id
+            and target.get("target_status") == "active"
+        ]
+        if len(active_targets) != 1:
+            raise ValueError(
+                "bound approved plan does not resolve exactly one active target"
+            )
+        if active_targets[0].get("max_outbound_messages_per_run") != 1:
+            raise ValueError(
+                "bound approved plan exceeds the single-target v1 run limit"
+            )
+
+        plan_row["linked_cron_job_id"] = cron_job_id
+        state["plans"] = [
+            row for row in state["plans"] if row.get("plan_id") != plan_row["plan_id"]
+        ]
+        state["plans"].append(dict(plan_row))
+        _write_whatsapp_outreach_state(state)
+        return dict(plan_row)
+
+
+def unbind_whatsapp_outreach_plan_from_cron_job(*, cron_job_id: str) -> None:
+    with _OUTREACH_STATE_LOCK:
+        state = load_whatsapp_outreach_state()
+        changed = False
+        for plan_row in state["plans"]:
+            if plan_row.get("linked_cron_job_id") == cron_job_id:
+                plan_row["linked_cron_job_id"] = None
+                changed = True
+        if changed:
+            _write_whatsapp_outreach_state(state)
+
+
+def sync_whatsapp_outreach_plan_cron_bindings(jobs: list[dict[str, Any]]) -> None:
+    bound_pairs = {
+        (
+            str(job.get("workflow_binding_id") or "").strip(),
+            str(job.get("id") or job.get("job_id") or "").strip(),
+        )
+        for job in jobs
+        if str(job.get("workflow_binding_type") or "").strip()
+        == WHATSAPP_OUTREACH_PLAN_WORKFLOW_BINDING_TYPE
+        and str(job.get("workflow_binding_id") or "").strip()
+        and str(job.get("id") or job.get("job_id") or "").strip()
+    }
+
+    with _OUTREACH_STATE_LOCK:
+        state = load_whatsapp_outreach_state()
+        changed = False
+        for plan_row in state["plans"]:
+            plan_id = str(plan_row.get("plan_id") or "").strip()
+            linked_cron_job_id = str(plan_row.get("linked_cron_job_id") or "").strip()
+            if not linked_cron_job_id:
+                continue
+            if (plan_id, linked_cron_job_id) not in bound_pairs:
+                plan_row["linked_cron_job_id"] = None
+                changed = True
+        if changed:
+            _write_whatsapp_outreach_state(state)
+
+
 async def execute_whatsapp_approved_outreach(
     request: dict[str, Any] | None,
     *,
@@ -420,7 +783,28 @@ async def execute_whatsapp_approved_outreach(
             reason=str(exc),
         )
 
-    resolution = ResolveWhatsAppExactTarget(normalized_request)
+    bound_state = load_whatsapp_outreach_state()
+    bound_request, _bound_plan, blocked_result = _resolve_bound_plan_request(
+        normalized_request,
+        state=bound_state,
+    )
+    if blocked_result is not None:
+        return blocked_result
+    normalized_request = bound_request or normalized_request
+
+    selected_fields = [
+        field
+        for field in WHATSAPP_APPROVED_OUTREACH_EXACT_SELECTOR_FIELDS
+        if normalized_request.get(field)
+    ]
+    if (
+        normalized_request.get("workflow_binding_type")
+        == WHATSAPP_OUTREACH_PLAN_WORKFLOW_BINDING_TYPE
+        and len(selected_fields) > 1
+    ):
+        resolution = _resolve_target_from_preserved_history(normalized_request)
+    else:
+        resolution = ResolveWhatsAppExactTarget(normalized_request)
     resolved_target = resolution.get("resolved_target")
     if resolution.get("resolution_status") != "resolved" or not isinstance(
         resolved_target, dict
@@ -458,48 +842,24 @@ async def execute_whatsapp_approved_outreach(
 
     with _OUTREACH_STATE_LOCK:
         state = load_whatsapp_outreach_state()
-        plan_row, plan_target_row = _matching_plan_and_target(
-            state,
-            operator_objective=normalized_request["operator_objective"],
-            approved_by_principal=approved_by_principal,
-            selector=plan_selector,
-        )
-
-        approved_at_utc = utc_isoformat(utc_now())
-        if plan_row is None or plan_target_row is None:
-            plan_id = f"waplan-{uuid4()}"
-            plan_target_id = f"watarget-{uuid4()}"
-            plan_row = {
-                "plan_id": plan_id,
-                "plan_status": "active",
-                "trigger_mode": "instruction_only",
-                "operator_objective": normalized_request["operator_objective"],
-                "created_by_session_id": None,
-                "approved_by_principal": approved_by_principal,
-                "approved_at_utc": approved_at_utc,
-                "report_delivery_policy": "initiating_session",
-                "default_report_cadence": "end_of_run",
-                "linked_cron_job_id": None,
-            }
-            plan_target_row = {
-                "plan_target_id": plan_target_id,
-                "plan_id": plan_id,
-                "target_status": "active",
-                **plan_selector,
-                "target_objective_override": None,
-                "max_outbound_messages_per_run": 1,
-                "last_resolved_conversation_key": resolved_target.get(
-                    "conversation_key"
-                ),
-                "last_observed_message_at_utc": history_window_end_utc,
-            }
-            state["plans"].append(plan_row)
-            state["plan_targets"].append(plan_target_row)
-        else:
-            plan_row["plan_status"] = "active"
-            plan_row["approved_at_utc"] = (
-                plan_row.get("approved_at_utc") or approved_at_utc
+        if (
+            normalized_request.get("workflow_binding_type")
+            == WHATSAPP_OUTREACH_PLAN_WORKFLOW_BINDING_TYPE
+        ):
+            plan_row, plan_target_row, founder_summary, reason = (
+                _validate_bound_plan_and_target(
+                    state,
+                    workflow_binding_id=str(
+                        normalized_request.get("workflow_binding_id")
+                    ),
+                    trigger_reference_id=normalized_request.get("trigger_reference_id"),
+                )
             )
+            if plan_row is None or plan_target_row is None:
+                return _blocked_result(
+                    founder_summary=str(founder_summary),
+                    reason=str(reason),
+                )
             plan_target_row.update({
                 **plan_selector,
                 "last_resolved_conversation_key": resolved_target.get(
@@ -507,6 +867,60 @@ async def execute_whatsapp_approved_outreach(
                 ),
                 "last_observed_message_at_utc": history_window_end_utc,
             })
+        else:
+            plan_row = None
+            plan_target_row = None
+
+        approved_at_utc = utc_isoformat(utc_now())
+        if plan_row is None or plan_target_row is None:
+            plan_row, plan_target_row = _matching_plan_and_target(
+                state,
+                operator_objective=str(normalized_request["operator_objective"]),
+                approved_by_principal=approved_by_principal,
+                selector=plan_selector,
+            )
+
+            if plan_row is None or plan_target_row is None:
+                plan_id = f"waplan-{uuid4()}"
+                plan_target_id = f"watarget-{uuid4()}"
+                plan_row = {
+                    "plan_id": plan_id,
+                    "plan_status": "active",
+                    "trigger_mode": "instruction_only",
+                    "operator_objective": normalized_request["operator_objective"],
+                    "created_by_session_id": None,
+                    "approved_by_principal": approved_by_principal,
+                    "approved_at_utc": approved_at_utc,
+                    "report_delivery_policy": "initiating_session",
+                    "default_report_cadence": "end_of_run",
+                    "linked_cron_job_id": None,
+                }
+                plan_target_row = {
+                    "plan_target_id": plan_target_id,
+                    "plan_id": plan_id,
+                    "target_status": "active",
+                    **plan_selector,
+                    "target_objective_override": None,
+                    "max_outbound_messages_per_run": 1,
+                    "last_resolved_conversation_key": resolved_target.get(
+                        "conversation_key"
+                    ),
+                    "last_observed_message_at_utc": history_window_end_utc,
+                }
+                state["plans"].append(plan_row)
+                state["plan_targets"].append(plan_target_row)
+            else:
+                plan_row["plan_status"] = "active"
+                plan_row["approved_at_utc"] = (
+                    plan_row.get("approved_at_utc") or approved_at_utc
+                )
+                plan_target_row.update({
+                    **plan_selector,
+                    "last_resolved_conversation_key": resolved_target.get(
+                        "conversation_key"
+                    ),
+                    "last_observed_message_at_utc": history_window_end_utc,
+                })
 
         run_id = f"warun-{uuid4()}"
         target_execution_id = f"waexec-{uuid4()}"
@@ -514,14 +928,16 @@ async def execute_whatsapp_approved_outreach(
             "run_id": run_id,
             "plan_id": plan_row["plan_id"],
             "run_status": "running",
-            "trigger_source": "owner_instruction",
-            "trigger_reference_id": None,
+            "workflow_binding_type": normalized_request.get("workflow_binding_type"),
+            "workflow_binding_id": normalized_request.get("workflow_binding_id"),
+            "trigger_source": normalized_request["trigger_source"],
+            "trigger_reference_id": normalized_request.get("trigger_reference_id"),
             "run_started_at_utc": run_started_at_utc,
             "run_completed_at_utc": None,
             "target_count": 1,
             "completed_target_count": 0,
             "failed_target_count": 0,
-            "report_delivery_target": None,
+            "report_delivery_target": normalized_request.get("report_delivery_target"),
             "report_id": None,
         }
         execution = {
@@ -565,7 +981,9 @@ async def execute_whatsapp_approved_outreach(
         state["target_executions"].append(dict(execution))
         _write_whatsapp_outreach_state(state)
 
-    if adapter is None:
+    send_callable = _resolve_send_callable(adapter)
+
+    if send_callable is None:
         execution["execution_status"] = "blocked"
         execution["last_error"] = "WhatsApp adapter unavailable"
         run["run_status"] = "blocked"
@@ -582,16 +1000,20 @@ async def execute_whatsapp_approved_outreach(
             "needed now."
         )
     else:
-        send_result = await adapter.send(
+        send_result = await send_callable(
             str(resolved_target["destination_chat_id"]),
             normalized_request["message_text"],
         )
-        raw_response = getattr(send_result, "raw_response", None) or {}
+        raw_response = _safe_instance_attr(send_result, "raw_response") or {}
         if isinstance(raw_response, dict):
-            execution["dispatch_group_id"] = raw_response.get("dispatch_group_id")
-        execution["message_id"] = getattr(send_result, "message_id", None)
+            execution["dispatch_group_id"] = _json_safe_string(
+                raw_response.get("dispatch_group_id")
+            )
+        execution["message_id"] = _json_safe_string(
+            _safe_instance_attr(send_result, "message_id")
+        )
 
-        if getattr(send_result, "success", False):
+        if _safe_instance_attr(send_result, "success") is True:
             execution["execution_status"] = "sent"
             run["run_status"] = "completed"
             founder_summary = (
@@ -601,7 +1023,9 @@ async def execute_whatsapp_approved_outreach(
             )
         else:
             execution["execution_status"] = "send_failed"
-            execution["last_error"] = getattr(send_result, "error", None)
+            execution["last_error"] = _json_safe_string(
+                _safe_instance_attr(send_result, "error")
+            )
             run["run_status"] = "failed"
             founder_summary = (
                 "WhatsApp approved outreach resolved one exact approved target "
@@ -720,7 +1144,10 @@ def format_whatsapp_approved_outreach_result(result: dict[str, Any]) -> str:
     lines.extend([
         f"plan_id: {plan.get('plan_id')}",
         f"run_id: {run.get('run_id')}",
+        f"workflow_binding_type: {run.get('workflow_binding_type')}",
+        f"workflow_binding_id: {run.get('workflow_binding_id')}",
         f"trigger_source: {run.get('trigger_source')}",
+        f"trigger_reference_id: {run.get('trigger_reference_id')}",
         f"operator_objective: {plan.get('operator_objective')}",
         f"run_status: {run.get('run_status')}",
         f"execution_status: {execution.get('execution_status')}",
@@ -745,8 +1172,10 @@ def format_whatsapp_approved_outreach_result(result: dict[str, Any]) -> str:
 __all__ = [
     "WHATSAPP_APPROVED_OUTREACH_ALLOWED_FIELDS",
     "WHATSAPP_APPROVED_OUTREACH_EXACT_SELECTOR_FIELDS",
+    "WHATSAPP_OUTREACH_PLAN_WORKFLOW_BINDING_TYPE",
     "WHATSAPP_OUTREACH_STATE_SCHEMA_VERSION",
     "append_whatsapp_outreach_run_record",
+    "bind_whatsapp_outreach_plan_to_cron_job",
     "execute_whatsapp_approved_outreach",
     "format_whatsapp_approved_outreach_result",
     "is_whatsapp_approved_outreach_instruction",
@@ -754,4 +1183,6 @@ __all__ = [
     "load_whatsapp_outreach_run_records",
     "normalize_whatsapp_approved_outreach_request",
     "parse_whatsapp_approved_outreach_instruction",
+    "sync_whatsapp_outreach_plan_cron_bindings",
+    "unbind_whatsapp_outreach_plan_from_cron_job",
 ]

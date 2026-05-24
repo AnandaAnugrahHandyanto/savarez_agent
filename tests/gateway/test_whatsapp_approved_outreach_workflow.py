@@ -11,6 +11,7 @@ from gateway.platforms.base import MessageEvent, SendResult
 from gateway.session import SessionEntry, SessionSource
 from gateway.whatsapp_message_store import append_whatsapp_record
 from gateway.whatsapp_approved_outreach import (
+    bind_whatsapp_outreach_plan_to_cron_job,
     load_whatsapp_outreach_run_records,
     load_whatsapp_outreach_state,
 )
@@ -426,3 +427,141 @@ async def test_instruction_triggered_outreach_surfaces_send_failure(
     assert "run_status: failed" in result
     assert "execution_status: send_failed" in result
     assert "last_error: bridge down" in result
+
+
+@pytest.mark.asyncio
+async def test_cron_triggered_outreach_reuses_bound_plan_and_sets_canonical_trigger_fields(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / ".hermes"
+    base_dir = hermes_home / "gateway" / "whatsapp-records"
+    base_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    _append_record(
+        base_dir,
+        record_id="record-1",
+        text="Prior vendor thread context.",
+        participant_role="external_party",
+        message_id="msg-1",
+        effective_event_at="2024-06-02T09:01:00Z",
+    )
+
+    runner = _make_runner(tmp_path)
+    runner.adapters[Platform.WHATSAPP].send = AsyncMock(
+        return_value=SendResult(
+            success=True,
+            message_id="bridge-msg-cron",
+            raw_response={
+                "dispatch_group_id": "dispatch-cron",
+                "messageId": "bridge-msg-cron",
+            },
+        )
+    )
+
+    await runner._handle_message(
+        _make_event(
+            "whatsapp outreach destination_key=whatsapp:dm:15551230000 "
+            'operator_objective="request the revised quote" '
+            'message_text="Following up on the revised quote."'
+        )
+    )
+
+    existing_plan_id = load_whatsapp_outreach_run_records()[0]["plan"]["plan_id"]
+    bind_whatsapp_outreach_plan_to_cron_job(
+        plan_id=existing_plan_id,
+        cron_job_id="cron-123",
+    )
+
+    from gateway.whatsapp_approved_outreach import execute_whatsapp_approved_outreach
+
+    result = await execute_whatsapp_approved_outreach(
+        {
+            "workflow_binding_type": "whatsapp_outreach_plan",
+            "workflow_binding_id": existing_plan_id,
+            "trigger_source": "cron_job",
+            "trigger_reference_id": "cron-123",
+            "message_text": "Scheduled follow-up.",
+            "report_delivery_target": "telegram:-100ops",
+        },
+        authorized=True,
+        adapter=runner.adapters[Platform.WHATSAPP],
+    )
+
+    assert result["workflow_status"] == "ready"
+    assert result["run"]["workflow_binding_type"] == "whatsapp_outreach_plan"
+    assert result["run"]["workflow_binding_id"] == existing_plan_id
+    assert result["run"]["trigger_source"] == "cron_job"
+    assert result["run"]["trigger_reference_id"] == "cron-123"
+    assert result["run"]["report_delivery_target"] == "telegram:-100ops"
+    assert result["execution"]["resolved_target"]["destination_chat_id"] == (
+        "15551230000@s.whatsapp.net"
+    )
+
+    runner.adapters[Platform.WHATSAPP].send.assert_awaited_with(
+        "15551230000@s.whatsapp.net",
+        "Scheduled follow-up.",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("plan_status", "expected_reason"),
+    [
+        ("paused", "bound approved plan is paused"),
+        ("cancelled", "bound approved plan is cancelled"),
+        ("draft", "bound approved plan is unresolved"),
+    ],
+)
+async def test_cron_triggered_outreach_fails_closed_for_unavailable_bound_plan(
+    tmp_path, monkeypatch, plan_status, expected_reason
+):
+    hermes_home = tmp_path / ".hermes"
+    base_dir = hermes_home / "gateway" / "whatsapp-records"
+    base_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    _append_record(
+        base_dir,
+        record_id="record-1",
+        text="Prior vendor thread context.",
+        participant_role="external_party",
+        message_id="msg-1",
+        effective_event_at="2024-06-02T09:01:00Z",
+    )
+
+    runner = _make_runner(tmp_path)
+    runner.adapters[Platform.WHATSAPP].send = AsyncMock()
+
+    await runner._handle_message(
+        _make_event(
+            "whatsapp outreach destination_key=whatsapp:dm:15551230000 "
+            'operator_objective="request the revised quote" '
+            'message_text="Following up on the revised quote."'
+        )
+    )
+    runner.adapters[Platform.WHATSAPP].send.reset_mock()
+    state = load_whatsapp_outreach_state()
+    state["plans"][0]["plan_status"] = plan_status
+    state["plans"][0]["linked_cron_job_id"] = "cron-123"
+    from gateway.whatsapp_approved_outreach import _write_whatsapp_outreach_state
+
+    _write_whatsapp_outreach_state(state)
+
+    from gateway.whatsapp_approved_outreach import execute_whatsapp_approved_outreach
+
+    result = await execute_whatsapp_approved_outreach(
+        {
+            "workflow_binding_type": "whatsapp_outreach_plan",
+            "workflow_binding_id": state["plans"][0]["plan_id"],
+            "trigger_source": "cron_job",
+            "trigger_reference_id": "cron-123",
+            "message_text": "Scheduled follow-up.",
+        },
+        authorized=True,
+        adapter=runner.adapters[Platform.WHATSAPP],
+    )
+
+    runner.adapters[Platform.WHATSAPP].send.assert_not_awaited()
+    assert result["workflow_status"] == "blocked"
+    assert result["reason"] == expected_reason

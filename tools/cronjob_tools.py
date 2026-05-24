@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import (
     AmbiguousJobReference,
+    WHATSAPP_OUTREACH_PLAN_WORKFLOW_BINDING_TYPE,
     create_job,
     get_job,
     list_jobs,
@@ -33,6 +34,10 @@ from cron.jobs import (
     trigger_job,
     update_job,
 )
+from gateway.whatsapp_approved_outreach import (
+    bind_whatsapp_outreach_plan_to_cron_job,
+    unbind_whatsapp_outreach_plan_from_cron_job,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -41,17 +46,23 @@ from cron.jobs import (
 # ---------------------------------------------------------------------------
 
 _CRON_THREAT_PATTERNS = [
-    (r'ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions', "prompt_injection"),
-    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
-    (r'system\s+prompt\s+override', "sys_prompt_override"),
-    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
-    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
-    (r'authorized_keys', "ssh_backdoor"),
-    (r'/etc/sudoers|visudo', "sudoers_mod"),
-    (r'rm\s+-rf\s+/', "destructive_root_rm"),
+    (
+        r"ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions",
+        "prompt_injection",
+    ),
+    (r"do\s+not\s+tell\s+the\s+user", "deception_hide"),
+    (r"system\s+prompt\s+override", "sys_prompt_override"),
+    (
+        r"disregard\s+(your|all|any)\s+(instructions|rules|guidelines)",
+        "disregard_rules",
+    ),
+    (r"cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)", "read_secrets"),
+    (r"authorized_keys", "ssh_backdoor"),
+    (r"/etc/sudoers|visudo", "sudoers_mod"),
+    (r"rm\s+-rf\s+/", "destructive_root_rm"),
 ]
 
-_CRON_SECRET_VAR_RE = r'\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)\w*\}?'
+_CRON_SECRET_VAR_RE = r"\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)\w*\}?"
 _CRON_EXFIL_COMMAND_PATTERNS = [
     # Tighten exfil detection to obvious leak paths: embedding a secret
     # directly in the destination URL, sending it in POST/FORM payloads,
@@ -60,14 +71,31 @@ _CRON_EXFIL_COMMAND_PATTERNS = [
     # pattern that talks to api.github.com.
     (rf'curl\s+[^\n]*https?://[^\s"\'`]*{_CRON_SECRET_VAR_RE}', "exfil_curl_url"),
     (rf'wget\s+[^\n]*https?://[^\s"\'`]*{_CRON_SECRET_VAR_RE}', "exfil_wget_url"),
-    (rf'curl\s+[^\n]*(?:--data(?:-raw|-binary|-urlencode)?|-d|--form|-F)\s+[^\n]*{_CRON_SECRET_VAR_RE}', "exfil_curl_data"),
-    (rf'wget\s+[^\n]*--post-(?:data|file)=[^\n]*{_CRON_SECRET_VAR_RE}', "exfil_wget_post"),
-    (rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*(?:Bearer|token)\s+{_CRON_SECRET_VAR_RE}["\']', "exfil_curl_auth_header"),
+    (
+        rf"curl\s+[^\n]*(?:--data(?:-raw|-binary|-urlencode)?|-d|--form|-F)\s+[^\n]*{_CRON_SECRET_VAR_RE}",
+        "exfil_curl_data",
+    ),
+    (
+        rf"wget\s+[^\n]*--post-(?:data|file)=[^\n]*{_CRON_SECRET_VAR_RE}",
+        "exfil_wget_post",
+    ),
+    (
+        rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*(?:Bearer|token)\s+{_CRON_SECRET_VAR_RE}["\']',
+        "exfil_curl_auth_header",
+    ),
 ]
 
 _CRON_INVISIBLE_CHARS = {
-    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
-    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
+    "\u200b",
+    "\u200c",
+    "\u200d",
+    "\u2060",
+    "\ufeff",
+    "\u202a",
+    "\u202b",
+    "\u202c",
+    "\u202d",
+    "\u202e",
 }
 
 # U+200D Zero-Width Joiner is also a legitimate, required part of many
@@ -97,21 +125,22 @@ def _zwj_has_emoji_neighbour(text: str, idx: int) -> bool:
     while right < len(text) and ord(text[right]) == _VARIATION_SELECTOR_CP:
         right += 1
     return (
-        left >= 0 and right < len(text)
+        left >= 0
+        and right < len(text)
         and _is_emoji_cp(ord(text[left]))
         and _is_emoji_cp(ord(text[right]))
     )
 
 
 def _strip_legitimate_emoji_zwj(prompt: str) -> str:
-    if '\u200d' not in prompt:
+    if "\u200d" not in prompt:
         return prompt
     cleaned: list[str] = []
     for idx, ch in enumerate(prompt):
-        if ch == '\u200d' and _zwj_has_emoji_neighbour(prompt, idx):
+        if ch == "\u200d" and _zwj_has_emoji_neighbour(prompt, idx):
             continue
         cleaned.append(ch)
-    return ''.join(cleaned)
+    return "".join(cleaned)
 
 
 def _scan_cron_prompt(prompt: str) -> str:
@@ -126,7 +155,9 @@ def _scan_cron_prompt(prompt: str) -> str:
     if github_auth_header:
         # Allow the bundled GitHub skill fallback shape without opening a
         # blanket exemption for arbitrary Authorization-header exfiltration.
-        prompt_to_scan = prompt.replace(github_auth_header.group(0), "curl https://api.github.com/user")
+        prompt_to_scan = prompt.replace(
+            github_auth_header.group(0), "curl https://api.github.com/user"
+        )
     prompt_for_invisible_scan = _strip_legitimate_emoji_zwj(prompt_to_scan)
     for char in _CRON_INVISIBLE_CHARS:
         if char in prompt_for_invisible_scan:
@@ -142,6 +173,7 @@ def _scan_cron_prompt(prompt: str) -> str:
 
 def _origin_from_env() -> Optional[Dict[str, str]]:
     from gateway.session_context import get_session_env
+
     origin_platform = get_session_env("HERMES_SESSION_PLATFORM")
     origin_chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
     if origin_platform and origin_chat_id:
@@ -149,7 +181,9 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
         if thread_id:
             logger.debug(
                 "Cron origin captured thread_id=%s for %s:%s",
-                thread_id, origin_platform, origin_chat_id,
+                thread_id,
+                origin_platform,
+                origin_chat_id,
             )
         return {
             "platform": origin_platform,
@@ -170,7 +204,9 @@ def _repeat_display(job: Dict[str, Any]) -> str:
     return f"{completed}/{times}" if completed else f"{times} times"
 
 
-def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
+def _canonical_skills(
+    skill: Optional[str] = None, skills: Optional[Any] = None
+) -> List[str]:
     if skills is None:
         raw_items = [skill] if skill else []
     elif isinstance(skills, str):
@@ -184,8 +220,6 @@ def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None)
         if text and text not in normalized:
             normalized.append(text)
     return normalized
-
-
 
 
 def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
@@ -213,6 +247,7 @@ def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
         # Pin to the current main provider so the job is stable
         try:
             from hermes_cli.config import load_config
+
             cfg = load_config()
             model_cfg = cfg.get("model", {})
             if isinstance(model_cfg, dict):
@@ -222,7 +257,9 @@ def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
     return (provider_name, model_name)
 
 
-def _normalize_optional_job_value(value: Optional[Any], *, strip_trailing_slash: bool = False) -> Optional[str]:
+def _normalize_optional_job_value(
+    value: Optional[Any], *, strip_trailing_slash: bool = False
+) -> Optional[str]:
     if value is None:
         return None
     text = str(value).strip()
@@ -284,9 +321,7 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     scripts_dir.mkdir(parents=True, exist_ok=True)
     containment_error = validate_within_dir(scripts_dir / raw, scripts_dir)
     if containment_error:
-        return (
-            f"Script path escapes the scripts directory via traversal: {raw!r}"
-        )
+        return f"Script path escapes the scripts directory via traversal: {raw!r}"
 
     return None
 
@@ -295,7 +330,13 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     prompt = str(job.get("prompt") or "")
     skills = _canonical_skills(job.get("skill"), job.get("skills"))
     job_id = str(job.get("id") or "unknown")
-    name = str(job.get("name") or prompt[:50] or (skills[0] if skills else "") or job_id or "cron job")
+    name = str(
+        job.get("name")
+        or prompt[:50]
+        or (skills[0] if skills else "")
+        or job_id
+        or "cron job"
+    )
     result = {
         "job_id": job_id,
         "name": name,
@@ -313,7 +354,9 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "last_status": job.get("last_status"),
         "last_delivery_error": job.get("last_delivery_error"),
         "enabled": job.get("enabled", True),
-        "state": job.get("state", "scheduled" if job.get("enabled", True) else "paused"),
+        "state": job.get(
+            "state", "scheduled" if job.get("enabled", True) else "paused"
+        ),
         "paused_at": job.get("paused_at"),
         "paused_reason": job.get("paused_reason"),
     }
@@ -327,6 +370,10 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["workdir"] = job["workdir"]
     if job.get("profile"):
         result["profile"] = job["profile"]
+    if job.get("workflow_binding_type"):
+        result["workflow_binding_type"] = job["workflow_binding_type"]
+    if job.get("workflow_binding_id"):
+        result["workflow_binding_id"] = job["workflow_binding_id"]
     return result
 
 
@@ -350,6 +397,8 @@ def cronjob(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
+    workflow_binding_type: Optional[str] = None,
+    workflow_binding_id: Optional[str] = None,
     no_agent: Optional[bool] = None,
     task_id: str = None,
 ) -> str:
@@ -364,6 +413,12 @@ def cronjob(
                 return tool_error("schedule is required for create", success=False)
             canonical_skills = _canonical_skills(skill, skills)
             _no_agent = bool(no_agent)
+            workflow_binding_type_value = _normalize_optional_job_value(
+                workflow_binding_type
+            )
+            workflow_binding_id_value = _normalize_optional_job_value(
+                workflow_binding_id
+            )
             # Job-shape validation differs by mode:
             #   - no_agent=True → script is the job; prompt/skills are optional
             #     (and irrelevant to execution).
@@ -376,8 +431,15 @@ def cronjob(
                         "the script is the job.",
                         success=False,
                     )
-            elif not prompt and not canonical_skills:
-                return tool_error("create requires either prompt or at least one skill", success=False)
+            elif (
+                not prompt
+                and not canonical_skills
+                and workflow_binding_type_value
+                != WHATSAPP_OUTREACH_PLAN_WORKFLOW_BINDING_TYPE
+            ):
+                return tool_error(
+                    "create requires either prompt or at least one skill", success=False
+                )
             if prompt:
                 scan_error = _scan_cron_prompt(prompt)
                 if scan_error:
@@ -392,6 +454,7 @@ def cronjob(
             # Validate context_from references existing jobs
             if context_from:
                 from cron.jobs import get_job as _get_job
+
                 refs = [context_from] if isinstance(context_from, str) else context_from
                 for ref_id in refs:
                     if not _get_job(ref_id):
@@ -401,24 +464,42 @@ def cronjob(
                             success=False,
                         )
 
-            job = create_job(
-                prompt=prompt or "",
-                schedule=schedule,
-                name=name,
-                repeat=repeat,
-                deliver=_normalize_deliver_param(deliver),
-                origin=_origin_from_env(),
-                skills=canonical_skills,
-                model=_normalize_optional_job_value(model),
-                provider=_normalize_optional_job_value(provider),
-                base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
-                script=_normalize_optional_job_value(script),
-                context_from=context_from,
-                enabled_toolsets=enabled_toolsets or None,
-                workdir=_normalize_optional_job_value(workdir),
-                profile=_normalize_optional_job_value(profile),
-                no_agent=_no_agent,
-            )
+            job = None
+            try:
+                job = create_job(
+                    prompt=prompt or "",
+                    schedule=schedule,
+                    name=name,
+                    repeat=repeat,
+                    deliver=_normalize_deliver_param(deliver),
+                    origin=_origin_from_env(),
+                    skills=canonical_skills,
+                    model=_normalize_optional_job_value(model),
+                    provider=_normalize_optional_job_value(provider),
+                    base_url=_normalize_optional_job_value(
+                        base_url, strip_trailing_slash=True
+                    ),
+                    script=_normalize_optional_job_value(script),
+                    context_from=context_from,
+                    enabled_toolsets=enabled_toolsets or None,
+                    workdir=_normalize_optional_job_value(workdir),
+                    profile=_normalize_optional_job_value(profile),
+                    workflow_binding_type=workflow_binding_type_value,
+                    workflow_binding_id=workflow_binding_id_value,
+                    no_agent=_no_agent,
+                )
+                if (
+                    job.get("workflow_binding_type")
+                    == WHATSAPP_OUTREACH_PLAN_WORKFLOW_BINDING_TYPE
+                ):
+                    bind_whatsapp_outreach_plan_to_cron_job(
+                        plan_id=str(job["workflow_binding_id"]),
+                        cron_job_id=str(job["id"]),
+                    )
+            except Exception:
+                if job is not None:
+                    remove_job(str(job["id"]))
+                raise
             return json.dumps(
                 {
                     "success": True,
@@ -437,11 +518,17 @@ def cronjob(
             )
 
         if normalized == "list":
-            jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]
-            return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
+            jobs = [
+                _format_job(job) for job in list_jobs(include_disabled=include_disabled)
+            ]
+            return json.dumps(
+                {"success": True, "count": len(jobs), "jobs": jobs}, indent=2
+            )
 
         if not job_id:
-            return tool_error(f"job_id is required for action '{normalized}'", success=False)
+            return tool_error(
+                f"job_id is required for action '{normalized}'", success=False
+            )
 
         try:
             job = resolve_job_ref(job_id)
@@ -464,7 +551,10 @@ def cronjob(
             )
         if not job:
             return json.dumps(
-                {"success": False, "error": f"Job with ID or name '{job_id}' not found. Use cronjob(action='list') to inspect jobs."},
+                {
+                    "success": False,
+                    "error": f"Job with ID or name '{job_id}' not found. Use cronjob(action='list') to inspect jobs.",
+                },
                 indent=2,
             )
         # Resolve to canonical ID (supports name-based lookup)
@@ -474,6 +564,11 @@ def cronjob(
             removed = remove_job(job_id)
             if not removed:
                 return tool_error(f"Failed to remove job '{job_id}'", success=False)
+            if (
+                job.get("workflow_binding_type")
+                == WHATSAPP_OUTREACH_PLAN_WORKFLOW_BINDING_TYPE
+            ):
+                unbind_whatsapp_outreach_plan_from_cron_job(cron_job_id=job_id)
             return json.dumps(
                 {
                     "success": True,
@@ -519,14 +614,18 @@ def cronjob(
             if provider is not None:
                 updates["provider"] = _normalize_optional_job_value(provider)
             if base_url is not None:
-                updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
+                updates["base_url"] = _normalize_optional_job_value(
+                    base_url, strip_trailing_slash=True
+                )
             if script is not None:
                 # Pass empty string to clear an existing script
                 if script:
                     script_error = _validate_cron_script_path(script)
                     if script_error:
                         return tool_error(script_error, success=False)
-                updates["script"] = _normalize_optional_job_value(script) if script else None
+                updates["script"] = (
+                    _normalize_optional_job_value(script) if script else None
+                )
             if context_from is not None:
                 # Empty string / empty list clears the field; otherwise validate
                 # each referenced job exists before storing. Normalized to a list
@@ -537,6 +636,7 @@ def cronjob(
                     refs = [str(j).strip() for j in context_from if str(j).strip()]
                 if refs:
                     from cron.jobs import get_job as _get_job
+
                     for ref_id in refs:
                         if not _get_job(ref_id):
                             return tool_error(
@@ -555,13 +655,25 @@ def cronjob(
                 # Empty string clears the field (restores old behaviour);
                 # otherwise pass raw — update_job() validates / normalizes.
                 updates["profile"] = _normalize_optional_job_value(profile) or None
+            if workflow_binding_type is not None:
+                updates["workflow_binding_type"] = (
+                    _normalize_optional_job_value(workflow_binding_type) or None
+                )
+            if workflow_binding_id is not None:
+                updates["workflow_binding_id"] = (
+                    _normalize_optional_job_value(workflow_binding_id) or None
+                )
             if no_agent is not None:
                 # Toggling no_agent on/off at update time. If flipping to True,
                 # we need a script to already exist on the job (or be part of
                 # the same update) — otherwise the next tick would error out.
                 target_no_agent = bool(no_agent)
                 if target_no_agent:
-                    effective_script = updates.get("script") if "script" in updates else job.get("script")
+                    effective_script = (
+                        updates.get("script")
+                        if "script" in updates
+                        else job.get("script")
+                    )
                     if not effective_script:
                         return tool_error(
                             "Cannot set no_agent=True on a job without a script. "
@@ -584,14 +696,73 @@ def cronjob(
                     updates["enabled"] = True
             if not updates:
                 return tool_error("No updates provided.", success=False)
-            updated = update_job(job_id, updates)
+            prior_binding_type = job.get("workflow_binding_type")
+            prior_binding_id = job.get("workflow_binding_id")
+            try:
+                updated = update_job(job_id, updates)
+                if (
+                    prior_binding_type == WHATSAPP_OUTREACH_PLAN_WORKFLOW_BINDING_TYPE
+                    and (
+                        updated.get("workflow_binding_type")
+                        != WHATSAPP_OUTREACH_PLAN_WORKFLOW_BINDING_TYPE
+                        or updated.get("workflow_binding_id") != prior_binding_id
+                    )
+                ):
+                    unbind_whatsapp_outreach_plan_from_cron_job(cron_job_id=job_id)
+                if (
+                    updated
+                    and updated.get("workflow_binding_type")
+                    == WHATSAPP_OUTREACH_PLAN_WORKFLOW_BINDING_TYPE
+                ):
+                    bind_whatsapp_outreach_plan_to_cron_job(
+                        plan_id=str(updated["workflow_binding_id"]),
+                        cron_job_id=str(updated["id"]),
+                    )
+            except Exception:
+                restore_updates = {
+                    key: job.get(key)
+                    for key in (
+                        "prompt",
+                        "name",
+                        "deliver",
+                        "skills",
+                        "skill",
+                        "model",
+                        "provider",
+                        "base_url",
+                        "script",
+                        "context_from",
+                        "enabled_toolsets",
+                        "workdir",
+                        "profile",
+                        "workflow_binding_type",
+                        "workflow_binding_id",
+                        "no_agent",
+                        "repeat",
+                        "schedule",
+                        "schedule_display",
+                        "state",
+                        "enabled",
+                        "next_run_at",
+                    )
+                    if key in job
+                }
+                update_job(job_id, restore_updates)
+                if (
+                    prior_binding_type == WHATSAPP_OUTREACH_PLAN_WORKFLOW_BINDING_TYPE
+                    and prior_binding_id
+                ):
+                    bind_whatsapp_outreach_plan_to_cron_job(
+                        plan_id=str(prior_binding_id),
+                        cron_job_id=str(job_id),
+                    )
+                raise
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
 
         return tool_error(f"Unknown cron action '{action}'", success=False)
 
     except Exception as e:
         return tool_error(str(e), success=False)
-
 
 
 CRONJOB_SCHEMA = {
@@ -618,36 +789,33 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
         "properties": {
             "action": {
                 "type": "string",
-                "description": "One of: create, list, update, pause, resume, remove, run"
+                "description": "One of: create, list, update, pause, resume, remove, run",
             },
             "job_id": {
                 "type": "string",
-                "description": "Required for update/pause/resume/remove/run"
+                "description": "Required for update/pause/resume/remove/run",
             },
             "prompt": {
                 "type": "string",
-                "description": "For create: the full self-contained prompt. If skills are also provided, this becomes the task instruction paired with those skills."
+                "description": "For create: the full self-contained prompt. If skills are also provided, this becomes the task instruction paired with those skills.",
             },
             "schedule": {
                 "type": "string",
-                "description": "For create/update: '30m', 'every 2h', '0 9 * * *', or ISO timestamp"
+                "description": "For create/update: '30m', 'every 2h', '0 9 * * *', or ISO timestamp",
             },
-            "name": {
-                "type": "string",
-                "description": "Optional human-friendly name"
-            },
+            "name": {"type": "string", "description": "Optional human-friendly name"},
             "repeat": {
                 "type": "integer",
-                "description": "Optional repeat count. Omit for defaults (once for one-shot, forever for recurring)."
+                "description": "Optional repeat count. Omit for defaults (once for one-shot, forever for recurring).",
             },
             "deliver": {
                 "type": "string",
-                "description": "Omit this parameter to auto-deliver back to the current chat and topic (recommended). Auto-detection preserves thread/topic context. Only set explicitly when the user asks to deliver somewhere OTHER than the current conversation. Values: 'origin' (same as omitting), 'local' (no delivery, save only), 'all' (fan out to every connected home channel), or platform:chat_id:thread_id for a specific destination. Combine with comma: 'origin,all' delivers to the origin plus every other connected channel. Examples: 'telegram:-1001234567890:17585', 'discord:#engineering', 'sms:+15551234567', 'all'. WARNING: 'platform:chat_id' without :thread_id loses topic targeting. 'all' resolves at fire time, so a job created before a channel was wired up will pick it up automatically once connected."
+                "description": "Omit this parameter to auto-deliver back to the current chat and topic (recommended). Auto-detection preserves thread/topic context. Only set explicitly when the user asks to deliver somewhere OTHER than the current conversation. Values: 'origin' (same as omitting), 'local' (no delivery, save only), 'all' (fan out to every connected home channel), or platform:chat_id:thread_id for a specific destination. Combine with comma: 'origin,all' delivers to the origin plus every other connected channel. Examples: 'telegram:-1001234567890:17585', 'discord:#engineering', 'sms:+15551234567', 'all'. WARNING: 'platform:chat_id' without :thread_id loses topic targeting. 'all' resolves at fire time, so a job created before a channel was wired up will pick it up automatically once connected.",
             },
             "skills": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional ordered list of skill names to load before executing the cron prompt. On update, pass an empty array to clear attached skills."
+                "description": "Optional ordered list of skill names to load before executing the cron prompt. On update, pass an empty array to clear attached skills.",
             },
             "model": {
                 "type": "object",
@@ -655,18 +823,18 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "properties": {
                     "provider": {
                         "type": "string",
-                        "description": "Provider name (e.g. 'openrouter', 'anthropic', or 'custom:<name>' for a provider defined in custom_providers config — always include the ':<name>' suffix, never pass the bare 'custom'). Omit to use and pin the current provider."
+                        "description": "Provider name (e.g. 'openrouter', 'anthropic', or 'custom:<name>' for a provider defined in custom_providers config — always include the ':<name>' suffix, never pass the bare 'custom'). Omit to use and pin the current provider.",
                     },
                     "model": {
                         "type": "string",
-                        "description": "Model name (e.g. 'anthropic/claude-sonnet-4', 'claude-sonnet-4')"
-                    }
+                        "description": "Model name (e.g. 'anthropic/claude-sonnet-4', 'claude-sonnet-4')",
+                    },
                 },
-                "required": ["model"]
+                "required": ["model"],
             },
             "script": {
                 "type": "string",
-                "description": f"Optional path to a script that runs each tick. In the default mode its stdout is injected into the agent's prompt as context (data-collection / change-detection pattern). With no_agent=True, the script IS the job and its stdout is delivered verbatim (classic watchdog pattern). Relative paths resolve under {display_hermes_home()}/scripts/. ``.sh``/``.bash`` extensions run via bash, everything else via Python. On update, pass empty string to clear."
+                "description": f"Optional path to a script that runs each tick. In the default mode its stdout is injected into the agent's prompt as context (data-collection / change-detection pattern). With no_agent=True, the script IS the job and its stdout is delivered verbatim (classic watchdog pattern). Relative paths resolve under {display_hermes_home()}/scripts/. ``.sh``/``.bash`` extensions run via bash, everything else via Python. On update, pass empty string to clear.",
             },
             "no_agent": {
                 "type": "boolean",
@@ -702,19 +870,27 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             "enabled_toolsets": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional list of toolset names to restrict the job's agent to (e.g. [\"web\", \"terminal\", \"file\", \"delegation\"]). When set, only tools from these toolsets are loaded, significantly reducing input token overhead. When omitted, all default tools are loaded. Infer from the job's prompt — e.g. use \"web\" if it calls web_search, \"terminal\" if it runs scripts, \"file\" if it reads files, \"delegation\" if it calls delegate_task. On update, pass an empty array to clear."
+                "description": 'Optional list of toolset names to restrict the job\'s agent to (e.g. ["web", "terminal", "file", "delegation"]). When set, only tools from these toolsets are loaded, significantly reducing input token overhead. When omitted, all default tools are loaded. Infer from the job\'s prompt — e.g. use "web" if it calls web_search, "terminal" if it runs scripts, "file" if it reads files, "delegation" if it calls delegate_task. On update, pass an empty array to clear.',
             },
             "workdir": {
                 "type": "string",
-                "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
+                "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated.",
             },
             "profile": {
                 "type": "string",
-                "description": "Optional Hermes profile name to run the job under. When set, the scheduler resolves that profile, applies a context-local Hermes home override, loads that profile's config/.env for the run, and bridges HERMES_HOME into subprocesses. Any temporary process-environment changes from profile .env loading are restored after the job exits. Use 'default' for the root Hermes profile. Named profiles must already exist. When unset (default), preserves the scheduler's existing profile. On update, pass an empty string to clear. Jobs with profile run sequentially (not parallel) to keep profile-scoped runtime state isolated."
+                "description": "Optional Hermes profile name to run the job under. When set, the scheduler resolves that profile, applies a context-local Hermes home override, loads that profile's config/.env for the run, and bridges HERMES_HOME into subprocesses. Any temporary process-environment changes from profile .env loading are restored after the job exits. Use 'default' for the root Hermes profile. Named profiles must already exist. When unset (default), preserves the scheduler's existing profile. On update, pass an empty string to clear. Jobs with profile run sequentially (not parallel) to keep profile-scoped runtime state isolated.",
+            },
+            "workflow_binding_type": {
+                "type": "string",
+                "description": f"Optional canonical workflow binding type stored with the cron job. This slice supports '{WHATSAPP_OUTREACH_PLAN_WORKFLOW_BINDING_TYPE}' for bound approved-outreach jobs. Must be provided together with workflow_binding_id.",
+            },
+            "workflow_binding_id": {
+                "type": "string",
+                "description": "Optional canonical workflow binding identifier stored with the cron job. Must be provided together with workflow_binding_type.",
             },
         },
-        "required": ["action"]
-    }
+        "required": ["action"],
+    },
 }
 
 
@@ -747,29 +923,33 @@ registry.register(
     name="cronjob",
     toolset="cronjob",
     schema=CRONJOB_SCHEMA,
-    handler=lambda args, **kw: (lambda _mo=_resolve_model_override(args.get("model")): cronjob(
-        action=args.get("action", ""),
-        job_id=args.get("job_id"),
-        prompt=args.get("prompt"),
-        schedule=args.get("schedule"),
-        name=args.get("name"),
-        repeat=args.get("repeat"),
-        deliver=args.get("deliver"),
-        include_disabled=args.get("include_disabled", True),
-        skill=args.get("skill"),
-        skills=args.get("skills"),
-        model=_mo[1],
-        provider=_mo[0] or args.get("provider"),
-        base_url=args.get("base_url"),
-        reason=args.get("reason"),
-        script=args.get("script"),
-        context_from=args.get("context_from"),
-        enabled_toolsets=args.get("enabled_toolsets"),
-        workdir=args.get("workdir"),
-        profile=args.get("profile"),
-        no_agent=args.get("no_agent"),
-        task_id=kw.get("task_id"),
-    ))(),
+    handler=lambda args, **kw: (
+        lambda _mo=_resolve_model_override(args.get("model")): cronjob(
+            action=args.get("action", ""),
+            job_id=args.get("job_id"),
+            prompt=args.get("prompt"),
+            schedule=args.get("schedule"),
+            name=args.get("name"),
+            repeat=args.get("repeat"),
+            deliver=args.get("deliver"),
+            include_disabled=args.get("include_disabled", True),
+            skill=args.get("skill"),
+            skills=args.get("skills"),
+            model=_mo[1],
+            provider=_mo[0] or args.get("provider"),
+            base_url=args.get("base_url"),
+            reason=args.get("reason"),
+            script=args.get("script"),
+            context_from=args.get("context_from"),
+            enabled_toolsets=args.get("enabled_toolsets"),
+            workdir=args.get("workdir"),
+            profile=args.get("profile"),
+            workflow_binding_type=args.get("workflow_binding_type"),
+            workflow_binding_id=args.get("workflow_binding_id"),
+            no_agent=args.get("no_agent"),
+            task_id=kw.get("task_id"),
+        )
+    )(),
     check_fn=check_cronjob_requirements,
     emoji="⏰",
 )
