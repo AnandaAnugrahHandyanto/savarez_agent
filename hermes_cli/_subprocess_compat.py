@@ -39,6 +39,9 @@ __all__ = [
     "windows_detach_flags",
     "windows_hide_flags",
     "windows_detach_popen_kwargs",
+    "is_windows_shim_target",
+    "arg_contains_cmd_metachars",
+    "CMD_METACHARS",
 ]
 
 
@@ -140,6 +143,72 @@ def windows_hide_flags() -> int:
     if not IS_WINDOWS:
         return 0
     return _CREATE_NO_WINDOW
+
+
+# -----------------------------------------------------------------------------
+# cmd.exe shim metacharacter detection (Windows .cmd / .bat re-parse hazard)
+# -----------------------------------------------------------------------------
+
+
+# Characters that cmd.exe treats specially when a .cmd / .bat shim
+# re-parses its argv.  Even if Python's subprocess module passes argv
+# correctly to ``CreateProcessW``, a ``.cmd`` / ``.bat`` target runs
+# inside ``cmd.exe /c``, which re-tokenizes its arguments and interprets
+# these as shell operators rather than literals:
+#
+#   |       pipe — splits the rest of the argv into a new command
+#   &       command sequencer (``a & b``) or background (``&``)
+#   <  >    file redirection (``> out.txt`` truncates a file)
+#   ^       cmd.exe's escape character — strips the next char
+#   "       quote — affects argv tokenization on the cmd.exe side
+#
+# Note: ``%`` is also a cmd.exe metacharacter (variable expansion) but
+# only inside batch files, not on the command line; we leave it off the
+# default set to keep the false-positive rate low.  Callers who care
+# about it can extend the constant.
+#
+# See #31419 for the upstream context and the recommended fix pattern
+# (route argument content via stdin or escape on the way in).
+CMD_METACHARS = frozenset("|&<>^\"")
+
+
+def is_windows_shim_target(target: Optional[str]) -> bool:
+    """Return ``True`` if ``target`` is a Windows .cmd / .bat shim.
+
+    Returns ``False`` on non-Windows.  Returns ``False`` if ``target``
+    is ``None`` or empty.  Detection is purely extension-based — a
+    correctly-named .cmd / .bat suffix.  The check is case-insensitive
+    because Windows paths often round-trip through different cases.
+    """
+    if not IS_WINDOWS or not target:
+        return False
+    lowered = target.lower()
+    return lowered.endswith(".cmd") or lowered.endswith(".bat")
+
+
+def arg_contains_cmd_metachars(arg: str, *, extra: str = "") -> bool:
+    """Return ``True`` if ``arg`` contains any cmd.exe metacharacter.
+
+    Use this to detect when an argv value about to be passed to a
+    ``.cmd`` / ``.bat`` shim would be re-parsed by ``cmd.exe`` and
+    risk wrong behavior (or, with attacker-controlled content,
+    command injection).
+
+    The check is platform-agnostic on purpose: callers who already
+    know they're targeting a .cmd shim (see
+    :func:`is_windows_shim_target`) can call this without first
+    branching on platform.  Returns ``False`` for an empty string.
+
+    Args:
+        arg: The argv value to inspect.
+        extra: Optional extra characters to treat as metacharacters
+            for this call (e.g. ``"%"`` if the caller is targeting
+            a batch file rather than a shim).
+    """
+    if not arg:
+        return False
+    metachars = CMD_METACHARS | set(extra)
+    return any(ch in metachars for ch in arg)
 
 
 def windows_detach_popen_kwargs() -> dict:
