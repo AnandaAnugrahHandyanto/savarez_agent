@@ -96,6 +96,42 @@ export const api = {
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
   getModelInfo: () => fetchJSON<ModelInfoResponse>("/api/model/info"),
+  getVoiceRealtimeConfig: () => fetchJSON<VoiceRealtimeConfig>("/api/voice/realtime/config"),
+  createVoiceRealtimeClientSecret: () =>
+    fetchJSON<VoiceRealtimeClientSecretResponse>("/api/voice/realtime/xai-client-secret", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    }),
+  startVoiceDelegate: (body: { input: string; instructions?: string; session_id?: string }) =>
+    fetchJSON<VoiceRunStartResponse>("/api/voice/delegates", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  getVoiceDelegate: (delegateId: string) =>
+    fetchJSON<VoiceRunStatus>(`/api/voice/delegates/${encodeURIComponent(delegateId)}`),
+  getVoiceDelegateEvents: (delegateId: string) =>
+    fetchJSON<{ object: string; delegate_id: string; run_id: string; events: Array<Record<string, unknown>> }>(
+      `/api/voice/delegates/${encodeURIComponent(delegateId)}/events`,
+    ),
+  approveVoiceDelegate: (delegateId: string, body: { choice: VoiceApprovalChoice; resolve_all?: boolean }) =>
+    fetchJSON<VoiceRunApprovalResponse>(`/api/voice/delegates/${encodeURIComponent(delegateId)}/approval`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  stopVoiceDelegate: (delegateId: string) =>
+    fetchJSON<VoiceRunStatus>(`/api/voice/delegates/${encodeURIComponent(delegateId)}/stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    }),
+  startVoiceRun: (body: { input: string; instructions?: string; session_id?: string }) => api.startVoiceDelegate(body),
+  getVoiceRun: (runId: string) => api.getVoiceDelegate(runId),
+  approveVoiceRun: (runId: string, body: { choice: VoiceApprovalChoice; resolve_all?: boolean }) =>
+    api.approveVoiceDelegate(runId, body),
+  stopVoiceRun: (runId: string) => api.stopVoiceDelegate(runId),
   getModelOptions: () => fetchJSON<ModelOptionsResponse>("/api/model/options"),
   getAuxiliaryModels: () => fetchJSON<AuxiliaryModelsResponse>("/api/model/auxiliary"),
   setModelAssignment: (body: ModelAssignmentRequest) =>
@@ -621,6 +657,88 @@ export interface ModelInfoResponse {
     max_output_tokens?: number;
     model_family?: string;
   };
+}
+
+export interface VoiceRealtimeToolSchema {
+  type: "function";
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+export interface VoiceRealtimeConfig {
+  enabled: boolean;
+  provider: "xai" | string;
+  model: string;
+  voice: string;
+  turn_detection: {
+    type: "server_vad" | string;
+    threshold: number;
+    silence_duration_ms: number;
+    prefix_padding_ms: number;
+  };
+  audio: {
+    input_rate: number;
+    output_rate: number;
+  };
+  tools: VoiceRealtimeToolSchema[];
+}
+
+export interface VoiceRealtimeClientSecretResponse {
+  client_secret: {
+    value: string;
+    expires_at: number;
+  };
+  model: string;
+  voice: string;
+}
+
+export type VoiceApprovalChoice = "once" | "session" | "deny";
+
+export interface VoiceApprovalRequest {
+  command?: string;
+  description?: string;
+  pattern_key?: string;
+  pattern_keys?: string[];
+  choices?: VoiceApprovalChoice[];
+  timestamp?: number;
+  [key: string]: unknown;
+}
+
+export interface VoiceRunStatus {
+  object: "hermes.voice.delegate" | "hermes.voice.run" | string;
+  delegate_id?: string;
+  run_id: string;
+  status: "queued" | "running" | "waiting_for_approval" | "stopping" | "completed" | "failed" | "cancelled" | "stopped" | string;
+  created_at?: number;
+  updated_at?: number;
+  session_id?: string;
+  input_preview?: string;
+  output?: string;
+  error?: string;
+  last_event?: string;
+  usage?: {
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+  };
+  events?: Array<Record<string, unknown>>;
+  approval_request?: VoiceApprovalRequest;
+}
+
+export interface VoiceRunStartResponse {
+  object: "hermes.voice.delegate" | "hermes.voice.run" | string;
+  delegate_id?: string;
+  run_id: string;
+  status: "started" | string;
+}
+
+export interface VoiceRunApprovalResponse {
+  object: "hermes.voice.delegate.approval_response" | "hermes.voice.run.approval_response" | string;
+  delegate_id?: string;
+  run_id: string;
+  choice: string;
+  resolved: number;
 }
 
 // ── Model options / assignment types ──────────────────────────────────

@@ -89,6 +89,18 @@ The **Chat** tab embeds the full Hermes TUI (the same interface you get from `he
 
 Close the browser tab and the PTY is reaped cleanly on the server. Re-opening spawns a fresh session.
 
+### Voice
+
+The **Voice** tab provides [Grok Voice Dispatch](./voice-dispatch.md): a realtime browser voice session that can start, monitor, and stop isolated Hermes delegates. Grok Voice is the conversational controller only; Hermes delegates perform the actual work using the normal Hermes tool and approval model.
+
+The browser never receives your long-lived `XAI_API_KEY`. The dashboard mints a short-lived xAI realtime client secret server-side and protects all `/api/voice/*` endpoints with the dashboard session token.
+
+Enable it with:
+
+```bash
+hermes setup voice
+```
+
 ### Config
 
 A form-based editor for `config.yaml`. All 150+ configuration fields are auto-discovered from `DEFAULT_CONFIG` and organized into tabbed categories:
