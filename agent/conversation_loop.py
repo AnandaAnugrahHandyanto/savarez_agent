@@ -476,6 +476,10 @@ def run_conversation(
         return result
 
     if agent.api_mode == "cursor_sdk_runtime":
+        # Cursor SDK has no system-role channel — build the Hermes system
+        # prompt here so cursor_runtime can prepend it on the first turn.
+        if agent._cached_system_prompt is None:
+            _restore_or_build_system_prompt(agent, system_message, conversation_history)
         result = agent._run_cursor_sdk_turn(
             user_message=user_message,
             original_user_message=original_user_message,

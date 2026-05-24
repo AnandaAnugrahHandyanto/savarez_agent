@@ -8,6 +8,43 @@ from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
+_CURSOR_TURN_SEPARATOR = "\n\n---\n\n"
+
+
+def effective_system_prompt(agent) -> str:
+    """Hermes system prompt plus any ephemeral overlay."""
+    prompt = getattr(agent, "_cached_system_prompt", None) or ""
+    ephemeral = getattr(agent, "ephemeral_system_prompt", None)
+    if ephemeral:
+        prompt = f"{prompt}\n\n{ephemeral}".strip()
+    return prompt
+
+
+def compose_cursor_user_input(
+    agent,
+    user_message: str,
+    *,
+    inject_system: bool,
+) -> str:
+    """Build the user input sent to Cursor SDK.
+
+    Cursor has no separate system-role channel, so the Hermes system prompt
+    is prepended to the first turn only (once per ``CursorSDKSession``).
+    """
+    text = user_message or ""
+    if not inject_system:
+        return text
+    system = effective_system_prompt(agent)
+    if not system.strip():
+        return text
+    return (
+        "The following are your operating instructions (Hermes system prompt). "
+        "Follow them for this entire session.\n\n"
+        f"{system}"
+        f"{_CURSOR_TURN_SEPARATOR}"
+        f"{text}"
+    ).strip()
+
 
 def run_cursor_sdk_turn(
     agent,
@@ -54,17 +91,26 @@ def run_cursor_sdk_turn(
             agent._cursor_session._progress_callback = progress_callback
         agent._cursor_session._tool_progress_callback = tool_progress_callback
 
-    # Skills are available via the hermes-tools MCP callback (skill_view /
-    # skills_list). Injecting the full skills system prompt here duplicates
-    # context and can stall the first Cursor turn.
-    prompt = user_message or ""
+    # Cursor SDK has no system-role channel. The Hermes system prompt (skills,
+    # kanban lifecycle, tool guidance) is prepended on the first turn of each
+    # CursorSDKSession so workers see the same contract as chat-completions
+    # runtimes. Subsequent turns on the same session omit it to avoid bloat.
+    session = agent._cursor_session
+    inject_system = getattr(session, "_turns_sent", 0) == 0
+    prompt = compose_cursor_user_input(
+        agent,
+        user_message,
+        inject_system=inject_system,
+    )
     logger.info(
-        "cursor SDK turn starting session=%s model=%s",
+        "cursor SDK turn starting session=%s model=%s inject_system=%s",
         getattr(agent, "session_id", None) or "none",
         getattr(agent, "model", None) or "composer-2.5",
+        inject_system,
     )
     try:
         turn = agent._cursor_session.run_turn(user_input=prompt)
+        session._turns_sent = getattr(session, "_turns_sent", 0) + 1
     except Exception as exc:
         logger.exception("cursor SDK turn failed")
         try:

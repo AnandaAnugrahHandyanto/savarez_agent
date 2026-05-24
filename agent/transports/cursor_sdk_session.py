@@ -326,6 +326,8 @@ class CursorSDKSession:
         self._active_run: Any = None
         self._closed = False
         self._mcp_servers: Optional[dict[str, dict[str, Any]]] = None
+        # Hermes prepends the system prompt on turn 0 only (see cursor_runtime).
+        self._turns_sent = 0
 
     def _resolve_mcp_servers(self) -> dict[str, dict[str, Any]]:
         if self._mcp_servers is None:
