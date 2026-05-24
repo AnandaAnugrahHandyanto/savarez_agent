@@ -133,6 +133,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._helper_connected: bool = False
         self._guid_cache: Dict[str, str] = {}
         self._inbound_message_state: Dict[str, tuple[str, str, float]] = {}
+        self._typing_active_chats: set[str] = set()
 
     # ------------------------------------------------------------------
     # API helpers
@@ -604,11 +605,15 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 await self.client.post(
                     self._api_url(f"/api/v1/chat/{encoded}/typing"), timeout=5
                 )
+                self._typing_active_chats.add(chat_id)
         except Exception as exc:
             logger.warning("[bluebubbles] failed to send typing indicator: %s", exc)
 
     async def stop_typing(self, chat_id: str) -> None:
         """Clear iMessage typing when Hermes finishes or is interrupted."""
+        if chat_id not in self._typing_active_chats:
+            return
+        self._typing_active_chats.discard(chat_id)
         if not self._private_api_enabled or not self._helper_connected or not self.client:
             return
         try:

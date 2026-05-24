@@ -414,6 +414,7 @@ class TestBlueBubblesWebhookParsing:
 
         await adapter.send_typing("iMessage;-;user@example.com")
         await adapter.stop_typing("iMessage;-;user@example.com")
+        await adapter.stop_typing("iMessage;-;user@example.com")
 
         assert len(calls) == 2
         assert calls[0][0] == "POST"
