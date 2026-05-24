@@ -32,6 +32,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli import __version__, __release_date__
+from hermes_cli.profiles import get_active_profile_name
 from hermes_cli.config import (
     cfg_get,
     DEFAULT_CONFIG,
@@ -718,7 +719,11 @@ def _tail_lines(path: Path, n: int) -> List[str]:
 async def restart_gateway():
     """Kick off a ``hermes gateway restart`` in the background."""
     try:
-        proc = _spawn_hermes_action(["gateway", "restart"], "gateway-restart")
+        profile = get_active_profile_name()
+        if profile and profile != "default":
+            proc = _spawn_hermes_action(["-p", profile, "gateway", "restart"], "gateway-restart")
+        else:
+            proc = _spawn_hermes_action(["gateway", "restart"], "gateway-restart")
     except Exception as exc:
         _log.exception("Failed to spawn gateway restart")
         raise HTTPException(status_code=500, detail=f"Failed to restart gateway: {exc}")
