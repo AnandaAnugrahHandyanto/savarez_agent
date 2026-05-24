@@ -22,6 +22,7 @@ from tools.mcp_oauth import (
     _is_interactive,
     _wait_for_callback,
     _make_callback_handler,
+    _make_redirect_handler,
     _redirect_handler,
 )
 
@@ -301,6 +302,24 @@ class TestRedirectHandlerSshHint:
         err = capsys.readouterr().err
         assert "ssh -N -L" not in err
 
+    def test_bound_redirect_handler_uses_captured_port_for_ssh_hint(self, monkeypatch, capsys):
+        import tools.mcp_oauth as mco
+
+        monkeypatch.setattr(mco, "_oauth_port", 49299)
+        monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 1234 22")
+        monkeypatch.setattr(mco, "_can_open_browser", lambda: False)
+        mco._oauth_active_flow_claims.clear()
+        mco._oauth_results_by_port.clear()
+        mco._oauth_pending_ports.clear()
+
+        handler = _make_redirect_handler(49203, ("server-a", "https://example.com/mcp"))
+        self._run(handler("https://example.com/auth"))
+
+        err = capsys.readouterr().err
+        assert "49203" in err
+        assert "49299" not in err
+        assert "ssh -N -L 49203:127.0.0.1:49203" in err
+
 
 # ---------------------------------------------------------------------------
 # Path traversal protection
@@ -466,6 +485,10 @@ class TestWaitForCallbackNoBlocking:
         import asyncio
 
         mod._oauth_port = _find_free_port()
+        mod._oauth_result = None
+        mod._oauth_result_active = False
+        mod._oauth_result_port = None
+        mod._oauth_results_by_port.clear()
 
         async def instant_sleep(_seconds):
             pass
@@ -474,6 +497,404 @@ class TestWaitForCallbackNoBlocking:
             with patch("builtins.input", side_effect=AssertionError("input() must not be called")):
                 with pytest.raises(OAuthNonInteractiveError, match="callback timed out"):
                     asyncio.run(_wait_for_callback())
+
+
+class TestSharedCallbackResultCleanup:
+    """``_oauth_result`` must not leak across login attempts.
+
+    If a prior flow exited (success, error, or timeout) and left a stale
+    auth_code/state/error in the shared slot, a subsequent
+    ``_wait_for_callback`` would wrongly accept it without ever seeing a
+    real browser callback.
+    """
+
+    def _instant_sleep_patch(self):
+        async def instant_sleep(_seconds):
+            pass
+        import tools.mcp_oauth as mod
+        return patch.object(mod.asyncio, "sleep", instant_sleep)
+
+    def test_timeout_clears_shared_result(self):
+        import tools.mcp_oauth as mod
+        import asyncio
+
+        mod._oauth_port = _find_free_port()
+        mod._oauth_result = None
+        mod._oauth_result_active = False
+        mod._oauth_result_port = None
+        mod._oauth_results_by_port.clear()
+
+        with self._instant_sleep_patch():
+            with pytest.raises(OAuthNonInteractiveError):
+                asyncio.run(_wait_for_callback())
+
+        assert mod._oauth_result is None, (
+            "timed-out callback must clear _oauth_result so the next login "
+            "attempt cannot reuse stale state"
+        )
+
+    def test_error_clears_shared_result(self):
+        """When the owner-waiter's callback returns ?error=…, the shared
+        slot must be cleared so the next attempt starts fresh."""
+        import tools.mcp_oauth as mod
+        import asyncio
+
+        mod._oauth_port = _find_free_port()
+        mod._oauth_result = None
+        mod._oauth_result_active = False
+        mod._oauth_result_port = None
+        mod._oauth_results_by_port.clear()
+
+        async def push_error_then_sleep(_seconds):
+            if mod._oauth_result is not None and mod._oauth_result["error"] is None:
+                mod._oauth_result["error"] = "server_error"
+
+        with patch.object(mod.asyncio, "sleep", push_error_then_sleep):
+            with pytest.raises(RuntimeError, match="server_error"):
+                asyncio.run(_wait_for_callback())
+
+        assert mod._oauth_result is None, (
+            "errored callback must clear _oauth_result so the next login "
+            "attempt does not raise the prior flow's error"
+        )
+
+    def test_success_clears_shared_result(self):
+        import tools.mcp_oauth as mod
+        import asyncio
+
+        mod._oauth_port = _find_free_port()
+        mod._oauth_result = None
+        mod._oauth_result_active = False
+        mod._oauth_result_port = None
+        mod._oauth_results_by_port.clear()
+
+        async def push_code_then_sleep(_seconds):
+            if mod._oauth_result is not None and mod._oauth_result["auth_code"] is None:
+                mod._oauth_result["auth_code"] = "fresh-code"
+                mod._oauth_result["state"] = "fresh-state"
+
+        with patch.object(mod.asyncio, "sleep", push_code_then_sleep):
+            code, state = asyncio.run(_wait_for_callback())
+
+        assert code == "fresh-code"
+        assert state == "fresh-state"
+        assert mod._oauth_result is None, (
+            "successful callback must clear _oauth_result so the next login "
+            "attempt does not reuse the previous code"
+        )
+
+    def test_owner_bind_failure_raises_noninteractive_error(self):
+        """Owner-branch bind failure must surface immediately.
+
+        The owner waiter is the only candidate to populate the shared
+        result dict, so a bind failure that is silently downgraded to
+        "fall through to polling" leaves the waiter blocked until the
+        5-minute timeout. Surface the failure as
+        ``OAuthNonInteractiveError`` (the existing user-friendly
+        callback-port message) and chain the underlying ``OSError`` via
+        ``__cause__`` so debugging info is preserved without leaking the
+        raw errno through the public API.
+        """
+        import tools.mcp_oauth as mod
+        import asyncio
+
+        mod._oauth_port = _find_free_port()
+        mod._oauth_result = None
+        mod._oauth_result_active = False
+        mod._oauth_result_port = None
+        mod._oauth_results_by_port.clear()
+
+        underlying = OSError("address already in use")
+        with patch.object(mod, "HTTPServer", side_effect=underlying):
+            with pytest.raises(OAuthNonInteractiveError) as excinfo:
+                asyncio.run(_wait_for_callback())
+
+        assert isinstance(excinfo.value.__cause__, OSError)
+        assert excinfo.value.__cause__ is underlying
+
+        # Owner must roll back the shared slot it installed so the next
+        # waiter doesn't poll a never-filled buffer.
+        assert mod._oauth_result is None
+
+    def test_build_oauth_auth_clears_stale_result(self, tmp_path, monkeypatch):
+        """``build_oauth_auth`` must drop any stale shared result before the
+        new flow begins, even if the previous flow leaked state."""
+        try:
+            from mcp.client.auth import OAuthClientProvider  # noqa: F401
+        except ImportError:
+            pytest.skip("MCP SDK auth not available")
+
+        import tools.mcp_oauth as mod
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # Simulate stale state from a crashed previous flow.
+        mod._oauth_result = {
+            "auth_code": "stale-code",
+            "state": "stale-state",
+            "error": None,
+        }
+        mod._oauth_result_active = False
+        mod._oauth_results_by_port[mod._callback_result_key(12345)] = {
+            "auth_code": "stale-map-code",
+            "state": "stale-map-state",
+            "error": None,
+        }
+
+        build_oauth_auth("fresh-flow", "https://example.com/mcp")
+
+        assert mod._oauth_result is None
+        assert mod._oauth_result_active is False
+        assert mod._oauth_results_by_port == {}
+
+    def test_concurrent_waiter_reuses_shared_result(self):
+        """A second waiter on the same flow shares the first's result dict.
+
+        It must not try to bind a fresh server (port is already taken) and
+        must observe the auth_code the first waiter's handler captured.
+        """
+        import tools.mcp_oauth as mod
+        import asyncio
+
+        mod._oauth_port = _find_free_port()
+        mod._oauth_result = None
+        mod._oauth_result_active = False
+        mod._oauth_result_port = None
+        mod._oauth_results_by_port.clear()
+
+        # First waiter installs the shared slot. Push a code so it returns
+        # quickly; we capture the dict identity before cleanup runs.
+        captured = {}
+
+        async def push_and_capture(_seconds):
+            if mod._oauth_result is not None and mod._oauth_result["auth_code"] is None:
+                captured["slot"] = mod._oauth_result
+                mod._oauth_result["auth_code"] = "shared-code"
+
+        with patch.object(mod.asyncio, "sleep", push_and_capture):
+            code1, _ = asyncio.run(_wait_for_callback())
+
+        assert code1 == "shared-code"
+        assert mod._oauth_result is None  # cleared by owner on exit
+
+        # Now seed a fresh shared slot as if a sibling waiter had set it
+        # up first. The new waiter should NOT own it and should NOT clear
+        # it on its own exit (only the installer cleans up). It should,
+        # however, observe the code already in the dict.
+        sibling_slot = {"auth_code": "sibling-code", "state": "sibling-state", "error": None}
+        mod._oauth_result = sibling_slot
+        mod._oauth_result_active = True
+        mod._oauth_result_port = mod._oauth_port
+        sibling_key = mod._callback_result_key(mod._oauth_port)
+        mod._oauth_results_by_port[sibling_key] = sibling_slot
+
+        async def noop(_seconds):
+            pass
+
+        with patch.object(mod.asyncio, "sleep", noop):
+            code2, state2 = asyncio.run(_wait_for_callback())
+
+        assert code2 == "sibling-code"
+        assert state2 == "sibling-state"
+        # Non-owner does not clear the slot — sibling waiter still owns it.
+        assert mod._oauth_result is sibling_slot
+        # Cleanup for the next test.
+        mod._oauth_result = None
+        mod._oauth_result_active = False
+        mod._oauth_result_port = None
+        mod._oauth_results_by_port.clear()
+
+    def test_provider_build_does_not_clear_active_shared_result(self, tmp_path, monkeypatch):
+        """Provider construction must not erase a live listener's result slot."""
+        try:
+            from mcp.client.auth import OAuthClientProvider  # noqa: F401
+        except ImportError:
+            pytest.skip("MCP SDK auth not available")
+
+        import tools.mcp_oauth as mod
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        active_slot = {"auth_code": None, "state": None, "error": None}
+        active_port = 12345
+        mod._oauth_result = active_slot
+        mod._oauth_result_active = True
+        mod._oauth_result_port = active_port
+        active_key = mod._callback_result_key(active_port)
+        mod._oauth_results_by_port[active_key] = active_slot
+
+        build_oauth_auth("fresh-flow", "https://example.com/mcp")
+
+        assert mod._oauth_result is active_slot
+        assert mod._oauth_result_active is True
+        assert mod._oauth_results_by_port[active_key] is active_slot
+        mod._oauth_result = None
+        mod._oauth_result_active = False
+        mod._oauth_result_port = None
+        mod._oauth_results_by_port.clear()
+
+    def test_reset_preserves_claim_before_listener_publish(self):
+        """Provider reset must not drop a claim made before listener publish.
+
+        OAuthClientProvider invokes the redirect handler (which shows the auth
+        URL) before it invokes the callback waiter (which publishes
+        _oauth_results_by_port and flips _oauth_result_active). In that gap the
+        active-flow claim is the only guard preventing a different flow on the
+        same explicit callback port from emitting a competing URL.
+        """
+        import tools.mcp_oauth as mod
+
+        port = _find_free_port()
+        flow_a = ("server-a", "https://a.example/mcp", (("client_id", '"a"'),))
+        flow_b = ("server-b", "https://b.example/mcp", (("client_id", '"b"'),))
+        flow_a_key = mod._callback_result_key(port, flow_a)
+        stale_key = mod._callback_result_key(port + 1, flow_a)
+
+        mod._oauth_result = {"auth_code": "stale", "state": None, "error": None}
+        mod._oauth_result_active = False
+        mod._oauth_result_port = port + 1
+        mod._oauth_results_by_port.clear()
+        mod._oauth_results_by_port[stale_key] = mod._oauth_result
+        mod._oauth_pending_ports.clear()
+        mod._oauth_active_flow_claims.clear()
+        mod._oauth_active_flow_claims.add(flow_a_key)
+
+        mod._reset_shared_callback_result()
+
+        assert mod._oauth_result is None
+        assert mod._oauth_result_port is None
+        assert mod._oauth_results_by_port == {}
+        assert flow_a_key in mod._oauth_active_flow_claims
+        with pytest.raises(
+            OAuthNonInteractiveError,
+            match="already in use by another active OAuth flow",
+        ):
+            mod._claim_callback_flow(port, flow_b)
+
+        mod._oauth_active_flow_claims.clear()
+
+    def test_bind_failure_does_not_publish_unbacked_shared_result(self):
+        """A failed owner bind must not expose a result dict for siblings to poll."""
+        import tools.mcp_oauth as mod
+        import asyncio
+
+        mod._oauth_port = _find_free_port()
+        mod._oauth_result = None
+        mod._oauth_result_active = False
+        mod._oauth_result_port = None
+        mod._oauth_results_by_port.clear()
+
+        with patch.object(mod, "HTTPServer", side_effect=OSError("address already in use")):
+            with pytest.raises(OAuthNonInteractiveError):
+                asyncio.run(_wait_for_callback())
+
+        assert mod._oauth_result is None
+        assert mod._oauth_result_active is False
+        assert mod._oauth_result_port is None
+        assert mod._oauth_results_by_port == {}
+
+    def test_active_slot_reuse_is_scoped_to_callback_port(self):
+        """A new flow on a different port must not poll another flow's result."""
+        import tools.mcp_oauth as mod
+        import asyncio
+
+        active_slot = {"auth_code": "flow-a-code", "state": "flow-a-state", "error": None}
+        flow_a_port = _find_free_port()
+        flow_b_port = _find_free_port()
+        while flow_b_port == flow_a_port:
+            flow_b_port = _find_free_port()
+
+        mod._oauth_port = flow_b_port
+        mod._oauth_result = active_slot
+        mod._oauth_result_active = True
+        mod._oauth_result_port = flow_a_port
+        mod._oauth_results_by_port.clear()
+        flow_a_key = mod._callback_result_key(flow_a_port)
+        flow_b_key = mod._callback_result_key(flow_b_port)
+        mod._oauth_results_by_port[flow_a_key] = active_slot
+
+        async def push_flow_b_code(_seconds):
+            flow_b_slot = mod._oauth_results_by_port.get(flow_b_key)
+            if flow_b_slot is not None and flow_b_slot["auth_code"] is None:
+                flow_b_slot["auth_code"] = "flow-b-code"
+                flow_b_slot["state"] = "flow-b-state"
+
+        with patch.object(mod.asyncio, "sleep", push_flow_b_code):
+            code, state = asyncio.run(_wait_for_callback())
+
+        assert (code, state) == ("flow-b-code", "flow-b-state")
+        assert mod._oauth_results_by_port[flow_a_key] is active_slot
+        mod._oauth_result = None
+        mod._oauth_result_active = False
+        mod._oauth_result_port = None
+        mod._oauth_results_by_port.clear()
+
+    def test_different_flow_on_active_same_port_is_rejected(self):
+        """Two different OAuth flows sharing a live port must fail closed.
+
+        The callback server is bound to one handler/result buffer. Until Hermes
+        has a state-aware demux listener, a second flow on the same explicit
+        port would either fail to bind or risk consuming the wrong code/state.
+        """
+        import tools.mcp_oauth as mod
+        import asyncio
+
+        port = _find_free_port()
+        flow_a = ("server-a", "https://a.example/mcp", (("client_id", '"a"'),))
+        flow_b = ("server-b", "https://b.example/mcp", (("client_id", '"b"'),))
+        flow_a_slot = {"auth_code": "flow-a-code", "state": "flow-a-state", "error": None}
+        flow_a_key = mod._callback_result_key(port, flow_a)
+
+        mod._oauth_port = port
+        mod._oauth_result = flow_a_slot
+        mod._oauth_result_active = True
+        mod._oauth_result_port = port
+        mod._oauth_results_by_port.clear()
+        mod._oauth_pending_ports.clear()
+        mod._oauth_active_flow_claims.clear()
+        mod._oauth_results_by_port[flow_a_key] = flow_a_slot
+
+        with pytest.raises(
+            OAuthNonInteractiveError,
+            match="already in use by another active OAuth flow",
+        ):
+            asyncio.run(_wait_for_callback(port=port, flow_key=flow_b))
+
+        assert mod._oauth_results_by_port[flow_a_key] is flow_a_slot
+        mod._oauth_result = None
+        mod._oauth_result_active = False
+        mod._oauth_result_port = None
+        mod._oauth_results_by_port.clear()
+        mod._oauth_pending_ports.clear()
+        mod._oauth_active_flow_claims.clear()
+
+    def test_sibling_waiters_for_same_flow_reuse_same_port_result(self):
+        """Sibling waiters for the same flow still reuse listener/result."""
+        import tools.mcp_oauth as mod
+        import asyncio
+
+        port = _find_free_port()
+        flow_key = ("same-server", "https://same.example/mcp", (("client_id", '"same"'),))
+        slot = {"auth_code": "same-flow-code", "state": "same-flow-state", "error": None}
+        slot_key = mod._callback_result_key(port, flow_key)
+
+        mod._oauth_port = port
+        mod._oauth_result = slot
+        mod._oauth_result_active = True
+        mod._oauth_result_port = port
+        mod._oauth_results_by_port.clear()
+        mod._oauth_results_by_port[slot_key] = slot
+
+        async def noop(_seconds):
+            pass
+
+        with patch.object(mod.asyncio, "sleep", noop):
+            code, state = asyncio.run(_wait_for_callback(port=port, flow_key=flow_key))
+
+        assert (code, state) == ("same-flow-code", "same-flow-state")
+        assert mod._oauth_results_by_port[slot_key] is slot
+        mod._oauth_result = None
+        mod._oauth_result_active = False
+        mod._oauth_result_port = None
+        mod._oauth_results_by_port.clear()
 
 
 class TestBuildOAuthAuthNonInteractive:
@@ -588,6 +1009,216 @@ def test_configure_callback_port_uses_explicit_port():
     assert cfg["_resolved_port"] == 54321
 
 
+def test_manager_build_provider_clears_stale_result(tmp_path, monkeypatch):
+    """The manager's provider-construction path must also reset the shared
+    ``_oauth_result`` slot.
+
+    ``build_oauth_auth`` already drops stale callback state before the new
+    flow begins; ``MCPOAuthManager._build_provider`` bypasses
+    ``build_oauth_auth`` entirely and constructs the provider directly,
+    so without an explicit reset a crashed prior flow's auth_code/state/
+    error could leak into the next ``_wait_for_callback``.
+    """
+    pytest.importorskip("mcp")
+
+    import tools.mcp_oauth as mod
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    mod._oauth_result = {
+        "auth_code": "stale-code",
+        "state": "stale-state",
+        "error": None,
+    }
+
+    manager = MCPOAuthManager()
+    provider = manager.get_or_build_provider(
+        "manager-fresh-flow",
+        "https://example.com/mcp",
+        None,
+    )
+
+    assert provider is not None
+    assert mod._oauth_result is None
+
+
+class TestConcurrentBindRace:
+    """Regression for the bind/publish race in ``_wait_for_callback``.
+
+    After one waiter's ``HTTPServer`` bind succeeds but before it publishes
+    ``_oauth_results_by_port``, a concurrent waiter used to bind the same
+    port, fail (port taken), see no published result, and raise
+    ``OAuthNonInteractiveError`` — even though the first waiter was about to
+    publish a live listener. The fix reserves an in-progress marker
+    (``_oauth_pending_ports``) atomically with the decision to bind, so a
+    concurrent waiter waits for that bind to resolve instead of racing it.
+    """
+
+    def _reset(self, mod, port):
+        mod._oauth_port = port
+        mod._oauth_result = None
+        mod._oauth_result_active = False
+        mod._oauth_result_port = None
+        mod._oauth_results_by_port.clear()
+        mod._oauth_pending_ports.clear()
+        mod._oauth_active_flow_claims.clear()
+
+    def test_waiter_waits_for_pending_binder_then_reuses_listener(self):
+        """A waiter that finds the port mid-bind must wait for the binding
+        sibling to publish, then reuse its listener — not bind and raise."""
+        import tools.mcp_oauth as mod
+        import asyncio
+
+        port = _find_free_port()
+        self._reset(mod, port)
+        # Simulate a sibling that has committed to binding this flow: the
+        # in-progress marker is set but no result is published yet.
+        slot_key = mod._callback_result_key(port)
+        mod._oauth_pending_ports.add(slot_key)
+
+        published = {"auth_code": "raced-code", "state": "raced-state", "error": None}
+
+        async def publish_during_poll(_seconds):
+            # The binding sibling finishes: it publishes a live listener and
+            # drops the in-progress marker.
+            if slot_key in mod._oauth_pending_ports:
+                mod._oauth_results_by_port[slot_key] = published
+                mod._oauth_pending_ports.discard(slot_key)
+
+        with patch.object(mod.asyncio, "sleep", publish_during_poll):
+            code, state = asyncio.run(_wait_for_callback())
+
+        assert (code, state) == ("raced-code", "raced-state")
+        # The waiting sibling never owned the slot; it must leave it intact.
+        assert mod._oauth_results_by_port[slot_key] is published
+        self._reset(mod, port)
+
+    def test_waiter_raises_when_pending_binder_fails_to_bind(self):
+        """If the binding sibling abandons its bind (marker dropped, nothing
+        published), the waiting sibling surfaces the bind failure."""
+        import tools.mcp_oauth as mod
+        import asyncio
+
+        port = _find_free_port()
+        self._reset(mod, port)
+        slot_key = mod._callback_result_key(port)
+        mod._oauth_pending_ports.add(slot_key)
+
+        async def binder_fails_during_poll(_seconds):
+            mod._oauth_pending_ports.discard(slot_key)
+
+        with patch.object(mod.asyncio, "sleep", binder_fails_during_poll):
+            with pytest.raises(OAuthNonInteractiveError, match="failed to bind"):
+                asyncio.run(_wait_for_callback())
+
+        self._reset(mod, port)
+
+    def test_binder_clears_in_progress_marker_on_success(self):
+        """The waiter that binds must publish a listener and drop its
+        in-progress marker so siblings switch from waiting to reusing."""
+        import tools.mcp_oauth as mod
+        import asyncio
+
+        port = _find_free_port()
+        self._reset(mod, port)
+
+        async def push_code_then_sleep(_seconds):
+            if mod._oauth_result is not None and mod._oauth_result["auth_code"] is None:
+                # While the listener is live, the marker must already be gone.
+                assert mod._callback_result_key(port) not in mod._oauth_pending_ports
+                mod._oauth_result["auth_code"] = "ok-code"
+
+        with patch.object(mod.asyncio, "sleep", push_code_then_sleep):
+            code, _ = asyncio.run(_wait_for_callback())
+
+        assert code == "ok-code"
+        assert mod._oauth_pending_ports == set()
+        self._reset(mod, port)
+
+    def test_binder_clears_in_progress_marker_on_bind_failure(self):
+        """A failed bind must drop the in-progress marker so a waiting
+        sibling stops waiting instead of hanging until the pending timeout."""
+        import tools.mcp_oauth as mod
+        import asyncio
+
+        port = _find_free_port()
+        self._reset(mod, port)
+
+        with patch.object(mod, "HTTPServer", side_effect=OSError("address already in use")):
+            with pytest.raises(OAuthNonInteractiveError):
+                asyncio.run(_wait_for_callback())
+
+        assert mod._oauth_pending_ports == set()
+        assert mod._oauth_results_by_port == {}
+        self._reset(mod, port)
+
+
+class TestCallbackLogRedaction:
+    """``log_message`` must not leak OAuth secrets into the debug log.
+
+    ``BaseHTTPRequestHandler`` log lines embed the raw request line, which
+    for the callback is ``GET /callback?code=...&state=...``. Logging that
+    verbatim leaks the authorization code and CSRF state.
+    """
+
+    def test_log_message_redacts_code_and_state(self, caplog):
+        import logging
+
+        HandlerClass, _ = _make_callback_handler()
+        handler = HandlerClass.__new__(HandlerClass)
+
+        with caplog.at_level(logging.DEBUG, logger="tools.mcp_oauth"):
+            handler.log_message(
+                '"%s" %s %s',
+                "GET /callback?code=secret-auth-code&state=secret-csrf HTTP/1.1",
+                "200",
+                "-",
+            )
+
+        assert "secret-auth-code" not in caplog.text
+        assert "secret-csrf" not in caplog.text
+        assert "code=REDACTED" in caplog.text
+        assert "state=REDACTED" in caplog.text
+
+    def test_log_message_redacts_error(self, caplog):
+        import logging
+
+        HandlerClass, _ = _make_callback_handler()
+        handler = HandlerClass.__new__(HandlerClass)
+
+        with caplog.at_level(logging.DEBUG, logger="tools.mcp_oauth"):
+            handler.log_message(
+                '"%s" %s %s',
+                "GET /callback?error=access_denied_with_detail HTTP/1.1",
+                "200",
+                "-",
+            )
+
+        assert "access_denied_with_detail" not in caplog.text
+        assert "error=REDACTED" in caplog.text
+
+    def test_redact_helper_preserves_non_secret_text(self):
+        from tools.mcp_oauth import _redact_callback_log
+
+        msg = '"GET /callback?code=abc123&state=xyz789&scope=channels:read HTTP/1.1" 200 -'
+        out = _redact_callback_log(msg)
+
+        assert "abc123" not in out
+        assert "xyz789" not in out
+        assert "code=REDACTED" in out
+        assert "state=REDACTED" in out
+        # Non-secret query params and the rest of the line are untouched.
+        assert "scope=channels:read" in out
+        assert out.endswith('HTTP/1.1" 200 -')
+
+    def test_redact_helper_noop_without_secrets(self):
+        from tools.mcp_oauth import _redact_callback_log
+
+        msg = '"GET /favicon.ico HTTP/1.1" 404 -'
+        assert _redact_callback_log(msg) == msg
+
+
 def test_build_oauth_auth_preserves_server_url_path():
     """server_url with path is forwarded to OAuthClientProvider unmodified.
 
@@ -619,5 +1250,32 @@ def test_build_oauth_auth_preserves_server_url_path():
         )
 
     assert captured["server_url"] == "https://mcp.notion.com/mcp"
+
+
+def test_redirect_handler_rejects_same_port_other_flow_before_emitting_url(monkeypatch):
+    """Conflicting flows must fail before the second authorization URL is shown."""
+    import asyncio
+    import tools.mcp_oauth as mod
+
+    port = _find_free_port()
+    flow_a = ("server-a", "https://example.com/a", ())
+    flow_b = ("server-b", "https://example.com/b", ())
+    mod._oauth_active_flow_claims.clear()
+    mod._oauth_results_by_port.clear()
+    mod._oauth_pending_ports.clear()
+
+    emitted: list[str] = []
+
+    async def fake_redirect(url, callback_port=None):
+        emitted.append(url)
+
+    monkeypatch.setattr(mod, "_redirect_handler", fake_redirect)
+
+    asyncio.run(mod._make_redirect_handler(port, flow_a)("https://auth.example/a"))
+    with pytest.raises(OAuthNonInteractiveError, match="already in use"):
+        asyncio.run(mod._make_redirect_handler(port, flow_b)("https://auth.example/b"))
+
+    assert emitted == ["https://auth.example/a"]
+    mod._oauth_active_flow_claims.clear()
 
 
