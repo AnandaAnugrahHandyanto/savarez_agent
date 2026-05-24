@@ -6,6 +6,7 @@ import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import MessageType
 
 
 # ---------------------------------------------------------------------------
@@ -389,6 +390,58 @@ class TestMattermostWebSocketParsing:
         assert self.adapter.handle_message.called
         msg_event = self.adapter.handle_message.call_args[0][0]
         assert msg_event.source.thread_id == "root_post_123"
+
+    @pytest.mark.asyncio
+    async def test_dm_command_with_padding_is_stripped_and_classified(self):
+        """Mattermost DMs should accept slash commands with surrounding whitespace."""
+        post_data = {
+            "id": "post_command",
+            "user_id": "user_123",
+            "channel_id": "dm_chan",
+            "message": "  /status   ",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "D",
+                "sender_name": "@alice",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+
+        assert self.adapter.handle_message.called
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/status"
+        assert msg_event.message_type == MessageType.COMMAND
+        assert msg_event.get_command() == "status"
+
+    @pytest.mark.asyncio
+    async def test_channel_mention_command_with_padding_is_stripped_and_classified(self):
+        """Mention-stripped channel commands should tolerate padded text."""
+        post_data = {
+            "id": "post_command_channel",
+            "user_id": "user_123",
+            "channel_id": "chan_456",
+            "message": "  @bot_user_id   /restart   ",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "O",
+                "sender_name": "@alice",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+
+        assert self.adapter.handle_message.called
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/restart"
+        assert msg_event.message_type == MessageType.COMMAND
+        assert msg_event.get_command() == "restart"
 
     @pytest.mark.asyncio
     async def test_invalid_post_json_ignored(self):
