@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from copy import deepcopy
 from typing import Any, Mapping
 
+from agent.memory_read_only_candidate_utils import (
+    build_stable_digest,
+    deep_copy_mapping,
+    summarize_candidates,
+    validate_policy_flags,
+)
 from agent.memory_real_proposal_creation_plan import (
     MEMORY_REAL_PROPOSAL_CREATION_PLAN_STATUS,
     explain_real_proposal_creation_plan,
@@ -181,9 +185,7 @@ def validate_real_proposal_dry_run(dry_run: Mapping[str, Any]) -> dict[str, Any]
     for forbidden_key in _FORBIDDEN_TRUE_KEYS:
         if dry_run.get(forbidden_key) is True:
             errors.append(f"{forbidden_key}_must_be_false_or_absent")
-    for key, expected in MEMORY_REAL_PROPOSAL_DRY_RUN_POLICY.items():
-        if policy.get(key) is not expected:
-            errors.append(f"policy_{key}_must_be_{str(expected).lower()}")
+    errors.extend(validate_policy_flags(policy, MEMORY_REAL_PROPOSAL_DRY_RUN_POLICY))
 
     return {"valid": not errors, "errors": _dedupe(errors)}
 
@@ -260,15 +262,10 @@ def recommend_real_proposal_dry_run_action(dry_run: Mapping[str, Any]) -> dict[s
 def summarize_real_proposal_dry_runs(
     dry_runs: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
 ) -> dict[str, Any]:
-    by_block_type: dict[str, int] = {}
-    by_status: dict[str, int] = {}
+    candidate_summary = summarize_candidates(dry_runs, "dry_run_status")
     valid_count = 0
     invalid_count = 0
     for dry_run in dry_runs:
-        block_type = str(dry_run.get("block_type"))
-        by_block_type[block_type] = by_block_type.get(block_type, 0) + 1
-        status = str(dry_run.get("dry_run_status"))
-        by_status[status] = by_status.get(status, 0) + 1
         validation = validate_real_proposal_dry_run(dry_run)
         if validation["valid"]:
             valid_count += 1
@@ -278,8 +275,8 @@ def summarize_real_proposal_dry_runs(
         "total": len(dry_runs),
         "valid_count": valid_count,
         "invalid_count": invalid_count,
-        "by_block_type": dict(sorted(by_block_type.items())),
-        "by_status": dict(sorted(by_status.items())),
+        "by_block_type": candidate_summary["by_block_type"],
+        "by_status": candidate_summary["by_status"],
         "policy": dict(MEMORY_REAL_PROPOSAL_DRY_RUN_POLICY),
     }
 
@@ -428,8 +425,7 @@ def _dry_run_id(dry_run: Mapping[str, Any]) -> str:
         "invalid_reason": dry_run.get("invalid_reason"),
         "policy": dry_run.get("policy", {}),
     }
-    payload = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str)
-    return f"memory-real-proposal-dry-run:v0.1:{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]}"
+    return build_stable_digest("memory-real-proposal-dry-run:v0.1", identity)
 
 
 def _preview_id(kind: str, source: Mapping[str, Any]) -> str:
@@ -444,12 +440,11 @@ def _preview_id(kind: str, source: Mapping[str, Any]) -> str:
         "source_pattern_ids": list(source.get("source_pattern_ids", []) or []),
         "source_fact_ids": list(source.get("source_fact_ids", []) or []),
     }
-    payload = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str)
-    return f"preview:{kind}:v0.1:{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]}"
+    return build_stable_digest(f"preview:{kind}:v0.1", identity)
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
-    return deepcopy(dict(value)) if isinstance(value, Mapping) else {}
+    return deep_copy_mapping(value)
 
 
 def _dedupe(values: list[str]) -> list[str]:

@@ -63,6 +63,15 @@ def test_valid_plan_creates_valid_manual_final_preflight_dry_run():
     assert dry_run["next_step_recommendation"]["writes_operation_ledger"] is False
 
 
+def test_valid_dry_run_id_matches_v0_1_baseline():
+    dry_run = create_real_proposal_dry_run(_plan())
+
+    assert (
+        dry_run["dry_run_id"]
+        == "memory-real-proposal-dry-run:v0.1:51ffa6148ff5bfa1"
+    )
+
+
 def test_invalid_plan_creates_invalid_dry_run():
     plan = _plan(outcome="reject")
 
@@ -130,6 +139,27 @@ def test_proposal_record_preview_contains_payload_and_source_evidence():
     assert preview["source_fact_ids"] == plan["source_fact_ids"]
     assert preview["created_real_proposal"] is False
     assert preview["submitted_to_governance"] is False
+
+
+def test_preview_ids_match_v0_1_baseline():
+    dry_run = create_real_proposal_dry_run(_plan())
+
+    assert (
+        dry_run["proposal_record_preview"]["proposal_id_preview"]
+        == "preview:proposal:v0.1:34690aee8a220b27"
+    )
+    assert (
+        dry_run["operation_ledger_preview"]["operation_event_id_preview"]
+        == "preview:operation-ledger:v0.1:6cb5ffd48b0cdc8d"
+    )
+    assert (
+        dry_run["target_paths_preview"]["proposal_record_selector"]
+        == "preview:proposal:v0.1:34690aee8a220b27"
+    )
+    assert (
+        dry_run["target_paths_preview"]["operation_ledger_selector"]
+        == "preview:operation-ledger:v0.1:6cb5ffd48b0cdc8d"
+    )
 
 
 def test_operation_ledger_preview_is_preview_only_and_not_written():
