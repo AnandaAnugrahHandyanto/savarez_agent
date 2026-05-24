@@ -44,11 +44,14 @@ Spawned by: CodexAppServerSession.ensure_started() when the runtime is
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
 import sys
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
+
+from pydantic import WithJsonSchema
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +106,48 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "kanban_unblock",
     "kanban_link",
 )
+
+
+def _signature_from_schema(schema: dict[str, Any]) -> inspect.Signature:
+    """Build a callable signature from a Hermes JSON tool schema.
+
+    FastMCP derives the MCP input schema from ``inspect.signature()``. A
+    plain ``**kwargs`` wrapper therefore exposes a single ``kwargs`` field
+    and loses the real Hermes parameters. We keep the runtime dispatcher
+    generic, but attach this synthetic signature so MCP clients receive the
+    same parameter contract Hermes gives native model calls.
+    """
+    properties = schema.get("properties") if isinstance(schema, dict) else {}
+    if not isinstance(properties, dict):
+        properties = {}
+
+    required = schema.get("required") if isinstance(schema, dict) else []
+    required_names = set(required or []) if isinstance(required, list) else set()
+
+    parameters: list[inspect.Parameter] = []
+    for prop_name, prop_schema in properties.items():
+        if not isinstance(prop_name, str) or not prop_name.isidentifier():
+            continue
+        if prop_name.startswith("_"):
+            continue
+
+        json_schema = prop_schema if isinstance(prop_schema, dict) else {}
+        annotation = Annotated[Any, WithJsonSchema(json_schema)]
+        default = (
+            inspect.Parameter.empty
+            if prop_name in required_names
+            else None
+        )
+        parameters.append(
+            inspect.Parameter(
+                prop_name,
+                inspect.Parameter.KEYWORD_ONLY,
+                default=default,
+                annotation=annotation,
+            )
+        )
+
+    return inspect.Signature(parameters=parameters, return_annotation=str)
 
 
 def _build_server() -> Any:
@@ -168,6 +213,7 @@ def _build_server() -> Any:
                     return json.dumps({"error": str(exc), "tool": tool_name})
             _dispatch.__name__ = tool_name
             _dispatch.__doc__ = description
+            _dispatch.__signature__ = _signature_from_schema(params_schema)
             return _dispatch
 
         try:
@@ -175,9 +221,6 @@ def _build_server() -> Any:
                 _make_handler(name),
                 name=name,
                 description=description,
-                # FastMCP accepts JSON schema directly via the
-                # input_schema parameter on newer versions; older
-                # versions use parameters_schema. Try both for compat.
             )
         except TypeError:
             # Older mcp SDK signature — fall back to decorator-style.

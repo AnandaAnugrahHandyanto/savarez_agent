@@ -8,6 +8,8 @@ build helper assembles a server when the SDK is present.
 
 from __future__ import annotations
 
+import inspect
+
 from unittest.mock import patch
 
 import pytest
@@ -97,6 +99,54 @@ class TestModuleSurface:
             assert orch_tool in EXPOSED_TOOLS, (
                 f"{orch_tool!r} missing from codex callback"
             )
+
+    def test_signature_from_schema_preserves_tool_parameters(self):
+        """Regression: FastMCP reads inspect.signature(), so the generic
+        **kwargs dispatcher must attach a synthetic signature or clients
+        only see a bogus `kwargs` string parameter."""
+        from agent.transports.hermes_tools_mcp_server import _signature_from_schema
+
+        sig = _signature_from_schema({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Skill name"},
+                "file_path": {"type": "string", "description": "Linked file"},
+            },
+            "required": ["name"],
+        })
+
+        assert list(sig.parameters) == ["name", "file_path"]
+        assert sig.parameters["name"].default is inspect.Parameter.empty
+        assert sig.parameters["file_path"].default is None
+
+    def test_signature_from_schema_feeds_fastmcp_input_schema(self):
+        """Pin the real SDK behavior that broke skill_view in Codex:
+        Tool.from_function should expose `name`, not `kwargs`."""
+        from mcp.server.fastmcp.tools import Tool
+        from agent.transports.hermes_tools_mcp_server import _signature_from_schema
+
+        def dispatch(**kwargs):
+            return "{}"
+
+        dispatch.__signature__ = _signature_from_schema({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Skill name"},
+                "file_path": {"type": "string", "description": "Linked file"},
+            },
+            "required": ["name"],
+        })
+
+        tool = Tool.from_function(
+            dispatch,
+            name="skill_view",
+            description="Load a skill",
+            structured_output=False,
+        )
+
+        assert list(tool.parameters["properties"]) == ["name", "file_path"]
+        assert tool.parameters["required"] == ["name"]
+        assert "kwargs" not in tool.parameters["properties"]
 
 
 class TestMain:
