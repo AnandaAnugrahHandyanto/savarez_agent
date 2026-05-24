@@ -32,6 +32,9 @@ _SLACK_TARGET_RE = re.compile(r"^\s*([CGDU][A-Z0-9]{8,})\s*$")
 _SLACK_THREAD_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,}):([^\s:]+)\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
+# WhatsApp Baileys chat IDs are fully qualified routing targets. Accept them
+# as explicit so resolved DMs/groups do not fall back to the home channel.
+_WHATSAPP_JID_TARGET_RE = re.compile(r"^\s*([A-Za-z0-9._:-]+@(?:s\.whatsapp\.net|lid|g\.us))\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
 _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # Platforms that address recipients by phone number and accept E.164 format
@@ -368,6 +371,10 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             # resolution path in send_message() can run.
             is_explicit = chat_id[0] not in {"U", "W"}
             return chat_id, None, is_explicit
+    if platform_name == "whatsapp":
+        match = _WHATSAPP_JID_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), None, True
     if platform_name == "matrix":
         trimmed = target_ref.strip()
         split_idx = trimmed.rfind(":$")
