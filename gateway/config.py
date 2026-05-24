@@ -1807,22 +1807,52 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             pass
 
     # Registry-driven enable for plugin platforms.  Built-ins have explicit
-    # blocks above; plugins expose check_fn() which is the single source of
-    # truth for "are my env vars set?".  When it returns True, ensure the
-    # platform is enabled so start() will create its adapter.  Plugins that
-    # need to seed ``PlatformConfig.extra`` from env vars (e.g. Google Chat's
-    # project_id / subscription_name) can supply ``env_enablement_fn`` on
-    # their PlatformEntry — called here BEFORE adapter construction.
+    # blocks above; plugins expose two hooks with subtly different meanings:
+    #
+    #   * ``check_fn()``     — "are my Python deps importable?" (often
+    #                          lazy-installs the SDK as a side effect)
+    #   * ``is_connected()`` — "did the user actually configure me?"
+    #                          (env vars / config.yaml present)
+    #
+    # Older code here gated on ``check_fn`` alone, which silently auto-
+    # enabled any plugin whose SDK happened to be on disk — including the
+    # Discord plugin, whose ``check_fn`` lazy-installs ``discord.py`` and
+    # then returns True even when the user never set ``DISCORD_BOT_TOKEN``.
+    # The result was log-spam loops (``[Discord] No bot token configured``,
+    # repeated reconnect attempts) for users who only picked Matrix in
+    # the setup wizard. Issue #31116.
+    #
+    # Prefer ``is_connected`` when the plugin defines it — that hook
+    # matches the user-intent semantics ``hermes_cli/gateway.py``'s
+    # ``_platform_status`` already uses for the setup picker. Fall back to
+    # ``check_fn`` for plugins that haven't adopted ``is_connected`` yet,
+    # so the historic "deps installed → enable" behavior is preserved for
+    # them. Plugins that need to seed ``PlatformConfig.extra`` from env
+    # vars can still supply ``env_enablement_fn`` — called below BEFORE
+    # adapter construction.
     try:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():
             try:
-                if not entry.check_fn():
-                    continue
+                if entry.is_connected is not None:
+                    # Synthesize a minimal PlatformConfig matching what the
+                    # adapter would see post-load. ``is_connected`` callers
+                    # only read env vars + ``config.extra`` so a default
+                    # ``PlatformConfig(enabled=True)`` is the right input
+                    # — same shape used by ``_platform_status`` in the
+                    # setup picker (see ``hermes_cli/gateway.py``).
+                    if not entry.is_connected(PlatformConfig(enabled=True)):
+                        continue
+                else:
+                    if not entry.check_fn():
+                        continue
             except Exception as e:
-                logger.debug("check_fn for %s raised: %s", entry.name, e)
+                logger.debug(
+                    "registry-driven enable check for %s raised: %s",
+                    entry.name, e,
+                )
                 continue
             platform = Platform(entry.name)
             if platform not in config.platforms:
