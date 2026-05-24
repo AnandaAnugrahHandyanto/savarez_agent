@@ -153,6 +153,14 @@ class GoalState:
     last_reason: Optional[str] = None
     paused_reason: Optional[str] = None       # why we auto-paused (budget, etc.)
     consecutive_parse_failures: int = 0       # judge-output parse failures in a row
+    # Mads-review gate metadata. V1 is manual: the goal pauses with a
+    # self-contained handoff screen; the user decides whether to run review,
+    # accept, resume, or clear.
+    mads_reviews_used: int = 0
+    last_mads_review_turn: int = 0
+    last_mads_verdict: Optional[str] = None
+    last_mads_reason: Optional[str] = None
+    review_recommended_reason: Optional[str] = None
     # User-added criteria appended mid-loop via the /subgoal command.
     # When non-empty the judge prompt and continuation prompt both
     # include them so the agent works toward them and the judge factors
@@ -181,6 +189,11 @@ class GoalState:
             last_reason=data.get("last_reason"),
             paused_reason=data.get("paused_reason"),
             consecutive_parse_failures=int(data.get("consecutive_parse_failures", 0) or 0),
+            mads_reviews_used=int(data.get("mads_reviews_used", 0) or 0),
+            last_mads_review_turn=int(data.get("last_mads_review_turn", 0) or 0),
+            last_mads_verdict=data.get("last_mads_verdict"),
+            last_mads_reason=data.get("last_mads_reason"),
+            review_recommended_reason=data.get("review_recommended_reason"),
             subgoals=subgoals,
         )
 
@@ -366,6 +379,184 @@ def _parse_judge_response(raw: str) -> Tuple[bool, str, bool]:
     if not reason:
         reason = "no reason provided"
     return done, reason, False
+
+
+_IMPORTANT_GOAL_KEYWORDS = {
+    "architecture", "autonomy", "autonomous", "background", "cron",
+    "deploy", "eval", "evaluation", "gateway", "implement", "improve",
+    "mads", "memory", "patch", "publish", "release", "restart",
+    "service", "skill", "test",
+}
+
+
+def classify_goal_topic(goal: str, subgoals: Optional[List[str]] = None) -> str:
+    """Return a deterministic topic bucket for Mads-review prompt examples."""
+    text = " ".join([goal or "", *((subgoals or []))]).lower()
+    if any(k in text for k in ["deploy", "restart", "service", "production", "rollback", "credential"]):
+        return "ops"
+    if any(k in text for k in ["test", "eval", "evaluation", "reliability", "regression"]):
+        return "evals"
+    if any(k in text for k in ["hermes", "goal", "agent", "mads", "autonomy", "autonomous", "architecture"]):
+        return "agent_architecture"
+    if any(k in text for k in ["website", "content", "seo", "copy", "homepage", "public", "identity"]):
+        return "public_content"
+    if any(k in text for k in ["research", "tool", "library", "compare", "alternative", "adoption"]):
+        return "research"
+    if any(k in text for k in ["cron", "automation", "background", "scheduler", "job"]):
+        return "automation"
+    if any(k in text for k in ["memory", "skill", "self-improvement", "improvement", "provenance"]):
+        return "memory_skills"
+    if any(k in text for k in ["patch", "code", "repo", "implementation", "bug", "fix"]):
+        return "code_patch"
+    return "general"
+
+
+def suggested_mads_review_prompts(topic: str) -> List[str]:
+    examples = {
+        "agent_architecture": [
+            "Focus on hidden autonomy risks, queued continuation bugs, state-machine simplicity, and missing tests.",
+            "Challenge whether this keeps Hermes as the control plane and Mads as reviewer only.",
+            "Look for any path where the goal could continue without explicit approval.",
+        ],
+        "code_patch": [
+            "Review the patch for correctness, regressions, backwards compatibility, and missing tests.",
+            "Focus on edge cases, failure modes, and whether the smallest safe change was made.",
+            "Check whether unrelated refactor or scope creep slipped in.",
+        ],
+        "evals": [
+            "Check whether the tests actually prove the behavior or only test implementation details.",
+            "Look for missing negative cases, stale-loop cases, and false-pass risks.",
+            "Challenge the eval design: what would make this look improved while still being unsafe?",
+        ],
+        "ops": [
+            "Review rollout risk, rollback path, verification commands, and what should block deployment.",
+            "Look for hidden production side effects, credential risks, and service-restart hazards.",
+            "Check whether this can be verified read-only before any live action.",
+        ],
+        "public_content": [
+            "Review for factual accuracy, public trust risks, broken links, and AI-slop language.",
+            "Check whether claims are evidence-backed and identity/social links are verified.",
+            "Focus on user perception, clarity, and anything that could damage credibility.",
+        ],
+        "research": [
+            "Challenge the recommendation. Look for better alternatives, weak evidence, and maintenance risks.",
+            "Focus on whether the sources justify the conclusion and what is still uncertain.",
+            "Compare practical adoption cost versus claimed benefit.",
+        ],
+        "automation": [
+            "Check for runaway automation, duplicate execution, noisy alerts, and missing failure handling.",
+            "Focus on idempotency, logging, retry behavior, and safe defaults.",
+            "Look for cases where the job silently fails or keeps acting after it should stop.",
+        ],
+        "memory_skills": [
+            "Check whether this creates durable improvement or just more accumulated state.",
+            "Focus on provenance, eval gates, stale memory risk, and rollback.",
+            "Challenge whether this belongs in memory, a skill, docs, config, or evals.",
+        ],
+        "general": [
+            "Challenge the result. Look for weak evidence, missing verification, and hidden assumptions.",
+            "Focus on whether Hermes is falsely declaring completion or skipping an important check.",
+            "Identify the smallest concrete next action if this should be revised.",
+        ],
+    }
+    return examples.get(topic, examples["general"])
+
+
+def is_mads_review_worthy_goal(goal: str, subgoals: Optional[List[str]] = None) -> bool:
+    text = " ".join([goal or "", *((subgoals or []))]).lower()
+    # Keep this conservative: v1 should pause at important work stages, not
+    # every explanatory goal that happens to mention Hermes or /goal.
+    return any(re.search(rf"\b{re.escape(word)}\b", text) for word in _IMPORTANT_GOAL_KEYWORDS)
+
+
+def render_mads_review_pause_message(state: GoalState, trigger: str, reason: str) -> str:
+    topic = classify_goal_topic(state.goal, state.subgoals)
+    examples = suggested_mads_review_prompts(topic)
+    suggested = examples[0]
+    lines = [
+        "⏸️ Goal paused — Mads review recommended",
+        "",
+        "🔎 Why this paused",
+        reason,
+        "",
+        "📍 Current state",
+        f"- 🎯 Goal: {state.goal}",
+        f"- 🔢 Turns: {state.turns_used}/{state.max_turns}",
+        f"- 🚦 Trigger: {trigger}",
+        "- 💤 Standby: yes — this goal will not continue on its own.",
+        "",
+        "✅ Recommended next step",
+        f"  /goal review mads {suggested}",
+        "",
+        "🧭 Other options",
+        "- 👀 /goal review",
+        "  Preview the review packet without sending.",
+        "- 🧠 /goal review mads",
+        "  Use the default Mads review packet.",
+        "- ✍️ /goal review mads <requirements>",
+        "  Add your own focus areas before review.",
+        "- ✅ /goal accept",
+        "  Mark done without Mads.",
+        "- ▶️ /goal resume",
+        "  Continue Hermes-only.",
+        "- 🛑 /goal clear",
+        "  Stop this goal.",
+        "",
+        "💡 Suggested Mads prompts for this topic",
+    ]
+    lines.extend(f"{i}. /goal review mads {text}" for i, text in enumerate(examples, start=1))
+    return "\n".join(lines)
+
+
+def render_mads_review_packet(state: GoalState, extra_requirements: str = "") -> str:
+    topic = classify_goal_topic(state.goal, state.subgoals)
+    examples = suggested_mads_review_prompts(topic)
+    subgoals_block = state.render_subgoals_block() if state.subgoals else "(none)"
+    req = (extra_requirements or "").strip() or examples[0]
+    return "\n".join([
+        "🧠 Mads review packet",
+        "",
+        "🎯 Goal",
+        state.goal,
+        "",
+        "📌 Subgoals",
+        subgoals_block,
+        "",
+        "📍 Current state",
+        f"- 🔢 turns used: {state.turns_used}/{state.max_turns}",
+        f"- ⚖️ last judge verdict: {state.last_verdict or 'unknown'}",
+        f"- 💬 last judge reason: {state.last_reason or 'unknown'}",
+        f"- 🚦 review trigger: {state.review_recommended_reason or 'manual'}",
+        "- 🧍 review mode: pause_for_review",
+        "- 💤 standby: the goal will not continue on its own while paused",
+        "",
+        "✍️ User-added review requirements",
+        req,
+        "",
+        "🚧 Rules",
+        "- 👀 Read-only review.",
+        "- 🚫 Do not edit files.",
+        "- 🚫 Do not deploy, publish, restart services, change credentials, or perform destructive actions.",
+        "- 🔎 Focus on concrete risks, missing verification, and whether Hermes is falsely declaring completion.",
+        "",
+        "📤 Return",
+        "1. ✅ Verdict: accept | revise | blocked | needs Henry decision",
+        "2. ⚠️ Highest-risk missed issue",
+        "3. ➡️ Concrete next action for Hermes",
+        "4. 🧪 Evidence required for completion",
+        "5. 📊 Confidence: low | medium | high",
+    ])
+
+
+def should_recommend_mads_review(state: GoalState, verdict: str) -> Tuple[bool, str, str]:
+    if state.mads_reviews_used > 0 or state.review_recommended_reason:
+        return False, "", ""
+    if verdict == "done" and is_mads_review_worthy_goal(state.goal, state.subgoals):
+        return True, "before_done", (
+            "This goal appears complete, but it touches an important area where "
+            "a second-model review is useful before accepting completion."
+        )
+    return False, "", ""
 
 
 def judge_goal(
@@ -568,6 +759,34 @@ class GoalManager:
         self._state.last_reason = reason
         save_goal(self.session_id, self._state)
 
+    def accept(self, reason: str = "accepted without Mads review") -> Optional[GoalState]:
+        """Mark a paused/review-recommended goal done by explicit user choice."""
+        if not self._state:
+            return None
+        self._state.status = "done"
+        self._state.last_verdict = "done"
+        self._state.last_reason = reason
+        self._state.paused_reason = None
+        save_goal(self.session_id, self._state)
+        return self._state
+
+    def render_mads_review(self, extra_requirements: str = "", *, mark_sent: bool = False) -> Optional[str]:
+        """Render the bounded Mads review packet for the active/paused goal.
+
+        V1 does not silently dispatch Mads; callers can show this packet or
+        hand it to a separate Mads/OpenClaw lane. ``mark_sent`` records that
+        the user explicitly requested the Mads packet.
+        """
+        if not self._state or not self.has_goal():
+            return None
+        if mark_sent:
+            self._state.mads_reviews_used += 1
+            self._state.last_mads_review_turn = self._state.turns_used
+            self._state.last_mads_verdict = "packet-prepared"
+            self._state.last_mads_reason = (extra_requirements or "default review packet").strip()
+            save_goal(self.session_id, self._state)
+        return render_mads_review_packet(self._state, extra_requirements)
+
     # --- /subgoal user controls ---------------------------------------
 
     def add_subgoal(self, text: str) -> str:
@@ -667,6 +886,21 @@ class GoalManager:
             state.consecutive_parse_failures = 0
 
         if verdict == "done":
+            should_review, trigger, review_reason = should_recommend_mads_review(state, verdict)
+            if should_review:
+                state.status = "paused"
+                state.paused_reason = f"mads-review-recommended:{trigger}"
+                state.review_recommended_reason = trigger
+                save_goal(self.session_id, state)
+                return {
+                    "status": "paused",
+                    "should_continue": False,
+                    "continuation_prompt": None,
+                    "verdict": "review_recommended",
+                    "reason": review_reason,
+                    "message": render_mads_review_pause_message(state, trigger, review_reason),
+                }
+
             state.status = "done"
             save_goal(self.session_id, state)
             return {

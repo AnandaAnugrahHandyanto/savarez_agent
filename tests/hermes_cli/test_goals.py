@@ -269,6 +269,92 @@ class TestGoalManager:
         assert mgr.state.status == "done"
         assert mgr.state.turns_used == 1
 
+    def test_evaluate_done_low_risk_completes_without_mads_review(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="eval-low-risk-done")
+        mgr.set("ship it")
+
+        with patch.object(goals, "judge_goal", return_value=("done", "shipped", False)):
+            decision = mgr.evaluate_after_turn("I shipped it.")
+
+        assert decision["verdict"] == "done"
+        assert decision["should_continue"] is False
+        assert mgr.state is not None
+        assert mgr.state.status == "done"
+        assert not mgr.state.review_recommended_reason
+
+    def test_evaluate_done_important_goal_pauses_with_mads_handoff(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="eval-mads-before-done")
+        mgr.set("Design the Hermes /goal Mads review gate")
+
+        with patch.object(goals, "judge_goal", return_value=("done", "designed", False)):
+            decision = mgr.evaluate_after_turn("The design is complete.")
+
+        assert decision["verdict"] == "review_recommended"
+        assert decision["should_continue"] is False
+        assert mgr.state is not None
+        assert mgr.state.status == "paused"
+        assert mgr.state.review_recommended_reason == "before_done"
+        assert "Standby: yes" in decision["message"]
+        assert "/goal review mads" in decision["message"]
+        assert "/goal accept" in decision["message"]
+        assert "hidden autonomy risks" in decision["message"]
+
+    def test_goal_review_packet_and_accept(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="eval-mads-review-packet")
+        mgr.set("Implement Hermes /goal review mads")
+        mgr.pause("mads-review-recommended:before_done")
+        assert mgr.state is not None
+        mgr.state.review_recommended_reason = "before_done"
+
+        preview = mgr.render_mads_review(mark_sent=False)
+        assert preview is not None
+        assert "Mads review packet" in preview
+        assert "Read-only review" in preview
+        assert mgr.state.mads_reviews_used == 0
+
+        packet = mgr.render_mads_review("Focus on queued continuation cleanup", mark_sent=True)
+        assert packet is not None
+        assert "Focus on queued continuation cleanup" in packet
+        assert mgr.state.mads_reviews_used == 1
+        assert mgr.state.last_mads_verdict == "packet-prepared"
+
+        accepted = mgr.accept()
+        assert accepted is not None
+        assert accepted.status == "done"
+        assert accepted.last_verdict == "done"
+
+    def test_resume_after_mads_review_pause_does_not_repause_before_done(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="eval-mads-review-short-circuit")
+        mgr.set("Implement Hermes /goal Mads review gate")
+
+        with patch.object(goals, "judge_goal", return_value=("done", "review first", False)):
+            paused = mgr.evaluate_after_turn("The implementation is complete.")
+
+        assert paused["verdict"] == "review_recommended"
+        assert mgr.state is not None
+        assert mgr.state.status == "paused"
+        assert mgr.state.review_recommended_reason == "before_done"
+
+        mgr.resume()
+        with patch.object(goals, "judge_goal", return_value=("done", "reviewed and complete", False)):
+            done = mgr.evaluate_after_turn("Mads reviewed this; finish it.")
+
+        assert done["verdict"] == "done"
+        assert done["should_continue"] is False
+        assert mgr.state.status == "done"
+        assert mgr.state.review_recommended_reason == "before_done"
+
     def test_evaluate_after_turn_continue_under_budget(self, hermes_home):
         from hermes_cli import goals
         from hermes_cli.goals import GoalManager

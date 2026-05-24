@@ -2534,15 +2534,19 @@ class GatewayRunner:
 
         User-issued /goal pause/clear can race with a continuation already
         queued by the judge.  Remove only synthetic goal continuations while
-        preserving normal /queue and user follow-up events.
+        preserving normal /queue and user follow-up events.  If the pending
+        slot held a removed goal continuation, promote the next normal FIFO
+        item so preserved user work is not stranded in overflow.
         """
         removed = 0
+        removed_pending_slot = False
         pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
         if isinstance(pending_slot, dict):
             pending_event = pending_slot.get(session_key)
             if self._is_goal_continuation_event(pending_event):
                 pending_slot.pop(session_key, None)
                 removed += 1
+                removed_pending_slot = True
 
         queued_events = getattr(self, "_queued_events", None)
         if isinstance(queued_events, dict):
@@ -2554,6 +2558,20 @@ class GatewayRunner:
                         removed += 1
                     else:
                         kept.append(queued_event)
+
+                # If we emptied the adapter's next-up slot by removing a goal
+                # continuation, keep the FIFO moving by promoting the first
+                # preserved user event out of overflow.  Otherwise it can sit
+                # in _queued_events forever because the drain loop only runs
+                # when adapter._pending_messages has a session entry.
+                if (
+                    removed_pending_slot
+                    and kept
+                    and isinstance(pending_slot, dict)
+                    and session_key not in pending_slot
+                ):
+                    pending_slot[session_key] = kept.pop(0)
+
                 if kept:
                     queued_events[session_key] = kept
                 else:
@@ -7014,9 +7032,13 @@ class GatewayRunner:
             # continuation prompt against the current turn.
             if _cmd_def_inner and _cmd_def_inner.name == "goal":
                 _goal_arg = (event.get_command_args() or "").strip().lower()
-                if not _goal_arg or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done"}:
+                if (
+                    not _goal_arg
+                    or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done", "accept", "review"}
+                    or _goal_arg.startswith("review ")
+                ):
                     return await self._handle_goal_command(event)
-                return "Agent is running — use /goal status / pause / clear mid-run, or /stop before setting a new goal."
+                return "Agent is running — use /goal status / pause / clear / review mid-run, or /stop before setting a new goal."
 
             # /subgoal is safe mid-run — it only modifies the goal's
             # subgoals list, which the judge reads at the next turn
@@ -10552,11 +10574,57 @@ class GatewayRunner:
                 logger.debug("goal pause: pending continuation cleanup failed: %s", exc)
             return t("gateway.goal.paused", goal=state.goal)
 
+        if lower == "accept":
+            state = mgr.accept()
+            if state is None:
+                return t("gateway.goal.no_goal_set")
+            return f"✓ Goal accepted: {state.goal}"
+
+        if lower == "review" or lower.startswith("review "):
+            rest = args.split(None, 1)[1].strip() if " " in args else ""
+            if not rest:
+                packet = mgr.render_mads_review(mark_sent=False)
+                if packet is None:
+                    return t("gateway.goal.no_goal_set")
+                return packet
+            tokens = rest.split(None, 1)
+            reviewer = tokens[0].lower()
+            extra = tokens[1].strip() if len(tokens) > 1 else ""
+            if reviewer != "mads":
+                return "Usage: /goal review mads [extra requirements]"
+            packet = mgr.render_mads_review(extra, mark_sent=True)
+            if packet is None:
+                return t("gateway.goal.no_goal_set")
+            return (
+                packet
+                + "\n\n"
+                + "V1 prepared the Mads packet and left the goal on standby; "
+                  "send it to the Mads lane, then /goal resume or /goal accept when ready."
+            )
+
         if lower == "resume":
             state = mgr.resume()
             if state is None:
                 return t("gateway.goal.no_resume")
-            return t("gateway.goal.resumed", goal=state.goal)
+            queued = False
+            try:
+                prompt = mgr.next_continuation_prompt()
+                adapter = self.adapters.get(event.source.platform) if event.source else None
+                _quick_key = self._session_key_for_source(event.source) if event.source else None
+                if prompt and adapter and _quick_key:
+                    cont_event = MessageEvent(
+                        text=prompt,
+                        message_type=MessageType.TEXT,
+                        source=event.source,
+                        message_id=None,
+                        channel_prompt=None,
+                    )
+                    self._enqueue_fifo(_quick_key, cont_event, adapter)
+                    queued = True
+            except Exception as exc:
+                logger.debug("goal resume: continuation enqueue failed: %s", exc)
+            suffix = "\n▶️ Queued the next /goal continuation turn." if queued else ""
+            return t("gateway.goal.resumed", goal=state.goal) + suffix
 
         if lower in {"clear", "stop", "done"}:
             had = mgr.has_goal()

@@ -9007,6 +9007,37 @@ class HermesCLI:
                 _cprint(f"  ⏸ Goal paused: {state.goal}")
             return
 
+        if lower == "accept":
+            state = mgr.accept()
+            if state is None:
+                _cprint(f"  {_DIM}No goal to accept.{_RST}")
+            else:
+                _cprint(f"  ✓ Goal accepted: {state.goal}")
+            return
+
+        if lower == "review" or lower.startswith("review "):
+            rest = arg.split(None, 1)[1].strip() if " " in arg else ""
+            if not rest:
+                packet = mgr.render_mads_review(mark_sent=False)
+                if packet is None:
+                    _cprint(f"  {_DIM}No active or paused goal to review.{_RST}")
+                else:
+                    _cprint(packet)
+                return
+            tokens = rest.split(None, 1)
+            reviewer = tokens[0].lower()
+            extra = tokens[1].strip() if len(tokens) > 1 else ""
+            if reviewer != "mads":
+                _cprint("  Usage: /goal review mads [extra requirements]")
+                return
+            packet = mgr.render_mads_review(extra, mark_sent=True)
+            if packet is None:
+                _cprint(f"  {_DIM}No active or paused goal to review.{_RST}")
+            else:
+                _cprint(packet)
+                _cprint(f"  {_DIM}V1 prepared the Mads packet and left the goal on standby; paste/send it to the Mads lane, then /goal resume or /goal accept when ready.{_RST}")
+            return
+
         if lower == "resume":
             state = mgr.resume()
             if state is None:
