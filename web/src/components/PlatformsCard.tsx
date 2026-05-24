@@ -9,11 +9,12 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
   const { t } = useI18n();
   const platformStateBadge: Record<
     string,
-    { tone: "success" | "warning" | "destructive"; label: string }
+    { tone: "success" | "warning" | "destructive" | "outline"; label: string }
   > = {
     connected: { tone: "success", label: t.status.connected },
     disconnected: { tone: "warning", label: t.status.disconnected },
     fatal: { tone: "destructive", label: t.status.error },
+    offline: { tone: "outline", label: t.status.disconnected },
   };
 
   return (
@@ -38,7 +39,9 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
               ? Wifi
               : info.state === "fatal"
                 ? AlertTriangle
-                : WifiOff;
+                : info.state === "offline"
+                  ? WifiOff
+                  : WifiOff;
 
           return (
             <div
@@ -52,7 +55,9 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
                       ? "text-success"
                       : info.state === "fatal"
                         ? "text-destructive"
-                        : "text-warning"
+                        : info.state === "offline"
+                          ? "text-muted-foreground"
+                          : "text-warning"
                   }`}
                 />
 

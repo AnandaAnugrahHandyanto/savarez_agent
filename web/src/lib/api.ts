@@ -67,9 +67,15 @@ async function getSessionToken(): Promise<string> {
 }
 
 export const api = {
-  getStatus: () => fetchJSON<StatusResponse>("/api/status"),
-  getSessions: (limit = 20, offset = 0) =>
-    fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
+  getStatus: (profile?: string) => {
+    const qs = profile ? `?profile=${encodeURIComponent(profile)}` : "";
+    return fetchJSON<StatusResponse>(`/api/status${qs}`);
+  },
+  getSessions: (limit = 20, offset = 0, profile = "all", since?: number) => {
+    let url = `/api/sessions?limit=${limit}&offset=${offset}&profile=${encodeURIComponent(profile)}`;
+    if (since !== undefined) url += `&since=${since}`;
+    return fetchJSON<PaginatedSessions>(url);
+  },
   getSessionMessages: (id: string) =>
     fetchJSON<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(id)}/messages`),
   getSessionLatestDescendant: (id: string) =>
@@ -212,8 +218,8 @@ export const api = {
   getToolsets: () => fetchJSON<ToolsetInfo[]>("/api/tools/toolsets"),
 
   // Session search (FTS5)
-  searchSessions: (q: string) =>
-    fetchJSON<SessionSearchResponse>(`/api/sessions/search?q=${encodeURIComponent(q)}`),
+  searchSessions: (q: string, profile = "all") =>
+    fetchJSON<SessionSearchResponse>(`/api/sessions/search?q=${encodeURIComponent(q)}&profile=${encodeURIComponent(profile)}`),
 
   // OAuth provider management
   getOAuthProviders: () =>
@@ -402,6 +408,10 @@ export interface SessionInfo {
   output_tokens: number;
   preview: string | null;
   parent_session_id?: string | null;
+  profile?: string | null;
+  profile_name?: string | null;
+  hermes_home?: string | null;
+  is_default_profile?: boolean;
 }
 
 export interface SessionLatestDescendantResponse {
@@ -599,6 +609,10 @@ export interface SessionSearchResult {
   source: string | null;
   model: string | null;
   session_started: number | null;
+  profile?: string | null;
+  profile_name?: string | null;
+  hermes_home?: string | null;
+  is_default_profile?: boolean;
 }
 
 export interface SessionSearchResponse {
