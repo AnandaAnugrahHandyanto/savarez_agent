@@ -1,6 +1,6 @@
 ---
 title: Web Search & Extract
-description: Search the web, extract page content, and crawl websites with multiple backend providers — including free self-hosted SearXNG.
+description: Search the web, extract page content, and crawl websites with multiple backend providers — including free self-hosted SearXNG and Camofox extraction.
 sidebar_label: Web Search
 sidebar_position: 6
 ---
@@ -12,7 +12,7 @@ Hermes Agent includes two model-callable web tools backed by multiple providers:
 - **`web_search`** — search the web and return ranked results
 - **`web_extract`** — fetch and extract readable content from one or more URLs (with built-in deep-crawl support when the backend provides it)
 
-Both are configured through a single backend selection. Providers are chosen via `hermes tools` or set directly in `config.yaml`. Recursive crawling capabilities (Firecrawl/Tavily) are exposed through `web_extract` rather than as a separate `web_crawl` tool.
+The tools share the same web configuration, but provider support differs by capability. Use `web.backend` for a shared default, or split search and extraction with `web.search_backend` and `web.extract_backend`. Recursive crawling capabilities (Firecrawl/Tavily) are exposed through `web_extract` rather than as a separate `web_crawl` tool.
 
 ## Backends
 
@@ -22,6 +22,7 @@ Both are configured through a single backend selection. Providers are chosen via
 | **SearXNG** | `SEARXNG_URL` | ✔ | — | — | ✔ Free (self-hosted) |
 | **Brave Search (free tier)** | `BRAVE_SEARCH_API_KEY` | ✔ | — | — | 2 000 queries/mo |
 | **DDGS (DuckDuckGo)** | — (no key) | ✔ | — | — | ✔ Free |
+| **Camofox** | `CAMOFOX_URL` | — | ✔ | — | ✔ Free (self-hosted) |
 | **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | ✔ | 1 000 searches/mo |
 | **Exa** | `EXA_API_KEY` | ✔ | ✔ | — | 1 000 searches/mo |
 | **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | — | Paid |
@@ -29,7 +30,7 @@ Both are configured through a single backend selection. Providers are chosen via
 
 Brave Search, DDGS, and xAI are **search-only** — pair any of them with Firecrawl/Tavily/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below).
 
-**Per-capability split:** you can use different providers for search and extract independently — for example SearXNG (free) for search and Firecrawl for extract. See [Per-capability configuration](#per-capability-configuration) below.
+**Per-capability split:** you can use different providers for search and extract independently — for example SearXNG for search and Camofox or Firecrawl for extract. See [Per-capability configuration](#per-capability-configuration) below.
 
 :::tip Nous Subscribers
 If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, web search and extract are available through the **[Tool Gateway](tool-gateway.md)** via managed Firecrawl — no API key needed. New installs can run `hermes setup --portal` to log in and turn on all gateway tools at once; existing installs can flip just web via `hermes tools`.
@@ -113,7 +114,7 @@ When `FIRECRAWL_API_URL` is set, the API key is optional (disable server auth wi
 
 SearXNG is a privacy-respecting, open-source metasearch engine that aggregates results from 70+ search engines. **No API key required** — just point Hermes at a running SearXNG instance.
 
-SearXNG is **search-only** — `web_extract` (including its crawl modes) requires a separate extract provider.
+SearXNG is **search-only** — `web_extract` needs a separate extract provider such as Camofox, Firecrawl, Tavily, Exa, or Parallel. Deep-crawl modes require a crawl-capable extract backend such as Firecrawl or Tavily.
 
 #### Option A — Self-host with Docker (recommended)
 
@@ -228,10 +229,40 @@ SearXNG handles search; you need a separate provider for `web_extract` (includin
 # ~/.hermes/config.yaml
 web:
   search_backend: "searxng"
-  extract_backend: "firecrawl"   # or tavily, exa, parallel
+  extract_backend: "camofox"   # or firecrawl, tavily, exa, parallel
 ```
 
-With this config, Hermes uses SearXNG for all search queries and Firecrawl for URL extraction — combining free search with high-quality extraction.
+With this config, Hermes uses SearXNG for all search queries and Camofox for URL extraction — a fully local web-search-and-extract stack when both services are self-hosted.
+
+---
+
+### Camofox extract (local, browser-backed)
+
+Camofox can back `web_extract` without changing your `web_search` backend. It opens each requested URL in a temporary Camofox tab, waits for the page when the Camofox server supports the wait endpoint, captures the accessibility snapshot, and renders that snapshot into deterministic Markdown.
+
+1. Start a Camofox server. See [Browser Automation → Camofox local mode](/docs/user-guide/features/browser#camofox-local-mode) for Docker and local setup.
+2. Point Hermes at the server:
+
+```bash
+# ~/.hermes/.env
+CAMOFOX_URL=http://localhost:9377
+```
+
+3. Use Camofox only for extraction:
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  search_backend: "searxng"   # or another search backend
+  extract_backend: "camofox"  # web_extract only
+```
+
+Notes:
+
+- `camofox` is extract-only. Do not set `web.backend: "camofox"`; use `web.extract_backend: "camofox"`.
+- `web_extract` output is deterministic Markdown from the browser accessibility snapshot. The Camofox path intentionally skips auxiliary LLM rewriting, even when LLM processing is requested.
+- Browser-backed redirects are still checked before content is exposed: Hermes applies SSRF and website blocklist checks before Camofox fetches the URL and again after Camofox reports the final URL.
+- Deep-crawl modes are not supported through Camofox; use Firecrawl or Tavily for crawling.
 
 ---
 
@@ -333,15 +364,17 @@ web:
   backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | tavily | exa | parallel | xai
 ```
 
+`web.backend` is a shared fallback and only accepts search-capable backends. Camofox is intentionally not valid here because it cannot search; configure it through `web.extract_backend` instead.
+
 ### Per-capability configuration
 
-Use different providers for search vs extract. This lets you combine free search (SearXNG) with a paid extract provider, or vice versa:
+Use different providers for search vs extract. This lets you combine free search (SearXNG) with a local or paid extract provider:
 
 ```yaml
 # ~/.hermes/config.yaml
 web:
   search_backend: "searxng"     # used by web_search
-  extract_backend: "firecrawl"  # used by web_extract (and its deep-crawl modes)
+  extract_backend: "camofox"    # used by web_extract; use firecrawl/tavily for deep-crawl modes
 ```
 
 When per-capability keys are empty, both fall through to `web.backend`. When `web.backend` is also empty, the backend is auto-detected from whichever API key/URL is present.
@@ -364,6 +397,8 @@ If no backend is explicitly configured, Hermes picks the first available one bas
 | `SEARXNG_URL` | searxng |
 
 xAI Web Search is **not** in the auto-detection chain — having `XAI_API_KEY` set (or being signed in via xAI Grok OAuth) does not automatically route web traffic through xAI, since those credentials are also used for inference / TTS / image gen and the user may want a different backend for web. Opt in explicitly with `web.backend: "xai"`.
+
+Camofox is not auto-selected from `CAMOFOX_URL` alone because it cannot handle search. Set `web.extract_backend: "camofox"` explicitly.
 
 ---
 
@@ -407,8 +442,10 @@ SearXNG cannot extract URL content. Set `web.extract_backend` to a provider that
 ```yaml
 web:
   search_backend: "searxng"
-  extract_backend: "firecrawl"  # or tavily / exa / parallel
+  extract_backend: "camofox"  # or firecrawl / tavily / exa / parallel
 ```
+
+If you choose Camofox, also set `CAMOFOX_URL` and make sure the Camofox server is running.
 
 ### SearXNG returns 0 results
 

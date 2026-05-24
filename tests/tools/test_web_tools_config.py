@@ -396,6 +396,52 @@ class TestBackendSelection:
              patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
             assert _get_backend() == "parallel"
 
+    def test_extract_backend_camofox_uses_per_capability_override_when_available(self):
+        """web.extract_backend=camofox selects Camofox for extraction only."""
+        import tools.web_tools as web_tools
+        from agent.web_search_registry import register_provider
+        from plugins.web.camofox.provider import CamofoxWebSearchProvider
+        register_provider(CamofoxWebSearchProvider())
+        from plugins.web.camofox.provider import CamofoxWebSearchProvider
+        with patch("tools.web_tools._load_web_config", return_value={"extract_backend": "camofox"}), \
+             patch.object(CamofoxWebSearchProvider, "is_available", return_value=True), \
+             patch("tools.web_tools._is_tool_gateway_ready", return_value=False):
+            assert web_tools._get_extract_backend() == "camofox"
+
+    def test_camofox_is_not_a_search_backend_even_when_configured(self):
+        """Camofox must not be selected for web_search."""
+        import tools.web_tools as web_tools
+        from agent.web_search_registry import register_provider
+        from plugins.web.camofox.provider import CamofoxWebSearchProvider
+        register_provider(CamofoxWebSearchProvider())
+        from plugins.web.camofox.provider import CamofoxWebSearchProvider
+        with patch("tools.web_tools._load_web_config", return_value={"search_backend": "camofox"}), \
+             patch.object(CamofoxWebSearchProvider, "is_available", return_value=True), \
+             patch("tools.web_tools._is_tool_gateway_ready", return_value=False):
+            assert web_tools._get_search_backend() != "camofox"
+
+    def test_check_web_api_key_accepts_camofox_extract_backend(self):
+        """A configured Camofox extract backend should make web_extract available."""
+        import tools.web_tools as web_tools
+        from agent.web_search_registry import register_provider
+        from plugins.web.camofox.provider import CamofoxWebSearchProvider
+        register_provider(CamofoxWebSearchProvider())
+        from plugins.web.camofox.provider import CamofoxWebSearchProvider
+        with patch("tools.web_tools._load_web_config", return_value={"extract_backend": "camofox"}), \
+             patch.object(CamofoxWebSearchProvider, "is_available", return_value=True):
+            assert web_tools.check_web_api_key() is True
+
+    def test_is_backend_available_camofox_delegates_to_camofox_availability(self):
+        import tools.web_tools as web_tools
+        from agent.web_search_registry import register_provider
+        from plugins.web.camofox.provider import CamofoxWebSearchProvider
+        register_provider(CamofoxWebSearchProvider())
+        from plugins.web.camofox.provider import CamofoxWebSearchProvider
+
+        with patch.object(CamofoxWebSearchProvider, "is_available", side_effect=[True, False]):
+            assert web_tools._is_backend_available("camofox") is True
+            assert web_tools._is_backend_available("camofox") is False
+
 
 class TestParallelClientConfig:
     """Test suite for Parallel client initialization."""
@@ -646,3 +692,9 @@ def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env
 
     assert "EXA_API_KEY" in _web_requires_env()
+
+
+def test_web_requires_env_includes_camofox_url_for_camofox_extract_backend():
+    from tools.web_tools import _web_requires_env
+
+    assert "CAMOFOX_URL" in _web_requires_env()

@@ -22,23 +22,25 @@ Hermes supports multiple AI inference providers out of the box. Use `hermes mode
 
 ## Web Search Backends
 
-The `web_search` and `web_extract` tools support four backend providers, configured via `config.yaml` or `hermes tools`:
+The `web_search` and `web_extract` tools support multiple backend providers, configured via `config.yaml` or `hermes tools`. Search and extraction can use different providers through `web.search_backend` and `web.extract_backend`:
 
 | Backend | Env Var | Search | Extract | Crawl |
 |---------|---------|--------|---------|-------|
 | **Firecrawl** (default) | `FIRECRAWL_API_KEY` | ✔ | ✔ | ✔ |
+| **SearXNG** | `SEARXNG_URL` | ✔ | — | — |
+| **Camofox** | `CAMOFOX_URL` | — | ✔ | — |
 | **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | — |
 | **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | ✔ |
 | **Exa** | `EXA_API_KEY` | ✔ | ✔ | — |
 
 Quick setup example:
-
 ```yaml
 web:
-  backend: firecrawl    # firecrawl | parallel | tavily | exa
+  search_backend: searxng
+  extract_backend: camofox
 ```
 
-If `web.backend` is not set, the backend is auto-detected from whichever API key is available. Self-hosted Firecrawl is also supported via `FIRECRAWL_API_URL`.
+If `web.backend` is not set, the backend is auto-detected from search-capable credentials. Camofox is extract-only, so set `web.extract_backend: camofox` explicitly when you want local browser-backed extraction.
 
 ## Browser Automation
 

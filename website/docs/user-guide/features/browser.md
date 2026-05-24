@@ -189,6 +189,16 @@ Or configure via `hermes tools` → Browser Automation → Camofox.
 
 When `CAMOFOX_URL` is set, all browser tools automatically route through Camofox instead of Browserbase or agent-browser.
 
+The same Camofox server can also provide local browser-backed `web_extract` results. This is configured separately from browser automation:
+
+```yaml
+web:
+  search_backend: "searxng"   # or another search backend
+  extract_backend: "camofox"  # web_extract only
+```
+
+That path opens temporary Camofox tabs, captures accessibility snapshots, and returns deterministic Markdown without auxiliary LLM rewriting. Camofox is not a search or crawl backend, so do not set `web.backend: "camofox"`.
+
 #### Persistent browser sessions
 
 By default, each Camofox session gets a random identity — cookies and logins don't survive across agent restarts. To enable persistent browser sessions, add the following to `~/.hermes/config.yaml`:
