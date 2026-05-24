@@ -326,7 +326,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
         "Search, install, inspect, or manage skills",
         "Tools & Skills",
         cli_only=True,
-        subcommands=("search", "browse", "inspect", "install"),
+        subcommands=("search", "browse", "inspect", "install", "audit"),
     ),
     CommandDef(
         "bundles",

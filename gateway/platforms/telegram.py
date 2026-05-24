@@ -5172,6 +5172,12 @@ class TelegramAdapter(BasePlatformAdapter):
             if event.channel_prompt
             else observe_prompt
         )
+        if event.message_type == MessageType.COMMAND:
+            return dataclasses.replace(
+                event,
+                source=shared_source,
+                channel_prompt=channel_prompt,
+            )
         return dataclasses.replace(
             event,
             text=self._telegram_group_observe_attributed_text(event),
