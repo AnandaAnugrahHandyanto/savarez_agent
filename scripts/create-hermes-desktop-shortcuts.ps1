@@ -30,6 +30,7 @@ $ErrorActionPreference = "Stop"
 $HermesShortcutNames = @(
     "Hermes Agent CLI.lnk",
     "Hermes Gateway.lnk",
+    "Hermes Llama Fallback (RTX3060).lnk",
     "Hermes Llama Fallback (RTX3080).lnk",
     "Hermes llama-server RTX3080.lnk",
     "Hermes Autostart (register).lnk",
@@ -277,6 +278,14 @@ function Remove-StaleHermesShortcuts {
         }
 
         if ($ShortcutDir -and (Test-Path -LiteralPath $ShortcutDir)) {
+            foreach ($name in $HermesShortcutNames) {
+                $inShortcutDir = Join-Path $ShortcutDir $name
+                if (Test-Path -LiteralPath $inShortcutDir) {
+                    Remove-Item -LiteralPath $inShortcutDir -Force
+                    $removed += $inShortcutDir
+                }
+            }
+
             $hypuraDup = Join-Path $ShortcutDir "Hermes Hypura Stack.lnk"
             if (Test-Path -LiteralPath $hypuraDup) {
                 Remove-Item -LiteralPath $hypuraDup -Force
@@ -527,7 +536,7 @@ else {
 }
 
 $startGatewayScript = Join-Path $RepoRoot "scripts\windows\start-hermes-gateway.ps1"
-$startLlama3080Script = Join-Path $RepoRoot "scripts\windows\start-hermes-llama-fallback-rtx3080.ps1"
+$startLlama3060Script = Join-Path $RepoRoot "scripts\windows\start-hermes-llama-fallback-rtx3060.ps1"
 $registerAutostartScript = Join-Path $RepoRoot "scripts\windows\register-hermes-autostart.ps1"
 $installAutostartScript = Join-Path $RepoRoot "scripts\windows\install-hermes-autostart.ps1"
 
@@ -535,13 +544,13 @@ $psShortcutDefs = @(
     @{
         Name        = "Hermes Gateway.lnk"
         Script      = $startGatewayScript
-        Description = "Start Hermes Gateway (llama RTX3080 fallback first, skip if already running)"
+        Description = "Start Hermes Gateway (llama RTX3060 fallback first, replace stale gateway)"
         NoExit      = $false
     },
     @{
-        Name        = "Hermes Llama Fallback (RTX3080).lnk"
-        Script      = $startLlama3080Script
-        Description = "Start llama.cpp fallback server on RTX 3080 (port 8080)"
+        Name        = "Hermes Llama Fallback (RTX3060).lnk"
+        Script      = $startLlama3060Script
+        Description = "Start llama.cpp fallback server on RTX 3060 (port 8080, 64K context)"
         NoExit      = $true
     },
     @{

@@ -44,7 +44,7 @@ if ($DelaySeconds -gt 0) {
     Start-Sleep -Seconds $DelaySeconds
 }
 
-$llamaScript = Join-Path $ScriptDir "start-hermes-llama-fallback-rtx3080.ps1"
+$llamaScript = Join-Path $ScriptDir "start-hermes-llama-fallback-rtx3060.ps1"
 if (-not (Test-Path -LiteralPath $llamaScript)) {
     $llamaScript = Join-Path $ScriptDir "start-hermes-llama-fallback.ps1"
 }
@@ -58,6 +58,6 @@ if (Test-Path -LiteralPath $llamaScript) {
 
 Start-Process `
     -FilePath "cmd.exe" `
-    -ArgumentList "/c", "set PYTHONIOENCODING=utf-8&& set PYTHONUTF8=1&& py -3 -m hermes_cli gateway run" `
+    -ArgumentList "/c", "set PYTHONIOENCODING=utf-8&& set PYTHONUTF8=1&& py -3 -m hermes_cli gateway run --replace" `
     -WorkingDirectory $RepoRoot `
     -WindowStyle $WindowStyle

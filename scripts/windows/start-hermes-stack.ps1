@@ -215,7 +215,7 @@ if ($enableGateway -and -not $gatewayRunning) {
     Start-DetachedProcessNoRedirect `
         -Name "gateway" `
         -FilePath "cmd.exe" `
-        -ArgumentList @("/c", "set PYTHONIOENCODING=utf-8&& set PYTHONUTF8=1&& py -3 -m hermes_cli gateway run")
+        -ArgumentList @("/c", "set PYTHONIOENCODING=utf-8&& set PYTHONUTF8=1&& py -3 -m hermes_cli gateway run --replace")
 }
 
 if ($enableApi -and -not (Is-CommandRunning -Needle "hermes_api_server")) {

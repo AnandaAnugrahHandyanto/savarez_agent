@@ -1153,7 +1153,7 @@ them into invariants before re-requesting review.
 ## Learned Workspace Facts
 
 - Primary inference: OpenCode Zen free models (`opencode-zen` + `auto-free`) with rotation via `skills/autonomous-ai-agents/opencode-free-rotation/` and `scripts/refresh_opencode_free_catalog.py`.
-- Local rollback: llama-cpp at `http://127.0.0.1:8080/v1`; TurboQuant `llama-server` RTX3080 scripts live under `scripts/windows/`.
+- Local rollback: llama-cpp at `http://127.0.0.1:8080/v1`; the active desktop/autostart fallback uses the RTX3060 64K launcher under `scripts/windows/`, with the RTX3080 launcher kept for legacy/manual use.
 - User fallback GGUF (huihui-qwen35-4b Q8_0) is stored under `H:\elt_data\releases\` on this machine.
 - OpenCode credentials bridge from OpenClaw: shared `OPENCODE_API_KEY` satisfies `OPENCODE_ZEN_API_KEY` when the Zen-specific key is unset.
 - Companion WebUI checkout: `C:\Users\downl\Desktop\hermes-webui`.

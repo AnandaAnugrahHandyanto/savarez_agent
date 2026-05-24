@@ -1,6 +1,6 @@
 # Register / unregister Hermes logon autostart via Task Scheduler.
 #
-# Default: llama.cpp RTX3080 fallback + Hermes Gateway (gateway script also
+# Default: llama.cpp RTX3060 fallback + Hermes Gateway (gateway script also
 # ensures llama if the dedicated task has not finished yet; both exit early
 # when port 8080 / gateway is already up).
 #
@@ -15,7 +15,7 @@ param(
     [switch]$Unregister,
     [switch]$GatewayOnly,
     [switch]$IncludeLegacyStack,
-    [string]$LlamaTaskName = "HermesLlamaFallbackRTX3080",
+    [string]$LlamaTaskName = "HermesLlamaFallbackRTX3060",
     [string]$GatewayTaskName = "HermesGatewayAutoStart",
     [string]$LegacyStackTaskName = "HermesAgentStackAutoStart"
 )
@@ -24,7 +24,7 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Resolve-Path (Join-Path $ScriptDir "..\..")
-$LlamaScript = Resolve-Path (Join-Path $ScriptDir "start-hermes-llama-fallback-rtx3080.ps1")
+$LlamaScript = Resolve-Path (Join-Path $ScriptDir "start-hermes-llama-fallback-rtx3060.ps1")
 $GatewayScript = Resolve-Path (Join-Path $ScriptDir "start-hermes-gateway.ps1")
 $StackScript = Resolve-Path (Join-Path $ScriptDir "start-hermes-stack.ps1")
 
@@ -39,7 +39,8 @@ $StaleRunValueNames = @(
 
 $StaleScheduledTaskNames = @(
     "HermesLlamaFallbackRTX3060Watchdog",
-    "HermesLlamaFallbackRTX3060"
+    "HermesLlamaFallbackRTX3060",
+    "HermesLlamaFallbackRTX3080"
 )
 
 $StaleStartupFiles = @(
@@ -203,7 +204,7 @@ if (-not $GatewayOnly) {
 
     $registered += Register-HermesScheduledTask `
         -TaskName $LlamaTaskName `
-        -Description "Auto-start llama.cpp fallback (RTX 3080, port 8080) at logon" `
+        -Description "Auto-start llama.cpp fallback (RTX 3060, port 8080, 64K context) at logon" `
         -ScriptPath $LlamaScript `
         -Env $llamaEnv `
         -DelaySeconds 10
