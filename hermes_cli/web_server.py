@@ -19,6 +19,7 @@ import secrets
 import subprocess
 import sys
 import threading
+import sqlite3
 import time
 import urllib.parse
 import urllib.request
@@ -536,13 +537,43 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
 
 
 @app.get("/api/status")
-async def get_status():
+async def get_status(profile: Optional[str] = None):
     current_ver, latest_ver = check_config_version()
 
-    # --- Gateway liveness detection ---
-    # Try local PID check first (same-host).  If that fails and a remote
-    # GATEWAY_HEALTH_URL is configured, probe the gateway over HTTP so the
-    # dashboard works when the gateway runs in a separate container.
+    # Normalize profile parameter.
+    #   None/""   -> current profile only (backward compatible)
+    #   "all"     -> aggregate across all profiles
+    #   <name>    -> specific profile only
+    target_profile = (profile or "").strip().lower()
+    aggregate_all = target_profile == "all"
+    specific_profile = target_profile if target_profile and not aggregate_all else None
+
+    # When targeting a specific non-default profile, read its status directly.
+    if specific_profile and specific_profile != "default":
+        from hermes_cli import profiles as profiles_mod
+        p = profiles_mod.get_profile_dir(specific_profile)
+        if not p.is_dir():
+            # Return empty status for missing profile rather than 500
+            return {
+                "version": __version__,
+                "release_date": __release_date__,
+                "hermes_home": str(p),
+                "config_path": str(p / "config.yaml"),
+                "env_path": str(p / ".env"),
+                "config_version": current_ver,
+                "latest_config_version": latest_ver,
+                "gateway_running": False,
+                "gateway_pid": None,
+                "gateway_health_url": _GATEWAY_HEALTH_URL,
+                "gateway_state": None,
+                "gateway_platforms": {},
+                "gateway_exit_reason": None,
+                "gateway_updated_at": None,
+                "active_sessions": 0,
+            }
+        return _get_status_for_profile_dir(p, current_ver, latest_ver)
+
+    # --- Current profile (default when no profile param) ---
     gateway_pid = get_running_pid()
     gateway_running = gateway_pid is not None
     remote_health_body: dict | None = None
@@ -554,7 +585,6 @@ async def get_status():
         )
         if alive:
             gateway_running = True
-            # PID from the remote container (display only — not locally valid)
             if remote_health_body:
                 gateway_pid = remote_health_body.get("pid")
 
@@ -573,8 +603,6 @@ async def get_status():
     except Exception:
         configured_gateway_platforms = None
 
-    # Prefer the detailed health endpoint response (has full state) when the
-    # local runtime status file is absent or stale (cross-container).
     runtime = read_runtime_status()
     if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
         runtime = remote_health_body
@@ -592,18 +620,44 @@ async def get_status():
         gateway_updated_at = runtime.get("updated_at")
         if not gateway_running:
             gateway_state = gateway_state if gateway_state in {"stopped", "startup_failed"} else "stopped"
-            gateway_platforms = {}
+            if configured_gateway_platforms:
+                for name in configured_gateway_platforms:
+                    if name not in gateway_platforms:
+                        gateway_platforms[name] = {
+                            "state": "offline",
+                            "is_connected": False,
+                            "updated_at": gateway_updated_at,
+                        }
+                    else:
+                        gateway_platforms[name]["state"] = "offline"
+                        gateway_platforms[name]["is_connected"] = False
         elif gateway_running and remote_health_body is not None:
-            # The health probe confirmed the gateway is alive, but the local
-            # runtime status file may be stale (cross-container).  Override
-            # stopped/None state so the dashboard shows the correct badge.
             if gateway_state in {None, "stopped"}:
                 gateway_state = "running"
 
-    # If there was no runtime info at all but the health probe confirmed alive,
-    # ensure we still report the gateway as running (no shared volume scenario).
     if gateway_running and gateway_state is None and remote_health_body is not None:
         gateway_state = "running"
+
+    # Aggregate platform states from all profiles when profile="all".
+    if aggregate_all:
+        try:
+            from hermes_cli import profiles as profiles_mod
+            for p_info in profiles_mod.list_profiles():
+                if p_info.is_default:
+                    continue
+                if p_info.gateway_running and p_info.gateway_platforms:
+                    for platform_name, platform_info in p_info.gateway_platforms.items():
+                        if platform_name not in gateway_platforms:
+                            gateway_platforms[platform_name] = platform_info
+                elif p_info.gateway_platforms:
+                    for platform_name, platform_info in p_info.gateway_platforms.items():
+                        if platform_name not in gateway_platforms:
+                            offline_info = dict(platform_info)
+                            offline_info["state"] = "offline"
+                            offline_info["is_connected"] = False
+                            gateway_platforms[platform_name] = offline_info
+        except Exception:
+            pass
 
     active_sessions = 0
     try:
@@ -632,6 +686,113 @@ async def get_status():
         "latest_config_version": latest_ver,
         "gateway_running": gateway_running,
         "gateway_pid": gateway_pid,
+        "gateway_health_url": _GATEWAY_HEALTH_URL,
+        "gateway_state": gateway_state,
+        "gateway_platforms": gateway_platforms,
+        "gateway_exit_reason": gateway_exit_reason,
+        "gateway_updated_at": gateway_updated_at,
+        "active_sessions": active_sessions,
+    }
+
+
+def _get_status_for_profile_dir(
+    profile_dir: Path,
+    current_ver: Optional[str] = None,
+    latest_ver: Optional[str] = None,
+) -> dict:
+    """Return status dict for a specific profile directory."""
+    try:
+        from gateway.status import get_running_pid, read_runtime_status
+        pid = get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False)
+        gateway_running = pid is not None
+    except Exception:
+        pid = None
+        gateway_running = False
+
+    gateway_state = None
+    gateway_platforms: dict = {}
+    gateway_exit_reason = None
+    gateway_updated_at = None
+    configured_gateway_platforms: set[str] | None = None
+
+    try:
+        from gateway.config import load_gateway_config
+        # Temporarily override HERMES_HOME for config loading
+        old_home = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = str(profile_dir)
+        try:
+            gateway_config = load_gateway_config()
+            configured_gateway_platforms = {
+                platform.value for platform in gateway_config.get_connected_platforms()
+            }
+        finally:
+            if old_home is not None:
+                os.environ["HERMES_HOME"] = old_home
+            elif "HERMES_HOME" in os.environ:
+                del os.environ["HERMES_HOME"]
+    except Exception:
+        configured_gateway_platforms = None
+
+    try:
+        runtime = read_runtime_status(profile_dir / "gateway_state.json")
+    except Exception:
+        runtime = None
+
+    if runtime:
+        gateway_state = runtime.get("gateway_state")
+        gateway_platforms = runtime.get("platforms") or {}
+        if configured_gateway_platforms is not None:
+            gateway_platforms = {
+                key: value
+                for key, value in gateway_platforms.items()
+                if key in configured_gateway_platforms
+            }
+        gateway_exit_reason = runtime.get("exit_reason")
+        gateway_updated_at = runtime.get("updated_at")
+        if not gateway_running:
+            gateway_state = gateway_state if gateway_state in {"stopped", "startup_failed"} else "stopped"
+            if configured_gateway_platforms:
+                for name in configured_gateway_platforms:
+                    if name not in gateway_platforms:
+                        gateway_platforms[name] = {
+                            "state": "offline",
+                            "is_connected": False,
+                            "updated_at": gateway_updated_at,
+                        }
+                    else:
+                        gateway_platforms[name]["state"] = "offline"
+                        gateway_platforms[name]["is_connected"] = False
+
+    if gateway_running and gateway_state is None:
+        gateway_state = "running"
+
+    active_sessions = 0
+    try:
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=profile_dir / "state.db")
+        try:
+            sessions = db.list_sessions_rich(limit=50)
+            now = time.time()
+            active_sessions = sum(
+                1 for s in sessions
+                if s.get("ended_at") is None
+                and (now - s.get("last_active", s.get("started_at", 0))) < 300
+            )
+        finally:
+            db.close()
+    except Exception:
+        pass
+
+    return {
+        "version": __version__,
+        "release_date": __release_date__,
+        "hermes_home": str(profile_dir),
+        "config_path": str(profile_dir / "config.yaml"),
+        "env_path": str(profile_dir / ".env"),
+        "config_version": current_ver,
+        "latest_config_version": latest_ver,
+        "gateway_running": gateway_running,
+        "gateway_pid": pid,
         "gateway_health_url": _GATEWAY_HEALTH_URL,
         "gateway_state": gateway_state,
         "gateway_platforms": gateway_platforms,
@@ -773,65 +934,222 @@ async def get_action_status(name: str, lines: int = 200):
     }
 
 
-@app.get("/api/sessions")
-async def get_sessions(limit: int = 20, offset: int = 0):
+def _session_profile_home(profile: Optional[str]) -> Tuple[str, Path]:
+    """Resolve a profile query value to (profile_name, HERMES_HOME)."""
+    from hermes_cli import profiles as profiles_mod
+
+    raw = (profile or "default").strip() or "default"
     try:
-        from hermes_state import SessionDB
-        db = SessionDB()
+        canon = profiles_mod.normalize_profile_name(raw)
+        profiles_mod.validate_profile_name(canon)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not profiles_mod.profile_exists(canon):
+        raise HTTPException(status_code=404, detail=f"Profile '{canon}' does not exist.")
+    return canon, profiles_mod.get_profile_dir(canon)
+
+
+def _annotate_session(session: Dict[str, Any], profile: str, home: Path) -> Dict[str, Any]:
+    annotated = dict(session)
+    annotated["profile"] = profile
+    annotated["profile_name"] = profile
+    annotated["hermes_home"] = str(home)
+    annotated["is_default_profile"] = profile == "default"
+    return annotated
+
+
+def _list_sessions_for_profile(profile: str, home: Path, limit: int, offset: int, since: Optional[float] = None) -> Tuple[List[Dict[str, Any]], int]:
+    """List sessions from a single profile's state.db.
+
+    Args:
+        since: If provided, only include sessions with started_at >= since.
+               The total count also reflects this filter.
+    """
+    from hermes_state import SessionDB
+    db = SessionDB(db_path=home / "state.db")
+    try:
+        sessions = db.list_sessions_rich(limit=limit, offset=offset)
+        if since is not None:
+            sessions = [s for s in sessions if s.get("started_at", 0) >= since]
+        # Count total with same filter for consistency
+        conn = sqlite3.connect(str(db.db_path))
         try:
-            sessions = db.list_sessions_rich(limit=limit, offset=offset)
-            total = db.session_count()
-            now = time.time()
-            for s in sessions:
-                s["is_active"] = (
-                    s.get("ended_at") is None
-                    and (now - s.get("last_active", s.get("started_at", 0))) < 300
-                )
-            return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
+            if since is not None:
+                cursor = conn.execute("SELECT COUNT(*) FROM sessions WHERE started_at >= ?", (since,))
+            else:
+                cursor = conn.execute("SELECT COUNT(*) FROM sessions")
+            total = cursor.fetchone()[0]
         finally:
-            db.close()
+            conn.close()
+        now = time.time()
+        for s in sessions:
+            s["is_active"] = (
+                s.get("ended_at") is None
+                and (now - s.get("last_active", s.get("started_at", 0))) < 300
+            )
+        return sessions, total
+    finally:
+        db.close()
+
+
+@app.get("/api/sessions")
+async def get_sessions(limit: int = 20, offset: int = 0, profile: Optional[str] = None, since: Optional[float] = None):
+    try:
+        # When no profile specified, use current (backward compatible)
+        if not profile:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            try:
+                sessions = db.list_sessions_rich(limit=limit, offset=offset)
+                if since is not None:
+                    sessions = [s for s in sessions if s.get("started_at", 0) >= since]
+                    conn = sqlite3.connect(str(db.db_path))
+                    try:
+                        cursor = conn.execute("SELECT COUNT(*) FROM sessions WHERE started_at >= ?", (since,))
+                        total = cursor.fetchone()[0]
+                    finally:
+                        conn.close()
+                else:
+                    total = db.session_count()
+                now = time.time()
+                for s in sessions:
+                    s["is_active"] = (
+                        s.get("ended_at") is None
+                        and (now - s.get("last_active", s.get("started_at", 0))) < 300
+                    )
+                return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
+            finally:
+                db.close()
+
+        # "all" — aggregate sessions from all profiles
+        if profile.strip().lower() == "all":
+            from hermes_cli import profiles as profiles_mod
+            all_sessions: List[Dict[str, Any]] = []
+            total = 0
+            for p in profiles_mod.list_profiles():
+                sessions, count = _list_sessions_for_profile(p.name, p.path, limit=10000, offset=0, since=since)
+                total += count
+                for s in sessions:
+                    all_sessions.append(_annotate_session(s, p.name, p.path))
+            # Sort by started_at desc, then apply limit/offset
+            all_sessions.sort(key=lambda s: s.get("started_at", 0), reverse=True)
+            paginated = all_sessions[offset:offset + limit]
+            return {"sessions": paginated, "total": total, "limit": limit, "offset": offset}
+
+        # Specific profile
+        name, home = _session_profile_home(profile)
+        sessions, total = _list_sessions_for_profile(name, home, limit, offset, since=since)
+        annotated = [_annotate_session(s, name, home) for s in sessions]
+        return {"sessions": annotated, "total": total, "limit": limit, "offset": offset}
+    except HTTPException:
+        raise
     except Exception:
         _log.exception("GET /api/sessions failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+def _search_sessions_for_profile(profile: str, home: Path, q: str, limit: int, since: Optional[float] = None) -> List[Dict[str, Any]]:
+    """Search sessions from a single profile's state.db."""
+    from hermes_state import SessionDB
+    db = SessionDB(db_path=home / "state.db")
+    try:
+        import re
+        terms = []
+        for token in re.findall(r'"[^"]*"|\S+', q.strip()):
+            if token.startswith('"') or token.endswith("*"):
+                terms.append(token)
+            else:
+                terms.append(token + "*")
+        prefix_query = " ".join(terms)
+        matches = db.search_messages(query=prefix_query, limit=limit)
+        results: List[Dict[str, Any]] = []
+        seen: set = set()
+        for m in matches:
+            sid = m["session_id"]
+            if sid in seen:
+                continue
+            ss = m.get("session_started")
+            if since is not None and (ss is None or ss < since):
+                continue
+            seen.add(sid)
+            results.append({
+                "session_id": sid,
+                "snippet": m.get("snippet", ""),
+                "role": m.get("role"),
+                "source": m.get("source"),
+                "model": m.get("model"),
+                "session_started": ss,
+                "profile": profile,
+                "profile_name": profile,
+                "hermes_home": str(home),
+                "is_default_profile": profile == "default",
+            })
+        return results
+    finally:
+        db.close()
+
+
 @app.get("/api/sessions/search")
-async def search_sessions(q: str = "", limit: int = 20):
+async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] = None, since: Optional[float] = None):
     """Full-text search across session message content using FTS5."""
     if not q or not q.strip():
         return {"results": []}
     try:
-        from hermes_state import SessionDB
-        db = SessionDB()
-        try:
-            # Auto-add prefix wildcards so partial words match
-            # e.g. "nimb" → "nimb*" matches "nimby"
-            # Preserve quoted phrases and existing wildcards as-is
-            import re
-            terms = []
-            for token in re.findall(r'"[^"]*"|\S+', q.strip()):
-                if token.startswith('"') or token.endswith("*"):
-                    terms.append(token)
-                else:
-                    terms.append(token + "*")
-            prefix_query = " ".join(terms)
-            matches = db.search_messages(query=prefix_query, limit=limit)
-            # Group by session_id — return unique sessions with their best snippet
-            seen: dict = {}
-            for m in matches:
-                sid = m["session_id"]
-                if sid not in seen:
-                    seen[sid] = {
-                        "session_id": sid,
-                        "snippet": m.get("snippet", ""),
-                        "role": m.get("role"),
-                        "source": m.get("source"),
-                        "model": m.get("model"),
-                        "session_started": m.get("session_started"),
-                    }
-            return {"results": list(seen.values())}
-        finally:
-            db.close()
+        # When no profile specified, use current (backward compatible)
+        if not profile:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            try:
+                import re
+                terms = []
+                for token in re.findall(r'"[^"]*"|\S+', q.strip()):
+                    if token.startswith('"') or token.endswith("*"):
+                        terms.append(token)
+                    else:
+                        terms.append(token + "*")
+                prefix_query = " ".join(terms)
+                matches = db.search_messages(query=prefix_query, limit=limit)
+                seen: dict = {}
+                for m in matches:
+                    sid = m["session_id"]
+                    if sid not in seen:
+                        ss = m.get("session_started")
+                        if since is not None and (ss is None or ss < since):
+                            continue
+                        seen[sid] = {
+                            "session_id": sid,
+                            "snippet": m.get("snippet", ""),
+                            "role": m.get("role"),
+                            "source": m.get("source"),
+                            "model": m.get("model"),
+                            "session_started": ss,
+                        }
+                return {"results": list(seen.values())}
+            finally:
+                db.close()
+
+        # "all" — search across all profiles
+        if profile.strip().lower() == "all":
+            from hermes_cli import profiles as profiles_mod
+            all_results: List[Dict[str, Any]] = []
+            seen_ids: set = set()
+            for p in profiles_mod.list_profiles():
+                results = _search_sessions_for_profile(p.name, p.path, q, limit, since=since)
+                for r in results:
+                    sid = r["session_id"]
+                    if sid not in seen_ids:
+                        seen_ids.add(sid)
+                        all_results.append(r)
+                if len(all_results) >= limit:
+                    break
+            return {"results": all_results[:limit]}
+
+        # Specific profile
+        name, home = _session_profile_home(profile)
+        results = _search_sessions_for_profile(name, home, q, limit, since=since)
+        return {"results": results}
+    except HTTPException:
+        raise
     except Exception:
         _log.exception("GET /api/sessions/search failed")
         raise HTTPException(status_code=500, detail="Search failed")
@@ -2777,6 +3095,9 @@ def _profile_to_dict(info) -> Dict[str, Any]:
         "provider": _profile_attr(info, "provider"),
         "has_env": bool(_profile_attr(info, "has_env", False)),
         "skill_count": int(_profile_attr(info, "skill_count", 0) or 0),
+        "gateway_state": _profile_attr(info, "gateway_state"),
+        "gateway_platforms": _profile_attr(info, "gateway_platforms") or {},
+        "gateway_updated_at": _profile_attr(info, "gateway_updated_at"),
     }
 
 
