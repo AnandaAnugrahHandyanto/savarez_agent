@@ -6132,7 +6132,9 @@ class GatewayRunner:
             if not check_api_server_requirements():
                 logger.warning("API Server: aiohttp not installed")
                 return None
-            return APIServerAdapter(config)
+            adapter = APIServerAdapter(config)
+            adapter.gateway_runner = self  # For background process watcher routing
+            return adapter
 
         elif platform == Platform.WEBHOOK:
             from gateway.platforms.webhook import WebhookAdapter, check_webhook_requirements

@@ -16,6 +16,7 @@ import asyncio
 import json
 import time
 import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -430,6 +431,78 @@ class TestAgentExecution:
             conversation_history=[],
             task_id="session-123",
         )
+
+    @pytest.mark.asyncio
+    async def test_run_agent_binds_parseable_gateway_session_context(self, adapter):
+        captured = {}
+        mock_agent = MagicMock()
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        def _run_conversation(**kwargs):
+            from gateway.session_context import get_session_env
+
+            captured["platform"] = get_session_env("HERMES_SESSION_PLATFORM", "")
+            captured["chat_id"] = get_session_env("HERMES_SESSION_CHAT_ID", "")
+            captured["session_key"] = get_session_env("HERMES_SESSION_KEY", "")
+            return {"final_response": "ok"}
+
+        mock_agent.run_conversation.side_effect = _run_conversation
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            result, _usage = await adapter._run_agent(
+                user_message="hello",
+                conversation_history=[],
+                session_id="session-123",
+                gateway_session_key="webui:user-42",
+            )
+
+        assert result["final_response"] == "ok"
+        assert captured["platform"] == "api_server"
+        assert captured["chat_id"].startswith("api-")
+        assert captured["session_key"].startswith("agent:main:api_server:dm:api-")
+
+    @pytest.mark.asyncio
+    async def test_run_agent_starts_pending_process_watchers_via_gateway_runner(self, adapter):
+        mock_agent = MagicMock()
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+        watcher_seen = asyncio.Event()
+        captured = {}
+
+        async def _fake_run_process_watcher(watcher):
+            captured.update(watcher)
+            watcher_seen.set()
+
+        def _run_conversation(**kwargs):
+            from tools.process_registry import process_registry
+
+            process_registry.pending_watchers.append({
+                "session_id": "proc_123",
+                "check_interval": 5,
+                "session_key": "agent:main:api_server:dm:api-abc123",
+                "platform": "api_server",
+                "chat_id": "api-abc123",
+                "notify_on_complete": True,
+            })
+            return {"final_response": "ok"}
+
+        mock_agent.run_conversation.side_effect = _run_conversation
+        adapter.gateway_runner = SimpleNamespace(_run_process_watcher=_fake_run_process_watcher)
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            result, _usage = await adapter._run_agent(
+                user_message="hello",
+                conversation_history=[],
+                session_id="session-123",
+            )
+
+        assert result["final_response"] == "ok"
+        await asyncio.wait_for(watcher_seen.wait(), timeout=1.0)
+        assert captured["session_id"] == "proc_123"
+        assert captured["platform"] == "api_server"
 
 
 # ---------------------------------------------------------------------------

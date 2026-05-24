@@ -1925,8 +1925,9 @@ def terminal_tool(
             # For non-local backends: runs inside the sandbox via env.execute().
             from tools.approval import get_current_session_key
             from tools.process_registry import process_registry
+            from gateway.session_context import get_session_env as _gse
 
-            session_key = get_current_session_key(default="")
+            session_key = _gse("HERMES_SESSION_KEY", "") or get_current_session_key(default="")
             effective_cwd = workdir or cwd
             try:
                 if env_type == "local":
@@ -1989,7 +1990,6 @@ def terminal_tool(
                 # watch-pattern and completion notifications can be
                 # routed back to the correct chat/thread.
                 if background and (notify_on_complete or watch_patterns):
-                    from gateway.session_context import get_session_env as _gse
                     _gw_platform = _gse("HERMES_SESSION_PLATFORM", "")
                     if _gw_platform:
                         _gw_chat_id = _gse("HERMES_SESSION_CHAT_ID", "")

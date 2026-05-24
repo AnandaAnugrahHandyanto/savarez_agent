@@ -35,6 +35,7 @@ import re
 import sqlite3
 import time
 import uuid
+from contextlib import suppress
 from typing import Any, Dict, List, Optional
 
 try:
@@ -50,6 +51,7 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
 )
+from gateway.session import SessionSource, build_session_key
 
 logger = logging.getLogger(__name__)
 
@@ -669,6 +671,45 @@ class APIServerAdapter(BasePlatformAdapter):
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self.gateway_runner = None
+
+    @staticmethod
+    def _build_gateway_session_source(
+        session_id: Optional[str],
+        gateway_session_key: Optional[str],
+    ) -> tuple[SessionSource, str]:
+        """Return a stable synthetic gateway source for API-server turns.
+
+        API clients may use arbitrary ``X-Hermes-Session-Key`` values such as
+        ``webui:user-42`` that are not valid gateway ``session_key`` strings.
+        Background process notifications, however, route through the gateway's
+        synthetic-event machinery which expects a parseable
+        ``agent:main:<platform>:<chat_type>:<chat_id>`` key.
+
+        Use a deterministic hash as the synthetic chat_id so the session remains
+        stable across turns without leaking raw client-provided identifiers into
+        the gateway routing grammar.
+        """
+        raw_scope = (gateway_session_key or session_id or "api_server").strip() or "api_server"
+        digest = hashlib.sha256(raw_scope.encode("utf-8")).hexdigest()[:16]
+        chat_id = f"api-{digest}"
+        source = SessionSource(
+            platform=Platform.API_SERVER,
+            chat_id=chat_id,
+            chat_name=gateway_session_key or session_id or chat_id,
+            chat_type="dm",
+            user_id=chat_id,
+            user_name="api_server",
+        )
+        return source, build_session_key(source)
+
+    async def _schedule_pending_process_watchers(self, watchers: List[Dict[str, Any]]) -> None:
+        """Start any new background-process watcher tasks via the live gateway runner."""
+        runner = getattr(self, "gateway_runner", None)
+        if not runner or not watchers:
+            return
+        for watcher in watchers:
+            asyncio.create_task(runner._run_process_watcher(watcher))
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -2756,8 +2797,15 @@ class APIServerAdapter(BasePlatformAdapter):
         another thread to stop in-progress LLM calls.
         """
         loop = asyncio.get_running_loop()
+        session_source, gateway_bg_session_key = self._build_gateway_session_source(
+            session_id=session_id,
+            gateway_session_key=gateway_session_key,
+        )
 
         def _run():
+            from gateway.session_context import clear_session_vars, set_session_vars
+            from tools.process_registry import process_registry
+
             agent = self._create_agent(
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
@@ -2770,25 +2818,42 @@ class APIServerAdapter(BasePlatformAdapter):
             if agent_ref is not None:
                 agent_ref[0] = agent
             effective_task_id = session_id or str(uuid.uuid4())
-            result = agent.run_conversation(
-                user_message=user_message,
-                conversation_history=conversation_history,
-                task_id=effective_task_id,
+            session_tokens = set_session_vars(
+                platform=session_source.platform.value,
+                chat_id=session_source.chat_id,
+                chat_name=session_source.chat_name or "",
+                thread_id="",
+                user_id=session_source.user_id or "",
+                user_name=session_source.user_name or "",
+                session_key=gateway_bg_session_key,
             )
-            usage = {
-                "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
-                "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
-                "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
-            }
-            # Include the effective session ID in the result so callers
-            # (e.g. X-Hermes-Session-Id header) can track compression-
-            # triggered session rotations. (#16938)
-            _eff_sid = getattr(agent, "session_id", session_id)
-            if isinstance(_eff_sid, str) and _eff_sid:
-                result["session_id"] = _eff_sid
-            return result, usage
+            try:
+                result = agent.run_conversation(
+                    user_message=user_message,
+                    conversation_history=conversation_history,
+                    task_id=effective_task_id,
+                )
+                usage = {
+                    "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
+                    "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
+                    "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                }
+                # Include the effective session ID in the result so callers
+                # (e.g. X-Hermes-Session-Id header) can track compression-
+                # triggered session rotations. (#16938)
+                _eff_sid = getattr(agent, "session_id", session_id)
+                if isinstance(_eff_sid, str) and _eff_sid:
+                    result["session_id"] = _eff_sid
+                pending_watchers = list(process_registry.pending_watchers)
+                process_registry.pending_watchers.clear()
+                return result, usage, pending_watchers
+            finally:
+                with suppress(Exception):
+                    clear_session_vars(session_tokens)
 
-        return await loop.run_in_executor(None, _run)
+        result, usage, pending_watchers = await loop.run_in_executor(None, _run)
+        await self._schedule_pending_process_watchers(pending_watchers)
+        return result, usage
 
     # ------------------------------------------------------------------
     # /v1/runs — structured event streaming
@@ -3010,18 +3075,28 @@ class APIServerAdapter(BasePlatformAdapter):
                         set_current_session_key,
                         unregister_gateway_notify,
                     )
+                    from tools.process_registry import process_registry
 
                     effective_task_id = session_id or run_id
                     approval_token = None
                     session_tokens = []
+                    session_source, gateway_bg_session_key = self._build_gateway_session_source(
+                        session_id=session_id,
+                        gateway_session_key=gateway_session_key,
+                    )
                     try:
                         # Bind approval/session identity for this API run via
                         # contextvars so concurrent runs do not share process
                         # environment state.
                         approval_token = set_current_session_key(approval_session_key)
                         session_tokens = set_session_vars(
-                            platform="api_server",
-                            session_key=approval_session_key,
+                            platform=session_source.platform.value,
+                            chat_id=session_source.chat_id,
+                            chat_name=session_source.chat_name or "",
+                            thread_id="",
+                            user_id=session_source.user_id or "",
+                            user_name=session_source.user_name or "",
+                            session_key=gateway_bg_session_key,
                         )
                         register_gateway_notify(approval_session_key, _approval_notify)
                         r = agent.run_conversation(
@@ -3029,6 +3104,8 @@ class APIServerAdapter(BasePlatformAdapter):
                             conversation_history=conversation_history,
                             task_id=effective_task_id,
                         )
+                        pending_watchers = list(process_registry.pending_watchers)
+                        process_registry.pending_watchers.clear()
                     finally:
                         try:
                             unregister_gateway_notify(approval_session_key)
@@ -3048,9 +3125,10 @@ class APIServerAdapter(BasePlatformAdapter):
                         "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
                         "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
                     }
-                    return r, u
+                    return r, u, pending_watchers
 
-                result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
+                result, usage, pending_watchers = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
+                await self._schedule_pending_process_watchers(pending_watchers)
                 # Check for structured failure (non-retryable client errors like
                 # 401/400 return failed=True instead of raising, so the except
                 # block below never fires — issue #15561).
