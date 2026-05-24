@@ -1353,7 +1353,6 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(
             conn, "tasks", "session_id", "session_id TEXT"
         )
-
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a

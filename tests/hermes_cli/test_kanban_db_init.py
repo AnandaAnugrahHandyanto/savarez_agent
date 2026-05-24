@@ -1,9 +1,72 @@
 from __future__ import annotations
 
+import sqlite3
 import threading
 from pathlib import Path
 
 from hermes_cli import kanban_db as kb
+
+
+def test_connect_migrates_legacy_indexed_columns_before_creating_indexes(tmp_path):
+    db_path = tmp_path / "legacy-kanban.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE tasks (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                body TEXT,
+                assignee TEXT,
+                status TEXT NOT NULL,
+                priority INTEGER DEFAULT 0,
+                created_by TEXT,
+                created_at INTEGER NOT NULL,
+                started_at INTEGER,
+                completed_at INTEGER,
+                workspace_kind TEXT NOT NULL DEFAULT 'scratch',
+                workspace_path TEXT,
+                branch_name TEXT,
+                claim_lock TEXT,
+                claim_expires INTEGER,
+                tenant TEXT,
+                result TEXT,
+                idempotency_key TEXT,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                worker_pid INTEGER,
+                last_failure_error TEXT,
+                max_runtime_seconds INTEGER,
+                last_heartbeat_at INTEGER,
+                current_run_id INTEGER,
+                workflow_template_id TEXT,
+                current_step_key TEXT,
+                skills TEXT,
+                model_override TEXT,
+                max_retries INTEGER
+            );
+            CREATE TABLE task_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                payload TEXT,
+                created_at INTEGER NOT NULL
+            );
+            """
+        )
+    finally:
+        conn.close()
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    with kb.connect(db_path) as migrated:
+        task_cols = {row["name"] for row in migrated.execute("PRAGMA table_info(tasks)")}
+        event_cols = {row["name"] for row in migrated.execute("PRAGMA table_info(task_events)")}
+        task_indexes = {row["name"] for row in migrated.execute("PRAGMA index_list(tasks)")}
+        event_indexes = {row["name"] for row in migrated.execute("PRAGMA index_list(task_events)")}
+
+    assert "session_id" in task_cols
+    assert "run_id" in event_cols
+    assert "idx_tasks_session_id" in task_indexes
+    assert "idx_events_run" in event_indexes
 
 
 def test_connect_initialization_is_thread_safe(tmp_path, monkeypatch):
