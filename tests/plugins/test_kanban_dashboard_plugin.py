@@ -2396,3 +2396,71 @@ def test_dashboard_task_drawer_summary_is_sticky():
     assert ".hermes-kanban-drawer-summary" in css
     assert "position: sticky;" in css
     assert "top: -0.9rem;" in css
+
+
+def test_custom_commands_crud_and_run(client, tmp_path, monkeypatch):
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="cmd-task", assignee="alice")
+
+    r = client.put(
+        "/api/plugins/kanban/custom-commands?board=default",
+        json={
+            "commands": [
+                {
+                    "id": "cmd_echo",
+                    "name": "Echo",
+                    "icon": "📣",
+                    "command": "echo hi",
+                },
+            ],
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["commands"][0]["name"] == "Echo"
+
+    r_cfg = client.get("/api/plugins/kanban/config?board=default")
+    assert r_cfg.json()["custom_commands"][0]["id"] == "cmd_echo"
+
+    kb.create_board("other")
+    r_other = client.put(
+        "/api/plugins/kanban/custom-commands?board=other",
+        json={
+            "commands": [
+                {
+                    "id": "cmd_other",
+                    "name": "Other",
+                    "icon": "🔧",
+                    "command": "echo other",
+                },
+            ],
+        },
+    )
+    assert r_other.status_code == 200, r_other.text
+
+    r_default = client.get("/api/plugins/kanban/custom-commands?board=default")
+    r_other_get = client.get("/api/plugins/kanban/custom-commands?board=other")
+    assert [c["id"] for c in r_default.json()["commands"]] == ["cmd_echo"]
+    assert [c["id"] for c in r_other_get.json()["commands"]] == ["cmd_other"]
+
+    workspace = tmp_path / "task-ws"
+    workspace.mkdir()
+    monkeypatch.setattr(
+        kb,
+        "_prepare_task_workspace",
+        lambda task, board=None: workspace,
+    )
+
+    r_run = client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/run-custom-command?board=default",
+        json={"command_id": "cmd_echo"},
+    )
+    assert r_run.status_code == 200, r_run.text
+    body = r_run.json()
+    assert body["ok"] is True
+    assert "hi" in body["stdout"]
+
+    r_missing = client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/run-custom-command?board=other",
+        json={"command_id": "cmd_echo"},
+    )
+    assert r_missing.status_code == 404

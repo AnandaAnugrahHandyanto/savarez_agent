@@ -503,6 +503,8 @@
     // In-flight specify/decompose ops keyed by task id — survives drawer
     // close/reopen so the button stays on "Specifying…" while the POST runs.
     const [auxBusy, setAuxBusy] = useState({});
+    const [customCommands, setCustomCommands] = useState([]);
+    const [showCustomCommands, setShowCustomCommands] = useState(false);
 
     const markAuxBusy = useCallback(function (taskId, kind) {
       setAuxBusy(function (prev) {
@@ -537,6 +539,24 @@
         })
         .catch(function () { setConfig({ render_markdown: true }); });
     }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+
+    const loadCustomCommands = useCallback(function () {
+      if (!board) {
+        setCustomCommands([]);
+        return Promise.resolve();
+      }
+      return SDK.fetchJSON(withBoard(`${API}/custom-commands`, board))
+        .then(function (res) {
+          setCustomCommands((res && res.commands) || []);
+        })
+        .catch(function () {
+          setCustomCommands([]);
+        });
+    }, [board]);
+
+    useEffect(function () {
+      loadCustomCommands();
+    }, [loadCustomCommands]);
 
     // --- fetch full board ---------------------------------------------------
     const loadBoard = useCallback(() => {
@@ -920,6 +940,7 @@
       setAssigneeFilter("");
       setIncludeArchived(false);
       clearSelected();
+      setShowCustomCommands(false);
     }, [board, clearSelected]);
 
     const createNewBoard = useCallback(function (payload) {
@@ -957,7 +978,29 @@
          return next;
        });
      }).catch(function (e) { setError(String(e.message || e)); });
-   }, [board, loadBoard, t]);
+    }, [loadBoard, board, t]);
+
+    const saveCustomCommands = useCallback(function (commands) {
+      return SDK.fetchJSON(withBoard(`${API}/custom-commands`, board), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ commands: commands }),
+      }).then(function (res) {
+        setCustomCommands((res && res.commands) || []);
+        return res;
+      });
+    }, [board]);
+
+    const runCustomCommand = useCallback(function (taskId, commandId) {
+      return SDK.fetchJSON(
+        withBoard(`${API}/tasks/${encodeURIComponent(taskId)}/run-custom-command`, board),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ command_id: commandId }),
+        },
+      );
+    }, [board]);
 
     const deleteSelected = useCallback(function (count) {
       if (selectedIds.size === 0) return Promise.resolve();
@@ -1007,6 +1050,11 @@
           },
         }) : null,
         h(OrchestrationPanel, null),
+        showCustomCommands ? h(CustomCommandsPanel, {
+          commands: customCommands,
+          onSave: saveCustomCommands,
+          onClose: function () { setShowCustomCommands(false); },
+        }) : null,
         h(AttentionStrip, {
           boardData,
           onOpen: setSelectedTaskId,
@@ -1024,6 +1072,8 @@
               .catch(function (e) { setError(String(e.message || e)); });
           },
           onRefresh: loadBoard,
+          showCustomCommands: showCustomCommands,
+          onToggleCustomCommands: function () { setShowCustomCommands(function (v) { return !v; }); },
         }),
        selectedIds.size > 0 ? h(BulkActionBar, {
          count: selectedIds.size,
@@ -1052,6 +1102,8 @@
           onOpen: setSelectedTaskId,
           onCreate: createTask,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
+          customCommands: customCommands,
+          onRunCustomCommand: runCustomCommand,
         }),
         selectedTaskId ? h(TaskDrawer, {
           taskId: selectedTaskId,
@@ -1065,6 +1117,8 @@
           auxBusy: auxBusy,
           markAuxBusy: markAuxBusy,
           clearAuxBusy: clearAuxBusy,
+          customCommands: customCommands,
+          onRunCustomCommand: runCustomCommand,
         }) : null,
       ),
     );
@@ -1970,6 +2024,206 @@
   }
 
   // -------------------------------------------------------------------------
+  // Custom commands — user-defined shell commands on card action rows
+  // -------------------------------------------------------------------------
+
+  function newCustomCommandId() {
+    return "cmd_" + Math.random().toString(16).slice(2, 14);
+  }
+
+  function CustomCommandButtons(props) {
+    const commands = props.commands || [];
+    if (!commands.length || !props.onRun) return null;
+    const [busyId, setBusyId] = useState(null);
+    const compact = !!props.compact;
+
+    const buttons = commands.map(function (cmd) {
+      const label = (cmd.icon ? cmd.icon + " " : "") + cmd.name;
+      const shortLabel = cmd.icon || cmd.name.slice(0, 3);
+      return h(Button, {
+        key: cmd.id,
+        size: "sm",
+        disabled: busyId === cmd.id,
+        title: cmd.name + (cmd.command ? ("\n" + cmd.command) : ""),
+        className: compact ? "hermes-kanban-card-cmd-btn" : "",
+        onClick: function () {
+          if (busyId) return;
+          setBusyId(cmd.id);
+          props.onRun(cmd.id).catch(function () {
+            /* fire-and-forget — no inline result box */
+          }).then(function () {
+            setBusyId(null);
+          });
+        },
+      }, busyId === cmd.id ? "…" : (compact ? shortLabel : label));
+    });
+
+    return h("span", {
+      className: compact ? "hermes-kanban-card-cmd-group" : "hermes-kanban-custom-cmd-group",
+      onClick: function (e) { e.stopPropagation(); },
+    }, buttons);
+  }
+
+  function CustomCommandsPanel(props) {
+    const { t } = useI18n();
+    const [draft, setDraft] = useState(function () {
+      return (props.commands || []).map(function (cmd) {
+        return Object.assign({}, cmd);
+      });
+    });
+    const [msg, setMsg] = useState(null);
+    const [saving, setSaving] = useState(false);
+    const [editingId, setEditingId] = useState(null);
+
+    useEffect(function () {
+      setDraft((props.commands || []).map(function (cmd) {
+        return Object.assign({}, cmd);
+      }));
+    }, [props.commands]);
+
+    const persist = function (next) {
+      setSaving(true);
+      setMsg(null);
+      return props.onSave(next).then(function () {
+        setMsg({ ok: true, text: "Custom commands saved." });
+        setEditingId(null);
+      }).catch(function (err) {
+        setMsg({ ok: false, text: "Save failed: " + String(err.message || err) });
+      }).then(function () {
+        setSaving(false);
+      });
+    };
+
+    const moveCommand = function (index, delta) {
+      const next = draft.slice();
+      const target = index + delta;
+      if (target < 0 || target >= next.length) return;
+      const tmp = next[index];
+      next[index] = next[target];
+      next[target] = tmp;
+      setDraft(next);
+      persist(next);
+    };
+
+    const removeCommand = function (index) {
+      const next = draft.filter(function (_cmd, i) { return i !== index; });
+      setDraft(next);
+      persist(next);
+    };
+
+    const startNew = function () {
+      const item = {
+        id: newCustomCommandId(),
+        name: "New command",
+        icon: "⚡",
+        command: "",
+      };
+      const next = draft.concat([item]);
+      setDraft(next);
+      setEditingId(item.id);
+    };
+
+    const updateEditing = function (patch) {
+      setDraft(function (prev) {
+        return prev.map(function (cmd) {
+          if (cmd.id !== editingId) return cmd;
+          return Object.assign({}, cmd, patch);
+        });
+      });
+    };
+
+    const saveEditing = function () {
+      const current = draft.find(function (cmd) { return cmd.id === editingId; });
+      if (!current || !String(current.name || "").trim() || !String(current.command || "").trim()) {
+        setMsg({ ok: false, text: "Name and command are required." });
+        return;
+      }
+      persist(draft);
+    };
+
+    const editing = draft.find(function (cmd) { return cmd.id === editingId; }) || null;
+
+    return h(Card, { className: "hermes-kanban-custom-commands-panel" },
+      h(CardContent, { className: "p-4 flex flex-col gap-3" },
+        h("div", { className: "flex items-center justify-between gap-2" },
+          h("div", { className: "text-sm font-medium" }, tx(t, "customCommands", "Custom Commands")),
+          h("div", { className: "flex gap-2" },
+            h(Button, { size: "sm", onClick: startNew, disabled: saving }, "+ Add"),
+            props.onClose ? h(Button, { size: "sm", onClick: props.onClose }, tx(t, "close", "Close")) : null,
+          ),
+        ),
+        h("div", { className: "text-xs text-muted-foreground" },
+          "Commands appear at the end of each card's action buttons and run in that task's workspace."),
+        draft.length === 0
+          ? h("div", { className: "text-xs text-muted-foreground" }, "No custom commands yet.")
+          : h("div", { className: "flex flex-col gap-2" },
+              draft.map(function (cmd, index) {
+                const isEditing = cmd.id === editingId;
+                return h("div", {
+                  key: cmd.id,
+                  className: "hermes-kanban-custom-command-row",
+                },
+                  h("div", { className: "flex items-center gap-2" },
+                    h("span", { className: "text-sm font-medium min-w-[1.5rem]" },
+                      (cmd.icon || "▪") + " " + cmd.name),
+                    h("span", { className: "text-[10px] text-muted-foreground flex-1 truncate" }, cmd.command || "—"),
+                    h(Button, {
+                      size: "sm",
+                      disabled: saving || index === 0,
+                      onClick: function () { moveCommand(index, -1); },
+                      title: "Move up",
+                    }, "↑"),
+                    h(Button, {
+                      size: "sm",
+                      disabled: saving || index === draft.length - 1,
+                      onClick: function () { moveCommand(index, 1); },
+                      title: "Move down",
+                    }, "↓"),
+                    h(Button, {
+                      size: "sm",
+                      disabled: saving,
+                      onClick: function () { setEditingId(isEditing ? null : cmd.id); },
+                    }, isEditing ? "Done" : "Edit"),
+                    h(Button, {
+                      size: "sm",
+                      disabled: saving,
+                      onClick: function () { removeCommand(index); },
+                    }, "Remove"),
+                  ),
+                  isEditing ? h("div", { className: "grid grid-cols-1 md:grid-cols-3 gap-2 pt-2" },
+                    h(Input, {
+                      value: editing.name || "",
+                      onChange: function (e) { updateEditing({ name: e.target.value }); },
+                      placeholder: "Name",
+                      className: "h-8 text-xs",
+                    }),
+                    h(Input, {
+                      value: editing.icon || "",
+                      onChange: function (e) { updateEditing({ icon: e.target.value }); },
+                      placeholder: "Icon",
+                      className: "h-8 text-xs",
+                    }),
+                    h(Input, {
+                      value: editing.command || "",
+                      onChange: function (e) { updateEditing({ command: e.target.value }); },
+                      placeholder: "Shell command",
+                      className: "h-8 text-xs md:col-span-1",
+                    }),
+                    h("div", { className: "md:col-span-3 flex gap-2" },
+                      h(Button, { size: "sm", onClick: saveEditing, disabled: saving }, "Save command"),
+                    ),
+                  ) : null,
+                );
+              }),
+            ),
+        msg ? h("div", {
+          className: msg.ok ? "hermes-kanban-msg-ok" : "hermes-kanban-msg-err",
+        }, msg.text) : null,
+      ),
+    );
+  }
+
+  // -------------------------------------------------------------------------
   // Toolbar
   // -------------------------------------------------------------------------
 
@@ -2031,6 +2285,12 @@
         tx(t, "lanesByProfile", "Lanes by profile"),
       ),
       h("div", { className: "flex-1" }),
+      h(Button, {
+        onClick: props.onToggleCustomCommands,
+        size: "sm",
+        title: "Add, edit, remove, and reorder custom commands shown on each card.",
+        className: props.showCustomCommands ? "hermes-kanban-toolbar-btn-active" : "",
+      }, tx(t, "customCommands", "Custom Commands")),
       h(Button, {
         onClick: props.onNudgeDispatch,
         size: "sm",
@@ -2266,6 +2526,8 @@
           onOpen: props.onOpen,
           onCreate: props.onCreate,
           allTasks: props.allTasks,
+          customCommands: props.customCommands,
+          onRunCustomCommand: props.onRunCustomCommand,
         });
       }),
       h(TrashDropZone, {
@@ -2400,6 +2662,8 @@
                       toggleSelected: props.toggleSelected,
                       toggleRange: props.toggleRange,
                       onOpen: props.onOpen,
+                      customCommands: props.customCommands,
+                      onRunCustomCommand: props.onRunCustomCommand,
                     });
                   }),
                 );
@@ -2414,6 +2678,8 @@
                   toggleSelected: props.toggleSelected,
                   toggleRange: props.toggleRange,
                   onOpen: props.onOpen,
+                  customCommands: props.customCommands,
+                  onRunCustomCommand: props.onRunCustomCommand,
                 });
               }),
       ),
@@ -2538,6 +2804,15 @@
                     : "Open pull request",
                 }, t.pr.label || tx(i18n, "prUnknown", "Unknown")),
               )
+            : null,
+          (props.customCommands && props.customCommands.length && props.onRunCustomCommand)
+            ? h(CustomCommandButtons, {
+                commands: props.customCommands,
+                compact: true,
+                onRun: function (commandId) {
+                  return props.onRunCustomCommand(t.id, commandId);
+                },
+              })
             : null,
           h("div", { className: "hermes-kanban-card-row" },
             h("label", {
@@ -3067,6 +3342,8 @@
           onToggleHomeSub: toggleHomeSubscription,
           onRefresh: props.onRefresh,
           auxKind: (props.auxBusy && props.auxBusy[props.taskId]) || null,
+          customCommands: props.customCommands,
+          onRunCustomCommand: props.onRunCustomCommand,
         }) : null,
         data ? h("div", { className: "hermes-kanban-drawer-comment-row" },
           h(Input, {
@@ -3151,6 +3428,8 @@
           onDecompose: props.onDecompose,
           onOpenTerminal: props.onOpenTerminal,
           auxKind: props.auxKind,
+          customCommands: props.customCommands,
+          onRunCustomCommand: props.onRunCustomCommand,
         }),
       ),
       h(DiagnosticsSection, {
@@ -3874,6 +4153,14 @@
           getDestructiveConfirm(t, "done")),
         b(tx(t, "archive", "Archive"),   { status: "archived" }, task.status !== "archived",
           getDestructiveConfirm(t, "archived")),
+        (props.customCommands && props.customCommands.length && props.onRunCustomCommand)
+          ? h(CustomCommandButtons, {
+              commands: props.customCommands,
+              onRun: function (commandId) {
+                return props.onRunCustomCommand(task.id, commandId);
+              },
+            })
+          : null,
       ),
       specifyMsg ? h("div", {
         className: specifyMsg.ok

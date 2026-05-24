@@ -51,6 +51,7 @@ from pydantic import BaseModel, Field
 from hermes_cli import kanban_db
 from hermes_cli import kanban_diagnostics as kd
 from hermes_cli import kanban_pr
+from hermes_cli import kanban_custom_commands as kcc
 
 log = logging.getLogger(__name__)
 
@@ -1531,6 +1532,94 @@ def open_task_workspace_terminal(
     return {"ok": True, "task_id": task_id, "path": launch.get("path"), **launch}
 
 
+class CustomCommandItem(BaseModel):
+    id: str
+    name: str
+    icon: str = ""
+    command: str
+
+
+class CustomCommandsBody(BaseModel):
+    commands: list[CustomCommandItem] = Field(default_factory=list)
+
+
+class RunCustomCommandBody(BaseModel):
+    command_id: str
+
+
+@router.get("/custom-commands")
+def get_custom_commands(board: Optional[str] = Query(None)):
+    """Return user-defined card commands for a kanban board."""
+    board = _resolve_board(board)
+    return {"commands": kcc.load_board_custom_commands(board)}
+
+
+@router.put("/custom-commands")
+def set_custom_commands(
+    payload: CustomCommandsBody,
+    board: Optional[str] = Query(None),
+):
+    """Replace the ordered list of custom card commands for a kanban board."""
+    board = _resolve_board(board)
+    try:
+        saved = kcc.save_board_custom_commands(
+            board,
+            [item.model_dump() for item in payload.commands],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"failed to save board commands: {exc}") from exc
+
+    return {"commands": saved}
+
+
+@router.post("/tasks/{task_id}/run-custom-command")
+def run_task_custom_command(
+    task_id: str,
+    payload: RunCustomCommandBody,
+    board: Optional[str] = Query(None),
+):
+    """Run a configured custom command in the task workspace."""
+    board = _resolve_board(board)
+    commands = kcc.load_board_custom_commands(board)
+    command = kcc.find_custom_command(commands, payload.command_id)
+    if command is None:
+        raise HTTPException(status_code=404, detail=f"custom command {payload.command_id!r} not found")
+
+    conn = _conn(board=board)
+    try:
+        task = kanban_db.get_task(conn, task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        try:
+            workspace = kanban_db._prepare_task_workspace(task, board=board)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"workspace: {exc}") from exc
+        kanban_db.set_workspace_path(conn, task_id, str(workspace))
+    finally:
+        conn.close()
+
+    try:
+        result = kcc.run_custom_command_in_workspace(workspace, command["command"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        log.exception("custom command failed for task %s", task_id)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {
+        "ok": bool(result.get("ok")),
+        "task_id": task_id,
+        "command_id": command["id"],
+        "command_name": command["name"],
+        "workspace": str(workspace),
+        **result,
+    }
+
+
 class ReassignBody(BaseModel):
     profile: Optional[str] = None  # "" or None = unassign
     reclaim_first: bool = False
@@ -1577,13 +1666,17 @@ def reassign_task_endpoint(
 # ---------------------------------------------------------------------------
 
 @router.get("/config")
-def get_config():
+def get_config(board: Optional[str] = Query(None)):
     """Return kanban dashboard preferences from ~/.hermes/config.yaml.
 
     Reads the ``dashboard.kanban`` section if present; defaults otherwise.
     Used by the UI to pre-select tenant filters, toggle markdown rendering,
     or set column-width preferences without a round-trip per page load.
+
+    ``custom_commands`` are stored per board in ``board.json`` and are
+    returned for the requested ``board`` slug.
     """
+    board = _resolve_board(board)
     try:
         from hermes_cli.config import load_config
         cfg = load_config() or {}
@@ -1597,6 +1690,7 @@ def get_config():
         "lane_by_profile": bool(k_cfg.get("lane_by_profile", True)),
         "include_archived_by_default": bool(k_cfg.get("include_archived_by_default", False)),
         "render_markdown": bool(k_cfg.get("render_markdown", True)),
+        "custom_commands": kcc.load_board_custom_commands(board),
     }
 
 
