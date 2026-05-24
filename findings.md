@@ -6945,3 +6945,89 @@ Areas of note (all BY_DESIGN or LOW severity):
 - `hermes_cli/kanban.py` — CLI argparse surface for kanban subcommands (2762 lines)
 - `plugins/kanban/dashboard/plugin_api.py` — Dashboard HTTP/WebSocket API (2217 lines)
 - `tools/kanban_tools.py` — Worker-side kanban tools (MCP interface)
+---
+
+## Pass #64 – Agent Subprocess, Delegation & MCP Integration – 2026-05-24T20:15:00Z
+
+Scope: tools/delegate_tool.py, tools/mcp_tool.py, tools/mcp_oauth.py, tools/code_execution_tool.py, tools/environments/local.py, tools/env_passthrough.py
+
+### P64-1 · MCP schema normalization rewrites but does not validate external schemas — MEDIUM
+
+**File:** `tools/mcp_tool.py:2710` (`_normalize_mcp_input_schema`)
+
+`_normalize_mcp_input_schema()` repairs and rewrites JSON Schema definitions from external MCP servers (resolving `#/definitions/` → `#/$defs/`, coercing missing types, pruning dangling `required` entries, collapsing nullable unions). However, it performs **normalization only** — it does not validate the resulting schema. A malicious or buggy MCP server could return a schema that normalizes to something semantically invalid or exploitable. The normalization is described as provider-agnostic but the function has no schema validation step.
+
+**Recommendation:** Add a JSON Schema validation pass (e.g. using `jsonschema` library) after normalization, at least for schemas with `$ref` or `anyOf`, to catch malformed schemas before they reach the LLM.
+
+---
+
+### P64-2 · file-based RPC seq allocation is protected but request file cleanup is not atomic — LOW
+
+**File:** `tools/code_execution_tool.py:385-400`
+
+The `_seq_lock` protects `_seq += 1` (read-modify-write), and request files use `os.rename()` for atomic write. However, the `_seq_lock` is a threading.Lock — if anyio/trio task-switching occurs within the lock region on the same thread, the sequence number space could be corrupted on async code paths.
+
+**Recommendation:** Use `itertools.count` with a lock, or `multiprocessing.Value('I')` for true atomicity across async contexts.
+
+---
+
+### P64-3 · tool_result_storage uses cat heredoc for content — stdin_data not shell-quoted — LOW
+
+**File:** `tools/tool_result_storage.py:92-93`
+
+```python
+cmd = f"mkdir -p {shlex.quote(storage_dir)} && cat > {shlex.quote(remote_path)}"
+result = env.execute(cmd, timeout=30, stdin_data=content)
+```
+
+`storage_dir` and `remote_path` are safely quoted via `shlex.quote()`, but `stdin_data=content` is passed directly to subprocess stdin. If `env.execute()` uses `shell=False` (direct exec), the content bypasses shell quoting. Risk is limited since `content` comes from tool results, but large persisted tool results with shell metacharacters could behave unexpectedly depending on backend's `env.execute()` implementation.
+
+**Recommendation:** Ensure `env.execute()` with `stdin_data` always passes content through a safe binary stdin channel, not shell interpolation.
+
+---
+
+### P64-4 · delegate_tool inherits parent_api_key for subagents — API credentials flow into child processes — INFO
+
+**File:** `tools/delegate_tool.py:979-982`
+
+```python
+parent_api_key = getattr(parent_agent, "api_key", None)
+if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
+    parent_api_key = parent_agent._client_kwargs.get("api_key")
+```
+
+Subagents inherit the parent's API key to maintain auth for provider access. Process isolation is at conversation/context level (skip_context_files=True, skip_memory=True, fresh conversation), but the API key does flow into the child process. This is by design but widens the credential exposure surface.
+
+**Recommendation:** Document explicitly. Consider stripping via `_sanitize_subprocess_env()` when subagent loses parent context, or ensure subagent processes are always sandboxed.
+
+---
+
+### P64-5 · env_passthrough blocks GHSA credential bypass — GOOD
+
+**File:** `tools/env_passthrough.py:48-68`, `tools/environments/local.py:103-170`
+
+`_is_hermes_provider_credential()` prevents skills from registering any variable in `_HERMES_PROVIDER_ENV_BLOCKLIST` as passthrough. This blocks the GHSA-rhbp-j443-p4rf class of attack where a malicious skill declares a Hermes-managed credential as required and receives it in a sandboxed process. Solid defense-in-depth.
+
+---
+
+### P64-6 · delegate_tool correctly sets skip_context_files=True and skip_memory=True — GOOD
+
+**File:** `tools/delegate_tool.py:1124-1125`
+
+Subagent initialization correctly passes `skip_context_files=True` and `skip_memory=True`, ensuring parent conversation history and memory files are not accessible to subagents.
+
+---
+
+### P64-7 · MCP OAuth callback server uses ephemeral port + localhost only — GOOD
+
+**File:** `tools/mcp_oauth.py:47-51`, token storage
+
+OAuth callback server binds to `localhost` only with ephemeral port. Tokens stored with `stat.S_IRWXU` (owner-only). Solid security posture.
+
+---
+
+### P64-8 · _HERMES_PROVIDER_ENV_BLOCKLIST is comprehensive — GOOD
+
+**File:** `tools/environments/local.py:79-170`
+
+Blocklist covers provider API keys, messaging tokens, email credentials, GitHub tokens. Dynamic derivation from `PROVIDER_REGISTRY.api_key_env_vars` and `OPTIONAL_ENV_VARS` means new providers automatically get added. Well architected.
