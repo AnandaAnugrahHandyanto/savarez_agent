@@ -742,6 +742,18 @@ def gemini_http_error(response: httpx.Response) -> GeminiAPIError:
         except (TypeError, ValueError):
             retry_after = None
 
+    # Gemini 429 responses often embed the retry delay in the error message
+    # body (e.g. "Please retry in 28.135353458s") instead of the Retry-After
+    # header.  Parse it as a fallback when the header is missing/unparseable.
+    if retry_after is None and err_message:
+        import re
+        _retry_match = re.search(r"[Rr]etry\s+(?:after|in)\s+([\d.]+)\s*s", err_message)
+        if _retry_match:
+            try:
+                retry_after = float(_retry_match.group(1))
+            except (TypeError, ValueError):
+                pass
+
     code = f"gemini_http_{status}"
     if status == 401:
         code = "gemini_unauthorized"

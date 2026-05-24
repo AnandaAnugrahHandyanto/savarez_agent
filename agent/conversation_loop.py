@@ -2945,6 +2945,16 @@ def run_conversation(
                                 _retry_after = min(float(_ra_raw), 120)  # Cap at 2 minutes
                             except (TypeError, ValueError):
                                 pass
+                    # Also check the exception's own retry_after attribute
+                    # (e.g. GeminiAPIError parses "Please retry in Xs" from
+                    # the response body when no Retry-After header is present).
+                    if _retry_after is None:
+                        _exc_retry_after = getattr(api_error, "retry_after", None)
+                        if _exc_retry_after is not None:
+                            try:
+                                _retry_after = min(float(_exc_retry_after), 120)  # Cap at 2 minutes
+                            except (TypeError, ValueError):
+                                pass
                 wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                 if is_rate_limited:
                     agent._emit_status(f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries})...")
