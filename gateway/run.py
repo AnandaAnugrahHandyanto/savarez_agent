@@ -66,6 +66,16 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_STALE_CODE_CHECK_INTERVAL_SECS_DEFAULT = 30.0
+_STALE_CODE_SENTINEL_RELATIVE_PATHS = (
+    "gateway/run.py",
+    "gateway/platforms/base.py",
+    "gateway/platforms/telegram.py",
+    "gateway/inbound_journal.py",
+    "hermes_cli/config.py",
+    "run_agent.py",
+    "model_tools.py",
+)
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
@@ -1756,6 +1766,11 @@ class GatewayRunner:
 
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
+
+        # Snapshot gateway source mtimes so a background monitor can restart
+        # after updates before the next user message hits the hot path.
+        self._stale_code_baseline = self._capture_stale_code_snapshot()
+        self._stale_code_restart_deferred = False
 
 
     def _wire_teams_pipeline_runtime(self) -> None:
@@ -3575,6 +3590,118 @@ class GatewayRunner:
         task.add_done_callback(self._background_tasks.discard)
         return True
 
+    def _stale_code_sentinel_paths(self) -> tuple[Path, ...]:
+        """Return source files whose newer mtime means this gateway is stale."""
+        root = Path(__file__).resolve().parents[1]
+        paths: list[Path] = []
+        for rel in _STALE_CODE_SENTINEL_RELATIVE_PATHS:
+            path = root / rel
+            if path.exists():
+                paths.append(path)
+        return tuple(paths)
+
+    def _capture_stale_code_snapshot(self) -> Dict[str, int]:
+        snapshot: Dict[str, int] = {}
+        for path in self._stale_code_sentinel_paths():
+            try:
+                snapshot[str(path)] = path.stat().st_mtime_ns
+            except OSError:
+                continue
+        return snapshot
+
+    def _detect_stale_code(self) -> bool:
+        """Detect source files updated after this gateway process started."""
+        if getattr(self, "_restart_requested", False):
+            return False
+        baseline = getattr(self, "_stale_code_baseline", None)
+        if not isinstance(baseline, dict) or not baseline:
+            self._stale_code_baseline = self._capture_stale_code_snapshot()
+            return False
+        for path_text, old_mtime_ns in baseline.items():
+            try:
+                current_mtime_ns = Path(path_text).stat().st_mtime_ns
+            except OSError:
+                continue
+            if current_mtime_ns > old_mtime_ns:
+                logger.info(
+                    "Detected gateway source update after startup: %s mtime_ns %s -> %s",
+                    path_text,
+                    old_mtime_ns,
+                    current_mtime_ns,
+                )
+                return True
+        return False
+
+    def _load_stale_code_check_interval(self) -> float:
+        raw = os.getenv("HERMES_GATEWAY_STALE_CODE_CHECK_INTERVAL")
+        if raw is None:
+            try:
+                from hermes_cli.config import load_config
+
+                raw = cfg_get(
+                    load_config(),
+                    "gateway",
+                    "stale_code_check_interval",
+                    default=_STALE_CODE_CHECK_INTERVAL_SECS_DEFAULT,
+                )
+            except Exception:
+                raw = _STALE_CODE_CHECK_INTERVAL_SECS_DEFAULT
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = _STALE_CODE_CHECK_INTERVAL_SECS_DEFAULT
+        return max(1.0, value)
+
+    def _trigger_stale_code_restart(self) -> bool:
+        """Request a restart for stale in-memory gateway code."""
+        if getattr(self, "_restart_requested", False):
+            return False
+        via_service = bool(os.environ.get("INVOCATION_ID"))
+        logger.info(
+            "Requesting gateway restart after stale-code detection (via_service=%s)",
+            via_service,
+        )
+        return self.request_restart(detached=not via_service, via_service=via_service)
+
+    async def _stale_code_monitor_tick(self) -> str:
+        """Run one stale-code monitor pass. Returns state for tests/logging."""
+        if getattr(self, "_restart_requested", False):
+            return "restart_already_requested"
+
+        if getattr(self, "_stale_code_restart_deferred", False):
+            if self._running_agent_count() > 0:
+                return "deferred_active"
+            self._stale_code_restart_deferred = False
+            self._trigger_stale_code_restart()
+            return "idle_restart"
+
+        if not self._detect_stale_code():
+            return "not_stale"
+
+        if self._running_agent_count() > 0:
+            self._stale_code_restart_deferred = True
+            logger.info(
+                "Stale gateway code detected; deferring restart until %d active session(s) drain",
+                self._running_agent_count(),
+            )
+            return "deferred_active"
+
+        self._trigger_stale_code_restart()
+        return "idle_restart"
+
+    async def _stale_code_monitor_watcher(self, interval: Optional[float] = None) -> None:
+        """Background stale-code monitor so updates are noticed before user input."""
+        delay = interval if interval is not None else self._load_stale_code_check_interval()
+        await asyncio.sleep(delay)
+        while self._running:
+            try:
+                await self._stale_code_monitor_tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("Stale-code monitor tick failed: %s", exc, exc_info=True)
+            await asyncio.sleep(delay)
+
     # Drain-timeout reasons set by _stop_impl() when a still-running turn is
     # force-interrupted; "restart_interrupted" is set by
     # SessionStore.suspend_recently_active() on crash recovery (no
@@ -4140,6 +4267,12 @@ class GatewayRunner:
                 skip_targets=skip_home_targets,
             )
 
+        # Replay inbound events that were durably queued before a planned
+        # restart/disconnect (for example stale-code hot-path detection).
+        # Do this before auto-resume so a queued real user message can own the
+        # next turn instead of stale interrupted work.
+        await self._drain_inbound_replay_queue()
+
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared
         # by the normal successful-turn path, so a failed auto-resume remains
@@ -4178,6 +4311,10 @@ class GatewayRunner:
                 ", ".join(p.value for p in self._failed_platforms),
             )
         asyncio.create_task(self._platform_reconnect_watcher())
+
+        # Start background stale-code monitor so planned updates are noticed
+        # before the first post-update user message hits the hot path.
+        asyncio.create_task(self._stale_code_monitor_watcher())
 
         # Start background handoff watcher — picks up CLI sessions marked
         # handoff_state='pending' in state.db and re-binds them to the
@@ -6518,6 +6655,53 @@ class GatewayRunner:
         7. Return response
         """
         source = event.source
+
+        # Stale-code self-check (Issue #17648).  A gateway that survives
+        # ``hermes update`` keeps old modules cached in sys.modules; the
+        # first inbound message is our earliest safe chance to detect
+        # this and restart gracefully before we dispatch to the agent
+        # and hit ImportError on freshly-added names (e.g. cfg_get).
+        # Idempotent — runs the real check at most once per message, and
+        # request_restart() no-ops after the first call.
+        try:
+            if self._detect_stale_code():
+                try:
+                    from gateway.inbound_journal import InboundJournal
+
+                    journal = InboundJournal(home=_hermes_home)
+                    journal_id = journal.record_event(event, status="received", reason="stale_code_restart")
+                    replay_path = journal.enqueue_replay(
+                        event,
+                        reason="stale_code_restart",
+                        journal_id=journal_id,
+                    )
+                    logger.info(
+                        "Stale-code restart triggered by user message; event queued for replay: platform=%s chat=%s update_id=%s journal_id=%s replay_path=%s",
+                        source.platform.value if source.platform else "unknown",
+                        source.chat_id,
+                        getattr(event, "platform_update_id", None),
+                        journal_id,
+                        replay_path,
+                    )
+                except Exception as replay_exc:
+                    logger.error(
+                        "Stale-code restart could not queue triggering message for replay: %s",
+                        replay_exc,
+                        exc_info=True,
+                    )
+                self._trigger_stale_code_restart()
+                # Acknowledge to the user so they don't see a silent
+                # drop; the gateway will be back up in a moment via the
+                # service manager / profile-watcher respawn.  The triggering
+                # message has been durably queued for replay when possible.
+                return (
+                    "⟳ Gateway code was updated in the background — "
+                    "restarting this gateway so your message can continue "
+                    "on the new code. Please retry in a moment if you do not "
+                    "see it resume automatically."
+                )
+        except Exception as _stale_exc:
+            logger.debug("Stale-code self-check failed: %s", _stale_exc)
 
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.
@@ -14094,6 +14278,53 @@ class GatewayRunner:
 
         return True
 
+    async def _drain_inbound_replay_queue(self) -> None:
+        """Replay inbound events persisted before a gateway restart.
+
+        Used for stale-code restarts and shutdown-time Telegram text batches.
+        The queue is file-backed and deduped by platform/chat/user/message/update/text
+        fingerprint so duplicate queue records cannot create duplicate agent turns.
+        """
+        try:
+            from gateway.inbound_journal import InboundJournal, ReplayQueue
+
+            queue = ReplayQueue(home=_hermes_home)
+            journal = InboundJournal(home=_hermes_home)
+        except Exception as exc:
+            logger.debug("Inbound replay queue unavailable: %s", exc)
+            return
+
+        for path, payload in list(queue.iter_items()):
+            fingerprint = str(payload.get("fingerprint") or "")
+            if fingerprint and queue.has_seen(fingerprint):
+                queue.delete(path)
+                continue
+            try:
+                event = queue.event_from_item(payload)
+                platform = event.source.platform
+                adapter = self.adapters.get(platform)
+                if not adapter:
+                    logger.warning(
+                        "Inbound replay skipped; adapter not connected: platform=%s path=%s",
+                        getattr(platform, "value", platform),
+                        path,
+                    )
+                    continue
+                await adapter.handle_message(event)
+                if fingerprint:
+                    queue.mark_seen(fingerprint)
+                journal.mark_event(event, "replayed", reason=payload.get("reason"), replay_path=str(path))
+                queue.delete(path)
+                logger.info(
+                    "Inbound replay delivered: platform=%s chat=%s update_id=%s journal_id=%s",
+                    event.source.platform.value if event.source.platform else "unknown",
+                    event.source.chat_id,
+                    getattr(event, "platform_update_id", None),
+                    getattr(event, "_hermes_journal_id", None),
+                )
+            except Exception as exc:
+                logger.warning("Inbound replay failed for %s: %s", path, exc, exc_info=True)
+
     async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
         """Notify the chat that initiated /restart that the gateway is back."""
         notify_path = _hermes_home / ".restart_notify.json"
@@ -14110,6 +14341,15 @@ class GatewayRunner:
                 return None
 
             platform = Platform(platform_str)
+            if platform == Platform.TELEGRAM:
+                try:
+                    int(str(chat_id))
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "Invalid restart notification target for Telegram: chat_id=%r",
+                        chat_id,
+                    )
+                    return
             adapter = self.adapters.get(platform)
             if not adapter:
                 logger.debug(
@@ -14138,7 +14378,7 @@ class GatewayRunner:
             # the log line is misleading and hides real delivery failures.
             if result is not None and getattr(result, "success", True) is False:
                 logger.warning(
-                    "Restart notification to %s:%s was not delivered: %s",
+                    "Restart notification send failed for %s:%s: %s",
                     platform_str,
                     chat_id,
                     getattr(result, "error", "send returned success=False"),
