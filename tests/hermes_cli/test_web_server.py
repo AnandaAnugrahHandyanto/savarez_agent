@@ -2,6 +2,7 @@
 
 import os
 import json
+import subprocess
 import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -124,6 +125,66 @@ class TestWebServerEndpoints:
         assert "version" in data
         assert "hermes_home" in data
         assert "active_sessions" in data
+
+    def test_workflow_api_init_advance_and_verify(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+
+        init_resp = self.client.post(
+            "/api/workflow/init",
+            json={
+                "repo": str(repo),
+                "name": "API Smoke",
+                "claude_gate_note": "Claude auth returned 401",
+            },
+        )
+        assert init_resp.status_code == 200
+        init_data = init_resp.json()
+        assert init_data["state"]["workflow_name"] == "API Smoke"
+        assert any(write["action"] == "create" for write in init_data["writes"])
+
+        advance_resp = self.client.post(
+            "/api/workflow/advance",
+            json={
+                "repo": str(repo),
+                "gate": "claude_review",
+                "status": "blocked",
+                "note": "Claude auth returned 401",
+            },
+        )
+        assert advance_resp.status_code == 200
+        gates = {
+            gate["key"]: gate for gate in advance_resp.json()["state"]["gates"]
+        }
+        assert gates["claude_review"]["status"] == "blocked"
+
+        verify_resp = self.client.post(
+            "/api/workflow/verify",
+            json={
+                "repo": str(repo),
+                "command": "pytest tests/hermes_cli/test_workflow_launcher.py",
+                "result": "passed",
+                "note": "launcher tests passed",
+            },
+        )
+        assert verify_resp.status_code == 200
+        verify_data = verify_resp.json()
+        assert verify_data["state"]["verifications"][-1]["result"] == "passed"
+        gates = {gate["key"]: gate for gate in verify_data["state"]["gates"]}
+        assert gates["verification"]["status"] == "done"
+
+    def test_workflow_api_rejects_non_git_repo_paths(self, tmp_path):
+        repo = tmp_path / "not-git"
+        repo.mkdir()
+
+        resp = self.client.post(
+            "/api/workflow/init",
+            json={"repo": str(repo), "name": "Blocked"},
+        )
+
+        assert resp.status_code == 400
+        assert "Git worktree" in resp.json()["detail"]
 
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config

@@ -68,6 +68,7 @@ import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
 import VisualLibraryPage from "@/pages/VisualLibraryPage";
+import WorkflowPage from "@/pages/WorkflowPage";
 import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
@@ -116,6 +117,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/cron": CronPage,
   "/skills": SkillsPage,
   "/plugins": PluginsPage,
+  "/workflow": WorkflowPage,
   "/visual-library": VisualLibraryPage,
   "/profiles": ProfilesPage,
   "/config": ConfigPage,
@@ -154,6 +156,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
+  { path: "/workflow", label: "Workflow", icon: Wrench },
   {
     path: "/visual-library",
     label: "Visual Library",

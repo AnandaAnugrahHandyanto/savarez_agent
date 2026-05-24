@@ -23,7 +23,7 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import yaml
 
@@ -475,6 +475,34 @@ class ModelAssignment(BaseModel):
     task: str = ""
 
 
+class WorkflowInitBody(BaseModel):
+    repo: Optional[str] = None
+    name: Optional[str] = None
+    linear_issue: Optional[str] = None
+    linear_project: Optional[str] = None
+    claude_gate_note: Optional[str] = None
+    force: bool = False
+
+
+WorkflowGateStatus = Literal["pending", "ready", "blocked", "done", "skipped"]
+WorkflowVerifyResult = Literal["passed", "failed", "blocked"]
+
+
+class WorkflowAdvanceBody(BaseModel):
+    repo: Optional[str] = None
+    gate: str
+    status: WorkflowGateStatus
+    evidence: Optional[str] = None
+    note: Optional[str] = None
+
+
+class WorkflowVerifyBody(BaseModel):
+    repo: Optional[str] = None
+    command: str
+    result: WorkflowVerifyResult
+    note: Optional[str] = None
+
+
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
 try:
     _GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "3"))
@@ -639,6 +667,116 @@ async def get_status():
         "gateway_updated_at": gateway_updated_at,
         "active_sessions": active_sessions,
     }
+
+
+def _workflow_repo_path(repo: Optional[str]) -> Path:
+    from hermes_cli.workflow_launcher import default_artifact_repository
+
+    default_repo = default_artifact_repository().expanduser().resolve()
+    if not repo:
+        return default_repo
+
+    requested = Path(repo).expanduser().resolve()
+    if requested == default_repo or default_repo in requested.parents:
+        return requested
+    if not requested.exists() or not requested.is_dir():
+        raise HTTPException(
+            status_code=400,
+            detail="Workflow repository must be an existing directory.",
+        )
+
+    try:
+        git_root = subprocess.run(
+            ["git", "-C", str(requested), "rev-parse", "--show-toplevel"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip()
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Workflow repository must be the default artifact repository "
+                "or an existing Git worktree."
+            ),
+        ) from exc
+
+    if not git_root:
+        raise HTTPException(
+            status_code=400,
+            detail="Workflow repository Git root could not be resolved.",
+        )
+    return Path(git_root).resolve()
+
+
+@app.get("/api/workflow/status")
+async def get_workflow_status(repo: Optional[str] = None):
+    from hermes_cli.workflow_launcher import workflow_payload
+
+    return workflow_payload(_workflow_repo_path(repo))
+
+
+@app.post("/api/workflow/init")
+async def init_workflow_endpoint(body: WorkflowInitBody):
+    from hermes_cli.workflow_launcher import init_workflow, workflow_payload
+
+    repo = _workflow_repo_path(body.repo)
+    try:
+        writes = init_workflow(
+            repo=repo,
+            workflow_name=body.name,
+            force=body.force,
+            linear_issue=body.linear_issue,
+            linear_project=body.linear_project,
+            claude_gate_note=body.claude_gate_note,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    payload = workflow_payload(repo)
+    payload["writes"] = [
+        {"path": str(write.path), "action": write.action} for write in writes
+    ]
+    return payload
+
+
+@app.post("/api/workflow/advance")
+async def advance_workflow_endpoint(body: WorkflowAdvanceBody):
+    from hermes_cli.workflow_launcher import advance_workflow_gate, workflow_payload
+
+    repo = _workflow_repo_path(body.repo)
+    try:
+        advance_workflow_gate(
+            repo=repo,
+            gate_key=body.gate,
+            status=body.status,
+            evidence=body.evidence,
+            note=body.note,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return workflow_payload(repo)
+
+
+@app.post("/api/workflow/verify")
+async def verify_workflow_endpoint(body: WorkflowVerifyBody):
+    from hermes_cli.workflow_launcher import record_verification, workflow_payload
+
+    repo = _workflow_repo_path(body.repo)
+    try:
+        record_verification(
+            repo=repo,
+            command=body.command,
+            result=body.result,
+            note=body.note,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return workflow_payload(repo)
 
 
 # ---------------------------------------------------------------------------

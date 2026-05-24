@@ -281,6 +281,30 @@ export const api = {
       `/api/actions/${encodeURIComponent(name)}/status?lines=${lines}`,
     ),
 
+  // Workflow launcher
+  getWorkflowStatus: (repo?: string) => {
+    const qs = repo ? `?repo=${encodeURIComponent(repo)}` : "";
+    return fetchJSON<WorkflowPayload>(`/api/workflow/status${qs}`);
+  },
+  initWorkflow: (body: WorkflowInitRequest) =>
+    fetchJSON<WorkflowPayload & { writes: WorkflowWrite[] }>("/api/workflow/init", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  advanceWorkflow: (body: WorkflowAdvanceRequest) =>
+    fetchJSON<WorkflowPayload>("/api/workflow/advance", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  verifyWorkflow: (body: WorkflowVerifyRequest) =>
+    fetchJSON<WorkflowPayload>("/api/workflow/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+
   // Dashboard plugins
   getPlugins: () =>
     fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
@@ -360,6 +384,85 @@ export interface ActionStatusResponse {
   name: string;
   pid: number | null;
   running: boolean;
+}
+
+export interface WorkflowGate {
+  evidence: string;
+  key: string;
+  note: string;
+  owner: string;
+  status: "pending" | "ready" | "blocked" | "done" | "skipped";
+  title: string;
+  updated_at: string;
+}
+
+export interface WorkflowVerification {
+  command: string;
+  note: string;
+  ran_at: string;
+  result: "passed" | "failed" | "blocked";
+}
+
+export interface WorkflowState {
+  created_at: string;
+  gates: WorkflowGate[];
+  linear_issue: string | null;
+  linear_project: string | null;
+  repo: string;
+  schema_version: number;
+  updated_at: string;
+  verifications: WorkflowVerification[];
+  workflow_name: string;
+}
+
+export interface WorkflowPayload {
+  inventory: {
+    missing_required_count: number;
+    records: Array<{
+      missing: string[];
+      slug: string;
+      source_file: string | null;
+      title: string;
+      updated_at: string;
+    }>;
+    repo: string;
+    total: number;
+    with_preview: number;
+    with_thumbnail: number;
+  };
+  markdown: string;
+  repo: string;
+  state: WorkflowState | null;
+  state_path: string;
+}
+
+export interface WorkflowWrite {
+  action: string;
+  path: string;
+}
+
+export interface WorkflowInitRequest {
+  claude_gate_note?: string;
+  force?: boolean;
+  linear_issue?: string;
+  linear_project?: string;
+  name?: string;
+  repo?: string;
+}
+
+export interface WorkflowAdvanceRequest {
+  evidence?: string;
+  gate: string;
+  note?: string;
+  repo?: string;
+  status: WorkflowGate["status"];
+}
+
+export interface WorkflowVerifyRequest {
+  command: string;
+  note?: string;
+  repo?: string;
+  result: WorkflowVerification["result"];
 }
 
 export interface PlatformStatus {

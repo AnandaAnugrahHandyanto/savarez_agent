@@ -8,8 +8,11 @@ folder is the evidence-bearing source of truth.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import json
-from dataclasses import dataclass
+import os
+import time
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
@@ -18,6 +21,7 @@ from hermes_constants import get_hermes_home
 
 
 WORKFLOW_DIRNAME = ".workflow"
+STATE_FILENAME = "state.json"
 EXPECTED_ARTIFACT_FILES = (
     "preview.html",
     "metadata.json",
@@ -26,6 +30,18 @@ EXPECTED_ARTIFACT_FILES = (
     "thumbnail.png",
 )
 SOURCE_FILES = ("source.html", "source.jsx", "source.fixed.jsx", "source.tsx")
+GATE_STATUSES = frozenset({"pending", "ready", "blocked", "done", "skipped"})
+VERIFY_RESULTS = frozenset({"passed", "failed", "blocked"})
+GATE_DEFINITIONS = (
+    ("scope_packet", "Scope packet", "Codex", "ARCHITECT_PACK.md"),
+    ("codex_plan", "Codex plan", "Codex", "CODEX_PLAN.md"),
+    ("claude_review", "Claude adversarial review", "Claude Code", "CLAUDE_CRITIQUE.md"),
+    ("reconciliation", "Reconciliation", "Codex", "RECONCILIATION.md"),
+    ("alignment_decision", "Alignment decision", "Codex + Claude", "ALIGNMENT_DECISION.md"),
+    ("build", "Build", "Codex", "repo diff"),
+    ("verification", "Verification", "Codex", "VERIFY.md"),
+    ("linear_update", "Linear update", "Operator", "linear/LINEAR_ISSUE_TEMPLATE.md"),
+)
 
 
 @dataclass(frozen=True)
@@ -53,12 +69,245 @@ class WorkflowWrite:
     action: str
 
 
+@dataclass(frozen=True)
+class WorkflowGate:
+    key: str
+    title: str
+    owner: str
+    status: str
+    evidence: str
+    note: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class VerificationRecord:
+    command: str
+    result: str
+    note: str
+    ran_at: str
+
+
+@dataclass(frozen=True)
+class WorkflowState:
+    schema_version: int
+    workflow_name: str
+    repo: str
+    created_at: str
+    updated_at: str
+    linear_issue: str | None
+    linear_project: str | None
+    gates: tuple[WorkflowGate, ...]
+    verifications: tuple[VerificationRecord, ...]
+
+
 def default_artifact_repository() -> Path:
     return get_hermes_home() / "artifact-repository"
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _state_path(repo: Path) -> Path:
+    return repo / WORKFLOW_DIRNAME / STATE_FILENAME
+
+
+def _state_lock_path(repo: Path) -> Path:
+    return repo / WORKFLOW_DIRNAME / ".state.lock"
+
+
+@contextmanager
+def _workflow_state_lock(repo: Path):
+    lock_path = _state_lock_path(repo)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + 10
+    fd: int | None = None
+    while fd is None:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode("ascii"))
+        except FileExistsError:
+            try:
+                age = time.time() - lock_path.stat().st_mtime
+                if age > 60:
+                    lock_path.unlink()
+                    continue
+            except FileNotFoundError:
+                continue
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"Timed out waiting for workflow state lock: {lock_path}")
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        if fd is not None:
+            os.close(fd)
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _write_text_atomic(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(
+        f".{path.name}.{os.getpid()}.{time.monotonic_ns()}.tmp"
+    )
+    try:
+        tmp_path.write_text(content, encoding="utf-8")
+        tmp_path.replace(path)
+    finally:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _gate_to_dict(gate: WorkflowGate) -> dict[str, str]:
+    return {
+        "key": gate.key,
+        "title": gate.title,
+        "owner": gate.owner,
+        "status": gate.status,
+        "evidence": gate.evidence,
+        "note": gate.note,
+        "updated_at": gate.updated_at,
+    }
+
+
+def _verification_to_dict(record: VerificationRecord) -> dict[str, str]:
+    return {
+        "command": record.command,
+        "result": record.result,
+        "note": record.note,
+        "ran_at": record.ran_at,
+    }
+
+
+def _state_to_dict(state: WorkflowState) -> dict:
+    return {
+        "schema_version": state.schema_version,
+        "workflow_name": state.workflow_name,
+        "repo": state.repo,
+        "created_at": state.created_at,
+        "updated_at": state.updated_at,
+        "linear_issue": state.linear_issue,
+        "linear_project": state.linear_project,
+        "gates": [_gate_to_dict(gate) for gate in state.gates],
+        "verifications": [
+            _verification_to_dict(record) for record in state.verifications
+        ],
+    }
+
+
+def _gate_from_dict(data: dict) -> WorkflowGate:
+    return WorkflowGate(
+        key=str(data.get("key") or ""),
+        title=str(data.get("title") or ""),
+        owner=str(data.get("owner") or ""),
+        status=str(data.get("status") or "pending"),
+        evidence=str(data.get("evidence") or ""),
+        note=str(data.get("note") or ""),
+        updated_at=str(data.get("updated_at") or "Unknown"),
+    )
+
+
+def _verification_from_dict(data: dict) -> VerificationRecord:
+    return VerificationRecord(
+        command=str(data.get("command") or ""),
+        result=str(data.get("result") or "blocked"),
+        note=str(data.get("note") or ""),
+        ran_at=str(data.get("ran_at") or "Unknown"),
+    )
+
+
+def _state_from_dict(data: dict) -> WorkflowState:
+    gates = tuple(
+        _gate_from_dict(item)
+        for item in data.get("gates", [])
+        if isinstance(item, dict)
+    )
+    verifications = tuple(
+        _verification_from_dict(item)
+        for item in data.get("verifications", [])
+        if isinstance(item, dict)
+    )
+    return WorkflowState(
+        schema_version=int(data.get("schema_version") or 1),
+        workflow_name=str(data.get("workflow_name") or "Workflow"),
+        repo=str(data.get("repo") or ""),
+        created_at=str(data.get("created_at") or "Unknown"),
+        updated_at=str(data.get("updated_at") or "Unknown"),
+        linear_issue=data.get("linear_issue")
+        if isinstance(data.get("linear_issue"), str)
+        else None,
+        linear_project=data.get("linear_project")
+        if isinstance(data.get("linear_project"), str)
+        else None,
+        gates=gates,
+        verifications=verifications,
+    )
+
+
+def _initial_state(
+    repo: Path,
+    workflow_name: str,
+    linear_issue: str | None,
+    linear_project: str | None,
+    claude_gate_note: str | None,
+) -> WorkflowState:
+    now = _utc_now()
+    gates = []
+    for key, title, owner, evidence in GATE_DEFINITIONS:
+        note = ""
+        status = "pending"
+        if key == "scope_packet":
+            status = "ready"
+            note = "Generated by workflow launcher."
+        elif key == "claude_review" and claude_gate_note:
+            note = claude_gate_note
+        gates.append(
+            WorkflowGate(
+                key=key,
+                title=title,
+                owner=owner,
+                status=status,
+                evidence=evidence,
+                note=note,
+                updated_at=now,
+            )
+        )
+    return WorkflowState(
+        schema_version=1,
+        workflow_name=workflow_name,
+        repo=str(repo),
+        created_at=now,
+        updated_at=now,
+        linear_issue=linear_issue,
+        linear_project=linear_project,
+        gates=tuple(gates),
+        verifications=(),
+    )
+
+
+def load_workflow_state(repo: Path) -> WorkflowState | None:
+    path = _state_path(repo.expanduser().resolve())
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return _state_from_dict(data) if isinstance(data, dict) else None
+
+
+def _write_workflow_state(repo: Path, state: WorkflowState) -> None:
+    path = _state_path(repo)
+    _write_text_atomic(
+        path,
+        json.dumps(_state_to_dict(state), indent=2, sort_keys=True) + "\n",
+    )
 
 
 def _read_metadata(path: Path) -> dict:
@@ -162,10 +411,110 @@ def _render_inventory(inventory: ArtifactInventory) -> str:
     )
 
 
+def _render_gate_table(state: WorkflowState) -> str:
+    rows = [
+        (
+            gate.key,
+            gate.title,
+            gate.owner,
+            gate.status,
+            gate.evidence,
+            gate.note or "",
+        )
+        for gate in state.gates
+    ]
+    return _markdown_table(
+        rows,
+        ("Key", "Gate", "Owner", "Status", "Evidence", "Note"),
+    )
+
+
+def _render_verification_table(state: WorkflowState) -> str:
+    if not state.verifications:
+        return "No verification records yet."
+    rows = [
+        (
+            record.ran_at,
+            f"`{record.command}`",
+            record.result,
+            record.note,
+        )
+        for record in state.verifications[-10:]
+    ]
+    return _markdown_table(rows, ("Ran At", "Command", "Result", "Note"))
+
+
+def _render_state_markdown(state: WorkflowState, inventory: ArtifactInventory) -> str:
+    return f"""# Workflow State
+
+- Target repository: `{state.repo}`
+- Workflow name: `{state.workflow_name}`
+- Created: {state.created_at}
+- Updated: {state.updated_at}
+- Linear issue: {state.linear_issue or "Pending"}
+- Linear project: {state.linear_project or "Pending"}
+- Artifact count: {inventory.total}
+- Artifacts with preview: {inventory.with_preview}
+- Artifacts with thumbnail: {inventory.with_thumbnail}
+- Artifacts missing required files: {inventory.missing_required_count}
+
+## Gate Status
+
+{_render_gate_table(state)}
+
+## Verification Log
+
+{_render_verification_table(state)}
+
+## Operating Rule
+
+Implementation starts only after Codex and Claude have aligned on the best path,
+or after the operator explicitly accepts a documented exception.
+"""
+
+
+def _inventory_to_dict(inventory: ArtifactInventory) -> dict:
+    return {
+        "repo": str(inventory.repo),
+        "total": inventory.total,
+        "with_preview": inventory.with_preview,
+        "with_thumbnail": inventory.with_thumbnail,
+        "missing_required_count": inventory.missing_required_count,
+        "records": [
+            {
+                "slug": record.slug,
+                "title": record.title,
+                "updated_at": record.updated_at,
+                "missing": list(record.missing),
+                "source_file": record.source_file,
+            }
+            for record in inventory.records
+        ],
+    }
+
+
+def workflow_payload(repo: Path) -> dict:
+    repo = repo.expanduser().resolve()
+    inventory = inventory_artifact_repository(repo)
+    state = load_workflow_state(repo)
+    return {
+        "repo": str(repo),
+        "state_path": str(_state_path(repo)),
+        "state": _state_to_dict(state) if state is not None else None,
+        "inventory": _inventory_to_dict(inventory),
+        "markdown": (
+            _render_state_markdown(state, inventory).rstrip()
+            if state is not None
+            else workflow_status(repo)
+        ),
+    }
+
+
 def _workflow_files(
     repo: Path,
     workflow_name: str,
     inventory: ArtifactInventory,
+    state: WorkflowState,
     linear_issue: str | None,
     linear_project: str | None,
     claude_gate_note: str | None,
@@ -190,28 +539,7 @@ def _workflow_files(
     )
 
     return {
-        Path("WORKFLOW_STATE.md"): f"""# Workflow State
-
-{summary}
-
-## Gate Status
-
-| Gate | Owner | Status | Evidence |
-| --- | --- | --- | --- |
-| 1. Scope packet | Codex | Ready | `ARCHITECT_PACK.md` |
-| 2. Codex plan | Codex | Pending | `CODEX_PLAN.md` |
-| 3. Claude adversarial review | Claude Code | Pending | `CLAUDE_CRITIQUE.md` |
-| 4. Reconciliation | Codex | Pending | `RECONCILIATION.md` |
-| 5. Alignment decision | Codex + Claude | Pending | `ALIGNMENT_DECISION.md` |
-| 6. Build | Codex | Pending | repo diff |
-| 7. Verification | Codex | Pending | `VERIFY.md` |
-| 8. Linear update | Operator | Pending | `linear/LINEAR_ISSUE_TEMPLATE.md` |
-
-## Operating Rule
-
-Implementation starts only after Codex and Claude have aligned on the best path,
-or after the operator explicitly accepts a documented exception.
-""",
+        Path("WORKFLOW_STATE.md"): _render_state_markdown(state, inventory),
         Path("ARCHITECT_PACK.md"): f"""# Architect Pack
 
 ## Objective
@@ -370,28 +698,49 @@ def init_workflow(
     repo = repo.expanduser().resolve()
     workflow_name = workflow_name or repo.name
     inventory = inventory_artifact_repository(repo)
-    files = _workflow_files(
+    state = _initial_state(
         repo=repo,
         workflow_name=workflow_name,
-        inventory=inventory,
         linear_issue=linear_issue,
         linear_project=linear_project,
         claude_gate_note=claude_gate_note,
     )
+    files = _workflow_files(
+        repo=repo,
+        workflow_name=workflow_name,
+        inventory=inventory,
+        state=state,
+        linear_issue=linear_issue,
+        linear_project=linear_project,
+        claude_gate_note=claude_gate_note,
+    )
+    files[Path(STATE_FILENAME)] = json.dumps(
+        _state_to_dict(state),
+        indent=2,
+        sort_keys=True,
+    )
     workflow_dir = repo / WORKFLOW_DIRNAME
     writes: list[WorkflowWrite] = []
 
-    for relative_path, content in files.items():
-        destination = workflow_dir / relative_path
-        if destination.exists() and not force:
-            writes.append(WorkflowWrite(destination, "exists"))
-            continue
-        action = "write" if destination.exists() else "create"
-        writes.append(WorkflowWrite(destination, action))
-        if dry_run:
-            continue
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(content.rstrip() + "\n", encoding="utf-8")
+    if dry_run:
+        for relative_path in files:
+            destination = workflow_dir / relative_path
+            if destination.exists() and not force:
+                writes.append(WorkflowWrite(destination, "exists"))
+                continue
+            action = "write" if destination.exists() else "create"
+            writes.append(WorkflowWrite(destination, action))
+        return writes
+
+    with _workflow_state_lock(repo):
+        for relative_path, content in files.items():
+            destination = workflow_dir / relative_path
+            if destination.exists() and not force:
+                writes.append(WorkflowWrite(destination, "exists"))
+                continue
+            action = "write" if destination.exists() else "create"
+            writes.append(WorkflowWrite(destination, action))
+            _write_text_atomic(destination, content.rstrip() + "\n")
 
     return writes
 
@@ -410,6 +759,132 @@ def inspect_workflow(repo: Path) -> str:
     return "\n".join(summary)
 
 
+def workflow_status(repo: Path) -> str:
+    repo = repo.expanduser().resolve()
+    inventory = inventory_artifact_repository(repo)
+    state = load_workflow_state(repo)
+    if state is None:
+        return "\n".join(
+            [
+                inspect_workflow(repo),
+                "",
+                f"No workflow state found at `{_state_path(repo)}`.",
+                "Run `hermes workflow init` before advancing gates.",
+            ]
+        )
+    return _render_state_markdown(state, inventory).rstrip()
+
+
+def _replace_gate(
+    state: WorkflowState,
+    gate_key: str,
+    status: str,
+    evidence: str | None,
+    note: str | None,
+) -> WorkflowState:
+    if status not in GATE_STATUSES:
+        raise ValueError(
+            f"Invalid status {status!r}. Expected one of: {', '.join(sorted(GATE_STATUSES))}"
+        )
+    updated = _utc_now()
+    found = False
+    gates = []
+    for gate in state.gates:
+        if gate.key != gate_key:
+            gates.append(gate)
+            continue
+        found = True
+        gates.append(
+            replace(
+                gate,
+                status=status,
+                evidence=gate.evidence if evidence is None else evidence,
+                note=gate.note if note is None else note,
+                updated_at=updated,
+            )
+        )
+    if not found:
+        valid = ", ".join(gate.key for gate in state.gates)
+        raise ValueError(f"Unknown gate {gate_key!r}. Expected one of: {valid}")
+    return replace(state, gates=tuple(gates), updated_at=updated)
+
+
+def _refresh_workflow_state_markdown(repo: Path, state: WorkflowState) -> None:
+    inventory = inventory_artifact_repository(repo)
+    destination = repo / WORKFLOW_DIRNAME / "WORKFLOW_STATE.md"
+    _write_text_atomic(
+        destination,
+        _render_state_markdown(state, inventory).rstrip() + "\n",
+    )
+
+
+def advance_workflow_gate(
+    repo: Path,
+    gate_key: str,
+    status: str,
+    evidence: str | None = None,
+    note: str | None = None,
+) -> WorkflowState:
+    repo = repo.expanduser().resolve()
+    with _workflow_state_lock(repo):
+        state = load_workflow_state(repo)
+        if state is None:
+            raise FileNotFoundError(f"No workflow state found at {_state_path(repo)}")
+        state = _replace_gate(state, gate_key, status, evidence, note)
+        _write_workflow_state(repo, state)
+        _refresh_workflow_state_markdown(repo, state)
+        return state
+
+
+def record_verification(
+    repo: Path,
+    command: str,
+    result: str,
+    note: str | None = None,
+) -> WorkflowState:
+    if result not in VERIFY_RESULTS:
+        raise ValueError(
+            f"Invalid result {result!r}. Expected one of: {', '.join(sorted(VERIFY_RESULTS))}"
+        )
+    repo = repo.expanduser().resolve()
+    with _workflow_state_lock(repo):
+        state = load_workflow_state(repo)
+        if state is None:
+            raise FileNotFoundError(f"No workflow state found at {_state_path(repo)}")
+
+        now = _utc_now()
+        record = VerificationRecord(
+            command=command,
+            result=result,
+            note=note or "",
+            ran_at=now,
+        )
+        state = replace(
+            state,
+            verifications=state.verifications + (record,),
+            updated_at=now,
+        )
+        if result == "passed":
+            state = _replace_gate(
+                state,
+                "verification",
+                "done",
+                "VERIFY.md",
+                note or f"Latest check passed: {command}",
+            )
+        else:
+            state = _replace_gate(
+                state,
+                "verification",
+                "blocked",
+                "VERIFY.md",
+                note or f"Latest check {result}: {command}",
+            )
+        _write_workflow_state(repo, state)
+        _refresh_workflow_state_markdown(repo, state)
+        return state
+
+
 def _print_writes(writes: Iterable[WorkflowWrite], dry_run: bool) -> None:
     prefix = "would " if dry_run else ""
     for write in writes:
@@ -425,6 +900,9 @@ def workflow_command(args: argparse.Namespace) -> None:
     if action == "inspect":
         print(inspect_workflow(repo))
         return
+    if action == "status":
+        print(workflow_status(repo))
+        return
     if action == "init":
         writes = init_workflow(
             repo=repo,
@@ -436,6 +914,33 @@ def workflow_command(args: argparse.Namespace) -> None:
             claude_gate_note=args.claude_gate_note,
         )
         _print_writes(writes, args.dry_run)
+        return
+    if action == "advance":
+        try:
+            state = advance_workflow_gate(
+                repo=repo,
+                gate_key=args.gate,
+                status=args.status,
+                evidence=args.evidence,
+                note=args.note,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            raise SystemExit(str(exc)) from exc
+        print(f"{args.gate}: {args.status}")
+        print(f"state: {_state_path(Path(state.repo))}")
+        return
+    if action == "verify":
+        try:
+            state = record_verification(
+                repo=repo,
+                command=args.command,
+                result=args.result,
+                note=args.note,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            raise SystemExit(str(exc)) from exc
+        print(f"verification: {args.result}")
+        print(f"state: {_state_path(Path(state.repo))}")
         return
     raise SystemExit("Missing workflow action. Use `hermes workflow --help`.")
 
@@ -500,6 +1005,73 @@ def register_workflow_subparser(subparsers) -> None:
         "--force",
         action="store_true",
         help="Overwrite existing workflow files.",
+    )
+
+    status_parser = workflow_sub.add_parser(
+        "status",
+        help="Print workflow gate status from .workflow/state.json",
+    )
+    status_parser.add_argument(
+        "--repo",
+        default=None,
+        help="Repository path. Defaults to Hermes artifact repository.",
+    )
+
+    advance_parser = workflow_sub.add_parser(
+        "advance",
+        help="Update a workflow gate status",
+    )
+    advance_parser.add_argument(
+        "--repo",
+        default=None,
+        help="Repository path. Defaults to Hermes artifact repository.",
+    )
+    advance_parser.add_argument(
+        "--gate",
+        required=True,
+        help="Gate key, for example codex_plan, claude_review, or verification.",
+    )
+    advance_parser.add_argument(
+        "--status",
+        required=True,
+        choices=sorted(GATE_STATUSES),
+        help="New gate status.",
+    )
+    advance_parser.add_argument(
+        "--evidence",
+        default=None,
+        help="Evidence path or reference for this gate.",
+    )
+    advance_parser.add_argument(
+        "--note",
+        default=None,
+        help="Short note explaining the gate update.",
+    )
+
+    verify_parser = workflow_sub.add_parser(
+        "verify",
+        help="Record a verification result and update the verification gate",
+    )
+    verify_parser.add_argument(
+        "--repo",
+        default=None,
+        help="Repository path. Defaults to Hermes artifact repository.",
+    )
+    verify_parser.add_argument(
+        "--command",
+        required=True,
+        help="Verification command or runtime check that was executed.",
+    )
+    verify_parser.add_argument(
+        "--result",
+        required=True,
+        choices=sorted(VERIFY_RESULTS),
+        help="Verification result.",
+    )
+    verify_parser.add_argument(
+        "--note",
+        default=None,
+        help="Short note or blocker details.",
     )
     workflow_parser.set_defaults(func=workflow_command)
 
