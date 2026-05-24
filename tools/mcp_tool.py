@@ -2835,7 +2835,9 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         List of all currently registered MCP tool names.
     """
     if not _MCP_AVAILABLE:
-        logger.debug("MCP SDK not available -- skipping explicit MCP registration")
+        logger.warning(
+            "MCP SDK not available -- install with: pip install mcp"
+        )
         return []
 
     if not servers:
@@ -2912,7 +2914,9 @@ def discover_mcp_tools() -> List[str]:
         List of all registered MCP tool names.
     """
     if not _MCP_AVAILABLE:
-        logger.debug("MCP SDK not available -- skipping MCP tool discovery")
+        logger.warning(
+            "MCP SDK not available -- install with: pip install mcp"
+        )
         return []
 
     servers = _load_mcp_config()
