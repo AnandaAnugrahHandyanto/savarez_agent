@@ -146,3 +146,47 @@ class TestHostHeaderMiddleware:
         resp = client.get("/api/status")
         # Should get through to the status endpoint, not a 400
         assert resp.status_code != 400
+
+
+class TestDashboardSecurityHeaders:
+    def test_public_dashboard_api_responses_include_security_headers(self):
+        from fastapi.testclient import TestClient
+        from hermes_cli.web_server import app
+
+        if hasattr(app.state, "bound_host"):
+            del app.state.bound_host
+
+        client = TestClient(app)
+        resp = client.get("/api/status")
+
+        assert resp.status_code == 200
+        assert resp.headers.get("Content-Security-Policy") == (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob:; "
+            "font-src 'self' data:; "
+            "connect-src 'self' ws://localhost:* ws://127.0.0.1:* "
+            "wss://localhost:* wss://127.0.0.1:*; "
+            "base-uri 'self'; "
+            "form-action 'self'; "
+            "frame-ancestors 'none'"
+        )
+        assert resp.headers.get("Permissions-Policy") == "camera=(), microphone=(), geolocation=()"
+        assert resp.headers.get("Referrer-Policy") == "no-referrer"
+        assert resp.headers.get("X-Content-Type-Options") == "nosniff"
+        assert resp.headers.get("X-Frame-Options") == "DENY"
+
+    def test_unauthorized_dashboard_api_responses_include_security_headers(self):
+        from fastapi.testclient import TestClient
+        from hermes_cli.web_server import app
+
+        if hasattr(app.state, "bound_host"):
+            del app.state.bound_host
+
+        client = TestClient(app)
+        resp = client.get("/api/env")
+
+        assert resp.status_code == 401
+        assert resp.headers.get("Content-Security-Policy")
+        assert resp.headers.get("X-Frame-Options") == "DENY"
