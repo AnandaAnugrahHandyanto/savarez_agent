@@ -2,7 +2,7 @@
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -359,6 +359,39 @@ class TestStreamRunMediaStripping:
             assert "MEDIA:" not in sent_text, f"MEDIA: leaked into display: {sent_text!r}"
 
         assert consumer.already_sent
+
+
+class TestTypingLifecycle:
+    """Streaming finalization should stop typing before the final reply lands."""
+
+    @pytest.mark.asyncio
+    async def test_finish_requests_typing_stop_before_final_send(self):
+        adapter = MagicMock()
+        adapter.request_typing_stop = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg_1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=999.0, buffer_threshold=999),
+        )
+
+        consumer.on_delta("Final answer")
+        consumer.finish()
+        await consumer.run()
+
+        adapter.request_typing_stop.assert_called_once_with("chat_123")
+        assert adapter.send.call_count == 1
+        stop_order = adapter.mock_calls.index(call.request_typing_stop("chat_123"))
+        send_order = adapter.mock_calls.index(call.send(
+            chat_id="chat_123",
+            content="Final answer",
+            reply_to=None,
+            metadata=None,
+        ))
+        assert stop_order < send_order
 
 
 # ── Segment break (tool boundary) tests ──────────────────────────────────

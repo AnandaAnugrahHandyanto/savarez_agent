@@ -1428,6 +1428,11 @@ class BasePlatformAdapter(ABC):
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
+        # Per-chat stop signals for the background typing refresher. This lets
+        # streaming/final-delivery paths stop refreshing the indicator before
+        # they post the completed response, instead of waiting for the whole
+        # message handler to unwind.
+        self._typing_stop_events: Dict[str, asyncio.Event] = {}
 
     @property
     def message_len_fn(self) -> Callable[[str], int]:
@@ -2469,12 +2474,19 @@ class BasePlatformAdapter(ABC):
         """Resume typing indicator for a chat after approval resolves."""
         self._typing_paused.discard(chat_id)
 
+    def request_typing_stop(self, chat_id: str) -> None:
+        """Ask the active typing refresher for ``chat_id`` to stop promptly."""
+        stop_event = self._typing_stop_events.get(chat_id)
+        if stop_event is not None:
+            stop_event.set()
+
     async def interrupt_session_activity(self, session_key: str, chat_id: str) -> None:
         """Signal the active session loop to stop and clear typing immediately."""
         if session_key:
             interrupt_event = self._active_sessions.get(session_key)
             if interrupt_event is not None:
                 interrupt_event.set()
+        self.request_typing_stop(chat_id)
         try:
             await self.stop_typing(chat_id)
         except Exception:
@@ -3205,13 +3217,15 @@ class BasePlatformAdapter(ABC):
         
         # Start continuous typing indicator (refreshes every 2 seconds)
         _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
-        _keep_typing_kwargs = {"metadata": _thread_metadata}
+        typing_stop_event = asyncio.Event()
+        self._typing_stop_events[event.source.chat_id] = typing_stop_event
+        _keep_typing_kwargs: Dict[str, Any] = {"metadata": _thread_metadata}
         try:
             _keep_typing_sig = inspect.signature(self._keep_typing)
         except (TypeError, ValueError):
             _keep_typing_sig = None
         if _keep_typing_sig is None or "stop_event" in _keep_typing_sig.parameters:
-            _keep_typing_kwargs["stop_event"] = interrupt_event
+            _keep_typing_kwargs["stop_event"] = typing_stop_event
         typing_task = asyncio.create_task(
             self._keep_typing(
                 event.source.chat_id,
@@ -3219,7 +3233,14 @@ class BasePlatformAdapter(ABC):
             )
         )
 
+        typing_task_stopped = False
+
         async def _stop_typing_task() -> None:
+            nonlocal typing_task_stopped
+            if typing_task_stopped:
+                return
+            typing_task_stopped = True
+            typing_stop_event.set()
             typing_task.cancel()
             try:
                 await asyncio.wait_for(asyncio.shield(typing_task), timeout=0.5)
@@ -3227,6 +3248,15 @@ class BasePlatformAdapter(ABC):
                 # Cancellation cleanup must not block adapter shutdown.  The
                 # typing task is already cancelled; if the parent task is also
                 # cancelling, let this message-processing task unwind now.
+                pass
+
+        async def _stop_typing_before_final_delivery() -> None:
+            """Prevent a late typing refresh from racing after the final reply."""
+            await _stop_typing_task()
+            try:
+                if hasattr(self, "stop_typing"):
+                    await self.stop_typing(event.source.chat_id)
+            except Exception:
                 pass
         
         try:
@@ -3321,6 +3351,7 @@ class BasePlatformAdapter(ABC):
                 _tts_caption_delivered = False
                 if _tts_path and Path(_tts_path).exists():
                     try:
+                        await _stop_typing_before_final_delivery()
                         telegram_tts_caption = None
                         if (
                             self.platform == Platform.TELEGRAM
@@ -3345,6 +3376,7 @@ class BasePlatformAdapter(ABC):
 
                 # Send the text portion
                 if text_content and not _tts_caption_delivered:
+                    await _stop_typing_before_final_delivery()
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)
                     # Mark final response messages for notification delivery.
@@ -3387,6 +3419,7 @@ class BasePlatformAdapter(ABC):
 
                 # Send extracted images as native attachments
                 if images:
+                    await _stop_typing_before_final_delivery()
                     logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
                     try:
                         await self.send_multiple_images(
@@ -3430,6 +3463,7 @@ class BasePlatformAdapter(ABC):
 
                 if _image_paths:
                     try:
+                        await _stop_typing_before_final_delivery()
                         _batch = [(f"file://{_quote(p)}", "") for p in _image_paths]
                         await self.send_multiple_images(
                             chat_id=event.source.chat_id,
@@ -3441,6 +3475,7 @@ class BasePlatformAdapter(ABC):
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
 
                 for media_path, is_voice in _non_image_media:
+                    await _stop_typing_before_final_delivery()
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
@@ -3471,6 +3506,7 @@ class BasePlatformAdapter(ABC):
 
                 # Send auto-detected local non-image files as native attachments
                 for file_path in _non_image_local:
+                    await _stop_typing_before_final_delivery()
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
@@ -3603,6 +3639,8 @@ class BasePlatformAdapter(ABC):
                     await self.stop_typing(event.source.chat_id)
             except Exception:
                 pass
+            if self._typing_stop_events.get(event.source.chat_id) is typing_stop_event:
+                self._typing_stop_events.pop(event.source.chat_id, None)
             # Late-arrival drain: a message may have arrived during the
             # cleanup awaits above (typing_task cancel, stop_typing).  Such
             # messages passed the Level-1 guard (entry still live, Event
