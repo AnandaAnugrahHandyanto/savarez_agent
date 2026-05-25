@@ -2747,6 +2747,117 @@ def test_default_spawn_auto_loads_kanban_worker_skill(kanban_home, monkeypatch):
     assert env.get("HERMES_PROFILE") == "some-profile"
 
 
+def test_default_spawn_injects_profile_home_and_model_hint(kanban_home, monkeypatch):
+    """Dispatcher should pass profile-scoped HERMES_HOME plus the same compact
+    model hint exposed in the decomposer roster.
+    """
+    captured = {}
+    profile_home = kanban_home / "profiles" / "analyst"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text(
+        """
+kanban_worker_model_routing:
+  version: 2026-05-15-jki-58
+  receipt_mode: dispatcher-comment-on-spawn
+  assignees:
+    analyst:
+      task_class: research
+      tier: standard
+      coding_lane:
+        default: claude-cli:opus-4.7-subscription
+      review_lane:
+        default: codex-cli:codex review
+        fallback_order:
+          - claude-cli:opus-4.7-subscription
+          - openai-codex:gpt-5.4
+      hermes_runtime_hint:
+        provider: openai-codex
+        model: gpt-5.4
+        reasoning_effort: medium
+      quota_monitor_lane:
+        provider: openai-codex
+        model: gpt-5.4-mini
+      notes: focused review routing
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    class FakeProc:
+        pid = 4242
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env", {})
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="routing", assignee="analyst")
+        task = kb.claim_task(conn, tid) or kb.get_task(conn, tid)
+        workspace = kb.resolve_workspace(task)
+        pid = kb._default_spawn(task, str(workspace))
+        assert pid == 4242
+    finally:
+        conn.close()
+
+    env = captured["env"]
+    assert env.get("HERMES_HOME") == str(profile_home)
+    hint = env.get("HERMES_KANBAN_MODEL_HINT") or ""
+    assert hint == kb.get_kanban_worker_model_hint("analyst", "analyst")
+    assert "version=2026-05-15-jki-58" in hint
+    assert "coding_default=claude-cli:opus-4.7-subscription" in hint
+    assert "review_default=codex-cli:codex review" in hint
+    assert "hermes_runtime_hint=openai-codex/gpt-5.4 reasoning=medium" in hint
+    assert "quota_monitor=openai-codex/gpt-5.4-mini" in hint
+
+
+def test_default_spawn_writes_dispatcher_receipt_comment(kanban_home, monkeypatch):
+    """When receipt_mode requests it, dispatcher records one spawn receipt
+    comment with run_id and compact model hint.
+    """
+    profile_home = kanban_home / "profiles" / "analyst"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text(
+        """
+kanban_worker_model_routing:
+  version: 2026-05-15-jki-58
+  receipt_mode: dispatcher-comment-on-spawn
+  assignees:
+    analyst:
+      review_lane:
+        default: codex-cli:codex review
+      hermes_runtime_hint:
+        provider: openai-codex
+        model: gpt-5.4
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    class FakeProc:
+        pid = 777
+
+    monkeypatch.setattr("subprocess.Popen", lambda *args, **kwargs: FakeProc())
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="receipt", assignee="analyst")
+        task = kb.claim_task(conn, tid) or kb.get_task(conn, tid)
+        workspace = kb.resolve_workspace(task)
+        kb._default_spawn(task, str(workspace))
+
+        comments = kb.list_comments(conn, tid)
+        assert comments, "expected dispatcher spawn receipt comment"
+        body = comments[-1].body
+        assert comments[-1].author == "dispatcher"
+        assert "dispatcher spawn receipt" in body
+        assert f"run_id: {task.current_run_id}" in body
+        assert "review_default=codex-cli:codex review" in body
+        assert "hermes_runtime_hint=openai-codex/gpt-5.4" in body
+    finally:
+        conn.close()
+
 def test_default_spawn_raises_terminal_timeout_to_task_runtime(kanban_home, monkeypatch):
     """A task runtime cap should raise the worker's terminal default.
 

@@ -347,3 +347,73 @@ def test_decompose_no_aux_client_configured(kanban_home):
 
     assert outcome.ok is False
     assert "no auxiliary client" in outcome.reason
+
+
+def test_roster_includes_compact_model_routing_hint(kanban_home):
+    """The decomposer roster should expose the same compact model hint the
+    dispatcher gives workers, so routing decisions are inspectable before spawn.
+    """
+    profile_home = kanban_home / "profiles" / "reviewer"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text(
+        """
+kanban_worker_model_routing:
+  version: 2026-05-15-jki-58
+  receipt_mode: dispatcher-comment-on-spawn
+  assignees:
+    reviewer:
+      task_class: review
+      tier: high-trust
+      review_lane:
+        default: codex-cli:codex review
+        fallback_order:
+          - claude-cli:opus-4.7-subscription
+      hermes_runtime_hint:
+        provider: openai-codex
+        model: gpt-5.4
+        reasoning_effort: high
+      quota_monitor_lane:
+        provider: openai-codex
+        model: gpt-5.4-mini
+      notes: reviewer lane
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    patches = _patch_list_profiles(["reviewer"])
+    for p in patches:
+        p.start()
+    try:
+        roster, valid = decomp._build_roster()
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert valid == {"reviewer"}
+    assert roster[0]["model_hint"]
+    formatted = decomp._format_roster(roster)
+    assert "model_hint:" in formatted
+    assert "version=2026-05-15-jki-58" in formatted
+    assert "review_default=codex-cli:codex review" in formatted
+    assert "hermes_runtime_hint=openai-codex/gpt-5.4 reasoning=high" in formatted
+
+
+def test_roster_ignores_malformed_model_routing(kanban_home):
+    """Malformed routing metadata must not block decomposition roster build."""
+    profile_home = kanban_home / "profiles" / "researcher"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text("kanban_worker_model_routing: [bad\n", encoding="utf-8")
+
+    patches = _patch_list_profiles(["researcher"])
+    for p in patches:
+        p.start()
+    try:
+        roster, valid = decomp._build_roster()
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert valid == {"researcher"}
+    assert roster[0]["name"] == "researcher"
+    assert roster[0].get("model_hint") is None
+    assert "desc for researcher" in decomp._format_roster(roster)

@@ -57,7 +57,7 @@ matching profile from the available roster.
 
 You will be given:
   - The original task title and body
-  - The list of available profiles (each with name + description)
+  - The list of available profiles (each with name + description, plus optional model/runtime hints)
   - The fallback "default_assignee" used when no profile fits
 
 Output a single JSON object with this exact shape:
@@ -85,7 +85,8 @@ Rules:
   - Use 2-6 tasks for normal work. Don't create 20 tiny tasks. Don't
     cram everything into 1 task.
   - Pick assignees from the roster by matching the task to the profile's
-    DESCRIPTION (not just the name). When nothing matches well, use null
+    DESCRIPTION first, using model/runtime hints as an inspectability and
+    suitability signal when present. When nothing matches well, use null
     and the system will route to the default_assignee.
   - Each child task body is what a fresh worker will read with no other
     context — be specific about goal, approach, and acceptance criteria.
@@ -217,9 +218,10 @@ def _resolve_default_assignee(cfg: dict) -> str:
 def _build_roster() -> tuple[list[dict], set[str]]:
     """Return (roster_for_prompt, valid_assignee_names).
 
-    Each roster entry is ``{name, description, has_description}``. The
-    valid-set is used after the LLM responds to rewrite invalid
-    assignees to the default fallback.
+    Each roster entry includes ``name``, ``description``, ``has_description``,
+    and best-effort ``model_hint`` when profile routing metadata exists. The
+    valid-set is used after the LLM responds to rewrite invalid assignees to
+    the default fallback.
     """
     roster: list[dict] = []
     valid: set[str] = set()
@@ -230,10 +232,16 @@ def _build_roster() -> tuple[list[dict], set[str]]:
         return roster, valid
     for p in all_profiles:
         desc = (p.description or "").strip()
+        model_hint = None
+        try:
+            model_hint = kb.get_kanban_worker_model_hint(p.name, p.name)
+        except Exception as exc:
+            logger.debug("decompose: failed to load model hint for %s: %s", p.name, exc)
         roster.append({
             "name": p.name,
             "description": desc or f"(no description; profile named {p.name!r})",
             "has_description": bool(desc),
+            "model_hint": model_hint,
         })
         valid.add(p.name)
     return roster, valid
@@ -245,7 +253,11 @@ def _format_roster(roster: list[dict]) -> str:
     lines = []
     for entry in roster:
         tag = "" if entry["has_description"] else " ⚠ undescribed"
-        lines.append(f"  - {entry['name']}{tag}: {entry['description']}")
+        line = f"  - {entry['name']}{tag}: {entry['description']}"
+        model_hint = entry.get("model_hint")
+        if model_hint:
+            line += f"\n    model_hint: {model_hint}"
+        lines.append(line)
     return "\n".join(lines)
 
 

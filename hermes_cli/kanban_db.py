@@ -5652,6 +5652,156 @@ def _worker_terminal_timeout_env(
     return str(desired)
 
 
+def _load_kanban_worker_model_routing(profile_arg: str, assignee: str) -> Optional[dict[str, Any]]:
+    """Load per-profile kanban worker routing metadata for ``assignee``.
+
+    This is intentionally best-effort: malformed/missing config should never
+    block decomposition or dispatch. Returns a compact dict with ``version``,
+    ``receipt_mode``, and the assignee-specific routing entry when present.
+    """
+    from hermes_cli.profiles import resolve_profile_env
+
+    try:
+        import yaml
+    except Exception:
+        return None
+
+    try:
+        config_path = Path(resolve_profile_env(profile_arg)) / "config.yaml"
+    except Exception:
+        return None
+    if not config_path.exists():
+        return None
+    try:
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    section = raw.get("kanban_worker_model_routing")
+    if not isinstance(section, dict):
+        return None
+    assignees = section.get("assignees")
+    if not isinstance(assignees, dict):
+        return None
+    entry = assignees.get(assignee)
+    if not isinstance(entry, dict):
+        return None
+    return {
+        "version": section.get("version"),
+        "receipt_mode": section.get("receipt_mode"),
+        "assignee": assignee,
+        "profile": profile_arg,
+        "entry": entry,
+    }
+
+
+def _compact_hint_value(value: object, *, limit: int = 160) -> str:
+    """Single-line, bounded representation for prompt/env/comment hints."""
+    text = " ".join(str(value).split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
+def _compact_spawn_model_hint(routing: dict[str, Any]) -> str:
+    """Return the shared compact model-routing hint used by roster + spawn."""
+    entry = routing.get("entry") or {}
+    if not isinstance(entry, dict):
+        entry = {}
+    bits: list[str] = []
+    version = routing.get("version")
+    if version:
+        bits.append(f"version={_compact_hint_value(version)}")
+    task_class = entry.get("task_class")
+    if task_class:
+        bits.append(f"task_class={_compact_hint_value(task_class)}")
+    tier = entry.get("tier")
+    if tier:
+        bits.append(f"tier={_compact_hint_value(tier)}")
+    coding_lane = entry.get("coding_lane")
+    if isinstance(coding_lane, dict):
+        if coding_lane.get("default"):
+            bits.append(f"coding_default={_compact_hint_value(coding_lane.get('default'))}")
+        if coding_lane.get("fallback"):
+            bits.append(f"coding_fallback={_compact_hint_value(coding_lane.get('fallback'))}")
+    review_lane = entry.get("review_lane")
+    if isinstance(review_lane, dict):
+        if review_lane.get("default"):
+            bits.append(f"review_default={_compact_hint_value(review_lane.get('default'))}")
+        fallback_order = review_lane.get("fallback_order")
+        if isinstance(fallback_order, list) and fallback_order:
+            bits.append(
+                "review_fallback=" + " -> ".join(_compact_hint_value(x, limit=80) for x in fallback_order if x)
+            )
+    preferred_external_lane = entry.get("preferred_external_lane")
+    if preferred_external_lane:
+        bits.append(f"preferred_external_lane={_compact_hint_value(preferred_external_lane)}")
+    hermes_runtime = entry.get("hermes_runtime_hint") or entry.get("hermes_runtime")
+    if isinstance(hermes_runtime, dict):
+        provider = hermes_runtime.get("provider")
+        model = hermes_runtime.get("model")
+        reasoning = hermes_runtime.get("reasoning_effort")
+        runtime_hint = "/".join(str(x) for x in [provider, model] if x)
+        if reasoning and runtime_hint:
+            runtime_hint = f"{runtime_hint} reasoning={reasoning}"
+        elif reasoning:
+            runtime_hint = f"reasoning={reasoning}"
+        if runtime_hint:
+            bits.append(f"hermes_runtime_hint={_compact_hint_value(runtime_hint)}")
+    quota_monitor_lane = entry.get("quota_monitor_lane")
+    if isinstance(quota_monitor_lane, dict):
+        provider = quota_monitor_lane.get("provider")
+        model = quota_monitor_lane.get("model")
+        quota_hint = "/".join(str(x) for x in [provider, model] if x)
+        if quota_hint:
+            bits.append(f"quota_monitor={_compact_hint_value(quota_hint)}")
+    notes = entry.get("notes")
+    if notes:
+        bits.append(f"notes={_compact_hint_value(notes, limit=240)}")
+    return " | ".join(bits)
+
+
+def get_kanban_worker_model_hint(profile_arg: str, assignee: Optional[str] = None) -> Optional[str]:
+    """Best-effort public helper for inspectable profile routing rosters."""
+    try:
+        from hermes_cli.profiles import normalize_profile_name
+        profile_key = normalize_profile_name(str(profile_arg).strip())
+    except Exception:
+        profile_key = str(profile_arg).strip()
+    chosen = str(assignee or profile_key).strip()
+    routing = _load_kanban_worker_model_routing(profile_key, chosen)
+    if not routing:
+        return None
+    hint = _compact_spawn_model_hint(routing)
+    return hint or None
+
+
+def _maybe_add_spawn_receipt_comment(
+    task: Task,
+    *,
+    board: Optional[str],
+    routing: Optional[dict[str, Any]],
+) -> None:
+    if not routing:
+        return
+    if routing.get("receipt_mode") != "dispatcher-comment-on-spawn":
+        return
+    hint = _compact_spawn_model_hint(routing)
+    if not hint:
+        return
+    lines = [
+        "dispatcher spawn receipt",
+        f"- run_id: {task.current_run_id if task.current_run_id is not None else 'unknown'}",
+        f"- assignee: {task.assignee or 'unknown'}",
+        f"- model_hint: {hint}",
+    ]
+    try:
+        with contextlib.closing(connect(board=board)) as conn:
+            add_comment(conn, task.id, "dispatcher", "\n".join(lines))
+    except Exception:
+        _log.debug("failed to write kanban spawn receipt comment", exc_info=True)
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -5680,6 +5830,7 @@ def _default_spawn(
 
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
+    routing = _load_kanban_worker_model_routing(profile_arg, task.assignee)
 
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
     # (fallback_providers, toolsets, agent settings, etc.) instead of the root
@@ -5739,6 +5890,9 @@ def _default_spawn(
     # what the tool reads — set it explicitly here so comments are
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
+    model_hint = _compact_spawn_model_hint(routing) if routing else ""
+    if model_hint:
+        env["HERMES_KANBAN_MODEL_HINT"] = model_hint
 
     cmd = [
         *_resolve_hermes_argv(),
@@ -5816,6 +5970,7 @@ def _default_spawn(
     # handle is kept alive by the child's inheritance.  The parent's
     # reference goes out of scope and is GC'd, but the OS-level FD stays
     # open in the child until the child exits.
+    _maybe_add_spawn_receipt_comment(task, board=board, routing=routing)
     return proc.pid
 
 
