@@ -660,7 +660,14 @@ class SignalAdapter(BasePlatformAdapter):
                     )
                 is_command = bool(text and text.strip().startswith("/"))
 
-                if not is_reply_to_bot and not is_command:
+                # Voice memos bypass observe_only — you can't add text or
+                # @mention to a voice memo, so requiring mention is impossible.
+                is_voice_memo = any(
+                    att.get("voiceNote") or "voice" in str(att.get("flags", "")).lower()
+                    for att in (data_message.get("attachments") or [])
+                )
+
+                if not is_reply_to_bot and not is_command and not is_voice_memo:
                     observe_enabled = os.getenv(
                         "SIGNAL_OBSERVE_UNMENTIONED", "true"
                     ).lower() in ("true", "1", "yes")
