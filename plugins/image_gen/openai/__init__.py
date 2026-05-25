@@ -33,6 +33,7 @@ from agent.image_gen_provider import (
     error_response,
     resolve_aspect_ratio,
     save_b64_image,
+    save_url_image,
     success_response,
 )
 
@@ -324,7 +325,11 @@ class OpenAIImageGenProvider(ImageGenProvider):
 
             if b64:
                 try:
-                    saved_path = save_b64_image(b64, prefix=f"openai_{tier_id}", extension=output_format)
+                    saved_path = save_b64_image(
+                        b64,
+                        prefix=f"openai_{tier_id}",
+                        extension=output_format,
+                    )
                 except Exception as exc:
                     return error_response(
                         error=f"Could not save image to cache: {exc}",
@@ -336,9 +341,21 @@ class OpenAIImageGenProvider(ImageGenProvider):
                     )
                 image_refs.append(str(saved_path))
             elif url:
-                # Defensive — gpt-image-2 returns b64 today, but fall back
-                # gracefully if the API ever changes.
-                image_refs.append(url)
+                # Defensive — gpt-image-2 returns b64 today, but OpenAI's API
+                # has previously returned URLs. Cache the bytes locally so the
+                # gateway never tries to fetch an ephemeral / signed URL after
+                # it expires — same rationale as the xAI provider (#26942).
+                try:
+                    saved_path = save_url_image(url, prefix=f"openai_{tier_id}")
+                except Exception as exc:
+                    logger.warning(
+                        "OpenAI image URL %s could not be cached (%s); falling back to bare URL.",
+                        url,
+                        exc,
+                    )
+                    image_refs.append(url)
+                else:
+                    image_refs.append(str(saved_path))
 
         if not image_refs:
             return error_response(
