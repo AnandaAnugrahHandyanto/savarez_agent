@@ -348,6 +348,52 @@
                 h("span", { className: cx("text-[10px] rounded-full border px-2 py-0.5", app.auto_generate ? "border-cyan-300/40 text-cyan-100" : "border-midground/20 text-midground/70") }, app.auto_generate ? `auto-on (≤${app.auto_generate_threshold || 3})` : "auto-off")
               ),
               h("div", { className: "mt-1 text-xs text-midground/60" }, app.positioning || "—"),
+
+              // Image library section — paste brand-approved URLs, see count, remove individual ones.
+              h("div", { className: "mt-3 rounded-md border border-midground/15 bg-background/40 p-2" },
+                h("div", { className: "flex items-baseline justify-between gap-2" },
+                  h("div", { className: "text-[10px] uppercase tracking-[0.14em] text-midground/60" }, "Image library"),
+                  h("div", { className: "text-[10px] text-midground/60" }, `${(app.image_library || []).length} image${(app.image_library || []).length === 1 ? "" : "s"}`)
+                ),
+                h("div", { className: "mt-1 text-[10px] text-midground/60" },
+                  "Paste a URL to a brand-approved photo. Pipeline rotates through these per draft. Zero cost, always works."
+                ),
+                (app.image_library || []).length ? h("div", { className: "mt-2 flex flex-wrap gap-1" },
+                  (app.image_library || []).map((url, idx) => h("span", {
+                    key: idx,
+                    className: "inline-flex items-center gap-1 rounded-full border border-midground/15 bg-background/60 px-2 py-0.5 text-[10px]",
+                  },
+                    h("a", { href: url, target: "_blank", rel: "noreferrer", className: "underline text-midground/70 hover:text-cyan-200 truncate max-w-[120px]" }, (url.split("/").pop() || url).slice(0, 30)),
+                    h("button", {
+                      type: "button",
+                      onClick: () => run(`img-rm ${app.slug}`, () => fetchJSON(`${API}/apps/${encodeURIComponent(app.slug)}/image-library?url=${encodeURIComponent(url)}`, { method: "DELETE" })),
+                      disabled: !!busy,
+                      className: "text-midground/60 hover:text-red-300",
+                    }, "×")
+                  ))
+                ) : null,
+                h("button", {
+                  onClick: () => {
+                    const url = window.prompt(`Paste an image URL to add to ${app.slug}'s library (must be publicly accessible, e.g. an S3/CDN URL):`);
+                    if (!url || !url.trim()) return;
+                    return run(`img-add ${app.slug}`, () => fetchJSON(`${API}/apps/${encodeURIComponent(app.slug)}/image-library`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: url.trim(), reviewer: "dashboard" }) }));
+                  },
+                  disabled: !!busy,
+                  className: "mt-2 text-[10px] underline text-cyan-200 hover:text-cyan-100",
+                }, "+ add image URL"),
+                h("button", {
+                  onClick: () => {
+                    const cur = app.image_style_guide || "";
+                    const next = window.prompt(`Visual style guide for ${app.slug}. What kinds of images suit this brand? (e.g. "warm photography, real adoptable pets, no cages, no distress")`, cur);
+                    if (next === null) return;
+                    return run(`img-style ${app.slug}`, () => fetchJSON(`${API}/apps/${encodeURIComponent(app.slug)}/image-style-guide`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ style_guide: next, reviewer: "dashboard" }) }));
+                  },
+                  disabled: !!busy,
+                  className: "ml-3 text-[10px] underline text-midground/70 hover:text-cyan-200",
+                }, app.image_style_guide ? "edit style guide" : "+ style guide"),
+                app.image_style_guide ? h("div", { className: "mt-1 text-[10px] text-midground/60 italic" }, `Style: ${app.image_style_guide.length > 80 ? app.image_style_guide.slice(0, 80) + "…" : app.image_style_guide}`) : null
+              ),
+
               h("div", { className: "mt-2 flex flex-wrap gap-2" },
                 h("button", {
                   onClick: () => run(`auto ${app.slug}`, () => fetchJSON(`${API}/apps/${encodeURIComponent(app.slug)}/auto-generate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !app.auto_generate }) })),
