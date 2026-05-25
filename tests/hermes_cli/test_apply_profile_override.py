@@ -336,3 +336,79 @@ class TestApplyProfileOverrideCronJobPin:
         assert hermes_home is not None and hermes_home.endswith("ozzy")
         assert "--profile" not in sys.argv
         assert "ozzy" not in sys.argv
+
+    def test_literal_cron_create_in_positional_does_not_suppress_global(
+        self, tmp_path, monkeypatch
+    ):
+        """``cron create`` literals buried inside another subcommand's
+        positional args must NOT be treated as the cron subcommand boundary.
+
+        Example: ``hermes chat tell me about cron create --profile ozzy``.
+        ``chat`` is the real subcommand here and has no ``--profile`` arg
+        of its own, so ``--profile ozzy`` is a legitimate global override
+        and HERMES_HOME must switch to ozzy. A naive "any cron token in
+        argv" scan would set a boundary at the literal ``cron`` and leave
+        the global ``--profile`` unprocessed.
+        """
+        hermes_root = tmp_path / ".hermes"
+        (hermes_root / "profiles" / "ozzy").mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "hermes",
+                "chat",
+                "tell",
+                "me",
+                "about",
+                "cron",
+                "create",
+                "--profile",
+                "ozzy",
+            ],
+        )
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        hermes_home = os.environ.get("HERMES_HOME")
+        assert hermes_home is not None and hermes_home.endswith("ozzy"), (
+            "Global --profile must still apply when ``cron create`` is only "
+            "a positional literal under a different subcommand"
+        )
+
+    def test_unknown_leading_flag_then_cron_create_still_protects_pin(
+        self, tmp_path, monkeypatch
+    ):
+        """A leading unrecognised global flag must not prevent the cron
+        boundary from being detected. ``hermes --debug cron create ...
+        --profile oracle`` is the cron subcommand (``--debug`` is nargs=0).
+        """
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "hermes",
+                "--debug",
+                "cron",
+                "create",
+                "0 3 * * *",
+                "task",
+                "--profile",
+                "oracle",
+            ],
+        )
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        assert os.environ.get("HERMES_HOME") is None
+        assert sys.argv[-2:] == ["--profile", "oracle"]
