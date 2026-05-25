@@ -1,0 +1,26 @@
+name: Plugin Compat Smoke
+
+on:
+  push:
+    branches: [main, feat/*]
+  pull_request:
+
+jobs:
+  hermes-meeting-compat:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install Hermes (this fork)
+        run: pip install -e ".[test]"
+      - name: Clone hermes-meeting plugin
+        run: git clone https://github.com/dandacompany/hermes-meeting.git /tmp/hermes-meeting
+      - name: Install plugin
+        run: pip install -e /tmp/hermes-meeting
+      - name: Run plugin compat tests
+        run: pytest /tmp/hermes-meeting/hermes_meeting/tests/test_compat_monkey_patch.py -v
