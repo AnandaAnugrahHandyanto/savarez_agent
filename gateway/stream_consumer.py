@@ -73,6 +73,11 @@ class StreamConsumerConfig:
     # "group", "supergroup", "forum").  Used to gate native draft streaming,
     # which is platform-specific (Telegram drafts are DM-only).
     chat_type: str = ""
+    # Optional Telegram-only context HUD prepended to every outbound
+    # bubble for the duration of this stream.  ``_last_sent_text`` and
+    # ``_accumulated`` stay HUD-free so dedup and continuation logic keep
+    # comparing raw model output.  ``None`` (default) leaves text alone.
+    hud_prefix: Optional[str] = None
 
 
 class GatewayStreamConsumer:
@@ -649,6 +654,20 @@ class GatewayStreamConsumer:
     # gateway/platforms/base.py for post-processing.
     _MEDIA_RE = re.compile(r'''[`"']?MEDIA:\s*\S+[`"']?''')
 
+    def _decorate_outbound(self, text: str) -> str:
+        """Prepend the configured HUD (if any) to outbound text.
+
+        Returns ``text`` unchanged when no HUD is configured or when the
+        body is empty/whitespace — empty bubbles never get a HUD-only
+        message that would look like noise on the platform.
+        """
+        prefix = getattr(self.cfg, "hud_prefix", None)
+        if not prefix:
+            return text
+        if not text or not text.strip():
+            return text
+        return f"{prefix}\n\n{text}"
+
     @staticmethod
     def _clean_for_display(text: str) -> str:
         """Strip MEDIA: directives and internal markers from text before display.
@@ -681,7 +700,7 @@ class GatewayStreamConsumer:
             meta = dict(self.metadata) if self.metadata else {}
             result = await self.adapter.send(
                 chat_id=self.chat_id,
-                content=text,
+                content=self._decorate_outbound(text),
                 reply_to=reply_to_id,
                 metadata=meta,
             )
@@ -770,7 +789,7 @@ class GatewayStreamConsumer:
                     try:
                         result = await self._edit_message(
                             message_id=self._message_id,
-                            content=clean_text,
+                            content=self._decorate_outbound(clean_text),
                         )
                         if result.success:
                             self._last_sent_text = clean_text
@@ -799,7 +818,7 @@ class GatewayStreamConsumer:
             for attempt in range(2):
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
-                    content=chunk,
+                    content=self._decorate_outbound(chunk),
                     metadata=self.metadata,
                 )
                 if result.success:
@@ -973,7 +992,7 @@ class GatewayStreamConsumer:
         try:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
-                content=tail,
+                content=self._decorate_outbound(tail),
                 metadata=self.metadata,
             )
             if result.success:
@@ -995,7 +1014,7 @@ class GatewayStreamConsumer:
         try:
             await self._edit_message(
                 message_id=self._message_id,
-                content=prefix,
+                content=self._decorate_outbound(prefix),
             )
             self._last_sent_text = prefix
         except Exception:
@@ -1009,7 +1028,7 @@ class GatewayStreamConsumer:
         try:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
-                content=text,
+                content=self._decorate_outbound(text),
                 metadata=self.metadata,
             )
             # Note: do NOT set _already_sent = True here.
@@ -1061,7 +1080,7 @@ class GatewayStreamConsumer:
         try:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
-                content=text,
+                content=self._decorate_outbound(text),
                 metadata=self.metadata,
             )
         except Exception as e:
@@ -1202,7 +1221,7 @@ class GatewayStreamConsumer:
                     # Edit existing message
                     result = await self._edit_message(
                         message_id=self._message_id,
-                        content=text,
+                        content=self._decorate_outbound(text),
                         finalize=finalize,
                     )
                     if result.success:
@@ -1281,7 +1300,7 @@ class GatewayStreamConsumer:
                 # so it lands in the correct topic/thread.
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
-                    content=text,
+                    content=self._decorate_outbound(text),
                     reply_to=self._initial_reply_to_id,
                     metadata=self.metadata,
                 )
