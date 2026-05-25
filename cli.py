@@ -859,6 +859,7 @@ def _cleanup_all_browsers(*args, **kwargs):
 _cleanup_done = False
 # Weak reference to the active AIAgent for memory provider shutdown at exit
 _active_agent_ref = None
+_active_cli_ref = None  # Weak reference to HermesCLI for atexit ephemeral cleanup
 _deferred_agent_startup_done = False
 
 
@@ -953,6 +954,15 @@ def _run_cleanup():
                 _active_agent_ref.shutdown_memory_provider(_session_msgs)
             else:
                 _active_agent_ref.shutdown_memory_provider()
+    except Exception:
+        pass
+    # Purge ephemeral session on exit (covers crash/SIGTERM paths).
+    # The graceful /quit handler also calls this, but atexit ensures it
+    # runs even on unexpected process termination.
+    try:
+        _cli = _active_cli_ref
+        if _cli and getattr(_cli, '_temp_session', False):
+            _cli._cleanup_temp_session_if_active()
     except Exception:
         pass
 
@@ -4895,8 +4905,9 @@ class HermesCLI:
                 tool_gen_callback=self._on_tool_gen_start if self.streaming_enabled else None,
             )
             # Store reference for atexit memory provider shutdown
-            global _active_agent_ref
+            global _active_agent_ref, _active_cli_ref
             _active_agent_ref = self.agent
+            _active_cli_ref = self
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint

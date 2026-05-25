@@ -315,8 +315,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if getattr(agent, "temp_session", False):
         volatile_parts.append(
             "EPHEMERAL SESSION: This session is ephemeral (/temp mode). "
-            "The memory, skill_manage, and cronjob (create) tools are BLOCKED — "
-            "do not attempt memory writes, skill edits, or cron creates. "
+            "The following tool actions are BLOCKED — do not attempt them:\n"
+            "- memory: add, replace, remove (reads via system prompt still work)\n"
+            "- skill_manage: create, edit, patch, delete, write_file, remove_file "
+            "(skill_view and skills_list still work)\n"
+            "- cronjob: create (list, poll, run, etc. still work)\n"
             "All other tools work normally. Inform the user if they ask about "
             "persisting information."
         )

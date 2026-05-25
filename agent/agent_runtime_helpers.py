@@ -1521,12 +1521,15 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
 # Ephemeral session tool-block helper
 # ---------------------------------------------------------------------------
 # Tools whose write-side actions are blocked in /temp (ephemeral) sessions.
-# Read-only operations (memory view, skill list, cron list/poll/etc.) are fine.
+# Read-only operations (memory is read via system prompt, skill_view /
+# skills_list are separate tools, cron list/poll/run are fine) are unaffected.
 _TEMP_BLOCKED_TOOLS = {
-    # tool_name -> set of blocked actions, or None to block all actions
-    "memory": None,          # view is fine; add/replace/remove blocked
-    "skill_manage": None,    # view/skill_view fine; create/edit/delete/write_file/remove_file blocked
-    "cronjob": {"create"},  # only create blocked; list/poll/run/etc. are fine
+    # tool_name -> frozenset of blocked actions.
+    # Empty frozenset means "block this tool entirely" (no actions allowed).
+    # All listed actions must match the tool's schema enum exactly.
+    "memory": frozenset({"add", "replace", "remove"}),
+    "skill_manage": frozenset({"create", "edit", "patch", "delete", "write_file", "remove_file"}),
+    "cronjob": frozenset({"create"}),
 }
 
 
@@ -1539,11 +1542,11 @@ def _check_temp_session_block(function_name: str, function_args: dict) -> Option
         return None
 
     blocked_actions = _TEMP_BLOCKED_TOOLS[function_name]
-    # If None, all actions for this tool are blocked.
-    if blocked_actions is None:
+
+    # If the tool has no actions at all (empty frozenset), block entirely.
+    if not blocked_actions:
         return (
             f"Tool '{function_name}' is blocked in ephemeral session mode. "
-            "Memory writes and skill edits are disabled. "
             "Use /new or /reset to exit ephemeral mode."
         )
 

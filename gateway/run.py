@@ -6020,6 +6020,15 @@ class GatewayRunner:
                     _db.close()
                 except Exception as _e:
                     logger.debug("SessionDB close error: %s", _e)
+
+            # Purge any ephemeral (/temp) sessions before closing DB.
+            try:
+                _purged = self._purge_all_temp_sessions()
+                if _purged:
+                    logger.info("Shutdown: purged %d ephemeral session(s)", _purged)
+            except Exception as _e:
+                logger.debug("Ephemeral session purge error: %s", _e)
+
             logger.info(
                 "Shutdown phase: SessionDB close done at +%.2fs",
                 _phase_elapsed(),
@@ -9383,6 +9392,24 @@ class GatewayRunner:
 
         header = "🔒 Ephemeral session started — memory writes, skill edits, and cron creates are blocked."
         return EphemeralReply(f"{header}\nSession will be deleted on /new, /reset, or exit.")
+
+    def _purge_all_temp_sessions(self) -> int:
+        """Purge all ephemeral sessions from DB and disk. Returns count purged.
+
+        Called on gateway shutdown to clean up any /temp sessions that weren't
+        explicitly ended with /new or /reset.
+        """
+        purged = 0
+        for _key, entry in list(getattr(self, 'session_store', None)._entries.items() if getattr(self, 'session_store', None) else []):
+            if getattr(entry, 'temp_session', False):
+                try:
+                    _sid = getattr(entry, 'session_id', None)
+                    if _sid and getattr(self, '_session_db', None):
+                        self._session_db.delete_session(_sid, sessions_dir=self.config.sessions_dir)
+                        purged += 1
+                except Exception:
+                    pass
+        return purged
 
     async def _handle_profile_command(self, event: MessageEvent) -> str:
         """Handle /profile — show active profile name and home directory."""
