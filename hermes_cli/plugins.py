@@ -97,6 +97,15 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Slack adapter lifecycle: fired after the Bolt AsyncApp is built and
+    # core event handlers are registered. Plugins may register additional
+    # app.command/action/view/event callbacks. Kwargs: app, adapter, profile,
+    # web_clients, bot_user_id.
+    "on_slack_app_init",
+    # TTS content transform hook. Fired before voice synthesis markdown
+    # stripping. Callers may use the last non-None str return value as the
+    # text to synthesize. Kwargs: text, event.
+    "transform_tts_text",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs user approval -- fires BOTH for CLI-interactive prompts
     # and for gateway/ACP approvals (Telegram, Discord, Slack, TUI, etc.).
