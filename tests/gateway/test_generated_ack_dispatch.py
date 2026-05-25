@@ -1,6 +1,16 @@
 from types import SimpleNamespace
 
 
+def test_generated_ack_submission_is_voice_message_only():
+    import gateway.run as gateway_run
+
+    assert gateway_run._should_submit_generated_ack_voice_out("voice") is True
+    assert gateway_run._should_submit_generated_ack_voice_out(SimpleNamespace(value="voice")) is True
+    assert gateway_run._should_submit_generated_ack_voice_out(SimpleNamespace(name="VOICE")) is True
+    assert gateway_run._should_submit_generated_ack_voice_out("text") is False
+    assert gateway_run._should_submit_generated_ack_voice_out(SimpleNamespace(value="photo")) is False
+
+
 def test_generated_ack_dispatch_saturation_drops_without_queueing(monkeypatch):
     import gateway.run as gateway_run
 

@@ -149,12 +149,15 @@ def test_policy_metadata_contains_only_safe_reason_codes_and_booleans():
         "suppressed": True,
         "reason_codes": ("secret_like", "raw_path_stripped", "empty_after_sanitization"),
         "rule_profile": "living_room_default",
-        "blocked_secret_like": True,
-        "dropped_code": False,
-        "blocked_stack_trace": False,
-        "dropped_tool_logs": False,
-        "dropped_paths": True,
-        "blocked_sensitive_topic": False,
+        "classifiers": {
+            "blocked_secret_like": True,
+            "dropped_code": False,
+            "blocked_stack_trace": False,
+            "dropped_tool_logs": False,
+            "dropped_paths": True,
+            "blocked_sensitive_topic": False,
+            "long_response": False,
+        },
     }
 
 
@@ -198,3 +201,31 @@ def test_ambient_policy_loads_rule_profiles_from_config(monkeypatch):
 
     assert decision.max_seconds == 2
     assert decision.text == "I completed the impleme…"
+
+
+def test_disabled_ambient_policy_config_uses_conservative_defaults():
+    policy = AmbientVoicePolicy.from_config(
+        {
+            "voice": {
+                "ambient_policy": {
+                    "enabled": False,
+                    "default_context": "airpods_private",
+                    "rule_profiles": {
+                        "airpods_private": {
+                            "allow_sensitive_topics": True,
+                            "max_chars": 500,
+                        }
+                    },
+                }
+            }
+        }
+    )
+
+    decision = policy.evaluate(
+        "Your trading PnL and portfolio drawdown look risky today.",
+        living_room_context(config_scope=None, explicit_spoken_request=True, is_private_context=True),
+    )
+
+    assert decision.rule_profile == "living_room_default"
+    assert decision.allowed is False
+    assert decision.classifiers["sensitive_topic"] is True

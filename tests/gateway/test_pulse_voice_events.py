@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from gateway.pulse_voice_events import (
     completion_voice_text,
+    is_voice_event_fresh_for_speech,
     publish_completion_voice_out,
     publish_generated_ack_voice_out,
     publish_voice_event,
@@ -85,6 +86,7 @@ def test_publish_voice_out_writes_canonical_schema_and_legacy_mirror(tmp_path, m
             "blocked_secret_like": False,
             "blocked_sensitive_topic": False,
             "blocked_stack_trace": False,
+            "long_response": False,
         },
     }
 
@@ -212,6 +214,32 @@ def test_publish_voice_out_suppresses_secrets_without_raw_metadata(tmp_path, mon
 
     publish_voice_out("completion", f"The token is {UNSAFE_SECRET}; keep it safe.")
 
+    [event] = _jsonl(voice_out_path())
+    assert event["kind"] == "suppressed"
+    assert event["text"] == ""
+    assert event["max_seconds"] == 0
+    assert event["policy"]["allowed"] is False
+    assert event["policy"]["suppressed"] is True
+    assert event["policy"]["classifiers"]["blocked_secret_like"] is True
+    assert event["observability"]["candidate_chars"] > 0
+    assert event["observability"]["spoken_chars"] == 0
+    assert event["observability"]["policy_stage"] == "final"
+    assert event["observability"]["suppression_reason"] == "secret_like_blocked"
+    assert UNSAFE_SECRET not in json.dumps(event, ensure_ascii=False)
+    assert _jsonl(voice_events_path()) == [event]
+
+def test_suppressed_observability_can_be_disabled(tmp_path, monkeypatch):
+    import gateway.pulse_voice_events as pulse_voice_events
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        pulse_voice_events,
+        "_voice_observability_config",
+        lambda: {"emit_suppressed_events": False, "include_candidate_counts": True},
+    )
+
+    publish_voice_out("completion", f"The token is {UNSAFE_SECRET}; keep it safe.")
+
     assert not voice_out_path().exists()
     assert not voice_events_path().exists()
 
@@ -221,15 +249,48 @@ def test_voice_safe_text_suppresses_inline_key_and_password_prose():
     assert voice_safe_text("The temporary password is example-pass-1234 for setup.") == ""
 
 
+def test_observability_candidate_counts_can_be_disabled(tmp_path, monkeypatch):
+    import gateway.pulse_voice_events as pulse_voice_events
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        pulse_voice_events,
+        "_voice_observability_config",
+        lambda: {"emit_suppressed_events": True, "include_candidate_counts": False},
+    )
+
+    publish_voice_out("completion", f"The token is {UNSAFE_SECRET}; keep it safe.")
+
+    [event] = _jsonl(voice_out_path())
+    assert event["kind"] == "suppressed"
+    assert event["observability"] == {
+        "policy_stage": "final",
+        "suppression_reason": "secret_like_blocked",
+    }
+
+
+def test_voice_event_freshness_requires_valid_recent_timestamp():
+    assert is_voice_event_fresh_for_speech({"ts": 100.0}, now=110.0, max_age_seconds=30.0) is True
+    assert is_voice_event_fresh_for_speech({}, now=110.0) is False
+    assert is_voice_event_fresh_for_speech({"ts": "not-a-timestamp"}, now=110.0) is False
+    assert is_voice_event_fresh_for_speech({"ts": 70.0}, now=110.0, max_age_seconds=30.0) is False
+    assert is_voice_event_fresh_for_speech({"ts": 120.0}, now=110.0, max_age_seconds=30.0) is False
+
+
 def test_publish_voice_out_suppresses_bearer_and_aws_style_tokens(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     publish_voice_out("completion", "Bearer hk_test_1234567890abcdef is configured.")
-    publish_voice_out("completion", "Using AWS key AKIAIOSFODNN7EXAMPLE for the demo.")
+    publish_voice_out("completion", "Using AWS key AKIAIO...MPLE for the demo.")
 
-    assert not voice_out_path().exists()
-    assert not voice_events_path().exists()
-
+    events = _jsonl(voice_out_path())
+    assert [event["kind"] for event in events] == ["suppressed", "suppressed"]
+    assert all(event["text"] == "" for event in events)
+    assert all(event["max_seconds"] == 0 for event in events)
+    assert all(event["observability"]["suppression_reason"] == "secret_like_blocked" for event in events)
+    payload = json.dumps(events, ensure_ascii=False)
+    assert "hk_test_1234567890abcdef" not in payload
+    assert "AKIAIO" not in payload
 
 def test_publish_voice_out_suppresses_paths_and_code_without_fallback(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -238,10 +299,15 @@ def test_publish_voice_out_suppresses_paths_and_code_without_fallback(tmp_path, 
     publish_voice_out("completion", "`print('do not speak inline code')`")
     publish_completion_voice_out("```python\nprint('done')\n```")
 
-    assert not voice_out_path().exists()
+    events = _jsonl(voice_out_path())
+    assert [event["kind"] for event in events] == ["suppressed", "suppressed", "suppressed"]
+    assert all(event["text"] == "" for event in events)
+    assert all(event["observability"]["suppression_reason"] == "empty_after_sanitize" for event in events)
+    payload = json.dumps(events, ensure_ascii=False)
+    assert "/Users/brenno" not in payload
+    assert "print" not in payload
     assert completion_voice_text("```python\nprint('done')\n```") == ("completion", "")
     assert voice_safe_text("`print('do not speak inline code')`") == ""
-
 
 def test_publish_voice_out_suppresses_stack_traces_and_sensitive_topics(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -252,8 +318,14 @@ def test_publish_voice_out_suppresses_stack_traces_and_sensitive_topics(tmp_path
     )
     publish_voice_out("completion", "Your trading PnL and portfolio exposure are down 12% today.")
 
-    assert not voice_out_path().exists()
-
+    events = _jsonl(voice_out_path())
+    assert [event["kind"] for event in events] == ["suppressed", "suppressed"]
+    assert events[0]["observability"]["suppression_reason"] == "stack_trace_blocked"
+    assert events[1]["observability"]["suppression_reason"] == "sensitive_topic_blocked"
+    payload = json.dumps(events, ensure_ascii=False)
+    assert "/Users/brenno" not in payload
+    assert "trading PnL" not in payload
+    assert "portfolio exposure" not in payload
 
 def test_policy_metadata_uses_safe_reason_codes_not_raw_content(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -309,6 +381,7 @@ def test_passed_policy_metadata_is_normalized_without_raw_content(tmp_path, monk
         "blocked_secret_like": False,
         "blocked_sensitive_topic": False,
         "blocked_stack_trace": False,
+        "long_response": False,
     }
 
 
@@ -469,13 +542,21 @@ def test_publish_completion_voice_out_marks_questions(tmp_path, monkeypatch):
     assert event["policy"]["classifiers"]["blocked_secret_like"] is False
 
 
-def test_publish_completion_voice_out_silences_empty_safe_output(tmp_path, monkeypatch):
+def test_publish_completion_voice_out_emits_suppressed_empty_safe_output(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     publish_completion_voice_out("MEDIA:/tmp/report.pdf\n```python\nprint('nothing safe')\n```")
 
-    assert not voice_out_path().exists()
-    assert not voice_events_path().exists()
+    [event] = _jsonl(voice_out_path())
+    assert _jsonl(voice_events_path()) == [event]
+    assert event["kind"] == "suppressed"
+    assert event["text"] == ""
+    assert event["max_seconds"] == 0
+    assert event["source"] == "assistant_final"
+    assert event["derived_from"] == "final_response"
+    assert event["policy"]["suppressed"] is True
+    assert event["observability"]["suppression_reason"] == "empty_after_sanitize"
+    assert event["observability"]["spoken_chars"] == 0
 
 
 def test_publish_completion_voice_out_keeps_platform_text_out_of_voice_history(tmp_path, monkeypatch):

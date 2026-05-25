@@ -1198,6 +1198,10 @@ DEFAULT_CONFIG = {
                 "model": None,
                 "silence_on_failure": True,
             },
+            "observability": {
+                "emit_suppressed_events": True,
+                "include_candidate_counts": True,
+            },
         },
     },
 

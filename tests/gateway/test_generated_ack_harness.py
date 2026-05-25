@@ -78,7 +78,7 @@ def test_prompt_context_redacts_user_secrets_paths_urls_logs_and_media():
     """
     prompt = GeneratedAckHarness().build_prompt(AckContext(user_message=raw))
 
-    assert "User asked about technical content; sensitive details omitted." in prompt
+    assert "User asked about sensitive content; details omitted." in prompt
     assert "/Users/brenno" not in prompt
     assert "gateway/generated_ack_harness.py" not in prompt
     assert "../private/config" not in prompt
@@ -130,8 +130,21 @@ def test_prompt_context_redacts_separatorless_short_secret_keywords():
         "pk_live_[REDACTED]",
     ):
         prompt = GeneratedAckHarness().build_prompt(AckContext(user_message=raw))
-        assert "User asked about technical content; sensitive details omitted." in prompt
+        assert "User asked about sensitive content; details omitted." in prompt
         assert raw not in prompt
+
+
+def test_prompt_context_coarsens_sensitive_topics_before_generation():
+    from gateway.generated_ack_harness import AckContext, GeneratedAckHarness
+
+    raw = "My portfolio liquidation and medical diagnosis details are private."
+    prompt = GeneratedAckHarness().build_prompt(AckContext(user_message=raw))
+
+    assert "User asked about sensitive content; details omitted." in prompt
+    assert "portfolio" not in prompt
+    assert "liquidation" not in prompt
+    assert "medical" not in prompt
+    assert "diagnosis" not in prompt
 
 
 def test_generated_ack_success_uses_injected_generator_and_timeout():

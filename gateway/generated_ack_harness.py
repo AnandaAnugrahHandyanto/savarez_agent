@@ -104,6 +104,13 @@ _TIMESTAMP_LOG_RE = re.compile(
     r"(?im)^\s*(?:\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?|\d{2}:\d{2}:\d{2}(?:\.\d+)?|\[[^\]]*(?:ERROR|WARN|WARNING|INFO|DEBUG)[^\]]*\])\s*(?:\[[^\]]+\]\s*)*(?:ERROR|WARN|WARNING|INFO|DEBUG)?\b.*$"
 )
 _BRACKET_LOG_RE = re.compile(r"(?im)^\s*(?:\[[^\]]+\]\s*)*\[(?:ERROR|WARN|WARNING|INFO|DEBUG)\]\s*.*$")
+_SENSITIVE_TOPIC_RE = re.compile(
+    r"(?i)\b("
+    r"pnl|p&l|profit\s+and\s+loss|portfolio|drawdown|trading|trade|position|leverage|liquidation|"
+    r"bank\s+account|credit\s+card|salary|net\s+worth|tax|medical|diagnosis|prescription|"
+    r"social\s+security|ssn|passport|relationship|divorce|therapy|credential|password|private\s+key"
+    r")\b"
+)
 _SENTENCE_END_RE = re.compile(r"[.!?。！？]")
 _WORD_RE = re.compile(r"[\w’'-]+", re.UNICODE)
 _CANNED_NORMALIZE_RE = re.compile(r"[^a-z0-9]+")
@@ -171,6 +178,7 @@ def _unsafe_raw_context_reason(text: str) -> str | None:
         ("code_or_log", _SHELL_SNIPPET_RE),
         ("code_or_log", _TIMESTAMP_LOG_RE),
         ("code_or_log", _BRACKET_LOG_RE),
+        ("sensitive_topic", _SENSITIVE_TOPIC_RE),
     )
     for reason, pattern in checks:
         if pattern.search(original):
@@ -188,7 +196,7 @@ def _sanitize_prompt_user_message(text: str, *, limit: int | None = None) -> str
     """
     original = str(text or "")
     if _unsafe_raw_context_reason(original):
-        return "User asked about technical content; sensitive details omitted."
+        return "User asked about sensitive content; details omitted."
     redacted = re.sub(r"\s+", " ", original).strip()
     if limit is not None and len(redacted) > limit:
         redacted = redacted[: limit - 1].rstrip() + "…"

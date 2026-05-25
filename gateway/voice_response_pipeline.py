@@ -124,13 +124,11 @@ class VoiceResponsePipeline:
         context: VoiceContext,
         *,
         summarizer: Callable[[str], str] | None = None,
-    ) -> VoiceEvent | None:
-        """Return the final speakable event, or ``None`` if no safe text exists."""
+    ) -> VoiceEvent:
+        """Return the final event candidate; empty text becomes suppressed telemetry downstream."""
         from gateway.pulse_voice_events import summarize_final_voice_response
 
         result = summarize_final_voice_response(final_response, summarizer=summarizer)
-        if not str(result.text or "").strip():
-            return None
         return VoiceEvent(
             kind=result.kind,  # type: ignore[arg-type]
             text=result.text,
@@ -184,7 +182,7 @@ class VoiceResponsePipeline:
 
     def publish(self, event: VoiceEvent | None) -> None:
         """Publish a voice event best-effort; never let voice break text delivery."""
-        if event is None or not str(event.text or "").strip():
+        if event is None:
             return
         try:
             self.publisher(event.kind, event.text, **event.to_publish_kwargs())

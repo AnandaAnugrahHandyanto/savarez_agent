@@ -16,6 +16,7 @@ import re
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
 
 from hermes_constants import get_hermes_home
@@ -79,9 +80,13 @@ _DEFAULT_GENERATED_ACK_CONFIG = {
     "model": None,
     "silence_on_failure": True,
 }
+_DEFAULT_VOICE_OBSERVABILITY_CONFIG = {
+    "emit_suppressed_events": True,
+    "include_candidate_counts": True,
+}
 _STACK_TRACE_RE = re.compile(r"(?is)^\s*Traceback \(most recent call last\):.*")
 _SENSITIVE_TOPIC_RE = re.compile(r"(?i)\b(?:trading\s+pnl|portfolio\s+exposure)\b")
-_AMBIENT_POLICY = AmbientVoicePolicy()
+_AMBIENT_POLICY: AmbientVoicePolicy | None = None
 
 
 @dataclass(frozen=True)
@@ -120,6 +125,29 @@ def voice_events_path() -> Path:
     return get_hermes_home() / "pulse" / "voice-events.jsonl"
 
 
+def is_voice_event_fresh_for_speech(
+    event: dict[str, Any],
+    *,
+    now: float | None = None,
+    max_age_seconds: float = 30.0,
+) -> bool:
+    """Return whether a voice-out event is fresh enough to auto-speak.
+
+    Missing, non-numeric, future-skewed, or stale timestamps are observability
+    only. Consumers should require this before triggering ambient room audio.
+    """
+    try:
+        raw_ts = event.get("ts")
+        if raw_ts is None:
+            return False
+        ts = float(raw_ts)
+        age = (time.time() if now is None else float(now)) - ts
+        max_age = max(0.0, float(max_age_seconds))
+    except (TypeError, ValueError):
+        return False
+    return 0 <= age <= max_age
+
+
 def _default_policy() -> dict[str, Any]:
     return {
         "allowed": True,
@@ -135,6 +163,7 @@ def _default_policy() -> dict[str, Any]:
             "blocked_secret_like": False,
             "blocked_sensitive_topic": False,
             "blocked_stack_trace": False,
+            "long_response": False,
         },
     }
 
@@ -153,7 +182,7 @@ def _ambient_context(kind: str, metadata: dict[str, Any]) -> AmbientVoiceContext
         profile=metadata.get("voice_profile") or metadata.get("profile") or "eon",
         explicit_spoken_request=bool(metadata.get("explicit_spoken_request", False)),
         is_private_context=bool(metadata.get("is_private_context", False)),
-        config_scope=str(metadata.get("config_scope") or "living_room_default"),
+        config_scope=metadata.get("config_scope"),
     )
 
 
@@ -184,6 +213,7 @@ def _policy_metadata_from_decision(
             "blocked_secret_like": ("blocked_secret_like", "secret_like"),
             "blocked_sensitive_topic": ("blocked_sensitive_topic", "sensitive_topic"),
             "blocked_stack_trace": ("blocked_stack_trace", "stack_trace"),
+            "long_response": ("long_response",),
         }
         for safe_key, aliases in classifier_aliases.items():
             policy["classifiers"][safe_key] = any(bool(base_classifiers.get(alias)) for alias in aliases)
@@ -224,6 +254,7 @@ def _policy_metadata_from_decision(
                 policy["classifiers"].get("blocked_sensitive_topic") or classifiers.get("sensitive_topic")
             ),
             "blocked_stack_trace": bool(policy["classifiers"].get("blocked_stack_trace") or classifiers.get("stack_trace")),
+            "long_response": bool(policy["classifiers"].get("long_response") or classifiers.get("long_response")),
         }
     )
     return policy
@@ -356,6 +387,56 @@ def _generated_ack_config() -> dict[str, Any]:
     except Exception:
         pass
     return config
+
+
+def _bool_config(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _voice_observability_config() -> dict[str, Any]:
+    """Load safe Pulse voice observability knobs."""
+    raw = dict(_DEFAULT_VOICE_OBSERVABILITY_CONFIG)
+    try:
+        from hermes_cli.config import load_config
+
+        loaded = load_config() or {}
+        pulse_voice = ((loaded.get("pulse") or {}).get("voice") or {}) if isinstance(loaded, dict) else {}
+        user_config = pulse_voice.get("observability") or {}
+        if isinstance(user_config, dict):
+            raw.update({k: v for k, v in user_config.items() if v is not None})
+    except Exception:
+        pass
+    return {
+        "emit_suppressed_events": _bool_config(
+            raw.get("emit_suppressed_events"),
+            _DEFAULT_VOICE_OBSERVABILITY_CONFIG["emit_suppressed_events"],
+        ),
+        "include_candidate_counts": _bool_config(
+            raw.get("include_candidate_counts"),
+            _DEFAULT_VOICE_OBSERVABILITY_CONFIG["include_candidate_counts"],
+        ),
+    }
+
+
+def _ambient_policy() -> AmbientVoicePolicy:
+    """Return config-loaded ambient policy while preserving test monkeypatch hook."""
+    if _AMBIENT_POLICY is not None:
+        return _AMBIENT_POLICY
+    try:
+        from hermes_cli.config import load_config
+
+        return AmbientVoicePolicy.from_config(load_config() or {})
+    except Exception:
+        return AmbientVoicePolicy()
 
 
 class _ProviderAckGenerator:
@@ -576,6 +657,93 @@ def _write_event(path: Path, event: dict[str, Any]) -> None:
         fh.write(line)
 
 
+def _write_voice_event(event: dict[str, Any]) -> None:
+    canonical = voice_out_path()
+    legacy = voice_events_path()
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    with _LOCK:
+        _write_event(canonical, event)
+        # Compatibility mirror for older Aegis builds; same canonical schema,
+        # not raw delta/commentary.
+        if legacy != canonical:
+            _write_event(legacy, event)
+
+
+def _observability_metadata(
+    *,
+    original_chars: int,
+    spoken_text: str,
+    decision: Any,
+    stage: str,
+    include_candidate_counts: bool = True,
+) -> dict[str, Any]:
+    reason_aliases = {
+        "empty_after_sanitization": "empty_after_sanitize",
+        "secret_like": "secret_like_blocked",
+        "sensitive_topic": "sensitive_topic_blocked",
+        "stack_trace": "stack_trace_blocked",
+        "command_log": "tool_log_blocked",
+    }
+    blocked_reasons = {
+        "secret_like_blocked",
+        "sensitive_topic_blocked",
+        "stack_trace_blocked",
+        "tool_log_blocked",
+        "empty_after_sanitize",
+    }
+    suppression_reason = None
+    for reason in list(getattr(decision, "reasons", ()) or []):
+        mapped = _safe_reason_code(reason_aliases.get(str(reason), str(reason)))
+        if mapped in blocked_reasons:
+            suppression_reason = mapped
+            break
+    observability = {
+        "policy_stage": _safe_metadata_string(stage, enum=True) or "candidate",
+        "suppression_reason": suppression_reason if getattr(decision, "suppressed", False) else None,
+    }
+    if include_candidate_counts:
+        observability.update(
+            {
+                "candidate_chars": max(0, int(original_chars or 0)),
+                "spoken_chars": len(str(spoken_text or "")),
+            }
+        )
+    return observability
+
+
+def _base_voice_event(
+    *,
+    kind: str,
+    text: str,
+    max_seconds: int,
+    policy: dict[str, Any],
+    observability: dict[str, Any],
+    metadata: dict[str, Any],
+    context: AmbientVoiceContext,
+) -> dict[str, Any]:
+    safe_metadata = _safe_voice_metadata(metadata)
+    return {
+        "id": f"{time.time_ns()}",
+        "ts": time.time(),
+        "schema_version": 2,
+        "kind": kind,
+        "text": text,
+        "max_seconds": max(0, min(int(max_seconds or 0), 30)),
+        "source": _safe_metadata_string(metadata.get("source", kind), enum=True) or kind,
+        "derived_from": _safe_metadata_string(
+            metadata.get("derived_from", "pulse_voice_candidate"),
+            enum=True,
+        ) or "pulse_voice_candidate",
+        "voice_profile": _safe_metadata_string(
+            metadata.get("voice_profile", context.profile or "eon"),
+            enum=True,
+        ) or "eon",
+        "policy": policy,
+        "observability": observability,
+        **safe_metadata,
+    }
+
+
 def publish_voice_out(kind: str, text: str, **metadata: Any) -> None:
     """Append a canonical voice-out event for local Pulse/Aegis subscribers.
 
@@ -587,16 +755,14 @@ def publish_voice_out(kind: str, text: str, **metadata: Any) -> None:
     kind = str(kind or "progress").strip().lower()
     if kind not in _ALLOWED_KINDS:
         kind = "progress"
-    sanitized = sanitize_voice_text(text)
-    if not sanitized.text:
-        return
     try:
+        original = str(text or "")
+        sanitized = sanitize_voice_text(original)
         context = _ambient_context(kind, metadata)
-        decision = _AMBIENT_POLICY.evaluate(sanitized.text, context)
-        if not decision.allowed or not decision.text:
-            return
         default_seconds = 2 if kind in {"ack", "progress"} else 4
-        base_policy = metadata.pop("policy", None)
+        stage = "final" if kind in {"completion", "question", "error"} else kind
+        base_policy = metadata.get("policy")
+
         if isinstance(base_policy, dict):
             merged_policy = dict(sanitized.policy)
             merged_policy.update({k: v for k, v in base_policy.items() if k not in {"reason_codes", "classifiers"}})
@@ -606,42 +772,83 @@ def publish_voice_out(kind: str, text: str, **metadata: Any) -> None:
             merged_classifiers = dict(sanitized.policy.get("classifiers") or {})
             merged_classifiers.update(base_policy.get("classifiers") or {})
             merged_policy["classifiers"] = merged_classifiers
+        else:
+            merged_policy = sanitized.policy
+
+        # The first-pass sanitizer enforces hard no-speak rules for secret-like
+        # text, stack traces, and empty-after-sanitize candidates. Never let the
+        # contextual ambient policy turn those back into speakable output.
+        if not sanitized.policy.get("allowed", True) or not sanitized.text:
+            classifiers = sanitized.policy.get("classifiers") or {}
+            decision = SimpleNamespace(
+                allowed=False,
+                text="",
+                sanitized=bool(sanitized.policy.get("sanitized", True)),
+                truncated=bool(sanitized.policy.get("truncated", False)),
+                suppressed=True,
+                max_seconds=0,
+                reasons=tuple(sanitized.policy.get("reason_codes") or ("empty_after_sanitize",)),
+                classifiers={
+                    "code": bool(classifiers.get("dropped_code")),
+                    "command_log": bool(classifiers.get("dropped_tool_logs")),
+                    "raw_path": bool(classifiers.get("dropped_paths")),
+                    "secret_like": bool(classifiers.get("blocked_secret_like")),
+                    "sensitive_topic": bool(classifiers.get("blocked_sensitive_topic")),
+                    "stack_trace": bool(classifiers.get("blocked_stack_trace")),
+                    "long_response": bool(classifiers.get("long_response")),
+                },
+                rule_profile=context.config_scope or "living_room_default",
+            )
             policy = _policy_metadata_from_decision(decision, merged_policy)
         else:
-            policy = _policy_metadata_from_decision(decision, sanitized.policy)
-        safe_metadata = _safe_voice_metadata(metadata)
+            decision = _ambient_policy().evaluate(sanitized.text, context)
+            policy = _policy_metadata_from_decision(decision, merged_policy)
+
+        observability_config = _voice_observability_config()
+        if not decision.allowed or not decision.text:
+            if not observability_config.get("emit_suppressed_events", True):
+                return
+            policy["allowed"] = False
+            policy["suppressed"] = True
+            event = _base_voice_event(
+                kind="suppressed",
+                text="",
+                max_seconds=0,
+                policy=policy,
+                observability=_observability_metadata(
+                    original_chars=len(original),
+                    spoken_text="",
+                    decision=decision,
+                    stage=stage,
+                    include_candidate_counts=observability_config.get("include_candidate_counts", True),
+                ),
+                metadata=metadata,
+                context=context,
+            )
+            event["max_seconds"] = 0
+            _write_voice_event(event)
+            return
+
         try:
-            requested_max_seconds = int(metadata.pop("max_seconds", decision.max_seconds or default_seconds) or default_seconds)
+            requested_max_seconds = int(metadata.get("max_seconds", decision.max_seconds or default_seconds) or default_seconds)
         except (TypeError, ValueError):
             requested_max_seconds = int(decision.max_seconds or default_seconds)
-        event = {
-            "id": f"{time.time_ns()}",
-            "ts": time.time(),
-            "schema_version": 2,
-            "kind": kind,
-            "text": decision.text,
-            "max_seconds": max(1, min(requested_max_seconds, 30)),
-            "source": _safe_metadata_string(metadata.pop("source", kind), enum=True) or kind,
-            "derived_from": _safe_metadata_string(
-                metadata.pop("derived_from", "pulse_voice_candidate"),
-                enum=True,
-            ) or "pulse_voice_candidate",
-            "voice_profile": _safe_metadata_string(
-                metadata.pop("voice_profile", context.profile or "eon"),
-                enum=True,
-            ) or "eon",
-            "policy": policy,
-            **safe_metadata,
-        }
-        canonical = voice_out_path()
-        legacy = voice_events_path()
-        canonical.parent.mkdir(parents=True, exist_ok=True)
-        with _LOCK:
-            _write_event(canonical, event)
-            # Compatibility mirror for older Aegis builds; same canonical schema,
-            # not raw delta/commentary.
-            if legacy != canonical:
-                _write_event(legacy, event)
+        event = _base_voice_event(
+            kind=kind,
+            text=decision.text,
+            max_seconds=max(1, min(requested_max_seconds, 30)),
+            policy=policy,
+            observability=_observability_metadata(
+                original_chars=len(original),
+                spoken_text=decision.text,
+                decision=decision,
+                stage=stage,
+                include_candidate_counts=observability_config.get("include_candidate_counts", True),
+            ),
+            metadata=metadata,
+            context=context,
+        )
+        _write_voice_event(event)
     except Exception:
         return
 

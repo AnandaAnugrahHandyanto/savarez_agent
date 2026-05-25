@@ -103,6 +103,14 @@ def _submit_generated_ack_voice_out(message_text: str, **kwargs: Any) -> bool:
     future.add_done_callback(release_slot)
     return True
 
+
+def _should_submit_generated_ack_voice_out(message_type: Any) -> bool:
+    """Generated turn-start room audio is only for voice-originated turns."""
+    value = getattr(message_type, "value", message_type)
+    name = getattr(message_type, "name", "")
+    return str(value).lower() == "voice" or str(name).lower() == "voice"
+
+
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
     r"auxiliary\s+.+\s+failed"
@@ -8625,20 +8633,21 @@ class GatewayRunner:
         try:
             _ack_source_message_id = self._reply_anchor_for_event(event)
             _ack_input_modality = "voice" if event.message_type == MessageType.VOICE else "text"
-            _submit_generated_ack_voice_out(
-                message_text,
-                session_id=session_entry.session_id,
-                platform=source.platform.value if source.platform else "",
-                chat_id=source.chat_id,
-                channel_id=source.parent_chat_id or source.chat_id,
-                thread_id=source.thread_id,
-                source_message_id=_ack_source_message_id,
-                input_modality=_ack_input_modality,
-                output_device="room_audio",
-                config_scope="living_room_default",
-                explicit_spoken_request=_ack_input_modality == "voice",
-                is_private_context=source.chat_type == "dm",
-            )
+            if _should_submit_generated_ack_voice_out(event.message_type):
+                _submit_generated_ack_voice_out(
+                    message_text,
+                    session_id=session_entry.session_id,
+                    platform=source.platform.value if source.platform else "",
+                    chat_id=source.chat_id,
+                    channel_id=source.parent_chat_id or source.chat_id,
+                    thread_id=source.thread_id,
+                    source_message_id=_ack_source_message_id,
+                    input_modality=_ack_input_modality,
+                    output_device="room_audio",
+                    config_scope="living_room_default",
+                    explicit_spoken_request=True,
+                    is_private_context=source.chat_type == "dm",
+                )
         except Exception:
             pass
 

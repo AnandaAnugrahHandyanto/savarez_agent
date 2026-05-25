@@ -186,12 +186,15 @@ class VoicePolicyDecision:
             "suppressed": self.suppressed,
             "reason_codes": self.reasons,
             "rule_profile": self.rule_profile,
-            "blocked_secret_like": bool(self.classifiers.get("secret_like")),
-            "dropped_code": bool(self.classifiers.get("code")),
-            "blocked_stack_trace": bool(self.classifiers.get("stack_trace")),
-            "dropped_tool_logs": bool(self.classifiers.get("command_log")),
-            "dropped_paths": bool(self.classifiers.get("raw_path")),
-            "blocked_sensitive_topic": bool(self.classifiers.get("sensitive_topic")),
+            "classifiers": {
+                "blocked_secret_like": bool(self.classifiers.get("secret_like")),
+                "dropped_code": bool(self.classifiers.get("code")),
+                "blocked_stack_trace": bool(self.classifiers.get("stack_trace")),
+                "dropped_tool_logs": bool(self.classifiers.get("command_log")),
+                "dropped_paths": bool(self.classifiers.get("raw_path")),
+                "blocked_sensitive_topic": bool(self.classifiers.get("sensitive_topic")),
+                "long_response": bool(self.classifiers.get("long_response")),
+            },
         }
 
 
@@ -201,6 +204,32 @@ class AmbientVoicePolicy:
 
     rule_profiles: Mapping[str, Mapping[str, Any]] = field(default_factory=_configured_rule_profiles)
     default_rule_profile: str = field(default_factory=_configured_default_rule_profile)
+
+    @classmethod
+    def from_config(cls, config: Mapping[str, Any] | None = None) -> "AmbientVoicePolicy":
+        """Build policy profiles from a Hermes config mapping.
+
+        Disabled config never disables hard safety rules; it only falls back to
+        conservative defaults instead of user profile overrides.
+        """
+        config = config or {}
+        voice = config.get("voice") if isinstance(config, Mapping) else {}
+        ambient = (voice or {}).get("ambient_policy") if isinstance(voice, Mapping) else {}
+        if not isinstance(ambient, Mapping) or ambient.get("enabled", True) is False:
+            return cls(rule_profiles=copy.deepcopy(_DEFAULT_PROFILES), default_rule_profile="living_room_default")
+        profiles = copy.deepcopy(_DEFAULT_PROFILES)
+        configured = ambient.get("rule_profiles")
+        if isinstance(configured, Mapping):
+            for name, profile in configured.items():
+                if not isinstance(name, str) or not isinstance(profile, Mapping):
+                    continue
+                base = copy.deepcopy(profiles.get(name, {}))
+                base.update(dict(profile))
+                profiles[name] = base
+        default = str(ambient.get("default_context") or "living_room_default").strip() or "living_room_default"
+        if default not in profiles:
+            default = "living_room_default"
+        return cls(rule_profiles=profiles, default_rule_profile=default)
 
     def evaluate(self, text: str, context: VoiceContext) -> VoicePolicyDecision:
         original = str(text or "")
