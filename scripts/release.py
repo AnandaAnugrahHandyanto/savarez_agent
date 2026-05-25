@@ -57,6 +57,7 @@ AUTHOR_MAP = {
     "dafeng@DafengdeMacBook-Pro.local": "WorldWriter",
     "schepers.zander1@gmail.com": "Strontvod",
     "anadi.jaggia@gmail.com": "Jaggia",
+    "steveonjava@gmail.com": "steveonjava",
     "32201324+simpolism@users.noreply.github.com": "simpolism",
     "simpolism@gmail.com": "simpolism",
     "jake@nousresearch.com": "simpolism",
