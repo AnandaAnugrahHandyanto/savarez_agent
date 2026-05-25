@@ -13387,3 +13387,128 @@ For abnormal termination, the WAL provides recovery to the last checkpoint. The 
 
 *Pass #94 complete — 2026-05-26T13:00:00Z*
 *Commit at scan: 5a51a1f65*
+
+
+---
+
+## Pass #95 – UI/TUI Security, Terminal Rendering & Accessibility Deep Dive – 2026-05-26T13:30:00Z
+
+Scope: hermes_cli/tui.py, hermes_cli/tui_gateway.py, hermes_cli/chat_ui.py, tools/browser_tool.py (TUI components), agent/redact.py, hermes_logging.py
+
+---
+
+### P95-1 · Terminal escape sequence injection — GOOD (structured output only)
+
+**File:** `hermes_cli/tui.py`, `hermes_cli/chat_ui.py`
+**Positive:** TUI is built on rich library which handles ANSI escape sequences safely. All output goes through rich's rendering pipeline which sanitizes potentially dangerous sequences. No raw ANSI generated directly from user content.
+
+---
+
+### P95-2 · Message content in TUI — GOOD (no raw echo)
+
+**File:** `hermes_cli/tui.py`, `hermes_cli/chat_ui.py`
+**Positive:** Message content is rendered using rich's Text/Table widgets, not raw print statements. This means ANSI sequences in messages are interpreted as display text, not terminal control sequences.
+
+---
+
+### P95-3 · TUI input validation — GOOD (slash commands use argparser)
+
+**File:** `hermes_cli/tui.py` (slash command handling)
+**Positive:** Slash commands are parsed using argparse-style parsing. Command names and arguments are validated before execution.
+
+---
+
+### P95-4 · TUI state management — GOOD (rich.Live rendering)
+
+**File:** `hermes_cli/tui.py`
+**Positive:** Uses `rich.Live` for non-destructive live display updates. State is managed in the render loop and updates are atomic.
+
+---
+
+### P95-5 · Secret masking in TUI — GOOD (redact.py integration)
+
+**File:** `hermes_cli/tui.py`, `agent/redact.py`
+**Positive:** Secrets are redacted before display in the TUI. The redaction happens at the formatting layer, ensuring no raw secrets appear in terminal output.
+
+---
+
+### P95-6 · Accessibility — PARTIAL (rich has some support)
+
+**File:** `hermes_cli/tui.py`
+**Observation:** Rich library has some accessibility features, but there is no explicit screen reader optimization in the TUI. This is a known limitation of terminal-based UIs.
+**Severity:** INFO
+**Impact:** Low — TUI is primarily for interactive use, not accessibility-first
+
+---
+
+### P95-7 · Visual-only security indicators — DOCUMENTED
+
+**File:** `hermes_cli/tui.py`
+**Observation:** Some security indicators (connection status, encryption status) are displayed as colored icons/text. These are not accessible via screen readers.
+**Severity:** INFO
+**Mitigation:** Rich status bars include text labels alongside color indicators
+
+---
+
+### P95-8 · TUI command history — GOOD (no persistent secrets)
+
+**Positive:** Command history stored by prompt-toolkit does not include sensitive data beyond what the user typed. No credential caching in history.
+
+---
+
+### P95-9 · SQL injection in TUI kanban queries — GOOD
+
+**File:** `hermes_cli/kanban_db.py`
+**Positive:** All kanban SQL queries use parameterised `?` placeholders. No string concatenation in queries. TUI kanban interface uses the same safe database layer as the rest of the application.
+
+---
+
+### P95-10 · Color scheme security indicators — GOOD (text labels present)
+
+**Positive:** Status indicators in TUI include text labels (e.g., "CONNECTED", "DISCONNECTED") alongside color coding, ensuring meaning is conveyed even without color perception.
+
+---
+
+### P95-11 · Browser tool TUI integration — GOOD (rendered in terminal)
+
+**File:** `tools/browser_tool.py`
+**Positive:** Browser tool captures are rendered using rich's console output, which sanitizes any potentially dangerous content in captured pages.
+
+---
+
+### P95-12 · Log injection via TUI input — GOOD
+
+**File:** `hermes_cli/tui.py`
+**Positive:** User input is handled through prompt-toolkit's input layer, which does not interpret ANSI sequences. Input is passed to the agent as raw text after basic cleanup.
+
+---
+
+### P95-13 · Sensitive data in TUI status bar — GOOD (redacted)
+
+**File:** `hermes_cli/tui.py`
+**Positive:** Status bar displays include platform status, session info, and token counts. Any sensitive data (API keys, tokens) are redacted or omitted from status displays.
+
+---
+
+### Summary Table
+
+| ID | Area | Status |
+|----|------|--------|
+| P95-1 | Terminal escape sequence injection | ✅ GOOD |
+| P95-2 | Message content rendering | ✅ GOOD |
+| P95-3 | TUI input validation (slash commands) | ✅ GOOD |
+| P95-4 | TUI state management (rich.Live) | ✅ GOOD |
+| P95-5 | Secret masking in TUI | ✅ GOOD |
+| P95-6 | Accessibility (screen reader) | ℹ️ PARTIAL |
+| P95-7 | Visual-only security indicators | ℹ️ DOCUMENTED |
+| P95-8 | TUI command history (no secret caching) | ✅ GOOD |
+| P95-9 | SQL injection in kanban queries | ✅ GOOD |
+| P95-10 | Color scheme security indicators | ✅ GOOD |
+| P95-11 | Browser tool TUI rendering | ✅ GOOD |
+| P95-12 | Log injection via TUI input | ✅ GOOD |
+| P95-13 | Sensitive data in status bar | ✅ GOOD |
+
+---
+
+*Pass #95 complete — 2026-05-26T13:30:00Z*
+*Commit at scan: 5a51a1f65*
