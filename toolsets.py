@@ -317,8 +317,29 @@ TOOLSETS = {
     },
 
 
+    # -------------------------------------------------------------------------
+    # Cybersecurity toolset
+    # -------------------------------------------------------------------------
+
+    "cyber": {
+        "description": (
+            "Cybersecurity operations toolkit: CVE/IOC threat intelligence (NVD, "
+            "VirusTotal, AbuseIPDB, MITRE ATT&CK), IOC extraction from logs and "
+            "reports, vulnerability triage with CVSS + EPSS scoring, and an "
+            "in-session incident response playbook. Pair with 'delegation' to fan "
+            "out parallel subagent analysis tasks."
+        ),
+        "tools": [
+            "threat_intel",   # CVE lookup, IOC reputation, MITRE ATT&CK TTP
+            "extract_iocs",   # IOC extraction from freeform text / logs
+            "vuln_triage",    # CVSS + EPSS + asset correlation
+            "ir_incident",    # IR playbook: create, timeline, evidence, report
+        ],
+        "includes": [],
+    },
+
     # Scenario-specific toolsets
-    
+
     "debugging": {
         "description": "Debugging and troubleshooting toolkit",
         "tools": ["terminal", "process"],
