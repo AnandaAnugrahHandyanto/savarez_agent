@@ -126,10 +126,12 @@ class TestCmdUpdateBranchFallback:
             if call.args and call.args[0][0] == "/usr/bin/npm"
         ]
 
-        # cmd_update runs npm commands in three locations:
-        #   1. repo root  — slash-command / TUI bridge deps
-        #   2. ui-tui/    — Ink TUI deps
-        #   3. web/       — install + "npm run build" for the web frontend
+        # cmd_update runs npm commands in five locations:
+        #   1. repo root                   — slash-command / TUI bridge deps
+        #   2. ui-tui/                     — Ink TUI deps
+        #   3. ui-tui/packages/hermes-ink  — workspace package runtime build
+        #   4. ui-tui/                     — self-contained TUI bundle build
+        #   5. web/                        — install + "npm run build" for the web frontend
         #
         # Repo-root and ui-tui installs intentionally omit `--silent` and run
         # without `capture_output` so optional postinstall scripts (e.g.
@@ -143,12 +145,17 @@ class TestCmdUpdateBranchFallback:
             "--no-audit",
             "--progress=false",
         ]
-        assert npm_calls[:2] == [
+        assert npm_calls[:4] == [
             (update_flags, PROJECT_ROOT),
             (update_flags, PROJECT_ROOT / "ui-tui"),
+            (
+                ["/usr/bin/npm", "run", "build"],
+                PROJECT_ROOT / "ui-tui" / "packages" / "hermes-ink",
+            ),
+            (["/usr/bin/npm", "run", "build"], PROJECT_ROOT / "ui-tui"),
         ]
-        if len(npm_calls) > 2:
-            assert npm_calls[2:] == [
+        if len(npm_calls) > 4:
+            assert npm_calls[4:] == [
                 (["/usr/bin/npm", "ci", "--silent"], PROJECT_ROOT / "web"),
                 (["/usr/bin/npm", "run", "build"], PROJECT_ROOT / "web"),
             ]

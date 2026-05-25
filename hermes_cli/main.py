@@ -8180,6 +8180,54 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
     return shutil.which("uv")
 
 
+def _run_tui_build_step(npm: str, label: str, cwd: Path) -> bool:
+    """Run one TUI build step and surface useful failure guidance."""
+    result = subprocess.run(
+        [npm, "run", "build"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if result.returncode == 0:
+        print(f"  ✓ {label}")
+        return True
+
+    print(f"  ⚠ {label} build failed")
+    combined = f"{result.stdout or ''}\n{result.stderr or ''}".strip()
+    if combined:
+        preview = "\n".join(combined.splitlines()[-10:])
+        for line in preview.splitlines():
+            print(f"    {line}")
+    return False
+
+
+def _build_tui_runtime_assets(npm: str, tui_dir: Path) -> bool:
+    """Build TUI runtime artefacts after an update.
+
+    ``@hermes/ink`` exposes ``index.js -> dist/entry-exports.js`` for dev and
+    workspace consumers, but that ``dist/`` file is an untracked build output.
+    A git pull / ZIP update can therefore refresh sources while leaving the
+    local package runtime missing or stale. Build the package first, then the
+    top-level self-contained TUI bundle.
+    """
+    if not (tui_dir / "package.json").exists():
+        return True
+
+    print("→ Building TUI runtime assets...")
+    ok = True
+    ink_dir = tui_dir / "packages" / "hermes-ink"
+    if (ink_dir / "package.json").exists():
+        ok = _run_tui_build_step(npm, "@hermes/ink", ink_dir) and ok
+    ok = _run_tui_build_step(npm, "ui-tui", tui_dir) and ok
+    if not ok:
+        print("  TUI may be unavailable until these build steps succeed:")
+        print("    cd ui-tui && npm run build --prefix packages/hermes-ink && npm run build")
+    return ok
+
+
 def _update_node_dependencies() -> None:
     npm = shutil.which("npm")
     if not npm:
@@ -8193,6 +8241,7 @@ def _update_node_dependencies() -> None:
         return
 
     print("→ Updating Node.js dependencies...")
+    ui_tui_installed = False
     for label, path in paths:
         if not (path / "package.json").exists():
             continue
@@ -8211,12 +8260,17 @@ def _update_node_dependencies() -> None:
         )
         if result.returncode == 0:
             print(f"  ✓ {label}")
+            if path == PROJECT_ROOT / "ui-tui":
+                ui_tui_installed = True
             continue
 
         print(f"  ⚠ npm install failed in {label}")
         stderr = (result.stderr or "").strip() if result.stderr else ""
         if stderr:
             print(f"    {stderr.splitlines()[-1]}")
+
+    if ui_tui_installed:
+        _build_tui_runtime_assets(npm, PROJECT_ROOT / "ui-tui")
 
 
 class _UpdateOutputStream:
