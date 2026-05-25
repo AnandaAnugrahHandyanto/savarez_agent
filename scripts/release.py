@@ -1252,6 +1252,7 @@ AUTHOR_MAP = {
     "120500656+ooovenenoso@users.noreply.github.com": "ooovenenoso",  # PR #28256 salvage (tool loop recovery hints)
     "120500656+oooindefatigable@users.noreply.github.com": "ooovenenoso",
     "vanthinh6886@gmail.com": "vanthinh6886",  # PR #28018 salvage (yaml/flock/atomic write guards)
+    "ade.du@tec-do.com": "Ade5954",  # PR #27632 / PR #28691
 }
 
 
