@@ -1,6 +1,6 @@
 # Held Specification Ledger — Local Cursor/Hermes Snapshot
 
-Generated: 2026-05-23
+Generated: 2026-05-25
 Scope: local workspace bootstrap for Hermes MCP `fleet_context_snapshot`
 Source: `.learnings/memory.md` HOT-tier memory in this checkout
 
@@ -14,6 +14,7 @@ Source: `.learnings/memory.md` HOT-tier memory in this checkout
 - HELD: Spec 088 Phase B pending Spec 087 full closure.
 - HELD: KG Phase 2 Step 5 blocked until freeze lifts (June 1 target in HOT memory).
 - HELD: Town-Hermes Feedback Protocol frozen until after h20d (2026-05-26).
+- HELD: Seven-layer runtime identity stack implementation is blocked until the real runtime agent directory/provenance source is verified.
 
 ## Active Governance Constraints
 
@@ -22,6 +23,7 @@ Source: `.learnings/memory.md` HOT-tier memory in this checkout
 - MUST: Lane A agents must not depend on LLM gateway tokens.
 - MUST: Only `crt_resolution_watcher` holds `mutate_data` authority.
 - MUST NOT: Claim "true PIT" unless archived raw inputs, archived code, and archived artifacts all exist.
+- MUST NOT: Backfill SOUL/PRINCIPLES/HISTORY/ACTIVE_CONTEXT from registry metadata or OpenClaw wrapper skills.
 
 ## Notes
 

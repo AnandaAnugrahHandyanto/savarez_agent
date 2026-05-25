@@ -1,17 +1,21 @@
 # Latest State — Local Cursor/Hermes Snapshot
 
-Generated: 2026-05-23
+Generated: 2026-05-25
 Scope: local workspace bootstrap for Hermes MCP `fleet_context_snapshot`
-Source: `.learnings/memory.md` HOT-tier memory in this checkout
+Source: `.learnings/memory.md` HOT-tier memory + current Hermes repo state
 
 ## Status
 
-- Mode: skills/context only unless the Hermes gateway is started separately.
+- Mode: MCP skills/context is always available; live-ops is available only when the Hermes gateway is running.
 - Hermes repo: `/workspace`
 - Runtime agents directory: `/workspace/agents`
 - Agent registry: present
 - Registered agents: 30
 - HOT learnings: present at `/workspace/.learnings/memory.md`
+- MCP skills/context tools: present (`fleet_context_snapshot`, `agent_health_summary`, `knowledge_query`, `town_brief`, skills/agents/knowledge/learnings/artifacts readers)
+- Town skill snapshots: 39 files under `docs/skills/*/SKILL.md`
+- OpenClaw agent wrapper skills: 31 files under `skills/openclaw/*/SKILL.md`
+- Current main: `a654b3d6b` (`cursor: update pipeline-production and llm-config rules — CI fix + gateway`)
 
 ## Project State
 
@@ -33,6 +37,12 @@ Source: `.learnings/memory.md` HOT-tier memory in this checkout
 
 - Q1 2026 13F cohort: cleared as of 2026-05-19.
 - Next 13F cycle: Q2 2026, deadline ~2026-08-14.
+
+## Local Identity Substrate Note
+
+- `/workspace/agents` is registry/index only in this cloud checkout.
+- Runtime SOUL/HEARTBEAT/IDENTITY documents require a local `HERMES_AGENTS_DIR` mount pointing at the operational repo.
+- Do not synthesize runtime identity layers from registry metadata or OpenClaw wrapper skills.
 
 ## Notes
 
