@@ -10721,6 +10721,175 @@ if TYPE_CHECKING:
 **No confirmed new issues.** Pass #79 clean.
 
 ---
-
 *Pass #79 complete — 2026-05-25T22:15:00Z*
+*Commit at scan: 5a51a1f65*
+
+## Pass #80 – Git History Archaeology, Issue Cross-Reference & Regressed Bugs Deep Dive – 2026-05-25 01:01:33
+
+---
+
+### 1. Git History Analysis
+
+#### 1.1 Reverted Commits (Regressed Bugs)
+
+Five explicit Revert commits found in recent history, indicating features that had to be backed out:
+
+| Commit | Description | Files Affected |
+|--------|-------------|----------------|
+| `57af46fae` | Revert "feat(firecrawl): add integration tag for Hermes usage in browser and web providers" (#28862) | plugins/browser/firecrawl/provider.py, plugins/web/firecrawl/provider.py |
+| `4d44304e8` | Revert "fix(telegram): enforce TELEGRAM_ALLOWED_USERS allowlist on inbound messages" | gateway/platforms/telegram.py |
+| `bbd2b4653` | Revert "feat(send_message): auto-detect @username mentions and create Telegram entities" | tools/send_message_tool.py |
+| `22120ef00` | Revert "feat(telegram): support quick-command-only menus" | 7 files — gateway/config.py, telegram.py, hermes_cli/commands.py, tests, docs |
+| `efd71e891` | Revert "fix: use resolved_origin and Host header in app_tools gateway client" | tools/app_tools.py |
+| `965ae7fa9` | revert(cli): drop scrollback box width clamp (#25975), restore full-width borders (#26163) | cli.py scrollback rendering |
+
+**Pattern observation**: The May 18-19 window (May 18 23:55-56:22) shows a cluster of 4 reverts in quick succession (bbd2b4653, 22120ef00, 4d44304e8, 57af46fae), suggesting a coordinated cleanup or rollback wave. These affect Telegram platform security (ALLOWED_USERS allowlist removal), Telegram quick-command menus, Firecrawl integration tags, and send_message mention detection.
+
+**Non-Revert feature rollback**: `3e7145e0b` reverted the /goal checklist + /subgoal feature stack (#23813) — a goal/ Ralph-loop feature rolled back and partially re-introduced in simpler form.
+
+#### 1.2 Security-Fix Commits (Recent)
+
+| Commit | Description | Area |
+|--------|-------------|------|
+| `4f4e337c4` | fix(file-safety): write-deny pairing/ directory to prevent approved-list injection | file-safety |
+| `7ab167736` | feat(security): on-demand supply-chain audit via OSV.dev (#31460) | supply-chain |
+| `be27bfed0` | security: harden API server key placeholder handling (#30738) | API server |
+| `e4a1220f8` | security: restrict default webhook toolset capabilities (#30745) | webhook |
+| `973255986` | fix(security): restrict dashboard websockets to loopback clients (#30741) | dashboard |
+| `d3c167b64` | fix(profiles): cross-profile soft guard on file-write tools + system-prompt hint (#31290)Telegram | profiles |
+| `d33c99bbb` | fix(security): validate Nous Portal inference_base_url against host allowlist | auth |
+| `2e509422e` | fix(security): hash gateway pairing codes instead of storing plaintext | gateway |
+| `9c90b3a59` | fix(security): validate secret in _reload_dynamic_routes to prevent HMAC bypass | gateway |
+| `e32d2ffc1` | fix(security): wire Nous URL allowlist into refresh / mint persistence sites | auth |
+| `1f5219fda` | fix(security): protect Hermes control-plane files from prompt injection | file-safety |
+| `5edb346c7` | security(file-safety): also write-deny root/.env when running under a profile (#15981) | file-safety |
+| `d9331eece` | fix(minimax-oauth): quarantine dead tokens on terminal refresh failure | OAuth |
+| `b570e0fdd` | fix(codex-oauth): quarantine terminal refresh errors so dead tokens are not replayed across sessions | OAuth |
+
+**Pattern**: Security fixes cluster around (a) file-safety path traversal/injection, (b) webhook/API server capability restriction, (c) pairing/auth HMAC validation, (d) profile-level file-write guards.
+
+#### 1.3 Regression-Test Commits (Recent)
+
+4 explicit regression tests added in recent history:
+- `16eed4f91`: test(telegram): add brand-new-topic regression for #31086
+- `b9f533af0`: test(gateway): regression for plugin-transformed response after streaming
+- `cc61e3be4`: test(tui): isolate viewport-height remount regression
+- `b5ea6a5c8`: test(xai-oauth): regression coverage for bad-credentials disambiguator (#29344)
+
+#### 1.4 Notable #XXXX Issue Fixes with Historical Context
+
+- **#13710** (cli.py:14262): signal handlers swallowing exceptions — "#13710 regression" explicitly named
+- **#11976** (run_agent.py:3556): Model identifier regression — mirrors opencode-go fix for #5211
+- **#16265** (test_jobs.py:533): One-shot jobs must flip to enabled=false when next_run_at cannot be computed
+- **#17855** (test_scheduler.py:1156): run_conversation failure flags mis-surfaced as success
+- **#26744** (test_plugins/kanban_dashboard_plugin.py:983): Failed status transitions must be surfaced inline
+- **#31116** (test_platform_registry.py:831): Buggy is_connected must not silently enable the platform
+- **#31179** (browser_tool.py:3662): vision backend error when no vision provider configured
+
+---
+
+### 2. Open GitHub Issues Cross-Reference
+
+#### 2.1 Unfixed/Open Bugs with Code Evidence
+
+**Issue #31179** — `browser_tool.py:3662`: Code explicitly documents: "Without the vision check, the tool stays in the model's tool list even when no vision provider is configured, then fails at call time with a cryptic provider-side error" — a known failure mode in source.
+
+**Issue #26744** — Status transition failures silently swallowed — regression test exists but UI surfacing may still be incomplete.
+
+**Issue #31116** — A buggy is_connected silently enabling a platform — test explicitly guards against this.
+
+#### 2.2 TODO Comments Matching Known Issues
+
+- `RELEASE_v0.9.0.md:194`: "TODO store enforces ID uniqueness during replace operations ([#7986])" — in release notes, may indicate known gap.
+
+#### 2.3 Test Gap Indicators
+
+- `test_atypical_scenarios.py`: Explicit stress-test file covering unicode, emoji, RTL, huge strings, control chars, SQL injection, malformed JSON, path traversal, graph cycles.
+
+- GHSA references in tests: Regression tests for GHSA-3vpc-7q5r-276h (telegram webhook), GHSA-qg5c-hvr5-hjgr (TLS callback), GHSA-96vc-wcxf-jjff (approval), GHSA-76xc-57q6-vm5m (Ollama).
+
+---
+
+### 3. Regressed Bugs Deep Dive
+
+#### 3.1 Test Gaps
+
+| Area | Gap | Evidence |
+|------|-----|----------|
+| Platform registry | Transient is_connected failures silently enabling platforms | test_platform_registry.py:827-832 |
+| Kanban dashboard | Failed status transitions silently swallowed | test_kanban_dashboard_plugin.py:982-986 |
+| Telegram webhooks | Forged updates from unauthenticated webhooks | telegram.py:1499-1501 |
+| Cron scheduler | run_conversation failure flags mis-surfaced | test_scheduler.py:1156-1160 |
+| Sessions | session_json regression | commits 36d2bbe87 + b6c6f650e |
+| File safety | write_file git baseline warnings | commit 0b89628e8 |
+
+#### 3.2 Recurring Bug Patterns
+
+1. **Signal handler regressions**: #13710 — signal handlers swallowing exceptions
+2. **Scrollback rendering**: #25975/#26163/#25981 — multiple reverts for terminal scrollback width
+3. **OAuth token lifecycle**: Dead tokens not quarantined — d9331eece + b570e0fdd
+4. **Hot-reload HMAC bypass**: #8306 empty-secret hot-reload skip
+5. **Streaming after plugin transform**: Regression added as b9f533af0
+
+---
+
+### 4. Changelog Archaeology
+
+#### 4.1 CHANGELOG Files
+
+13 RELEASE_v0.*.md files found. No CHANGELOG.md (uppercase). Notes are per-version.
+
+#### 4.2 Changelog Entries vs Code
+
+- **v0.14.0**: "/goal checklist + /subgoal" — marked as "rolled back in window (#23813); returned in simpler form via #25449" — documented rollback.
+- **v0.14.0**: PyPI wheel new — potential packaging issues not yet discovered.
+- **HeartCodec skill**: "Tags may be ignored — known issue (#90)" — explicitly documented.
+
+#### 4.3 Known Issues Documented
+
+- Windows "early beta" — ~40 follow-up fixes acknowledged in v0.14.0.
+- RTX 5080 incompatibility — upstream.
+- Triton not available on macOS.
+
+---
+
+### 5. Security Advisory Patterns
+
+#### 5.1 GHSA References in Code (42 occurrences across 212 matches)
+
+| GHSA | Location | Security Implication |
+|------|----------|---------------------|
+| GHSA-3vpc-7q5r-276h | telegram.py:1501 | Telegram webhook secret required to prevent forged updates |
+| GHSA-qg5c-hvr5-hjgr | acp_adapter/server.py:1397, agent/tool_executor.py:224 | TLS thread-local for approval callbacks |
+| GHSA-96vc-wcxf-jjff | acp_adapter/server.py:1403 | Non-interactive auto-approve vs interactive approval |
+| GHSA-76xc-57q6-vm5m | agent/chat_completion_helpers.py:795 | Ollama Cloud credential env fallback |
+| GHSA-5qr3-c538-wm9j | environment-variables.md:562 | Dashboard refuses project plugin api file auto-import |
+
+#### 5.2 Security TODO/CVE Patterns
+
+- No explicit TODO security or CVE- patterns found in source.
+- SECURITY.md (331 lines) documents trust model: "The only security boundary against an adversarial LLM is the operating system" — in-process heuristics (approval gate, redaction, skill guard) are non-boundaries per policy.
+
+#### 5.3 Supply Chain
+
+- OSV.dev on-demand advisories (#31460) via 7ab167736
+- Lazy-install framework includes OSV supply-chain advisory checking
+
+---
+
+### 6. Summary of Key Findings
+
+1. **Revert cluster May 18-19**: 4 features reverted rapidly — TELEGRAM_ALLOWED_USERS allowlist enforcement, quick-command menus, send_message mentions, firecrawl tags. Monitor for gaps.
+
+2. **Regressed Telegram security**: `4d44304e8` reverted TELEGRAM_ALLOWED_USERS allowlist enforcement. GHSA-3vpc-7q5r-276h webhook secret protection remains.
+
+3. **GHSA annotations well-integrated**: 42+ references across 212 matches; tests validate GHSA-related behaviors.
+
+4. **Regression test coverage with gaps**: Tests for platform registry is_connected, kanban error surfacing, cron failure flags, OAuth quarantine, HMAC hot-reload — gaps remain around file mutation verification, Telegram allowlist, plugin-transformed streaming.
+
+5. **Scrollback rendering historical regression**: Multiple reverts for #25975/#26163/#25981 — final fix via prompt_toolkit monkey-patching.
+
+6. **Known unfixed issue in code**: #31179 browser_tool vision backend error — documented as known failure mode at browser_tool.py:3662.
+
+---
 *Commit at scan: 5a51a1f65*
