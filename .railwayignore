@@ -1,0 +1,42 @@
+# Development files
+.git
+.github
+.gitignore
+.envrc
+flake.nix
+flake.lock
+nix/
+
+# Documentation
+*.md
+docs/
+website/
+
+# Development dependencies
+.venv
+node_modules
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+
+# Local config
+.env
+.env.local
+.env.*.local
+
+# Docker Compose (local dev only)
+docker-compose.yml
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Test files
+tests/
+scripts/run_tests_parallel.py
+
+# Release notes
+RELEASE_*.md
