@@ -1335,6 +1335,7 @@ AUTHOR_MAP = {
     "timothy.b.dixon@gmail.com": "Codename-11",  # PR #29302 (API server session controls — sessions/chat/fork/stream)
     "jpschwartz2@uwalumni.com": "Schwartz10",  # PR #29302 sub-PR (multimodal media in session chat API)
     "JohnC1009@users.noreply.github.com": "JohnC1009",  # PR #32020 salvage (auth: global auth.json fallback in _load_provider_state)
+    "4436110+zqchris@users.noreply.github.com": "zqchris",  # PR #32131 (codex stream activity watchdog)
 }
 
 
