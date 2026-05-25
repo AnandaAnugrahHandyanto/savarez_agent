@@ -935,6 +935,16 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- Durable cursor for infrastructure-level checkpoint notifications.
+-- Unlike kanban_notify_subs, this is not tied to a single task; the
+-- gateway tails blocked checkpoint events across the whole board and
+-- delivers one review packet to each configured home target.
+CREATE TABLE IF NOT EXISTS kanban_checkpoint_cursors (
+    target        TEXT PRIMARY KEY,
+    last_event_id INTEGER NOT NULL DEFAULT 0,
+    updated_at    INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
@@ -1006,6 +1016,32 @@ def _validate_sqlite_header(path: Path) -> None:
         f"{path}{signature}; first_32={head[:32].hex(' ')}"
     )
 
+
+def _refuse_live_kanban_db_in_pytest(path: Path) -> None:
+    """Prevent pytest from writing fixture tasks into the operator Kanban DB.
+
+    Dispatcher-spawned workers intentionally inherit HERMES_KANBAN_* env vars
+    that pin them to a live board. If a worker runs pytest, those env vars can
+    make DB-layer tests call connect() against the live board unless the test
+    suite clears them first. Refuse that footgun at the DB boundary too.
+    """
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    if os.environ.get("HERMES_KANBAN_ALLOW_LIVE_TEST") == "1":
+        return
+    live_root = Path(os.path.expanduser("~/.hermes")).resolve()
+    resolved = path.expanduser().resolve()
+    live_paths = (live_root / "kanban.db", live_root / "kanban")
+    try:
+        is_live = resolved == live_paths[0] or resolved.is_relative_to(live_paths[1])
+    except AttributeError:  # pragma: no cover - Python < 3.9 compatibility
+        is_live = resolved == live_paths[0] or str(resolved).startswith(str(live_paths[1]) + os.sep)
+    if is_live:
+        raise RuntimeError(
+            "Refusing to open live Hermes Kanban DB during pytest. "
+            "Clear HERMES_KANBAN_DB/HERMES_KANBAN_BOARD/HERMES_KANBAN_HOME "
+            "or set HERMES_KANBAN_ALLOW_LIVE_TEST=1 for an explicit integration test."
+        )
 
 class KanbanDbCorruptError(RuntimeError):
     """Raised when an existing kanban DB file fails integrity checks.
@@ -1131,7 +1167,6 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     backup = _backup_corrupt_db(resolved)
     raise KanbanDbCorruptError(resolved, backup, reason)
 
-
 def connect(
     db_path: Optional[Path] = None,
     *,
@@ -1159,6 +1194,7 @@ def connect(
         path = db_path
     else:
         path = kanban_db_path(board=board)
+    _refuse_live_kanban_db_in_pytest(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     # Cheap byte-level check first — catches the #29507 TLS-overwrite shape
     # and other invalid-header cases without opening a sqlite connection.
@@ -1218,6 +1254,7 @@ def init_db(
         path = db_path
     else:
         path = kanban_db_path(board=board)
+    _refuse_live_kanban_db_in_pytest(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     resolved = str(path.resolve())
     # Clear the cache entry so the underlying connect() re-runs the
@@ -1694,7 +1731,15 @@ def create_task(
                             "(" + ",".join("?" * len(parents)) + ")",
                             parents,
                         ).fetchall()
-                        if any(r["status"] != "done" for r in rows):
+                        if any(r["status"] not in ("done", "archived") for r in rows):
+                            task_status = "todo"
+                        elif _checkpoint_dependency_blocks(
+                            conn,
+                            child_id=None,
+                            parent_ids=parents,
+                            child_title=title,
+                            child_body=body,
+                        ):
                             task_status = "todo"
                 # Even in triage mode we still need to validate parent ids
                 # so the eventual link rows don't dangle.
@@ -2195,35 +2240,127 @@ def _synthesize_ended_run(
 # Dependency resolution (todo -> ready)
 # ---------------------------------------------------------------------------
 
-def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Return True when ``task_id`` is sticky-blocked by an explicit
-    worker/operator ``kanban_block`` call (#28712).
+def _metadata_marks_failed_review(metadata: Optional[dict]) -> bool:
+    """Return True when review metadata explicitly says it did not approve."""
+    if not isinstance(metadata, dict):
+        return False
+    approved = metadata.get("approved")
+    if approved is False:
+        return True
+    if isinstance(approved, str) and approved.strip().lower() in {
+        "false", "no", "rejected", "blocked",
+    }:
+        return True
+    blockers = metadata.get("blockers")
+    if isinstance(blockers, (list, tuple, set, dict)) and len(blockers) > 0:
+        return True
+    if isinstance(blockers, str) and blockers.strip():
+        return True
+    return False
 
-    A ``blocked`` status can come from two very different sources:
 
-    * **Worker- or operator-initiated** — a worker called
-      ``kanban_block(reason="review-required: ...")`` (or somebody ran
-      ``hermes kanban block <id>``).  This is a deliberate handoff that
-      should stay blocked until an operator unblocks it.  The block tool
-      emits a ``"blocked"`` event row in ``task_events``.
+def _metadata_marks_passing_review(metadata: Optional[dict]) -> bool:
+    """Return True when review metadata explicitly says it approved."""
+    if not isinstance(metadata, dict):
+        return False
+    approved = metadata.get("approved")
+    if approved is True:
+        return True
+    return isinstance(approved, str) and approved.strip().lower() in {
+        "true", "yes", "approved", "pass", "passed",
+    }
 
-    * **Circuit-breaker** — ``_record_task_failure`` tripped after
-      repeated crashes / spawn failures / timeouts.  This emits
-      ``"gave_up"``, *not* ``"blocked"``, and is meant to recover
-      automatically once the underlying conditions change (e.g. parents
-      finish, transient infra error clears).
 
-    The cheapest signal that distinguishes the two is the most recent
-    ``"blocked"`` / ``"unblocked"`` event for the task.  If the most
-    recent one is ``"blocked"`` (or there is a ``"blocked"`` event and
-    no ``"unblocked"`` event has fired since), the task is sticky and
-    ``recompute_ready`` must *not* auto-promote it.
+def _is_checkpoint_text(title: Optional[str], body: Optional[str]) -> bool:
+    """Heuristic for human/Gabriel checkpoint tasks.
 
-    Returns ``False`` when there is no such event at all (e.g. the task
-    was set to ``status='blocked'`` by the circuit breaker or by direct
-    DB manipulation) — preserves the pre-#28712 auto-recover semantics
-    for that path.
+    Keep this intentionally aligned with the gateway checkpoint notifier's
+    default keywords so dependency safety applies to the same tasks that would
+    ping a human once promoted/blocked.
     """
+    haystack = "\n".join([title or "", body or ""]).lower()
+    keywords = (
+        "checkpoint", "review needed", "human review", "approval needed",
+        "decision:", "gabriel review", "gabriel",
+    )
+    return any(k in haystack for k in keywords)
+
+
+def _descendant_ids(conn: sqlite3.Connection, task_id: str) -> list[str]:
+    """Return descendants of ``task_id`` via task_links, breadth-first."""
+    out: list[str] = []
+    seen: set[str] = set()
+    stack = [task_id]
+    while stack:
+        current = stack.pop(0)
+        rows = conn.execute(
+            "SELECT child_id FROM task_links WHERE parent_id = ?",
+            (current,),
+        ).fetchall()
+        for row in rows:
+            child = row["child_id"]
+            if child in seen:
+                continue
+            seen.add(child)
+            out.append(child)
+            stack.append(child)
+    return out
+
+
+def _failed_review_has_passing_descendant(
+    conn: sqlite3.Connection,
+    failed_review_id: str,
+    *,
+    checkpoint_child_id: Optional[str],
+) -> bool:
+    """Return True once a failed review's remediation chain has a passing re-review."""
+    for descendant_id in _descendant_ids(conn, failed_review_id):
+        if checkpoint_child_id and descendant_id == checkpoint_child_id:
+            continue
+        run = latest_run(conn, descendant_id)
+        if run and _metadata_marks_passing_review(run.metadata):
+            return True
+    return False
+
+
+def _checkpoint_dependency_blocks(
+    conn: sqlite3.Connection,
+    *,
+    child_id: Optional[str],
+    parent_ids: Iterable[str],
+    child_title: Optional[str] = None,
+    child_body: Optional[str] = None,
+) -> bool:
+    """Gate checkpoint promotion behind a passing final review.
+
+    A review that completed with ``metadata.approved=false`` or blockers must
+    not satisfy a downstream Gabriel/human checkpoint by itself. It only stops
+    blocking the checkpoint after one of its non-checkpoint descendants records
+    an explicit passing review (``metadata.approved=true``), which represents
+    the remediation -> final-review gate.
+    """
+    if child_id:
+        child = get_task(conn, child_id)
+        if not child or not _is_checkpoint_text(child.title, child.body):
+            return False
+    elif not _is_checkpoint_text(child_title, child_body):
+        return False
+
+    for parent_id in parent_ids:
+        run = latest_run(conn, parent_id)
+        if not run or not _metadata_marks_failed_review(run.metadata):
+            continue
+        if not _failed_review_has_passing_descendant(
+            conn,
+            parent_id,
+            checkpoint_child_id=child_id,
+        ):
+            return True
+    return False
+
+
+def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return True when ``task_id`` is sticky-blocked by an explicit worker/operator block."""
     row = conn.execute(
         "SELECT kind FROM task_events "
         "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
@@ -2235,6 +2372,10 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
 
 def recompute_ready(conn: sqlite3.Connection) -> int:
     """Promote ``todo`` tasks to ``ready`` when all parents are ``done`` or ``archived``.
+
+    Checkpoint tasks have one extra safety gate: a parent review completed with
+    ``metadata.approved=false`` or blockers is not considered sufficient until
+    its remediation chain has a passing final-review descendant.
 
     Returns the number of tasks promoted.  Safe to call inside or outside
     an existing transaction; it opens its own IMMEDIATE txn.
@@ -2263,13 +2404,21 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
                 # this predicate back).
                 continue
             parents = conn.execute(
-                "SELECT t.status FROM tasks t "
+                "SELECT t.id, t.status FROM tasks t "
                 "JOIN task_links l ON l.parent_id = t.id "
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
-                # Blocked tasks also get their failure counters reset —
+
+            parent_ids = [p["id"] for p in parents]
+            parents_done = all(p["status"] in ("done", "archived") for p in parents)
+            blocked_by_failed_review = _checkpoint_dependency_blocks(
+                conn,
+                child_id=task_id,
+                parent_ids=parent_ids,
+            )
+            if parents_done and not blocked_by_failed_review:
+                # Blocked tasks also get their failure counters reset -
                 # this is effectively an auto-unblock (circuit-breaker
                 # recovery; worker-initiated blocks are skipped above).
                 if cur_status == "blocked":
@@ -6356,6 +6505,7 @@ def advance_notify_cursor(
         )
 
 
+
 def rewind_notify_cursor(
     conn: sqlite3.Connection,
     *,
@@ -6383,6 +6533,111 @@ def rewind_notify_cursor(
             ),
         )
     return cur.rowcount > 0
+
+def checkpoint_cursor_key(*, platform: str, chat_id: str, thread_id: Optional[str] = None) -> str:
+    """Stable key for a board-wide checkpoint-notification delivery target."""
+    return f"{platform}:{chat_id}:{thread_id or ''}"
+
+
+def get_checkpoint_cursor(conn: sqlite3.Connection, target: str) -> int:
+    row = conn.execute(
+        "SELECT last_event_id FROM kanban_checkpoint_cursors WHERE target = ?",
+        (target,),
+    ).fetchone()
+    return int(row["last_event_id"]) if row else 0
+
+
+def unseen_checkpoint_events(
+    conn: sqlite3.Connection,
+    *,
+    target: str,
+    kinds: Optional[Iterable[str]] = None,
+) -> tuple[int, list[tuple[Event, Optional[Task]]]]:
+    """Return board-wide task events newer than this target's checkpoint cursor.
+
+    The cursor is per delivery target and per board DB. The returned cursor is
+    the max event id seen for the requested kinds, even when the caller later
+    filters some events out as non-checkpoints. Call
+    :func:`advance_checkpoint_cursor` only after delivery succeeds.
+    """
+    cursor = get_checkpoint_cursor(conn, target)
+    kind_list = list(kinds) if kinds else None
+    q = (
+        "SELECT e.*, "
+        "t.id AS t_id, t.title, t.body, t.assignee, t.status, t.priority, "
+        "t.created_by, t.created_at AS t_created_at, t.started_at, "
+        "t.completed_at, t.workspace_kind, t.workspace_path, t.claim_lock, "
+        "t.claim_expires, t.tenant, t.result, t.idempotency_key, "
+        "t.consecutive_failures, t.worker_pid, t.last_failure_error, "
+        "t.max_runtime_seconds, t.last_heartbeat_at, t.current_run_id, "
+        "t.workflow_template_id, t.current_step_key, t.skills "
+        "FROM task_events e LEFT JOIN tasks t ON t.id = e.task_id "
+        "WHERE e.id > ? "
+        + ("AND e.kind IN (" + ",".join("?" * len(kind_list)) + ") " if kind_list else "")
+        + "ORDER BY e.id ASC"
+    )
+    params: list[Any] = [cursor]
+    if kind_list:
+        params.extend(kind_list)
+    rows = conn.execute(q, params).fetchall()
+    out: list[tuple[Event, Optional[Task]]] = []
+    max_id = cursor
+    for r in rows:
+        try:
+            payload = json.loads(r["payload"]) if r["payload"] else None
+        except Exception:
+            payload = None
+        ev = Event(
+            id=int(r["id"]),
+            task_id=r["task_id"],
+            kind=r["kind"],
+            payload=payload,
+            created_at=int(r["created_at"]),
+            run_id=(int(r["run_id"]) if "run_id" in r.keys() and r["run_id"] is not None else None),
+        )
+        task = None
+        if r["t_id"]:
+            task_row = {k: r[k] for k in (
+                "id", "title", "body", "assignee", "status", "priority",
+                "created_by", "started_at", "completed_at", "workspace_kind",
+                "workspace_path", "claim_lock", "claim_expires", "tenant",
+                "result", "idempotency_key", "consecutive_failures",
+                "worker_pid", "last_failure_error", "max_runtime_seconds",
+                "last_heartbeat_at", "current_run_id", "workflow_template_id",
+                "current_step_key", "skills",
+            )}
+            task_row["created_at"] = r["t_created_at"]
+            task = Task.from_row(_DictRow(task_row))
+        out.append((ev, task))
+        max_id = max(max_id, int(r["id"]))
+    return max_id, out
+
+
+def advance_checkpoint_cursor(
+    conn: sqlite3.Connection,
+    *,
+    target: str,
+    new_cursor: int,
+) -> None:
+    now = int(time.time())
+    with write_txn(conn):
+        conn.execute(
+            """
+            INSERT INTO kanban_checkpoint_cursors (target, last_event_id, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(target) DO UPDATE SET
+                last_event_id = MAX(last_event_id, excluded.last_event_id),
+                updated_at = excluded.updated_at
+            """,
+            (target, int(new_cursor), now),
+        )
+
+
+class _DictRow(dict):
+    """Tiny sqlite.Row-compatible adapter for Task.from_row in joined queries."""
+
+    def keys(self):  # type: ignore[override]
+        return super().keys()
 
 
 # ---------------------------------------------------------------------------

@@ -94,6 +94,23 @@ def _get_session_platform() -> str:
         return os.getenv("HERMES_SESSION_PLATFORM", "") or ""
 
 
+def _is_cron_approval_context() -> bool:
+    """True when this tool call is running inside a cron job.
+
+    Cron may execute the agent and its tools in worker threads.  Prefer the
+    ContextVar-backed session context when it is available so cron identity
+    survives thread hops without relying only on process-global os.environ.
+    """
+    try:
+        from gateway.session_context import get_session_env
+
+        if is_truthy_value(get_session_env("HERMES_CRON_SESSION", "")):
+            return True
+    except Exception:
+        pass
+    return env_var_enabled("HERMES_CRON_SESSION")
+
+
 def _is_gateway_approval_context() -> bool:
     """True when this call is inside a gateway/API session.
 
@@ -108,7 +125,7 @@ def _is_gateway_approval_context() -> bool:
     fall through to the gateway branch would submit a pending approval
     with no listener and block the job indefinitely.
     """
-    if env_var_enabled("HERMES_CRON_SESSION"):
+    if _is_cron_approval_context():
         return False
     if env_var_enabled("HERMES_GATEWAY_SESSION"):
         return True
@@ -956,7 +973,7 @@ def check_dangerous_command(command: str, env_type: str,
 
     if not is_cli and not is_gateway:
         # Cron sessions: respect cron_mode config
-        if env_var_enabled("HERMES_CRON_SESSION"):
+        if _is_cron_approval_context():
             if _get_cron_approval_mode() == "deny":
                 return {
                     "approved": False,
@@ -1081,27 +1098,36 @@ def check_all_command_guards(command: str, env_type: str,
 
     is_cli = env_var_enabled("HERMES_INTERACTIVE")
     is_gateway = _is_gateway_approval_context()
-    is_ask = env_var_enabled("HERMES_EXEC_ASK")
+    is_cron = _is_cron_approval_context()
+    # Cron runs can be spawned by the gateway/dispatcher and inherit
+    # HERMES_EXEC_ASK=1 from that parent process.  A cron job never has a
+    # live user approval listener, so inherited ask-mode must not route it to
+    # the pending approval queue; cron_mode is the only approval policy here.
+    is_ask = False if is_cron else env_var_enabled("HERMES_EXEC_ASK")
+
+    # Cron sessions: respect cron_mode before CLI/gateway/ask flows.  This
+    # keeps explicit-profile cron jobs noninteractive even when the scheduler
+    # process inherits gateway approval env vars.
+    if is_cron:
+        if _get_cron_approval_mode() == "deny":
+            # Run detection to get a description for the block message
+            is_dangerous, _pk, description = detect_dangerous_command(command)
+            if is_dangerous:
+                return {
+                    "approved": False,
+                    "message": (
+                        f"BLOCKED: Command flagged as dangerous ({description}) "
+                        "but cron jobs run without a user present to approve it. "
+                        "Find an alternative approach that avoids this command. "
+                        "To allow dangerous commands in cron jobs, set "
+                        "approvals.cron_mode: approve in config.yaml."
+                    ),
+                }
+        return {"approved": True, "message": None}
 
     # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
     # flows, we do not block on approvals and we skip external guard work.
     if not is_cli and not is_gateway and not is_ask:
-        # Cron sessions: respect cron_mode config
-        if env_var_enabled("HERMES_CRON_SESSION"):
-            if _get_cron_approval_mode() == "deny":
-                # Run detection to get a description for the block message
-                is_dangerous, _pk, description = detect_dangerous_command(command)
-                if is_dangerous:
-                    return {
-                        "approved": False,
-                        "message": (
-                            f"BLOCKED: Command flagged as dangerous ({description}) "
-                            "but cron jobs run without a user present to approve it. "
-                            "Find an alternative approach that avoids this command. "
-                            "To allow dangerous commands in cron jobs, set "
-                            "approvals.cron_mode: approve in config.yaml."
-                        ),
-                    }
         return {"approved": True, "message": None}
 
     # --- Phase 1: Gather findings from both checks ---
@@ -1233,7 +1259,10 @@ def check_all_command_guards(command: str, env_type: str,
                     "description": combined_desc,
                 }
 
-            # Block until the user responds or timeout (default 5 min).
+            # Block until the user responds or timeout.  Use the public
+            # approvals.timeout knob unless a legacy gateway_timeout override
+            # is explicitly present, so the Discord button lifetime and the
+            # backend queue lifetime stay aligned.
             # Poll in short slices so we can fire activity heartbeats every
             # ~10s to the agent's inactivity tracker.  Without this, the
             # blocking event.wait() never touches activity, and the
@@ -1241,11 +1270,14 @@ def check_all_command_guards(command: str, env_type: str,
             # 1800s) kills the agent while the user is still responding to
             # the approval prompt.  Mirrors the _wait_for_process() cadence
             # in tools/environments/base.py.
-            timeout = _get_approval_config().get("gateway_timeout", 300)
+            approval_cfg = _get_approval_config()
+            timeout = approval_cfg.get(
+                "gateway_timeout", approval_cfg.get("timeout", 60)
+            )
             try:
                 timeout = int(timeout)
             except (ValueError, TypeError):
-                timeout = 300
+                timeout = 60
 
             try:
                 from tools.environments.base import touch_activity_if_due
@@ -1326,7 +1358,9 @@ def check_all_command_guards(command: str, env_type: str,
                     "pattern_key": primary_key,
                     "description": combined_desc,
                     "outcome": outcome,
+                    "approval_outcome": outcome,
                     "user_consent": False,
+
                 }
 
             # User approved — persist based on scope (same logic as CLI)

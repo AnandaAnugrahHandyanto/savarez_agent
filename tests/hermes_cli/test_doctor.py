@@ -1225,8 +1225,53 @@ class TestDoctorXaiOAuthStatus:
         assert "(not logged in)" in out
 
 
+def test_find_name_based_discord_routes_scans_live_config_surfaces(tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    (hermes_home / "cron").mkdir(parents=True)
+    (hermes_home / "profiles" / "blue").mkdir(parents=True)
+    (hermes_home / "config.yaml").write_text(
+        "kanban:\n  checkpoint_notifications:\n    default_target: discord:#inbox\n    chat_id: \"#inbox\"\n",
+        encoding="utf-8",
+    )
+    (hermes_home / "cron" / "jobs.json").write_text(
+        '{"jobs":[{"deliver":"discord:#notifications"}]}\n',
+        encoding="utf-8",
+    )
+    (hermes_home / "profiles" / "blue" / "config.yaml").write_text(
+        "kanban:\n  checkpoint_notifications:\n    default_target: discord:1497817860553310338\n",
+        encoding="utf-8",
+    )
+
+    hits = doctor._find_name_based_discord_routes(hermes_home)
+
+    assert [(path.relative_to(hermes_home).as_posix(), line, target) for path, line, target in hits] == [
+        ("config.yaml", 3, "discord:#inbox"),
+        ("config.yaml", 4, "#inbox"),
+        ("cron/jobs.json", 1, "discord:#notifications"),
+    ]
+
+
+def test_find_name_based_discord_routes_accepts_numeric_routes(tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    (hermes_home / "cron").mkdir(parents=True)
+    (hermes_home / "profiles" / "blue").mkdir(parents=True)
+    (hermes_home / "config.yaml").write_text(
+        "kanban:\n  checkpoint_notifications:\n    default_target: discord:1497817860553310338\n",
+        encoding="utf-8",
+    )
+    (hermes_home / "cron" / "jobs.json").write_text(
+        '{"jobs":[{"deliver":"discord:1497817911488806982"}]}\n',
+        encoding="utf-8",
+    )
+    (hermes_home / "profiles" / "blue" / "config.yaml").write_text(
+        "kanban:\n  checkpoint_notifications:\n    default_target: discord:1497817860553310338\n",
+        encoding="utf-8",
+    )
+
+    assert doctor._find_name_based_discord_routes(hermes_home) == []
+
 # ---------------------------------------------------------------------------
-# ◆ Auth Providers — codex CLI import hint placement (issue #27975)
+# Auth Providers - codex CLI import hint placement (issue #27975)
 # ---------------------------------------------------------------------------
 
 

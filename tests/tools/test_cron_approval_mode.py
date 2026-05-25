@@ -330,3 +330,20 @@ class TestCronWithGatewayOrigin:
                 assert result.get("status") != "approval_required"
         finally:
             clear_session_vars(tokens)
+
+    def test_cron_with_inherited_exec_ask_uses_cron_mode_not_pending(self, monkeypatch):
+        """Cron must ignore HERMES_EXEC_ASK inherited from gateway-spawned workers."""
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+
+        from unittest.mock import patch as mock_patch
+        with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
+            result = check_all_command_guards("rm -rf /tmp/stuff", "local")
+            assert not result["approved"]
+            assert "BLOCKED" in result["message"]
+            assert "cron_mode" in result["message"]
+            assert result.get("status") != "pending_approval"
+            assert not result.get("approval_pending")

@@ -31,6 +31,16 @@ _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 
+
+def _discord_expired_color():
+    """Color for expired/stale component prompts, with discord.py mock fallback."""
+    color_factory = getattr(
+        discord.Color,
+        "dark_grey",
+        getattr(discord.Color, "greyple", discord.Color.orange),
+    )
+    return color_factory()
+
 try:
     import discord
     from discord import Message as DiscordMessage, Intents
@@ -1400,12 +1410,28 @@ class DiscordAdapter(BasePlatformAdapter):
                 if not channel:
                     return SendResult(success=False, error=f"Thread {thread_id} not found")
             else:
-                # Get the parent channel
-                channel = self._client.get_channel(int(chat_id))
-                if not channel:
-                    channel = await self._client.fetch_channel(int(chat_id))
-                if not channel:
-                    return SendResult(success=False, error=f"Channel {chat_id} not found")
+                # Get the parent channel.  Delivery targets may use
+                # discord:#channel-name; resolve those lazily against the
+                # connected client's visible channels, otherwise preserve the
+                # existing numeric-ID path.
+                if isinstance(chat_id, str) and chat_id.startswith("#"):
+                    wanted = chat_id[1:].strip().lower()
+                    channel = None
+                    try:
+                        for candidate in self._client.get_all_channels():
+                            if str(getattr(candidate, "name", "")).lower() == wanted:
+                                channel = candidate
+                                break
+                    except Exception:
+                        channel = None
+                    if not channel:
+                        return SendResult(success=False, error=f"Channel {chat_id} not found")
+                else:
+                    channel = self._client.get_channel(int(chat_id))
+                    if not channel:
+                        channel = await self._client.fetch_channel(int(chat_id))
+                    if not channel:
+                        return SendResult(success=False, error=f"Channel {chat_id} not found")
 
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
@@ -4060,13 +4086,32 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             embed.add_field(name="Reason", value=description, inline=False)
 
+            approval_timeout = 60
+            try:
+                from hermes_cli.config import load_config
+                approvals = (load_config().get("approvals", {}) or {})
+                approval_timeout = int(
+                    approvals.get("gateway_timeout", approvals.get("timeout", 60))
+                )
+            except Exception:
+                approval_timeout = 60
+            if approval_timeout > 0:
+                embed.set_footer(
+                    text=(
+                        f"Expires after {approval_timeout} seconds. "
+                        "If it expires, ask Hermes to request it again."
+                    )
+                )
+
             view = ExecApprovalView(
                 session_key=session_key,
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
+                timeout_seconds=approval_timeout,
             )
 
             msg = await channel.send(embed=embed, view=view)
+            view.message = msg
             return SendResult(success=True, message_id=str(msg.id))
 
         except Exception as e:
@@ -4544,15 +4589,15 @@ class DiscordAdapter(BasePlatformAdapter):
             if require_mention and not is_free_channel and not in_bot_thread:
                 if self._client.user not in message.mentions and not mention_prefix:
                     return
-        # Auto-thread: when enabled, automatically create a thread for every
-        # @mention in a text channel so each conversation is isolated (like Slack).
+        # Auto-thread: when enabled, automatically create a thread for each
+        # triggering text-channel message so each conversation is isolated.
         # Messages already inside threads or DMs are unaffected.
         # no_thread_channels: channels where bot responds directly without thread.
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
+            skip_thread = bool(channel_ids & no_thread_channels)
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
@@ -5018,12 +5063,16 @@ def _define_discord_view_classes() -> None:
             session_key: str,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            timeout_seconds: int = 60,
         ):
-            super().__init__(timeout=300)  # 5-minute timeout
+            # Match the backend approval queue timeout so Discord buttons don't
+            # remain live after the agent has already received a BLOCKED result.
+            super().__init__(timeout=max(int(timeout_seconds or 0), 1))
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
+            self.message = None
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             """Verify the user clicking is authorized."""
@@ -5048,21 +5097,9 @@ def _define_discord_view_classes() -> None:
                 )
                 return
 
-            self.resolved = True
-
-            # Update the embed with the decision
-            embed = interaction.message.embeds[0] if interaction.message.embeds else None
-            if embed:
-                embed.color = color
-                embed.set_footer(text=f"{label} by {interaction.user.display_name}")
-
-            # Disable all buttons
-            for child in self.children:
-                child.disabled = True
-
-            await interaction.response.edit_message(embed=embed, view=self)
-
-            # Unblock the waiting agent thread via the gateway approval queue
+            # Resolve the backend queue first. If it returns 0, the approval
+            # already timed out or was consumed, so do not display a misleading
+            # "Approved" state in Discord.
             try:
                 from tools.approval import resolve_gateway_approval
                 count = resolve_gateway_approval(self.session_key, choice)
@@ -5072,6 +5109,34 @@ def _define_discord_view_classes() -> None:
                 )
             except Exception as exc:
                 logger.error("Failed to resolve gateway approval from button: %s", exc)
+                await interaction.response.send_message(
+                    "I couldn't resolve that approval. Ask Hermes to request it again.",
+                    ephemeral=True,
+                )
+                return
+
+            self.resolved = True
+
+            embed = interaction.message.embeds[0] if interaction.message.embeds else None
+            if count <= 0:
+                if embed:
+                    embed.color = _discord_expired_color()
+                    embed.set_footer(text="Expired — ask Hermes to request this again")
+                for child in self.children:
+                    child.disabled = True
+                await interaction.response.edit_message(embed=embed, view=self)
+                return
+
+            # Update the embed with the decision
+            if embed:
+                embed.color = color
+                embed.set_footer(text=f"{label} by {interaction.user.display_name}")
+
+            # Disable all buttons
+            for child in self.children:
+                child.disabled = True
+
+            await interaction.response.edit_message(embed=embed, view=self)
 
         @discord.ui.button(label="Allow Once", style=discord.ButtonStyle.green)
         async def allow_once(
@@ -5102,6 +5167,15 @@ def _define_discord_view_classes() -> None:
             self.resolved = True
             for child in self.children:
                 child.disabled = True
+            if self.message is not None:
+                try:
+                    embed = self.message.embeds[0] if self.message.embeds else None
+                    if embed:
+                        embed.color = _discord_expired_color()
+                        embed.set_footer(text="Expired — ask Hermes to request this again")
+                    await self.message.edit(embed=embed, view=self)
+                except Exception as exc:
+                    logger.debug("Could not edit expired approval message: %s", exc)
 
     class SlashConfirmView(discord.ui.View):
         """Three-button view for generic slash-command confirmations.

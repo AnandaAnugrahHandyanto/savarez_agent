@@ -9,6 +9,7 @@ import sys
 import subprocess
 import shutil
 import importlib.util
+import re
 from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
@@ -205,6 +206,72 @@ def _fail_and_issue(text: str, detail: str, fix: str, issues: list[str]) -> None
     """Emit a check_fail and append the corresponding fix instruction."""
     check_fail(text, detail)
     issues.append(fix)
+
+
+def _find_name_based_discord_routes(hermes_home: Path | None = None) -> list[tuple[Path, int, str]]:
+    """Return config routes that use ambiguous Discord channel names.
+
+    A bot can be present in multiple Discord guilds. Targets such as
+    ``discord:#inbox`` are resolved by visible channel name at send time, so
+    they can land in the wrong server when another guild has the same channel
+    name. Numeric Discord channel IDs are stable and should be used for
+    config/cron/profile delivery targets.
+    """
+    home = hermes_home or HERMES_HOME
+    candidates = [
+        home / "config.yaml",
+        home / "cron" / "jobs.json",
+    ]
+    candidates.extend(sorted((home / "profiles").glob("*/config.yaml")))
+
+    route_pattern = re.compile(r"discord:#[A-Za-z0-9_.-]+")
+    named_value_pattern = re.compile(
+        r"(?:deliver|default_target|target|chat_id|thread_id|channel)"
+        r"[\"']?\s*[:=]\s*[\"']?(#[A-Za-z0-9_.-]+)"
+    )
+    hits: list[tuple[Path, int, str]] = []
+    for path in candidates:
+        if not path.exists() or not path.is_file():
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except Exception:
+            continue
+        for line_no, line in enumerate(lines, 1):
+            route_match = route_pattern.search(line)
+            if route_match:
+                hits.append((path, line_no, route_match.group(0)))
+                continue
+            named_value_match = named_value_pattern.search(line)
+            if named_value_match:
+                hits.append((path, line_no, named_value_match.group(1)))
+    return hits
+
+
+def _check_discord_name_based_routes(issues: list[str]) -> None:
+    """Warn when live routing config contains ambiguous ``discord:#name`` targets."""
+    hits = _find_name_based_discord_routes()
+    if not hits:
+        check_ok("Discord delivery routes use numeric channel IDs")
+        return
+
+    check_warn(
+        "Name-based Discord delivery routes found",
+        "(use numeric channel IDs to avoid cross-server delivery)",
+    )
+    for path, line_no, target in hits[:12]:
+        rel = path
+        try:
+            rel = path.relative_to(HERMES_HOME)
+        except Exception:
+            pass
+        check_info(f"{rel}:{line_no} uses {target}")
+    if len(hits) > 12:
+        check_info(f"...and {len(hits) - 12} more")
+    issues.append(
+        "Replace discord:#name delivery targets in config.yaml, cron/jobs.json, "
+        "and profile config.yaml files with numeric Discord channel IDs."
+    )
 
 
 def _check_s6_supervision(issues: list[str]) -> None:
@@ -819,6 +886,10 @@ def run_doctor(args):
                     issues.append("Stale root-level provider/base_url in config.yaml — run 'hermes doctor --fix'")
         except Exception:
             pass
+
+        # Validate Discord delivery routes before config-structure checks so
+        # multi-server bots do not silently deliver to same-named legacy channels.
+        _check_discord_name_based_routes(issues)
 
         # Validate config structure (catches malformed custom_providers, etc.)
         try:

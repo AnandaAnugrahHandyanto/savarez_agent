@@ -4681,6 +4681,7 @@ class GatewayRunner:
                     break
                 await asyncio.sleep(1)
 
+
     def _active_profile_name(self) -> str:
         """Return the profile name this gateway represents."""
         try:
@@ -4688,6 +4689,633 @@ class GatewayRunner:
             return get_active_profile_name() or "default"
         except Exception:
             return "default"
+
+    def _kanban_checkpoint_config(self) -> dict:
+        """Return gateway-level Kanban checkpoint notification config."""
+        raw = _load_gateway_config().get("kanban", {}).get("checkpoint_notifications", {})
+        if raw is None:
+            raw = {}
+        if not isinstance(raw, dict):
+            raw = {"enabled": bool(raw)}
+        return raw
+
+    def _kanban_checkpoint_targets(self, platform_enum, board: Optional[str] = None) -> list[dict]:
+        """Resolve configured checkpoint targets for a board.
+
+        Preferred shape::
+
+            kanban.checkpoint_notifications:
+              board_targets:
+                ghl-manager-ui: discord:1502593547122249758
+              default_target: discord:#inbox
+
+        If no explicit target is configured, preserve the old behavior and use
+        each configured platform's home channel.
+        """
+        cfg = self._kanban_checkpoint_config()
+        if cfg.get("enabled", True) is False:
+            return []
+
+        def _as_list(value: Any) -> list[Any]:
+            if value is None:
+                return []
+            if isinstance(value, (list, tuple)):
+                return list(value)
+            return [value]
+
+        def _target_from_spec(spec: Any, *, fallback_name: Optional[str] = None) -> Optional[dict]:
+            platform_value = None
+            chat_id = None
+            thread_id = ""
+            name = fallback_name or "checkpoint"
+
+            if isinstance(spec, dict):
+                platform_value = spec.get("platform") or spec.get("platform_value")
+                chat_id = spec.get("chat_id") or spec.get("channel") or spec.get("target")
+                thread_id = str(spec.get("thread_id") or "")
+                name = str(spec.get("name") or name)
+                if isinstance(chat_id, str) and ":" in chat_id and not platform_value:
+                    spec = chat_id
+                else:
+                    platform_value = str(platform_value or "discord").strip().lower()
+            if isinstance(spec, str):
+                raw = spec.strip()
+                if not raw:
+                    return None
+                if ":" in raw:
+                    parts = raw.split(":", 2)
+                    platform_value = parts[0].strip().lower()
+                    chat_id = parts[1].strip() if len(parts) > 1 else ""
+                    thread_id = parts[2].strip() if len(parts) > 2 else ""
+                else:
+                    platform_value = raw.lower()
+                    chat_id = None
+            try:
+                plat = platform_enum(str(platform_value or "discord").strip().lower())
+            except Exception:
+                return None
+            if not chat_id:
+                runner_config = getattr(self, "config", None)
+                platforms_config = getattr(runner_config, "platforms", {}) or {}
+                pconf = platforms_config.get(plat)
+                home = pconf.home_channel if pconf else None
+                if not home:
+                    return None
+                chat_id = str(home.chat_id)
+                thread_id = str(home.thread_id) if home.thread_id else ""
+                if not fallback_name:
+                    name = home.name
+            return {
+                "platform": plat,
+                "platform_value": plat.value,
+                "chat_id": str(chat_id),
+                "thread_id": str(thread_id or ""),
+                "name": name,
+            }
+
+        board_targets = cfg.get("board_targets") or cfg.get("boards") or {}
+        if board and isinstance(board_targets, dict) and board in board_targets:
+            targets = [
+                t for t in (
+                    _target_from_spec(spec, fallback_name=board)
+                    for spec in _as_list(board_targets.get(board))
+                )
+                if t
+            ]
+            if targets:
+                return targets
+
+        default_specs = _as_list(cfg.get("default_target")) + _as_list(cfg.get("default_targets"))
+        targets = [t for t in (_target_from_spec(spec) for spec in default_specs) if t]
+        if targets:
+            return targets
+
+        platforms = cfg.get("platforms") or ["discord"]
+        return [
+            t for t in (
+                _target_from_spec(str(raw).strip().lower())
+                for raw in _as_list(platforms)
+            )
+            if t
+        ]
+
+    def _is_kanban_checkpoint_event(self, task: Any, event: Any) -> bool:
+        """Heuristic for Kanban events that should ping a human checkpoint."""
+        if not event or getattr(event, "kind", None) not in {"blocked", "promoted"}:
+            return False
+        if task and str(getattr(task, "assignee", "") or "").strip().lower() == "gabriel":
+            return True
+        cfg = self._kanban_checkpoint_config()
+        keywords = cfg.get("keywords") or [
+            "checkpoint", "review", "approval", "approve", "decision",
+            "human review", "gabriel review",
+        ]
+        if isinstance(keywords, str):
+            keywords = [keywords]
+        payload = getattr(event, "payload", None) or {}
+        haystack = "\n".join(str(x or "") for x in [
+            getattr(task, "title", "") if task else "",
+            getattr(task, "body", "") if task else "",
+            payload.get("reason", "") if isinstance(payload, dict) else "",
+        ]).lower()
+        return any(str(k).strip().lower() in haystack for k in keywords if str(k).strip())
+
+    @staticmethod
+    def _extract_review_artifact(text: str) -> Optional[str]:
+        """Pull a likely URL/path/artifact line out of checkpoint text."""
+        if not text:
+            return None
+
+        def _valid_artifact(candidate: str) -> Optional[str]:
+            value = (candidate or "").strip().rstrip(".,)")
+            if not value:
+                return None
+            # Avoid turning Markdown section labels like ``Links / artifacts``
+            # or prior malformed notifications like ``Artifact: / artifacts``
+            # into fake filesystem paths.
+            if re.fullmatch(r"/?\s*artifacts?", value, flags=re.IGNORECASE):
+                return None
+            if value.lower() in {"kanban card", "none", "n/a", "not specified"}:
+                return None
+            return value
+
+        for line in text.splitlines():
+            if line.lower().strip().startswith(("review:", "artifact:", "preview:", "path:", "url:")):
+                artifact = _valid_artifact(line.split(":", 1)[1])
+                if artifact:
+                    return artifact
+        url = re.search(r"https?://\S+", text)
+        if url:
+            return _valid_artifact(url.group(0))
+        # Unlabelled paths are heuristic only; keep them strict so prose such
+        # as ``Links / artifacts`` never becomes ``/ artifacts``.
+        path = re.search(r"(?:^|\s)(/(?!\s)[^\s,;)]+)", text)
+        if path:
+            return _valid_artifact(path.group(1))
+        return None
+
+    @staticmethod
+    def _extract_safety_line(text: str) -> str:
+        for line in (text or "").splitlines():
+            if line.lower().strip().startswith("safety:"):
+                return line.split(":", 1)[1].strip() or "not specified"
+        return "not specified"
+
+    @staticmethod
+    def _extract_labeled_value(text: str, labels: tuple[str, ...]) -> Optional[str]:
+        """Return the first non-empty ``Label: value`` match from text."""
+        wanted = tuple(label.rstrip(":").strip().lower() for label in labels)
+        for line in (text or "").splitlines():
+            raw = line.strip().lstrip("-*").strip()
+            if ":" not in raw:
+                continue
+            key, value = raw.split(":", 1)
+            if key.strip().lower() in wanted and value.strip():
+                return value.strip()
+        return None
+
+    @staticmethod
+    def _extract_labeled_section(text: str, labels: tuple[str, ...], *, max_chars: int = 700) -> Optional[str]:
+        """Return a labelled value plus continuation lines until the next label."""
+        wanted = tuple(label.rstrip(":").strip().lower() for label in labels)
+        lines = (text or "").splitlines()
+        for idx, line in enumerate(lines):
+            raw = line.strip().lstrip("-*").strip()
+            if ":" not in raw:
+                continue
+            key, value = raw.split(":", 1)
+            if key.strip().lower() not in wanted:
+                continue
+            parts = [value.strip()] if value.strip() else []
+            for nxt in lines[idx + 1:]:
+                stripped = nxt.strip()
+                if not stripped:
+                    if parts:
+                        parts.append("")
+                    continue
+                if re.match(r"^[A-Z][A-Za-z0-9 /()_.-]{2,80}:\s*", stripped):
+                    break
+                parts.append(stripped)
+                if sum(len(p) for p in parts) >= max_chars:
+                    break
+            compact = "\n".join(parts).strip()
+            if compact:
+                return compact[:max_chars]
+        return None
+
+    @staticmethod
+    def _looks_like_ghl_approval_card(board: str, body: str) -> bool:
+        board_l = (board or "").lower()
+        body_l = (body or "").lower()
+        return (
+            board_l in {"ghl-six-priority-cleanup", "ghl-blue-consolidation"}
+            or "brand/location:" in body_l
+            or ("conversation id" in body_l and "contact" in body_l and "recommended action" in body_l)
+        )
+
+    @staticmethod
+    def _extract_review_checklist(text: str) -> str:
+        """Extract a short acceptance/checklist section when one is present."""
+        lines = (text or "").splitlines()
+        starts = (
+            "acceptance criteria", "review checklist", "checklist",
+            "criteria", "quality gate",
+        )
+        for idx, line in enumerate(lines):
+            if line.strip().rstrip(":").lower() in starts:
+                bullets: list[str] = []
+                for nxt in lines[idx + 1:]:
+                    stripped = nxt.strip()
+                    if not stripped:
+                        if bullets:
+                            break
+                        continue
+                    # Stop at the next obvious labelled section.
+                    if bullets and re.match(r"^[A-Z][A-Za-z /-]{2,40}:\s*", stripped):
+                        break
+                    bullets.append(stripped)
+                    if len(bullets) >= 6:
+                        break
+                if bullets:
+                    return " | ".join(bullets)[:600]
+        return "Review the artifact against the card body and block reason; approve only if it satisfies the stated acceptance criteria, otherwise reply with required changes."
+
+    @staticmethod
+    def _summarize_review_changes(
+        *,
+        reason: str,
+        body: str,
+        comments: Optional[list[Any]] = None,
+        runs: Optional[list[Any]] = None,
+    ) -> str:
+        """Summarize what changed from run metadata/comments/body."""
+        comments = comments or []
+        runs = runs or []
+        for run in reversed(runs):
+            summary = str(getattr(run, "summary", "") or "").strip()
+            meta = getattr(run, "metadata", None) or {}
+            if summary or meta:
+                bits: list[str] = []
+                if summary:
+                    bits.append(summary)
+                if isinstance(meta, dict):
+                    changed = meta.get("changed_files") or meta.get("artifacts") or meta.get("deliverables")
+                    if changed:
+                        if isinstance(changed, (list, tuple)):
+                            changed_text = ", ".join(str(x) for x in changed[:6])
+                        else:
+                            changed_text = str(changed)
+                        bits.append(f"Changed/artifacts: {changed_text}")
+                if bits:
+                    return "; ".join(bits)[:700]
+        for comment in reversed(comments):
+            text = str(getattr(comment, "body", "") or "").strip()
+            if not text:
+                continue
+            for label in ("What changed", "Summary", "review-required handoff"):
+                value = GatewayRunner._extract_labeled_value(text, (label,))
+                if value:
+                    return value[:700]
+            # Compact common JSON handoff comments enough to be useful in chat.
+            match = re.search(r"\{[\s\S]*\}", text)
+            if match:
+                try:
+                    parsed = json.loads(match.group(0))
+                    if isinstance(parsed, dict):
+                        bits = []
+                        if parsed.get("summary"):
+                            bits.append(str(parsed["summary"]))
+                        changed = parsed.get("changed_files") or parsed.get("artifacts")
+                        if changed:
+                            if isinstance(changed, (list, tuple)):
+                                changed_text = ", ".join(str(x) for x in changed[:6])
+                            else:
+                                changed_text = str(changed)
+                            bits.append("Changed/artifacts: " + changed_text)
+                        if bits:
+                            return "; ".join(bits)[:700]
+                except Exception:
+                    pass
+        for source in (reason, body):
+            for line in (source or "").splitlines():
+                stripped = line.strip().lstrip("-*").strip()
+                if not stripped or ":" in stripped[:32]:
+                    continue
+                return stripped[:500]
+        return "See the card body and recent handoff comments for the implementation/change summary."
+
+    @staticmethod
+    def _summarize_review_verification(
+        *,
+        body: str,
+        comments: Optional[list[Any]] = None,
+        runs: Optional[list[Any]] = None,
+    ) -> str:
+        """Summarize tests/verification separately from the change summary."""
+        comments = comments or []
+        runs = runs or []
+        for run in reversed(runs):
+            meta = getattr(run, "metadata", None) or {}
+            if isinstance(meta, dict):
+                tests = meta.get("tests_run") or meta.get("verification") or meta.get("tests")
+                if tests:
+                    return str(tests)[:500]
+        for comment in reversed(comments):
+            text = str(getattr(comment, "body", "") or "").strip()
+            if not text:
+                continue
+            for label in ("Verification", "Tests", "tests_run"):
+                value = GatewayRunner._extract_labeled_value(text, (label,))
+                if value:
+                    return value[:500]
+            match = re.search(r"\{[\s\S]*\}", text)
+            if match:
+                try:
+                    parsed = json.loads(match.group(0))
+                    if isinstance(parsed, dict):
+                        tests = parsed.get("tests_run") or parsed.get("verification") or parsed.get("tests")
+                        if tests:
+                            return str(tests)[:500]
+                except Exception:
+                    pass
+        explicit = GatewayRunner._extract_labeled_value(body or "", ("Verification", "Tests"))
+        if explicit:
+            return explicit[:500]
+        return "Not specified in the card; verify manually against the checklist/artifact before approving."
+
+    @staticmethod
+    def _checkpoint_bullet(label: str, value: object) -> str:
+        """Format one notification fact as a Discord-friendly bullet."""
+        text = str(value or "not specified").strip().replace("\r", "")
+        text = re.sub(r"\n+", " | ", text)
+        return f"- {label}: {text}"
+
+    @staticmethod
+    def _format_review_how_to_view(artifact: Optional[str], context: str) -> str:
+        explicit = GatewayRunner._extract_labeled_value(
+            context,
+            ("How to view", "How to run", "Run", "View", "Open", "Instructions"),
+        )
+        if explicit:
+            return explicit[:500]
+        if not artifact:
+            return "No explicit artifact/URL was provided; open the Kanban card and review the latest handoff comment before deciding."
+        if artifact.startswith("http://") or artifact.startswith("https://"):
+            return f"Open the URL above and review the current rendered artifact."
+        if artifact.startswith("/") or artifact.startswith("~"):
+            return f"Local-only artifact: on Atlas, run `xdg-open {artifact!r}` if it is a file, or `cd {artifact!r}` and follow the card/project README if it is a directory."
+        return "Use the artifact reference above plus the card body; if it is local-only, open it from the Atlas filesystem path shown."
+
+    def _format_kanban_checkpoint_message(
+        self,
+        *,
+        board: str,
+        task: Any,
+        event: Any,
+        comments: Optional[list[Any]] = None,
+        runs: Optional[list[Any]] = None,
+    ) -> str:
+        """Format the standard human checkpoint packet for Discord/etc."""
+        payload = getattr(event, "payload", None) or {}
+        reason = str(payload.get("reason", "") if isinstance(payload, dict) else "").strip()
+        title = (getattr(task, "title", None) or getattr(event, "task_id", "checkpoint"))[:160]
+        body = getattr(task, "body", "") if task else ""
+        if self._looks_like_ghl_approval_card(board, body or ""):
+            return self._format_ghl_kanban_checkpoint_message(
+                board=board,
+                task=task,
+                event=event,
+                reason=reason,
+                title=title,
+                body=body or "",
+                comments=comments,
+            )
+        comment_text = "\n".join(str(getattr(c, "body", "") or "") for c in (comments or [])[-5:])
+        run_text = "\n".join(
+            "\n".join([
+                str(getattr(r, "summary", "") or ""),
+                json.dumps(getattr(r, "metadata", None), ensure_ascii=False) if getattr(r, "metadata", None) else "",
+            ])
+            for r in (runs or [])[-3:]
+        )
+        combined = "\n".join([title, reason, body or "", comment_text, run_text])
+        decision = reason.splitlines()[0][:220] if reason else "Review this blocked checkpoint and reply with approve / needs changes."
+        card = f"{board}/{getattr(event, 'task_id', '')}"
+        assignee = getattr(task, "assignee", None) if task else None
+        artifact = self._extract_review_artifact(combined)
+        changed = self._summarize_review_changes(
+            reason=reason,
+            body=body or "",
+            comments=comments,
+            runs=runs,
+        )
+        checklist = self._extract_review_checklist(combined)
+        safety = self._extract_safety_line(combined)
+        how_to_view = self._format_review_how_to_view(artifact, combined)
+        verification = self._summarize_review_verification(
+            body=body or "",
+            comments=comments,
+            runs=runs,
+        )
+        links_lines = ["### Links / artifacts"]
+        if artifact:
+            links_lines.append(self._checkpoint_bullet("Artifact", artifact))
+            links_lines.append(self._checkpoint_bullet("How to view/run", how_to_view))
+        else:
+            links_lines.append("- No artifact/URL provided in the card or handoff comments; use the Kanban card plus the latest handoff comment.")
+
+        assignee_line = f"@{assignee}" if assignee else "not specified"
+        return "\n".join([
+            "## Gabriel review needed",
+            f"**Project/task:** {title}",
+            f"**Card:** {card}",
+            f"**Assignee:** {assignee_line}",
+            "",
+            "### What changed",
+            self._checkpoint_bullet("Summary", changed),
+            "",
+            "### Verification",
+            self._checkpoint_bullet("Tests/checks", verification),
+            self._checkpoint_bullet("Acceptance/checklist", checklist),
+            "",
+            "### Review needed",
+            self._checkpoint_bullet("Decision needed", decision),
+            "- Reply options: `approve` / `needs changes: <what must change>`",
+            "",
+            *links_lines,
+            "",
+            "### Safety / next action",
+            self._checkpoint_bullet("Known risks/safety", safety),
+            "- Next action: Gabriel replies with approval or specific requested changes; the worker proceeds only after that decision.",
+        ])
+
+    def _format_ghl_kanban_checkpoint_message(
+        self,
+        *,
+        board: str,
+        task: Any,
+        event: Any,
+        reason: str,
+        title: str,
+        body: str,
+        comments: Optional[list[Any]] = None,
+    ) -> str:
+        """Format Blue/GHL approval cards as operational decisions, not code-review artifacts."""
+        combined_comments = "\n".join(str(getattr(c, "body", "") or "") for c in (comments or [])[-3:])
+        latest_context = combined_comments.strip() or reason.strip()
+        brand = self._extract_labeled_section(body, ("Brand/location", "Location/brand"), max_chars=180) or "not specified"
+        contact = self._extract_labeled_section(body, ("Contact", "Contact name/phone/contact ID"), max_chars=220) or "not specified"
+        job_location = self._extract_labeled_section(body, ("Job/service location", "Service location"), max_chars=180)
+        latest_customer = self._extract_labeled_section(body, ("Latest customer ask/message", "Latest customer message summary"), max_chars=300)
+        last_outbound = self._extract_labeled_section(body, ("Last outbound/manual contact", "Last outbound"), max_chars=300)
+        current_state = self._extract_labeled_section(body, ("Current state", "Current CRM/calendar/task/opportunity/ledger state"), max_chars=420)
+        why_now = self._extract_labeled_section(body, ("Why the action matters now", "Why it matters"), max_chars=380)
+        recommended = self._extract_labeled_section(body, ("Recommended action",), max_chars=450) or "review the card and decide the next safe action"
+        draft = self._extract_labeled_section(body, ("Exact draft text if choosing A", "Exact draft", "Draft"), max_chars=700)
+        send_target = self._extract_labeled_section(body, ("Send target/channel and brand/location", "Send target/channel"), max_chars=220)
+        options = self._extract_labeled_section(body, ("Approval options",), max_chars=300)
+        decision = reason.splitlines()[0][:260] if reason else recommended[:260]
+        card = f"{board}/{getattr(event, 'task_id', '')}"
+        lines = [
+            "## Blue/GHL approval needed",
+            f"**Project/task:** {title}",
+            f"**Card:** {card}",
+            "",
+            "### Decision needed",
+            self._checkpoint_bullet("Decision", decision),
+            self._checkpoint_bullet("Recommended next action", recommended),
+            "",
+            "### Customer / context",
+            self._checkpoint_bullet("Customer", contact),
+            self._checkpoint_bullet("Brand", brand),
+        ]
+        if job_location:
+            lines.append(self._checkpoint_bullet("Job/location", job_location))
+        if why_now:
+            lines.append(self._checkpoint_bullet("Why now", why_now))
+        if current_state:
+            lines.append(self._checkpoint_bullet("Live/current state", current_state))
+        if latest_customer:
+            lines.append(self._checkpoint_bullet("Latest customer", latest_customer))
+        if last_outbound:
+            lines.append(self._checkpoint_bullet("Last outbound", last_outbound))
+        if latest_context:
+            lines.append(self._checkpoint_bullet("Latest card update", latest_context[:700]))
+        lines.extend([
+            "",
+            "### Draft / action",
+            self._checkpoint_bullet("Draft/action", draft if draft else "No customer-facing draft proposed in this card."),
+        ])
+        if send_target:
+            lines.append(self._checkpoint_bullet("Send target", send_target))
+        if options:
+            lines.append(self._checkpoint_bullet("Approval options", options))
+        lines.extend([
+            "",
+            "### Safety / next action",
+            "- Guardrail: no customer send, calendar change, opportunity update, or other risky CRM mutation until Gabriel approves and Blue re-fetches live GHL/calendar/ledger state.",
+            "- Reply with the decision, e.g. `approve/send`, `reschedule`, `call back`, `close/no action`, or `edit: ...`.",
+        ])
+        return "\n".join(lines)
+
+    def _collect_kanban_notifier_deliveries(self, platform_enum, kb_module) -> dict:
+        """Collect regular task-subscription and human checkpoint deliveries.
+
+        This is synchronous so callers can run it via ``asyncio.to_thread``;
+        tests can also call it directly to verify board routing and cursor
+        behavior without starting the infinite gateway watcher loop.
+        """
+        deliveries: list[dict] = []
+        checkpoint_deliveries: list[dict] = []
+        terminal_kinds = ("completed", "blocked", "gave_up", "crashed", "timed_out")
+        try:
+            boards = kb_module.list_boards(include_archived=False)
+        except Exception:
+            boards = [kb_module.read_board_metadata(kb_module.DEFAULT_BOARD)]
+        seen_db_paths: set[str] = set()
+        for board_meta in boards:
+            slug = board_meta.get("slug") or kb_module.DEFAULT_BOARD
+            try:
+                db_path = Path(board_meta.get("db_path") or kb_module.kanban_db_path(board=slug))
+                db_key = str(db_path.expanduser().resolve(strict=False))
+            except Exception:
+                db_key = str(board_meta.get("db_path") or slug)
+            if db_key in seen_db_paths:
+                continue
+            seen_db_paths.add(db_key)
+            try:
+                conn = kb_module.connect(board=slug)
+            except Exception:
+                continue
+            try:
+                subs = kb_module.list_notify_subs(conn)
+                for sub in subs:
+                    sub_profile = str(sub.get("notifier_profile") or "").strip()
+                    notifier_profile = str(getattr(self, "_kanban_notifier_profile", None) or "").strip()
+                    if notifier_profile and sub_profile and sub_profile != notifier_profile:
+                        continue
+                    old_cursor, cursor, events = kb_module.claim_unseen_events_for_sub(
+                        conn,
+                        task_id=sub["task_id"],
+                        platform=sub["platform"],
+                        chat_id=sub["chat_id"],
+                        thread_id=sub.get("thread_id") or "",
+                        kinds=terminal_kinds,
+                    )
+                    if not events:
+                        continue
+                    task = kb_module.get_task(conn, sub["task_id"])
+                    deliveries.append({
+                        "sub": sub,
+                        "old_cursor": old_cursor,
+                        "cursor": cursor,
+                        "events": events,
+                        "task": task,
+                        "board": slug,
+                    })
+                checkpoint_targets = self._kanban_checkpoint_targets(platform_enum, board=slug)
+                for target in checkpoint_targets:
+                    target_key = kb_module.checkpoint_cursor_key(
+                        platform=target["platform_value"],
+                        chat_id=target["chat_id"],
+                        thread_id=target.get("thread_id") or "",
+                    )
+                    cursor, items = kb_module.unseen_checkpoint_events(
+                        conn,
+                        target=target_key,
+                        kinds=("promoted", "blocked"),
+                    )
+                    if not items:
+                        continue
+                    matched = []
+                    for ev, task in items:
+                        if self._is_kanban_checkpoint_event(task, ev):
+                            comments = []
+                            runs = []
+                            try:
+                                comments = kb_module.list_comments(conn, ev.task_id)
+                            except Exception:
+                                comments = []
+                            try:
+                                runs = kb_module.list_runs(conn, ev.task_id, include_active=False)
+                            except Exception:
+                                runs = []
+                            matched.append({
+                                "event": ev,
+                                "task": task,
+                                "comments": comments,
+                                "runs": runs,
+                            })
+                    checkpoint_deliveries.append({
+                        "target": target,
+                        "target_key": target_key,
+                        "cursor": cursor,
+                        "items": matched,
+                        "board": slug,
+                    })
+            finally:
+                conn.close()
+        return {"subs": deliveries, "checkpoints": checkpoint_deliveries}
 
     async def _kanban_notifier_watcher(self, interval: float = 5.0) -> None:
         """Poll ``kanban_notify_subs`` and deliver terminal events to users.
@@ -4747,104 +5375,43 @@ class GatewayRunner:
 
         while self._running:
             try:
-                def _collect():
-                    deliveries: list[dict] = []
-                    active_platforms = {
-                        getattr(platform, "value", str(platform)).lower()
-                        for platform in self.adapters.keys()
-                    }
-                    if not active_platforms:
-                        logger.debug("kanban notifier: no connected adapters; skipping tick")
-                        return deliveries
 
-                    # Enumerate every board on disk, but poll each resolved DB
-                    # path once. Multiple slugs can point at the same DB when
-                    # HERMES_KANBAN_DB pins the board path; without this guard
-                    # one gateway could collect the same subscription/event
-                    # more than once before advancing the cursor.
+                collected = await asyncio.to_thread(
+                    self._collect_kanban_notifier_deliveries,
+                    _Platform,
+                    _kb,
+                )
+                deliveries = collected.get("subs", []) if isinstance(collected, dict) else collected
+                checkpoint_deliveries = collected.get("checkpoints", []) if isinstance(collected, dict) else []
+                for d in checkpoint_deliveries:
+                    target = d["target"]
+                    adapter = self.adapters.get(target["platform"])
+                    if adapter is None:
+                        continue
+                    metadata: dict[str, Any] = {}
+                    if target.get("thread_id"):
+                        metadata["thread_id"] = target["thread_id"]
                     try:
-                        boards = _kb.list_boards(include_archived=False)
-                    except Exception:
-                        boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
-                    seen_db_paths: set[str] = set()
-                    for board_meta in boards:
-                        slug = board_meta.get("slug") or _kb.DEFAULT_BOARD
-                        db_path = board_meta.get("db_path")
-                        try:
-                            resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path else str(_kb.kanban_db_path(slug).resolve())
-                        except Exception:
-                            resolved_db_path = f"slug:{slug}"
-                        if resolved_db_path in seen_db_paths:
-                            logger.debug(
-                                "kanban notifier: skipping duplicate board slug %s for DB %s",
-                                slug, resolved_db_path,
+                        for item in d.get("items", []):
+                            msg = self._format_kanban_checkpoint_message(
+                                board=d.get("board") or _kb.DEFAULT_BOARD,
+                                task=item.get("task"),
+                                event=item.get("event"),
+                                comments=item.get("comments"),
+                                runs=item.get("runs"),
                             )
-                            continue
-                        seen_db_paths.add(resolved_db_path)
-                        try:
-                            conn = _kb.connect(board=slug)
-                        except Exception as exc:
-                            logger.debug("kanban notifier: cannot open board %s: %s", slug, exc)
-                            continue
-                        try:
-                            # `connect()` runs the schema + idempotent migration
-                            # on first open per process, so an explicit
-                            # `init_db()` here would be redundant. Worse:
-                            # `init_db()` deliberately busts the per-process
-                            # cache and re-runs the migration on a *second*
-                            # connection, which races the first and used to
-                            # log a benign but noisy `duplicate column name`
-                            # traceback (and intermittent "database is locked"
-                            # — issue #21378) on every gateway start against
-                            # a legacy DB. `_add_column_if_missing` now
-                            # tolerates that race, but we still skip the
-                            # redundant call to avoid the wasted work.
-                            subs = _kb.list_notify_subs(conn)
-                            if not subs:
-                                logger.debug("kanban notifier: board %s has no subscriptions", slug)
-                            for sub in subs:
-                                owner_profile = sub.get("notifier_profile") or None
-                                if owner_profile and owner_profile != notifier_profile:
-                                    logger.debug(
-                                        "kanban notifier: subscription for %s owned by profile %s; current profile %s skipping",
-                                        sub.get("task_id"), owner_profile, notifier_profile,
-                                    )
-                                    continue
-                                platform = (sub.get("platform") or "").lower()
-                                if platform not in active_platforms:
-                                    logger.debug(
-                                        "kanban notifier: subscription for %s on %s skipped; adapter not connected",
-                                        sub.get("task_id"), platform or "<missing>",
-                                    )
-                                    continue
-                                old_cursor, cursor, events = _kb.claim_unseen_events_for_sub(
-                                    conn,
-                                    task_id=sub["task_id"],
-                                    platform=sub["platform"],
-                                    chat_id=sub["chat_id"],
-                                    thread_id=sub.get("thread_id") or "",
-                                    kinds=TERMINAL_KINDS,
-                                )
-                                if not events:
-                                    continue
-                                task = _kb.get_task(conn, sub["task_id"])
-                                logger.debug(
-                                    "kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
-                                    len(events), sub["task_id"], slug, old_cursor, cursor,
-                                )
-                                deliveries.append({
-                                    "sub": sub,
-                                    "old_cursor": old_cursor,
-                                    "cursor": cursor,
-                                    "events": events,
-                                    "task": task,
-                                    "board": slug,
-                                })
-                        finally:
-                            conn.close()
-                    return deliveries
-
-                deliveries = await asyncio.to_thread(_collect)
+                            await adapter.send(target["chat_id"], msg, metadata=metadata)
+                        await asyncio.to_thread(
+                            self._kanban_checkpoint_advance,
+                            d["target_key"],
+                            d["cursor"],
+                            d.get("board"),
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "kanban checkpoint notifier: send failed for %s on %s: %s",
+                            d.get("target_key"), target.get("platform_value"), exc,
+                        )
                 for d in deliveries:
                     sub = d["sub"]
                     task = d["task"]
@@ -5044,6 +5611,17 @@ class GatewayRunner:
                 thread_id=sub.get("thread_id") or "",
                 new_cursor=cursor,
             )
+        finally:
+            conn.close()
+
+    def _kanban_checkpoint_advance(
+        self, target_key: str, cursor: int, board: Optional[str] = None,
+    ) -> None:
+        """Sync helper: advance board-wide checkpoint notification cursor."""
+        from hermes_cli import kanban_db as _kb
+        conn = _kb.connect(board=board)
+        try:
+            _kb.advance_checkpoint_cursor(conn, target=target_key, new_cursor=cursor)
         finally:
             conn.close()
 
@@ -11571,7 +12149,10 @@ class GatewayRunner:
             platform_key = _platform_config_key(source.platform)
 
             from hermes_cli.tools_config import _get_platform_tools
-            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            base_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            enabled_toolsets = self._resolve_channel_toolsets(
+                user_config, platform_key, source, base_toolsets
+            )
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
@@ -14891,6 +15472,58 @@ class GatewayRunner:
         return out
 
     @staticmethod
+    def _resolve_channel_toolsets(user_config: dict, platform_key: str, source, base_toolsets: list) -> list:
+        """Apply optional per-channel toolset additions/removals.
+
+        Config format:
+            discord:
+              channel_toolsets:
+                "1500367666559582249": ["ghl_blue_crew", "ghl_solar_renew"]
+                "150123": {add: ["foo"], remove: ["bar"]}
+
+        The base platform toolset remains authoritative; channel entries are a
+        narrow overlay so general Discord can opt out of global MCP while Blue
+        channels add back only their required GHL servers.
+        """
+        resolved = set(base_toolsets or [])
+        platform_cfg = (user_config or {}).get(platform_key) or {}
+        if not isinstance(platform_cfg, dict):
+            return sorted(resolved)
+        bindings = platform_cfg.get("channel_toolsets") or {}
+        if not isinstance(bindings, dict):
+            return sorted(resolved)
+
+        ids = []
+        for attr in ("chat_id", "thread_id", "parent_chat_id", "chat_id_alt"):
+            val = getattr(source, attr, None)
+            if val:
+                ids.append(str(val))
+        ids.append("*")
+
+        def _as_list(value):
+            if value is None:
+                return []
+            if isinstance(value, str):
+                return [value]
+            if isinstance(value, (list, tuple, set)):
+                return [str(v) for v in value if str(v).strip()]
+            return []
+
+        for cid in ids:
+            entry = bindings.get(cid)
+            if entry is None:
+                continue
+            if isinstance(entry, dict):
+                for name in _as_list(entry.get("remove")):
+                    resolved.discard(name)
+                for name in _as_list(entry.get("add")):
+                    resolved.add(name)
+            else:
+                for name in _as_list(entry):
+                    resolved.add(name)
+        return sorted(resolved)
+
+    @staticmethod
     def _agent_config_signature(
         model: str,
         runtime: dict,
@@ -15660,7 +16293,10 @@ class GatewayRunner:
         platform_key = _platform_config_key(source.platform)
 
         from hermes_cli.tools_config import _get_platform_tools
-        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        base_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        enabled_toolsets = self._resolve_channel_toolsets(
+            user_config, platform_key, source, base_toolsets
+        )
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 
