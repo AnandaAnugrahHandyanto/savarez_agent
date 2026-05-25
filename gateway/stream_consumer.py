@@ -1172,6 +1172,16 @@ class GatewayStreamConsumer:
             # the regular edit/send path below.
         try:
             if self._message_id is not None:
+                _adapter_disables_progressive_edits = (
+                    getattr(self.adapter, "DISABLE_PROGRESSIVE_EDITS", False) is True
+                )
+                if _adapter_disables_progressive_edits:
+                    _adapter_prefers_fresh_final = (
+                        getattr(self.adapter, "PREFER_FRESH_FINAL_ON_FINALIZE", False) is True
+                    )
+                    if finalize and _adapter_prefers_fresh_final and await self._try_fresh_final(text):
+                        return True
+                    return False
                 if self._edit_supported:
                     # Skip if text is identical to what we last sent.
                     # Exception: adapters that require an explicit finalize
@@ -1193,9 +1203,15 @@ class GatewayStreamConsumer:
                     # old preview follows.  Ported from
                     # openclaw/openclaw#72038.  Gated by config so the
                     # legacy edit-in-place path stays the default.
+                    _adapter_prefers_fresh_final = (
+                        getattr(self.adapter, "PREFER_FRESH_FINAL_ON_FINALIZE", False) is True
+                    )
                     if (
                         finalize
-                        and self._should_send_fresh_final()
+                        and (
+                            _adapter_prefers_fresh_final
+                            or self._should_send_fresh_final()
+                        )
                         and await self._try_fresh_final(text)
                     ):
                         return True

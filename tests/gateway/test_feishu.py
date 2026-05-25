@@ -153,13 +153,462 @@ class TestFeishuMessageNormalization(unittest.TestCase):
         )
 
         self.assertEqual(normalized.relation_kind, "interactive")
-        self.assertEqual(
-            normalized.text_content,
-            "Build Failed\nService: payments-api\nBranch: main\nView Logs\nRetry\nActions: View Logs, Retry",
+
+
+    def test_build_markdown_card_payload_preserves_header_and_hr(self):
+        from gateway.platforms.feishu import _build_markdown_card_payload
+
+        payload = json.loads(
+            _build_markdown_card_payload(
+                """**结论**
+保留本地 Feishu 表现层。
+
+---
+
+**下一步**
+先修复 card builder，再验证发送链路。"""
+            )
         )
 
+        self.assertEqual(payload["header"]["title"]["content"], "📘 结论")
+        self.assertEqual(payload["header"]["template"], "indigo")
+        self.assertEqual(payload["elements"][0]["tag"], "markdown")
+        self.assertIn("保留本地 Feishu 表现层", payload["elements"][0]["content"])
+        self.assertEqual(payload["elements"][1]["tag"], "hr")
+        self.assertEqual(payload["elements"][2]["tag"], "markdown")
+        self.assertIn("**下一步**", payload["elements"][2]["content"])
 
-class TestFeishuAdapterMessaging(unittest.TestCase):
+    def test_build_markdown_card_payload_converts_markdown_headings_to_bold_sections(self):
+        from gateway.platforms.feishu import _build_markdown_card_payload
+
+        payload = json.loads(
+            _build_markdown_card_payload(
+                """# 记忆检查
+## 当前状态
+USER.md 超限。
+
+---
+
+# 建议
+先做主题合并重写。"""
+            )
+        )
+
+        self.assertEqual(payload["header"]["title"]["content"], "📘 记忆检查")
+        self.assertEqual(payload["header"]["template"], "indigo")
+        markdown_contents = [element["content"] for element in payload["elements"] if element.get("tag") == "markdown"]
+        self.assertTrue(any("当前状态" in content for content in markdown_contents))
+        self.assertIn("USER.md 超限。", markdown_contents)
+        self.assertTrue(any("建议" in content for content in markdown_contents))
+        self.assertIn("先做主题合并重写。", markdown_contents)
+    def test_feishu_adapter_defaults_to_fresh_final_and_disables_progressive_edits(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        self.assertTrue(adapter.PREFER_FRESH_FINAL_ON_FINALIZE)
+        self.assertTrue(adapter.DISABLE_PROGRESSIVE_EDITS)
+
+    def test_long_decision_guard_sends_compressed_content_by_default(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"long_decision_guard": {}}))
+        content = "# CC Switch 详细介绍\n" + "\n".join(
+            f"**方案{i}**\n- 结论：这是外部项目吸收评估，需要介绍风险、证据、建议和下一步，并补充足够长的论证说明，确保超过默认阈值。"
+            for i in range(30)
+        )
+        msg_type, raw_payload = adapter._build_outbound_payload(content)
+        payload = json.loads(raw_payload)
+
+        self.assertEqual(msg_type, "interactive")
+        self.assertIn("长内容已压缩发送", payload["header"]["title"]["content"])
+        markdowns = "\n".join(
+            element.get("content", "")
+            for element in payload.get("elements", [])
+            if element.get("tag") == "markdown"
+        )
+        self.assertIn("正文片段 1", markdowns)
+        self.assertIn("CC Switch 详细介绍", markdowns)
+
+    def test_long_decision_guard_sends_compressed_content_without_html_link_when_enabled(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(
+            PlatformConfig(
+                extra={
+                    "long_decision_guard": {
+                        "enabled": True,
+                        "max_chars": 700,
+                        "require_decision_trace_url": True,
+                    }
+                }
+            )
+        )
+        content = "# CC Switch 详细介绍\n" + "\n".join(
+            f"**方案{i}**\n- 结论：这是外部项目吸收评估，需要介绍风险、证据、建议和下一步。"
+            for i in range(20)
+        )
+        msg_type, raw_payload = adapter._build_outbound_payload(content)
+        payload = json.loads(raw_payload)
+
+        self.assertEqual(msg_type, "interactive")
+        self.assertIn("长内容已压缩发送", payload["header"]["title"]["content"])
+        markdowns = "\n".join(
+            element.get("content", "")
+            for element in payload.get("elements", [])
+            if element.get("tag") == "markdown"
+        )
+        self.assertIn("正文片段 1", markdowns)
+        self.assertIn("没有检测到 decision trace HTML 链接", markdowns)
+
+    def test_long_decision_guard_allows_decision_trace_html_link(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(
+            PlatformConfig(
+                extra={
+                    "long_decision_guard": {
+                        "enabled": True,
+                        "max_chars": 700,
+                        "require_decision_trace_url": True,
+                    }
+                }
+            )
+        )
+        content = (
+            "# CC Switch 详细介绍\n"
+            + "\n".join(
+                f"**方案{i}**\n- 结论：这是外部项目吸收评估，需要介绍风险、证据、建议和下一步。"
+                for i in range(20)
+            )
+            + "\n\n[📖 打开 HTML 论证页](https://taoge-decision-traces.pages.dev/cc-switch.html)"
+        )
+        msg_type, raw_payload = adapter._build_outbound_payload(content)
+        payload = json.loads(raw_payload)
+
+        self.assertEqual(msg_type, "interactive")
+        self.assertNotIn("长决策回复已拦截", payload["header"]["title"]["content"])
+        self.assertTrue(any(element.get("tag") == "action" for element in payload["elements"]))
+
+    def test_long_decision_guard_keeps_legacy_morning_brief_decision_trace_compatibility(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(
+            PlatformConfig(
+                extra={
+                    "long_decision_guard": {
+                        "enabled": True,
+                        "max_chars": 700,
+                        "require_decision_trace_url": True,
+                    }
+                }
+            )
+        )
+        content = (
+            "# 历史链接兼容验证\n"
+            + "\n".join(
+                f"**方案{i}**\n- 结论：这是外部项目吸收评估，需要介绍风险、证据、建议和下一步。"
+                for i in range(20)
+            )
+            + "\n\n[📖 打开 HTML 论证页](https://taoge-morning-brief.pages.dev/decision-traces/legacy.html)"
+        )
+        msg_type, raw_payload = adapter._build_outbound_payload(content)
+        payload = json.loads(raw_payload)
+
+        self.assertEqual(msg_type, "interactive")
+        self.assertNotIn("长决策回复已拦截", payload["header"]["title"]["content"])
+
+    def test_long_decision_guard_rejects_plain_morning_brief_html_link(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(
+            PlatformConfig(
+                extra={
+                    "long_decision_guard": {
+                        "enabled": True,
+                        "max_chars": 700,
+                        "require_decision_trace_url": True,
+                    }
+                }
+            )
+        )
+        content = (
+            "# 晨报链接误用验证\n"
+            + "\n".join(
+                f"**方案{i}**\n- 结论：这是外部项目吸收评估，需要介绍风险、证据、建议和下一步。"
+                for i in range(20)
+            )
+            + "\n\n[📖 打开 HTML 论证页](https://taoge-morning-brief.pages.dev/daily-brief-2026-05-25.html)"
+        )
+        msg_type, raw_payload = adapter._build_outbound_payload(content)
+        payload = json.loads(raw_payload)
+
+        self.assertEqual(msg_type, "interactive")
+        self.assertIn("长内容已压缩发送", payload["header"]["title"]["content"])
+
+    def test_long_decision_guard_rejects_non_html_decision_trace_url(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(
+            PlatformConfig(extra={"long_decision_guard": {"enabled": True, "max_chars": 700}})
+        )
+        content = (
+            "# 非 HTML 链接误用验证\n"
+            + "\n".join(
+                f"**方案{i}**\n- 结论：这是外部项目吸收评估，需要介绍风险、证据、建议和下一步。"
+                for i in range(20)
+            )
+            + "\n\n[📖 打开 HTML 论证页](https://taoge-decision-traces.pages.dev/assets/app.css)"
+        )
+        msg_type, raw_payload = adapter._build_outbound_payload(content)
+        payload = json.loads(raw_payload)
+
+        self.assertEqual(msg_type, "interactive")
+        self.assertIn("长内容已压缩发送", payload["header"]["title"]["content"])
+
+    def test_long_decision_guard_runs_before_force_text_metadata(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(
+            PlatformConfig(extra={"long_decision_guard": {"enabled": True, "max_chars": 700}})
+        )
+        content = "# 强制文本绕过验证\n" + "\n".join(
+            f"**方案{i}**\n- 结论：这是外部项目吸收评估，需要介绍风险、证据、建议和下一步。"
+            for i in range(20)
+        )
+        msg_type, raw_payload = adapter._build_outbound_payload(
+            content,
+            metadata={"feishu_force_text": True},
+        )
+        payload = json.loads(raw_payload)
+
+        self.assertEqual(msg_type, "interactive")
+        self.assertIn("长内容已压缩发送", payload["header"]["title"]["content"])
+
+    def test_decision_trace_reply_with_table_link_uses_button(self):
+        from gateway.platforms.feishu import _build_markdown_card_payload
+
+        content = """# 表格型决策
+| 方案 | 判断 |
+|---|---|
+| A | 推荐 |
+| B | 不推荐 |
+
+[📖 打开 HTML 论证页](https://taoge-decision-traces.pages.dev/table-decision.html)"""
+        payload = json.loads(_build_markdown_card_payload(content))
+
+        self.assertEqual(payload["header"]["template"], "wathet")
+        self.assertTrue(any(element.get("tag") == "action" for element in payload["elements"]))
+        self.assertTrue(any(element.get("tag") == "column_set" for element in payload["elements"]))
+        markdowns = [element.get("content", "") for element in payload["elements"] if element.get("tag") == "markdown"]
+        self.assertFalse(any("taoge-decision-traces.pages.dev" in content for content in markdowns))
+
+    def test_build_markdown_card_payload_renders_markdown_table_as_column_set(self):
+        from gateway.platforms.feishu import _build_markdown_card_payload
+
+        payload = json.loads(
+            _build_markdown_card_payload(
+                """# 审计总表
+| job_id | 状态 |
+|---|---|
+| cron-a | ok |
+| cron-b | pending |"""
+            )
+        )
+
+        self.assertEqual(payload["header"]["title"]["content"], "📋 审计总表")
+        self.assertEqual(payload["header"]["template"], "indigo")
+        column_sets = [element for element in payload["elements"] if element.get("tag") == "column_set"]
+        self.assertGreaterEqual(len(column_sets), 3)
+        self.assertEqual(column_sets[0]["columns"][0]["elements"][0]["content"], "**job_id**")
+        self.assertEqual(column_sets[1]["columns"][0]["elements"][0]["content"], "cron-a")
+        self.assertEqual(column_sets[2]["columns"][1]["elements"][0]["content"], "pending")
+
+    def test_build_markdown_card_payload_keeps_table_surrounding_text_readable(self):
+        from gateway.platforms.feishu import _build_markdown_card_payload
+
+        payload = json.loads(
+            _build_markdown_card_payload(
+                """# 审计总表
+先看摘要说明。
+
+| job_id | 状态 |
+|---|---|
+| cron-a | ok |
+| cron-b | pending |
+
+收尾说明保留在表格后面。"""
+            )
+        )
+
+        markdowns = [element["content"] for element in payload["elements"] if element.get("tag") == "markdown"]
+        self.assertIn("先看摘要说明。", markdowns)
+        self.assertIn("收尾说明保留在表格后面。", markdowns)
+        self.assertFalse(payload["elements"][-1] == {"tag": "hr"})
+
+    def test_build_markdown_card_payload_uses_table_card_path_without_auto_summary(self):
+        from gateway.platforms.feishu import _build_markdown_card_payload
+
+        payload = json.loads(
+            _build_markdown_card_payload(
+                """# 审计总表
+本轮只展示 cron 状态。
+
+| job_id | 状态 |
+|---|---|
+| cron-a | ok |
+| cron-b | pending |"""
+            )
+        )
+
+        markdowns = [element["content"] for element in payload["elements"] if element.get("tag") == "markdown"]
+        self.assertIn("本轮只展示 cron 状态。", markdowns)
+        self.assertNotIn("**结论：**本轮只展示 cron 状态。", markdowns)
+
+    def test_build_markdown_card_payload_report_summary_only_for_longer_report(self):
+        from gateway.platforms.feishu import _build_markdown_card_payload
+
+        payload = json.loads(
+            _build_markdown_card_payload(
+                """# 路由评估
+先纠偏，再优化展示。
+- 普通结构化聊天走 post
+- 正式报告保留 interactive
+
+**当前状态**
+路由规则已经拆分。
+
+**下一步**
+继续收口 table card。"""
+            )
+        )
+
+        markdowns = [element["content"] for element in payload["elements"] if element.get("tag") == "markdown"]
+        self.assertIn("**结论：**先纠偏，再优化展示。\n- 普通结构化聊天走 post\n- 正式报告保留 interactive", markdowns)
+
+    def test_build_paginated_report_card_payloads_preserves_all_sections_and_button(self):
+        from gateway.platforms.feishu import _build_paginated_report_card_payloads
+
+        sections = []
+        for idx in range(1, 7):
+            sections.append(
+                f"**第{idx}段**\n"
+                f"这是第{idx}段的完整内容，用来验证分页不会被 simple card 的 16 elements 上限截断。\n"
+                f"- 关键点 {idx}-A\n"
+                f"- 关键点 {idx}-B"
+            )
+        content = "# 分页验证\n开头结论不能丢。\n\n" + "\n\n".join(sections) + "\n\n[📖 打开 HTML 论证页](https://taoge-decision-traces.pages.dev/sample.html)"
+
+        payloads = [json.loads(payload) for payload in _build_paginated_report_card_payloads(content, max_units_per_page=2, max_chars_per_page=500)]
+
+        self.assertGreater(len(payloads), 1)
+        combined_markdown = "\n".join(
+            element.get("content", "")
+            for payload in payloads
+            for element in payload.get("elements", [])
+            if element.get("tag") == "markdown"
+        )
+        self.assertIn("开头结论不能丢。", combined_markdown)
+        for idx in range(1, 7):
+            self.assertIn(f"第{idx}段", combined_markdown)
+            self.assertIn(f"关键点 {idx}-B", combined_markdown)
+        self.assertTrue(payloads[-1]["header"]["title"]["content"].endswith(f"（{len(payloads)}/{len(payloads)}）"))
+        self.assertEqual(payloads[-1]["header"]["template"], "wathet")
+        self.assertTrue(any(element.get("tag") == "action" for element in payloads[-1]["elements"]))
+
+    def test_build_outbound_payload_honors_force_text_metadata(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = "**结论**\n继续保留 card。"
+        msg_type, payload = adapter._build_outbound_payload(
+            content,
+            metadata={"feishu_force_text": True},
+        )
+
+        self.assertEqual(msg_type, "text")
+        self.assertEqual(json.loads(payload)["text"], content)
+
+    def test_decision_trace_reply_with_html_link_uses_light_card_button(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = """**结论**
+这套方案可以收口。
+
+**建议**
+- 飞书只放短结论
+- 详细论证走 HTML
+
+**提醒**
+敏感内容不要发公网。
+
+[📖 打开 HTML 论证页](https://taoge-decision-traces.pages.dev/sample.html)"""
+        msg_type, raw_payload = adapter._build_outbound_payload(content)
+        payload = json.loads(raw_payload)
+
+        self.assertEqual(msg_type, "interactive")
+        self.assertEqual(payload["header"]["template"], "wathet")
+        self.assertIn("决策", payload["header"]["title"]["content"])
+        self.assertTrue(any(element.get("tag") == "action" for element in payload["elements"]))
+        button = next(
+            action
+            for element in payload["elements"]
+            if element.get("tag") == "action"
+            for action in element.get("actions", [])
+            if action.get("tag") == "button"
+        )
+        self.assertEqual(button["text"]["content"], "📖 打开 HTML 论证页")
+        self.assertEqual(button["multi_url"]["url"], "https://taoge-decision-traces.pages.dev/sample.html")
+        markdowns = [element["content"] for element in payload["elements"] if element.get("tag") == "markdown"]
+        self.assertTrue(any("结论" in content for content in markdowns))
+        self.assertTrue(any("建议" in content for content in markdowns))
+        self.assertTrue(any("提醒" in content for content in markdowns))
+        self.assertFalse(any("https://taoge-decision-traces.pages.dev" in content for content in markdowns))
+
+    def test_structured_closure_with_links_keeps_card_path(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = """**结论**
+这次已经收口完成。
+
+**落点**
+- wiki：[/home/ht/llm-wikis/hermes-ops/index.md](file:///home/ht/llm-wikis/hermes-ops/index.md)
+- runbook：[/home/ht/llm-wikis/hermes-ops/concepts/feishu-rendering-debug-runbook.md](file:///home/ht/llm-wikis/hermes-ops/concepts/feishu-rendering-debug-runbook.md)
+
+**下一步**
+按 runbook 继续。"""
+        msg_type, _payload = adapter._build_outbound_payload(content)
+
+        self.assertEqual(msg_type, "interactive")
+
+    @patch("gateway.platforms.feishu.asyncio.to_thread")
+
+    def test_edit_message_skips_progressive_edits_when_disabled(self, mock_to_thread):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter.DISABLE_PROGRESSIVE_EDITS = True
+        adapter._client = object()
+
+        result = asyncio.run(adapter.edit_message("oc_test", "om_1", "hello"))
+
+        self.assertFalse(result.success)
+        self.assertIn("progressive edits disabled", result.error)
+        mock_to_thread.assert_not_called()
+
     @patch.dict(os.environ, {
         "FEISHU_APP_ID": "cli_app",
         "FEISHU_APP_SECRET": "secret_app",
@@ -360,6 +809,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
                     chat_id="oc_chat",
                     message_id="om_progress",
                     content="📖 read_file: \"/tmp/image.png\"",
+                    finalize=True,
                 )
             )
 
@@ -404,6 +854,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
                     chat_id="oc_chat",
                     message_id="om_progress",
                     content="可以用 **粗体** 和 *斜体*。",
+                    finalize=True,
                 )
             )
 
@@ -2623,22 +3074,13 @@ class TestAdapterBehavior(unittest.TestCase):
             )
 
         self.assertTrue(result.success)
-        self.assertEqual(captured["request"].request_body.msg_type, "post")
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
         payload = json.loads(captured["request"].request_body.content)
-        rows = payload["zh_cn"]["content"]
-        self.assertEqual(
-            rows,
-            [
-                [
-                    {
-                        "tag": "md",
-                        "text": "确认已入库 ✓\n文件路径：`/root/.hermes/profiles/agent_cto/cron/jobs.json`\n**解码后的内容：**",
-                    }
-                ],
-                [{"tag": "md", "text": "```json\n{\"cron\": \"list\"}\n```"}],
-                [{"tag": "md", "text": "后续说明仍应保留。"}],
-            ],
-        )
+        self.assertIn("elements", payload)
+        markdown_contents = [element.get("content", "") for element in payload["elements"] if element.get("tag") == "markdown"]
+        self.assertTrue(any("确认已入库 ✓" in content for content in markdown_contents))
+        self.assertTrue(any("```json\n{\"cron\": \"list\"}\n```" in content for content in markdown_contents))
+        self.assertTrue(any("后续说明仍应保留。" in content for content in markdown_contents))
 
     @patch.dict(os.environ, {}, clear=True)
     def test_build_post_payload_keeps_fence_like_code_lines_inside_code_block(self):
@@ -2831,13 +3273,12 @@ class TestAdapterBehavior(unittest.TestCase):
             )
 
         self.assertTrue(result.success)
-        self.assertEqual(captured["request"].request_body.msg_type, "post")
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
         payload = json.loads(captured["request"].request_body.content)
-        rows = payload["zh_cn"]["content"]
-        self.assertEqual(
-            rows,
-            [[{"tag": "md", "text": "---\n1. 第一项\n<u>下划线</u>\n~~删除线~~"}]],
-        )
+        markdown_contents = [element.get("content", "") for element in payload["elements"] if element.get("tag") == "markdown"]
+        self.assertTrue(any("第一项" in content for content in markdown_contents))
+        self.assertTrue(any("<u>下划线</u>" in content for content in markdown_contents))
+        self.assertTrue(any("~~删除线~~" in content for content in markdown_contents))
 
 
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")

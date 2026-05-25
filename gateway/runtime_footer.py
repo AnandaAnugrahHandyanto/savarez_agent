@@ -26,10 +26,11 @@ piecemeal, the footer is sent as a separate trailing message via
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-_DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
+_DEFAULT_FIELDS: tuple[str, ...] = ("model", "sent_at")
 _SEP = " · "
 
 
@@ -95,6 +96,7 @@ def format_runtime_footer(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    sent_at: Optional[datetime] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
@@ -112,6 +114,9 @@ def format_runtime_footer(
             if context_length and context_length > 0 and context_tokens >= 0:
                 pct = max(0, min(100, round((context_tokens / context_length) * 100)))
                 parts.append(f"{pct}%")
+        elif field == "sent_at":
+            if sent_at is not None:
+                parts.append(sent_at.strftime("%Y-%m-%d · %H:%M"))
         elif field == "cwd":
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:
@@ -131,6 +136,7 @@ def build_footer_line(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    sent_at: Optional[datetime] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -141,10 +147,14 @@ def build_footer_line(
     cfg = resolve_footer_config(user_config, platform_key)
     if not cfg.get("enabled"):
         return ""
-    return format_runtime_footer(
+    footer = format_runtime_footer(
         model=model,
         context_tokens=context_tokens,
         context_length=context_length,
         cwd=cwd,
+        sent_at=sent_at,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
     )
+    if not footer:
+        return ""
+    return f"---\n{footer}"
