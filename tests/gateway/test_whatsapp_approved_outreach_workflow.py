@@ -12,7 +12,10 @@ from gateway.session import SessionEntry, SessionSource
 from gateway.whatsapp_message_store import append_whatsapp_record
 from gateway.whatsapp_approved_outreach import (
     WHATSAPP_DEFAULT_COMMUNICATION_SKILL_NAME,
+    build_cli_chat_whatsapp_outreach_requests,
     bind_whatsapp_outreach_plan_to_cron_job,
+    execute_whatsapp_approved_outreach,
+    format_whatsapp_approved_outreach_result,
     load_whatsapp_outreach_run_records,
     load_whatsapp_outreach_state,
     _write_whatsapp_outreach_state,
@@ -258,7 +261,9 @@ async def test_instruction_triggered_outreach_sends_one_bounded_follow_up(
     assert execution_row["execution_status"] == "sent"
     assert execution_row["message_generation_mode"] == "operator_text_override"
     assert execution_row["draft_outcome"] == "send_message"
-    assert execution_row["outbound_message_text"] == "Following up on the revised quote."
+    assert (
+        execution_row["outbound_message_text"] == "Following up on the revised quote."
+    )
     assert execution_row["resolved_conversation_key"] == "whatsapp:dm:15551230000"
     assert execution_row["resolved_destination_key"] == "whatsapp:dm:15551230000"
     assert execution_row["resolved_destination_chat_id"] == "15551230000@s.whatsapp.net"
@@ -569,6 +574,140 @@ async def test_instruction_triggered_outreach_fails_closed_for_ambiguous_target(
 
     runner.adapters[Platform.WHATSAPP].send.assert_not_awaited()
     assert "Status: invalid_request" in result
+
+
+def test_cli_chat_instruction_normalizes_into_canonical_outreach_request():
+    operator_instruction, run_request = build_cli_chat_whatsapp_outreach_requests(
+        (
+            "whatsapp outreach approved_destination_chat_id=15551230000@s.whatsapp.net "
+            'operator_objective="Request the first quote" '
+            'message_text="Hello from Hermes."'
+        ),
+        session_id="sess-cli-1",
+    )
+
+    assert (
+        operator_instruction["approved_destination_chat_id"]
+        == "15551230000@s.whatsapp.net"
+    )
+    assert operator_instruction["trigger_source"] == "owner_instruction"
+    assert operator_instruction["trigger_reference_id"] == "sess-cli-1"
+    assert operator_instruction["operator_ingress_surface"] == "cli_chat"
+    assert run_request == operator_instruction
+
+
+@pytest.mark.asyncio
+async def test_cli_chat_cold_start_instruction_sends_one_first_dm_and_persists_honest_continuity(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / ".hermes"
+    base_dir = hermes_home / "gateway" / "whatsapp-records"
+    base_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    runner = _make_runner(tmp_path)
+    runner.adapters[Platform.WHATSAPP].send = AsyncMock(
+        return_value=SendResult(
+            success=True,
+            message_id="bridge-cold-start-1",
+            raw_response={
+                "dispatch_group_id": "dispatch-cold-start-1",
+                "messageId": "bridge-cold-start-1",
+            },
+        )
+    )
+
+    operator_instruction, run_request = build_cli_chat_whatsapp_outreach_requests(
+        (
+            "whatsapp outreach approved_destination_chat_id=15551230000@s.whatsapp.net "
+            'operator_objective="Request the first quote" '
+            'message_text="Hello from Hermes."'
+        ),
+        session_id="sess-cli-cold-start",
+    )
+
+    result = await execute_whatsapp_approved_outreach(
+        run_request,
+        authorized=True,
+        adapter=runner.adapters[Platform.WHATSAPP],
+    )
+
+    assert operator_instruction["operator_ingress_surface"] == "cli_chat"
+    runner.adapters[Platform.WHATSAPP].send.assert_awaited_once_with(
+        "15551230000@s.whatsapp.net",
+        "Hello from Hermes.",
+    )
+    assert result["workflow_status"] == "ready"
+    assert result["run"]["trigger_source"] == "owner_instruction"
+    assert result["run"]["operator_ingress_surface"] == "cli_chat"
+    assert (
+        result["execution"]["target_resolution_source"]
+        == "approved_destination_chat_id"
+    )
+    assert (
+        result["execution"]["approved_destination_chat_id_snapshot"]
+        == "15551230000@s.whatsapp.net"
+    )
+    assert result["execution"]["had_prior_preserved_thread"] is False
+    assert result["execution"]["continuity_mode"] == "cold_start_first_send_completed"
+    assert result["execution"]["communication_stage"] == "opening_outreach"
+    assert result["execution"]["draft_outcome"] == "send_message"
+    assert result["execution"]["execution_status"] == "sent"
+    assert (
+        result["execution"]["resolved_target"]["destination_chat_id"]
+        == "15551230000@s.whatsapp.net"
+    )
+    assert (
+        result["execution"]["resolved_target"]["destination_key"]
+        == "whatsapp:dm:15551230000"
+    )
+    assert (
+        result["execution"]["resolved_target"]["conversation_key"]
+        == "whatsapp:dm:15551230000"
+    )
+
+    rendered = format_whatsapp_approved_outreach_result(result)
+    assert "operator_ingress_surface: cli_chat" in rendered
+    assert "target_resolution_source: approved_destination_chat_id" in rendered
+    assert (
+        "approved_destination_chat_id_snapshot: 15551230000@s.whatsapp.net" in rendered
+    )
+    assert "had_prior_preserved_thread: False" in rendered
+    assert "continuity_mode: cold_start_first_send_completed" in rendered
+    assert "report_continuity_mode: cold_start_first_send_completed" in rendered
+    assert "report_had_prior_preserved_thread: False" in rendered
+
+    outreach_state = load_whatsapp_outreach_state()
+    plan_row = outreach_state["plans"][0]
+    target_row = outreach_state["plan_targets"][0]
+    run_row = outreach_state["runs"][0]
+    execution_row = outreach_state["target_executions"][0]
+    report_row = outreach_state["reports"][0]
+
+    assert plan_row["operator_ingress_surface"] == "cli_chat"
+    assert target_row["approved_destination_chat_id"] == "15551230000@s.whatsapp.net"
+    assert target_row["target_resolution_source"] == "preserved_history"
+    assert target_row["continuity_mode"] == "preserved_thread_follow_up"
+    assert target_row["destination_key"] == "whatsapp:dm:15551230000"
+    assert target_row["dm_counterparty_id"] == "15551230000"
+    assert run_row["operator_ingress_surface"] == "cli_chat"
+    assert execution_row["target_resolution_source"] == "approved_destination_chat_id"
+    assert (
+        execution_row["approved_destination_chat_id_snapshot"]
+        == "15551230000@s.whatsapp.net"
+    )
+    assert execution_row["had_prior_preserved_thread"] is False
+    assert execution_row["continuity_mode"] == "cold_start_first_send_completed"
+    assert execution_row["history_record_count"] == 0
+    assert (
+        report_row["target_rows"][0]["continuity_mode"]
+        == "cold_start_first_send_completed"
+    )
+    assert report_row["target_rows"][0]["had_prior_preserved_thread"] is False
+    assert any(
+        "without prior preserved thread context" in item
+        for item in report_row["target_rows"][0]["uncertainties"]
+    )
 
 
 @pytest.mark.asyncio

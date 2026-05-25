@@ -13,6 +13,8 @@ from agent.skill_commands import _build_skill_message, _load_skill_payload
 from hermes_constants import get_hermes_home
 
 from gateway.whatsapp_message_store import (
+    append_whatsapp_record,
+    build_whatsapp_destination_fields,
     query_whatsapp_records_any_time,
     utc_isoformat,
     utc_now,
@@ -27,6 +29,7 @@ WHATSAPP_APPROVED_OUTREACH_EXACT_SELECTOR_FIELDS = (
 )
 WHATSAPP_APPROVED_OUTREACH_ALLOWED_FIELDS = (
     *WHATSAPP_APPROVED_OUTREACH_EXACT_SELECTOR_FIELDS,
+    "approved_destination_chat_id",
     "operator_objective",
     "message_text",
     "report_delivery_target",
@@ -55,6 +58,22 @@ WHATSAPP_ALLOWED_DRAFT_OUTCOMES = (
 _JSON_PRIMITIVE_TYPES = (str, int, float, bool, type(None))
 
 _OUTREACH_STATE_LOCK = threading.Lock()
+
+
+def build_cli_chat_whatsapp_outreach_requests(
+    text: str | None,
+    *,
+    session_id: str | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    parsed_request = parse_whatsapp_approved_outreach_instruction(text)
+    normalized_instruction = normalize_whatsapp_approved_outreach_request({
+        **parsed_request,
+        "trigger_source": "owner_instruction",
+        "trigger_reference_id": session_id,
+        "operator_ingress_surface": "cli_chat",
+    })
+    operator_instruction = dict(normalized_instruction)
+    return operator_instruction, dict(operator_instruction)
 
 
 def is_whatsapp_approved_outreach_instruction(text: str | None) -> bool:
@@ -106,8 +125,14 @@ def normalize_whatsapp_approved_outreach_request(
         for field in WHATSAPP_APPROVED_OUTREACH_EXACT_SELECTOR_FIELDS
     }
     selected_fields = [field for field, value in normalized.items() if value]
-    if not workflow_binding_type and len(selected_fields) != 1:
-        raise ValueError("approved outreach requires exactly one exact selector")
+    approved_destination_chat_id = (
+        str(raw_request.get("approved_destination_chat_id") or "").strip() or None
+    )
+    if not workflow_binding_type:
+        if approved_destination_chat_id and selected_fields:
+            raise ValueError("approved outreach requires exactly one target basis")
+        if not approved_destination_chat_id and len(selected_fields) != 1:
+            raise ValueError("approved outreach requires exactly one exact selector")
 
     operator_objective = str(raw_request.get("operator_objective") or "").strip()
     if bool(workflow_binding_type) != bool(workflow_binding_id):
@@ -131,15 +156,20 @@ def normalize_whatsapp_approved_outreach_request(
     trigger_reference_id = (
         str(raw_request.get("trigger_reference_id") or "").strip() or None
     )
+    operator_ingress_surface = (
+        str(raw_request.get("operator_ingress_surface") or "").strip() or None
+    )
     if not trigger_source:
         trigger_source = "owner_instruction"
     return {
         **normalized,
+        "approved_destination_chat_id": approved_destination_chat_id,
         "operator_objective": operator_objective or None,
         "message_text": message_text,
         "report_delivery_target": report_delivery_target,
         "trigger_source": trigger_source,
         "trigger_reference_id": trigger_reference_id,
+        "operator_ingress_surface": operator_ingress_surface,
         "workflow_binding_type": workflow_binding_type or None,
         "workflow_binding_id": workflow_binding_id or None,
     }
@@ -388,10 +418,19 @@ def _matching_plan_and_target(
     operator_objective: str,
     approved_by_principal: str,
     selector: dict[str, Any],
+    approved_destination_chat_id: str | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     selected_fields = [field for field, value in selector.items() if value]
     for plan_target in reversed(state["plan_targets"]):
         if plan_target.get("target_status") != "active":
+            continue
+        if approved_destination_chat_id is not None:
+            if (
+                plan_target.get("approved_destination_chat_id")
+                != approved_destination_chat_id
+            ):
+                continue
+        elif plan_target.get("approved_destination_chat_id"):
             continue
         if any(
             plan_target.get(field) != selector.get(field) for field in selected_fields
@@ -444,6 +483,8 @@ def _status_basis_for_observable_status(observable_status: str) -> str:
 def _observable_status_from_history_and_execution(
     history_rows: list[dict[str, Any]], execution_status: str
 ) -> str:
+    if execution_status == "handoff_required":
+        return "handoff_required"
     if execution_status == "send_failed":
         return "send_failed"
     if execution_status == "sent":
@@ -617,15 +658,75 @@ def _status_basis_for_execution_status(execution_status: str) -> str:
 
 
 def _normalized_communication_skill_name(value: Any) -> str:
-    return (
-        str(value or "").strip() or WHATSAPP_DEFAULT_COMMUNICATION_SKILL_NAME
-    )
+    return str(value or "").strip() or WHATSAPP_DEFAULT_COMMUNICATION_SKILL_NAME
 
 
 def _select_communication_stage(history_rows: list[dict[str, Any]]) -> str:
     if any(row.get("participant_role") == "agent" for row in history_rows):
         return "follow_up"
     return "opening_outreach"
+
+
+def _cold_start_failure_reason(
+    *,
+    approved_destination_chat_id: str | None,
+    destination_fields: dict[str, Any] | None,
+) -> str | None:
+    if not approved_destination_chat_id:
+        return (
+            "approved_destination_chat_id is required for cold-start DM first contact"
+        )
+    if not isinstance(destination_fields, dict):
+        return "approved_destination_chat_id could not be normalized"
+    if destination_fields.get("destination_context_type") != "direct_message":
+        return (
+            "approved_destination_chat_id must represent one direct-message destination"
+        )
+    if not destination_fields.get("destination_chat_id"):
+        return (
+            "approved_destination_chat_id must resolve to one exact destination_chat_id"
+        )
+    if not destination_fields.get("dm_counterparty_id"):
+        return (
+            "approved_destination_chat_id must resolve to one exact dm_counterparty_id"
+        )
+    return None
+
+
+def _persist_cold_start_outbound_record(
+    *,
+    approved_destination_chat_id_snapshot: str,
+    outbound_message_text: str,
+    message_id: str | None,
+    effective_event_at_utc: str,
+) -> None:
+    effective_event_at = datetime.fromisoformat(
+        effective_event_at_utc.replace("Z", "+00:00")
+    )
+    destination_fields = build_whatsapp_destination_fields(
+        approved_destination_chat_id_snapshot
+    )
+    record_id = f"wa-cold-start-{uuid4()}"
+    append_whatsapp_record(
+        {
+            "record_kind": "conversation_record",
+            "record_id": record_id,
+            "conversation_key": destination_fields.get("destination_key"),
+            **destination_fields,
+            "direction": "outbound",
+            "effective_event_at_utc": effective_event_at_utc,
+            "record_sequence": 0,
+            "participant_role": "agent",
+            "message_classification": "conversational_only",
+            "command_authority_scope": "none",
+            "sender_id": "agent",
+            "sender_name": "Hermes",
+            "text": outbound_message_text,
+            "message_id": message_id,
+            "media_types": [],
+        },
+        effective_event_at=effective_event_at,
+    )
 
 
 def _parse_draft_response_payload(raw_response: str) -> dict[str, Any]:
@@ -1054,7 +1155,19 @@ async def execute_whatsapp_approved_outreach(
                 for field in WHATSAPP_APPROVED_OUTREACH_EXACT_SELECTOR_FIELDS
                 if normalized_request.get(field)
             ]
-            if len(selected_fields) != 1:
+            approved_destination_chat_id = normalized_request.get(
+                "approved_destination_chat_id"
+            )
+            if approved_destination_chat_id and selected_fields:
+                return _result(
+                    workflow_status="invalid_request",
+                    founder_summary=(
+                        "WhatsApp approved outreach could not start because the "
+                        "instruction mixed preserved-thread selectors with a cold-start DM target."
+                    ),
+                    reason="approved outreach requires exactly one target basis",
+                )
+            if not approved_destination_chat_id and len(selected_fields) != 1:
                 return _result(
                     workflow_status="invalid_request",
                     founder_summary=(
@@ -1068,11 +1181,22 @@ async def execute_whatsapp_approved_outreach(
                 field: normalized_request.get(field)
                 for field in WHATSAPP_APPROVED_OUTREACH_EXACT_SELECTOR_FIELDS
             }
+            target_resolution_source = (
+                "approved_destination_chat_id"
+                if approved_destination_chat_id
+                else "preserved_history"
+            )
+            continuity_mode = (
+                "cold_start_pending_first_send"
+                if approved_destination_chat_id
+                else "preserved_thread_follow_up"
+            )
             plan_row, existing_target = _matching_plan_and_target(
                 state,
                 operator_objective=str(normalized_request["operator_objective"]),
                 approved_by_principal=approved_by_principal,
                 selector=selector,
+                approved_destination_chat_id=approved_destination_chat_id,
             )
             approved_at_utc = utc_isoformat(utc_now())
             if plan_row is None or existing_target is None:
@@ -1087,6 +1211,9 @@ async def execute_whatsapp_approved_outreach(
                     ),
                     "operator_objective": normalized_request["operator_objective"],
                     "created_by_session_id": None,
+                    "operator_ingress_surface": normalized_request.get(
+                        "operator_ingress_surface"
+                    ),
                     "approved_by_principal": approved_by_principal,
                     "approved_at_utc": approved_at_utc,
                     "report_delivery_policy": "initiating_session",
@@ -1099,6 +1226,9 @@ async def execute_whatsapp_approved_outreach(
                         "plan_id": plan_id,
                         "target_status": "active",
                         **selector,
+                        "approved_destination_chat_id": approved_destination_chat_id,
+                        "target_resolution_source": target_resolution_source,
+                        "continuity_mode": continuity_mode,
                         "target_objective_override": None,
                         "max_outbound_messages_per_run": 1,
                         "last_resolved_conversation_key": None,
@@ -1108,8 +1238,14 @@ async def execute_whatsapp_approved_outreach(
             else:
                 plan_row = dict(plan_row)
                 plan_row["plan_status"] = "active"
-                plan_row["communication_skill_name"] = _normalized_communication_skill_name(
-                    plan_row.get("communication_skill_name")
+                if normalized_request.get("operator_ingress_surface"):
+                    plan_row["operator_ingress_surface"] = normalized_request.get(
+                        "operator_ingress_surface"
+                    )
+                plan_row["communication_skill_name"] = (
+                    _normalized_communication_skill_name(
+                        plan_row.get("communication_skill_name")
+                    )
                 )
                 plan_row["approved_at_utc"] = (
                     plan_row.get("approved_at_utc") or approved_at_utc
@@ -1133,6 +1269,9 @@ async def execute_whatsapp_approved_outreach(
             "workflow_binding_id": normalized_request.get("workflow_binding_id"),
             "trigger_source": normalized_request["trigger_source"],
             "trigger_reference_id": normalized_request.get("trigger_reference_id"),
+            "operator_ingress_surface": normalized_request.get(
+                "operator_ingress_surface"
+            ),
             "run_started_at_utc": run_started_at_utc,
             "run_completed_at_utc": None,
             "target_count": len(plan_targets),
@@ -1161,6 +1300,12 @@ async def execute_whatsapp_approved_outreach(
                 "resolved_conversation_key": None,
                 "resolved_destination_key": None,
                 "resolved_destination_chat_id": None,
+                "continuity_mode": plan_target_row.get("continuity_mode"),
+                "target_resolution_source": plan_target_row.get(
+                    "target_resolution_source"
+                ),
+                "approved_destination_chat_id_snapshot": None,
+                "had_prior_preserved_thread": True,
                 "group_chat_id": plan_target_row.get("group_chat_id"),
                 "dm_counterparty_id": plan_target_row.get("dm_counterparty_id"),
                 "destination_context_type": None,
@@ -1200,7 +1345,84 @@ async def execute_whatsapp_approved_outreach(
     for plan_target_row, execution in zip(plan_targets, executions, strict=False):
         selector = _exact_selector_from_row(plan_target_row)
         selected_fields = [field for field, value in selector.items() if value]
-        if len(selected_fields) == 1:
+        approved_destination_chat_id = _json_safe_string(
+            plan_target_row.get("approved_destination_chat_id")
+        )
+        target_resolution_source = (
+            _json_safe_string(plan_target_row.get("target_resolution_source"))
+            or "preserved_history"
+        )
+        continuity_mode = _json_safe_string(plan_target_row.get("continuity_mode"))
+        if target_resolution_source == "approved_destination_chat_id":
+            destination_fields = build_whatsapp_destination_fields(
+                str(approved_destination_chat_id or "")
+            )
+            cold_start_error = _cold_start_failure_reason(
+                approved_destination_chat_id=approved_destination_chat_id,
+                destination_fields=destination_fields,
+            )
+            if cold_start_error:
+                execution.update({
+                    "execution_status": "blocked",
+                    "last_error": cold_start_error,
+                    "continuity_mode": continuity_mode
+                    or "cold_start_pending_first_send",
+                    "target_resolution_source": "approved_destination_chat_id",
+                    "approved_destination_chat_id_snapshot": approved_destination_chat_id,
+                    "had_prior_preserved_thread": False,
+                })
+                target_rows.append({
+                    "plan_target_id": plan_target_row["plan_target_id"],
+                    "resolved_target": {
+                        "conversation_key": None,
+                        "destination_key": destination_fields.get("destination_key"),
+                        "group_chat_id": None,
+                        "dm_counterparty_id": destination_fields.get(
+                            "dm_counterparty_id"
+                        ),
+                        "destination_context_type": destination_fields.get(
+                            "destination_context_type"
+                        ),
+                        "destination_chat_id": destination_fields.get(
+                            "destination_chat_id"
+                        ),
+                        "destination_target_id": destination_fields.get(
+                            "destination_target_id"
+                        ),
+                    },
+                    "continuity_mode": "cold_start_pending_first_send",
+                    "had_prior_preserved_thread": False,
+                    "observable_status": "unresolved",
+                    "status_basis": "direct_conversation_evidence",
+                    "latest_observed_message_at_utc": None,
+                    "open_items": [],
+                    "handoff_reason": None,
+                    "uncertainties": [cold_start_error],
+                })
+                failed_count += 1
+                completed_count += 1
+                continue
+            resolved_target = {
+                "conversation_key": None,
+                "destination_key": destination_fields.get("destination_key"),
+                "group_chat_id": None,
+                "dm_counterparty_id": destination_fields.get("dm_counterparty_id"),
+                "destination_context_type": destination_fields.get(
+                    "destination_context_type"
+                ),
+                "destination_chat_id": destination_fields.get("destination_chat_id"),
+                "destination_target_id": destination_fields.get(
+                    "destination_target_id"
+                ),
+            }
+            continuity_rows = []
+            history_window_start_utc = utc_isoformat(utc_now())
+            history_window_end_utc = history_window_start_utc
+            resolution = {
+                "resolution_status": "resolved",
+                "resolved_target": resolved_target,
+            }
+        elif len(selected_fields) == 1:
             resolution = ResolveWhatsAppExactTarget(selector)
         else:
             resolution = _resolve_target_from_preserved_history(selector)
@@ -1229,29 +1451,32 @@ async def execute_whatsapp_approved_outreach(
                 ],
             })
             failed_count += 1
+            completed_count += 1
             continue
-
-        continuity_rows = query_whatsapp_records_any_time(
-            conversation_key=resolved_target.get("conversation_key"),
-            destination_key=resolved_target.get("destination_key"),
-            destination_context_type=resolved_target.get("destination_context_type"),
-            group_chat_id=resolved_target.get("group_chat_id"),
-            dm_counterparty_id=resolved_target.get("dm_counterparty_id"),
-        )
-        history_window_start_utc = (
-            continuity_rows[0].get("effective_event_at_utc")
-            if continuity_rows
-            else None
-        )
-        history_window_end_utc = (
-            continuity_rows[-1].get("effective_event_at_utc")
-            if continuity_rows
-            else None
-        )
-        if history_window_start_utc is None:
-            history_window_start_utc = utc_isoformat(utc_now())
-        if history_window_end_utc is None:
-            history_window_end_utc = history_window_start_utc
+        if target_resolution_source != "approved_destination_chat_id":
+            continuity_rows = query_whatsapp_records_any_time(
+                conversation_key=resolved_target.get("conversation_key"),
+                destination_key=resolved_target.get("destination_key"),
+                destination_context_type=resolved_target.get(
+                    "destination_context_type"
+                ),
+                group_chat_id=resolved_target.get("group_chat_id"),
+                dm_counterparty_id=resolved_target.get("dm_counterparty_id"),
+            )
+            history_window_start_utc = (
+                continuity_rows[0].get("effective_event_at_utc")
+                if continuity_rows
+                else None
+            )
+            history_window_end_utc = (
+                continuity_rows[-1].get("effective_event_at_utc")
+                if continuity_rows
+                else None
+            )
+            if history_window_start_utc is None:
+                history_window_start_utc = utc_isoformat(utc_now())
+            if history_window_end_utc is None:
+                history_window_end_utc = history_window_start_utc
         if (
             run_window_start_utc is None
             or history_window_start_utc < run_window_start_utc
@@ -1262,6 +1487,14 @@ async def execute_whatsapp_approved_outreach(
 
         plan_target_row.update({
             **_exact_selector_from_row(resolved_target),
+            "approved_destination_chat_id": approved_destination_chat_id,
+            "target_resolution_source": target_resolution_source,
+            "continuity_mode": continuity_mode
+            or (
+                "cold_start_pending_first_send"
+                if target_resolution_source == "approved_destination_chat_id"
+                else "preserved_thread_follow_up"
+            ),
             "last_resolved_conversation_key": resolved_target.get("conversation_key"),
             "last_observed_message_at_utc": history_window_end_utc,
         })
@@ -1277,6 +1510,16 @@ async def execute_whatsapp_approved_outreach(
             "history_window_start_utc": history_window_start_utc,
             "history_window_end_utc": history_window_end_utc,
             "history_record_count": len(continuity_rows),
+            "continuity_mode": continuity_mode
+            or (
+                "cold_start_pending_first_send"
+                if target_resolution_source == "approved_destination_chat_id"
+                else "preserved_thread_follow_up"
+            ),
+            "target_resolution_source": target_resolution_source,
+            "approved_destination_chat_id_snapshot": approved_destination_chat_id,
+            "had_prior_preserved_thread": target_resolution_source
+            != "approved_destination_chat_id",
             "communication_skill_name": plan_row["communication_skill_name"],
             "last_error": None,
         })
@@ -1301,9 +1544,7 @@ async def execute_whatsapp_approved_outreach(
                 execution["communication_skill_name"] = draft_request[
                     "communication_skill_name"
                 ]
-                execution["communication_stage"] = draft_request[
-                    "communication_stage"
-                ]
+                execution["communication_stage"] = draft_request["communication_stage"]
                 execution["message_generation_mode"] = "skill_generated"
                 execution["draft_outcome"] = draft["draft_outcome"]
                 execution["outbound_message_text"] = draft["outbound_message_text"]
@@ -1349,6 +1590,80 @@ async def execute_whatsapp_approved_outreach(
                         _safe_instance_attr(send_result, "error")
                     )
 
+        if (
+            execution.get("execution_status") == "sent"
+            and execution.get("target_resolution_source")
+            == "approved_destination_chat_id"
+            and execution.get("outbound_message_text")
+        ):
+            cold_start_event_at_utc = utc_isoformat(utc_now())
+            _persist_cold_start_outbound_record(
+                approved_destination_chat_id_snapshot=str(
+                    execution.get("approved_destination_chat_id_snapshot")
+                ),
+                outbound_message_text=str(execution.get("outbound_message_text")),
+                message_id=_json_safe_string(execution.get("message_id")),
+                effective_event_at_utc=str(cold_start_event_at_utc),
+            )
+            persisted_fields = build_whatsapp_destination_fields(
+                str(execution.get("approved_destination_chat_id_snapshot") or "")
+            )
+            plan_target_row.update({
+                **_exact_selector_from_row({
+                    "conversation_key": persisted_fields.get("destination_key"),
+                    "destination_key": persisted_fields.get("destination_key"),
+                    "group_chat_id": None,
+                    "dm_counterparty_id": persisted_fields.get("dm_counterparty_id"),
+                }),
+                "target_resolution_source": "preserved_history",
+                "continuity_mode": "preserved_thread_follow_up",
+                "last_resolved_conversation_key": persisted_fields.get(
+                    "destination_key"
+                ),
+                "last_observed_message_at_utc": cold_start_event_at_utc,
+            })
+            execution.update({
+                "resolved_conversation_key": persisted_fields.get("destination_key"),
+                "resolved_destination_key": persisted_fields.get("destination_key"),
+                "resolved_destination_chat_id": persisted_fields.get(
+                    "destination_chat_id"
+                ),
+                "dm_counterparty_id": persisted_fields.get("dm_counterparty_id"),
+                "destination_context_type": persisted_fields.get(
+                    "destination_context_type"
+                ),
+                "destination_target_id": persisted_fields.get("destination_target_id"),
+                "history_window_start_utc": cold_start_event_at_utc,
+                "history_window_end_utc": cold_start_event_at_utc,
+                "history_record_count": 0,
+                "continuity_mode": "cold_start_first_send_completed",
+                "target_resolution_source": "approved_destination_chat_id",
+                "had_prior_preserved_thread": False,
+            })
+            resolved_target = {
+                "conversation_key": persisted_fields.get("destination_key"),
+                "destination_key": persisted_fields.get("destination_key"),
+                "group_chat_id": None,
+                "dm_counterparty_id": persisted_fields.get("dm_counterparty_id"),
+                "destination_context_type": persisted_fields.get(
+                    "destination_context_type"
+                ),
+                "destination_chat_id": persisted_fields.get("destination_chat_id"),
+                "destination_target_id": persisted_fields.get("destination_target_id"),
+            }
+            history_window_start_utc = cold_start_event_at_utc
+            history_window_end_utc = cold_start_event_at_utc
+            if (
+                run_window_start_utc is None
+                or history_window_start_utc < run_window_start_utc
+            ):
+                run_window_start_utc = history_window_start_utc
+            if (
+                run_window_end_utc is None
+                or history_window_end_utc > run_window_end_utc
+            ):
+                run_window_end_utc = history_window_end_utc
+
         observable_status = _observable_status_from_history_and_execution(
             continuity_rows,
             str(execution.get("execution_status") or ""),
@@ -1358,6 +1673,10 @@ async def execute_whatsapp_approved_outreach(
             row_uncertainties.append(
                 "observable status is bounded to preserved history before the next reply arrives"
             )
+            if execution.get("had_prior_preserved_thread") is False:
+                row_uncertainties.append(
+                    "execution began without prior preserved thread context"
+                )
         if execution.get("execution_status") == "handoff_required" and execution.get(
             "handoff_reason"
         ):
@@ -1367,10 +1686,13 @@ async def execute_whatsapp_approved_outreach(
         target_rows.append({
             "plan_target_id": plan_target_row["plan_target_id"],
             "resolved_target": resolved_target,
+            "continuity_mode": execution.get("continuity_mode"),
+            "had_prior_preserved_thread": execution.get("had_prior_preserved_thread"),
             "observable_status": observable_status,
             "status_basis": _status_basis_for_observable_status(observable_status),
             "latest_observed_message_at_utc": history_window_end_utc,
             "open_items": [],
+            "handoff_reason": execution.get("handoff_reason"),
             "uncertainties": row_uncertainties,
         })
         if execution["execution_status"] in {"blocked", "send_failed"}:
@@ -1382,24 +1704,46 @@ async def execute_whatsapp_approved_outreach(
     if run_window_end_utc is None:
         run_window_end_utc = run_window_start_utc
 
-    if completed_count == 0:
+    success_count = sum(
+        1
+        for item in executions
+        if item.get("execution_status") in {"sent", "no_send_required"}
+    )
+    blocked_or_handoff_count = sum(
+        1
+        for item in executions
+        if item.get("execution_status") in {"blocked", "handoff_required"}
+    )
+    send_failed_count = sum(
+        1 for item in executions if item.get("execution_status") == "send_failed"
+    )
+
+    if not target_rows:
         run["run_status"] = "blocked"
-        founder_summary = "WhatsApp approved outreach stayed blocked because none of the approved targets could be executed."
-        report_status = "failed"
-    elif failed_count == 0:
+        founder_summary = "WhatsApp approved outreach stayed blocked because no executable approved targets were available."
+        report_status = "no_targets"
+    elif success_count and failed_count == 0:
         run["run_status"] = "completed"
         founder_summary = (
             f"WhatsApp approved outreach executed {completed_count} approved target"
             f"{'s' if completed_count != 1 else ''} through isolated single-target steps and produced an evidence-bounded run report."
         )
         report_status = "ready"
-    elif failed_count < completed_count:
+    elif success_count and failed_count:
         run["run_status"] = "completed_with_failures"
         founder_summary = (
             f"WhatsApp approved outreach executed {completed_count} approved targets with {failed_count} isolated failure"
             f"{'s' if failed_count != 1 else ''}; the report stays bounded to preserved history plus explicit run metadata."
         )
         report_status = "partial"
+    elif blocked_or_handoff_count:
+        run["run_status"] = "blocked"
+        founder_summary = "WhatsApp approved outreach stayed blocked because none of the approved targets reached a send or no-send completion state."
+        report_status = "failed"
+    elif send_failed_count == len(executions):
+        run["run_status"] = "failed"
+        founder_summary = "WhatsApp approved outreach attempted the approved target set but every isolated target execution failed at send time."
+        report_status = "failed"
     else:
         run["run_status"] = "failed"
         founder_summary = "WhatsApp approved outreach attempted the approved target set but every isolated target execution failed or blocked."
@@ -1526,6 +1870,7 @@ def format_whatsapp_approved_outreach_result(result: dict[str, Any]) -> str:
         f"workflow_binding_id: {run.get('workflow_binding_id')}",
         f"trigger_source: {run.get('trigger_source')}",
         f"trigger_reference_id: {run.get('trigger_reference_id')}",
+        f"operator_ingress_surface: {run.get('operator_ingress_surface')}",
         f"operator_objective: {plan.get('operator_objective')}",
         f"run_status: {run.get('run_status')}",
         f"target_count: {run.get('target_count')}",
@@ -1535,6 +1880,10 @@ def format_whatsapp_approved_outreach_result(result: dict[str, Any]) -> str:
         f"communication_stage: {execution.get('communication_stage')}",
         f"draft_outcome: {execution.get('draft_outcome')}",
         f"execution_status: {execution.get('execution_status')}",
+        f"continuity_mode: {execution.get('continuity_mode')}",
+        f"target_resolution_source: {execution.get('target_resolution_source')}",
+        f"approved_destination_chat_id_snapshot: {execution.get('approved_destination_chat_id_snapshot')}",
+        f"had_prior_preserved_thread: {execution.get('had_prior_preserved_thread')}",
         f"destination_chat_id: {resolved_target.get('destination_chat_id')}",
         f"conversation_key: {resolved_target.get('conversation_key')}",
         f"destination_key: {resolved_target.get('destination_key')}",
@@ -1547,9 +1896,7 @@ def format_whatsapp_approved_outreach_result(result: dict[str, Any]) -> str:
         f"message_id: {execution.get('message_id')}",
     ])
     if execution.get("outbound_message_text"):
-        lines.append(
-            f"outbound_message_text: {execution.get('outbound_message_text')}"
-        )
+        lines.append(f"outbound_message_text: {execution.get('outbound_message_text')}")
     if execution.get("handoff_reason"):
         lines.append(f"handoff_reason: {execution.get('handoff_reason')}")
     if execution.get("last_error"):
@@ -1559,6 +1906,11 @@ def format_whatsapp_approved_outreach_result(result: dict[str, Any]) -> str:
             f"report_id: {report.get('report_id')}",
             f"report_status: {report.get('report_status')}",
             f"report_target_rows: {len(report.get('target_rows') or [])}",
+        ])
+        first_report_row = (report.get("target_rows") or [None])[0] or {}
+        lines.extend([
+            f"report_continuity_mode: {first_report_row.get('continuity_mode')}",
+            f"report_had_prior_preserved_thread: {first_report_row.get('had_prior_preserved_thread')}",
         ])
     if target_executions:
         lines.extend(["", "Target executions:"])
@@ -1574,6 +1926,7 @@ __all__ = [
     "WHATSAPP_OUTREACH_PLAN_WORKFLOW_BINDING_TYPE",
     "WHATSAPP_OUTREACH_STATE_SCHEMA_VERSION",
     "append_whatsapp_outreach_run_record",
+    "build_cli_chat_whatsapp_outreach_requests",
     "bind_whatsapp_outreach_plan_to_cron_job",
     "execute_whatsapp_approved_outreach",
     "format_whatsapp_approved_outreach_result",

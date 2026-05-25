@@ -111,6 +111,9 @@ def append_whatsapp_record(
 ) -> Path:
     path = whatsapp_daily_partition_path(effective_event_at, base_dir=base_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
+    record = dict(record)
+    if not record.get("record_sequence"):
+        record["record_sequence"] = next_whatsapp_record_sequence(effective_event_at)
     line = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
     with _APPEND_LOCK:
         with path.open("a", encoding="utf-8") as handle:
