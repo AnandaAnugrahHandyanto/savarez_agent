@@ -8179,6 +8179,30 @@ class GatewayRunner:
         # onto subsequent messages in the same session (issue #6508).
         if getattr(session_entry, "is_fresh_reset", False):
             session_entry.is_fresh_reset = False
+
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+            _platform = getattr(source, "platform", None)
+            _platform_value = _platform.value if hasattr(_platform, "value") else str(_platform or "")
+            _invoke_hook(
+                "post_gateway_session_resolved",
+                event=event,
+                source=source,
+                session_id=session_entry.session_id,
+                session_key=session_key,
+                platform=_platform_value,
+                chat_id=getattr(source, "chat_id", "") or "",
+                chat_type=getattr(source, "chat_type", "") or "",
+                user_id=getattr(source, "user_id", "") or "",
+                user_name=getattr(source, "user_name", "") or "",
+                is_new_session=bool(_is_new_session),
+                was_auto_reset=bool(getattr(session_entry, "was_auto_reset", False)),
+                reset_reason=getattr(session_entry, "auto_reset_reason", None) or "",
+            )
+        except Exception as exc:
+            logger.warning("post_gateway_session_resolved invocation failed: %s", exc)
+
         if _is_new_session:
             await self.hooks.emit("session:start", {
                 "platform": source.platform.value if source.platform else "",
