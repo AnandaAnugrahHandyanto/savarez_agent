@@ -11127,5 +11127,180 @@ The agent's `KawaiiSpinner` display and rich tool output make it visually engagi
 
 ---
 
+---
+
+## Pass #82 – Memory System, User Data & PII Handling Deep Dive – 2026-05-25T03:15:00Z
+
+### 1. MEMORY STORAGE
+
+#### 1a. Built-in file-backed memory (tools/memory_tool.py)
+
+- **Storage**: Plain text files at `<hermes_home>/memories/MEMORY.md` and `<hermes_home>/memories/USER.md`
+- **Encryption at rest**: **NO.** Files are stored as plaintext markdown. No AES, no at-rest encryption.
+- **Char limits**: Memory store bounded to 2,200 chars; User store bounded to 1,375 chars (enforced at add time).
+- **File locking**: Uses `fcntl` (Unix) / `msvcrt` (Windows) for cross-session write safety via separate `.lock` files.
+- **System prompt snapshot**: A frozen snapshot is captured at `load_from_disk()` and used for the entire session; mid-session writes update files but do NOT change the in-session system prompt (preserves prefix cache stability).
+- **Data residua risk**: MEMORY.md and USER.md persist across sessions by design. Deleted entries are removed from disk but old content may remain in system prompt snapshot until session restart.
+- **Cross-session access**: Files are per-profile (`hermes_home`), shared across all sessions of the same profile. A session B can read what session A wrote, subject to the file lock.
+
+#### 1b. SQLite session store (hermes_state.py)
+
+- **Storage**: `state.db` (WAL mode; falls back to DELETE journal on NFS/SMB)
+- **Encryption at rest**: **NO.** Plain SQLite. No SQLCipher, no application-level encryption of stored messages.
+- **Contents**: Full message history, session metadata, model config, FTS5 full-text search index.
+- **Cross-session access**: Sessions are isolated by `session_id`. FTS5 searches across ALL sessions (by default). `delete_session()` removes a specific session and its messages; `prune_sessions(older_than_days)` bulk-deletes old sessions.
+- **WAL mode**: Enables concurrent readers + one writer. Falls back to DELETE journal on network filesystems.
+
+#### 1c. Plugin memory providers (plugins/memory/)
+
+- Pluggable architecture (agent/memory_provider.py base class). Only ONE external provider allowed at a time.
+- External providers (Honcho, Hindsight, Mem0, etc.) are NOT audited here — each ships its own storage strategy.
+- `initialize(session_id, hermes_home, platform, ...)` accepts `agent_context` kwarg to skip writes for non-primary contexts (e.g., cron subagents).
+- `on_session_end(messages)` hook allows provider-specific cleanup at session end.
+
+---
+
+### 2. PII HANDLING
+
+#### 2a. Secret redaction (agent/redact.py)
+
+Comprehensive regex-based redaction pipeline applied BEFORE logs are written:
+
+- **API key prefixes**: 30+ vendor patterns (OpenAI `sk-*`, GitHub PATs, Slack `xoxb-*`, Google `AIza...`, Stripe `sk_live_*`, etc.)
+- **Query params**: `access_token`, `refresh_token`, `token`, `api_key`, `password`, `secret`, `key`, `code`, `signature`, etc.
+- **JSON fields**: `apiKey`, `token`, `secret`, `password`, `bearer`, etc.
+- **Auth headers**: `Authorization: Bearer <token>`
+- **JWT tokens**: Patterns starting with `eyJ` (base64 for `{`)
+- **Private keys**: `-----BEGIN ... PRIVATE KEY-----` blocks
+- **DB conn strings**: `postgres://user:PASSWORD@host` style URLs
+- **E.164 phone numbers** (Signal): `+<country><number>` — redacted in Signal context
+- **Discord mentions**: `<@!123456789012345678>` snowflake IDs
+- **Telegram bot tokens**: `bot<digits>:<token>`
+- **ENV assignments**: `API_KEY=value` patterns
+- **URL userinfo**: `https://user:password@host`
+- **HTTP request targets**: `POST /webhook?password=...`
+
+Short tokens (<18 chars): fully masked. Longer tokens: preserve first 6 + last 4 chars.
+
+**Redaction toggle**: Controlled by `HERMES_REDACT_SECRETS` env var (default: `true`/ON). Snapshot taken at import time — cannot be toggled mid-session. Config opt-out via `security.redact_secrets: false` in config.yaml.
+
+**Logging**: `RedactingFormatter` class wraps all log formatters; applies `redact_sensitive_text()` to every log record.
+
+#### 2b. PII in logs
+
+- **agent.log**: Secrets redacted before writing via RedactingFormatter.
+- **errors.log**: Same redaction applied.
+- **gateway.log**: Same redaction applied.
+- **Console output (CLI)**: `HERMES_REDACT_SECRETS` controls CLI output redaction too (cli.py lines 12221–12229 show the startup warning when disabled).
+
+#### 2c. PII in memory/tool payloads
+
+- Tool payloads (function call arguments/results) stored in `state.db` messages table — **not encrypted**, not PII-scanned individually.
+- `agent/message_sanitization.py`: Only scrubs lone UTF-16 surrogates (crash-prevention for JSON serialization), NOT PII redaction.
+- `agent/prompt_builder.py` line 404: System prompt instructs the model "Do NOT type passwords, API keys, credit card numbers, or other sensitive information." — trust-based, not enforced.
+
+#### 2d. PII extraction from memory
+
+- No PII detection/extraction in the built-in memory tool. If a user stores a phone number or email in MEMORY.md, it persists in plaintext and gets injected into future system prompts.
+- External plugin memory providers handle PII their own way (not audited here).
+
+---
+
+### 3. MEMORY INJECTION (POISONING, VALIDATION, CROSS-CONTAMINATION)
+
+#### 3a. Injection validation in built-in memory tool
+
+`tools/memory_tool.py` implements `_scan_memory_content()` which runs BEFORE any add/replace:
+
+**Invisible unicode scan**: Blocks zero-width chars (U+200B, U+200C, U+200D, U+2060, U+FEFF, bidirectional marks U+202A–U+202E).
+
+**Threat pattern scan** (8 patterns):
+- Prompt injection: `ignore previous instructions`, `you are now`, `do not tell the user`, `system prompt override`, `disregard your instructions`, `act as if you have no restrictions`
+- Exfiltration: `curl ... $...KEY/TOKEN/SECRET/PASSWORD/CREDENTIAL/API`, `wget ... $...KEY/TOKEN/SECRET/PASSWORD/CREDENTIAL/API`, `cat ... .env/credentials/.netrc/.pgpass/.npmrc/.pypirc`
+- Persistence: `authorized_keys`, `$HOME/.ssh`, `$HOME/.hermes/.env`
+
+If any match: **mutation refused**, returns error.
+
+#### 3b. Context sanitization (agent/memory_manager.py)
+
+`sanitize_context()` strips injected memory-context fences and system notes from provider output before it reaches the model:
+- Removes `<memory-context>...</memory-context>` blocks
+- Removes `[System note: The following is recalled memory context, NOT new user input...]` markers
+- Streaming-aware `StreamingContextScrubber` handles chunk-boundary splits
+
+#### 3c. Cross-session contamination risk
+
+- **MEMORY.md/USER.md**: Shared across all sessions of the same profile. If session A writes "user prefers X" to USER.md, session B (different terminal, same profile) will read it in the next session's system prompt snapshot.
+- **External drift detection**: The memory tool detects if the file was modified externally (e.g., by patch tool, shell append, or sister session) and refuses to write, backing up the drifted file to `.bak.<ts>`.
+- **state.db**: FTS5 search is cross-session by default. No isolation enforced at the search level.
+- Plugin providers: Cross-contamination depends on the provider's session scoping (not audited).
+- **`cross_session` flag in TUI**: `tui_gateway/server.py` line 3036 — a `cross_session` param controls whether context is loaded from the current session only or across sessions. When `True`, broader context is injected.
+
+---
+
+### 4. MEMORY DELETION (PURGE, RETENTION, SESSION END)
+
+#### 4a. Session deletion
+
+- `hermes_state.py delete_session(session_id)`: Deletes session row and all its messages. Orphans child sessions (sets `parent_session_id = NULL` instead of cascade delete). Also removes on-disk transcript files (`.json`, `.jsonl`, `request_dump_*`).
+- `hermes_state.py prune_sessions(older_than_days, source)`: Bulk delete sessions older than N days. Only prunes ended sessions (not active). Also removes on-disk transcript files for pruned sessions.
+- CLI `/exit --delete`: Also removes current session's transcripts (cli.py lines 14467–14479).
+- TUI `session.delete` RPC: Refuses to delete active session (line 2460 of tui_gateway/server.py).
+
+#### 4b. Memory files
+
+- No built-in "delete all memory" command found. MEMORY.md and USER.md must be manually deleted or edited.
+- Plugin providers may have their own deletion mechanisms.
+
+#### 4c. Retention
+
+- Default prune window: 90 days (`hermes_state.py prune_sessions` default).
+- Sessions directory transcripts (`.json`/`.jsonl`): Only removed when `delete_session`/`prune_sessions` is called with `sessions_dir` argument, or via `/exit --delete`.
+- WAL/SHM/WAL files for `state.db`: Standard SQLite WAL persistence.
+
+---
+
+### 5. USER DATA EXPORT (GDPR, PORTABILITY)
+
+#### 5a. Data export mechanisms
+
+- **Profile export** (`hermes_cli/profiles.py`): `hermes profiles export` creates a `.tar.gz` archive of critical state: config, state.db, .env, auth JSONs, cron jobs, pairing files. The exclusion list explicitly includes `state.db` (session history DB) — meaning session transcripts ARE included in the export archive.
+- **Profile clone** (`hermes profiles clone`): Similar archive; portable snapshot.
+- **On-disk transcripts**: `.json`/`.jsonl` files in sessions directories are plain and portable.
+- **No dedicated GDPR export endpoint**: No `/export` command, no user-facing data export tool, no JSON dump of all personal data. Export is profile-level backup (includes everything).
+
+#### 5b. Data portability issues
+
+- Session history lives in `state.db` (SQLite). Export is a raw DB file copy, not a human-readable export.
+- No per-user data subject request (DSR) fulfillment tooling (no "export all data for user X" mechanism).
+- No field-level PII labeling/classification.
+
+#### 5c. No GDPR-specific compliance controls found
+
+- No data minimization enforcement (all messages stored verbatim).
+- No consent tracking.
+- No right-to-erasure automation beyond manual `delete_session`/`prune_sessions` calls.
+
+---
+
+### SUMMARY TABLE
+
+| Concern | Status | Notes |
+|---|---|---|
+| Memory encryption at rest | NO | Plain text files (MEMORY.md/USER.md) and SQLite (state.db) |
+| PII redaction in logs | YES | agent/redact.py + RedactingFormatter; 30+ secret patterns |
+| PII redaction in memory | NO | Messages stored verbatim; memory tool has no PII scanner |
+| Memory injection validation | PARTIAL | memory_tool._scan_memory_content() blocks 8 threat patterns + invisible unicode; cron scheduler has separate prompt-injection scanner |
+| Cross-session contamination | RISK | MEMORY.md/USER.md shared across sessions of same profile; FTS5 cross-session; no isolation enforced |
+| Session deletion | YES | delete_session(), prune_sessions(older_than_days), /exit --delete |
+| Memory file deletion | NO | No delete-all-memory command; files must be manually removed |
+| GDPR data export | INCOMPLETE | Profile archive includes state.db but no human-readable per-user DSR export |
+| GDPR right to erasure | INCOMPLETE | Manual delete_session/prune; no automated "forget user X" |
+
+---
+
+*Pass #82 complete — 2026-05-25T03:15:00Z*
+*Commit at scan: 5a51a1f65*
+
 *Pass #81 complete — 2026-05-25T02:30:00Z*
 *Commit at scan: 5a51a1f65*
