@@ -658,6 +658,13 @@ class Task:
     # set the env var. Lets clients render a per-session board without
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
+    # Production Workflow v1 — production order reference. NULL for tasks
+    # that are not part of a production order. Introduced in Slice 4.
+    production_order_id: Optional[str] = None
+    # Production Workflow v1 — current state machine value (e.g.
+    # ``"PRODUCTION_ORDER_CREATED"``). NULL for non-production-order
+    # tasks. Introduced in Slice 4.
+    current_state: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -726,6 +733,12 @@ class Task:
             ),
             session_id=(
                 row["session_id"] if "session_id" in keys else None
+            ),
+            production_order_id=(
+                row["production_order_id"] if "production_order_id" in keys else None
+            ),
+            current_state=(
+                row["current_state"] if "current_state" in keys else None
             ),
         )
 
@@ -1192,6 +1205,7 @@ def connect(
                 # stale PRAGMA snapshots during gateway startup.
                 conn.executescript(SCHEMA_SQL)
                 _migrate_add_optional_columns(conn)
+                _migrate_production_order_tables(conn)
                 _INITIALIZED_PATHS.add(resolved)
     except Exception:
         conn.close()
@@ -1464,6 +1478,40 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "UPDATE task_events SET kind = ? WHERE kind = ?",
             (new, old),
         )
+
+    # Slice 4 — Production Workflow v1 runtime bridge columns.
+    if "production_order_id" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "production_order_id", "production_order_id TEXT"
+        )
+    if "current_state" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "current_state", "current_state TEXT"
+        )
+
+
+def _migrate_production_order_tables(conn: sqlite3.Connection) -> None:
+    """Create the ``production_order_events`` table if missing.
+
+    Called by :func:`connect` after the standard schema init so the table
+    is available on every DB open. Idempotent: uses ``IF NOT EXISTS``.
+    This is a **separate** table from ``task_events`` to avoid schema
+    mismatch (the field sets differ).
+    """
+    conn.execute("""\
+CREATE TABLE IF NOT EXISTS production_order_events (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    production_order_id TEXT NOT NULL,
+    timestamp           INTEGER NOT NULL,
+    event_type          TEXT NOT NULL,
+    from_state          TEXT,
+    to_state            TEXT,
+    owner_profile       TEXT,
+    kanban_card_id      TEXT,
+    result              TEXT,
+    error               TEXT,
+    next_action         TEXT
+);""")
 
 
 @contextlib.contextmanager
