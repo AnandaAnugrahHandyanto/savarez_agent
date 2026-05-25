@@ -481,7 +481,15 @@ def guess_category(path: Path) -> Optional[str]:
         }:
             return None
         if top == "cron" or top == "cronjobs":
-            return "cron-output"
+            # Only ``cron/output/**`` holds disposable run artifacts. The
+            # top level of ``cron/`` holds durable scheduler state
+            # (``jobs.json``, ``.tick.lock``) — auto-tracking those as
+            # ``cron-output`` makes the registry eligible for deletion
+            # during the next quick cleanup, which silently wipes all
+            # scheduled jobs (#32164).
+            if len(rel.parts) >= 2 and rel.parts[1] == "output":
+                return "cron-output"
+            return None
         if top == "cache":
             return "temp"
     except ValueError:

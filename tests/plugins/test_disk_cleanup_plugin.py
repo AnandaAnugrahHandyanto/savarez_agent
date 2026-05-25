@@ -127,13 +127,46 @@ class TestGuessCategory:
         # Even though it matches test_* pattern, logs/ is excluded.
         assert dg.guess_category(p) is None
 
-    def test_cron_subtree_categorised(self, _isolate_env):
+    def test_cron_output_subtree_categorised(self, _isolate_env):
+        # Only ``cron/output/**`` artifacts are disposable cron-output;
+        # tested via a typical per-job run artifact.
+        dg = _load_lib()
+        output_dir = _isolate_env / "cron" / "output" / "myjob"
+        output_dir.mkdir(parents=True)
+        p = output_dir / "run.md"
+        p.write_text("x")
+        assert dg.guess_category(p) == "cron-output"
+
+    def test_cron_registry_not_classified(self, _isolate_env):
+        # Regression for #32164: the live scheduler registry must never
+        # be auto-tracked as ``cron-output`` or quick cleanup will delete
+        # it and Hermes will then read missing-registry as zero jobs.
         dg = _load_lib()
         cron_dir = _isolate_env / "cron"
         cron_dir.mkdir()
-        p = cron_dir / "job_output.md"
-        p.write_text("x")
-        assert dg.guess_category(p) == "cron-output"
+        p = cron_dir / "jobs.json"
+        p.write_text("[]")
+        assert dg.guess_category(p) is None
+
+    def test_cron_tick_lock_not_classified(self, _isolate_env):
+        # ``cron/.tick.lock`` is also durable control-plane state; same
+        # invariant as ``jobs.json``.
+        dg = _load_lib()
+        cron_dir = _isolate_env / "cron"
+        cron_dir.mkdir()
+        p = cron_dir / ".tick.lock"
+        p.write_text("")
+        assert dg.guess_category(p) is None
+
+    def test_cronjobs_registry_not_classified(self, _isolate_env):
+        # ``cronjobs`` is the legacy alias for the same top-level dir;
+        # the same registry-preservation invariant must hold.
+        dg = _load_lib()
+        cron_dir = _isolate_env / "cronjobs"
+        cron_dir.mkdir()
+        p = cron_dir / "jobs.json"
+        p.write_text("[]")
+        assert dg.guess_category(p) is None
 
     def test_ordinary_file_returns_none(self, _isolate_env):
         dg = _load_lib()
