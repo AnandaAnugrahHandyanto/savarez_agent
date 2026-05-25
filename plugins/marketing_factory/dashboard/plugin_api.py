@@ -56,6 +56,16 @@ class AutoGenerateBody(BaseModel):
     reviewer: str = "dashboard"
 
 
+class ImageLibraryBody(BaseModel):
+    url: str
+    reviewer: str = "dashboard"
+
+
+class StyleGuideBody(BaseModel):
+    style_guide: str
+    reviewer: str = "dashboard"
+
+
 class AppCreateBody(BaseModel):
     slug: str
     name: str
@@ -463,4 +473,36 @@ async def set_channel_mode(app_slug: str, channel: str, body: ChannelModeBody):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"result": result, "overview": _overview(store)}
+
+
+@router.post("/apps/{app_slug}/image-library")
+async def add_image_to_library_endpoint(app_slug: str, body: ImageLibraryBody):
+    store = _store()
+    try:
+        result = store.add_image_to_library(app_slug, body.url, reviewer=body.reviewer)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"result": result, "overview": _overview(store)}
+
+
+@router.delete("/apps/{app_slug}/image-library")
+async def remove_image_from_library_endpoint(app_slug: str, url: str):
+    store = _store()
+    try:
+        result = store.remove_image_from_library(app_slug, url)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"result": result, "overview": _overview(store)}
+
+
+@router.post("/apps/{app_slug}/image-style-guide")
+async def set_image_style_guide_endpoint(app_slug: str, body: StyleGuideBody):
+    store = _store()
+    try:
+        result = store.set_image_style_guide(app_slug, body.style_guide, reviewer=body.reviewer)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"result": result, "overview": _overview(store)}
