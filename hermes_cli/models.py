@@ -397,6 +397,19 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
     ],
+    # Eden AI: meta-gateway. The live /v3/models catalog (349+ models) is
+    # used at runtime; this curated list is the offline fallback only.
+    # Anthropic ids use the hyphen form Eden AI stores (dot form returns 400).
+    "edenai": [
+        "anthropic/claude-opus-4-6",
+        "anthropic/claude-sonnet-4-6",
+        "anthropic/claude-haiku-4-5",
+        "openai/gpt-4o",
+        "openai/gpt-4o-mini",
+        "google/gemini-2.0-flash",
+        "mistral/mistral-large-latest",
+        "cohere/command-r-plus",
+    ],
     # Alibaba DashScope Coding platform (coding-intl) — default endpoint.
     # Supports Qwen models + third-party providers (GLM, Kimi, MiniMax).
     # Users with classic DashScope keys should override DASHSCOPE_BASE_URL
@@ -953,6 +966,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("kilocode",       "Kilo Code",                "Kilo Code (Kilo Gateway API)"),
     ProviderEntry("opencode-zen",   "OpenCode Zen",             "OpenCode Zen (35+ curated models, pay-as-you-go)"),
     ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (open models, $10/month subscription)"),
+    ProviderEntry("edenai",         "Eden AI",                  "Eden AI (drop-in for OpenAI; 349 models across 21 underlying providers)"),
     ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek — IAM or API key)"),
     ProviderEntry("azure-foundry",  "Azure Foundry",            "Azure Foundry (OpenAI-style or Anthropic-style endpoint — your Azure AI deployment)"),
     ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway"),
@@ -1029,6 +1043,9 @@ _PROVIDER_ALIASES = {
     "aliyun": "alibaba",
     "qwen": "alibaba",
     "alibaba-cloud": "alibaba",
+    "eden": "edenai",
+    "eden-ai": "edenai",
+    "eden_ai": "edenai",
     "qwen-portal": "qwen-oauth",
     "gemini-cli": "google-gemini-cli",
     "gemini-oauth": "google-gemini-cli",
@@ -1293,6 +1310,28 @@ def ai_gateway_model_ids(*, force_refresh: bool = False) -> list[str]:
     return [mid for mid, _ in fetch_ai_gateway_models(force_refresh=force_refresh)]
 
 
+def fetch_edenai_models() -> list[tuple[str, str]]:
+    """Return Eden AI's catalog as (model_id, description) tuples.
+
+    Eden AI is a meta-gateway exposing 349+ models across 21 underlying
+    providers. Live `/v3/models` is the source of truth when an API key is
+    configured; otherwise we fall back to the curated headline list in
+    ``_PROVIDER_MODELS["edenai"]``. Description is empty — Eden AI's catalog
+    doesn't expose the same per-model annotation OpenRouter does.
+    """
+    try:
+        from hermes_cli.auth import resolve_api_key_provider_credentials
+
+        creds = resolve_api_key_provider_credentials("edenai")
+        api_key = str(creds.get("api_key") or "").strip()
+        base_url = str(creds.get("base_url") or "").strip()
+        if api_key and base_url:
+            live = fetch_api_models(api_key, base_url)
+            if live:
+                return [(mid, "") for mid in live]
+    except Exception:
+        pass
+    return [(mid, "") for mid in _PROVIDER_MODELS.get("edenai", [])]
 
 
 # ---------------------------------------------------------------------------
@@ -2245,6 +2284,19 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             from hermes_cli.auth import resolve_api_key_provider_credentials
 
             creds = resolve_api_key_provider_credentials("gmi")
+            api_key = str(creds.get("api_key") or "").strip()
+            base_url = str(creds.get("base_url") or "").strip()
+            if api_key and base_url:
+                live = fetch_api_models(api_key, base_url)
+                if live:
+                    return live
+        except Exception:
+            pass
+    if normalized == "edenai":
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+
+            creds = resolve_api_key_provider_credentials("edenai")
             api_key = str(creds.get("api_key") or "").strip()
             base_url = str(creds.get("base_url") or "").strip()
             if api_key and base_url:

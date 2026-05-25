@@ -387,6 +387,16 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("OPENCODE_ZEN_API_KEY",),
         base_url_env_var="OPENCODE_ZEN_BASE_URL",
     ),
+    "edenai": ProviderConfig(
+        id="edenai",
+        name="Eden AI",
+        auth_type="api_key",
+        # Eden AI is a meta-gateway: 349+ models across 21+ underlying providers
+        # (Anthropic, OpenAI, Google, Cohere, Mistral, ...) under one OpenAI-shape API.
+        inference_base_url="https://api.edenai.run/v3",
+        api_key_env_vars=("EDENAI_API_KEY",),
+        base_url_env_var="EDENAI_BASE_URL",
+    ),
     "opencode-go": ProviderConfig(
         id="opencode-go",
         name="OpenCode Go",
@@ -1433,6 +1443,7 @@ def resolve_provider(
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
         "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
         "opencode": "opencode-zen", "zen": "opencode-zen",
+        "eden": "edenai", "eden-ai": "edenai", "eden_ai": "edenai",
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth", "google-gemini-cli": "google-gemini-cli", "gemini-cli": "google-gemini-cli", "gemini-oauth": "google-gemini-cli",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",

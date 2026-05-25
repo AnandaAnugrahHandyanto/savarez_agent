@@ -63,6 +63,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "mimo", "xiaomi-mimo",
     "tencent", "tokenhub", "tencent-cloud", "tencentmaas",
     "arcee-ai", "arceeai",
+    "edenai", "eden", "eden-ai", "eden_ai",
     "gmi-cloud", "gmicloud",
     "xai", "x-ai", "x.ai", "grok",
     "nvidia", "nim", "nvidia-nim", "nemotron",
@@ -376,6 +377,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.novita.ai": "novita",
     "tokenhub.tencentmaas.com": "tencent-tokenhub",
     "ollama.com": "ollama-cloud",
+    "api.edenai.run": "edenai",
 }
 
 # Auto-extend with hostnames derived from provider profiles.
