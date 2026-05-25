@@ -4,6 +4,7 @@ All functions are stateless. AIAgent._build_system_prompt() calls these to
 assemble pieces, then combines them with memory and ephemeral prompts.
 """
 
+import contextvars
 import json
 import logging
 import os
@@ -27,6 +28,10 @@ from agent.skill_utils import (
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
+
+_SCOPED_SKILL_INDEX_NAMES: contextvars.ContextVar[tuple[str, ...] | None] = (
+    contextvars.ContextVar("hermes_scoped_skill_index_names", default=None)
+)
 
 # ---------------------------------------------------------------------------
 # Context file scanning — detect prompt injection / promptware in AGENTS.md,
@@ -924,12 +929,84 @@ def _build_snapshot_entry(
         "description": description,
         "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
+        "related_skills": sorted(_extract_related_skill_names(frontmatter)),
     }
 
 
 # =========================================================================
 # Skills index
 # =========================================================================
+
+def _normalize_skill_name_values(values) -> set[str]:
+    if values is None:
+        return set()
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, (list, tuple, set, frozenset)):
+        return set()
+
+    names: set[str] = set()
+    for value in values:
+        if value is None:
+            continue
+        for part in str(value).split(","):
+            name = part.strip().strip("'\"")
+            if name:
+                names.add(name)
+    return names
+
+
+def _extract_related_skill_names(frontmatter: dict) -> set[str]:
+    names = _normalize_skill_name_values(frontmatter.get("related_skills"))
+    metadata = frontmatter.get("metadata")
+    if isinstance(metadata, dict):
+        hermes = metadata.get("hermes")
+        if isinstance(hermes, dict):
+            names.update(_normalize_skill_name_values(hermes.get("related_skills")))
+    return names
+
+
+def set_scoped_skill_index_names(skill_names) -> contextvars.Token:
+    """Scope the pre-rendered skill index for the current context."""
+    names = tuple(sorted(_normalize_skill_name_values(skill_names)))
+    return _SCOPED_SKILL_INDEX_NAMES.set(names or None)
+
+
+def reset_scoped_skill_index_names(token: contextvars.Token) -> None:
+    _SCOPED_SKILL_INDEX_NAMES.reset(token)
+
+
+def _entry_skill_names(entry: dict) -> set[str]:
+    return {
+        str(name).strip()
+        for name in (entry.get("frontmatter_name"), entry.get("skill_name"))
+        if str(name).strip()
+    }
+
+
+def _expand_scoped_skill_names(
+    scoped_skill_names: set[str],
+    skill_entries: list[dict],
+) -> set[str]:
+    """Include scoped skills plus their transitive related_skills references."""
+    entries_by_name: dict[str, dict] = {}
+    for entry in skill_entries:
+        for name in _entry_skill_names(entry):
+            entries_by_name.setdefault(name, entry)
+
+    expanded = set(scoped_skill_names)
+    pending = list(scoped_skill_names)
+    while pending:
+        current = pending.pop()
+        entry = entries_by_name.get(current)
+        if not entry:
+            continue
+        for related in _normalize_skill_name_values(entry.get("related_skills")):
+            if related not in expanded:
+                expanded.add(related)
+                pending.append(related)
+    return expanded
+
 
 def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
     """Read a SKILL.md once and return platform compatibility, frontmatter, and description.
@@ -984,6 +1061,7 @@ def _skill_should_show(
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
+    bound_skill_names=None,
 ) -> str:
     """Build a compact skill index for the system prompt.
 
@@ -1005,6 +1083,12 @@ def build_skills_system_prompt(
     if not skills_dir.exists() and not external_dirs:
         return ""
 
+    if bound_skill_names is None:
+        scoped_skill_names = set(_SCOPED_SKILL_INDEX_NAMES.get() or ())
+    else:
+        scoped_skill_names = _normalize_skill_name_values(bound_skill_names)
+    scoped_skill_names = scoped_skill_names or None
+
     # ── Layer 1: in-process LRU cache ─────────────────────────────────
     # Include the resolved platform so per-platform disabled-skill lists
     # produce distinct cache entries (gateway serves multiple platforms).
@@ -1022,6 +1106,7 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        tuple(sorted(scoped_skill_names or set())),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1030,10 +1115,21 @@ def build_skills_system_prompt(
             return cached
 
     # ── Layer 2: disk snapshot ────────────────────────────────────────
-    snapshot = _load_skills_snapshot(skills_dir)
+    # Scoped cron prompts need fresh frontmatter so related_skills expansion
+    # works even when an older snapshot predates that metadata field.
+    snapshot = None if scoped_skill_names else _load_skills_snapshot(skills_dir)
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     category_descriptions: dict[str, str] = {}
+    visible_skill_entries: list[dict] = []
+
+    def add_visible_skill(entry: dict) -> None:
+        if scoped_skill_names:
+            visible_skill_entries.append(entry)
+        else:
+            skills_by_category.setdefault(entry["category"], []).append(
+                (entry["frontmatter_name"], entry["description"])
+            )
 
     if snapshot is not None:
         # Fast path: use pre-parsed metadata from disk
@@ -1054,9 +1150,11 @@ def build_skills_system_prompt(
                 available_toolsets,
             ):
                 continue
-            skills_by_category.setdefault(category, []).append(
-                (frontmatter_name, entry.get("description", ""))
-            )
+            entry = dict(entry)
+            entry["category"] = category
+            entry["frontmatter_name"] = frontmatter_name
+            entry["description"] = entry.get("description", "")
+            add_visible_skill(entry)
         category_descriptions = {
             str(k): str(v)
             for k, v in (snapshot.get("category_descriptions") or {}).items()
@@ -1079,9 +1177,7 @@ def build_skills_system_prompt(
                 available_toolsets,
             ):
                 continue
-            skills_by_category.setdefault(entry["category"], []).append(
-                (entry["frontmatter_name"], entry["description"])
-            )
+            add_visible_skill(entry)
 
         # Read category-level DESCRIPTION.md files
         for desc_file in iter_skill_index_files(skills_dir, "DESCRIPTION.md"):
@@ -1109,9 +1205,13 @@ def build_skills_system_prompt(
     # and typically small).  Local skills already in skills_by_category take
     # precedence: we track seen names and skip duplicates from external dirs.
     seen_skill_names: set[str] = set()
-    for cat_skills in skills_by_category.values():
-        for name, _desc in cat_skills:
-            seen_skill_names.add(name)
+    if scoped_skill_names:
+        for entry in visible_skill_entries:
+            seen_skill_names.update(_entry_skill_names(entry))
+    else:
+        for cat_skills in skills_by_category.values():
+            for name, _desc in cat_skills:
+                seen_skill_names.add(name)
 
     for ext_dir in external_dirs:
         if not ext_dir.exists():
@@ -1135,9 +1235,7 @@ def build_skills_system_prompt(
                 ):
                     continue
                 seen_skill_names.add(frontmatter_name)
-                skills_by_category.setdefault(entry["category"], []).append(
-                    (frontmatter_name, entry["description"])
-                )
+                add_visible_skill(entry)
             except Exception as e:
                 logger.debug("Error reading external skill %s: %s", skill_file, e)
 
@@ -1154,6 +1252,17 @@ def build_skills_system_prompt(
                 category_descriptions.setdefault(cat, str(cat_desc).strip().strip("'\""))
             except Exception as e:
                 logger.debug("Could not read external skill description %s: %s", desc_file, e)
+
+    if scoped_skill_names:
+        expanded_names = _expand_scoped_skill_names(
+            scoped_skill_names,
+            visible_skill_entries,
+        )
+        for entry in visible_skill_entries:
+            if _entry_skill_names(entry) & expanded_names:
+                skills_by_category.setdefault(entry["category"], []).append(
+                    (entry["frontmatter_name"], entry["description"])
+                )
 
     if not skills_by_category:
         result = ""

@@ -1001,6 +1001,17 @@ def _parse_wake_gate(script_output: str) -> bool:
     return gate.get("wakeAgent", True) is not False
 
 
+def _job_skill_names(job: dict) -> list[str]:
+    skills = job.get("skills")
+    if skills is None:
+        legacy = job.get("skill")
+        skills = [legacy] if legacy else []
+    elif isinstance(skills, str):
+        skills = [skills]
+
+    return [str(name).strip() for name in skills if str(name).strip()]
+
+
 def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first.
 
@@ -1013,7 +1024,6 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             (if any) runs inline as before.
     """
     prompt = str(job.get("prompt") or "")
-    skills = job.get("skills")
 
     # Run data-collection script if configured, inject output as context.
     script_path = job.get("script")
@@ -1103,13 +1113,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         "findings normally, or say [SILENT] and nothing more.]\n\n"
     )
     prompt = cron_hint + prompt
-    if skills is None:
-        legacy = job.get("skill")
-        skills = [legacy] if legacy else []
-    elif isinstance(skills, str):
-        skills = [skills]
-
-    skill_names = [str(name).strip() for name in skills if str(name).strip()]
+    skill_names = _job_skill_names(job)
     if not skill_names:
         return _scan_assembled_cron_prompt(prompt, job)
 
@@ -1381,6 +1385,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     logger.info("Prompt: %s", prompt[:100])
 
     agent = None
+    _scoped_skill_index_token = None
 
     # Mark this as a cron session so the approval system can apply cron_mode.
     # This env var is process-wide and persists for the lifetime of the
@@ -1451,6 +1456,11 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
 
     try:
+        _bound_skill_names = _job_skill_names(job)
+        if _bound_skill_names:
+            from agent.prompt_builder import set_scoped_skill_index_names
+            _scoped_skill_index_token = set_scoped_skill_index_names(_bound_skill_names)
+
         # Re-read .env and config.yaml fresh every run so provider/key
         # changes take effect without a gateway restart.
         from dotenv import load_dotenv
@@ -1811,6 +1821,12 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         clear_session_vars(_ctx_tokens)
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
+        if _scoped_skill_index_token is not None:
+            try:
+                from agent.prompt_builder import reset_scoped_skill_index_names
+                reset_scoped_skill_index_names(_scoped_skill_index_token)
+            except Exception as e:
+                logger.debug("Job '%s': failed to reset scoped skill index: %s", job_id, e)
         if _session_db:
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")

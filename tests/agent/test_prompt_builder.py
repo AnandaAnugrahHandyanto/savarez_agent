@@ -266,6 +266,99 @@ class TestBuildSkillsSystemPrompt:
         assert "Debug Python scripts" in result
         assert "available_skills" in result
 
+    def test_bound_skills_scope_index(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        bound_dir = tmp_path / "skills" / "feeds" / "freshrss-reader"
+        bound_dir.mkdir(parents=True)
+        (bound_dir / "SKILL.md").write_text(
+            "---\nname: freshrss-reader\ndescription: Read feed entries\n---\n"
+        )
+        other_dir = tmp_path / "skills" / "web" / "source-crawler"
+        other_dir.mkdir(parents=True)
+        (other_dir / "SKILL.md").write_text(
+            "---\nname: source-crawler\ndescription: Crawl source URLs\n---\n"
+        )
+
+        result = build_skills_system_prompt(bound_skill_names=["freshrss-reader"])
+
+        assert "freshrss-reader" in result
+        assert "Read feed entries" in result
+        assert "source-crawler" not in result
+        assert "Crawl source URLs" not in result
+
+    def test_empty_bound_skills_keep_full_index(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for category, name in [("feeds", "freshrss-reader"), ("web", "source-crawler")]:
+            skill_dir = tmp_path / "skills" / category / name
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {name} description\n---\n"
+            )
+
+        result = build_skills_system_prompt(bound_skill_names=[])
+
+        assert "freshrss-reader" in result
+        assert "source-crawler" in result
+
+    def test_bound_skill_includes_related_skills(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        primary = tmp_path / "skills" / "feeds" / "freshrss-reader"
+        primary.mkdir(parents=True)
+        (primary / "SKILL.md").write_text(
+            "---\n"
+            "name: freshrss-reader\n"
+            "description: Read feed entries\n"
+            "metadata:\n"
+            "  hermes:\n"
+            "    related_skills: [source-crawler]\n"
+            "---\n"
+        )
+        related = tmp_path / "skills" / "web" / "source-crawler"
+        related.mkdir(parents=True)
+        (related / "SKILL.md").write_text(
+            "---\nname: source-crawler\ndescription: Crawl source URLs\n---\n"
+        )
+        unrelated = tmp_path / "skills" / "mail" / "newsletter-reader"
+        unrelated.mkdir(parents=True)
+        (unrelated / "SKILL.md").write_text(
+            "---\nname: newsletter-reader\ndescription: Read newsletters\n---\n"
+        )
+
+        result = build_skills_system_prompt(bound_skill_names=["freshrss-reader"])
+
+        assert "freshrss-reader" in result
+        assert "source-crawler" in result
+        assert "newsletter-reader" not in result
+
+    def test_context_scoped_skills_do_not_leak_after_reset(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for category, name in [("feeds", "freshrss-reader"), ("web", "source-crawler")]:
+            skill_dir = tmp_path / "skills" / category / name
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {name} description\n---\n"
+            )
+
+        from agent.prompt_builder import (
+            reset_scoped_skill_index_names,
+            set_scoped_skill_index_names,
+        )
+
+        token = set_scoped_skill_index_names(["freshrss-reader"])
+        try:
+            scoped = build_skills_system_prompt()
+            explicit_empty = build_skills_system_prompt(bound_skill_names=[])
+        finally:
+            reset_scoped_skill_index_names(token)
+        unscoped = build_skills_system_prompt()
+
+        assert "freshrss-reader" in scoped
+        assert "source-crawler" not in scoped
+        assert "freshrss-reader" in explicit_empty
+        assert "source-crawler" in explicit_empty
+        assert "freshrss-reader" in unscoped
+        assert "source-crawler" in unscoped
+
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cat_dir = tmp_path / "skills" / "tools"
@@ -1192,6 +1285,4 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
-
 
