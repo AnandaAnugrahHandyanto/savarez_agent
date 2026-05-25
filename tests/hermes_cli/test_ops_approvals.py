@@ -224,6 +224,51 @@ def test_approval_api_lists_audit_events(_isolate_hermes_home):
     assert all(event["approval_id"] == created["id"] for event in events)
 
 
+def test_approval_summary_counts_pending_and_generates_review_text(_isolate_hermes_home):
+    from hermes_cli.ops_approvals import ApprovalStore
+
+    store = ApprovalStore()
+    pending = store.propose_from_context(_valid_request(
+        title="Reload dashboard",
+        risk_label="Live-service",
+        source_surface="discord",
+        source_ref="thread:ops",
+    ))
+    rejected = store.propose_from_context(_valid_request(title="Old request", risk_label="Draft-only"))
+    store.decide(rejected["id"], "rejected", decided_by="Travis")
+
+    summary = store.summary()
+
+    assert summary["pending_count"] == 1
+    assert summary["total_count"] == 2
+    assert summary["blocked_execution"] is True
+    assert summary["pending"][0]["id"] == pending["id"]
+    assert "Reload dashboard" in summary["review_text"]
+    assert "No action has been executed" in summary["review_text"]
+
+
+def test_approval_api_summary_endpoint(_isolate_hermes_home):
+    try:
+        from starlette.testclient import TestClient
+    except ImportError:
+        pytest.skip("fastapi/starlette not installed")
+
+    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+    client = TestClient(app)
+    client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+    created = client.post("/api/ops/approvals/propose", json=_valid_request(title="Approve dashboard reload")).json()
+
+    resp = client.get("/api/ops/approvals/summary")
+
+    assert resp.status_code == 200
+    summary = resp.json()
+    assert summary["pending_count"] == 1
+    assert summary["pending"][0]["id"] == created["id"]
+    assert "Approve dashboard reload" in summary["review_text"]
+    assert summary["blocked_execution"] is True
+
+
 def test_approval_api_records_decision_but_has_no_execute_route(_isolate_hermes_home):
     try:
         from starlette.testclient import TestClient

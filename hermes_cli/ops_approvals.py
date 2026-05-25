@@ -171,6 +171,30 @@ class ApprovalStore:
             events.append(event)
         return events
 
+    def summary(self) -> Dict[str, Any]:
+        items = self.list()
+        pending = [item for item in items if item.get("status") == "pending"]
+        lines = [
+            f"Pending Jenny approvals: {len(pending)}.",
+            "No action has been executed from this approval inbox.",
+        ]
+        for idx, item in enumerate(pending[:10], start=1):
+            lines.append(
+                f"{idx}. [{item.get('risk_label')}] {item.get('title')} — "
+                f"target: {item.get('target')} — expires: {item.get('expires_at')}"
+            )
+        if len(pending) > 10:
+            lines.append(f"...and {len(pending) - 10} more pending approval(s).")
+        if not pending:
+            lines.append("There are no pending approvals right now.")
+        return {
+            "pending_count": len(pending),
+            "total_count": len(items),
+            "blocked_execution": True,
+            "pending": pending,
+            "review_text": "\n".join(lines),
+        }
+
     def create(self, data: Dict[str, Any]) -> Dict[str, Any]:
         created_at = _now_utc()
         risk_label = _required_text(data, "risk_label")

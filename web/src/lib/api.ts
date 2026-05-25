@@ -166,6 +166,7 @@ export const api = {
     const qs = approvalId ? `?approval_id=${encodeURIComponent(approvalId)}` : "";
     return fetchJSON<OpsApprovalAuditEvent[]>(`/api/ops/approvals/audit${qs}`);
   },
+  getOpsApprovalSummary: () => fetchJSON<OpsApprovalSummary>("/api/ops/approvals/summary"),
 
   // Cron jobs
   getCronJobs: (profile = "all") =>
@@ -641,6 +642,14 @@ export interface OpsApprovalAuditEvent {
   actor?: string | null;
   note?: string | null;
   timestamp: string;
+}
+
+export interface OpsApprovalSummary {
+  pending_count: number;
+  total_count: number;
+  blocked_execution: boolean;
+  pending: OpsApproval[];
+  review_text: string;
 }
 
 export interface CronJob {

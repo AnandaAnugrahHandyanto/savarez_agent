@@ -27,7 +27,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { H2, Typography } from "@/components/NouiTypography";
 import { Card, CardContent } from "@/components/ui/card";
 import { api } from "@/lib/api";
-import type { CronJob, SessionInfo, StatusResponse } from "@/lib/api";
+import type { CronJob, OpsApprovalSummary, SessionInfo, StatusResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { usePageHeader } from "@/contexts/usePageHeader";
 
@@ -300,7 +300,7 @@ function platformSummary(status: StatusResponse | null): string {
   return names.length ? names.join(" · ") : "No active platforms reported";
 }
 
-function TodayView({ status, activeJobs, jobs }: { status: StatusResponse | null; activeJobs: CronJob[]; jobs: CronJob[] }) {
+function TodayView({ status, activeJobs, jobs, approvalSummary }: { status: StatusResponse | null; activeJobs: CronJob[]; jobs: CronJob[]; approvalSummary: OpsApprovalSummary | null }) {
   const problemJobs = jobs.filter(isProblemJob);
   const nextProjects = PROJECTS.slice(0, 6);
   const platformCount = status?.gateway_platforms ? Object.keys(status.gateway_platforms).length : 0;
@@ -327,8 +327,8 @@ function TodayView({ status, activeJobs, jobs }: { status: StatusResponse | null
           <div className="grid gap-3 md:grid-cols-3">
             <div className="rounded-xl border border-amber-400/25 bg-amber-500/10 p-3">
               <div className="text-xs uppercase tracking-wide text-amber-200">Needs Travis</div>
-              <div className="mt-2 text-3xl font-semibold text-text-primary">{DECISION_QUEUE.length}</div>
-              <div className="mt-1 text-xs text-text-secondary">standing approval gates</div>
+              <div className="mt-2 text-3xl font-semibold text-text-primary">{approvalSummary?.pending_count ?? DECISION_QUEUE.length}</div>
+              <div className="mt-1 text-xs text-text-secondary">pending approval records + standing gates</div>
             </div>
             <div className="rounded-xl border border-emerald-400/25 bg-emerald-500/10 p-3">
               <div className="text-xs uppercase tracking-wide text-emerald-200">Active runs</div>
@@ -345,7 +345,19 @@ function TodayView({ status, activeJobs, jobs }: { status: StatusResponse | null
           <div className="grid gap-3 lg:grid-cols-2">
             <div className="space-y-2">
               <div className="text-sm font-semibold text-text-primary">Waiting on approval / do not auto-run</div>
-              {DECISION_QUEUE.map((item) => (
+              {approvalSummary?.pending?.length ? (
+                approvalSummary.pending.slice(0, 4).map((item) => (
+                  <Link key={item.id} to="/approvals" className="block rounded-xl border border-amber-400/20 bg-amber-500/10 p-3 transition hover:border-amber-300/50">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-medium text-text-primary">{item.title}</div>
+                        <div className="mt-1 text-xs leading-5 text-text-secondary">{item.target}</div>
+                      </div>
+                      <Badge tone="outline" className="shrink-0 border-amber-400/30 text-amber-200">{item.risk_label}</Badge>
+                    </div>
+                  </Link>
+                ))
+              ) : DECISION_QUEUE.map((item) => (
                 <div key={item.label} className="rounded-xl border border-white/10 bg-black/25 p-3">
                   <div className="flex items-start justify-between gap-3">
                     <div>
@@ -504,6 +516,7 @@ export default function MissionControlPage() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [approvalSummary, setApprovalSummary] = useState<OpsApprovalSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { setEnd } = usePageHeader();
 
@@ -513,11 +526,13 @@ export default function MissionControlPage() {
       api.getStatus(),
       api.getCronJobs("all"),
       api.getSessions(8),
-    ]).then(([statusResult, jobsResult, sessionsResult]) => {
+      api.getOpsApprovalSummary(),
+    ]).then(([statusResult, jobsResult, sessionsResult, approvalSummaryResult]) => {
       if (statusResult.status === "fulfilled") setStatus(statusResult.value);
       if (jobsResult.status === "fulfilled") setJobs(jobsResult.value);
       if (sessionsResult.status === "fulfilled") setSessions(sessionsResult.value.sessions);
-      const failures = [statusResult, jobsResult, sessionsResult].filter((r) => r.status === "rejected");
+      if (approvalSummaryResult.status === "fulfilled") setApprovalSummary(approvalSummaryResult.value);
+      const failures = [statusResult, jobsResult, sessionsResult, approvalSummaryResult].filter((r) => r.status === "rejected");
       setError(failures.length ? "Some live status panels could not refresh." : null);
     });
   }, []);
@@ -588,7 +603,7 @@ export default function MissionControlPage() {
           </div>
         )}
 
-        <TodayView status={status} activeJobs={activeJobs} jobs={jobs} />
+        <TodayView status={status} activeJobs={activeJobs} jobs={jobs} approvalSummary={approvalSummary} />
 
         <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           {DASHBOARD_METRICS.map((metric) => (

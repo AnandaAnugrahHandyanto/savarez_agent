@@ -20,7 +20,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { H2, Typography } from "@/components/NouiTypography";
 import { Card, CardContent } from "@/components/ui/card";
 import { api } from "@/lib/api";
-import type { CronJob, OpsApproval, OpsApprovalAuditEvent, OpsApprovalCreate, StatusResponse } from "@/lib/api";
+import type { CronJob, OpsApproval, OpsApprovalAuditEvent, OpsApprovalCreate, OpsApprovalSummary, StatusResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { usePageHeader } from "@/contexts/usePageHeader";
 
@@ -196,6 +196,7 @@ export default function ApprovalInboxPage() {
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [approvals, setApprovals] = useState<OpsApproval[]>([]);
   const [auditEvents, setAuditEvents] = useState<OpsApprovalAuditEvent[]>([]);
+  const [approvalSummary, setApprovalSummary] = useState<OpsApprovalSummary | null>(null);
   const [approvalFilter, setApprovalFilter] = useState<ApprovalFilter>("all");
   const [proposalForm, setProposalForm] = useState<OpsApprovalCreate>(EMPTY_PROPOSAL_FORM);
   const [decisionNote, setDecisionNote] = useState("Approved in dashboard; Jenny must still execute through normal chat/tool flow only.");
@@ -206,12 +207,13 @@ export default function ApprovalInboxPage() {
 
   const load = useCallback(() => {
     setError(null);
-    Promise.allSettled([api.getStatus(), api.getCronJobs("all"), api.getOpsApprovals(), api.getOpsApprovalAudit()]).then(([statusResult, jobsResult, approvalsResult, auditResult]) => {
+    Promise.allSettled([api.getStatus(), api.getCronJobs("all"), api.getOpsApprovals(), api.getOpsApprovalAudit(), api.getOpsApprovalSummary()]).then(([statusResult, jobsResult, approvalsResult, auditResult, summaryResult]) => {
       if (statusResult.status === "fulfilled") setStatus(statusResult.value);
       if (jobsResult.status === "fulfilled") setJobs(jobsResult.value);
       if (approvalsResult.status === "fulfilled") setApprovals(approvalsResult.value);
       if (auditResult.status === "fulfilled") setAuditEvents(auditResult.value);
-      if (statusResult.status === "rejected" || jobsResult.status === "rejected" || approvalsResult.status === "rejected" || auditResult.status === "rejected") {
+      if (summaryResult.status === "fulfilled") setApprovalSummary(summaryResult.value);
+      if (statusResult.status === "rejected" || jobsResult.status === "rejected" || approvalsResult.status === "rejected" || auditResult.status === "rejected" || summaryResult.status === "rejected") {
         setError("Some approval-context sources could not refresh.");
       }
     });
@@ -330,6 +332,14 @@ export default function ApprovalInboxPage() {
     );
   }, []);
 
+  const copySummary = useCallback(() => {
+    if (!approvalSummary?.review_text) return;
+    navigator.clipboard?.writeText(approvalSummary.review_text).then(
+      () => setMessage("Copied pending-approval summary."),
+      () => setError("Could not copy summary from this browser session."),
+    );
+  }, [approvalSummary]);
+
   return (
     <main className="h-full overflow-auto px-4 py-5 lg:px-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-5">
@@ -385,6 +395,21 @@ export default function ApprovalInboxPage() {
             className="mt-4 min-h-20 w-full rounded-xl border border-white/10 bg-black/30 p-3 text-sm text-text-primary outline-none focus:border-midground/60"
             placeholder="Decision note applied to approve/reject/clarify/snooze actions"
           />
+        </section>
+
+        <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <div className="text-sm font-semibold text-text-primary">Pending approval summary</div>
+              <Typography className="mt-1 text-sm leading-6 text-text-secondary">
+                {approvalSummary?.pending_count ? `${approvalSummary.pending_count} approval(s) need Travis review. Copy this summary into Discord/WhatsApp when needed.` : "No pending approvals right now. The dashboard remains decision-only."}
+              </Typography>
+            </div>
+            <Button ghost onClick={copySummary} disabled={!approvalSummary?.review_text} className="w-fit gap-2"><Clipboard className="h-4 w-4" /> Copy summary</Button>
+          </div>
+          {approvalSummary?.review_text && (
+            <pre className="mt-3 whitespace-pre-wrap rounded-xl border border-white/10 bg-black/25 p-3 text-xs leading-5 text-text-secondary">{approvalSummary.review_text}</pre>
+          )}
         </section>
 
         <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">

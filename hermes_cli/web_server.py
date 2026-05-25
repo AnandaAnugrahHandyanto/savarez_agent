@@ -2653,6 +2653,14 @@ async def list_ops_approval_audit(approval_id: Optional[str] = None):
         raise _approval_error(exc) from exc
 
 
+@app.get("/api/ops/approvals/summary")
+async def summarize_ops_approvals():
+    try:
+        return _approval_store().summary()
+    except Exception as exc:
+        raise _approval_error(exc) from exc
+
+
 @app.post("/api/ops/approvals/{approval_id}/approve")
 async def approve_ops_approval(approval_id: str, body: ApprovalDecision):
     try:
