@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import tempfile
 import time
 from contextlib import contextmanager
@@ -179,6 +180,146 @@ def _drift_error(path: "Path", bak_path: str) -> Dict[str, Any]:
     }
 
 
+
+class DurableMemoryArchive:
+    """Append-only durable memory archive backed by SQLite/FTS5.
+
+    The curated MEMORY.md/USER.md files remain the bounded prompt snapshot.
+    This archive is the lossless layer: accepted memory writes land here before
+    any prompt-snapshot budgeting, so writes do not fail solely because the
+    prompt-injected files are full.
+    """
+
+    def __init__(self, db_path: Optional[Path] = None):
+        self.db_path = db_path or (get_memory_dir() / "memory_archive.sqlite3")
+
+    def _connect(self):
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(self.db_path))
+        conn.row_factory = sqlite3.Row
+        self._ensure_schema(conn)
+        return conn
+
+    @staticmethod
+    def _ensure_schema(conn):
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memory_archive (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target TEXT NOT NULL CHECK(target IN ('memory', 'user')),
+                content TEXT NOT NULL,
+                action TEXT NOT NULL DEFAULT 'add',
+                curated INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                deleted_at INTEGER
+            )
+            """
+        )
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(memory_archive)").fetchall()}
+        if "deleted_at" not in columns:
+            conn.execute("ALTER TABLE memory_archive ADD COLUMN deleted_at INTEGER")
+
+        conn.execute("DROP INDEX IF EXISTS idx_memory_archive_target_content")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_archive_target_content_active "
+            "ON memory_archive(target, content) WHERE deleted_at IS NULL"
+        )
+        try:
+            conn.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS memory_archive_fts "
+                "USING fts5(content, target UNINDEXED, content='memory_archive', content_rowid='id')"
+            )
+            conn.execute(
+                "CREATE TRIGGER IF NOT EXISTS memory_archive_ai AFTER INSERT ON memory_archive BEGIN "
+                "INSERT INTO memory_archive_fts(rowid, content, target) VALUES (new.id, new.content, new.target); "
+                "END"
+            )
+            conn.execute(
+                "CREATE TRIGGER IF NOT EXISTS memory_archive_ad AFTER DELETE ON memory_archive BEGIN "
+                "INSERT INTO memory_archive_fts(memory_archive_fts, rowid, content, target) "
+                "VALUES('delete', old.id, old.content, old.target); "
+                "END"
+            )
+            conn.execute(
+                "CREATE TRIGGER IF NOT EXISTS memory_archive_au AFTER UPDATE ON memory_archive BEGIN "
+                "INSERT INTO memory_archive_fts(memory_archive_fts, rowid, content, target) "
+                "VALUES('delete', old.id, old.content, old.target); "
+                "INSERT INTO memory_archive_fts(rowid, content, target) VALUES (new.id, new.content, new.target); "
+                "END"
+            )
+        except sqlite3.OperationalError:
+            # Some embedded SQLite builds omit FTS5. The archive still works;
+            # search() falls back to LIKE.
+            pass
+        conn.commit()
+
+    def add(self, target: str, content: str, *, curated: bool = False) -> Dict[str, Any]:
+        now = int(time.time())
+        with self._connect() as conn:
+            try:
+                cur = conn.execute(
+                    "INSERT INTO memory_archive(target, content, action, curated, created_at) VALUES (?, ?, 'add', ?, ?)",
+                    (target, content, 1 if curated else 0, now),
+                )
+                conn.commit()
+                return {"archived": True, "archive_id": cur.lastrowid, "archive_duplicate": False}
+            except sqlite3.IntegrityError:
+                row = conn.execute(
+                    "SELECT id, curated FROM memory_archive WHERE target = ? AND content = ? AND deleted_at IS NULL",
+                    (target, content),
+                ).fetchone()
+                if row and curated and not row["curated"]:
+                    conn.execute("UPDATE memory_archive SET curated = 1 WHERE id = ?", (row["id"],))
+                    conn.commit()
+                return {"archived": True, "archive_id": row["id"] if row else None, "archive_duplicate": True}
+
+    def mark_curated(self, target: str, content: str):
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE memory_archive SET curated = 1 WHERE target = ? AND content = ? AND deleted_at IS NULL",
+                (target, content),
+            )
+            conn.commit()
+
+    def forget(self, target: str, content: str):
+        now = int(time.time())
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE memory_archive SET deleted_at = ? WHERE target = ? AND content = ? AND deleted_at IS NULL",
+                (now, target, content),
+            )
+            conn.commit()
+
+    def search(self, query: str, target: Optional[str] = None, limit: int = 5) -> List[Dict[str, Any]]:
+        query = (query or "").strip()
+        if not query:
+            return []
+        with self._connect() as conn:
+            try:
+                where = "WHERE memory_archive_fts MATCH ? AND memory_archive.deleted_at IS NULL"
+                params: List[Any] = [query]
+                if target in {"memory", "user"}:
+                    where += " AND memory_archive.target = ?"
+                    params.append(target)
+                rows = conn.execute(
+                    f"SELECT memory_archive.id, memory_archive.target, memory_archive.content "
+                    f"FROM memory_archive_fts JOIN memory_archive ON memory_archive_fts.rowid = memory_archive.id {where} LIMIT ?",
+                    (*params, limit),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                like = f"%{query}%"
+                if target in {"memory", "user"}:
+                    rows = conn.execute(
+                        "SELECT id, target, content FROM memory_archive WHERE content LIKE ? AND target = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT ?",
+                        (like, target, limit),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT id, target, content FROM memory_archive WHERE content LIKE ? AND deleted_at IS NULL ORDER BY id DESC LIMIT ?",
+                        (like, limit),
+                    ).fetchall()
+        return [dict(row) for row in rows]
+
 class MemoryStore:
     """
     Bounded curated memory with file persistence. One instance per AIAgent.
@@ -197,6 +338,7 @@ class MemoryStore:
         self.user_char_limit = user_char_limit
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+        self.archive = DurableMemoryArchive()
 
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
@@ -306,7 +448,7 @@ class MemoryStore:
         return self.memory_char_limit
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
-        """Append a new entry. Returns error if it would exceed the char limit."""
+        """Append a new entry, archiving it even if the curated snapshot is full."""
         content = content.strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
@@ -330,30 +472,43 @@ class MemoryStore:
 
             # Reject exact duplicates
             if content in entries:
-                return self._success_response(target, "Entry already exists (no duplicate added).")
+                archive_result = self.archive.add(target, content, curated=True)
+                self.archive.mark_curated(target, content)
+                resp = self._success_response(target, "Entry already exists (no duplicate added).")
+                resp.update({"archived": True, "archive_id": archive_result.get("archive_id"), "curated": True})
+                return resp
 
             # Calculate what the new total would be
             new_entries = entries + [content]
             new_total = len(ENTRY_DELIMITER.join(new_entries))
 
             if new_total > limit:
+                archive_result = self.archive.add(target, content, curated=False)
                 current = self._char_count(target)
                 return {
-                    "success": False,
-                    "error": (
-                        f"Memory at {current:,}/{limit:,} chars. "
-                        f"Adding this entry ({len(content)} chars) would exceed the limit. "
-                        f"Replace or remove existing entries first."
+                    "success": True,
+                    "target": target,
+                    "message": (
+                        "Entry saved to durable memory archive, but not added to the "
+                        "prompt-injected curated snapshot because it is full. "
+                        "Replace or remove curated entries later if this should always be injected."
                     ),
+                    "archived": True,
+                    "archive_id": archive_result.get("archive_id"),
+                    "curated": False,
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
                 }
 
+            archive_result = self.archive.add(target, content, curated=True)
             entries.append(content)
             self._set_entries(target, entries)
             self.save_to_disk(target)
+            self.archive.mark_curated(target, content)
 
-        return self._success_response(target, "Entry added.")
+        resp = self._success_response(target, "Entry added.")
+        resp.update({"archived": True, "archive_id": archive_result.get("archive_id"), "curated": True})
+        return resp
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
@@ -409,9 +564,12 @@ class MemoryStore:
                     ),
                 }
 
+            old_entry = entries[idx]
             entries[idx] = new_content
             self._set_entries(target, entries)
             self.save_to_disk(target)
+            self.archive.forget(target, old_entry)
+            self.archive.add(target, new_content, curated=True)
 
         return self._success_response(target, "Entry replaced.")
 
@@ -445,9 +603,11 @@ class MemoryStore:
                 # All identical -- safe to remove just the first
 
             idx = matches[0][0]
+            removed_entry = entries[idx]
             entries.pop(idx)
             self._set_entries(target, entries)
             self.save_to_disk(target)
+            self.archive.forget(target, removed_entry)
 
         return self._success_response(target, "Entry removed.")
 
@@ -640,13 +800,18 @@ def memory_tool(
             return tool_error("content is required for 'replace' action.", success=False)
         result = store.replace(target, old_text, content)
 
+    elif action == "search":
+        if not content:
+            return tool_error("content is required as the search query for 'search' action.", success=False)
+        result = {"success": True, "matches": store.archive.search(content, target=target)}
+
     elif action == "remove":
         if not old_text:
             return tool_error("old_text is required for 'remove' action.", success=False)
         result = store.remove(target, old_text)
 
     else:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove, search", success=False)
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -664,8 +829,9 @@ MEMORY_SCHEMA = {
     "name": "memory",
     "description": (
         "Save durable information to persistent memory that survives across sessions. "
-        "Memory is injected into future turns, so keep it compact and focused on facts "
-        "that will still matter later.\n\n"
+        "Compact curated memory is injected into future turns; if that snapshot is full, "
+        "new entries are still saved to the durable searchable archive. Keep entries "
+        "focused on facts that will still matter later.\n\n"
         "WHEN TO SAVE (do this proactively, don't wait to be asked):\n"
         "- User corrects you or says 'remember this' / 'don't do that again'\n"
         "- User shares a preference, habit, or personal detail (name, role, timezone, coding style)\n"
@@ -682,7 +848,7 @@ MEMORY_SCHEMA = {
         "- 'user': who the user is -- name, role, preferences, communication style, pet peeves\n"
         "- 'memory': your notes -- environment facts, project conventions, tool quirks, lessons learned\n\n"
         "ACTIONS: add (new entry), replace (update existing -- old_text identifies it), "
-        "remove (delete -- old_text identifies it).\n\n"
+        "remove (delete -- old_text identifies it), search (retrieve durable archived memories by query).\n\n"
         "SKIP: trivial/obvious info, things easily re-discovered, raw data dumps, and temporary task state."
     ),
     "parameters": {
@@ -690,7 +856,7 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
+                "enum": ["add", "replace", "remove", "search"],
                 "description": "The action to perform."
             },
             "target": {
