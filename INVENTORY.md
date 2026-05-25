@@ -18,12 +18,13 @@ All 8,830 passing tests indicate production code is stable. Further analysis bel
 **Fix:** Added `agent.models_dev` to the modules cleared by `_fresh_modules()`.
 **Root cause:** Global `_models_dev_cache` in `agent.models_dev` leaked between test cases, causing stale vision capability data to pollute subsequent tests.
 
-### 3. [MEDIUM] Test ordering pollution — path resolution tests
+### 3. [LOW] Test ordering pollution — within-file only (cross-file already isolated)
 **File:** `tests/tools/test_resolve_path.py`
 **Symptom:** 3 tests fail in full suite, pass in isolation.
-**Root cause:** Another test file modifies module state or env vars that affect path resolution, and doesn't clean up.
-**Fix:** Identify the polluting test via bisect, add proper cleanup.
-**Impact:** CI flakes depending on test execution order.
+**Root cause:** Stale module-level state in `tools.file_tools._file_ops_cache` and `tools.terminal_tool._active_environments` can leak BETWEEN tests within the same file.
+**Mitigation already in place:** `scripts/run_tests_parallel.py` spawns each test file in a fresh subprocess (`python -m pytest <file>`), so cross-file module-level state leakage is impossible (see `tests/conftest.py` lines 388-402). This bug can only manifest within a single test file.
+**Remaining risk:** If `test_resolve_path.py` shares mutable state with other tests in its own file, ordering matters — that's the author's responsibility per conftest.
+**Impact:** Low — cross-file pollution prevented by process isolation.
 
 ### 4. [LOW] YOLO mode tests don't reset `_YOLO_MODE_FROZEN`
 **File:** `tests/tools/test_yolo_mode.py`
