@@ -2183,7 +2183,9 @@ class TestPtyWebSocket:
             ),
         )
 
-        with self.client.websocket_connect(self._url()) as conn:
+        with self.client.websocket_connect(
+            self._url(), headers={"host": "192.0.2.10"}
+        ) as conn:
             buf = b""
             import time
 
