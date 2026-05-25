@@ -626,6 +626,10 @@ class HindsightMemoryProvider(MemoryProvider):
                 pass
         existing.update(values)
         config_path.write_text(json.dumps(existing, indent=2))
+        try:
+            os.chmod(config_path, 0o600)
+        except OSError:
+            pass
 
     def post_setup(self, hermes_home: str, config: dict) -> None:
         """Custom setup wizard — installs only the deps needed for the selected mode."""

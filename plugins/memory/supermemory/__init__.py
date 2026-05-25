@@ -153,6 +153,10 @@ def _save_supermemory_config(values: dict, hermes_home: str) -> None:
             existing = {}
     existing.update(values)
     config_path.write_text(json.dumps(existing, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        os.chmod(config_path, 0o600)
+    except OSError:
+        pass
 
 
 def _detect_category(text: str) -> str:

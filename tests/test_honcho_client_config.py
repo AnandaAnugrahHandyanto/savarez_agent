@@ -2,12 +2,14 @@
 
 import json
 import os
+import stat
 import tempfile
 from pathlib import Path
 
 import pytest
 
 from plugins.memory.honcho.client import HonchoClientConfig
+from plugins.memory.honcho import HonchoMemoryProvider
 
 
 class TestHonchoClientConfigAutoEnable:
@@ -103,3 +105,14 @@ class TestHonchoClientConfigAutoEnable:
 
         assert cfg.api_key == "fallback-key"
         assert cfg.enabled is True  # from_env() sets enabled=True
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits not enforced on Windows")
+def test_save_config_sets_owner_only_permissions(tmp_path):
+    """honcho.json must be written with 0o600 so API key is not world-readable."""
+    provider = HonchoMemoryProvider()
+    provider.save_config({"api_key": "hc-test-key"}, str(tmp_path))
+    config_file = tmp_path / "honcho.json"
+    assert config_file.exists()
+    mode = stat.S_IMODE(config_file.stat().st_mode)
+    assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
