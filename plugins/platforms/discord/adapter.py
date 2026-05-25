@@ -51,7 +51,7 @@ from gateway.config import Platform, PlatformConfig
 import re
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
-from utils import atomic_json_write
+from utils import atomic_json_write, env_bool, env_int
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -83,6 +83,12 @@ def _clean_discord_id(entry: str) -> str:
     if entry.lower().startswith("user:"):
         entry = entry[5:]
     return entry.strip()
+
+
+def _parse_csv_env(name: str) -> List[str]:
+    """Return non-empty comma-separated env entries as stripped strings."""
+    raw = os.getenv(name, "")
+    return [part.strip() for part in raw.split(",") if part.strip()]
 
 
 def check_discord_requirements() -> bool:
@@ -550,6 +556,8 @@ class DiscordAdapter(BasePlatformAdapter):
 
     # Auto-disconnect from voice channel after this many seconds of inactivity
     VOICE_TIMEOUT = 300
+    # Auto-disconnect when a joined voice channel has no non-bot members.
+    VOICE_EMPTY_TIMEOUT = 300
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
@@ -569,6 +577,15 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
         self._voice_sources: Dict[int, Dict[str, Any]] = {}  # guild_id -> linked text channel source metadata
         self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
+        self._voice_timeout_seconds = env_int(
+            "DISCORD_VOICE_IDLE_TIMEOUT_SECONDS",
+            self.VOICE_TIMEOUT,
+        )
+        self._voice_empty_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> empty-channel timeout task
+        self._voice_empty_timeout_seconds = env_int(
+            "DISCORD_VOICE_EMPTY_TIMEOUT_SECONDS",
+            self.VOICE_EMPTY_TIMEOUT,
+        )
         # Phase 2: voice listening
         self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
@@ -583,6 +600,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None
+        self._voice_auto_join_reconcile_task: Optional[asyncio.Task] = None
         # Dedup cache: prevents duplicate bot responses when Discord
         # RESUME replays events after reconnects.
         self._dedup = MessageDeduplicator()
@@ -815,15 +833,8 @@ class DiscordAdapter(BasePlatformAdapter):
 
             @self._client.event
             async def on_voice_state_update(member, before, after):
-                """Track voice channel join/leave events."""
-                # Only track channels where the bot is connected
-                bot_guild_ids = set(adapter_self._voice_clients.keys())
-                if not bot_guild_ids:
-                    return
-                guild_id = member.guild.id
-                if guild_id not in bot_guild_ids:
-                    return
-                # Ignore the bot itself
+                """Track voice channel join/leave events and opt-in auto-join."""
+                # Ignore the bot itself.
                 if member == adapter_self._client.user:
                     return
 
@@ -834,17 +845,41 @@ class DiscordAdapter(BasePlatformAdapter):
                     and after.channel is not None
                     and before.channel != after.channel
                 )
+                if not (joined or left or switched):
+                    return
 
-                if joined or left or switched:
-                    logger.info(
-                        "Voice state: %s (%d) %s (guild %d)",
-                        member.display_name,
-                        member.id,
-                        "joined " + after.channel.name if joined
-                        else "left " + before.channel.name if left
-                        else f"moved {before.channel.name} -> {after.channel.name}",
+                guild_id = member.guild.id
+                if env_bool("DISCORD_VOICE_AUTO_JOIN", False) or guild_id in adapter_self._voice_clients:
+                    if joined:
+                        action = f"joined {getattr(after.channel, 'name', after.channel)}"
+                    elif left:
+                        action = f"left {getattr(before.channel, 'name', before.channel)}"
+                    else:
+                        action = (
+                            f"moved {getattr(before.channel, 'name', before.channel)} -> "
+                            f"{getattr(after.channel, 'name', after.channel)}"
+                        )
+                    logger.debug(
+                        "Voice state relevant to voice handling: %s (%s) %s (guild %s)",
+                        getattr(member, "display_name", member),
+                        getattr(member, "id", ""),
+                        action,
                         guild_id,
                     )
+
+                left_with_trigger = await adapter_self._maybe_auto_leave_voice_channel_for_trigger(
+                    member,
+                    before.channel,
+                    after.channel,
+                )
+                if left_with_trigger:
+                    return
+
+                if after.channel is not None:
+                    await adapter_self._maybe_auto_join_voice_channel(member, after.channel)
+
+                if guild_id in adapter_self._voice_clients:
+                    adapter_self._reset_empty_voice_timeout(guild_id)
 
             # Register slash commands
             if self._slash_commands:
@@ -890,10 +925,18 @@ class DiscordAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
 
+        if self._voice_auto_join_reconcile_task and not self._voice_auto_join_reconcile_task.done():
+            self._voice_auto_join_reconcile_task.cancel()
+            try:
+                await self._voice_auto_join_reconcile_task
+            except asyncio.CancelledError:
+                pass
+
         self._running = False
         self._client = None
         self._ready_event.clear()
         self._post_connect_task = None
+        self._voice_auto_join_reconcile_task = None
 
         self._release_platform_lock()
 
@@ -1888,8 +1931,145 @@ class DiscordAdapter(BasePlatformAdapter):
             return await super().send_voice(chat_id, audio_path, caption, reply_to, metadata=metadata)
 
     # ------------------------------------------------------------------
-    # Voice channel methods (join / leave / play)
+    # Voice channel methods (auto-join / join / leave / play)
     # ------------------------------------------------------------------
+
+    def _voice_auto_join_channel_matches(self, channel) -> bool:
+        configured_channel_id = os.getenv("DISCORD_VOICE_AUTO_JOIN_CHANNEL_ID", "").strip()
+        configured_channel_name = os.getenv("DISCORD_VOICE_AUTO_JOIN_CHANNEL_NAME", "").strip()
+        if configured_channel_id:
+            return str(getattr(channel, "id", "")) == configured_channel_id
+        if configured_channel_name:
+            return getattr(channel, "name", "") == configured_channel_name
+        logger.warning("DISCORD_VOICE_AUTO_JOIN is enabled but no channel id/name is configured")
+        return False
+
+    def _voice_auto_join_text_channel_id(self) -> str:
+        return os.getenv("DISCORD_VOICE_TEXT_CHANNEL_ID", "").strip() or os.getenv("DISCORD_HOME_CHANNEL", "").strip()
+
+    async def _maybe_auto_leave_voice_channel_for_trigger(self, member, before_channel, after_channel) -> bool:
+        """Leave when a configured auto-join trigger user leaves our connected VC.
+
+        ``empty_timeout_seconds`` is a safety net for channels that become
+        empty.  When ``auto_join.user_ids`` is configured, the more useful
+        behavior is to follow the trigger user's presence exactly: if they
+        leave or move out of the channel Hermes joined for them, Hermes leaves
+        immediately instead of waiting for the empty-channel grace timer.
+        """
+        if not env_bool("DISCORD_VOICE_AUTO_JOIN", False):
+            return False
+        if getattr(member, "bot", False):
+            return False
+        trigger_user_ids = set(_parse_csv_env("DISCORD_VOICE_AUTO_JOIN_USER_IDS"))
+        if not trigger_user_ids or str(getattr(member, "id", "")) not in trigger_user_ids:
+            return False
+        if before_channel is None:
+            return False
+
+        guild = getattr(member, "guild", None) or getattr(before_channel, "guild", None)
+        if guild is None:
+            return False
+        guild_id = int(guild.id)
+        vc = self._voice_clients.get(guild_id)
+        if not vc or not vc.is_connected():
+            return False
+        connected_channel = getattr(vc, "channel", None)
+        if connected_channel is None:
+            return False
+        if str(getattr(before_channel, "id", "")) != str(getattr(connected_channel, "id", "")):
+            return False
+        if after_channel is not None and str(getattr(after_channel, "id", "")) == str(getattr(connected_channel, "id", "")):
+            return False
+
+        logger.info(
+            "Leaving Discord voice channel %s (%s) because trigger user %s left/moved",
+            getattr(connected_channel, "name", connected_channel),
+            getattr(connected_channel, "id", ""),
+            getattr(member, "id", ""),
+        )
+        await self._leave_voice_channel_for_timeout(
+            guild_id,
+            "Left voice channel (trigger user left).",
+        )
+        return True
+
+    async def _maybe_auto_join_voice_channel(self, member, channel) -> None:
+        """Auto-join a configured voice channel when an allowed user joins it."""
+        if not env_bool("DISCORD_VOICE_AUTO_JOIN", False):
+            return
+        if not self.gateway_runner:
+            return
+        if getattr(member, "bot", False):
+            return
+        guild = getattr(member, "guild", None) or getattr(channel, "guild", None)
+        if guild is None:
+            return
+        guild_id = int(guild.id)
+        if self.is_in_voice_channel(guild_id):
+            return
+        if not self._voice_auto_join_channel_matches(channel):
+            return
+
+        allowed_trigger_users = set(_parse_csv_env("DISCORD_VOICE_AUTO_JOIN_USER_IDS"))
+        if allowed_trigger_users and str(member.id) not in allowed_trigger_users:
+            return
+        if not self._is_allowed_user(str(member.id), member, guild=guild, is_dm=False):
+            return
+
+        text_channel_id = self._voice_auto_join_text_channel_id()
+        if not text_channel_id:
+            logger.warning("Discord voice auto-join needs DISCORD_VOICE_TEXT_CHANNEL_ID or DISCORD_HOME_CHANNEL")
+            return
+
+        handler = getattr(self.gateway_runner, "_handle_discord_voice_auto_join", None)
+        if handler is None:
+            return
+        try:
+            await handler(self, member, channel, text_channel_id)
+        except Exception:
+            logger.warning("Discord voice auto-join failed", exc_info=True)
+
+    def schedule_voice_auto_join_reconcile(self) -> None:
+        """Schedule startup auto-join after the gateway has synced voice config."""
+        if not env_bool("DISCORD_VOICE_AUTO_JOIN", False):
+            return
+        if self._voice_auto_join_reconcile_task and not self._voice_auto_join_reconcile_task.done():
+            self._voice_auto_join_reconcile_task.cancel()
+        self._voice_auto_join_reconcile_task = asyncio.create_task(
+            self._reconcile_voice_auto_join()
+        )
+
+    async def _reconcile_voice_auto_join(self) -> None:
+        """Join the configured voice channel on startup if a trigger user is already there."""
+        if not env_bool("DISCORD_VOICE_AUTO_JOIN", False):
+            return
+        client = self._client
+        if not client or not self.gateway_runner:
+            return
+        bot_user = getattr(self._client, "user", None)
+        for guild in getattr(client, "guilds", []) or []:
+            if self._client is not client:
+                return
+            is_closed = getattr(client, "is_closed", None)
+            if callable(is_closed) and is_closed():
+                return
+            if self.is_in_voice_channel(int(guild.id)):
+                continue
+            for channel in getattr(guild, "voice_channels", []) or []:
+                if self._client is not client:
+                    return
+                if not self._voice_auto_join_channel_matches(channel):
+                    continue
+                for member in getattr(channel, "members", []) or []:
+                    if self._client is not client:
+                        return
+                    if getattr(member, "bot", False) or member == bot_user:
+                        continue
+                    await self._maybe_auto_join_voice_channel(member, channel)
+                    if self.is_in_voice_channel(int(guild.id)):
+                        break
+                if self.is_in_voice_channel(int(guild.id)):
+                    break
 
     async def join_voice_channel(self, channel) -> bool:
         """Join a Discord voice channel. Returns True on success."""
@@ -1903,14 +2083,17 @@ class DiscordAdapter(BasePlatformAdapter):
             if existing and existing.is_connected():
                 if existing.channel.id == channel.id:
                     self._reset_voice_timeout(guild_id)
+                    self._reset_empty_voice_timeout(guild_id)
                     return True
                 await existing.move_to(channel)
                 self._reset_voice_timeout(guild_id)
+                self._reset_empty_voice_timeout(guild_id)
                 return True
 
             vc = await channel.connect()
             self._voice_clients[guild_id] = vc
             self._reset_voice_timeout(guild_id)
+            self._reset_empty_voice_timeout(guild_id)
 
             # Start voice receiver (Phase 2: listen to users)
             try:
@@ -1942,6 +2125,9 @@ class DiscordAdapter(BasePlatformAdapter):
             task = self._voice_timeout_tasks.pop(guild_id, None)
             if task:
                 task.cancel()
+            empty_task = self._voice_empty_timeout_tasks.pop(guild_id, None)
+            if empty_task:
+                empty_task.cancel()
             self._voice_text_channels.pop(guild_id, None)
             self._voice_sources.pop(guild_id, None)
 
@@ -2004,23 +2190,84 @@ class DiscordAdapter(BasePlatformAdapter):
         return member.voice.channel
 
     def _reset_voice_timeout(self, guild_id: int) -> None:
-        """Reset the auto-disconnect inactivity timer."""
+        """Reset the auto-disconnect inactivity timer.
+
+        ``DISCORD_VOICE_IDLE_TIMEOUT_SECONDS=0`` disables the silence-based
+        timeout so Hermes can stay connected/listening while everyone is muted.
+        Empty-channel cleanup is handled separately by
+        ``_reset_empty_voice_timeout``.
+        """
         task = self._voice_timeout_tasks.pop(guild_id, None)
         if task:
             task.cancel()
+        if self._voice_timeout_seconds <= 0:
+            return
         self._voice_timeout_tasks[guild_id] = asyncio.ensure_future(
             self._voice_timeout_handler(guild_id)
         )
 
     async def _voice_timeout_handler(self, guild_id: int) -> None:
-        """Auto-disconnect after VOICE_TIMEOUT seconds of inactivity."""
+        """Auto-disconnect after configured seconds of voice inactivity."""
         try:
-            await asyncio.sleep(self.VOICE_TIMEOUT)
+            await asyncio.sleep(self._voice_timeout_seconds)
         except asyncio.CancelledError:
             return
+        await self._leave_voice_channel_for_timeout(
+            guild_id,
+            "Left voice channel (inactivity timeout).",
+        )
+
+    def _voice_channel_has_humans(self, guild_id: int) -> bool:
+        """Return True when the connected VC still contains non-bot members."""
+        vc = self._voice_clients.get(guild_id)
+        if not vc or not vc.is_connected():
+            return False
+        channel = getattr(vc, "channel", None)
+        if channel is None:
+            return False
+        client = getattr(self, "_client", None)
+        bot_user = getattr(client, "user", None) if client else None
+        bot_id = getattr(bot_user, "id", None)
+        return any(
+            not getattr(member, "bot", False)
+            and (bot_id is None or getattr(member, "id", None) != bot_id)
+            for member in (getattr(channel, "members", []) or [])
+        )
+
+    def _reset_empty_voice_timeout(self, guild_id: int) -> None:
+        """Reset/cancel the leave-on-empty-channel timer for a guild."""
+        task = self._voice_empty_timeout_tasks.pop(guild_id, None)
+        if task:
+            task.cancel()
+        if self._voice_empty_timeout_seconds <= 0:
+            return
+        if self._voice_channel_has_humans(guild_id):
+            return
+        vc = self._voice_clients.get(guild_id)
+        if not vc or not vc.is_connected():
+            return
+        self._voice_empty_timeout_tasks[guild_id] = asyncio.ensure_future(
+            self._voice_empty_timeout_handler(guild_id)
+        )
+
+    async def _voice_empty_timeout_handler(self, guild_id: int) -> None:
+        """Leave the voice channel if it remains empty for the grace period."""
+        try:
+            await asyncio.sleep(self._voice_empty_timeout_seconds)
+        except asyncio.CancelledError:
+            return
+        if self._voice_channel_has_humans(guild_id):
+            return
+        await self._leave_voice_channel_for_timeout(
+            guild_id,
+            "Left voice channel (empty channel timeout).",
+        )
+
+    async def _leave_voice_channel_for_timeout(self, guild_id: int, notification: str) -> None:
+        """Disconnect for an adapter-owned timeout and clean runner state."""
         text_ch_id = self._voice_text_channels.get(guild_id)
         await self.leave_voice_channel(guild_id)
-        # Notify the runner so it can clean up voice_mode state
+        # Notify the runner so it can clean up voice_mode state.
         if self._on_voice_disconnect and text_ch_id:
             try:
                 self._on_voice_disconnect(str(text_ch_id))
@@ -2030,7 +2277,7 @@ class DiscordAdapter(BasePlatformAdapter):
             ch = self._client.get_channel(text_ch_id)
             if ch:
                 try:
-                    await ch.send("Left voice channel (inactivity timeout).")
+                    await ch.send(notification)
                 except Exception:
                     pass
 
@@ -2149,6 +2396,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         is_dm=False,
                     ):
                         continue
+                    self._reset_voice_timeout(guild_id)
                     await self._process_voice_input(guild_id, user_id, pcm_data)
         except asyncio.CancelledError:
             pass
@@ -6133,6 +6381,34 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     if _discord_rtm is not None and not os.getenv("DISCORD_REPLY_TO_MODE"):
         _rtm_str = "off" if _discord_rtm is False else str(_discord_rtm).lower()
         os.environ["DISCORD_REPLY_TO_MODE"] = _rtm_str
+
+    # Discord voice-channel options.  These live under the Discord platform
+    # block (``discord.voice``) because they identify Discord channel/user IDs
+    # and adapter-owned timeout behaviour; generic STT/TTS provider settings
+    # remain under top-level ``stt`` / ``tts`` / ``voice``.  Whether joined
+    # voice sessions speak replies is controlled by existing ``voice.auto_tts``.
+    def _set_voice_env_if_absent(env_key: str, value) -> None:
+        if value is None or os.getenv(env_key):
+            return
+        if isinstance(value, bool):
+            os.environ[env_key] = str(value).lower()
+        elif isinstance(value, (list, tuple, set)):
+            os.environ[env_key] = ",".join(str(v) for v in value)
+        else:
+            os.environ[env_key] = str(value)
+
+    voice_cfg = discord_cfg.get("voice")
+    if isinstance(voice_cfg, dict):
+        auto_join_cfg = voice_cfg.get("auto_join")
+        if isinstance(auto_join_cfg, dict):
+            _set_voice_env_if_absent("DISCORD_VOICE_AUTO_JOIN", auto_join_cfg.get("enabled"))
+            _set_voice_env_if_absent("DISCORD_VOICE_AUTO_JOIN_CHANNEL_ID", auto_join_cfg.get("channel_id"))
+            _set_voice_env_if_absent("DISCORD_VOICE_AUTO_JOIN_CHANNEL_NAME", auto_join_cfg.get("channel_name"))
+            _set_voice_env_if_absent("DISCORD_VOICE_TEXT_CHANNEL_ID", auto_join_cfg.get("text_channel_id"))
+            _set_voice_env_if_absent("DISCORD_VOICE_AUTO_JOIN_USER_IDS", auto_join_cfg.get("user_ids"))
+        _set_voice_env_if_absent("DISCORD_VOICE_IDLE_TIMEOUT_SECONDS", voice_cfg.get("idle_timeout_seconds"))
+        _set_voice_env_if_absent("DISCORD_VOICE_EMPTY_TIMEOUT_SECONDS", voice_cfg.get("empty_timeout_seconds"))
+
     return None  # all settings flow through env; nothing to merge into extras
 
 

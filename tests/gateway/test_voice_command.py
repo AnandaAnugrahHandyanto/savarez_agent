@@ -523,6 +523,9 @@ class TestDiscordPlayTtsSkip:
         adapter._voice_text_channels = {}
         adapter._voice_sources = {}
         adapter._voice_timeout_tasks = {}
+        adapter._voice_timeout_seconds = DiscordAdapter.VOICE_TIMEOUT
+        adapter._voice_empty_timeout_tasks = {}
+        adapter._voice_empty_timeout_seconds = DiscordAdapter.VOICE_EMPTY_TIMEOUT
         adapter._voice_receivers = {}
         adapter._voice_listen_tasks = {}
         adapter._client = None
@@ -816,7 +819,8 @@ class TestVoiceChannelCommands:
         result = await runner._handle_voice_channel_join(event)
         assert "joined" in result.lower()
         assert "General" in result
-        assert runner._voice_mode["discord:123"] == "all"
+        assert runner._voice_mode["discord:123"] == "off"
+        assert "reply in text" in result.lower()
         assert mock_adapter._voice_sources[111]["chat_id"] == "123"
         assert mock_adapter._voice_sources[111]["chat_type"] == "group"
 
@@ -1079,6 +1083,9 @@ class TestDiscordVoiceChannelMethods:
         adapter._voice_text_channels = {}
         adapter._voice_sources = {}
         adapter._voice_timeout_tasks = {}
+        adapter._voice_timeout_seconds = DiscordAdapter.VOICE_TIMEOUT
+        adapter._voice_empty_timeout_tasks = {}
+        adapter._voice_empty_timeout_seconds = DiscordAdapter.VOICE_EMPTY_TIMEOUT
         adapter._voice_receivers = {}
         adapter._voice_listen_tasks = {}
         adapter._voice_input_callback = None
@@ -1355,19 +1362,21 @@ class TestCallbackWiringOrder:
 
     def test_callback_set_before_join(self):
         """_handle_voice_channel_join wires callback before calling join."""
-        import ast, inspect
+        import inspect
         from gateway.run import GatewayRunner
         source = inspect.getsource(GatewayRunner._handle_voice_channel_join)
         lines = source.split("\n")
         callback_line = None
         join_line = None
         for i, line in enumerate(lines):
-            if "_voice_input_callback" in line and "=" in line and "None" not in line:
-                if callback_line is None:
-                    callback_line = i
+            if "_wire_discord_voice_callbacks" in line:
+                callback_line = i
             if "join_voice_channel" in line and "await" in line:
                 join_line = i
-        assert callback_line is not None, "callback wiring not found"
+        helper_source = inspect.getsource(GatewayRunner._wire_discord_voice_callbacks)
+        assert "_voice_input_callback" in helper_source, "callback wiring not found"
+        assert "_on_voice_disconnect" in helper_source, "disconnect callback wiring not found"
+        assert callback_line is not None, "callback wiring call not found"
         assert join_line is not None, "join_voice_channel call not found"
         assert callback_line < join_line, (
             f"callback must be wired (line {callback_line}) BEFORE "
@@ -1387,6 +1396,7 @@ class TestCallbackWiringOrder:
         )
         mock_adapter.get_user_voice_channel = AsyncMock(return_value=mock_channel)
         mock_adapter._voice_input_callback = None
+        mock_adapter._on_voice_disconnect = None
 
         event = _make_event("/voice channel")
         event.raw_message = SimpleNamespace(guild_id=111, guild=None)
@@ -1395,6 +1405,7 @@ class TestCallbackWiringOrder:
         result = await runner._handle_voice_channel_join(event)
         assert "failed" in result.lower()
         assert mock_adapter._voice_input_callback is None
+        assert mock_adapter._on_voice_disconnect is None
 
     @pytest.mark.asyncio
     async def test_join_returns_false_clears_callback(self, tmp_path):
@@ -1407,6 +1418,7 @@ class TestCallbackWiringOrder:
         mock_adapter.join_voice_channel = AsyncMock(return_value=False)
         mock_adapter.get_user_voice_channel = AsyncMock(return_value=mock_channel)
         mock_adapter._voice_input_callback = None
+        mock_adapter._on_voice_disconnect = None
 
         event = _make_event("/voice channel")
         event.raw_message = SimpleNamespace(guild_id=111, guild=None)
@@ -1415,6 +1427,7 @@ class TestCallbackWiringOrder:
         result = await runner._handle_voice_channel_join(event)
         assert "failed" in result.lower()
         assert mock_adapter._voice_input_callback is None
+        assert mock_adapter._on_voice_disconnect is None
 
 
 # =====================================================================
@@ -1437,6 +1450,7 @@ class TestLeaveExceptionHandling:
             side_effect=RuntimeError("Connection reset")
         )
         mock_adapter._voice_input_callback = MagicMock()
+        mock_adapter._on_voice_disconnect = MagicMock()
 
         event = _make_event("/voice leave")
         event.raw_message = SimpleNamespace(guild_id=111, guild=None)
@@ -1447,6 +1461,7 @@ class TestLeaveExceptionHandling:
         assert "left" in result.lower()
         assert runner._voice_mode["telegram:123"] == "off"
         assert mock_adapter._voice_input_callback is None
+        assert mock_adapter._on_voice_disconnect is None
 
     @pytest.mark.asyncio
     async def test_leave_clears_callback(self, runner):
@@ -1455,6 +1470,7 @@ class TestLeaveExceptionHandling:
         mock_adapter.is_in_voice_channel = MagicMock(return_value=True)
         mock_adapter.leave_voice_channel = AsyncMock()
         mock_adapter._voice_input_callback = MagicMock()
+        mock_adapter._on_voice_disconnect = MagicMock()
 
         event = _make_event("/voice leave")
         event.raw_message = SimpleNamespace(guild_id=111, guild=None)
@@ -1463,6 +1479,7 @@ class TestLeaveExceptionHandling:
 
         await runner._handle_voice_channel_leave(event)
         assert mock_adapter._voice_input_callback is None
+        assert mock_adapter._on_voice_disconnect is None
 
 
 # =====================================================================
@@ -1861,6 +1878,9 @@ class TestVoiceTimeoutCleansRunnerState:
         adapter._voice_text_channels = {}
         adapter._voice_sources = {}
         adapter._voice_timeout_tasks = {}
+        adapter._voice_timeout_seconds = DiscordAdapter.VOICE_TIMEOUT
+        adapter._voice_empty_timeout_tasks = {}
+        adapter._voice_empty_timeout_seconds = DiscordAdapter.VOICE_EMPTY_TIMEOUT
         adapter._voice_receivers = {}
         adapter._voice_listen_tasks = {}
         adapter._voice_input_callback = None
@@ -1952,6 +1972,9 @@ class TestPlaybackTimeout:
         adapter._voice_text_channels = {}
         adapter._voice_sources = {}
         adapter._voice_timeout_tasks = {}
+        adapter._voice_timeout_seconds = DiscordAdapter.VOICE_TIMEOUT
+        adapter._voice_empty_timeout_tasks = {}
+        adapter._voice_empty_timeout_seconds = DiscordAdapter.VOICE_EMPTY_TIMEOUT
         adapter._voice_receivers = {}
         adapter._voice_listen_tasks = {}
         adapter._voice_input_callback = None

@@ -1382,6 +1382,20 @@ DEFAULT_CONFIG = {
         # real memory cost. Default 32 MiB matches the historical hardcoded
         # cap. Set to 0 for no cap. Env override: DISCORD_MAX_ATTACHMENT_BYTES.
         "max_attachment_bytes": 33554432,
+        # Discord voice-channel auto-join. Manual `/voice join` still works when
+        # disabled. Set channel/user IDs from Discord's Developer Mode. Env
+        # overrides use DISCORD_VOICE_* names (see docs).
+        "voice": {
+            "auto_join": {
+                "enabled": False,
+                "channel_id": "",      # Voice channel ID to join (preferred over name)
+                "channel_name": "",    # Fallback match when no channel_id is set
+                "text_channel_id": "", # Text channel for transcripts/replies (fallback: DISCORD_HOME_CHANNEL)
+                "user_ids": [],         # Optional trigger-user allowlist; empty = any authorized user
+            },
+            "idle_timeout_seconds": 300,   # 0 disables silence-based disconnect
+            "empty_timeout_seconds": 300,  # Leave after channel has no non-bot humans
+        },
     },
 
     # WhatsApp platform settings (gateway mode)

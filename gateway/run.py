@@ -1895,37 +1895,23 @@ class GatewayRunner:
         except OSError as e:
             logger.warning("Failed to save voice modes: %s", e)
 
-    def _set_adapter_auto_tts_disabled(self, adapter, chat_id: str, disabled: bool) -> None:
-        """Update an adapter's in-memory auto-TTS suppression set if present."""
-        disabled_chats = getattr(adapter, "_auto_tts_disabled_chats", None)
-        if not isinstance(disabled_chats, set):
-            return
-        if disabled:
-            disabled_chats.add(chat_id)
-            # ``/voice off`` also clears any explicit enable — it's a hard override.
-            enabled_chats = getattr(adapter, "_auto_tts_enabled_chats", None)
-            if isinstance(enabled_chats, set):
-                enabled_chats.discard(chat_id)
-        else:
-            disabled_chats.discard(chat_id)
-
-    def _set_adapter_auto_tts_enabled(self, adapter, chat_id: str, enabled: bool) -> None:
-        """Update an adapter's per-chat auto-TTS opt-in set if present.
-
-        Used for ``/voice on``/``/voice tts`` where the user explicitly wants
-        auto-TTS even when ``voice.auto_tts`` is False globally.
-        """
+    def _set_adapter_auto_tts(self, adapter, chat_id: str, *, enabled: bool) -> None:
+        """Update adapter in-memory auto-TTS overrides for one chat."""
+        chat_id = str(chat_id)
         enabled_chats = getattr(adapter, "_auto_tts_enabled_chats", None)
-        if not isinstance(enabled_chats, set):
-            return
+        disabled_chats = getattr(adapter, "_auto_tts_disabled_chats", None)
         if enabled:
-            enabled_chats.add(chat_id)
-            # An explicit opt-in clears any stale /voice off for this chat.
-            disabled_chats = getattr(adapter, "_auto_tts_disabled_chats", None)
+            if isinstance(enabled_chats, set):
+                enabled_chats.add(chat_id)
             if isinstance(disabled_chats, set):
+                # An explicit opt-in clears any stale /voice off for this chat.
                 disabled_chats.discard(chat_id)
         else:
-            enabled_chats.discard(chat_id)
+            if isinstance(disabled_chats, set):
+                disabled_chats.add(chat_id)
+            if isinstance(enabled_chats, set):
+                # ``/voice off`` is a hard override and clears any explicit enable.
+                enabled_chats.discard(chat_id)
 
     def _sync_voice_mode_state_to_adapter(self, adapter) -> None:
         """Restore persisted /voice state into a live platform adapter.
@@ -1970,6 +1956,12 @@ class GatewayRunner:
                 key[len(prefix):] for key, mode in self._voice_mode.items()
                 if mode in {"voice_only", "all"} and key.startswith(prefix)
             )
+
+    def _run_adapter_post_sync_startup(self, adapter) -> None:
+        """Run adapter startup hooks that depend on runner-owned state sync."""
+        schedule_reconcile = getattr(adapter, "schedule_voice_auto_join_reconcile", None)
+        if callable(schedule_reconcile):
+            schedule_reconcile()
 
     async def _safe_adapter_disconnect(self, adapter, platform) -> None:
         """Call adapter.disconnect() defensively, swallowing any error.
@@ -3977,6 +3969,7 @@ class GatewayRunner:
                 if success:
                     self.adapters[platform] = adapter
                     self._sync_voice_mode_state_to_adapter(adapter)
+                    self._run_adapter_post_sync_startup(adapter)
                     connected_count += 1
                     self._update_platform_runtime_status(
                         platform.value,
@@ -5581,6 +5574,7 @@ class GatewayRunner:
                     if success:
                         self.adapters[platform] = adapter
                         self._sync_voice_mode_state_to_adapter(adapter)
+                        self._run_adapter_post_sync_startup(adapter)
                         self.delivery_router.adapters = self.adapters
                         del self._failed_platforms[platform]
                         self._update_platform_runtime_status(
@@ -10853,6 +10847,31 @@ class GatewayRunner:
             return raw.guild.id
         return None
 
+    def _set_discord_voice_join_mode(
+        self,
+        adapter,
+        platform: Platform,
+        chat_id: str,
+        *,
+        tts_enabled: bool,
+    ) -> None:
+        """Persist the chat-side mode created by a Discord VC join.
+
+        When top-level ``voice.auto_tts`` is false, Hermes remains in the voice channel and
+        listens, but replies in text only.  This is represented as voice mode
+        ``off`` plus an explicit adapter auto-TTS suppression so the BaseAdapter
+        does not synthesize speech for voice-originated turns.
+        """
+        chat_id = str(chat_id)
+        self._voice_mode[self._voice_key(platform, chat_id)] = "all" if tts_enabled else "off"
+        self._save_voice_modes()
+        self._set_adapter_auto_tts(adapter, chat_id, enabled=tts_enabled)
+
+    @staticmethod
+    def _discord_voice_join_tts_enabled(adapter) -> bool:
+        """Return the existing global ``voice.auto_tts`` default pushed to the adapter."""
+        return getattr(adapter, "_auto_tts_default", False) is True
+
     async def _handle_voice_command(self, event: MessageEvent) -> str:
         """Handle /voice [on|off|tts|channel|leave|status] command."""
         args = event.get_command_args().strip().lower()
@@ -10866,19 +10885,19 @@ class GatewayRunner:
             self._voice_mode[voice_key] = "voice_only"
             self._save_voice_modes()
             if adapter:
-                self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
+                self._set_adapter_auto_tts(adapter, chat_id, enabled=True)
             return t("gateway.voice.enabled_voice_only")
         elif args in {"off", "disable"}:
             self._voice_mode[voice_key] = "off"
             self._save_voice_modes()
             if adapter:
-                self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
+                self._set_adapter_auto_tts(adapter, chat_id, enabled=False)
             return t("gateway.voice.disabled_text")
         elif args == "tts":
             self._voice_mode[voice_key] = "all"
             self._save_voice_modes()
             if adapter:
-                self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
+                self._set_adapter_auto_tts(adapter, chat_id, enabled=True)
             return t("gateway.voice.tts_enabled")
         elif args in {"channel", "join"}:
             return await self._handle_voice_channel_join(event)
@@ -10914,14 +10933,25 @@ class GatewayRunner:
                 self._voice_mode[voice_key] = "voice_only"
                 self._save_voice_modes()
                 if adapter:
-                    self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
+                    self._set_adapter_auto_tts(adapter, chat_id, enabled=True)
                 return t("gateway.voice.enabled_short")
             else:
                 self._voice_mode[voice_key] = "off"
                 self._save_voice_modes()
                 if adapter:
-                    self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
+                    self._set_adapter_auto_tts(adapter, chat_id, enabled=False)
                 return t("gateway.voice.disabled_short")
+
+    def _wire_discord_voice_callbacks(self, adapter) -> None:
+        """Wire Discord voice callbacks before joining a voice channel."""
+        adapter._voice_input_callback = self._handle_voice_channel_input
+        adapter._on_voice_disconnect = self._handle_voice_timeout_cleanup
+
+    @staticmethod
+    def _clear_discord_voice_callbacks(adapter) -> None:
+        """Clear callbacks after a failed or completed Discord voice join."""
+        adapter._voice_input_callback = None
+        adapter._on_voice_disconnect = None
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
         """Join the user's current Discord voice channel."""
@@ -10941,16 +10971,13 @@ class GatewayRunner:
 
         # Wire callbacks BEFORE join so voice input arriving immediately
         # after connection is not lost.
-        if hasattr(adapter, "_voice_input_callback"):
-            adapter._voice_input_callback = self._handle_voice_channel_input
-        if hasattr(adapter, "_on_voice_disconnect"):
-            adapter._on_voice_disconnect = self._handle_voice_timeout_cleanup
+        self._wire_discord_voice_callbacks(adapter)
 
         try:
             success = await adapter.join_voice_channel(voice_channel)
         except Exception as e:
             logger.warning("Failed to join voice channel: %s", e)
-            adapter._voice_input_callback = None
+            self._clear_discord_voice_callbacks(adapter)
             err_lower = str(e).lower()
             if "pynacl" in err_lower or "nacl" in err_lower or "davey" in err_lower:
                 return (
@@ -10959,20 +10986,119 @@ class GatewayRunner:
                 )
             return f"Failed to join voice channel: {e}"
 
-        if success:
-            adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
-            if hasattr(adapter, "_voice_sources"):
-                adapter._voice_sources[guild_id] = event.source.to_dict()
-            self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "all"
-            self._save_voice_modes()
-            self._set_adapter_auto_tts_enabled(adapter, event.source.chat_id, enabled=True)
-            return (
-                f"Joined voice channel **{voice_channel.name}**.\n"
-                f"I'll speak my replies and listen to you. Use /voice leave to disconnect."
+        if not success:
+            self._clear_discord_voice_callbacks(adapter)
+            return "Failed to join voice channel. Check bot permissions (Connect + Speak)."
+
+        voice_text_channels = getattr(adapter, "_voice_text_channels")
+        voice_sources = getattr(adapter, "_voice_sources")
+        voice_text_channels[guild_id] = int(event.source.chat_id)
+        voice_sources[guild_id] = event.source.to_dict()
+        tts_enabled = self._discord_voice_join_tts_enabled(adapter)
+        self._set_discord_voice_join_mode(
+            adapter,
+            event.source.platform,
+            event.source.chat_id,
+            tts_enabled=tts_enabled,
+        )
+        suffix = (
+            "I'll speak my replies and listen to you. Use /voice leave to disconnect."
+            if tts_enabled
+            else "I'll listen here and reply in text. Use /voice tts to enable spoken replies, "
+            "or /voice leave to disconnect."
+        )
+        return f"Joined voice channel **{voice_channel.name}**.\n{suffix}"
+
+    async def _handle_discord_voice_auto_join(self, adapter, member, channel, text_channel_id: str) -> None:
+        """Join a configured Discord VC when an authorized trigger user enters it."""
+        guild = getattr(channel, "guild", None) or getattr(member, "guild", None)
+        if guild is None:
+            return
+        guild_id = int(guild.id)
+        text_channel_id = str(text_channel_id)
+
+        try:
+            text_channel_id_int = int(text_channel_id)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Discord voice auto-join needs a numeric text channel id; got %r",
+                text_channel_id,
             )
-        # Join failed — clear callback
-        adapter._voice_input_callback = None
-        return "Failed to join voice channel. Check bot permissions (Connect + Speak)."
+            return
+
+        text_channel = None
+        client = getattr(adapter, "_client", None)
+        if client is not None:
+            get_channel = getattr(client, "get_channel", None)
+            if callable(get_channel):
+                text_channel = get_channel(text_channel_id_int)
+        if text_channel is None:
+            logger.warning(
+                "Discord voice auto-join text channel %s was not found; refusing to join voice without reply routing",
+                text_channel_id,
+            )
+            return
+        text_guild = getattr(text_channel, "guild", None)
+        text_guild_id = getattr(text_guild, "id", None)
+        if text_guild_id is not None:
+            try:
+                text_guild_id_int = int(text_guild_id)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Discord voice auto-join text channel %s has invalid guild id %r",
+                    text_channel_id,
+                    text_guild_id,
+                )
+                return
+            if text_guild_id_int != guild_id:
+                logger.warning(
+                    "Discord voice auto-join text channel %s belongs to guild %s, not voice guild %s",
+                    text_channel_id,
+                    text_guild_id,
+                    guild_id,
+                )
+                return
+
+        # Wire callbacks BEFORE join so voice input arriving immediately after
+        # connection is not lost.
+        self._wire_discord_voice_callbacks(adapter)
+
+        try:
+            success = await adapter.join_voice_channel(channel)
+        except Exception:
+            logger.warning("Discord voice auto-join failed", exc_info=True)
+            success = False
+        if not success:
+            self._clear_discord_voice_callbacks(adapter)
+            return
+
+        voice_text_channels = getattr(adapter, "_voice_text_channels")
+        voice_sources = getattr(adapter, "_voice_sources")
+        voice_text_channels[guild_id] = text_channel_id_int
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id=text_channel_id,
+            user_id=str(getattr(member, "id", "")),
+            user_name=getattr(member, "display_name", None) or str(getattr(member, "id", "")),
+            chat_name=getattr(text_channel, "name", None) or text_channel_id,
+            chat_type="channel",
+        )
+        voice_sources[guild_id] = source.to_dict()
+
+        tts_enabled = self._discord_voice_join_tts_enabled(adapter)
+        self._set_discord_voice_join_mode(
+            adapter,
+            Platform.DISCORD,
+            text_channel_id,
+            tts_enabled=tts_enabled,
+        )
+        logger.info(
+            "Auto-joined Discord voice channel %s (%s) for user %s; voice_auto_tts=%s",
+            getattr(channel, "name", text_channel_id),
+            getattr(channel, "id", "?"),
+            getattr(member, "id", "?"),
+            tts_enabled,
+        )
 
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
         """Leave the Discord voice channel."""
@@ -10992,9 +11118,8 @@ class GatewayRunner:
         # Always clean up state even if leave raised an exception
         self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "off"
         self._save_voice_modes()
-        self._set_adapter_auto_tts_disabled(adapter, event.source.chat_id, disabled=True)
-        if hasattr(adapter, "_voice_input_callback"):
-            adapter._voice_input_callback = None
+        self._set_adapter_auto_tts(adapter, event.source.chat_id, enabled=False)
+        self._clear_discord_voice_callbacks(adapter)
         return "Left voice channel."
 
     def _handle_voice_timeout_cleanup(self, chat_id: str) -> None:
@@ -11005,7 +11130,7 @@ class GatewayRunner:
         self._voice_mode[self._voice_key(Platform.DISCORD, chat_id)] = "off"
         self._save_voice_modes()
         adapter = self.adapters.get(Platform.DISCORD)
-        self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
+        self._set_adapter_auto_tts(adapter, chat_id, enabled=False)
 
     def _is_duplicate_voice_transcript(self, guild_id: int, user_id: int, transcript: str) -> bool:
         """Suppress repeated STT outputs for the same recent utterance.

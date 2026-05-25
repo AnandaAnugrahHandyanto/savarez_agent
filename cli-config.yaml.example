@@ -700,6 +700,15 @@ platform_toolsets:
 #   reactions: true                  # Show processing reactions (default: true)
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
 #   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
+#   voice:
+#     auto_join:
+#       enabled: false               # Auto-join a configured voice channel when a trigger user joins
+#       channel_id: ""               # Voice channel ID to join (preferred over channel_name)
+#       channel_name: ""             # Fallback match if channel_id is unset, e.g. "General"
+#       text_channel_id: ""          # Text channel for transcripts/replies; falls back to DISCORD_HOME_CHANNEL
+#       user_ids: []                 # Optional trigger-user IDs; empty = any authorized Discord user
+#     idle_timeout_seconds: 300       # 0 disables silence-based disconnect
+#     empty_timeout_seconds: 300      # Leave after no non-bot humans remain
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)

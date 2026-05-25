@@ -345,7 +345,7 @@ Useful when you want private interaction without server-channel mention behavior
 
 This is the most advanced mode.
 
-Hermes joins a Discord VC, listens to user speech, transcribes it, runs the normal agent pipeline, and speaks replies back into the channel.
+Hermes joins a Discord VC, listens to user speech, transcribes it, runs the normal agent pipeline, and replies in the associated text channel. If the existing top-level `voice.auto_tts` setting is enabled, it also speaks replies back into the channel.
 
 ## Required Discord permissions
 
@@ -369,12 +369,36 @@ In a Discord text channel where the bot is present:
 /voice status
 ```
 
+By default, `/voice join` uses the same listen-only behavior as auto-join: Hermes stays in the VC, posts transcripts, and replies in text. Set top-level `voice.auto_tts: true` if you want it to speak replies immediately after joining.
+
+## Automatic Discord VC auto-join
+
+Hermes can auto-join a configured voice channel when an authorized trigger user joins it. This is useful for a personal server where you want Hermes to appear in `General` whenever you enter.
+
+```yaml
+# ~/.hermes/config.yaml
+discord:
+  voice:
+    auto_join:
+      enabled: true
+      channel_id: "123456789012345678"      # voice channel ID, preferred
+      # channel_name: "General"             # fallback if channel_id is unset
+      text_channel_id: "234567890123456789" # transcripts/replies; falls back to DISCORD_HOME_CHANNEL
+      user_ids: ["345678901234567890"]      # optional; empty = any authorized Discord user
+    idle_timeout_seconds: 0                  # 0 disables silence-based disconnect
+    empty_timeout_seconds: 300               # leave after no non-bot humans remain
+```
+
+Equivalent environment variables are `DISCORD_VOICE_AUTO_JOIN`, `DISCORD_VOICE_AUTO_JOIN_CHANNEL_ID`, `DISCORD_VOICE_AUTO_JOIN_CHANNEL_NAME`, `DISCORD_VOICE_TEXT_CHANNEL_ID`, `DISCORD_VOICE_AUTO_JOIN_USER_IDS`, `DISCORD_VOICE_IDLE_TIMEOUT_SECONDS`, and `DISCORD_VOICE_EMPTY_TIMEOUT_SECONDS`.
+
+On gateway startup, Hermes also reconciles the configured channel and joins if a trigger user is already present.
+
 ### What happens when joined
 
 - users speak in the VC
 - Hermes detects speech boundaries
 - transcripts are posted in the associated text channel
-- Hermes responds in text and audio
+- Hermes responds in text; if `voice.auto_tts` or `/voice tts` is enabled, it also responds in audio
 - the text channel is the one where `/voice join` was issued
 
 ### Best practices for Discord VC use

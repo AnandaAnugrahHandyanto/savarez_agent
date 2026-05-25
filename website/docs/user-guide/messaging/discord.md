@@ -677,7 +677,8 @@ Hermes Agent supports Discord voice messages:
 
 - **Incoming voice messages** are automatically transcribed using the configured STT provider: local `faster-whisper` (no key), Groq Whisper (`GROQ_API_KEY`), or OpenAI Whisper (`VOICE_TOOLS_OPENAI_KEY`).
 - **Text-to-speech**: Use `/voice tts` to have the bot send spoken audio responses alongside text replies.
-- **Discord voice channels**: Hermes can also join a voice channel, listen to users speaking, and talk back in the channel.
+- **Discord voice channels**: Hermes can join a voice channel, listen to users speaking, post transcripts to a linked text channel, and optionally speak replies in the channel.
+- **Discord VC auto-join**: set `discord.voice.auto_join.enabled: true` in `~/.hermes/config.yaml` (or `DISCORD_VOICE_AUTO_JOIN=true`) to join a configured VC when an authorized trigger user enters. Configure `channel_id`, `text_channel_id`, optional `user_ids`, `idle_timeout_seconds`, and `empty_timeout_seconds` under `discord.voice`. Spoken replies use the existing top-level `voice.auto_tts` setting. Hermes also reconciles this on gateway startup if the trigger user is already in the target VC.
 
 For the full setup and operational guide, see:
 - [Voice Mode](/docs/user-guide/features/voice-mode)

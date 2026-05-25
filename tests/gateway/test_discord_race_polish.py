@@ -23,6 +23,9 @@ def _make_adapter():
     adapter._voice_receivers = {}
     adapter._voice_listen_tasks = {}
     adapter._voice_timeout_tasks = {}
+    adapter._voice_timeout_seconds = DiscordAdapter.VOICE_TIMEOUT
+    adapter._voice_empty_timeout_tasks = {}
+    adapter._voice_empty_timeout_seconds = DiscordAdapter.VOICE_EMPTY_TIMEOUT
     adapter._voice_text_channels = {}
     adapter._voice_sources = {}
     adapter._client = MagicMock()
@@ -60,11 +63,14 @@ async def test_concurrent_joins_do_not_double_connect():
     channel.guild.id = 42
     channel.connect = lambda: slow_connect(channel)
 
+    def fake_ensure_future(coro):
+        coro.close()
+        return asyncio.create_task(asyncio.sleep(0))
+
     from plugins.platforms.discord import adapter as discord_mod
     with patch.object(discord_mod, "VoiceReceiver",
                       MagicMock(return_value=MagicMock(start=lambda: None))):
-        with patch.object(discord_mod.asyncio, "ensure_future",
-                          lambda _c: asyncio.create_task(asyncio.sleep(0))):
+        with patch.object(discord_mod.asyncio, "ensure_future", fake_ensure_future):
             t1 = asyncio.create_task(adapter.join_voice_channel(channel))
             t2 = asyncio.create_task(adapter.join_voice_channel(channel))
             await asyncio.sleep(0.05)
