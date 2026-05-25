@@ -1080,12 +1080,20 @@ def skill_view(
         _content_lower = content.lower()
         _injection_detected = any(p in _content_lower for p in _INJECTION_PATTERNS)
 
-        if _outside_skills_dir or _injection_detected:
+        # P30-3 FIX (audit 100 passes): check skill file integrity against
+        # trusted_fingerprints from config.yaml.  Warn but still serve —
+        # matching the existing behavior of the injection scan.
+        from agent.skill_utils import check_skill_integrity
+        _integrity_warning = check_skill_integrity(skill_md)
+
+        if _outside_skills_dir or _injection_detected or _integrity_warning:
             _warnings = []
             if _outside_skills_dir:
                 _warnings.append(f"skill file is outside the trusted skills directory (~/.hermes/skills/): {skill_md}")
             if _injection_detected:
                 _warnings.append("skill content contains patterns that may indicate prompt injection")
+            if _integrity_warning:
+                _warnings.append(_integrity_warning)
             logging.getLogger(__name__).warning("Skill security warning for '%s': %s", name, "; ".join(_warnings))
 
         parsed_frontmatter: Dict[str, Any] = {}

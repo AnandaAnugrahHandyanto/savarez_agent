@@ -5,6 +5,7 @@ heavy dependency chain.  It is safe to import at module level without triggering
 tool registration or provider resolution.
 """
 
+import hashlib
 import logging
 import os
 import re
@@ -15,6 +16,89 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from hermes_constants import get_config_path, get_skills_dir, is_termux
 
 logger = logging.getLogger(__name__)
+
+# ── Skill file integrity (P30-3 fix) ─────────────────────────────────────
+# SHA-256 store: path -> hexdigest.  Loaded once per process.
+_SKILL_FINGERPRINTS: Dict[str, str] = {}
+
+# Trusted fingerprints — comma-separated SHA-256 hexdigests in config.yaml
+# under skills.trusted_fingerprints.  If non-empty and a skill's hash is NOT
+# in this list, a WARNING is logged.  Empty list = trust all (backward compat).
+_FP_CACHE_KEY: Optional[Tuple[str, int]] = None
+
+
+def _load_fingerprints_cache() -> None:
+    """Load trusted fingerprints from config.yaml once per process."""
+    global _FP_CACHE_KEY
+    config_path = get_config_path()
+    if not config_path.exists():
+        return
+    try:
+        stat = config_path.stat()
+        cache_key = (str(config_path), stat.st_mtime_ns)
+    except OSError:
+        cache_key = None
+
+    if cache_key == _FP_CACHE_KEY:
+        return
+    _FP_CACHE_KEY = cache_key
+    _SKILL_FINGERPRINTS.clear()
+
+    try:
+        import yaml
+        parsed = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return
+
+    skills_cfg = parsed.get("skills", {})
+    if not isinstance(skills_cfg, dict):
+        return
+
+    trusted = skills_cfg.get("trusted_fingerprints", [])
+    if isinstance(trusted, str):
+        trusted = [t.strip() for t in trusted.split(",") if t.strip()]
+    if not isinstance(trusted, list):
+        return
+
+    for fp in trusted:
+        fp = fp.strip()
+        if len(fp) == 64:  # SHA-256 hexdigest length
+            _SKILL_FINGERPRINTS[fp] = ""  # value unused; key presence = trust
+
+
+def compute_skill_fingerprint(skill_path: Path) -> str:
+    """Return SHA-256 hexdigest of a skill file's content.
+
+    Caches results in-process so repeated calls are cheap.
+    """
+    try:
+        return hashlib.sha256(skill_path.read_bytes()).hexdigest()
+    except Exception:
+        return ""
+
+
+def check_skill_integrity(skill_path: Path) -> Optional[str]:
+    """Check a skill file against trusted_fingerprints.
+
+    Returns None if trusted_fingerprints is empty (trust all = backward compat).
+    Returns "" if the skill's hash is trusted.
+    Returns a warning string if the hash is NOT in trusted_fingerprints.
+    """
+    _load_fingerprints_cache()
+    if not _SKILL_FINGERPRINTS:
+        return None  # trust all when list is empty
+
+    fp = compute_skill_fingerprint(skill_path)
+    if not fp:
+        return None  # can't compute = skip check
+
+    if fp not in _SKILL_FINGERPRINTS:
+        return (
+            f"skill '{skill_path.name}' has SHA-256 fingerprint not in "
+            f"skills.trusted_fingerprints — file may have been modified. "
+            f"Hash: {fp}"
+        )
+    return ""
 
 # ── Platform mapping ──────────────────────────────────────────────────────
 
@@ -112,7 +196,14 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
         if isinstance(parsed, dict):
             frontmatter = parsed
     except Exception:
-        # Fallback: simple key:value parsing for malformed YAML
+        # P30-4 FIX (audit 100 passes): log at WARNING when frontmatter YAML
+        # is malformed, so operators can see the degradation. The fallback
+        # key:value parsing will still work, but the corruption should be visible.
+        logger.warning(
+            "parse_frontmatter: YAML frontmatter parse failed in skill; "
+            "falling back to key:value parsing. Skill content may be malformed.",
+            exc_info=True,
+        )
         for line in yaml_content.strip().split("\n"):
             if ":" not in line:
                 continue
