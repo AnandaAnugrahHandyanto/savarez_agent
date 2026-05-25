@@ -12897,5 +12897,261 @@ No `CHANGELOG.md` file exists in the repository. There is no single changelog �
 
 ---
 
-*Pass #92 complete — 2026-05-26T12:15:00Z*
+---
+
+## Pass #93 – OAuth 2.0, OpenID Connect & Token Security Deep Dive – 2026-05-26T12:30:00Z
+
+Scope: hermes_cli/auth.py, agent/anthropic_adapter.py, agent/google_oauth.py, agent/credential_pool.py, agent/credential_sources.py, tests/test_minimax_oauth.py, skills/productivity/google-workspace/scripts/setup.py, plans/gemini-oauth-provider.md, gateway/pairing.py
+
+---
+
+### Finding P93-1: OAuth State Parameter — CSRF Protection Present ✅
+
+**Location:**
+- `agent/anthropic_adapter.py` lines 1204, 1214, 1253–1256
+- `hermes_cli/auth.py` lines 6871–6875 (MiniMax)
+- `tests/test_minimax_oauth.py` lines 156–179
+
+**Detail:**
+All OAuth authorization code flows validate the `state` parameter to prevent CSRF attacks per RFC 6749 §10.12.
+
+- State is generated using `secrets.token_urlsafe(32)` — cryptographically secure (anthropic_adapter.py line 1204)
+- Callback validation explicitly compares received_state against stored oauth_state (line 1254)
+- Mismatch raises `AuthError` with code `"state_mismatch"` and logs a warning (lines 1255–1256)
+- MiniMax flow same pattern: `payload.get("state") != state` raises AuthError with code `"state_mismatch"` (auth.py line 6871–6875)
+- Test `test_request_user_code_state_mismatch_raises` explicitly verifies this behavior
+
+**Assessment:** GOOD — state parameter properly validated with explicit CSRF error on mismatch.
+
+---
+
+### Finding P93-2: PKCE Implementation — Standards-Compliant ✅
+
+**Location:**
+- `hermes_cli/auth.py` lines 2255–2293 (Spotify + generic PKCE)
+- `agent/anthropic_adapter.py` line 1203, 1213–1214
+- `plans/gemini-oauth-provider.md` line 19
+
+**Detail:**
+PKCE (RFC 7636) is implemented for all OAuth flows:
+
+- Code verifier: 64-byte random via `os.urandom()`, base64url-encoded, truncated to 128 chars
+- Code challenge: SHA256 digest of verifier, base64url-encoded (S256 method)
+- `code_challenge_method: "S256"` explicitly set in authorization URL params
+- Code verifier passed in token exchange request (anthropic_adapter.py line 1267)
+- Spotify PKCE: `_spotify_build_authorize_url()` includes state + code_challenge + method
+- Gemini OAuth plan also specifies "S256 code challenge, 32-byte random verifier"
+
+**Assessment:** GOOD — full PKCE S256 implementation, no "plain" method fallback observed.
+
+---
+
+### Finding P93-3: Token Storage — Plaintext JSON with 0o600 Permissions ⚠️
+
+**Location:**
+- `hermes_cli/auth.py` lines 1–20 (arch description)
+- `plans/gemini-oauth-provider.md` line 29 (`chmod 600`)
+- `docker/entrypoint.sh` lines 100–102 (bootstrap from env → `chmod 600`)
+- `skills/productivity/google-workspace/scripts/setup.py` (stores at profile-scoped path)
+- `RELEASE_v0.8.0.md` line 281 (Google Workspace tokens profile-scoped)
+
+**Detail:**
+Tokens (access_token, refresh_token) are stored in JSON files (auth.json, google_token.json, etc.) as **plaintext** — no AES or any encryption at rest.
+
+- File permission enforcement: `chmod 600` set on bootstrap, and `stat.S_IRWXU` (owner-only) enforced on callback server startup
+- `auth.json` holds OAuth credentials for Nous Portal (CONTRIBUTING.md line 209)
+- Google Workspace tokens stored per-profile at `~/.hermes/google_token.json`
+- Docker entrypoint bootstraps `auth.json` from `$HERMES_AUTH_JSON_BOOTSTRAP` env var with mode 600
+- No field-level encryption observed in token storage files — tokens stored in cleartext JSON
+
+**Risk:** If an attacker gains filesystem read access, all OAuth tokens are exposed in plaintext.
+
+**Recommendation:** Encrypt tokens at rest using a derived key from the user's Hermes credentials (e.g., PBKDF2 of master password or keyfile). Alternatively use the OS keychain (macOS Keychain, Linux libsecret).
+
+---
+
+### Finding P93-4: Token Expiration — Checked Before Use ✅
+
+**Location:**
+- `hermes_cli/auth.py` lines 6879–6891 (`_minimax_expired_in_looks_like_unix_ms`, `_minimax_resolve_token_expiry_unix`)
+- `plans/gemini-oauth-provider.md` line 30 ("check expiry, refresh if within 5 min of expiration")
+- `tests/test_minimax_oauth.py` lines 218–243 (token polling with expiry handling)
+- `tests/test_minimax_oauth.py` lines 330–351 (test_refresh_updates_access_token)
+
+**Detail:**
+- `get_valid_access_token()` pattern checks expiry before each API call, refreshes if needed
+- `_minimax_resolve_token_expiry_unix()` distinguishes between unix-ms absolute time vs TTL seconds — handles ambiguous MiniMax API response format
+- `expired_in` field parsed correctly to compute absolute expiry
+- Refresh flow updates access_token, preserves refresh_token for reuse
+
+**Assessment:** GOOD — token expiry is checked and proactive refresh is implemented.
+
+---
+
+### Finding P93-5: Refresh Token Rotation — Supported ✅
+
+**Location:**
+- `agent/credential_pool.py` lines 924, 948, 990, 1014, 1048, 1074
+- `hermes_cli/auth.py` line 2788 (`auth_type: "oauth_pkce"`)
+- `RELEASE_v0.8.0.md` lines 53–55 (OAuth token sync, stale credentials)
+
+**Detail:**
+- OAuth token sync between credential pool and credentials file (PR #4981)
+- Refresh token used to obtain new access_token; new access_token stored back
+- When refresh token is terminally invalid, local token state is cleared (credential_pool.py lines 924, 990, 1048)
+- Error message when Codex refresh token is reused: "Actionable error message when Codex refresh token is reused" (RELEASE_v0.8.0.md line 196)
+
+**Assessment:** GOOD — refresh token rotation is properly handled with cleanup on terminal invalidation.
+
+---
+
+### Finding P93-6: Redirect URI / Callback Validation — Localhost Enforcement ✅
+
+**Location:**
+- `hermes_cli/auth.py` lines 2296–2313 (Spotify redirect URI validation)
+- `agent/anthropic_adapter.py` lines 1210, 1266 (`_OAUTH_REDIRECT_URI`)
+- `agent/google_oauth.py` lines 869, 953 (localhost callback server)
+- `findings.md` line 7228 (OAuth callback server binds to localhost only)
+
+**Detail:**
+- Spotify: validates redirect_uri scheme is http, hostname is localhost or 127.0.0.1, port must be explicit (lines 2296–2313)
+- Google OAuth: `http://localhost:PORT/callback` with ephemeral port, binds localhost only
+- OAuth callback server: binds to `localhost` only with ephemeral port (findings.md line 7228)
+- `_OAUTH_REDIRECT_URI` used in both authorization request and token exchange — must match exactly
+
+**Assessment:** GOOD — redirect URI validated to localhost only; no arbitrary remote URI callbacks.
+
+---
+
+### Finding P93-7: Scope Enforcement (Google Workspace) — Partial ⚠️
+
+**Location:**
+- `skills/productivity/google-workspace/scripts/setup.py` lines 172–199, 377–390
+- `skills/productivity/google-workspace/scripts/google_api.py` lines 71, 184
+
+**Detail:**
+- Google Workspace skill checks for missing scopes from stored token payload (line 199)
+- `_missing_scopes_from_payload()` detects scope drift between token and requested scopes
+- Token payload stores granted_scopes, reports missing ones on auth check
+- However: `Credentials.from_authorized_user_file()` called WITHOUT scopes parameter to avoid `invalid_scope` errors on refresh (lines 170–174) — this means scope validation happens at setup but not strictly enforced on every API call
+
+**Assessment:** PARTIAL — scope checking exists but deliberately bypassed in google-auth library to avoid refresh failures. Least-privilege scopes tracked but not rigidly enforced per call.
+
+---
+
+### Finding P93-8: Nous OAuth — Separate from Inference API Key ✅
+
+**Location:**
+- `RELEASE_v0.8.0.md` line 62 ("Nous OAuth access_token no longer used as inference API key")
+- `hermes_cli/auth.py` lines 4161, 4358, 4447–4468, 4887–4896, 5109, 5230
+
+**Detail:**
+- Nous OAuth access_token is NOT used directly as inference API key (fixed in PR #5564)
+- Instead uses `invoke JWT (preferred): use a scoped access_token directly for inference` or `Legacy session key (fallback)` (auth.py lines 16–19)
+- `_quarantine_nous_oauth_state()` isolates bad OAuth state; `_merge_shared_nous_oauth_state()` handles cross-profile sharing
+- `refresh_nous_oauth_from_state()` is a thin wrapper around `refresh_nous_oauth_pure()`
+
+**Assessment:** GOOD — Nous OAuth tokens properly gated behind token minting, not exposed as API keys.
+
+---
+
+### Finding P93-9: Token Replay — Pairing Code TTL Enforcement ✅
+
+**Location:**
+- `gateway/pairing.py` lines 11, 44, 215, 219, 265, 271–290, 333
+
+**Detail:**
+- Pairing codes expire after 1 hour (`CODE_TTL_SECONDS = 3600`)
+- Codes stored as salted SHA-256 hash, not plaintext — resistant to replay if DB is compromised
+- `_cleanup_expired()` prunes expired codes from storage
+- Legacy plaintext-key entries tolerated during migration but clearly marked
+
+**Assessment:** GOOD — pairing code replay prevented by TTL + salted hash storage.
+
+---
+
+### Finding P93-10: OAuth Flow for MCP — PKCE OAuth 2.1 ✅
+
+**Location:**
+- `RELEASE_v0.8.0.md` lines 25, 231
+- `RELEASE_v0.4.0.md` lines 19, 236, 319 (PKCE verifier leak fix)
+
+**Detail:**
+- MCP OAuth 2.1 PKCE: full standards-compliant OAuth client support (PR #5420)
+- Previous fix: PKCE verifier leak fix + OAuth refresh Content-Type (PR #1775)
+- Removed unused Hermes-native PKCE OAuth flow (PR #3107) — cleaned up dead code
+
+**Assessment:** GOOD — MCP OAuth 2.1 PKCE is current and maintained.
+
+---
+
+### Finding P93-11: xAI Grok OAuth — Entitlements Error Handling ✅
+
+**Location:**
+- `RELEASE_v0.14.0.md` lines 6, 12–14, 166
+- `run_agent.py` lines 1363–1368
+
+**Detail:**
+- xAI Grok via SuperGrok OAuth handles entitlement errors gracefully
+- Error strings checked: `"do not have an active Grok subscription"` triggers appropriate user messaging
+- Local OpenAI-compatible proxy for OAuth providers enables Codex/Aider/Cline to use OAuth-backed providers
+
+**Assessment:** GOOD — OAuth provider error handling with actionable user messages.
+
+---
+
+### Finding P93-12: Spotify OAuth — PKCE Flow with State ✅
+
+**Location:**
+- `hermes_cli/auth.py` lines 2667, 2752, 2788, 2881–2882
+
+**Detail:**
+- Spotify PKCE flow: code_verifier generated randomly, code_challenge computed as SHA256
+- `_refresh_spotify_oauth_state()` handles token refresh with `auth_type: "oauth_pkce"`
+- State carried through flow for CSRF protection
+
+**Assessment:** GOOD — Spotify OAuth PKCE + state implemented correctly.
+
+---
+
+### Finding P93-13: MiniMax OAuth — State Mismatch CSRF Check ✅
+
+**Location:**
+- `hermes_cli/auth.py` lines 6871–6875
+- `hermes_cli/main.py` line 3445 (`get_provider_auth_state("minimax-oauth")`)
+- `hermes_cli/auth.py` line 6960 (`_save_provider_state`)
+
+**Detail:**
+- MiniMax OAuth response validated: `payload.get("state") != state` raises `AuthError` with code `"state_mismatch"`
+- State saved/loaded via `_save_provider_state` / `_load_provider_state` for `"minimax-oauth"` provider
+- Full OAuth token polling with state mismatch detection throughout flow
+
+**Assessment:** GOOD — MiniMax CSRF protection via state parameter.
+
+---
+
+### Overall OAuth 2.0 / OpenID Connect & Token Security Assessment
+
+| Category | Status | Notes |
+|---|---|---|
+| State parameter / CSRF | ✅ GOOD | Validated in all flows; mismatch raises explicit error |
+| PKCE (S256) | ✅ GOOD | Full RFC 7636 implementation |
+| Authorization code exchange | ✅ GOOD | Verifier required, redirect_uri must match |
+| Token expiration | ✅ GOOD | Checked before use, proactive refresh |
+| Token rotation | ✅ GOOD | Refresh token retained, access token updated |
+| Token storage | ⚠️ WARNING | Plaintext JSON, 0o600 permissions only — no encryption at rest |
+| Scope enforcement | ⚠️ PARTIAL | Google Workspace tracks scopes; main auth.json doesn't enforce |
+| Least privilege | ⚠️ PARTIAL | Profile-scoped tokens exist; no comprehensive scope validation |
+| Refresh token security | ✅ GOOD | Rotation works, terminal invalidation clears state |
+| Redirect URI validation | ✅ GOOD | Localhost-only enforced for all OAuth flows |
+| Token leakage | ⚠️ NOTE | State passed via URL fragment (#) — not in server referrer but may appear in browser history |
+| Third-party platform flows | ✅ GOOD | xAI, Spotify, MiniMax, Google, MCP all have proper flows |
+| Nous OAuth gating | ✅ GOOD | access_token not used directly as API key |
+
+**Key Risk:** Token storage as plaintext JSON in `auth.json` with filesystem-level only protection. If the system is compromised at the filesystem level, all OAuth tokens are exposed. Consider field-level encryption or OS keychain integration for sensitive token storage.
+
+**Key Strength:** CSRF protection (state validation), PKCE, and redirect URI validation are all properly implemented across OAuth flows.
+
+---
+*Pass #93 complete — 2026-05-26T12:30:00Z*
 *Commit at scan: 5a51a1f65*
