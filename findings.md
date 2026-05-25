@@ -13642,3 +13642,119 @@ Scope: hermes_cli/tui.py, hermes_cli/tui_gateway.py, hermes_cli/chat_ui.py, tool
 
 *Pass #96 complete — 2026-05-26T14:05:00Z*
 *Commit at scan: 5a51a1f65*
+
+
+---
+
+## Pass #97 – Web API Endpoints, REST/GraphQL & External-facing Attack Surface Deep Dive – 2026-05-26T15:05:00Z
+
+Scope: gateway/platforms/api_server.py, hermes_cli/web_server.py, gateway/platforms/base.py, gateway/run.py
+
+---
+
+### P97-1 · API key authentication — GOOD (with caveat)
+
+**File:** `gateway/platforms/api_server.py`
+**Positive:** API key required via `X-API-Key` header. Supports multiple keys for different consumers.
+**Caveat:** When no API keys are configured (`hermes api-keys list` returns empty), all requests are allowed without authentication. This is a known design trade-off for internal-only deployments.
+**Severity:** MEDIUM (if exposed externally)
+**Mitigation:** `HERMES_EXTERNAL_MODE=enforced` can mandate API key requirement
+
+---
+
+### P97-2 · No IDOR in API — GOOD
+
+**File:** `gateway/platforms/api_server.py`
+**Positive:** All session lookups use the authenticated key's own session IDs. No cross-user session access possible. Message retrieval is scoped to the authenticated key.
+
+---
+
+### P97-3 · No GraphQL — N/A
+
+**Observation:** Hermes Agent uses REST for external APIs. No GraphQL endpoint found.
+**Impact:** GraphQL-specific attack surface (query complexity, introspection) does not apply.
+
+---
+
+### P97-4 · CORS restriction — GOOD
+
+**File:** `hermes_cli/web_server.py`
+**Positive:** Web dashboard binds to localhost only. CORS restricted to same-origin (`http://localhost:*`). No external access to web dashboard.
+
+---
+
+### P97-5 · Rate limiting on API — GOOD (per-key)
+
+**File:** `gateway/platforms/api_server.py`
+**Positive:** Per-key rate limiting with configurable limits. Rate limit headers returned (`X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`). 429 responses include `Retry-After` header.
+
+---
+
+### P97-6 · Per-message size limit — GOOD
+
+**File:** `gateway/platforms/api_server.py`
+**Positive:** 1MB per message limit enforced. `413 Content Too Large` returned for oversized requests.
+
+---
+
+### P97-7 · API payload schema validation — GOOD
+
+**File:** `gateway/platforms/api_server.py`
+**Positive:** Message payload validated before processing. Invalid payloads return 400 with descriptive error.
+
+---
+
+### P97-8 · No mass assignment — GOOD
+
+**Observation:** API uses structured Pydantic models for request parsing. No dynamic attribute assignment from request payloads. Each field has explicit type and validation.
+
+---
+
+### P97-9 · Webhook endpoint security — GOOD
+
+**File:** `gateway/platforms/telegram.py`, `gateway/platforms/feishu.py`, etc.
+**Positive:** Webhooks verified via HMAC signature (Telegram, Feishu) or bearer token. Invalid signatures return 403.
+
+---
+
+### P97-10 · API versioning — GOOD (no unpublished APIs)
+
+**Positive:** All endpoints are versioned (`/v1/`, `/v2/`). No unpublished or experimental endpoints exposed externally.
+
+---
+
+### P97-11 · Internal mode flag — GOOD (security boundary)
+
+**File:** `gateway/run.py`, `gateway/platforms/api_server.py`
+**Positive:** `HERMES_EXTERNAL_MODE=open` vs `HERMES_EXTERNAL_MODE=enforced` controls whether unauthenticated requests are allowed in internal mode.
+
+---
+
+### P97-12 · API audit logging — GOOD
+
+**File:** `hermes_state.py` (SessionDB)
+**Positive:** All API requests logged to session database with timestamp, source, and message metadata. Audit trail complete.
+
+---
+
+### Summary Table
+
+| ID | Area | Severity | Status |
+|----|------|----------|--------|
+| P97-1 | API key authentication (no keys = open) | MEDIUM | ⚠️ KNOWN |
+| P97-2 | No IDOR in API | — | ✅ GOOD |
+| P97-3 | No GraphQL | — | ℹ️ N/A |
+| P97-4 | CORS restriction | — | ✅ GOOD |
+| P97-5 | Rate limiting on API | — | ✅ GOOD |
+| P97-6 | Per-message size limit | — | ✅ GOOD |
+| P97-7 | API payload schema validation | — | ✅ GOOD |
+| P97-8 | No mass assignment | — | ✅ GOOD |
+| P97-9 | Webhook endpoint security | — | ✅ GOOD |
+| P97-10 | API versioning | — | ✅ GOOD |
+| P97-11 | Internal mode flag | — | ✅ GOOD |
+| P97-12 | API audit logging | — | ✅ GOOD |
+
+---
+
+*Pass #97 complete — 2026-05-26T15:05:00Z*
+*Commit at scan: 5a51a1f65*
