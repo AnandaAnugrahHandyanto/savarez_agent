@@ -1193,6 +1193,91 @@ def test_jobs_subpage_suppresses_unsafe_thread_links():
     assert "evil.t.me" not in html
 
 
+def test_jobs_subpage_opens_safe_signed_artifact_and_preserves_thread_link():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    item = item_cls(
+        job_id="lead",
+        name="Lead Brief",
+        schedule="daily",
+        deliver="telegram:-1003566991387:86",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_10-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Most important signed briefing.",
+        artifact_url="https://acta.imperatr.com/r/lead/detail.html?exp=1&sig=abc",
+        telegram_url="https://t.me/c/3566991387/86",
+    )
+
+    html = render_jobs_page([item], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
+
+    assert 'class="job-row fresh openable" data-open-url="https://acta.imperatr.com/r/lead/detail.html?exp=1&amp;sig=abc"' in html
+    assert '<a class="row-open-overlay job-open-overlay" href="https://acta.imperatr.com/r/lead/detail.html?exp=1&amp;sig=abc"' in html
+    assert '<span class="job-open-state signed">OPEN/SIGNED</span>' in html
+    assert '<span class="confidence-chip">CONF HIGH</span>' in html
+    assert "<span>fresh</span>" in html
+    assert "<span>60m ago</span>" in html
+    assert 'href="https://t.me/c/3566991387/86"' in html
+    assert "THREAD" in html
+    assert ".job-open-overlay { position:absolute; inset:0; z-index:2; border:0; text-decoration:none; }" in html
+    assert ".job-row > :not(.row-open-overlay) { position:relative; }" in html
+    assert ".job-main .thread-link { position:relative; z-index:3; pointer-events:auto; }" in html
+
+
+def test_jobs_subpage_rejects_unsafe_or_unsigned_artifact_urls():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    signed = item_cls(
+        job_id="signed",
+        name="Signed Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_10-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Signed.",
+        artifact_url="/r/signed/detail.html?exp=1&sig=abc",
+    )
+    unsigned = item_cls(
+        job_id="unsigned",
+        name="Unsigned Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_09-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 9, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Unsigned.",
+        artifact_url="https://acta.imperatr.com/r/unsigned/detail.html?exp=1",
+    )
+    unsafe = item_cls(
+        job_id="unsafe",
+        name="Unsafe Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_08-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 8, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Unsafe.",
+        artifact_url="javascript:alert(1)",
+    )
+
+    html = render_jobs_page([signed, unsigned, unsafe], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
+
+    assert 'data-open-url="/r/signed/detail.html?exp=1&amp;sig=abc"' in html
+    assert 'href="/r/signed/detail.html?exp=1&amp;sig=abc"' in html
+    assert "javascript:alert" not in html
+    assert html.count('data-open-url=') == 1
+    assert html.count('class="row-open-overlay job-open-overlay"') == 1
+    assert html.count('<span class="job-open-state muted">NO PAGE</span>') == 2
+    assert "https://acta.imperatr.com/r/unsigned/detail.html" not in html
+
+
 def test_outputs_page_uses_v9_shell_and_signed_source_rows():
     item_cls = collect_situation_items.__globals__["CronSituationItem"]
     item = item_cls(

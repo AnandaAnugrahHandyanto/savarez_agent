@@ -812,13 +812,28 @@ def _render_jobs_rows(items: Sequence[CronSituationItem], now: datetime) -> list
         latest = item.latest_time.isoformat() if item.latest_time else "No run yet"
         age = _age_label(item.latest_time, now)
         schedule = item.schedule or "manual"
+        artifact_url = item.artifact_url if item.enabled and _is_safe_signed_acta_artifact_url(item.artifact_url) else None
+        href = html.escape(artifact_url, quote=True) if artifact_url else ""
+        open_attr = f' data-open-url="{href}"' if href else ' aria-disabled="true"'
+        openable_class = " openable" if href else " no-page"
+        open_overlay = (
+            f'<a class="row-open-overlay job-open-overlay" href="{href}" aria-label="Open signed Acta artifact: {html.escape(item.name, quote=True)}"></a>'
+            if href
+            else ""
+        )
+        open_state = (
+            '<span class="job-open-state signed">OPEN/SIGNED</span>'
+            if href
+            else '<span class="job-open-state muted">NO PAGE</span>'
+        )
         rows.append(
             f"""
-<div class="job-row {status_class}">
+<div class="job-row {status_class}{openable_class}"{open_attr}>
+  {open_overlay}
   <div class="job-rank">{index:02d}</div>
   <div class="job-main"><b>{_safe_text(item.name)}</b><span>{_safe_text(item.job_id)} · {_safe_text(item.deliver or "local")}{_telegram_link_html(item)}</span></div>
   <div class="job-schedule"><em>SCHEDULE</em>{_safe_text(schedule)}</div>
-  <div class="job-last"><em>LAST RUN</em><time>{_safe_text(latest)}</time><small><span class="confidence-chip">{_safe_text(confidence)}</span><span>{_safe_text(status_label)}</span><span>{_safe_text(age)}</span></small></div>
+  <div class="job-last"><em>LAST RUN</em><time>{_safe_text(latest)}</time><small><span class="confidence-chip">{_safe_text(confidence)}</span><span>{_safe_text(status_label)}</span><span>{_safe_text(age)}</span>{open_state}</small></div>
 </div>"""
         )
     return rows
@@ -1039,7 +1054,13 @@ h2 {{ font:680 15px/1.12 var(--ui); margin:0 0 2px; color:#fff; letter-spacing:-
 .jobs-head {{ display:flex; align-items:flex-end; gap:12px; padding:16px 0 8px; border-bottom:1px solid var(--line-soft); }}
 .jobs-head h2 {{ margin:0; font:800 13px var(--mono); letter-spacing:.12em; text-transform:uppercase; color:#fff; }}
 .jobs-head span {{ margin-left:auto; color:var(--muted); font:11px var(--mono); text-transform:uppercase; }}
-.job-row {{ display:grid; grid-template-columns:42px minmax(0,1.2fr) minmax(120px,.7fr) minmax(180px,.9fr); gap:12px; align-items:center; padding:13px 0; border-bottom:1px solid var(--line-soft); }}
+.job-row {{ display:grid; grid-template-columns:42px minmax(0,1.2fr) minmax(120px,.7fr) minmax(180px,.9fr); gap:12px; align-items:center; padding:13px 0; border-bottom:1px solid var(--line-soft); position:relative; overflow:hidden; }}
+.job-row[data-open-url] {{ cursor:pointer; }}
+.job-row[aria-disabled='true'] {{ cursor:default; }}
+.job-row[data-open-url]:hover {{ border-color:rgba(35,167,255,.55); }}
+.job-open-overlay {{ z-index:2; }}
+.job-row > :not(.row-open-overlay) {{ position:relative; }}
+.job-main .thread-link {{ position:relative; z-index:3; pointer-events:auto; }}
 .job-rank {{ color:var(--accent); font:800 11px var(--mono); }}
 .job-main b {{ display:block; color:#fff; font:700 15px/1.2 var(--ui); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
 .job-main span, .job-schedule, .job-last {{ color:var(--muted); font:11px var(--mono); min-width:0; }}
@@ -1047,7 +1068,11 @@ h2 {{ font:680 15px/1.12 var(--ui); margin:0 0 2px; color:#fff; letter-spacing:-
 .job-schedule, .job-last {{ display:grid; gap:3px; }}
 .job-schedule em, .job-last em {{ color:var(--faint); font-style:normal; font-size:9px; letter-spacing:.1em; }}
 .job-last time {{ color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
-.job-last small {{ color:var(--accent); font:10px var(--mono); text-transform:uppercase; }}
+.job-last small {{ color:var(--accent); font:10px var(--mono); text-transform:uppercase; display:flex; flex-wrap:wrap; gap:4px; align-items:center; line-height:1.25; }}
+.job-last small span {{ border:1px solid var(--line-soft); border-radius:999px; padding:2px 5px; background:rgba(255,255,255,.026); }}
+.job-last small .confidence-chip {{ color:#fff; border-color:rgba(35,167,255,.34); background:rgba(117,108,255,.16); letter-spacing:.08em; }}
+.job-last small .job-open-state.signed {{ color:#fff; border-color:rgba(117,108,255,.46); background:rgba(117,108,255,.22); }}
+.job-last small .job-open-state.muted {{ color:var(--muted); }}
 .side {{ display:grid; gap:16px; align-content:start; }}
 .card {{ background:var(--panel); border:1px solid var(--line); border-radius:24px; overflow:hidden; backdrop-filter:blur(18px) saturate(145%); }}
 .card-head {{ height:34px; border-bottom:1px solid var(--line); display:flex; align-items:center; padding:0 10px; font:700 11px var(--mono); letter-spacing:.1em; text-transform:uppercase; color:#fff; }}
@@ -1169,7 +1194,14 @@ h1 { margin:6px 0 8px; color:var(--text); font:720 clamp(22px,3.6vw,34px)/1.02 v
 .jobs-head h2 { margin:0; font:800 12px var(--mono); letter-spacing:.12em; text-transform:uppercase; color:#fff; }
 .jobs-head span { margin-left:auto; color:var(--muted); font:10px var(--mono); text-transform:uppercase; }
 .job-row { display:grid; grid-template-columns:34px minmax(0,1.2fr) minmax(112px,.64fr) minmax(164px,.86fr); gap:10px; align-items:center; padding:10px 12px; margin:7px 0; position:relative; overflow:hidden; }
-.job-row:before { content:""; width:2px; height:36px; border-radius:999px; background:rgba(117,108,255,.78); position:absolute; left:0; top:50%; transform:translateY(-50%); }
+.job-row[data-open-url] { cursor:pointer; }
+.job-row[aria-disabled='true'] { cursor:default; }
+.job-row[data-open-url]:hover { border-color:rgba(35,167,255,.55); box-shadow:0 0 24px rgba(35,167,255,.10); }
+.job-open-overlay { position:absolute; inset:0; z-index:2; border:0; text-decoration:none; }
+.job-open-overlay:focus-visible { outline:2px solid var(--acta2); outline-offset:2px; border-radius:inherit; }
+.job-row > :not(.row-open-overlay) { position:relative; }
+.job-main .thread-link { position:relative; z-index:3; pointer-events:auto; }
+.job-row:before { content:""; width:2px; height:36px; border-radius:999px; background:rgba(117,108,255,.78); position:absolute; left:0; top:50%; transform:translateY(-50%); z-index:4; pointer-events:none; }
 .job-rank { color:var(--acta2); font:800 10px var(--mono); }
 .job-main b { display:block; color:#fff; font:700 14px/1.15 var(--ui); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .job-main span, .job-schedule, .job-last { color:var(--muted); font:10px var(--mono); min-width:0; }
@@ -1180,6 +1212,8 @@ h1 { margin:6px 0 8px; color:var(--text); font:720 clamp(22px,3.6vw,34px)/1.02 v
 .job-last small { color:var(--acta2); font:10px var(--mono); text-transform:uppercase; display:flex; flex-wrap:wrap; gap:4px; align-items:center; line-height:1.25; }
 .job-last small span { border:1px solid var(--line-soft); border-radius:999px; padding:2px 5px; background:rgba(255,255,255,.026); }
 .job-last small .confidence-chip { color:#fff; border-color:rgba(35,167,255,.34); background:rgba(117,108,255,.16); letter-spacing:.08em; }
+.job-last small .job-open-state.signed { color:#fff; border-color:rgba(117,108,255,.46); background:rgba(117,108,255,.22); }
+.job-last small .job-open-state.muted { color:var(--muted); }
 .silent .job-rank, .missing .job-rank, .silent .output-rank, .missing .output-rank { color:var(--red); }
 .outputs-panel { margin-top:12px; display:flex; flex-direction:column; gap:7px; }
 .output-row { display:grid; grid-template-columns:34px minmax(0,1fr) auto; gap:10px; align-items:center; padding:9px 12px; position:relative; overflow:hidden; min-height:62px; }
