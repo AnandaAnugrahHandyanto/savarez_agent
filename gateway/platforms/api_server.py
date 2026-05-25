@@ -54,6 +54,29 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+API_SERVER_ADAPTER_KEY = (
+    web.AppKey("api_server_adapter", object) if AIOHTTP_AVAILABLE and web is not None else "api_server_adapter"
+)
+
+
+def _get_api_server_adapter(app: Any) -> Any:
+    """Return the API-server adapter from an aiohttp app.
+
+    Prefer the typed AppKey to keep aiohttp quiet, but retain the legacy string
+    lookup so older tests/plugins that still set app["api_server_adapter"] keep
+    working instead of becoming a foot-gun with a nice hat.
+    """
+    try:
+        adapter = app.get(API_SERVER_ADAPTER_KEY)
+    except Exception:
+        adapter = None
+    if adapter is None:
+        try:
+            adapter = app.get("api_server_adapter")
+        except Exception:
+            adapter = None
+    return adapter
+
 # Default settings
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
@@ -62,6 +85,223 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+
+
+SINGLEBRAIN_RESTRICTED_SOURCE_CLASSES = [
+    "raw Gong transcripts",
+    "current P&L/margins",
+    "HR/comp",
+    "employee underperformance/personnel decisions",
+    "raw CRM/Gong exports",
+    "credentials",
+    "private Eric context",
+    "unrestricted dumps",
+]
+
+SINGLEBRAIN_ALLOWED_SANITIZED_SOURCE_CLASSES = [
+    "CRM/HubSpot account health",
+    "Gong summaries/sentiment/promises",
+    "Drive client goals",
+    "analytics/GA4 performance summaries",
+    "ads platform performance summaries",
+    "SEO/GSC performance summaries",
+    "pipeline themes",
+    "owners, blockers, next actions, and citations",
+]
+
+SINGLEBRAIN_REQUIRED_ENVELOPE_FIELDS = [
+    "local_only",
+    "live_verified",
+    "external_write_executed",
+    "owner_approval_status",
+    "client_scope",
+    "user_allow_scope",
+    "channel_allow_scope",
+    "source_system",
+    "source_class",
+    "freshness",
+    "permission_status",
+    "redactions",
+    "owner",
+    "steward",
+    "next_action",
+    "blocker",
+    "citation",
+]
+
+SINGLEBRAIN_MONDAY_ALLOWED_SOURCE_CLASS_TOKENS = {
+    "crm_hubspot_account_health": "CRM/HubSpot account health",
+    "gong_summary": "Gong summaries/sentiment/promises",
+    "drive_client_goal": "Drive client goals",
+    "analytics_ga4": "analytics/GA4 performance summaries",
+    "ads_platform_performance": "ads platform performance summaries",
+    "seo_gsc": "SEO/GSC performance summaries",
+}
+
+SINGLEBRAIN_MONDAY_BLOCKED_SOURCE_CLASS_TOKENS = {
+    "hr": "HR/comp",
+    "comp": "HR/comp",
+    "p_and_l_margins": "current P&L/margins",
+    "raw_gong_transcript": "raw Gong transcripts",
+    "raw_crm_export": "raw CRM/Gong exports",
+    "credentials_private_eric_context": "private Eric context",
+}
+
+SINGLEBRAIN_MONDAY_ACL_CONTRACT = {
+    "default": "allow_read_only_business_questions",
+    "dimensions": ["operation", "sensitivity", "channel"],
+    "allowed_source_classes": sorted(SINGLEBRAIN_MONDAY_ALLOWED_SOURCE_CLASS_TOKENS),
+    "blocked_source_classes": sorted(SINGLEBRAIN_MONDAY_BLOCKED_SOURCE_CLASS_TOKENS),
+    "unknown_source_class": "allow_if_read_only_business_context_and_not_sensitive",
+    "unknown_field": "allow_if_read_only_business_context_and_not_sensitive",
+    "unknown_user": "allow_if_read_only_business_context_and_not_sensitive",
+    "unknown_channel": "group_channels_require_redacted_report_only_output",
+}
+
+SINGLEBRAIN_ADMIN_CONTROL_PLANE_V0_CONTRACT = {
+    "registry": {"required": True},
+    "permission_ladder": ["no_access", "read_only", "draft_only", "write_with_approval", "autonomous_write"],
+    "overrides": ["channel", "team_lane", "person", "emergency"],
+    "health": {"connector_health_required": True},
+    "audit": {"audit_log_required": True},
+    "fast_disable": {"kill_switch_required": True},
+}
+
+SINGLEBRAIN_MONDAY_READINESS_CONTRACT = {
+    "beta_channels": ["C053K3LHMU6"],
+    "beta_users": ["Eric", "approved operator"],
+    "kill_switch": "disable single-brain profile/api policy or remove bot from beta channel; no gateway restart from cron",
+    "audit_log": "endpoint/status/timestamp-only evidence plus sandbox transcript ids",
+    "sandbox_proof": {
+        "allowed_minimum": 6,
+        "blocked_minimum": 6,
+        "allowed_tokens": sorted(SINGLEBRAIN_MONDAY_ALLOWED_SOURCE_CLASS_TOKENS),
+        "blocked_tokens": sorted(SINGLEBRAIN_MONDAY_BLOCKED_SOURCE_CLASS_TOKENS),
+    },
+    "ask": ["Launch", "Revise", "Hold"],
+    "live_verified": False,
+    "external_write_executed": False,
+}
+
+SINGLEBRAIN_OPERATIONAL_SIGNAL_CLASSES = [
+    "capacity gaps",
+    "unclear ownership",
+    "delivery blockers",
+    "client sentiment themes",
+    "resourcing risks to route to managers",
+]
+
+
+def _singlebrain_prompt_requests_restricted_sources(prompt: str) -> bool:
+    """Heuristic source-regression guard for obvious restricted Single Brain asks."""
+    normalized = prompt.lower()
+    restricted_needles = (
+        "hr records",
+        "hr data",
+        "hr files",
+        "raw gong",
+        "gong transcript",
+        "transcripts",
+        "p&l",
+        "profit and loss",
+        "margin",
+        "margins",
+        "comp",
+        "compensation",
+        "underperform",
+        "who should we fire",
+        "fire",
+        "unprofitable",
+        "employee comp",
+        "employees underperform",
+        "personnel file",
+        "personnel records",
+        "personnel decision",
+        "credentials",
+        "secret",
+        "secrets",
+        "raw crm",
+        "export",
+        "private eric",
+    )
+    return any(needle in normalized for needle in restricted_needles)
+
+
+def build_singlebrain_permission_envelope_answer(prompt: str = "") -> str:
+    """Return the safe Ambient SG / Single Brain answer for source-regression probes."""
+    restricted = True if not prompt else _singlebrain_prompt_requests_restricted_sources(prompt)
+    blocked = "; ".join(SINGLEBRAIN_RESTRICTED_SOURCE_CLASSES)
+    allowed = "; ".join(SINGLEBRAIN_ALLOWED_SANITIZED_SOURCE_CLASSES)
+    operational = "; ".join(SINGLEBRAIN_OPERATIONAL_SIGNAL_CLASSES)
+
+    opening = (
+        "I can help with the sanitized version."
+        if not restricted
+        else "I can’t pull or summarize the restricted sources in this channel."
+    )
+
+    return "\n".join(
+        [
+            opening,
+            "",
+            "Permission envelope:",
+            "- local_only: true",
+            "- live_verified: false",
+            "- external_write_executed: false",
+            "- owner_approval_status: normal read-only business questions do not require pre-approved summary artifacts; live operator write actions remain approval-gated",
+            "- client_scope: relevant client/account context only; no unrestricted dumps",
+            "- user_allow_scope: normal authenticated read-only business questions are allowed unless they ask for restricted classes",
+            "- channel_allow_scope: group Slack/API lanes require redacted, report-only output for sensitive business context",
+            "- source_system: readable business context may include CRM/HubSpot, Gong summaries, Drive client goals, GA4/analytics, ads platforms, and GSC/SEO summaries",
+            f"- source_class: allowed sanitized classes are {allowed}",
+            "- freshness: every cited account-health, Gong-summary, Drive-goal, analytics, ads, SEO, or pipeline signal must show its source date or be labeled unverified/stale",
+            "- permission_status: authenticated normal read-only business questions are allowed; public or group Slack/API lane stays read-only/report-only",
+            "- redactions: sanitized output only, citations allowed to business records/source dates, no raw dumps",
+            "- owner: account owner, connector steward, or operator owns follow-up action routing",
+            "- steward: Eric/private authorized lane only for HR/comp/P&L/personnel work; client-health summaries route to the account owner or assigned operator",
+            "- next_action: answer normal read-only business questions directly with available context; refuse or route restricted classes to the proper private lane",
+            "- blocker: write actions, external posting, raw dumps, HR/comp, current P&L/margins, secrets, and unrestricted exports are blocked in this lane",
+            "- citation: cite the business record label and source date when available; label freshness as unknown if missing",
+            "- requester/channel scope: public or group Slack/API lane, read-only/report-only response only",
+            f"- allowed source classes: {allowed}",
+            f"- blocked source classes: {blocked}",
+            "- redaction status: sanitized output only, citations allowed to business records/source dates, no raw dumps",
+            "- freshness/source date requirement: every cited account-health, Gong-summary, Drive-goal, analytics, ads, SEO, or pipeline signal must show its source date or be labeled unverified/stale",
+            "- steward/owner: Eric/private authorized lane only for HR/comp/P&L/personnel work; client-health summaries route to the account owner or assigned operator",
+            "- external_write_executed:false",
+            "- local/live verification caveat: this is the local policy response; no live Gong, finance, CRM, credential, Drive, analytics, ads, SEO, or private Eric-context connector was accessed",
+            "",
+            "Blocked here: raw Gong transcripts; current P&L/margins; HR/comp; employee underperformance/personnel decisions; raw CRM/Gong exports; credentials; private Eric context; unrestricted dumps. I’m not treating public/group-channel approval as enough for those. Highly restricted HR/comp/P&L/personnel work goes to Eric/private authorized lane only.",
+            "",
+            "Useful safe alternative: I can produce a sanitized client-health / delivery-risk summary using CRM/HubSpot account health, Gong summaries/sentiment/promises, Drive client goals, analytics/GA4 performance summaries, ads platform performance summaries, SEO/GSC performance summaries, pipeline themes, owners, blockers, next actions, and citations. No raw transcripts. No margins. No comp. No individual underperformance claims.",
+            "",
+            f"Employee/performance angle, safely: aggregate non-HR operational signals only, such as {operational}. I can route those as manager-review signals, not comp-based rankings or employee judgments.",
+        ]
+    )
+
+
+def build_singlebrain_readonly_system_policy() -> str:
+    """Return the runtime policy appended to allowed SingleBrain API reads."""
+    blocked = "; ".join(SINGLEBRAIN_RESTRICTED_SOURCE_CLASSES)
+    allowed = "; ".join(SINGLEBRAIN_ALLOWED_SANITIZED_SOURCE_CLASSES)
+    return (
+        "SingleBrain API access policy: answer normal authenticated read-only business questions without "
+        "requiring pre-approved summary artifacts or per-source allowlists. Keep the lane read-only "
+        "and report-only: do not perform external writes, live Slack posts, job/run mutations, approvals, gateway "
+        "restarts, credential changes, or destructive actions. In group/public channels, redact sensitive details "
+        "and summarize rather than dumping records. Allowed sanitized business context includes: "
+        f"{allowed}. Block/refuse restricted classes in this lane: {blocked}. Never provide raw dumps, raw exports, "
+        "credentials/secrets, current P&L/margins, HR/comp, or individual personnel/underperformance judgments. "
+        "If freshness or citations are unavailable, label them unknown instead of claiming approval is missing."
+    )
+
+
+def _with_singlebrain_readonly_system_policy(system_prompt: Optional[str]) -> Optional[str]:
+    """Append the SingleBrain read-only policy to an optional caller system prompt."""
+    policy = build_singlebrain_readonly_system_policy()
+    if not system_prompt:
+        return policy
+    return f"{system_prompt}\n\n{policy}"
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -488,7 +728,7 @@ if AIOHTTP_AVAILABLE:
     @web.middleware
     async def cors_middleware(request, handler):
         """Add CORS headers for explicitly allowed origins; handle OPTIONS preflight."""
-        adapter = request.app.get("api_server_adapter")
+        adapter = _get_api_server_adapter(request.app)
         origin = request.headers.get("Origin", "")
         cors_headers = None
         if adapter is not None:
@@ -679,6 +919,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self._model_name: str = self._resolve_model_name(
             extra.get("model_name", os.getenv("API_SERVER_MODEL_NAME", "")),
         )
+        self._access_policy: Optional[Dict[str, Any]] = self._normalize_access_policy(extra)
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -762,6 +1003,156 @@ class APIServerAdapter(BasePlatformAdapter):
             return False
 
         return "*" in self._cors_origins or origin in self._cors_origins
+
+    @staticmethod
+    def _normalize_access_policy(extra: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Return an opt-in API access policy, preserving default live behavior."""
+        policy_present = "singlebrain_readonly_policy" in extra or "access_policy" in extra
+        raw_policy = extra.get("singlebrain_readonly_policy") or extra.get("access_policy")
+        if not policy_present:
+            return None
+
+        default_allowed = [
+            "GET /health",
+            "GET /health/detailed",
+            "GET /v1/models",
+            "GET /v1/capabilities",
+            "POST /v1/chat/completions",
+            "POST /v1/responses",
+        ]
+        default_denied = [
+            "POST /v1/runs",
+            "POST /v1/runs/*/approval",
+            "POST /v1/runs/*/stop",
+            "DELETE /v1/responses/*",
+            "POST /api/jobs",
+            "PATCH /api/jobs/*",
+            "DELETE /api/jobs/*",
+            "POST /api/jobs/*/pause",
+            "POST /api/jobs/*/resume",
+            "POST /api/jobs/*/run",
+        ]
+
+        def _string_list(value: Any, fallback: List[str]) -> List[str]:
+            if not isinstance(value, (list, tuple, set)):
+                return list(fallback)
+            items = [str(item).strip() for item in value if str(item).strip()]
+            return items or list(fallback)
+
+        invalid_policy = not isinstance(raw_policy, dict)
+        mode = str(raw_policy.get("mode") or "").strip() if isinstance(raw_policy, dict) else ""
+        if mode != "read_only_report_only":
+            invalid_policy = True
+
+        policy_data = raw_policy if isinstance(raw_policy, dict) else {}
+        return {
+            "name": str(policy_data.get("name") or "singlebrain-ambient-sg-beta"),
+            "mode": "read_only_report_only",
+            "allowed_endpoints": _string_list(policy_data.get("allowed_endpoints"), default_allowed),
+            "denied_endpoints": _string_list(policy_data.get("denied_endpoints"), default_denied),
+            "report_path": str(policy_data.get("report_path") or ""),
+            "external_writes_enabled": bool(policy_data.get("external_writes_enabled", False)),
+            "live_slack_posting_enabled": bool(policy_data.get("live_slack_posting_enabled", False)),
+            "gateway_restart_enabled": bool(policy_data.get("gateway_restart_enabled", False)),
+            "invalid_policy_error": invalid_policy,
+        }
+
+    def _access_policy_for_capabilities(self) -> Optional[Dict[str, Any]]:
+        """Public, serializable access policy advertised to API clients."""
+        if not self._access_policy:
+            return None
+        return {
+            "name": self._access_policy.get("name"),
+            "mode": self._access_policy.get("mode"),
+            "allowed_endpoints": list(self._access_policy.get("allowed_endpoints") or []),
+            "denied_endpoints": list(self._access_policy.get("denied_endpoints") or []),
+            "report_path": self._access_policy.get("report_path", ""),
+            "external_writes_enabled": bool(self._access_policy.get("external_writes_enabled", False)),
+            "live_slack_posting_enabled": bool(self._access_policy.get("live_slack_posting_enabled", False)),
+            "gateway_restart_enabled": bool(self._access_policy.get("gateway_restart_enabled", False)),
+            "invalid_policy_error": bool(self._access_policy.get("invalid_policy_error", False)),
+        }
+
+    @staticmethod
+    def _endpoint_matches_policy(endpoint: str, pattern: str) -> bool:
+        """Match endpoint strings like ``POST /v1/runs/abc/stop`` to policy globs."""
+        if endpoint == pattern:
+            return True
+        if "*" not in pattern:
+            return False
+        escaped = re.escape(pattern).replace(r"\*", r"[^/]+")
+        return re.fullmatch(escaped, endpoint) is not None
+
+    def _read_only_policy_denial(self, method: str, path: str) -> Optional["web.Response"]:
+        """Deny write/run endpoints before creating an agent or other side effects.
+
+        In read-only/report-only mode, configured denies are only the first line
+        of defense. Any unlisted non-read HTTP method must also fail closed so a
+        future route cannot bypass the Single Brain boundary by being forgotten
+        in the denylist. Normal chat/responses reads are allowlisted separately
+        and then get prompt-level restricted-class screening plus the read-only
+        system policy.
+        """
+        policy = self._access_policy
+        if not policy or policy.get("mode") != "read_only_report_only":
+            return None
+
+        endpoint = f"{method.upper()} {path}"
+        denied = policy.get("denied_endpoints") or []
+        allowed = policy.get("allowed_endpoints") or []
+        explicitly_denied = any(self._endpoint_matches_policy(endpoint, pattern) for pattern in denied)
+        explicitly_allowed = any(self._endpoint_matches_policy(endpoint, pattern) for pattern in allowed)
+        if not explicitly_denied and explicitly_allowed:
+            return None
+
+        reason = (
+            "Single Brain read-only/report-only API policy denies run/write endpoints, including "
+            "unlisted non-read endpoints, and returns a sanitized permission-envelope response "
+            "instead of touching restricted sources."
+        )
+        answer = build_singlebrain_permission_envelope_answer()
+        return web.json_response(
+            {
+                "error": {
+                    "message": answer,
+                    "type": "access_policy_error",
+                    "code": "singlebrain_readonly_denied",
+                    "policy": policy.get("name"),
+                    "denied_endpoint": endpoint,
+                    "reason": reason,
+                    "report_path": policy.get("report_path", ""),
+                    "permission_envelope_answer": answer,
+                    "external_write_executed": False,
+                }
+            },
+            status=403,
+        )
+
+    def _singlebrain_restricted_prompt_denial(self, prompt: Any, endpoint: str) -> Optional["web.Response"]:
+        """Block restricted SingleBrain prompt classes while allowing normal reads."""
+        policy = self._access_policy
+        if not policy or policy.get("mode") != "read_only_report_only":
+            return None
+        prompt_text = _normalize_multimodal_content(prompt) if not isinstance(prompt, str) else prompt
+        if not _singlebrain_prompt_requests_restricted_sources(prompt_text):
+            return None
+        answer = build_singlebrain_permission_envelope_answer(prompt_text)
+        return web.json_response(
+            {
+                "error": {
+                    "message": answer,
+                    "type": "access_policy_error",
+                    "code": "singlebrain_restricted_source_denied",
+                    "policy": policy.get("name"),
+                    "denied_endpoint": endpoint,
+                    "reason": "Single Brain read-only policy blocks restricted HR/comp/P&L/margins/secrets/raw-dump prompt classes in group/API lanes.",
+                    "report_path": policy.get("report_path", ""),
+                    "permission_envelope_answer": answer,
+                    "external_write_executed": False,
+                }
+            },
+            status=403,
+        )
 
     # ------------------------------------------------------------------
     # Auth helper
@@ -945,6 +1336,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
+        policy_denial = self._read_only_policy_denial(request.method, request.path)
+        if policy_denial is not None:
+            return policy_denial
         return web.json_response({"status": "ok", "platform": "hermes-agent"})
 
     async def _handle_health_detailed(self, request: "web.Request") -> "web.Response":
@@ -1000,7 +1394,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
-        return web.json_response({
+        payload = {
             "object": "hermes.api_server.capabilities",
             "platform": "hermes-agent",
             "model": self._model_name,
@@ -1046,13 +1440,20 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
             },
-        })
+        }
+        access_policy = self._access_policy_for_capabilities()
+        if access_policy is not None:
+            payload["access_policy"] = access_policy
+        return web.json_response(payload)
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        policy_denial = self._read_only_policy_denial(request.method, request.path)
+        if policy_denial is not None:
+            return policy_denial
 
         # Parse request body
         try:
@@ -1103,6 +1504,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 {"error": {"message": "No user message found in messages", "type": "invalid_request_error"}},
                 status=400,
             )
+
+        restricted_denial = self._singlebrain_restricted_prompt_denial(
+            user_message, f"{request.method.upper()} {request.path}"
+        )
+        if restricted_denial is not None:
+            return restricted_denial
+        if self._access_policy and self._access_policy.get("mode") == "read_only_report_only":
+            system_prompt = _with_singlebrain_readonly_system_policy(system_prompt)
 
         # Allow caller to scope long-term memory (e.g. Honcho) with a
         # stable per-channel identifier via X-Hermes-Session-Key.  This
@@ -2122,6 +2531,9 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        policy_denial = self._read_only_policy_denial(request.method, request.path)
+        if policy_denial is not None:
+            return policy_denial
 
         # Long-term memory scope header (see chat_completions for details).
         gateway_session_key, key_err = self._parse_session_key_header(request)
@@ -2218,6 +2630,14 @@ class APIServerAdapter(BasePlatformAdapter):
         user_message: Any = input_messages[-1].get("content", "") if input_messages else ""
         if not _content_has_visible_payload(user_message):
             return web.json_response(_openai_error("No user message found in input"), status=400)
+
+        restricted_denial = self._singlebrain_restricted_prompt_denial(
+            user_message, f"{request.method.upper()} {request.path}"
+        )
+        if restricted_denial is not None:
+            return restricted_denial
+        if self._access_policy and self._access_policy.get("mode") == "read_only_report_only":
+            instructions = _with_singlebrain_readonly_system_policy(instructions)
 
         # Truncation support
         if body.get("truncation") == "auto" and len(conversation_history) > 100:
@@ -2406,6 +2826,9 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        policy_denial = self._read_only_policy_denial(request.method, request.path)
+        if policy_denial is not None:
+            return policy_denial
 
         response_id = request.match_info["response_id"]
         stored = self._response_store.get(response_id)
@@ -2419,6 +2842,9 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        policy_denial = self._read_only_policy_denial(request.method, request.path)
+        if policy_denial is not None:
+            return policy_denial
 
         response_id = request.match_info["response_id"]
         deleted = self._response_store.delete(response_id)
@@ -2464,6 +2890,9 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        policy_denial = self._read_only_policy_denial(request.method, request.path)
+        if policy_denial is not None:
+            return policy_denial
         cron_err = self._check_jobs_available()
         if cron_err:
             return cron_err
@@ -2479,6 +2908,9 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        policy_denial = self._read_only_policy_denial(request.method, request.path)
+        if policy_denial is not None:
+            return policy_denial
         cron_err = self._check_jobs_available()
         if cron_err:
             return cron_err
@@ -2527,6 +2959,9 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        policy_denial = self._read_only_policy_denial(request.method, request.path)
+        if policy_denial is not None:
+            return policy_denial
         cron_err = self._check_jobs_available()
         if cron_err:
             return cron_err
@@ -2546,6 +2981,9 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        policy_denial = self._read_only_policy_denial(request.method, request.path)
+        if policy_denial is not None:
+            return policy_denial
         cron_err = self._check_jobs_available()
         if cron_err:
             return cron_err
@@ -2579,6 +3017,9 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        policy_denial = self._read_only_policy_denial(request.method, request.path)
+        if policy_denial is not None:
+            return policy_denial
         cron_err = self._check_jobs_available()
         if cron_err:
             return cron_err
@@ -2598,6 +3039,9 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        policy_denial = self._read_only_policy_denial(request.method, request.path)
+        if policy_denial is not None:
+            return policy_denial
         cron_err = self._check_jobs_available()
         if cron_err:
             return cron_err
@@ -2617,6 +3061,9 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        policy_denial = self._read_only_policy_denial(request.method, request.path)
+        if policy_denial is not None:
+            return policy_denial
         cron_err = self._check_jobs_available()
         if cron_err:
             return cron_err
@@ -2636,6 +3083,9 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        policy_denial = self._read_only_policy_denial(request.method, request.path)
+        if policy_denial is not None:
+            return policy_denial
         cron_err = self._check_jobs_available()
         if cron_err:
             return cron_err
@@ -2892,6 +3342,9 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        policy_denial = self._read_only_policy_denial(request.method, request.path)
+        if policy_denial is not None:
+            return policy_denial
 
         # Long-term memory scope header (see chat_completions for details).
         gateway_session_key, key_err = self._parse_session_key_header(request)
@@ -3188,6 +3641,9 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        policy_denial = self._read_only_policy_denial(request.method, request.path)
+        if policy_denial is not None:
+            return policy_denial
 
         run_id = request.match_info["run_id"]
         status = self._run_statuses.get(run_id)
@@ -3203,6 +3659,9 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        policy_denial = self._read_only_policy_denial(request.method, request.path)
+        if policy_denial is not None:
+            return policy_denial
 
         run_id = request.match_info["run_id"]
 
@@ -3253,6 +3712,9 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        policy_denial = self._read_only_policy_denial(request.method, request.path)
+        if policy_denial is not None:
+            return policy_denial
 
         run_id = request.match_info["run_id"]
         status = self._run_statuses.get(run_id)
@@ -3341,6 +3803,9 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        policy_denial = self._read_only_policy_denial(request.method, request.path)
+        if policy_denial is not None:
+            return policy_denial
 
         run_id = request.match_info["run_id"]
         agent = self._active_run_agents.get(run_id)
@@ -3422,9 +3887,10 @@ class APIServerAdapter(BasePlatformAdapter):
             return False
 
         try:
+            assert web is not None
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
             self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
-            self._app["api_server_adapter"] = self
+            self._app[API_SERVER_ADAPTER_KEY] = self
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
             self._app.router.add_get("/v1/health", self._handle_health)
