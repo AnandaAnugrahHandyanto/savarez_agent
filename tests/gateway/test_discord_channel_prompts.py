@@ -322,6 +322,7 @@ async def test_run_agent_reloads_system_prompt_after_config_edit_and_busts_cache
         session_key=session_key,
         channel_prompt="Channel prompt",
     )
+    assert session_key in runner._agent_cache
 
     config_path.write_text("agent:\n  system_prompt: New prompt\n", encoding="utf-8")
 
@@ -334,9 +335,19 @@ async def test_run_agent_reloads_system_prompt_after_config_edit_and_busts_cache
         session_key=session_key,
         channel_prompt="Channel prompt",
     )
+    third = await runner._run_agent(
+        message="hi once more",
+        context_prompt="Context prompt",
+        history=[],
+        source=_make_source(),
+        session_id="session-1",
+        session_key=session_key,
+        channel_prompt="Channel prompt",
+    )
 
     assert first["final_response"] == "ok"
     assert second["final_response"] == "ok"
+    assert third["final_response"] == "ok"
     assert len(_HotReloadAgent.init_kwargs) == 2
     assert _HotReloadAgent.init_kwargs[0]["ephemeral_system_prompt"] == (
         "Context prompt\n\nChannel prompt\n\nOld prompt"
