@@ -221,3 +221,14 @@ RUN mkdir -p /opt/data
 # like `--version` would be intercepted by /init's POSIX shell.
 ENTRYPOINT [ "/init", "/opt/hermes/docker/main-wrapper.sh" ]
 CMD [ ]
+
+# ---------- Railway Support ----------
+# For Railway deployments, use railway-entrypoint.sh instead of s6-overlay
+# This runs a single service (gateway or dashboard) without multi-process supervision
+ENV HERMES_MODE=gateway
+COPY --chmod=0755 docker/railway-entrypoint.sh /opt/hermes/docker/railway-entrypoint.sh
+COPY --chmod=0755 docker/railway-healthcheck.sh /opt/hermes/docker/railway-healthcheck.sh
+
+# Health check for Railway
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+  CMD /opt/hermes/docker/railway-healthcheck.sh
