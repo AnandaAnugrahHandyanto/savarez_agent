@@ -51,11 +51,30 @@ _INTERNAL_NOTE_RE = re.compile(
 )
 
 
+# P30-6 FIX (audit 100 passes): hard cap on prefetch context size to prevent
+# unbounded memory growth. Older memories without fence wrappers could inject
+# content that bypasses the scrubber — cap puts a ceiling on blast radius.
+MAX_PREFETCH_CHARS = 10_000
+
+# Additional injection pattern: [System note: ...] markers that may appear
+# outside memory-context fence wrappers in older memory entries.
+_ADDITIONAL_INJECTION_RE = re.compile(r'\[System note:[^\]]*\]', re.IGNORECASE)
+
+
 def sanitize_context(text: str) -> str:
-    """Strip fence tags, injected context blocks, and system notes from provider output."""
+    """Strip fence tags, injected context blocks, and system notes from provider output.
+
+    P30-6 FIX: also strips [System note: ...] markers outside fence wrappers
+    and applies MAX_PREFETCH_CHARS to prevent unbounded context growth.
+    """
     text = _INTERNAL_CONTEXT_RE.sub('', text)
     text = _INTERNAL_NOTE_RE.sub('', text)
     text = _FENCE_TAG_RE.sub('', text)
+    # P30-6: strip [System note:] markers even when outside fence wrappers
+    text = _ADDITIONAL_INJECTION_RE.sub('', text)
+    # P30-6: enforce hard cap on total context size
+    if len(text) > MAX_PREFETCH_CHARS:
+        text = text[:MAX_PREFETCH_CHARS]
     return text
 
 
@@ -339,21 +358,29 @@ class MemoryManager:
     def prefetch_all(self, query: str, *, session_id: str = "") -> str:
         """Collect prefetch context from all providers.
 
-        Returns merged context text labeled by provider. Empty providers
-        are skipped. Failures in one provider don't block others.
+        P30-6 FIX: each provider's output is sanitized and the total merged
+        output is capped at MAX_PREFETCH_CHARS to prevent unbounded growth
+        and limit prompt injection blast radius from old memory entries.
         """
         parts = []
         for provider in self._providers:
             try:
                 result = provider.prefetch(query, session_id=session_id)
                 if result and result.strip():
-                    parts.append(result)
+                    # Sanitize each block before joining
+                    sanitized = sanitize_context(result)
+                    if sanitized.strip():
+                        parts.append(sanitized)
             except Exception as e:
                 logger.debug(
                     "Memory provider '%s' prefetch failed (non-fatal): %s",
                     provider.name, e,
                 )
-        return "\n\n".join(parts)
+        combined = "\n\n".join(parts)
+        # P30-6: enforce hard cap on total combined prefetch output
+        if len(combined) > MAX_PREFETCH_CHARS:
+            combined = combined[:MAX_PREFETCH_CHARS]
+        return combined
 
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
         """Queue background prefetch on all providers for the next turn."""
