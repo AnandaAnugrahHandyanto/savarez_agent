@@ -28,6 +28,11 @@ from agent.memory_read_only_candidate_utils import (
 )
 
 
+class _RaisesOnDeepcopy:
+    def __deepcopy__(self, memo):
+        raise AssertionError("nested payload must not be deep-copied")
+
+
 def test_constants_match_current_safety_expectations():
     assert READ_ONLY_POLICY_BASE == {
         "read_only": True,
@@ -208,6 +213,21 @@ def test_validate_forbidden_true_keys_false_or_absent_preserves_order_and_dedupe
     ]
 
 
+def test_validate_forbidden_true_keys_false_or_absent_does_not_deepcopy_nested_payloads():
+    candidate = {
+        "writes_operation_ledger": True,
+        "writes_token_files": False,
+        "submitted": None,
+        "implementation_contract": {
+            "reviews": [{"large_payload": _RaisesOnDeepcopy()}],
+        },
+    }
+
+    assert validate_forbidden_true_keys_false_or_absent(candidate) == [
+        "writes_operation_ledger_must_be_false_or_absent"
+    ]
+
+
 def test_validate_policy_flags_catches_true_and_false_expectations():
     policy = dict(READ_ONLY_POLICY_BASE)
     policy["read_only"] = False
@@ -218,6 +238,18 @@ def test_validate_policy_flags_catches_true_and_false_expectations():
         "policy_read_only_must_be_true",
         "policy_would_write_memory_must_be_false",
         "policy_does_not_create_operation_events_must_be_true",
+    ]
+
+
+def test_validate_policy_flags_does_not_deepcopy_nested_payloads():
+    policy = dict(READ_ONLY_POLICY_BASE)
+    policy["read_only"] = False
+    policy["implementation_contract"] = {
+        "reviews": [{"large_payload": _RaisesOnDeepcopy()}],
+    }
+
+    assert validate_policy_flags(policy) == [
+        "policy_read_only_must_be_true"
     ]
 
 
@@ -237,6 +269,47 @@ def test_validate_preview_integrity_catches_forbidden_true_flags_inside_previews
         "approval_token_record_preview_token_issued_must_not_be_true",
         "proposal_record_preview_must_be_preview_only",
         "proposal_record_preview_created_real_proposal_must_not_be_true",
+    ]
+
+
+def test_preview_validators_do_not_deepcopy_nested_payloads():
+    candidate = {
+        "proposal_record_preview": {
+            "preview_only": False,
+            "created_real_proposal": True,
+            "large_payload": _RaisesOnDeepcopy(),
+        },
+        "approval_token_write_payload_preview": {
+            "preview_only": True,
+            "written": True,
+            "large_payload": _RaisesOnDeepcopy(),
+        },
+        "implementation_contract": {
+            "reviews": [{"large_payload": _RaisesOnDeepcopy()}],
+        },
+    }
+
+    assert validate_preview_integrity(
+        candidate,
+        preview_fields=("proposal_record_preview",),
+        forbidden_true_keys=("created_real_proposal",),
+    ) == [
+        "proposal_record_preview_must_be_preview_only",
+        "proposal_record_preview_created_real_proposal_must_not_be_true",
+    ]
+    assert validate_preview_forbidden_true_keys_false_or_absent(
+        candidate,
+        preview_fields=("proposal_record_preview",),
+        forbidden_true_keys=("created_real_proposal",),
+    ) == [
+        "proposal_record_preview_created_real_proposal_must_be_false_or_absent"
+    ]
+    assert validate_write_preview_integrity(
+        candidate,
+        write_preview_fields=("approval_token_write_payload_preview",),
+        forbidden_true_keys=("written",),
+    ) == [
+        "approval_token_write_payload_preview_written_must_not_be_true"
     ]
 
 
@@ -393,6 +466,30 @@ def test_summarize_candidates_counts_total_status_type_and_block_type():
         "by_status": {"locked": 1, "valid": 2},
         "by_block_type": {"preference": 2, "procedural_rules": 1},
         "by_type": {"contract": 2, "review": 1},
+    }
+
+
+def test_summarize_candidates_does_not_deepcopy_nested_payloads():
+    candidates = [
+        {
+            "status": "valid",
+            "candidate_type": "contract",
+            "block_type": "procedural_rules",
+            "implementation_contract": {"large_payload": _RaisesOnDeepcopy()},
+        },
+        {
+            "status": "locked",
+            "candidate_type": "review",
+            "block_type": "procedural_rules",
+            "implementation_contract": {"large_payload": _RaisesOnDeepcopy()},
+        },
+    ]
+
+    assert summarize_candidates(candidates, "status", type_key="candidate_type") == {
+        "total": 2,
+        "by_status": {"locked": 1, "valid": 1},
+        "by_block_type": {"procedural_rules": 2},
+        "by_type": {"contract": 1, "review": 1},
     }
 
 

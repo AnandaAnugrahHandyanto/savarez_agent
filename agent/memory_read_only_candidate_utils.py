@@ -78,6 +78,11 @@ def as_list(value: Any) -> list[Any]:
     return deepcopy(list(value)) if isinstance(value, (list, tuple)) else []
 
 
+def _mapping_view(value: Any) -> Mapping[Any, Any]:
+    """Return a read-only mapping view without copying nested candidate graphs."""
+    return value if isinstance(value, Mapping) else {}
+
+
 def deep_copy_mapping(value: Any) -> dict[str, Any]:
     """Return a deep-copied mapping without sharing nested values."""
     return as_mapping(value)
@@ -100,7 +105,7 @@ def validate_required_keys(
     candidate: Mapping[str, Any],
     required_keys: Iterable[str],
 ) -> list[str]:
-    candidate_mapping = as_mapping(candidate)
+    candidate_mapping = _mapping_view(candidate)
     errors = [
         f"missing_{key}"
         for key in _iter_keys(required_keys)
@@ -113,7 +118,7 @@ def validate_forbidden_true_keys(
     candidate: Mapping[str, Any],
     forbidden_keys: Iterable[str] = DEFAULT_FORBIDDEN_TRUE_KEYS,
 ) -> list[str]:
-    candidate_mapping = as_mapping(candidate)
+    candidate_mapping = _mapping_view(candidate)
     errors = [
         f"{key}_must_be_false"
         for key in _iter_keys(forbidden_keys)
@@ -126,7 +131,7 @@ def validate_forbidden_true_keys_false_or_absent(
     candidate: Mapping[str, Any],
     forbidden_keys: Iterable[str] = DEFAULT_FORBIDDEN_TRUE_KEYS,
 ) -> list[str]:
-    candidate_mapping = as_mapping(candidate)
+    candidate_mapping = _mapping_view(candidate)
     errors = [
         f"{key}_must_be_false_or_absent"
         for key in _iter_keys(forbidden_keys)
@@ -139,9 +144,9 @@ def validate_policy_flags(
     policy: Mapping[str, Any],
     expected_flags: Mapping[str, bool] = READ_ONLY_POLICY_BASE,
 ) -> list[str]:
-    policy_mapping = as_mapping(policy)
+    policy_mapping = _mapping_view(policy)
     errors: list[str] = []
-    for key, expected in as_mapping(expected_flags).items():
+    for key, expected in _mapping_view(expected_flags).items():
         if expected is True and policy_mapping.get(key) is not True:
             errors.append(f"policy_{key}_must_be_true")
         elif expected is False and policy_mapping.get(key) is not False:
@@ -162,7 +167,7 @@ def validate_preview_forbidden_true_keys_false_or_absent(
     preview_fields: Iterable[str] = DEFAULT_PREVIEW_FIELDS,
     forbidden_true_keys: Iterable[str] = DEFAULT_FORBIDDEN_TRUE_KEYS,
 ) -> list[str]:
-    candidate_mapping = as_mapping(candidate)
+    candidate_mapping = _mapping_view(candidate)
     errors: list[str] = []
     for field in _iter_keys(preview_fields):
         preview = candidate_mapping.get(field)
@@ -235,7 +240,7 @@ def _validate_preview_fields(
     preview_fields: Iterable[str],
     forbidden_true_keys: Iterable[str],
 ) -> list[str]:
-    candidate_mapping = as_mapping(candidate)
+    candidate_mapping = _mapping_view(candidate)
     forbidden = {str(key) for key in _iter_keys(forbidden_true_keys)}
     errors: list[str] = []
     for field in _iter_keys(preview_fields):
@@ -264,7 +269,7 @@ def _is_forbidden_true_key(key: str, forbidden: set[str]) -> bool:
 def _count_by_key(candidates: list[Mapping[str, Any]], key: str) -> dict[str, int]:
     counts: dict[str, int] = {}
     for candidate in candidates:
-        candidate_mapping = as_mapping(candidate)
+        candidate_mapping = _mapping_view(candidate)
         value = str(candidate_mapping.get(key))
         counts[value] = counts.get(value, 0) + 1
     return dict(sorted(counts.items()))
