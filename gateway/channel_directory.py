@@ -247,12 +247,66 @@ def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
 def load_directory() -> Dict[str, Any]:
     """Load the cached channel directory from disk."""
     if not DIRECTORY_PATH.exists():
-        return {"updated_at": None, "platforms": {}}
-    try:
-        with open(DIRECTORY_PATH, encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {"updated_at": None, "platforms": {}}
+        directory = {"updated_at": None, "platforms": {}}
+    else:
+        try:
+            with open(DIRECTORY_PATH, encoding="utf-8") as f:
+                directory = json.load(f)
+        except Exception:
+            directory = {"updated_at": None, "platforms": {}}
+
+    return _merge_profile_directories(directory)
+
+
+def _merge_profile_directories(directory: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge channel directories from named profiles into the active directory.
+
+    Multi-profile offices often run Discord from role profiles (``cto``,
+    ``atlas``, etc.) while the controlling profile is Telegram-only.  The
+    ``send_message`` tool runs in the controlling profile, so without this
+    merge it can only list Telegram even though Discord role gateways have
+    already discovered the server channels.  Profile directories are cached
+    snapshots only; merging them here does not start or reconfigure gateways.
+    """
+    root = get_hermes_home()
+    # Only the root/default profile should aggregate named profile directories.
+    # A named profile's HERMES_HOME is already ~/.hermes/profiles/<name>, and
+    # recursively looking for profiles below that would be surprising.
+    profiles_root = root / "profiles"
+    if not profiles_root.exists():
+        return directory
+
+    platforms = directory.setdefault("platforms", {})
+    seen: Dict[str, set] = {
+        name: {str(ch.get("id")) for ch in channels if ch.get("id")}
+        for name, channels in platforms.items()
+        if isinstance(channels, list)
+    }
+
+    for profile_dir in sorted(profiles_root.iterdir()):
+        if not profile_dir.is_dir():
+            continue
+        profile_directory = profile_dir / "channel_directory.json"
+        if not profile_directory.exists():
+            continue
+        try:
+            with open(profile_directory, encoding="utf-8") as f:
+                pdata = json.load(f)
+        except Exception:
+            continue
+        for platform_name, channels in (pdata.get("platforms") or {}).items():
+            if not isinstance(channels, list):
+                continue
+            target = platforms.setdefault(platform_name, [])
+            pseen = seen.setdefault(platform_name, {str(ch.get("id")) for ch in target if ch.get("id")})
+            for ch in channels:
+                cid = ch.get("id") if isinstance(ch, dict) else None
+                if not cid or str(cid) in pseen:
+                    continue
+                target.append(ch)
+                pseen.add(str(cid))
+
+    return directory
 
 
 def lookup_channel_type(platform_name: str, chat_id: str) -> Optional[str]:

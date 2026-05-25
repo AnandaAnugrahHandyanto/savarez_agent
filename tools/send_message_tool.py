@@ -166,6 +166,60 @@ def _handle_list():
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
 
 
+def _read_env_value(env_path, key: str) -> str:
+    """Read one simple KEY=value entry without mutating process env."""
+    try:
+        with open(env_path, encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                env_key, value = line.split("=", 1)
+                if env_key.strip() != key:
+                    continue
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+                    value = value[1:-1]
+                return value
+    except Exception:
+        return ""
+    return ""
+
+
+def _discord_profile_send_config():
+    """Build a Discord PlatformConfig from a running role profile, if any.
+
+    The default Telegram controller often has no Discord token of its own,
+    while office role profiles do.  This fallback lets central control send
+    explicit Discord channel targets using the existing role-profile token.
+    """
+    try:
+        from gateway.config import PlatformConfig
+        from hermes_cli.config import get_hermes_home
+    except Exception:
+        return None
+
+    root = get_hermes_home()
+    profiles_root = root / "profiles"
+    if not profiles_root.exists():
+        return None
+
+    preferred = ["atlas", "cto", "nike", "iris", "thor", "thoth", "argus", "eris"]
+    profile_dirs = []
+    for name in preferred:
+        p = profiles_root / name
+        if p.is_dir():
+            profile_dirs.append(p)
+    profile_dirs.extend(p for p in sorted(profiles_root.iterdir()) if p.is_dir() and p not in profile_dirs)
+
+    for profile_dir in profile_dirs:
+        token = _read_env_value(profile_dir / ".env", "DISCORD_BOT_TOKEN")
+        if not token:
+            continue
+        return PlatformConfig(enabled=True, token=token)
+    return None
+
+
 def _handle_send(args):
     """Send a message to a platform target."""
     target = args.get("target", "")
@@ -220,6 +274,11 @@ def _handle_send(args):
         return tool_error(f"Unknown platform: {platform_name}")
 
     pconfig = config.platforms.get(platform)
+    if platform_name == "discord" and (not pconfig or not pconfig.enabled or not getattr(pconfig, "token", None)):
+        profile_pconfig = _discord_profile_send_config()
+        if profile_pconfig is not None:
+            pconfig = profile_pconfig
+
     if not pconfig or not pconfig.enabled:
         # Weixin can be configured purely via .env; synthesize a pconfig so
         # send_message and cron delivery work without a gateway.yaml entry.
@@ -238,6 +297,10 @@ def _handle_send(args):
                     },
                 )
             else:
+                return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
+        elif platform_name == "discord":
+            pconfig = _discord_profile_send_config()
+            if pconfig is None:
                 return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
         else:
             return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
