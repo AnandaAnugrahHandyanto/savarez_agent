@@ -3196,25 +3196,32 @@ class BasePlatformAdapter(ABC):
                         and not media_files):
                     try:
                         from tools.tts_tool import text_to_speech_tool, check_tts_requirements
-                        from gateway.session_context import set_session_vars, get_session_env
+                        from gateway.session_context import set_session_platform, get_session_env
                         if check_tts_requirements():
                             import json as _json
                             speech_text = self.prepare_tts_text(text_content)
                             if not speech_text:
                                 raise ValueError("Empty text after markdown cleanup")
-                            # Ensure the session platform context var is set so that
+                            # Ensure the session platform contextvar is set so that
                             # text_to_speech_tool picks the correct output format.
                             # When auto-TTS fires from the gateway send pipeline the
                             # agent's session context is not active, so platform
                             # detection inside the tool falls back to "" (→ MP3).
-                            # We set it explicitly here using the adapter's known platform.
+                            # Use set_session_platform() — the narrow single-var helper —
+                            # and reset it in a finally block to avoid leaking state
+                            # into the rest of this asyncio task.
                             _platform_name = self.platform.value if hasattr(self.platform, "value") else str(self.platform).lower()
-                            _existing_platform = get_session_env("HERMES_SESSION_PLATFORM", "")
-                            if not _existing_platform:
-                                set_session_vars(platform=_platform_name)
-                            tts_result_str = await asyncio.to_thread(
-                                text_to_speech_tool, text=speech_text
-                            )
+                            _platform_token = None
+                            if not get_session_env("HERMES_SESSION_PLATFORM", ""):
+                                _platform_token = set_session_platform(_platform_name)
+                            try:
+                                tts_result_str = await asyncio.to_thread(
+                                    text_to_speech_tool, text=speech_text
+                                )
+                            finally:
+                                if _platform_token is not None:
+                                    from gateway.session_context import _SESSION_PLATFORM
+                                    _SESSION_PLATFORM.reset(_platform_token)
                             tts_data = _json.loads(tts_result_str)
                             _tts_path = tts_data.get("file_path")
                     except Exception as tts_err:
