@@ -33,8 +33,9 @@ You are setting up Hermes Agent as my always-on personal assistant.
 Goal:
 - Install or repair Hermes on this machine.
 - Configure a primary hosted model provider.
+- Determine whether this machine is the master orchestrator Hermes computer or a secondary Hermes node.
 - Configure Discord gateway access.
-- Configure WhatsApp gateway access if supported on this machine.
+- Configure WhatsApp gateway access only on the master orchestrator unless I explicitly ask for WhatsApp on this machine.
 - Configure app integrations I choose from a checklist.
 - Configure a local Ollama fallback so Hermes can keep responding if the hosted provider hits limits or quota.
 - Install Hermes Gateway as a persistent service and verify end-to-end messages.
@@ -101,11 +102,18 @@ Ask these only after discovery, and only if the answer cannot be inferred.
 
 Ask one at a time:
 
-1. "Which hosted model provider should be primary? Recommended: OpenRouter, Anthropic, OpenAI, or Nous Portal."
-2. "Should I enable Discord gateway on this machine?"
-3. "Should I enable WhatsApp gateway on this machine?"
-4. "Which optional app integrations do you want now? Choose any: GitHub, Google Workspace/Gmail/Calendar/Drive, Slack, Telegram, Notion, Linear, Spotify, Home Assistant, email/IMAP, SMS, Matrix, Feishu/Lark, WeCom, custom MCP servers."
-5. "Do you want local Ollama fallback? Recommended yes for always-on agents."
+1. "Is this computer the master orchestrator Hermes node, a secondary Hermes node, or are you not sure?"
+2. "Which hosted model provider should be primary? Recommended: OpenRouter, Anthropic, OpenAI, or Nous Portal."
+3. "Should I enable Discord gateway on this machine? Recommended yes for the master orchestrator."
+4. "Should I enable WhatsApp gateway on this machine? Recommended only for the master orchestrator unless you explicitly want WhatsApp attached here."
+5. "Which optional app integrations do you want now? Choose any: GitHub, Google Workspace/Gmail/Calendar/Drive, Slack, Telegram, Notion, Linear, Spotify, Home Assistant, email/IMAP, SMS, Matrix, Feishu/Lark, WeCom, custom MCP servers."
+6. "Do you want local Ollama fallback? Recommended yes for the master orchestrator and any always-on nodes."
+
+Use the answer to question 1 to set defaults:
+
+- **Master orchestrator:** configure persistent gateway, Discord, WhatsApp/private-group access, local fallback, cron, memory, and the broadest app integration set.
+- **Secondary node:** configure the primary model, core toolsets, local fallback if useful, and only the app/platform integrations specifically needed on that machine. Do not attach WhatsApp by default.
+- **Not sure:** infer from uptime and role. A 24/7 desktop/server/Mac mini that should receive phone or Discord messages is usually the master orchestrator; a laptop or task-specific workstation is usually secondary.
 
 For every selected integration, walk the user through only the credential step that cannot be automated.
 
@@ -211,6 +219,8 @@ Gateway running
 Then send a harmless message in the Discord home channel and confirm Hermes replies.
 
 ## Phase 5: WhatsApp Gateway
+
+WhatsApp should normally be attached only to the master orchestrator Hermes computer. This prevents multiple Hermes nodes from competing for the same WhatsApp session or replying in the same private chat. If this machine is secondary, skip this phase unless the user explicitly wants WhatsApp on this node.
 
 Run the WhatsApp setup/pairing flow:
 
