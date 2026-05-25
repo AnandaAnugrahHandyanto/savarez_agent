@@ -11,12 +11,17 @@ from cron.acta_dashboard import (
     attach_artifact_urls,
     available_run_dates,
     build_dashboard,
+    collect_catalog_outputs,
+    collect_run_history,
     collect_situation_items,
+    publish_catalog_output_artifacts,
     render_acta_detail_report,
     render_archive_index,
+    render_catalog_outputs_page,
     render_dashboard,
     render_jobs_page,
     render_outputs_page,
+    render_runs_page,
 )
 
 
@@ -377,7 +382,7 @@ def test_dashboard_counts_exclude_morning_audio_by_default():
     html = render_dashboard([visible, audio])
 
     assert "P Morning Audio Briefing" not in html
-    assert 'Briefing Packet <span>1</span>' in html
+    assert 'Today <span>1</span>' in html
     assert '<div class="output-summary"><b>1/1</b><span>fresh</span><span>0 gaps</span></div>' in html
     assert "metricrow" not in html
     assert "VISIBLE <b>1</b>" in html
@@ -825,7 +830,7 @@ def test_mobile_bottom_nav_appears_only_after_top_nav_scrolls_out(tmp_path: Path
     html = render_dashboard(collect_situation_items(tmp_path))
 
     assert '<nav class="date-nav"' in html
-    assert '<nav class="mobilebar"><a href="/">TODAY</a><a href="/jobs">JOBS</a><a href="/archive">ARCHIVE</a><a href="/outputs">OUTPUTS</a></nav>' in html
+    assert '<nav class="mobilebar"><a href="/">TODAY</a><a href="/outputs">OUTPUTS</a><a href="/runs">RUNS</a><a href="/jobs">JOBS</a><a href="/archive">ARCHIVE</a></nav>' in html
     assert '.mobilebar.visible' in html
     assert 'IntersectionObserver' in html
     assert "document.querySelector('.date-nav')" in html
@@ -952,6 +957,8 @@ def test_archive_index_includes_sticky_navigation_bar():
     assert '<a class="ticker" href="/"><em>ACTA</em> / ARCHIVE</a>' in html
     assert '<nav class="nav">' in html
     assert '<a href="/">Today</a>' in html
+    assert '<a href="/outputs">Outputs</a>' in html
+    assert '<a href="/runs">Runs</a>' in html
     assert '<a href="/jobs">Jobs</a>' in html
     assert '<a class="active" href="/archive">Archive</a>' in html
     assert "position:sticky" in html
@@ -1031,9 +1038,10 @@ def test_secondary_acta_surfaces_include_mobile_module_nav_without_stale_markers
     }
     expected = {
         "TODAY": "/",
+        "OUTPUTS": "/outputs",
+        "RUNS": "/runs",
         "JOBS": "/jobs",
         "ARCHIVE": "/archive",
-        "OUTPUTS": "/outputs",
     }
     active_link = {
         "jobs": '<a class="active" href="/jobs">JOBS</a>',
@@ -1292,6 +1300,98 @@ def test_outputs_page_requires_signed_acta_artifact_url_for_read_state():
     assert "Signed <b>1</b>" in html
 
 
+def test_catalog_outputs_import_static_acta_outputs_and_render_persistent_rows(tmp_path: Path):
+    outputs = tmp_path / "artifacts" / "acta-outputs"
+    outputs.mkdir(parents=True)
+    (outputs / "index.html").write_text(
+        """
+        <article data-id="hermes-agent-lanes-decision-tree" data-href="/outputs/hermes-agent-lanes-decision-tree"
+          data-title="Hermes Agent Lanes & Specialist Agents" data-tags="hermes agents decision tree">
+          <p>Visual decision tree for when to use Telegram topic lanes and specialist agents.</p>
+          <div class="meta">Published 2026-05-24 16:49 UTC</div>
+        </article>
+        """,
+        encoding="utf-8",
+    )
+    (outputs / "hermes-agent-lanes-decision-tree.html").write_text("<html><title>Fallback</title><body><p>Fallback.</p></body></html>", encoding="utf-8")
+
+    catalog_items = collect_catalog_outputs(tmp_path)
+    html = render_catalog_outputs_page(catalog_items, generated_at=datetime(2026, 5, 24, 17, tzinfo=timezone.utc))
+
+    assert [item.id for item in catalog_items] == ["hermes-agent-lanes-decision-tree"]
+    assert "Hermes Agent Lanes &amp; Specialist Agents" in html
+    assert 'href="/outputs/hermes-agent-lanes-decision-tree"' in html
+    assert "Visual decision tree" in html
+    assert str(tmp_path) not in html
+    assert "latest cron" not in html.lower()
+    assert '<a class="active" href="/outputs">Outputs</a>' in html
+    assert 'href="/runs"' in html
+    assert "script-src 'sha256-" in html
+
+
+def test_run_history_scans_multiple_files_excludes_acta_and_joins_job_metadata(tmp_path: Path):
+    for job_id in ("daily", "htmlonly", "acta-situation-room"):
+        (tmp_path / "cron" / "output" / job_id).mkdir(parents=True)
+    (tmp_path / "cron" / "jobs.json").write_text(
+        json.dumps(
+            [
+                {"id": "daily", "name": "Daily Brief", "schedule": {"display": "0 8 * * *"}, "deliver": "telegram:-1003566991387:86"},
+                {"id": "htmlonly", "name": "HTML Only", "schedule": "manual", "deliver": "local"},
+            ]
+        )
+    )
+    (tmp_path / "cron" / "output" / "daily" / "2026-05-19_08-00-00.md").write_text("## Response\n\nOld daily")
+    (tmp_path / "cron" / "output" / "daily" / "2026-05-20_08-00-00.md").write_text("## Response\n\nNew daily")
+    (tmp_path / "cron" / "output" / "htmlonly" / "2026-05-20_09-00-00.html").write_text("<html>run</html>")
+    (tmp_path / "cron" / "output" / "acta-situation-room" / "2026-05-20_10-00-00.md").write_text("## Response\n\nDashboard")
+
+    runs = collect_run_history(tmp_path)
+    html = render_runs_page(runs, generated_at=datetime(2026, 5, 20, 12, tzinfo=timezone.utc))
+
+    assert [run.run_id for run in runs] == ["2026-05-20_09-00-00", "2026-05-20_08-00-00", "2026-05-19_08-00-00"]
+    assert "Acta Runs" in html
+    assert "Daily Brief" in html
+    assert "0 8 * * *" in html
+    assert "Old daily" in html and "New daily" in html
+    assert "HTML Only" in html and "HTML" in html
+    assert "acta-situation-room" not in html
+    assert str(tmp_path) not in html
+    assert 'href="https://t.me/c/3566991387/86"' in html
+    assert '<a class="active" href="/runs">Runs</a>' in html
+
+
+def test_run_history_does_not_leak_prompt_when_response_heading_missing(tmp_path: Path):
+    (tmp_path / "cron" / "output" / "daily").mkdir(parents=True)
+    (tmp_path / "cron" / "jobs.json").write_text(json.dumps([{"id": "daily", "name": "Daily Brief"}]))
+    (tmp_path / "cron" / "output" / "daily" / "2026-05-20_08-00-00.md").write_text(
+        "## Prompt\n\nSECRET PROMPT SHOULD NOT RENDER\n\n## Tool Output\n\ninternal trace",
+        encoding="utf-8",
+    )
+
+    html = render_runs_page(collect_run_history(tmp_path), generated_at=datetime(2026, 5, 20, 12, tzinfo=timezone.utc))
+
+    assert "SECRET PROMPT" not in html
+    assert "internal trace" not in html
+    assert "No visible Markdown response" in html
+
+
+def test_run_history_rejects_symlinked_run_files(tmp_path: Path):
+    output_dir = tmp_path / "cron" / "output" / "daily"
+    output_dir.mkdir(parents=True)
+    secret = tmp_path / "secret.md"
+    secret.write_text("## Response\n\nSECRET FILE", encoding="utf-8")
+    (output_dir / "2026-05-20_08-00-00.md").symlink_to(secret)
+
+    assert collect_run_history(tmp_path) == []
+
+
+def test_acta_nav_order_is_today_outputs_runs_jobs_archive():
+    html = render_archive_index([date(2026, 5, 20)], generated_at=datetime(2026, 5, 20, tzinfo=timezone.utc))
+
+    assert html.index('href="/">Today') < html.index('href="/outputs">Outputs') < html.index('href="/runs">Runs') < html.index('href="/jobs">Jobs') < html.index('href="/archive">Archive')
+    assert "grid-template-columns:repeat(5,1fr)" in html
+
+
 def test_outputs_page_rejects_http_downgrade_urls():
     item_cls = collect_situation_items.__globals__["CronSituationItem"]
     item = item_cls(
@@ -1347,6 +1447,13 @@ def test_build_dashboard_publishes_outputs_index(tmp_path: Path, monkeypatch):
         json.dumps([{"id": "lead", "name": "Lead Brief", "deliver": "telegram:-1003566991387:86"}])
     )
     (tmp_path / "cron" / "output" / "lead" / "2026-05-19_10-00-00.md").write_text("## Response\n\nMost important")
+    outputs = tmp_path / "artifacts" / "acta-outputs"
+    outputs.mkdir(parents=True)
+    (outputs / "index.html").write_text(
+        '<article data-id="hermes-agent-lanes-decision-tree" data-title="Hermes Agent Lanes & Specialist Agents"><p>Lane decision tree.</p></article>',
+        encoding="utf-8",
+    )
+    (outputs / "hermes-agent-lanes-decision-tree.html").write_text("<html><p>Lane decision tree.</p></html>", encoding="utf-8")
     (tmp_path / "config.yaml").write_text(
         "cron:\n  html_artifacts:\n    publish:\n      enabled: true\n      endpoint: https://acta.imperatr.com\n"
     )
@@ -1370,4 +1477,13 @@ def test_build_dashboard_publishes_outputs_index(tmp_path: Path, monkeypatch):
     assert output_publish["path"].name == "outputs.html"
     assert "Acta Outputs" in output_publish["html"]
     assert '<a class="active" href="/outputs">Outputs</a>' in output_publish["html"]
-    assert "https://acta.imperatr.com/r/lead/detail.html?exp=1&amp;sig=abc" in output_publish["html"]
+    assert "Hermes Agent Lanes &amp; Specialist Agents" in output_publish["html"]
+    assert 'href="/outputs/hermes-agent-lanes-decision-tree"' in output_publish["html"]
+    assert "https://acta.imperatr.com/r/lead/detail.html?exp=1&amp;sig=abc" not in output_publish["html"]
+    backing_publish = next(item for item in published if item["object_key"] == "public/outputs/hermes-agent-lanes-decision-tree/index.html")
+    assert backing_publish["path"].name == "hermes-agent-lanes-decision-tree.html"
+    assert "Lane decision tree" in backing_publish["html"]
+    runs_publish = next(item for item in published if item["object_key"] == "public/runs/index.html")
+    assert runs_publish["path"].name == "runs.html"
+    assert "Acta Runs" in runs_publish["html"]
+    assert "Lead Brief" in runs_publish["html"]

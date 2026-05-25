@@ -27,6 +27,7 @@ except Exception:  # pragma: no cover - optional in tests
 
 from hermes_constants import get_hermes_home
 
+from cron.acta_catalog import default_catalog_path, default_outputs_dir, import_acta_outputs, load_catalog
 from cron.html_artifacts import CSP, REPORT_END, REPORT_START, HtmlReportMetadata, render_html_report, render_report_body
 from cron.html_publish import HtmlArtifactPublishError, publish_html_artifact
 
@@ -294,6 +295,38 @@ class CronSituationItem:
     telegram_url: str | None = None
 
 
+@dataclass(frozen=True)
+class ActaOutputItem:
+    id: str
+    title: str
+    href: str
+    summary: str
+    tags: tuple[str, ...]
+    source_name: str
+    created_at: str
+    updated_at: str
+    pinned: bool = False
+    read: bool = False
+    archived: bool = False
+
+
+@dataclass(frozen=True)
+class ActaRunItem:
+    job_id: str
+    name: str
+    schedule: str
+    deliver: str
+    enabled: bool
+    run_id: str
+    run_time: datetime | None
+    status: str
+    excerpt: str
+    source_name: str
+    has_markdown: bool
+    has_html: bool
+    telegram_url: str | None = None
+
+
 def _safe_text(value: object) -> str:
     return html.escape(str(value or ""))
 
@@ -449,15 +482,22 @@ def _strip_embedded_html_report(markdown: str) -> str:
     return markdown.strip()
 
 
-def _extract_response(markdown: str) -> str:
+def _extract_response_if_present(markdown: str) -> str | None:
     match = re.search(r"(?:^|\n)## Response\s*\n", markdown)
     if not match:
-        return _strip_embedded_html_report(markdown)
+        return None
     response = markdown[match.end():]
     next_heading = re.search(r"\n## [A-Z][^\n]*\n", response)
     if next_heading:
         response = response[: next_heading.start()]
     return _strip_embedded_html_report(response)
+
+
+def _extract_response(markdown: str) -> str:
+    response = _extract_response_if_present(markdown)
+    if response is None:
+        return _strip_embedded_html_report(markdown)
+    return response
 
 
 def _plain_excerpt(markdown: str, max_chars: int = 320) -> str:
@@ -514,6 +554,111 @@ def collect_situation_items(hermes_home: Path | None = None, run_date: date | No
             )
         )
     return sorted(items, key=lambda item: (item.enabled, item.latest_time or datetime.min.replace(tzinfo=timezone.utc)), reverse=True)
+
+
+def _parse_iso_datetime(value: object) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _is_safe_catalog_href(value: str | None) -> bool:
+    return bool(value and (value == "/outputs" or re.fullmatch(r"/outputs/[a-z0-9][a-z0-9-]*/?", value)))
+
+
+def collect_catalog_outputs(hermes_home: Path | None = None) -> list[ActaOutputItem]:
+    """Load persistent Acta outputs, importing static artifacts once when needed."""
+    home = hermes_home or get_hermes_home()
+    catalog_path = default_catalog_path(home)
+    try:
+        catalog = import_acta_outputs(hermes_home=home, save=True)
+    except OSError:
+        catalog = load_catalog(catalog_path)
+
+    outputs: list[ActaOutputItem] = []
+    for entry in catalog.get("outputs", []):
+        if not isinstance(entry, Mapping) or bool(entry.get("archived", False)):
+            continue
+        href = str(entry.get("href") or "")
+        if not _is_safe_catalog_href(href):
+            href = "/outputs"
+        raw_source_ref = entry.get("source_ref")
+        source_ref: Mapping[str, Any] = raw_source_ref if isinstance(raw_source_ref, Mapping) else {}
+        outputs.append(
+            ActaOutputItem(
+                id=str(entry.get("id") or "output"),
+                title=str(entry.get("title") or entry.get("id") or "Output"),
+                href=href,
+                summary=str(entry.get("summary") or ""),
+                tags=tuple(str(tag) for tag in (entry.get("tags") or []) if str(tag).strip()),
+                source_name=str(source_ref.get("name") or source_ref.get("label") or "acta-output"),
+                created_at=str(entry.get("created_at") or ""),
+                updated_at=str(entry.get("updated_at") or ""),
+                pinned=bool(entry.get("pinned", False)),
+                read=bool(entry.get("read", False)),
+                archived=bool(entry.get("archived", False)),
+            )
+        )
+    return sorted(outputs, key=lambda item: (not item.pinned, -(_parse_iso_datetime(item.updated_at) or datetime.min.replace(tzinfo=timezone.utc)).timestamp(), item.title.casefold()))
+
+
+def collect_run_history(hermes_home: Path | None = None, limit: int = 200) -> list[ActaRunItem]:
+    """Scan cron output history across all run files, excluding Acta's own dashboard job."""
+    home = hermes_home or get_hermes_home()
+    jobs_path = home / "cron" / "jobs.json"
+    jobs = {str(job.get("id") or ""): job for job in (_jobs_from_file(jobs_path) if jobs_path.exists() else []) if str(job.get("id") or "")}
+    output_root = home / "cron" / "output"
+    if not output_root.exists():
+        return []
+    grouped: dict[tuple[str, str], dict[str, Path]] = {}
+    output_root_resolved = output_root.resolve()
+    for path in output_root.glob("*/*"):
+        if path.parent.name == "acta-situation-room" or path.suffix.lower() not in {".md", ".html"} or path.is_symlink() or not path.is_file():
+            continue
+        try:
+            path.resolve().relative_to(output_root_resolved)
+        except (OSError, ValueError):
+            continue
+        grouped.setdefault((path.parent.name, path.stem), {})[path.suffix.lower()] = path
+
+    runs: list[ActaRunItem] = []
+    for (job_id, run_id), paths in grouped.items():
+        md_path = paths.get(".md")
+        html_path = paths.get(".html")
+        job = jobs.get(job_id, {})
+        response = ""
+        if md_path is not None:
+            try:
+                response = _extract_response_if_present(md_path.read_text(encoding="utf-8", errors="replace")) or ""
+            except OSError:
+                response = ""
+        status = "fresh" if response and response.strip() != "[SILENT]" else "silent"
+        run_time = _latest_run_time(md_path, html_path)
+        source_path = md_path or html_path
+        runs.append(
+            ActaRunItem(
+                job_id=job_id,
+                name=str(job.get("name") or job_id),
+                schedule=_schedule_display(job),
+                deliver=str(job.get("deliver") or ""),
+                enabled=bool(job.get("enabled", True)),
+                run_id=run_id,
+                run_time=run_time,
+                status=status,
+                excerpt=_plain_excerpt(response or "No visible Markdown response for this run."),
+                source_name=source_path.name if source_path else run_id,
+                has_markdown=md_path is not None,
+                has_html=html_path is not None,
+                telegram_url=_telegram_url_from_job(job),
+            )
+        )
+    return sorted(runs, key=lambda item: item.run_time or datetime.min.replace(tzinfo=timezone.utc), reverse=True)[:limit]
 
 
 def _age_label(dt: datetime | None, now: datetime) -> str:
@@ -911,7 +1056,7 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
 .pull-refresh {{ display:none; position:fixed; left:50%; top:calc(8px + env(safe-area-inset-top, 0px)); transform:translate(-50%,-130%); min-width:150px; padding:9px 12px; border:1px solid var(--line); border-radius:999px; background:rgba(3,6,11,.96); color:var(--acta2); font:800 10px var(--mono); letter-spacing:.12em; text-align:center; z-index:5; opacity:0; transition:transform .18s ease, opacity .18s ease; box-shadow:0 12px 32px rgba(0,0,0,.55); }}
 .pull-refresh.ready {{ color:#fff; background:linear-gradient(135deg,var(--acta),var(--acta2)); border-color:transparent; }}
 .pull-refresh.visible {{ opacity:1; transform:translate(-50%,0); }}
-@media (max-width:980px) {{ .pull-refresh {{ display:block; }} .shell {{ display:block; min-width:0; width:100%; }} .rail {{ display:none; }} .main {{ width:100%; min-width:0; }} .top {{ height:50px; padding:0 max(14px, env(safe-area-inset-left, 0px)) 0 max(14px, env(safe-area-inset-left, 0px)); }} .date-nav {{ position:static; background:rgba(3,6,11,.82); padding:8px 14px; gap:8px; }} .nav-link {{ min-height:38px; display:inline-flex; align-items:center; padding:0 12px; }} .content {{ display:block; padding:12px 14px calc(132px + env(safe-area-inset-bottom, 0px)); }} .panel-title {{ margin-top:12px; }} .side {{ display:none; }} .topstats {{ display:none; }} .lead {{ margin-bottom:8px; touch-action:pan-y; }} .lead p {{ display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }} .meta {{ gap:9px; }} .feed {{ border-top:0; }} .brief-row {{ min-height:60px; touch-action:pan-y; }} .swipe-content {{ grid-template-columns:32px minmax(0,1fr) auto; gap:8px; min-height:60px; padding:7px 10px; touch-action:pan-y; }} .brief-row:hover .swipe-content {{ background:rgba(255,255,255,.05); outline:0; }} .row-signal {{ font-size:8px; }} .row-kicker {{ font-size:10px; }} .brief-copy p {{ display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }} .source-line {{ display:block; font-size:9px; margin-top:3px; }} .open-label {{ display:none; }} .card-actions {{ grid-column:3; justify-self:end; }} .ask-label {{ padding:5px 7px; font-size:10px; }} .jobs-panel {{ margin-top:18px; scroll-margin-top:100px; }} .jobs-head {{ padding-top:14px; }} .job-row {{ grid-template-columns:34px minmax(0,1fr); gap:8px 10px; padding:13px 0; }} .job-schedule, .job-last {{ grid-column:2; }} .job-main b {{ font-size:14px; }} .search {{ max-width:none; }} .mobilebar {{ display:grid; position:fixed; left:max(10px, env(safe-area-inset-left, 0px)); right:max(10px, env(safe-area-inset-right, 0px)); bottom:calc(14px + env(safe-area-inset-bottom, 0px)); min-height:62px; background:linear-gradient(180deg, rgba(7,16,24,.96), rgba(3,6,11,.94)), radial-gradient(circle at 18% 0%, rgba(117,108,255,.28), transparent 42%), radial-gradient(circle at 86% 20%, rgba(35,167,255,.18), transparent 48%); backdrop-filter:blur(18px) saturate(145%); border:1px solid rgba(117,108,255,.28); grid-template-columns:repeat(4,1fr); z-index:3; box-shadow:0 -16px 38px rgba(0,0,0,.62), 0 0 26px rgba(117,108,255,.13); opacity:0; transform:translateY(calc(100% + 24px)); pointer-events:none; transition:opacity .18s ease, transform .22s cubic-bezier(.2,.8,.2,1); }} .mobilebar.visible {{ opacity:1; transform:translateY(0); pointer-events:auto; }} .mobilebar a {{ display:grid; place-items:center; min-height:62px; color:#ddd; text-decoration:none; font:11px var(--mono); touch-action:manipulation; -webkit-tap-highlight-color:rgba(117,108,255,.18); }} .mobilebar a:first-child {{ color:var(--accent); }} }}
+@media (max-width:980px) {{ .pull-refresh {{ display:block; }} .shell {{ display:block; min-width:0; width:100%; }} .rail {{ display:none; }} .main {{ width:100%; min-width:0; }} .top {{ height:50px; padding:0 max(14px, env(safe-area-inset-left, 0px)) 0 max(14px, env(safe-area-inset-left, 0px)); }} .date-nav {{ position:static; background:rgba(3,6,11,.82); padding:8px 14px; gap:8px; }} .nav-link {{ min-height:38px; display:inline-flex; align-items:center; padding:0 12px; }} .content {{ display:block; padding:12px 14px calc(132px + env(safe-area-inset-bottom, 0px)); }} .panel-title {{ margin-top:12px; }} .side {{ display:none; }} .topstats {{ display:none; }} .lead {{ margin-bottom:8px; touch-action:pan-y; }} .lead p {{ display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }} .meta {{ gap:9px; }} .feed {{ border-top:0; }} .brief-row {{ min-height:60px; touch-action:pan-y; }} .swipe-content {{ grid-template-columns:32px minmax(0,1fr) auto; gap:8px; min-height:60px; padding:7px 10px; touch-action:pan-y; }} .brief-row:hover .swipe-content {{ background:rgba(255,255,255,.05); outline:0; }} .row-signal {{ font-size:8px; }} .row-kicker {{ font-size:10px; }} .brief-copy p {{ display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }} .source-line {{ display:block; font-size:9px; margin-top:3px; }} .open-label {{ display:none; }} .card-actions {{ grid-column:3; justify-self:end; }} .ask-label {{ padding:5px 7px; font-size:10px; }} .jobs-panel {{ margin-top:18px; scroll-margin-top:100px; }} .jobs-head {{ padding-top:14px; }} .job-row {{ grid-template-columns:34px minmax(0,1fr); gap:8px 10px; padding:13px 0; }} .job-schedule, .job-last {{ grid-column:2; }} .job-main b {{ font-size:14px; }} .search {{ max-width:none; }} .mobilebar {{ display:grid; position:fixed; left:max(10px, env(safe-area-inset-left, 0px)); right:max(10px, env(safe-area-inset-right, 0px)); bottom:calc(14px + env(safe-area-inset-bottom, 0px)); min-height:62px; background:linear-gradient(180deg, rgba(7,16,24,.96), rgba(3,6,11,.94)), radial-gradient(circle at 18% 0%, rgba(117,108,255,.28), transparent 42%), radial-gradient(circle at 86% 20%, rgba(35,167,255,.18), transparent 48%); backdrop-filter:blur(18px) saturate(145%); border:1px solid rgba(117,108,255,.28); grid-template-columns:repeat(5,1fr); z-index:3; box-shadow:0 -16px 38px rgba(0,0,0,.62), 0 0 26px rgba(117,108,255,.13); opacity:0; transform:translateY(calc(100% + 24px)); pointer-events:none; transition:opacity .18s ease, transform .22s cubic-bezier(.2,.8,.2,1); }} .mobilebar.visible {{ opacity:1; transform:translateY(0); pointer-events:auto; }} .mobilebar a {{ display:grid; place-items:center; min-height:62px; color:#ddd; text-decoration:none; font:11px var(--mono); touch-action:manipulation; -webkit-tap-highlight-color:rgba(117,108,255,.18); }} .mobilebar a:first-child {{ color:var(--accent); }} }}
 @media (max-width:620px) {{ .top {{ gap:8px; }} .ticker {{ font-size:11px; }} .search {{ display:none; }} .lead {{ grid-template-columns:1fr; }} .output-summary {{ grid-column:1; grid-row:auto; justify-self:start; text-align:left; display:flex; align-items:center; gap:6px; min-width:0; }} h1 {{ font-size:19px; max-width:100%; }} .lead p {{ font-size:13px; line-height:1.3; }} .label {{ line-height:1.7; }} .swipe-content {{ grid-template-columns:28px minmax(0,1fr); }} h2 {{ font-size:15px; }} .row-kicker {{ flex-wrap:wrap; overflow:visible; line-height:1.25; }} .row-kicker span, .row-kicker .read-state {{ min-height:auto; display:inline-flex; align-items:center; }} .source-line {{ white-space:normal; overflow:visible; text-overflow:clip; line-height:1.25; word-break:break-word; color:var(--muted); }} .card-actions {{ grid-column:2; justify-self:start; margin-top:2px; }} .brief-copy p {{ font-size:13px; line-height:1.25; }} footer {{ font-size:11px; line-height:1.45; }} }}
 </style>
 </head>
@@ -922,12 +1067,13 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
     <div class="brand"><div class="logo">A</div><div><b>Acta</b><small>IMPERATR SITUATION ROOM</small></div></div>
     <nav class="nav-side">
       <h4>Today</h4>
-      <a class="active" href="/">Briefing Packet <span>{total}</span></a>
-      <a href="/archive">Archive <span>{len(archive_dates)}</span></a>
-      <a href="/jobs">Jobs <span>{len(jobs_rows)}</span></a>
+      <a class="active" href="/">Today <span>{total}</span></a>
       <a href="/outputs">Outputs <span>{total}</span></a>
+      <a href="/runs">Runs <span>{active}</span></a>
+      <a href="/jobs">Jobs <span>{len(jobs_rows)}</span></a>
+      <a href="/archive">Archive <span>{len(archive_dates)}</span></a>
       <h4>Trace</h4>
-      <a href="/jobs">Source Runs <span>{active}</span></a>
+      <a href="/runs">Source Runs <span>{active}</span></a>
       <a href="/archive">Audit Trail <span>{len(archive_dates)}</span></a>
     </nav>
     <div class="railfoot"><span class="live"></span>LIVE {html.escape(now.strftime('%H:%M UTC'))}<br>DAY {html.escape(day_label)}</div>
@@ -938,7 +1084,7 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
       <div class="search">Search briefings, sources, jobs, archive…</div>
       <div class="topstats"><div>VISIBLE <b>{visible}</b></div><div>SILENT <b>{silent}</b></div><div>MISSING <b>{missing}</b></div></div>
     </header>
-    <nav class="date-nav"><a class="nav-link primary" href="/">Today</a><a class="nav-link" href="/jobs">Jobs</a><a class="nav-link" href="/archive">Archive</a><a class="nav-link" href="/outputs">Outputs</a></nav>
+    <nav class="date-nav"><a class="nav-link primary" href="/">Today</a><a class="nav-link" href="/outputs">Outputs</a><a class="nav-link" href="/runs">Runs</a><a class="nav-link" href="/jobs">Jobs</a><a class="nav-link" href="/archive">Archive</a></nav>
     <section class="content">
       <div>
         <article class="lead readable unread" data-read-key="{lead_read_key}"{lead_href_attr}>
@@ -963,7 +1109,7 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
     <footer>Generated {html.escape(now.isoformat())}. Signed Acta links expire automatically.</footer>
   </main>
 </div>
-<nav class="mobilebar"><a href="/">TODAY</a><a href="/jobs">JOBS</a><a href="/archive">ARCHIVE</a><a href="/outputs">OUTPUTS</a></nav>
+<nav class="mobilebar"><a href="/">TODAY</a><a href="/outputs">OUTPUTS</a><a href="/runs">RUNS</a><a href="/jobs">JOBS</a><a href="/archive">ARCHIVE</a></nav>
 <script>{dashboard_script}</script>
 </body>
 </html>
@@ -1072,12 +1218,16 @@ pre { overflow-x:auto; background:rgba(0,0,0,.24); border:1px solid var(--line);
 code { font-family:var(--mono); color:#b9dfff; }
 p code, li code { background:rgba(255,255,255,.055); border:1px solid var(--line); padding:1px 5px; border-radius:6px; }
 footer { color:var(--faint); margin-top:22px; font:11px var(--mono); text-align:center; }
-@media (max-width:760px) { .top { height:50px; padding:0 14px; gap:8px; } .ticker { font-size:11px; } .top .nav { display:none; } .nav { gap:6px; } .nav a { min-height:36px; display:inline-flex; align-items:center; padding:0 10px; } main { width:100%; padding:14px 14px calc(118px + env(safe-area-inset-bottom, 0px)); } h1 { font-size:22px; } .lede { font-size:13px; line-height:1.36; } .grid { grid-template-columns:1fr; } .job-row, .output-row { grid-template-columns:32px minmax(0,1fr); gap:8px 9px; padding:9px 10px; min-height:60px; } .job-schedule, .job-last, .output-actions { grid-column:2; } .job-main b, .output-main b { font-size:14px; } .output-actions { justify-self:start; } .output-meta { flex-wrap:wrap; overflow:visible; } .output-meta .followup-meta { display:inline-flex; } .actions { gap:6px; margin-left:0; overflow:auto; } .followup { max-width:132px; overflow:hidden; text-overflow:ellipsis; padding:7px 9px; } .back { padding:7px 9px; } .report-shell { border-radius:16px; padding:12px; } h1.report-title { font-size:22px; } article.report-body { font-size:14.5px; line-height:1.5; } .section-title { font-size:18px; } .mobilebar { display:grid; position:fixed; left:max(10px, env(safe-area-inset-left, 0px)); right:max(10px, env(safe-area-inset-right, 0px)); bottom:calc(14px + env(safe-area-inset-bottom, 0px)); min-height:62px; background:linear-gradient(180deg, rgba(7,16,24,.96), rgba(3,6,11,.94)), radial-gradient(circle at 18% 0%, rgba(117,108,255,.28), transparent 42%), radial-gradient(circle at 86% 20%, rgba(35,167,255,.18), transparent 48%); backdrop-filter:blur(18px) saturate(145%); border:1px solid rgba(117,108,255,.28); border-radius:0; grid-template-columns:repeat(4,1fr); z-index:3; box-shadow:0 -16px 38px rgba(0,0,0,.62), 0 0 26px rgba(117,108,255,.13); } .mobilebar a { display:grid; place-items:center; min-height:62px; color:#ddd; text-decoration:none; font:11px var(--mono); touch-action:manipulation; -webkit-tap-highlight-color:rgba(117,108,255,.18); } .mobilebar a.active { color:#fff; background:rgba(117,108,255,.18); box-shadow:inset 0 2px 0 var(--acta2); } }
+@media (max-width:760px) { .top { height:50px; padding:0 14px; gap:8px; } .ticker { font-size:11px; } .top .nav { display:none; } .nav { gap:6px; } .nav a { min-height:36px; display:inline-flex; align-items:center; padding:0 10px; } main { width:100%; padding:14px 14px calc(118px + env(safe-area-inset-bottom, 0px)); } h1 { font-size:22px; } .lede { font-size:13px; line-height:1.36; } .grid { grid-template-columns:1fr; } .job-row, .output-row { grid-template-columns:32px minmax(0,1fr); gap:8px 9px; padding:9px 10px; min-height:60px; } .job-schedule, .job-last, .output-actions { grid-column:2; } .job-main b, .output-main b { font-size:14px; } .output-actions { justify-self:start; } .output-meta { flex-wrap:wrap; overflow:visible; } .output-meta .followup-meta { display:inline-flex; } .actions { gap:6px; margin-left:0; overflow:auto; } .followup { max-width:132px; overflow:hidden; text-overflow:ellipsis; padding:7px 9px; } .back { padding:7px 9px; } .report-shell { border-radius:16px; padding:12px; } h1.report-title { font-size:22px; } article.report-body { font-size:14.5px; line-height:1.5; } .section-title { font-size:18px; } .mobilebar { display:grid; position:fixed; left:max(10px, env(safe-area-inset-left, 0px)); right:max(10px, env(safe-area-inset-right, 0px)); bottom:calc(14px + env(safe-area-inset-bottom, 0px)); min-height:62px; background:linear-gradient(180deg, rgba(7,16,24,.96), rgba(3,6,11,.94)), radial-gradient(circle at 18% 0%, rgba(117,108,255,.28), transparent 42%), radial-gradient(circle at 86% 20%, rgba(35,167,255,.18), transparent 48%); backdrop-filter:blur(18px) saturate(145%); border:1px solid rgba(117,108,255,.28); border-radius:0; grid-template-columns:repeat(5,1fr); z-index:3; box-shadow:0 -16px 38px rgba(0,0,0,.62), 0 0 26px rgba(117,108,255,.13); } .mobilebar a { display:grid; place-items:center; min-height:62px; color:#ddd; text-decoration:none; font:11px var(--mono); touch-action:manipulation; -webkit-tap-highlight-color:rgba(117,108,255,.18); } .mobilebar a.active { color:#fff; background:rgba(117,108,255,.18); box-shadow:inset 0 2px 0 var(--acta2); } }
 """.strip()
 
 
+def _acta_nav_links() -> list[tuple[str, str, str]]:
+    return [("/", "Today", "today"), ("/outputs", "Outputs", "outputs"), ("/runs", "Runs", "runs"), ("/jobs", "Jobs", "jobs"), ("/archive", "Archive", "archive")]
+
+
 def _acta_top_nav(active: str, label: str) -> str:
-    links = [("/", "Today", "today"), ("/jobs", "Jobs", "jobs"), ("/archive", "Archive", "archive"), ("/outputs", "Outputs", "outputs")]
+    links = _acta_nav_links()
     nav = "".join(
         f'<a class="active" href="{href}">{text}</a>' if key == active else f'<a href="{href}">{text}</a>'
         for href, text, key in links
@@ -1086,7 +1236,7 @@ def _acta_top_nav(active: str, label: str) -> str:
 
 
 def _acta_mobile_module_nav(active: str | None = None) -> str:
-    links = [("/", "TODAY", "today"), ("/jobs", "JOBS", "jobs"), ("/archive", "ARCHIVE", "archive"), ("/outputs", "OUTPUTS", "outputs")]
+    links = [(href, text.upper(), key) for href, text, key in _acta_nav_links()]
     nav = "".join(
         f'<a class="active" href="{href}">{text}</a>' if key == active else f'<a href="{href}">{text}</a>'
         for href, text, key in links
@@ -1131,6 +1281,42 @@ def render_jobs_page(
 </body>
 </html>
 """
+
+
+def publish_catalog_output_artifacts(
+    outputs: Sequence[ActaOutputItem],
+    hermes_home: Path,
+    publish_settings: Mapping[str, Any],
+) -> None:
+    """Publish backing persistent output HTML at stable /outputs/<id>/ URLs.
+
+    Catalog rows intentionally keep stable root-relative hrefs. This helper makes
+    those hrefs resolvable during Acta publishing without trusting arbitrary
+    catalog paths: it only reads sanitized filenames from the known artifacts
+    shelf and uploads them under slug-shaped object keys.
+    """
+    artifacts_dir = default_outputs_dir(hermes_home).resolve()
+    for item in outputs:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", item.id):
+            continue
+        if not item.source_name.endswith(".html") or Path(item.source_name).name != item.source_name:
+            continue
+        source_path = artifacts_dir / item.source_name
+        try:
+            resolved = source_path.resolve()
+            resolved.relative_to(artifacts_dir)
+        except (OSError, ValueError):
+            continue
+        if not resolved.exists() or resolved.is_symlink() or not resolved.is_file():
+            continue
+        try:
+            publish_html_artifact(
+                resolved,
+                {"id": "acta-output"},
+                {**publish_settings, "object_key": f"public/outputs/{item.id}/index.html"},
+            )
+        except HtmlArtifactPublishError:
+            continue
 
 
 def render_outputs_page(
@@ -1229,6 +1415,126 @@ def render_outputs_page(
 """
 
 
+def render_catalog_outputs_page(
+    outputs: Sequence[ActaOutputItem],
+    generated_at: datetime | None = None,
+) -> str:
+    now = generated_at or datetime.now(timezone.utc)
+    rows: list[str] = []
+    pinned = sum(1 for item in outputs if item.pinned)
+    unread = sum(1 for item in outputs if not item.read)
+    for index, item in enumerate(outputs, start=1):
+        href = item.href if _is_safe_catalog_href(item.href) else ""
+        escaped_href = html.escape(href, quote=True) if href else ""
+        updated = _parse_iso_datetime(item.updated_at)
+        age = _age_label(updated, now) if updated else "catalog"
+        tags = " ".join(f"<span>#{_safe_text(tag)}</span>" for tag in item.tags[:6])
+        open_overlay = (
+            f'<a class="output-open-overlay" href="{escaped_href}" aria-label="Open output: {html.escape(item.title, quote=True)}"></a>'
+            if escaped_href
+            else ""
+        )
+        read_class = " read" if item.read else " unread"
+        read_key = html.escape(f"output:{item.id}", quote=True)
+        rows.append(
+            f"""
+<article class="output-row readable{read_class} fresh" data-read-key="{read_key}" data-open-url="{escaped_href}">
+  {open_overlay}
+  <div class="output-rank">{index:02d}</div>
+  <div class="output-main">
+    <b>{_safe_text(item.title)}</b>
+    <p>{_safe_text(item.summary or "Persistent Acta output.")}</p>
+    <div class="output-meta"><span class="read-state">{'READ' if item.read else 'UNREAD'}</span><span class="confidence-chip">CATALOG</span><span>{'PINNED' if item.pinned else 'OUTPUT'}</span><span>{_safe_text(age)}</span><span>SOURCE {_safe_text(item.source_name)}</span><span>ID {_safe_text(item.id)}</span>{tags}</div>
+  </div>
+  <div class="output-actions"><span class="open">OPEN</span></div>
+</article>"""
+        )
+    read_state_script = _outputs_read_state_script()
+    outputs_csp = _inline_script_csp(read_state_script)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no">
+<meta http-equiv="Content-Security-Policy" content="{html.escape(outputs_csp, quote=False)}">
+<title>Acta Outputs</title>
+<style>{_acta_page_css()}</style>
+</head>
+<body>
+{_acta_top_nav('outputs', 'Outputs')}
+<main>
+  <p class="kicker">Acta Situation Room · Outputs</p>
+  <h1>Persistent catalog.</h1>
+  <p class="lede">Durable Acta outputs imported from the persistent catalog, separate from run history.</p>
+  <nav class="quick-nav"><a href="/">Today</a><a class="active" href="/outputs">Outputs</a><a href="/runs">Runs</a><a href="/jobs">Jobs</a><a href="/archive">Archive</a></nav>
+  <section class="stats"><div class="stat">Outputs <b>{len(rows)}</b></div><div class="stat">Pinned <b>{pinned}</b></div><div class="stat">Unread <b>{unread}</b></div></section>
+  <section class="outputs-panel">
+    {''.join(rows) or '<p class="prompt">No persistent Acta outputs yet.</p>'}
+  </section>
+  <footer>Generated {html.escape(now.isoformat())}. Catalog rows expose only public-safe output hrefs.</footer>
+</main>
+{_acta_mobile_module_nav('outputs')}
+<script>{read_state_script}</script>
+</body>
+</html>
+"""
+
+
+def render_runs_page(runs: Sequence[ActaRunItem], generated_at: datetime | None = None) -> str:
+    now = generated_at or datetime.now(timezone.utc)
+    rows: list[str] = []
+    fresh = sum(1 for item in runs if item.status == "fresh")
+    silent = sum(1 for item in runs if item.status == "silent")
+    for index, item in enumerate(runs, start=1):
+        run_time = item.run_time.isoformat() if item.run_time else "unknown"
+        age = _age_label(item.run_time, now) if item.run_time else "unknown"
+        telegram_url = item.telegram_url if _is_safe_telegram_url(item.telegram_url) else ""
+        followup = (
+            f'<a class="followup-meta" href="{html.escape(telegram_url, quote=True)}" target="_blank" rel="noopener" aria-label="Ask follow-up in Telegram">FOLLOW-UP</a>'
+            if telegram_url
+            else '<span>NO FOLLOW-UP</span>'
+        )
+        kind = "+".join(part for part, present in (("MD", item.has_markdown), ("HTML", item.has_html)) if present) or "OUTPUT"
+        rows.append(
+            f"""
+<article class="output-row {_safe_text(item.status)}" aria-disabled="true">
+  <div class="output-rank">{index:02d}</div>
+  <div class="output-main">
+    <b>{_safe_text(item.name)}</b>
+    <p>{_safe_text(item.excerpt)}</p>
+    <div class="output-meta"><span>{_safe_text(item.status)}</span><span>{_safe_text(kind)}</span><span>{_safe_text(age)}</span><span>RUN {_safe_text(run_time)}</span><span>SOURCE {_safe_text(item.source_name)}</span><span>JOB {_safe_text(item.job_id)}</span><span>SCHEDULE {_safe_text(item.schedule or 'manual')}</span><span>{_safe_text(item.deliver or 'local')}</span>{followup}</div>
+  </div>
+  <div class="output-actions"><span class="muted">HISTORY</span></div>
+</article>"""
+        )
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no">
+<meta http-equiv="Content-Security-Policy" content="{html.escape(CSP, quote=False)}">
+<title>Acta Runs</title>
+<style>{_acta_page_css()}</style>
+</head>
+<body>
+{_acta_top_nav('runs', 'Runs')}
+<main>
+  <p class="kicker">Acta Situation Room · Runs</p>
+  <h1>Run history.</h1>
+  <p class="lede">Chronological cron output history scanned from run files across jobs. Local filesystem paths are not exposed.</p>
+  <nav class="quick-nav"><a href="/">Today</a><a href="/outputs">Outputs</a><a class="active" href="/runs">Runs</a><a href="/jobs">Jobs</a><a href="/archive">Archive</a></nav>
+  <section class="stats"><div class="stat">Runs <b>{len(rows)}</b></div><div class="stat">Fresh <b>{fresh}</b></div><div class="stat">Silent <b>{silent}</b></div></section>
+  <section class="outputs-panel">
+    {''.join(rows) or '<p class="prompt">No cron run history yet.</p>'}
+  </section>
+  <footer>Generated {html.escape(now.isoformat())}.</footer>
+</main>
+{_acta_mobile_module_nav('runs')}
+</body>
+</html>
+"""
+
+
 def render_archive_index(archive_dates: Sequence[date], generated_at: datetime | None = None) -> str:
     now = generated_at or datetime.now(timezone.utc)
     cards = "".join(
@@ -1250,7 +1556,7 @@ def render_archive_index(archive_dates: Sequence[date], generated_at: datetime |
 <p class="kicker">Acta · Archive</p>
 <h1>Previous days.</h1>
 <p class="lede">Browse prior Situation Room snapshots by day. Historical pages now use the same Imperatr surface as the live feed.</p>
-<nav class="quick-nav"><a href="/">Today</a><a href="/jobs">Jobs</a><a class="active" href="/archive">Archive</a><a href="/outputs">Outputs</a></nav>
+<nav class="quick-nav"><a href="/">Today</a><a href="/outputs">Outputs</a><a href="/runs">Runs</a><a href="/jobs">Jobs</a><a class="active" href="/archive">Archive</a></nav>
 <section class="grid">{cards}</section>
 <footer>Generated {html.escape(now.isoformat())}.</footer>
 </main>
@@ -1489,18 +1795,20 @@ def build_dashboard(
             {**publish_settings, "object_key": "public/jobs/index.html"},
         )
         outputs_path = output_dir / "outputs.html"
-        outputs_path.write_text(
-            render_outputs_page(
-                items,
-                generated_at=generated_at,
-                feed_preferences=acta_dashboard_config(config),
-            ),
-            encoding="utf-8",
-        )
+        catalog_outputs = collect_catalog_outputs(home)
+        publish_catalog_output_artifacts(catalog_outputs, home, publish_settings)
+        outputs_path.write_text(render_catalog_outputs_page(catalog_outputs, generated_at=generated_at), encoding="utf-8")
         publish_html_artifact(
             outputs_path,
             {"id": "acta-situation-room"},
             {**publish_settings, "object_key": "public/outputs/index.html"},
+        )
+        runs_path = output_dir / "runs.html"
+        runs_path.write_text(render_runs_page(collect_run_history(home), generated_at=generated_at), encoding="utf-8")
+        publish_html_artifact(
+            runs_path,
+            {"id": "acta-situation-room"},
+            {**publish_settings, "object_key": "public/runs/index.html"},
         )
         for run_day in dates:
             day_items = collect_situation_items(home, run_date=run_day)
