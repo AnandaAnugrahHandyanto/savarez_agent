@@ -25,7 +25,7 @@ import uuid
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, AsyncIterator, Deque, Dict, Optional
+from typing import Any, AsyncIterator, Callable, Deque, Dict, Optional
 
 import httpx
 
@@ -59,6 +59,8 @@ RUNTIME_INPUT_POLL_SECONDS = 1.0
 RUNTIME_APPROVAL_POLL_SECONDS = 1.0
 RUNTIME_HITL_MAX_TIMEOUT_SECONDS = 30 * 60
 FINAL_MESSAGE_HANDOFF_SECONDS = 0.75
+REGISTRATION_POLL_INTERVAL_SECONDS = 3.0
+REGISTRATION_TIMEOUT_SECONDS = 5 * 60.0
 
 AUDIO_EXTS = {".m4a", ".mp3", ".ogg", ".opus", ".wav", ".webm", ".flac"}
 IMAGE_EXTS = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
@@ -1846,6 +1848,20 @@ def _load_agent_profiles() -> dict[str, dict[str, Any]]:
     return profiles
 
 
+def _profile_slug(name: str) -> str:
+    slug_chars: list[str] = []
+    prev_dash = False
+    for char in name.strip().lower():
+        if char.isascii() and char.isalnum():
+            slug_chars.append(char)
+            prev_dash = False
+        elif not prev_dash:
+            slug_chars.append("-")
+            prev_dash = True
+    slug = "".join(slug_chars).strip("-")
+    return slug or "hermes"
+
+
 def _profile_matches_client(profile: dict[str, Any], expected: str = "hermes") -> bool:
     client_type = profile.get("clientType")
     return not client_type or str(client_type) == expected
@@ -1933,6 +1949,316 @@ def _config_int(config: Any, key: str, env_name: str, default: int) -> int:
         return max(1, int(raw))
     except (TypeError, ValueError):
         return default
+
+
+def _save_canon_profile(
+    profile_name: str,
+    *,
+    api_key: str,
+    agent_id: str,
+    agent_name: str,
+    base_url: str = "",
+    stream_url: str = "",
+) -> None:
+    profiles = _load_agent_profiles()
+    entry: dict[str, Any] = {
+        "apiKey": api_key,
+        "agentId": agent_id,
+        "agentName": agent_name,
+        "registeredAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "clientType": "hermes",
+    }
+    if base_url and base_url.rstrip("/") != DEFAULT_BASE_URL:
+        entry["baseUrl"] = base_url.rstrip("/")
+    if stream_url and stream_url.rstrip("/") != DEFAULT_STREAM_URL:
+        entry["streamUrl"] = stream_url.rstrip("/")
+    profiles[profile_name] = entry
+    _write_agent_profiles(_canon_agents_path(), profiles)
+
+
+def _post_registration_request(
+    *,
+    base_url: str,
+    name: str,
+    description: str,
+    owner_phone: str,
+    requested_agent_id: Optional[str] = None,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "name": name,
+        "description": description,
+        "ownerPhone": owner_phone,
+        "developerInfo": "Hermes gateway platform adapter",
+        "clientType": "hermes",
+        "localRegistrationId": str(uuid.uuid4()),
+    }
+    if requested_agent_id:
+        body["requestedAgentId"] = requested_agent_id
+
+    res = httpx.post(
+        f"{base_url.rstrip('/')}/agents/register",
+        headers={"Content-Type": "application/json"},
+        json=body,
+        timeout=DEFAULT_TIMEOUT_SECONDS,
+    )
+    if res.status_code >= 400:
+        raise CanonApiError(res.status_code, res.text)
+    data = res.json()
+    if not isinstance(data, dict) or not data.get("requestId"):
+        raise ValueError("Canon registration did not return a requestId")
+    return data
+
+
+def _get_registration_status(
+    *,
+    base_url: str,
+    request_id: str,
+    poll_token: Optional[str],
+) -> dict[str, Any]:
+    headers = {"x-canon-poll-token": poll_token} if poll_token else None
+    res = httpx.get(
+        f"{base_url.rstrip('/')}/agents/status/{request_id}",
+        headers=headers,
+        timeout=DEFAULT_TIMEOUT_SECONDS,
+    )
+    if res.status_code >= 400:
+        raise CanonApiError(res.status_code, res.text)
+    data = res.json()
+    if not isinstance(data, dict):
+        raise ValueError("Canon registration status response was not an object")
+    return data
+
+
+def _ack_registration_status(
+    *,
+    base_url: str,
+    request_id: str,
+    poll_token: Optional[str],
+) -> None:
+    headers = {"x-canon-poll-token": poll_token} if poll_token else None
+    res = httpx.post(
+        f"{base_url.rstrip('/')}/agents/status/{request_id}/ack",
+        headers=headers,
+        timeout=DEFAULT_TIMEOUT_SECONDS,
+    )
+    if res.status_code >= 400:
+        raise CanonApiError(res.status_code, res.text)
+
+
+def _wait_for_registration_approval(
+    *,
+    base_url: str,
+    request_id: str,
+    poll_token: Optional[str],
+    on_poll: Optional[Callable[[dict[str, Any]], None]] = None,
+    timeout_seconds: float = REGISTRATION_TIMEOUT_SECONDS,
+    poll_interval_seconds: float = REGISTRATION_POLL_INTERVAL_SECONDS,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        time.sleep(poll_interval_seconds)
+        status = _get_registration_status(
+            base_url=base_url,
+            request_id=request_id,
+            poll_token=poll_token,
+        )
+        if on_poll:
+            on_poll(status)
+        if status.get("status") in {"approved", "rejected"}:
+            return status
+    return {"status": "timeout"}
+
+
+def _setup_canon() -> None:
+    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
+    from hermes_cli.setup import (
+        Colors,
+        color,
+        print_error,
+        print_info,
+        print_success,
+        print_warning,
+        prompt,
+        prompt_choice,
+        prompt_yes_no,
+    )
+
+    print()
+    print(color("  --- Canon Setup ---", Colors.CYAN))
+    print()
+    print_info("  Canon can use an existing agent profile or register a new Hermes agent.")
+    print_info("  Registration sends an approval request to the Canon owner app.")
+
+    existing_key = get_env_value("CANON_API_KEY") or ""
+    existing_agent = get_env_value("CANON_AGENT") or ""
+    if existing_key or existing_agent or validate_config(None):
+        print()
+        if existing_agent:
+            print_success(f"Canon is already configured with profile '{existing_agent}'.")
+        else:
+            print_success("Canon is already configured.")
+        if not prompt_yes_no("  Reconfigure Canon?", False):
+            return
+
+    choices = [
+        "Register/reconnect a Hermes agent with Canon (recommended)",
+        "Use an existing Canon profile from ~/.canon/agents.json",
+        "Paste an existing Canon API key",
+    ]
+    choice = prompt_choice("  How would you like to configure Canon?", choices, 0)
+
+    if choice == 2:
+        print()
+        print_info("  Paste the agk_live_... key returned by Canon registration.")
+        api_key = prompt("  Canon API key", password=True)
+        if not api_key:
+            print_warning("  Skipped — Canon needs CANON_API_KEY or CANON_AGENT.")
+            return
+        save_env_value("CANON_API_KEY", api_key)
+        remove_env_value("CANON_AGENT")
+        print_success("  Canon API key saved.")
+        return
+
+    if choice == 1:
+        try:
+            profiles = _load_agent_profiles()
+        except Exception as exc:
+            print_error(f"  Could not read {_canon_agents_path()}: {_safe_error(exc)}")
+            return
+        available = [
+            name
+            for name, profile in sorted(profiles.items())
+            if isinstance(profile, dict) and _profile_matches_client(profile)
+        ]
+        if available:
+            default = existing_agent if existing_agent in available else available[0]
+            profile_name = prompt("  Canon profile", default=default)
+        else:
+            print_warning("  No Hermes-compatible profiles found in ~/.canon/agents.json.")
+            profile_name = prompt("  Canon profile")
+        if not profile_name:
+            print_warning("  Skipped — Canon needs a profile name.")
+            return
+        try:
+            _resolved_from_profile(profile_name, profiles[profile_name])
+        except KeyError:
+            print_error(f"  Profile '{profile_name}' was not found in {_canon_agents_path()}.")
+            return
+        except Exception as exc:
+            print_error(f"  Profile '{profile_name}' is not usable: {_safe_error(exc)}")
+            return
+        save_env_value("CANON_AGENT", profile_name)
+        remove_env_value("CANON_API_KEY")
+        print_success(f"  Canon profile '{profile_name}' saved.")
+        return
+
+    print()
+    agent_name = prompt("  Agent display name", default="Hermes")
+    if not agent_name:
+        print_warning("  Skipped — Canon registration needs an agent name.")
+        return
+    description = prompt(
+        "  Agent description",
+        default="Hermes gateway agent",
+    )
+    owner_phone = prompt("  Owner phone number (E.164, e.g. +15551234567)")
+    if not owner_phone:
+        print_warning("  Skipped — Canon registration needs the owner's phone number.")
+        return
+    profile_name = prompt("  Local Canon profile name", default=_profile_slug(agent_name))
+    if not profile_name:
+        print_warning("  Skipped — Canon registration needs a local profile name.")
+        return
+
+    base_url = prompt(
+        "  Canon API base URL",
+        default=get_env_value("CANON_BASE_URL") or DEFAULT_BASE_URL,
+    ).rstrip("/")
+
+    requested_agent_id = None
+    try:
+        requested_agent_id = _load_agent_profiles().get(profile_name, {}).get("agentId")
+    except Exception:
+        requested_agent_id = None
+
+    try:
+        submitted = _post_registration_request(
+            base_url=base_url,
+            name=agent_name,
+            description=description,
+            owner_phone=owner_phone,
+            requested_agent_id=requested_agent_id,
+        )
+    except Exception as exc:
+        print_error(f"  Canon registration failed: {_safe_error(exc)}")
+        return
+
+    request_id = str(submitted.get("requestId") or "")
+    poll_token = submitted.get("pollToken")
+    print_success(f"  Registration submitted (request ID: {request_id}).")
+    print_info("  Approve the request in the Canon app. Waiting up to 5 minutes...")
+
+    def _poll_update(status: dict[str, Any]) -> None:
+        state = status.get("status", "pending")
+        if state == "pending":
+            print(".", end="", flush=True)
+
+    try:
+        result = _wait_for_registration_approval(
+            base_url=base_url,
+            request_id=request_id,
+            poll_token=str(poll_token) if poll_token else None,
+            on_poll=_poll_update,
+        )
+    except Exception as exc:
+        print()
+        print_error(f"  Canon approval polling failed: {_safe_error(exc)}")
+        return
+
+    print()
+    status = result.get("status")
+    if status == "rejected":
+        print_warning("  Canon registration was rejected.")
+        return
+    if status != "approved":
+        print_warning("  Canon registration timed out. Run setup again to retry.")
+        return
+
+    api_key = str(result.get("apiKey") or "").strip()
+    agent_id = str(result.get("agentId") or "").strip()
+    approved_name = str(result.get("agentName") or agent_name).strip()
+    if not api_key or not agent_id:
+        print_error("  Canon approved the request but did not return a usable API key.")
+        return
+
+    try:
+        _save_canon_profile(
+            profile_name,
+            api_key=api_key,
+            agent_id=agent_id,
+            agent_name=approved_name,
+            base_url=base_url,
+        )
+    except Exception as exc:
+        print_error(f"  Could not save Canon profile: {_safe_error(exc)}")
+        return
+
+    try:
+        _ack_registration_status(
+            base_url=base_url,
+            request_id=request_id,
+            poll_token=str(poll_token) if poll_token else None,
+        )
+    except Exception as exc:
+        print_warning(f"  Canon profile saved, but key-delivery ack failed: {_safe_error(exc)}")
+
+    save_env_value("CANON_AGENT", profile_name)
+    remove_env_value("CANON_API_KEY")
+    if base_url != DEFAULT_BASE_URL:
+        save_env_value("CANON_BASE_URL", base_url)
+
+    print_success(f"  Canon agent '{approved_name}' saved as profile '{profile_name}'.")
+    print_info("  Hermes will use CANON_AGENT for the Canon platform.")
 
 
 def _first_string(data: Any, *keys: str) -> Optional[str]:
@@ -2384,6 +2710,7 @@ def register(ctx):
         is_connected=is_connected,
         required_env=[],
         install_hint="Set CANON_API_KEY or CANON_AGENT for your Canon agent",
+        setup_fn=_setup_canon,
         env_enablement_fn=_env_enablement,
         cron_deliver_env_var="CANON_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send,

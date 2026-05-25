@@ -23,8 +23,11 @@ DEFAULT_STREAM_URL = _canon.DEFAULT_STREAM_URL
 TURN_COMPLETE_METADATA = _canon.TURN_COMPLETE_METADATA
 _env_enablement = _canon._env_enablement
 _parse_sse_frame = _canon._parse_sse_frame
+_profile_slug = _canon._profile_slug
+_save_canon_profile = _canon._save_canon_profile
 _standalone_send = _canon._standalone_send
 _resolve_canon_agent = _canon._resolve_canon_agent
+_wait_for_registration_approval = _canon._wait_for_registration_approval
 _canon_timeout_seconds = _canon._canon_timeout_seconds
 check_requirements = _canon.check_requirements
 register = _canon.register
@@ -169,6 +172,60 @@ class TestCanonConfig:
         monkeypatch.setenv("HERMES_CLARIFY_TIMEOUT", "3600")
 
         assert _canon_timeout_seconds("HERMES_CLARIFY_TIMEOUT", 300) == 1800
+
+    def test_profile_slug_normalizes_display_name(self):
+        assert _profile_slug("My Hermes Agent!") == "my-hermes-agent"
+        assert _profile_slug("!!!") == "hermes"
+
+    def test_save_canon_profile_writes_resolvable_agents_json(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("CANON_HOME", str(tmp_path))
+        monkeypatch.delenv("CANON_API_KEY", raising=False)
+        monkeypatch.setenv("CANON_AGENT", "my-hermes")
+
+        _save_canon_profile(
+            "my-hermes",
+            api_key="profile-key",
+            agent_id="agent-1",
+            agent_name="My Hermes",
+            base_url="https://api.example.test",
+        )
+
+        resolved = _resolve_canon_agent(_config())
+
+        assert resolved.api_key == "profile-key"
+        assert resolved.profile == "my-hermes"
+        assert resolved.agent_id == "agent-1"
+        assert resolved.base_url == "https://api.example.test"
+
+    def test_wait_for_registration_approval_returns_approved(self, monkeypatch):
+        statuses = [
+            {"status": "pending"},
+            {
+                "status": "approved",
+                "apiKey": "agk_live_test",
+                "agentId": "agent-1",
+            },
+        ]
+        seen = []
+
+        def fake_status(**_kwargs):
+            return statuses.pop(0)
+
+        monkeypatch.setattr(_canon, "_get_registration_status", fake_status)
+        monkeypatch.setattr(_canon.time, "sleep", lambda _seconds: None)
+
+        result = _wait_for_registration_approval(
+            base_url=DEFAULT_BASE_URL,
+            request_id="req-1",
+            poll_token="poll-1",
+            on_poll=seen.append,
+            timeout_seconds=10,
+            poll_interval_seconds=0.01,
+        )
+
+        assert result["status"] == "approved"
+        assert result["apiKey"] == "agk_live_test"
+        assert [item["status"] for item in seen] == ["pending", "approved"]
 
 
 class TestCanonHttpClient:
@@ -1213,6 +1270,7 @@ class TestCanonRegister:
         assert recorded["name"] == "canon"
         assert recorded["label"] == "Canon"
         assert recorded["required_env"] == []
+        assert callable(recorded["setup_fn"])
         assert recorded["cron_deliver_env_var"] == "CANON_HOME_CHANNEL"
         assert recorded["standalone_sender_fn"] is _standalone_send
         assert recorded["allowed_users_env"] == "CANON_ALLOWED_USERS"

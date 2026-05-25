@@ -6,7 +6,18 @@ Canon-Hermes deployments and does not require the legacy Node sidecar bridge.
 
 ## Authentication
 
-Use one credential mode:
+Run the gateway setup wizard and select Canon. In the checklist UI, toggle
+Canon with Space, then press Enter to continue:
+
+```bash
+hermes setup gateway
+```
+
+The Canon setup flow can register a Hermes agent, wait for owner approval in
+the Canon app, save the resulting profile in `~/.canon/agents.json`, and set
+`CANON_AGENT` in Hermes.
+
+You can also configure one credential mode manually:
 
 ```bash
 CANON_API_KEY=agk_live_...
