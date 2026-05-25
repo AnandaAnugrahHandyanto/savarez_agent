@@ -734,6 +734,36 @@ def _restart_notification_pending() -> bool:
     return (_hermes_home / ".restart_notify.json").exists()
 
 
+# Marker written when a shutdown/restart broadcast was actually delivered to
+# users (active sessions or home channels).  Consumed on the next gateway
+# startup to send a matching "back online" home-channel notice so the user
+# isn't left wondering whether the gateway came back after an OS reboot or
+# external `systemctl restart`.  See `_notify_active_sessions_of_shutdown`
+# (writer) and `_should_broadcast_startup` (reader).
+_SHUTDOWN_BROADCAST_MARKER = ".shutdown_broadcast_pending"
+
+
+def _shutdown_broadcast_pending() -> bool:
+    """Return True when a prior shutdown broadcast went out and hasn't been acked."""
+    return (_hermes_home / _SHUTDOWN_BROADCAST_MARKER).exists()
+
+
+def _clear_shutdown_broadcast_marker() -> None:
+    try:
+        (_hermes_home / _SHUTDOWN_BROADCAST_MARKER).unlink()
+    except FileNotFoundError:
+        pass
+    except Exception:  # pragma: no cover — best-effort cleanup
+        pass
+
+
+def _write_shutdown_broadcast_marker() -> None:
+    try:
+        (_hermes_home / _SHUTDOWN_BROADCAST_MARKER).touch()
+    except Exception:  # pragma: no cover — best-effort
+        pass
+
+
 # Mark this process as a gateway so cli.py's module-level load_cli_config()
 # knows not to clobber TERMINAL_CWD if lazily imported.
 os.environ["_HERMES_GATEWAY"] = "1"
@@ -3502,6 +3532,13 @@ class GatewayRunner:
                     e,
                 )
 
+        # Record that we just broadcast shutdown/restart messages so the next
+        # gateway startup can send a matching "back online" notice — even when
+        # the trigger wasn't /restart (OS reboot, external `systemctl
+        # restart`, etc.).  Only write when at least one delivery succeeded.
+        if notified:
+            _write_shutdown_broadcast_marker()
+
     def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
         for agent in active_agents.values():
             try:
@@ -4326,17 +4363,31 @@ class GatewayRunner:
         delivered_restart_target = await self._send_restart_notification()
 
         # Broadcast a lightweight "gateway is back" message to configured
-        # home channels only when this startup is resuming from /restart. If a
-        # /restart requester already received a direct completion notice in the
-        # same chat, skip the generic broadcast there to avoid duplicates while
-        # still allowing a home-channel fallback when the direct send fails.
-        if restart_notification_pending or delivered_restart_target is not None:
+        # home channels when this startup is resuming from /restart, OR when
+        # the previous gateway sent a shutdown broadcast (OS reboot, external
+        # `systemctl restart`, etc.).  In those latter cases users already
+        # got a "shutting down" notice on Telegram/Discord/etc. and expect a
+        # matching "back online" signal.  If a /restart requester already
+        # received a direct completion notice in the same chat, skip the
+        # generic broadcast there to avoid duplicates while still allowing a
+        # home-channel fallback when the direct send fails.
+        shutdown_broadcast_was_pending = _shutdown_broadcast_pending()
+        if (
+            restart_notification_pending
+            or delivered_restart_target is not None
+            or shutdown_broadcast_was_pending
+        ):
             skip_home_targets = (
                 {delivered_restart_target} if delivered_restart_target else None
             )
             await self._send_home_channel_startup_notifications(
                 skip_targets=skip_home_targets,
             )
+        # Always clear the marker after a startup attempt — whether we
+        # broadcast or not — so a single stale marker can't cause repeated
+        # spurious "back online" notices on subsequent restarts.
+        if shutdown_broadcast_was_pending:
+            _clear_shutdown_broadcast_marker()
 
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared

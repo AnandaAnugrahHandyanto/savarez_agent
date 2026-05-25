@@ -623,3 +623,57 @@ async def test_shutdown_notifications_use_cached_live_thread_source_when_origin_
         "⚠️ Gateway shutting down — Your current task will be interrupted.",
         metadata={"thread_id": "topic-7"},
     )
+
+
+# ── shutdown-broadcast marker (drives "back online" on next startup) ────────
+
+
+def test_shutdown_broadcast_marker_helpers_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    assert gateway_run._shutdown_broadcast_pending() is False
+
+    gateway_run._write_shutdown_broadcast_marker()
+    assert gateway_run._shutdown_broadcast_pending() is True
+    assert (tmp_path / gateway_run._SHUTDOWN_BROADCAST_MARKER).exists()
+
+    gateway_run._clear_shutdown_broadcast_marker()
+    assert gateway_run._shutdown_broadcast_pending() is False
+
+
+def test_clear_shutdown_broadcast_marker_is_idempotent(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    # Should not raise even when the marker doesn't exist.
+    gateway_run._clear_shutdown_broadcast_marker()
+    gateway_run._clear_shutdown_broadcast_marker()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_broadcast_writes_marker_when_delivery_succeeds(tmp_path, monkeypatch):
+    """After a successful shutdown broadcast, leave a marker for next startup."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="42")
+    session_key = build_session_key(source)
+    runner._running_agents[session_key] = object()
+    runner.session_store._entries[session_key] = MagicMock(origin=source)
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="bye"))
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert gateway_run._shutdown_broadcast_pending() is True
+
+
+@pytest.mark.asyncio
+async def test_shutdown_broadcast_skips_marker_when_no_delivery(tmp_path, monkeypatch):
+    """No active sessions and no home channel → no broadcast → no marker."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock()
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send.assert_not_called()
+    assert gateway_run._shutdown_broadcast_pending() is False
