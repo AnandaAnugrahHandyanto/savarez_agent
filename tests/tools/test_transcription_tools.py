@@ -424,8 +424,20 @@ class TestTranscribeLocalCommand:
 # _transcribe_local — additional tests
 # ============================================================================
 
+def _faster_whisper_available() -> bool:
+    """Return True if faster_whisper is installed and its __spec__ is valid.
+
+    ``find_spec`` raises ``ValueError`` when a package has ``__spec__ is None``
+    (partially installed / broken metadata), which would crash collection.
+    """
+    try:
+        return __import__("importlib").util.find_spec("faster_whisper") is not None
+    except (ValueError, ImportError, ModuleNotFoundError):
+        return False
+
+
 @pytest.mark.skipif(
-    not __import__("importlib").util.find_spec("faster_whisper"),
+    not _faster_whisper_available(),
     reason="faster_whisper not installed",
 )
 class TestTranscribeLocalExtended:

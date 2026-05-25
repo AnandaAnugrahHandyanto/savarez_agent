@@ -86,9 +86,9 @@ def test_update_via_zip_accepts_normal_member(tmp_path, monkeypatch, capsys):
 
     Sanity check that the symlink reject didn't break the happy path.
     Wraps just enough of _update_via_zip's I/O to verify extraction
-    proceeds past the symlink check. We let the rest of the function
-    fail naturally (no real git checkout to update); the assertion is
-    just that we got past the ZIP validation.
+    proceeds past the symlink check. Redirects tempdir and PROJECT_ROOT
+    into tmp_path so the test never writes to the real repo or triggers
+    slow pip/npm installs.
     """
     zip_path = tmp_path / "normal.zip"
     _build_normal_zip(str(zip_path))
@@ -97,12 +97,26 @@ def test_update_via_zip_accepts_normal_member(tmp_path, monkeypatch, capsys):
 
     args = type("Args", (), {})()
 
+    # Redirect extraction staging into tmp_path and point PROJECT_ROOT
+    # at a fake location so _update_via_zip never copies files into the
+    # real repository (which would overwrite README.md and cause
+    # collateral test failures in parallel workers).
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    fake_root = staging / "fake-root"
+    fake_root.mkdir()
+
     def fake_urlretrieve(url, dest):
         with open(zip_path, "rb") as src, open(dest, "wb") as dst:
             dst.write(src.read())
         return dest, None
 
-    with patch("urllib.request.urlretrieve", side_effect=fake_urlretrieve):
+    with patch("tempfile.mkdtemp", return_value=str(staging)), \
+         patch("urllib.request.urlretrieve", side_effect=fake_urlretrieve), \
+         patch("hermes_cli.main.PROJECT_ROOT", fake_root), \
+         patch("hermes_cli.main._clear_bytecode_cache", return_value=0), \
+         patch("hermes_cli.main._install_python_dependencies_with_optional_fallback"), \
+         patch("subprocess.run"):
         # The function will fail later (no real install dir to update into),
         # but it must get past the ZIP validation without raising
         # ValueError("symlink member").
