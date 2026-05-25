@@ -539,12 +539,21 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
                 language=shlex.quote(language),
                 model=shlex.quote(normalized_model),
             )
-            # User-provided templates (env var) may contain shell syntax; auto-detected commands are safe for list mode.
-            use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
-            if use_shell:
-                subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
-            else:
-                subprocess.run(shlex.split(command), check=True, capture_output=True, text=True)
+            # FIX S71-1 (audit 100 passes): user-provided HERMES_LOCAL_STT_COMMAND
+            # templates must be executed with shell=False to prevent arbitrary shell
+            # command injection.  Even though template values are shlex.quoted, a
+            # malicious user could set HERMES_LOCAL_STT_COMMAND to something like:
+            #   "whisper {input_path} --model {model} ; rm -rf /"
+            # which shell=True would execute.  Using shlex.split() + shell=False
+            # prevents shell interpretation of any shell metacharacters in the
+            # template (|, &&, ;, $, etc.) while correctly parsing the command.
+            subprocess.run(
+                shlex.split(command),
+                shell=False,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
             
 
             txt_files = sorted(Path(output_dir).glob("*.txt"))
