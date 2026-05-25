@@ -2839,6 +2839,241 @@ class TestAdapterBehavior(unittest.TestCase):
             [[{"tag": "md", "text": "---\n1. 第一项\n<u>下划线</u>\n~~删除线~~"}]],
         )
 
+    def test_is_http2_stream_reset_error_walks_cause_chain(self):
+        # Detector must match the urllib3-future stream-reset marker even when
+        # the exception is wrapped (requests wraps urllib3.exceptions.ProtocolError
+        # as requests.exceptions.ConnectionError). Walk both __cause__ and
+        # __context__ so explicit and implicit chains are covered.
+        from gateway.platforms.feishu import FeishuAdapter
+
+        inner = RuntimeError("Stream 1 was reset by remote peer. Reason: 0x1.")
+        outer = ConnectionError("Stream 1 was reset by remote peer. Reason: 0x1.")
+        outer.__cause__ = inner
+        self.assertTrue(FeishuAdapter._is_http2_stream_reset_error(outer))
+
+        # Unrelated ConnectionError must not trigger the fallback.
+        self.assertFalse(
+            FeishuAdapter._is_http2_stream_reset_error(ConnectionError("DNS resolution failed"))
+        )
+
+        # Implicit context chain (re-raise inside `except` without `from`)
+        # mirrors how `requests` re-wraps urllib3's ProtocolError. The detector
+        # must walk __context__ to catch the marker on the inner exception.
+        try:
+            try:
+                raise RuntimeError("Stream 7 was reset by remote peer. Reason: 0x1.")
+            except RuntimeError:
+                raise ConnectionError("upstream upload failed")
+        except ConnectionError as exc:
+            self.assertTrue(FeishuAdapter._is_http2_stream_reset_error(exc))
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_image_file_falls_back_to_http1_on_stream_reset(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._app_id = "cli_test"
+        adapter._app_secret = "secret_test"
+        adapter._domain_name = "feishu"
+
+        class _ImageAPI:
+            def create(self, request):
+                raise ConnectionError(
+                    "Stream 1 was reset by remote peer. Reason: 0x1."
+                )
+
+        class _MessageAPI:
+            def __init__(self):
+                self.calls = []
+
+            def create(self, request):
+                self.calls.append(request)
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_fallback"),
+                )
+
+        message_api = _MessageAPI()
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(image=_ImageAPI(), message=message_api))
+        )
+
+        token_resp = SimpleNamespace(
+            json=lambda: {"code": 0, "tenant_access_token": "t_abc", "expire": 7200},
+            status_code=200,
+        )
+        upload_resp = SimpleNamespace(
+            json=lambda: {"code": 0, "msg": "ok", "data": {"image_key": "img_via_http1"}},
+            status_code=200,
+        )
+
+        calls = []
+
+        class _FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                calls.append(("init", kwargs))
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def post(self, url, **kwargs):
+                calls.append((url, kwargs))
+                if url.endswith("/tenant_access_token/internal"):
+                    return token_resp
+                return upload_resp
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".png", delete=False) as tmp:
+            tmp.write(b"\x89PNG\r\n\x1a\n")
+            image_path = tmp.name
+
+        try:
+            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct), \
+                 patch("httpx.AsyncClient", _FakeAsyncClient):
+                result = asyncio.run(adapter.send_image_file(chat_id="oc_chat", image_path=image_path))
+        finally:
+            os.unlink(image_path)
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_fallback")
+        # Fallback acquired a token via http2-disabled httpx and uploaded via raw HTTP/1.1.
+        init_kwargs = next(call for call in calls if call[0] == "init")[1]
+        self.assertEqual(init_kwargs.get("http2"), False)
+        self.assertEqual(init_kwargs.get("trust_env"), False)
+        post_urls = [c[0] for c in calls if c[0] != "init"]
+        self.assertIn("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal", post_urls)
+        self.assertIn("https://open.feishu.cn/open-apis/im/v1/images", post_urls)
+        # The downstream send-message path used the http1-derived image_key.
+        sent_body = message_api.calls[0].request_body.content
+        self.assertIn("img_via_http1", sent_body)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_image_file_reraises_non_stream_reset_connection_errors(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._app_id = "cli_test"
+        adapter._app_secret = "secret_test"
+        adapter._domain_name = "feishu"
+
+        class _ImageAPI:
+            def create(self, request):
+                raise ConnectionError("DNS resolution failed")
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(image=_ImageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        # httpx must never be reached when the error doesn't match the marker.
+        class _ExplodingAsyncClient:
+            def __init__(self, *args, **kwargs):
+                raise AssertionError("httpx fallback must not fire on unrelated errors")
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".png", delete=False) as tmp:
+            tmp.write(b"\x89PNG\r\n\x1a\n")
+            image_path = tmp.name
+
+        try:
+            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct), \
+                 patch("httpx.AsyncClient", _ExplodingAsyncClient):
+                result = asyncio.run(adapter.send_image_file(chat_id="oc_chat", image_path=image_path))
+        finally:
+            os.unlink(image_path)
+
+        # `send_image_file` has a broad `except Exception` so the failure is
+        # surfaced as SendResult(success=False) rather than an exception. The
+        # important invariant is that the httpx fallback was NOT invoked.
+        self.assertFalse(result.success)
+        self.assertIn("DNS resolution failed", result.error or "")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_uploaded_file_falls_back_to_http1_on_stream_reset(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._app_id = "cli_test"
+        adapter._app_secret = "secret_test"
+        adapter._domain_name = "lark"  # exercise the larksuite base URL branch
+
+        class _FileAPI:
+            def create(self, request):
+                raise ConnectionError(
+                    "Stream 3 was reset by remote peer. Reason: 0x1."
+                )
+
+        class _MessageAPI:
+            def __init__(self):
+                self.calls = []
+
+            def create(self, request):
+                self.calls.append(request)
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_file_fallback"),
+                )
+
+        message_api = _MessageAPI()
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(file=_FileAPI(), message=message_api))
+        )
+
+        upload_payload = {"code": 0, "msg": "ok", "data": {"file_key": "file_via_http1"}}
+        token_resp = SimpleNamespace(
+            json=lambda: {"code": 0, "tenant_access_token": "t_lark"},
+            status_code=200,
+        )
+        upload_resp = SimpleNamespace(json=lambda: upload_payload, status_code=200)
+
+        seen_urls = []
+
+        class _FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def post(self, url, **kwargs):
+                seen_urls.append(url)
+                if url.endswith("/tenant_access_token/internal"):
+                    return token_resp
+                return upload_resp
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".pdf", delete=False) as tmp:
+            tmp.write(b"%PDF-1.4\n")
+            file_path = tmp.name
+
+        try:
+            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct), \
+                 patch("httpx.AsyncClient", _FakeAsyncClient):
+                result = asyncio.run(adapter.send_document(chat_id="oc_chat", file_path=file_path))
+        finally:
+            os.unlink(file_path)
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_file_fallback")
+        # `lark` domain must route to open.larksuite.com, not open.feishu.cn.
+        self.assertIn("https://open.larksuite.com/open-apis/im/v1/files", seen_urls)
+        sent_body = message_api.calls[0].request_body.content
+        self.assertIn("file_via_http1", sent_body)
+
 
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
 class TestHydrateBotIdentity(unittest.TestCase):

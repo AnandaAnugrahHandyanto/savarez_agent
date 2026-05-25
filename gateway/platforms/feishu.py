@@ -173,6 +173,16 @@ _VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".3gp"}
 _DOCUMENT_MIME_TO_EXT = {mime: ext for ext, mime in SUPPORTED_DOCUMENT_TYPES.items()}
 _FEISHU_IMAGE_UPLOAD_TYPE = "message"
 _FEISHU_FILE_UPLOAD_TYPE = "stream"
+# Substrings in the urllib3-future HTTP/2 stream-reset ConnectionError that
+# triggers the raw HTTP/1.1 upload fallback. urllib3-future is installed
+# alongside `requests>=2.32` in some environments (WSL, certain Docker bases);
+# its HTTP/2 backend negotiates an upgrade for outbound multipart uploads
+# that Feishu IM storage rejects with a stream reset. The lark_oapi SDK
+# uses `requests.request(...)` directly so we cannot disable HTTP/2 at the
+# transport layer; instead we detect the failure and retry via httpx HTTP/1.1.
+# See issue #32224 — `urllib3.exceptions.ProtocolError: Stream N was reset
+# by remote peer. Reason: 0x1.`
+_FEISHU_STREAM_RESET_MARKER = "was reset by remote peer"
 _FEISHU_OPUS_UPLOAD_EXTENSIONS = {".ogg", ".opus"}
 _FEISHU_MEDIA_UPLOAD_EXTENSIONS = {".mp4", ".mov", ".avi", ".m4v"}
 _FEISHU_DOC_UPLOAD_TYPES = {
@@ -2120,7 +2130,21 @@ class FeishuAdapter(BasePlatformAdapter):
                 image=image_file,
             )
             request = self._build_image_upload_request(body)
-            upload_response = await asyncio.to_thread(self._client.im.v1.image.create, request)
+            try:
+                upload_response = await asyncio.to_thread(self._client.im.v1.image.create, request)
+            except Exception as upload_exc:
+                if not self._is_http2_stream_reset_error(upload_exc):
+                    raise
+                logger.warning(
+                    "[Feishu] image upload hit HTTP/2 stream reset (%s); retrying via raw HTTP/1.1",
+                    upload_exc,
+                )
+                upload_response = await self._http1_open_api_upload(
+                    kind="image",
+                    payload_bytes=image_bytes,
+                    file_name=os.path.basename(image_path),
+                    upload_type=_FEISHU_IMAGE_UPLOAD_TYPE,
+                )
             image_key = self._extract_response_field(upload_response, "image_key")
             if not image_key:
                 return self._response_error_result(
@@ -4338,13 +4362,29 @@ class FeishuAdapter(BasePlatformAdapter):
         )
         try:
             with open(file_path, "rb") as file_obj:
+                file_bytes = file_obj.read()
+                file_obj.seek(0)
                 body = self._build_file_upload_body(
                     file_type=upload_file_type,
                     file_name=display_name,
                     file=file_obj,
                 )
                 request = self._build_file_upload_request(body)
-                upload_response = await asyncio.to_thread(self._client.im.v1.file.create, request)
+                try:
+                    upload_response = await asyncio.to_thread(self._client.im.v1.file.create, request)
+                except Exception as upload_exc:
+                    if not self._is_http2_stream_reset_error(upload_exc):
+                        raise
+                    logger.warning(
+                        "[Feishu] file upload hit HTTP/2 stream reset (%s); retrying via raw HTTP/1.1",
+                        upload_exc,
+                    )
+                    upload_response = await self._http1_open_api_upload(
+                        kind="file",
+                        payload_bytes=file_bytes,
+                        file_name=display_name,
+                        upload_type=upload_file_type,
+                    )
             file_key = self._extract_response_field(upload_response, "file_key")
             if not file_key:
                 return self._response_error_result(
@@ -4439,6 +4479,105 @@ class FeishuAdapter(BasePlatformAdapter):
             return None
         data = getattr(response, "data", None)
         return getattr(data, field_name, None) if data else None
+
+    @staticmethod
+    def _is_http2_stream_reset_error(exc: BaseException) -> bool:
+        # urllib3-future raises ProtocolError -> ConnectionError with this marker
+        # on Feishu IM upload endpoints when negotiating HTTP/2. Walk the cause
+        # chain so we catch it whether requests wraps it or it propagates raw.
+        seen: set[int] = set()
+        cur: Optional[BaseException] = exc
+        while cur is not None and id(cur) not in seen:
+            seen.add(id(cur))
+            if _FEISHU_STREAM_RESET_MARKER in str(cur):
+                return True
+            cur = cur.__cause__ or cur.__context__
+        return False
+
+    async def _http1_open_api_upload(
+        self,
+        *,
+        kind: Literal["image", "file"],
+        payload_bytes: bytes,
+        file_name: str,
+        upload_type: str,
+    ) -> Any:
+        # Raw HTTP/1.1 fallback for `im/v1/images` and `im/v1/files` when the
+        # lark SDK's HTTP/2 transport gets a stream reset from Feishu media
+        # storage. Returns a SimpleNamespace that mimics the lark response
+        # shape (`.success()`, `.data.image_key|file_key`, `.code`, `.msg`)
+        # so `_extract_response_field` / `_response_error_result` work
+        # unchanged. See issue #32224.
+        import httpx
+
+        if kind == "image":
+            endpoint = "/open-apis/im/v1/images"
+            files = {"image": (file_name, payload_bytes, "application/octet-stream")}
+            data = {"image_type": upload_type}
+            key_field = "image_key"
+        else:
+            endpoint = "/open-apis/im/v1/files"
+            files = {"file": (file_name, payload_bytes, "application/octet-stream")}
+            data = {"file_type": upload_type, "file_name": file_name}
+            key_field = "file_key"
+
+        base_url = _onboard_open_base_url(self._domain_name)
+        token_url = f"{base_url}/open-apis/auth/v3/tenant_access_token/internal"
+        upload_url = f"{base_url}{endpoint}"
+
+        def _error(code: int, msg: str) -> Any:
+            return SimpleNamespace(
+                success=lambda: False,
+                code=code,
+                msg=msg,
+                data=None,
+            )
+
+        try:
+            async with httpx.AsyncClient(http2=False, trust_env=False, timeout=60.0) as client:
+                token_resp = await client.post(
+                    token_url,
+                    json={"app_id": self._app_id, "app_secret": self._app_secret},
+                )
+                token_payload = token_resp.json()
+                access_token = token_payload.get("tenant_access_token")
+                if not access_token:
+                    return _error(
+                        int(token_payload.get("code") or token_resp.status_code or -1),
+                        str(token_payload.get("msg") or "tenant_access_token unavailable"),
+                    )
+                upload_resp = await client.post(
+                    upload_url,
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    files=files,
+                    data=data,
+                )
+        except httpx.HTTPError as exc:
+            logger.error("[Feishu] HTTP/1.1 upload fallback failed: %s", exc, exc_info=True)
+            return _error(-1, f"http1 fallback failed: {exc}")
+
+        try:
+            upload_payload = upload_resp.json()
+        except ValueError:
+            return _error(upload_resp.status_code or -1, "non-JSON upload response")
+
+        if upload_payload.get("code") != 0:
+            return _error(
+                int(upload_payload.get("code") or upload_resp.status_code or -1),
+                str(upload_payload.get("msg") or "upload failed"),
+            )
+
+        upload_data = upload_payload.get("data")
+        key_value = upload_data.get(key_field) if isinstance(upload_data, dict) else None
+        if not key_value:
+            return _error(int(upload_payload.get("code") or -1), f"{key_field} missing in response")
+
+        return SimpleNamespace(
+            success=lambda: True,
+            code=0,
+            msg="ok",
+            data=SimpleNamespace(**{key_field: key_value}),
+        )
 
     def _response_error_result(
         self,
