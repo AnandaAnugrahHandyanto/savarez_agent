@@ -11,35 +11,82 @@
 
   function cx(...parts) { return parts.filter(Boolean).join(" "); }
 
-  // ImageWithFallback — graceful placeholder while the Pollinations request is
-  // pending or if it fails. Uses inline aspectRatio (browser-native, doesn't
-  // require Tailwind's aspect-ratio plugin which the host dashboard may not
-  // include).
+  // ImageWithFallback — graceful placeholder + auto-retry. Pollinations
+  // first-render can flake (cold-start, transient 5xx, browser-cached error
+  // from an earlier failed request); we transparently retry up to twice with
+  // a cache-busting query param before giving up.
   function ImageWithFallback({ url, alt, aspectRatio, className }) {
     const [state, setState] = useState("loading"); // loading | loaded | error
+    const [retryNum, setRetryNum] = useState(0);
+    const wrapperStyle = {
+      aspectRatio,
+      position: "relative",
+      width: "100%",
+      borderRadius: "12px",
+      overflow: "hidden",
+      border: "1px solid rgba(255,255,255,0.10)",
+      background: "rgba(255,255,255,0.04)",
+    };
     if (!url) {
-      return h("div", {
-        style: { aspectRatio, background: "rgba(120,120,120,0.15)" },
-        className: cx("w-full rounded-lg border border-midground/15 flex items-center justify-center text-[10px] text-midground/60", className),
-      }, "no image");
+      return h("div", { style: wrapperStyle, className: className || "" },
+        h("div", {
+          style: {
+            position: "absolute", inset: 0,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            color: "rgba(255,255,255,0.55)", fontSize: "12px",
+            textTransform: "uppercase", letterSpacing: "0.14em",
+          },
+        }, "no image")
+      );
     }
-    return h("div", {
-      style: { aspectRatio, position: "relative" },
-      className: cx("w-full rounded-lg border border-midground/15 overflow-hidden", className),
-    },
+    // Append cache-buster on retries so the browser definitely re-requests.
+    const effectiveUrl = retryNum > 0 ? `${url}${url.includes("?") ? "&" : "?"}_r=${retryNum}` : url;
+    const placeholderText = state === "error" ? "image unavailable" : (retryNum > 0 ? `retrying (${retryNum})…` : "rendering image…");
+    return h("div", { style: wrapperStyle, className: className || "" },
       state !== "loaded" ? h("div", {
-        className: "absolute inset-0 flex items-center justify-center text-[10px] text-midground/60 bg-midground/10",
-      }, state === "error" ? "image unavailable" : "rendering image…") : null,
+        style: {
+          position: "absolute", inset: 0,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          color: "rgba(255,255,255,0.75)", fontSize: "13px",
+          textTransform: "uppercase", letterSpacing: "0.14em",
+          background: "rgba(255,255,255,0.04)",
+          animation: state !== "error" ? "mfPulse 1.6s ease-in-out infinite" : "none",
+          cursor: state === "error" ? "pointer" : "default",
+        },
+        onClick: state === "error" ? () => { setState("loading"); setRetryNum(retryNum + 1); } : undefined,
+        title: state === "error" ? "Click to retry" : undefined,
+      }, state === "error" ? "image unavailable — click to retry" : placeholderText) : null,
       h("img", {
-        src: url,
+        key: `img-${retryNum}`,
+        src: effectiveUrl,
         alt: alt || "",
         loading: "lazy",
         onLoad: () => setState("loaded"),
-        onError: () => setState("error"),
+        onError: () => {
+          if (retryNum < 2) {
+            // First/second flake — bump retry count, which changes the key and
+            // re-creates the img element with a fresh src.
+            setTimeout(() => {
+              setState("loading");
+              setRetryNum((n) => n + 1);
+            }, 800);
+          } else {
+            setState("error");
+          }
+        },
         style: { width: "100%", height: "100%", objectFit: "cover", display: state === "error" ? "none" : "block" },
       })
     );
   }
+
+  // Inject the pulse keyframes once. Cheap, idempotent.
+  (function injectPulseCSS() {
+    if (document.getElementById("mf-pulse-style")) return;
+    const style = document.createElement("style");
+    style.id = "mf-pulse-style";
+    style.textContent = "@keyframes mfPulse { 0%,100% { opacity: 0.55 } 50% { opacity: 0.95 } }";
+    document.head.appendChild(style);
+  })();
 
   // ---------------------------------------------------------------------------
   // FactoryFloor — only visible while a campaign is actively running.
