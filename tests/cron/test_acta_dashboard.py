@@ -937,6 +937,7 @@ def test_detail_report_uses_acta_situation_room_ui():
     html = render_acta_detail_report(
         "# Market Brief\n\nImportant signal.",
         {"job_id": "job1", "job_name": "Market Brief", "run_time": "2026-05-19T10:00:00+00:00"},
+        detail_signals={"signed status": "fresh", "signed conf": "CONF HIGH", "signed age": "60m ago"},
     )
 
     assert "Acta Situation Room" in html
@@ -946,6 +947,65 @@ def test_detail_report_uses_acta_situation_room_ui():
     assert "--black:#03060b" in html
     assert "--accent:#756cff" in html
     assert "Important signal." in html
+    assert "<b>SIGNED STATUS</b> fresh" in html
+    assert "<b>SIGNED CONF</b> CONF HIGH" in html
+    assert "<b>SIGNED AGE</b> 60m ago" in html
+
+
+def test_detail_report_escapes_optional_operator_signals():
+    html = render_acta_detail_report(
+        "# Safe Brief\n\nVisible signal.",
+        {"job_id": "job1", "job_name": "Safe Brief", "run_time": "2026-05-19T10:00:00+00:00"},
+        detail_signals={"<script>bad()</script>": "<img src=x onerror=alert(1)>"},
+    )
+
+    assert "<script>bad" not in html
+    assert "<img src=x" not in html
+    assert "SCRIPTBAD/SCRIPT" in html
+    assert "&lt;img src=x onerror=alert(1)&gt;" in html
+
+
+def test_detail_signal_helpers_are_source_derived_and_time_scoped():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    run_cls = collect_run_history.__globals__["ActaRunItem"]
+    now = datetime(2026, 5, 20, 12, tzinfo=timezone.utc)
+    cron_item = item_cls(
+        job_id="daily",
+        name="Daily Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("2026-05-20_11-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 20, 11, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Visible.",
+    )
+    stale_run = run_cls(
+        job_id="daily",
+        name="Daily Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        run_id="2026-05-18_08-00-00",
+        run_time=datetime(2026, 5, 18, 8, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Visible.",
+        source_name="2026-05-18_08-00-00.md",
+        has_markdown=True,
+        has_html=False,
+    )
+
+    assert render_acta_detail_report.__globals__["_cron_detail_signals"](cron_item, now) == {
+        "signed status": "fresh",
+        "signed conf": "CONF HIGH",
+        "signed age": "60m ago",
+    }
+    assert render_acta_detail_report.__globals__["_run_detail_signals"](stale_run, now) == {
+        "signed status": "fresh",
+        "signed conf": "CONF MED",
+        "signed age": "2d ago",
+    }
 
 
 def test_attach_artifact_urls_reprocesses_markdown_into_acta_detail_ui(tmp_path: Path, monkeypatch):
@@ -962,7 +1022,7 @@ def test_attach_artifact_urls_reprocesses_markdown_into_acta_detail_ui(tmp_path:
         enabled=True,
         latest_md=md,
         latest_html=stale_html,
-        latest_time=None,
+        latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
         status="fresh",
         excerpt="Useful briefing",
     )
@@ -981,6 +1041,9 @@ def test_attach_artifact_urls_reprocesses_markdown_into_acta_detail_ui(tmp_path:
     assert uploaded["path"].parent == output_dir
     assert "Acta Situation Room" in uploaded["html"]
     assert "Fresh Markdown" in uploaded["html"]
+    assert "<b>SIGNED STATUS</b> fresh" in uploaded["html"]
+    assert "<b>SIGNED CONF</b> CONF" in uploaded["html"]
+    assert "<b>SIGNED AGE</b>" in uploaded["html"]
     assert "stale old ui" not in uploaded["html"]
 
 
@@ -1920,6 +1983,9 @@ def test_run_history_published_rows_open_signed_detail_without_prompt_or_path_le
     assert '<span class="open">SIGNED</span>' in html
     assert 'class="output-open-overlay"' in html
     assert "Visible response body only." in detail_html
+    assert "<b>SIGNED STATUS</b> fresh" in detail_html
+    assert "<b>SIGNED CONF</b> CONF" in detail_html
+    assert "<b>SIGNED AGE</b>" in detail_html
     assert "SECRET PROMPT" not in detail_html
     assert "internal trace" not in detail_html
     assert local_sentinel not in detail_html

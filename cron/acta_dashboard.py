@@ -1714,6 +1714,7 @@ def render_acta_detail_report(
     body: str,
     metadata: HtmlReportMetadata | Mapping[str, str],
     telegram_url: str | None = None,
+    detail_signals: Mapping[str, str] | None = None,
 ) -> str:
     """Render a standalone Acta detail page using the Imperatr Acta visual system."""
     if isinstance(metadata, Mapping):
@@ -1731,6 +1732,11 @@ def render_acta_detail_report(
     ]
     if source_filename:
         footer_bits.append(f"<span><b>SOURCE</b> {html.escape(Path(source_filename).name)}</span>")
+    for label, value in (detail_signals or {}).items():
+        clean_label = re.sub(r"[^A-Za-z0-9 _/-]+", "", str(label)).strip().upper()
+        clean_value = str(value or "").strip()
+        if clean_label and clean_value:
+            footer_bits.append(f"<span><b>{html.escape(clean_label)}</b> {html.escape(clean_value)}</span>")
     followup_link = ""
     safe_telegram_url = telegram_url if _is_safe_telegram_url(telegram_url) else ""
     if safe_telegram_url:
@@ -1763,6 +1769,27 @@ def render_acta_detail_report(
 </body>
 </html>
 """
+
+
+def _cron_detail_signals(item: CronSituationItem, now: datetime | None = None) -> dict[str, str]:
+    """Return source-derived operator signals for signed detail pages."""
+    current = now or datetime.now(timezone.utc)
+    return {
+        "signed status": "paused" if not item.enabled else item.status,
+        "signed conf": _confidence_label(item, current),
+        "signed age": _age_label(item.latest_time, current),
+    }
+
+
+def _run_detail_signals(item: ActaRunItem, now: datetime | None = None) -> dict[str, str]:
+    """Return source-derived operator signals for run-history detail pages."""
+    current = now or datetime.now(timezone.utc)
+    return {
+        "signed status": "paused" if not item.enabled else item.status,
+        "signed conf": _confidence_bucket(item.enabled, item.status, item.run_time, current),
+        "signed age": _age_label(item.run_time, current),
+    }
+
 
 def _detail_body(item: CronSituationItem) -> str:
     if not item.latest_md:
@@ -1861,6 +1888,7 @@ def attach_run_artifact_urls(
                         source_filename=Path(item.source_name).name,
                     ),
                     telegram_url=item.telegram_url,
+                    detail_signals=_run_detail_signals(item),
                 )
                 temp_html.write_text(detail_html, encoding="utf-8")
                 url = publish_html_artifact(
@@ -1917,6 +1945,7 @@ def attach_artifact_urls(
                     source_filename=item.latest_md.name,
                 ),
                 telegram_url=item.telegram_url,
+                detail_signals=_cron_detail_signals(item),
             )
             temp_html.write_text(detail_html, encoding="utf-8")
             source_html = temp_html
@@ -1934,6 +1963,7 @@ def attach_artifact_urls(
                     source_filename=item.latest_html.name,
                 ),
                 telegram_url=item.telegram_url,
+                detail_signals=_cron_detail_signals(item),
             )
             temp_html.write_text(detail_html, encoding="utf-8")
             source_html = temp_html
