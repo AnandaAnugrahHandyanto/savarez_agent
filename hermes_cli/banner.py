@@ -152,15 +152,21 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
 
 
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
-    """Count commits behind origin/main in a local checkout."""
+    """Count commits behind origin/main in a local checkout.
+
+    Returns None when the fetch fails — a stale zero is worse than
+    no information, because it silently hides real updates.
+    """
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["git", "fetch", "origin", "--quiet"],
             capture_output=True, timeout=10,
             cwd=str(repo_dir),
         )
+        if result.returncode != 0:
+            return None
     except Exception:
-        pass  # Offline or timeout — use stale refs, that's fine
+        return None  # Offline or timeout — can't trust stale refs
 
     try:
         result = subprocess.run(
@@ -260,7 +266,10 @@ def check_for_updates() -> Optional[int]:
             behind = _check_via_local_git(repo_dir)
 
     try:
-        cache_file.write_text(json.dumps({"ts": now, "behind": behind, "rev": embedded_rev}))
+        # Only cache non-None results — a failed fetch should retry next
+        # startup, not get locked into the 6-hour cache as "no info."
+        if behind is not None:
+            cache_file.write_text(json.dumps({"ts": now, "behind": behind, "rev": embedded_rev}))
     except Exception:
         pass
 
@@ -374,8 +383,27 @@ def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
 
 
 def format_banner_version_label() -> str:
-    """Return the version label shown in the startup banner title."""
+    """Return the version label shown in the startup banner title.
+
+    Uses the background update check (which includes a real git fetch)
+    so the label reflects actual upstream status, not stale local refs.
+    Falls back to the local-ref count only if the background check isn't
+    ready yet (e.g., first startup before the thread completes).
+    """
     base = f"Hermes Agent v{VERSION} ({RELEASE_DATE})"
+
+    # Prefer the background check — it includes a real git fetch.
+    behind = get_update_result(timeout=0.5)
+    if behind is not None:
+        if behind > 0:
+            commits_word = "commit" if behind == 1 else "commits"
+            return f"{base} · {behind} {commits_word} behind upstream"
+        if behind == UPDATE_AVAILABLE_NO_COUNT:
+            return f"{base} · update available"
+        # behind == 0: up to date
+        return base
+
+    # Background check not ready — fall back to local refs.
     state = get_git_banner_state()
     if not state:
         return base
