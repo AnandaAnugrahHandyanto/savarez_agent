@@ -329,6 +329,22 @@ class TestExtractMedia:
         assert media == [("/tmp/Jane Doe/speech.flac", False)]
         assert cleaned == ""
 
+    @pytest.mark.parametrize(
+        ("filename", "expected"),
+        [
+            ("report.md", "/tmp/report.md"),
+            ("REPORT.MD", "/tmp/REPORT.MD"),
+            ("report.html", "/tmp/report.html"),
+            ("report.htm", "/tmp/report.htm"),
+        ],
+    )
+    def test_media_tag_supports_text_report_attachments(self, filename, expected):
+        content = f"Here is the file:\nMEDIA:/tmp/{filename}"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [(expected, False)]
+        assert "MEDIA:" not in cleaned
+        assert "Here is the file" in cleaned
+
     def test_as_document_directive_stripped_from_cleaned_text(self):
         """[[as_document]] is a routing directive — strip it from
         user-visible text just like [[audio_as_voice]]. Callers detect the
