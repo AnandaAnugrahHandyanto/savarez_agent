@@ -865,24 +865,28 @@ def render_dashboard(
             if telegram_url
             else ""
         )
-        read_key = html.escape(_read_key(item), quote=True)
-        open_attr = f' data-open-url="{href}"' if href else ' aria-disabled="true"'
+        read_key = html.escape(_read_key(item), quote=True) if href else ""
+        open_attr = f' data-open-url="{href}" data-read-key="{read_key}"' if href else ' aria-disabled="true"'
+        readable_class = " readable unread" if href else ""
         open_overlay = (
             f'<a class="row-open-overlay" href="{href}" aria-label="Open briefing: {html.escape(item.name, quote=True)}"></a>'
             if href
             else ""
         )
+        swipe_action = '<div class="swipe-action" aria-hidden="true">MARK READ</div>' if href else ""
+        read_state = '<span class="read-state">UNREAD</span>' if href else ""
+        row_read_dot = '<span class="read-dot"></span>' if href else ""
         rows.append(
             f"""
-<section class="brief-row readable unread {status_class}" data-read-key="{read_key}"{open_attr}>
+<section class="brief-row{readable_class} {status_class}"{open_attr}>
   {open_overlay}
-  <div class="swipe-action" aria-hidden="true">MARK READ</div>
+  {swipe_action}
   <div class="swipe-content">
-    <div class="row-signal"><span class="read-dot"></span><span>{_safe_text(row_signal)}</span></div>
+    <div class="row-signal">{row_read_dot}<span>{_safe_text(row_signal)}</span></div>
     <div class="brief-copy">
       <h2>{_safe_text(item.name)}</h2>
       <p>{_safe_text(item.excerpt)}</p>
-      <div class="row-kicker"><span class="read-state">UNREAD</span><span class="confidence-chip">{_safe_text(confidence)}</span><span>{_safe_text(status_label)}</span><span>{_safe_text(age)}</span><span>{_safe_text(item.schedule or "manual")}</span></div>
+      <div class="row-kicker">{read_state}<span class="confidence-chip">{_safe_text(confidence)}</span><span>{_safe_text(status_label)}</span><span>{_safe_text(age)}</span><span>{_safe_text(item.schedule or "manual")}</span></div>
       <div class="source-line">{_safe_text(item.job_id)} · {_safe_text(item.deliver or "local")} · {_safe_text(latest)}</div>
     </div>
     <span class="card-actions"><span class="open-label">{open_label}</span>{ask_link}</span>
@@ -929,7 +933,12 @@ def render_dashboard(
         if lead_telegram_url
         else ""
     )
-    lead_read_key = html.escape(_read_key(lead_item), quote=True) if lead_item else ""
+    lead_read_key = html.escape(_read_key(lead_item), quote=True) if lead_item and lead_href else ""
+    lead_class = "lead readable unread" if lead_href else "lead"
+    lead_read_attr = f' data-read-key="{lead_read_key}"' if lead_href else ""
+    lead_label_read_state = '<span class="read-dot"></span><span class="read-state">UNREAD</span>' if lead_href else ""
+    lead_open_hint = "open first" if lead_href else "no page"
+    lead_row_meta = "row opens" if lead_href else "signed rows only"
     lead_confidence = _confidence_label(lead_item, now) if lead_item else "CONF LOW/GAP"
     dashboard_script = _dashboard_inline_script()
     dashboard_csp_placeholder = "__ACTA_DASHBOARD_CSP__"
@@ -1017,7 +1026,7 @@ h2 {{ font:680 15px/1.12 var(--ui); margin:0 0 2px; color:#fff; letter-spacing:-
 .open-label {{ justify-self:end; align-self:center; border:1px solid var(--line-soft); border-radius:999px; color:#fff; padding:5px 7px; font:10px var(--mono); background:rgba(255,255,255,.035); }}
 .card-actions {{ justify-self:end; align-self:center; display:flex; gap:6px; align-items:center; }}
 .ask-label {{ border:1px solid rgba(35,167,255,.38); border-radius:999px; color:#fff; background:rgba(117,108,255,.34); text-decoration:none; padding:5px 7px; font:760 10px var(--mono); }}
-.brief-row:hover .open-label {{ border-color:var(--acta2); color:#fff; }}
+.brief-row[data-open-url]:hover .open-label {{ border-color:var(--acta2); color:#fff; }}
 .jobs-panel {{ margin-top:22px; border-top:1px solid var(--line); scroll-margin-top:112px; }}
 .jobs-head {{ display:flex; align-items:flex-end; gap:12px; padding:16px 0 8px; border-bottom:1px solid var(--line-soft); }}
 .jobs-head h2 {{ margin:0; font:800 13px var(--mono); letter-spacing:.12em; text-transform:uppercase; color:#fff; }}
@@ -1088,15 +1097,15 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
     <nav class="date-nav"><a class="nav-link primary" href="/">Today</a><a class="nav-link" href="/outputs">Outputs</a><a class="nav-link" href="/runs">Runs</a><a class="nav-link" href="/jobs">Jobs</a><a class="nav-link" href="/archive">Archive</a></nav>
     <section class="content">
       <div>
-        <article class="lead readable unread" data-read-key="{lead_read_key}"{lead_href_attr}>
+        <article class="{lead_class}"{lead_read_attr}{lead_href_attr}>
           {lead_open_overlay}
-          <div class="label"><span class="read-dot"></span><span class="read-state">UNREAD</span><span>{_safe_text(lead_confidence)}</span><span>today</span><span>open first</span></div>
+          <div class="label">{lead_label_read_state}<span>{_safe_text(lead_confidence)}</span><span>today</span><span>{lead_open_hint}</span></div>
           <h1>{_safe_text(lead_title)}</h1>
           <p>{_safe_text(lead_excerpt)}</p>
           <div class="output-summary"><b>{visible}/{active}</b><span>fresh</span><span>{missing} gaps</span></div>
-          <div class="meta"><span>{html.escape(day_label)}</span><span>{_safe_text(lead_confidence)}</span><span>{silent} silent</span><span>{len(archive_dates)} archive days</span><span>row opens</span>{lead_ask_link}</div>
+          <div class="meta"><span>{html.escape(day_label)}</span><span>{_safe_text(lead_confidence)}</span><span>{silent} silent</span><span>{len(archive_dates)} archive days</span><span>{lead_row_meta}</span>{lead_ask_link}</div>
         </article>
-        <div class="panel-title"><b>Output Stream</b><span>tap any row</span></div>
+        <div class="panel-title"><b>Output Stream</b><span>signed rows open</span></div>
         <section class="feed">
           {''.join(rows)}
         </section>
@@ -1104,7 +1113,7 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
       <aside class="side">
         <section class="card"><div class="card-head">Read Order <span>PRIORITIZED</span></div><div class="readorder">{''.join(read_order) or '<p class="prompt">No outputs yet.</p>'}</div></section>
         <section class="card"><div class="card-head">Audit Trail <span>PROVENANCE</span></div><div class="audit">{''.join(audit_rows) or '<p class="prompt">No runs yet.</p>'}</div></section>
-        <section class="card"><div class="card-head">Operator Assist <span>NEXT PASS</span></div><div class="assist"><div class="prompt">Open the top briefing packet first. Use silent or missing rows as source gaps, not as promoted content. Keep raw prompts and local paths out of the human surface.</div><div class="chiprow"><span class="chip">TEXT FIRST</span><span class="chip">NO RAW PROMPTS</span><span class="chip">CLICK ANY ROW</span></div></div></section>
+        <section class="card"><div class="card-head">Operator Assist <span>NEXT PASS</span></div><div class="assist"><div class="prompt">Open the top signed briefing packet first. Use silent, missing, or no-page rows as source gaps, not as promoted content. Keep raw prompts and local paths out of the human surface.</div><div class="chiprow"><span class="chip">TEXT FIRST</span><span class="chip">NO RAW PROMPTS</span><span class="chip">SIGNED ROWS</span></div></div></section>
       </aside>
     </section>
     <footer>Generated {html.escape(now.isoformat())}. Signed Acta links expire automatically.</footer>

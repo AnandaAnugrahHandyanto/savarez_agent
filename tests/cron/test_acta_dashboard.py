@@ -123,7 +123,7 @@ def test_dashboard_uses_acta_imperatr_suite_board_palette(tmp_path: Path):
     assert "#23a7ff" in html
     assert "Acta Imperatr situation room" in html
     assert "ACTA</em> / OUTPUTS" in html
-    assert "open first" in html
+    assert "no page" in html
     assert "output-summary" in html
     assert "metricrow" not in html
     assert "P2" not in html
@@ -628,6 +628,46 @@ def test_today_dashboard_requires_signed_acta_artifact_urls_for_open_overlays():
     assert "evil.example" not in html
     assert "javascript:alert" not in html
     assert "ASK TELEGRAM" not in html
+    unsigned_row = next(row for row in re.findall(r'<section class="brief-row[^>]*>.*?</section>', html, re.S) if "Unsigned Brief" in row)
+    unsafe_row = next(row for row in re.findall(r'<section class="brief-row[^>]*>.*?</section>', html, re.S) if "Unsafe Brief" in row)
+    for disabled_row in (unsigned_row, unsafe_row):
+        assert 'aria-disabled="true"' in disabled_row
+        assert "readable" not in disabled_row
+        assert "data-read-key" not in disabled_row
+        assert "row-open-overlay" not in disabled_row
+        assert "read-dot" not in disabled_row
+        assert "read-state" not in disabled_row
+        assert "MARK READ" not in disabled_row
+
+
+def test_today_dashboard_gates_lead_read_state_to_signed_detail_links():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    lead = item_cls(
+        job_id="lead",
+        name="Unsigned Lead Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_10-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Lead has an artifact candidate but no signed Acta URL.",
+        artifact_url="https://acta.imperatr.com/r/lead/detail.html?exp=1",
+    )
+
+    html = render_dashboard([lead], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
+    lead_article = re.search(r'<article class="lead"[^>]*>.*?</article>', html, re.S)
+
+    assert lead_article
+    assert 'aria-disabled="true"' in lead_article.group(0)
+    assert "readable" not in lead_article.group(0)
+    assert "data-read-key" not in lead_article.group(0)
+    assert "row-open-overlay" not in lead_article.group(0)
+    assert "read-dot" not in lead_article.group(0)
+    assert "read-state" not in lead_article.group(0)
+    assert "no page" in lead_article.group(0)
+    assert "https://acta.imperatr.com/r/lead/detail.html?exp=1" not in html
 
 
 def test_today_dashboard_allows_only_safe_absolute_telegram_followup_links():
@@ -754,6 +794,7 @@ def test_dashboard_surfaces_confidence_without_changing_read_state():
         latest_time=datetime(2026, 5, 19, 11, tzinfo=timezone.utc),
         status="fresh",
         excerpt="Recent high-confidence signal.",
+        artifact_url="https://acta.imperatr.com/r/lead/detail.html?exp=1&sig=lead",
     )
     older = item_cls(
         job_id="older",
@@ -766,6 +807,7 @@ def test_dashboard_surfaces_confidence_without_changing_read_state():
         latest_time=datetime(2026, 5, 17, 11, tzinfo=timezone.utc),
         status="fresh",
         excerpt="Older still-visible signal.",
+        artifact_url="https://acta.imperatr.com/r/older/detail.html?exp=1&sig=older",
     )
     silent = item_cls(
         job_id="silent",
