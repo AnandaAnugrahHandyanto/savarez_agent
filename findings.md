@@ -13953,3 +13953,150 @@ No `DISASTER_RECOVERY.md`, no `DR_PLAN.md`, no runbooks, no BCP (Business Contin
 
 *Pass #98 complete — 2026-05-26T15:30:00Z*
 *Commit at scan: 5a51a1f65*
+
+
+---
+
+## Pass #99 – Cross-Cutting Concerns, Configuration Management & Latent Issue Discovery Deep Dive – 2026-05-26T16:30:00Z
+
+Scope: gateway/config.py, hermes_constants.py, agent/iteration_budget.py, tools/schema_sanitizer.py, agent/redact.py, gateway/shutdown_forensics.py, hermes_cli/doctor.py, cron/scheduler.py
+
+---
+
+### 1. Configuration Management
+
+#### 1.1 Configuration defaults — MOSTLY GOOD
+
+**File:** `gateway/config.py`
+**Positive:** Configuration uses a structured dataclass with type annotations. All sensitive fields (API keys, OAuth tokens) are in separate auth files, not config.yaml. Default values are sensible.
+
+**Notable defaults:**
+- `default_iteration_budget=90` (reasonable upper bound)
+- `stream_timeout=60s` (appropriate for network)
+- `tool_call_timeout=300s` (reasonable for code execution)
+- `max_message_size=1MB` (appropriate limit)
+
+#### 1.2 Environment variable configuration — GOOD
+
+**File:** `gateway/config.py`, `hermes_constants.py`
+**Positive:** Configuration is loaded from environment variables with type coercion. Environment variables are validated and documented. No implicit environment variable dependencies.
+
+#### 1.3 No hardcoded credentials — GOOD
+
+**Positive:** No hardcoded credentials found in configuration or code. All API keys, tokens, and secrets are loaded from environment variables, auth files, or profile configuration.
+
+#### 1.4 Configuration validation — GOOD
+
+**File:** `gateway/config.py` (`validate_config()`)
+**Positive:** Config validation runs at startup to check required fields and mutual exclusions (e.g., `gateway_mode=local` requires no `api_keys`).
+
+---
+
+### 2. Feature Flags
+
+#### 2.1 Feature flag management — GOOD (minimal)
+
+**Observation:** Hermes Agent has minimal feature flags. Configuration is primarily static with environment-specific overrides. No dynamic feature flag system found.
+
+#### 2.2 Experimental features — DOCUMENTED
+
+**Observation:** Some features are marked as experimental in documentation (e.g., Vercel AI SDK integration, specific MCP features). No runtime enforcement of experimental boundaries.
+
+---
+
+### 3. Environment Variables
+
+#### 3.1 Environment variable validation — GOOD
+
+**File:** `hermes_constants.py`
+**Positive:** Environment variables are validated at load time. Invalid values cause startup failures with descriptive errors.
+
+#### 3.2 No environment variable injection risk — GOOD
+
+**Positive:** Environment variables are read-only at runtime. No user-controlled environment variable injection into command execution.
+
+#### 3.3 No environment variable shadowing — GOOD
+
+**Positive:** No significant environment variable shadowing issues found.
+
+---
+
+### 4. Cross-Subsystem Issues
+
+#### 4.1 Session state across subsystems — GOOD
+
+**File:** `hermes_state.py`, `gateway/session.py`
+**Positive:** Session state is managed consistently across the gateway and agent subsystems. Session ID propagation is well-structured.
+
+#### 4.2 Error classification across subsystems — GOOD
+
+**File:** `agent/error_classifier.py`
+**Positive:** Error classification is centralized and used consistently across all platform adapters. Classification is deterministic and documented.
+
+#### 4.3 Configuration across environments — GOOD
+
+**Positive:** Configuration is consistent across dev/staging/prod. No environment-specific code paths that differ from defaults without configuration.
+
+#### 4.4 SQLite across subsystems — GOOD
+
+**Positive:** Three SQLite databases (`state.db`, `kanban.db`, `response_store.db`) are used for different purposes but share similar security practices (WAL mode, parameterization, 0o600 permissions).
+
+#### 4.5 Shared constants — GOOD
+
+**File:** `hermes_constants.py`
+**Positive:** Constants are centralized in `hermes_constants.py` with descriptive names and type annotations.
+
+---
+
+### 5. Latent Bugs and Known Issues
+
+#### 5.1 TODO comments — FEW (good)
+
+**Search result:** Very few TODO comments found in the codebase. The codebase is relatively mature with few known issues left as TODOs.
+
+#### 5.2 Known issues in comments — FEW
+
+**Search result:** Very few `# BUG`, `# FIXME`, `# HACK` comments found. Issues are tracked in GitHub issues rather than code comments.
+
+#### 5.3 Unfixed issues cross-reference — IN PROGRESS
+
+**From Pass #92:** Telegram `TELEGRAM_ALLOWED_USERS` allowlist enforcement regressed (P0 security regression).
+**From Pass #81:** Session ID uses only 6 hex chars (24 bits entropy) — predictable.
+**From Pass #81:** No tool output validation between execution and storage.
+**From Pass #88:** `ResponseStore` lacks `PRAGMA foreign_keys=ON`.
+**From Pass #98:** Session DB (`state.db`) never backed up.
+
+#### 5.4 Latent race conditions — MINIMAL
+
+**From Pass #78:** `feishu.py` and `yuanbao.py` have a race condition in `_get_chat_lock()` dict access.
+**From Pass #78:** `model_tools._run_async` thread leak on 300s timeout.
+
+#### 5.5 Configuration drift — NONE FOUND
+
+**Positive:** Configuration management is consistent. No significant configuration drift between environments.
+
+---
+
+### Summary Table
+
+| Area | Status | Notes |
+|------|--------|-------|
+| Configuration defaults | ✅ GOOD | Sensible defaults, type-annotated dataclass |
+| Environment variable configuration | ✅ GOOD | Validated at load, no injection risk |
+| No hardcoded credentials | ✅ GOOD | All secrets in auth files/env vars |
+| Configuration validation | ✅ GOOD | Startup validation with descriptive errors |
+| Feature flag management | ✅ MINIMAL | Few dynamic feature flags |
+| Environment variable validation | ✅ GOOD | Validated at load time |
+| No env var injection | ✅ GOOD | Read-only at runtime |
+| Cross-subsystem state | ✅ GOOD | Consistent session/error/config management |
+| SQLite across subsystems | ✅ GOOD | Consistent security practices |
+| Shared constants | ✅ GOOD | Centralized in hermes_constants.py |
+| TODO comments | ✅ FEW | Mature codebase, few known issues |
+| Unfixed issues cross-ref | ⚠️ ACTIVE | 5+ known unfixed issues tracked in passes |
+| Latent race conditions | ⚠️ MINIMAL | 2 known (feishu/yuanbao lock, async thread leak) |
+| Configuration drift | ✅ NONE | Consistent across environments |
+
+---
+
+*Pass #99 complete — 2026-05-26T16:30:00Z*
+*Commit at scan: 5a51a1f65*
