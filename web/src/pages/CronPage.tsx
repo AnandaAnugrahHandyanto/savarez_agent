@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
-import { Clock, Pause, Play, Plus, Trash2, X, Zap, ArrowUpDown } from "lucide-react";
+import { Clock, Pause, Play, Trash2, X, Zap, ArrowUpDown } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
