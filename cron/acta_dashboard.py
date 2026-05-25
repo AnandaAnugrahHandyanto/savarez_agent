@@ -324,12 +324,14 @@ def _schedule_display(job: Mapping[str, Any]) -> str:
 
 
 def _telegram_web_url(chat_id: object, thread_id: object | None = None) -> str | None:
-    """Return a Telegram deep link for private supergroup/forum targets.
+    """Return a safe Telegram web link for explicit cron delivery targets.
 
     Hermes cron delivery targets for Telegram forum topics are stored as
     ``telegram:<chat_id>:<thread_id>``. Telegram's web/app deep link for
     private supergroups uses the internal ID with the leading ``-100`` removed:
-    ``https://t.me/c/<internal_id>/<topic_or_message_id>``.
+    ``https://t.me/c/<internal_id>/<topic_or_message_id>``. Public ``@username``
+    targets are also supported, but only when the username and optional numeric
+    thread/message ID pass a fail-closed allowlist.
     """
     chat = str(chat_id or "").strip()
     thread = str(thread_id or "").strip()
@@ -341,7 +343,12 @@ def _telegram_web_url(chat_id: object, thread_id: object | None = None) -> str |
             return f"https://t.me/c/{internal_id}/{thread}"
     if chat.startswith("@") and len(chat) > 1:
         username = chat[1:]
-        return f"https://t.me/{username}/{thread}" if thread else f"https://t.me/{username}"
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{4,31}", username):
+            if thread:
+                if thread.isdigit():
+                    return f"https://t.me/{username}/{thread}"
+            else:
+                return f"https://t.me/{username}"
     return None
 
 

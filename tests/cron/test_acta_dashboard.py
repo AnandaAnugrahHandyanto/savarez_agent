@@ -156,6 +156,84 @@ def test_collects_telegram_thread_links_from_delivery_targets(tmp_path: Path):
     assert 'href="https://t.me/c/3566991387/86"' in dashboard_html
 
 
+def test_collects_public_telegram_username_links_from_delivery_targets(tmp_path: Path):
+    (tmp_path / "cron" / "output" / "plain").mkdir(parents=True)
+    (tmp_path / "cron" / "output" / "thread").mkdir(parents=True)
+    (tmp_path / "cron" / "jobs.json").write_text(
+        json.dumps(
+            [
+                {"id": "plain", "name": "Plain Channel", "schedule": "daily", "deliver": "telegram:@valid_name"},
+                {"id": "thread", "name": "Thread Channel", "schedule": "daily", "deliver": "telegram:@Valid_Name123:987"},
+            ]
+        )
+    )
+    (tmp_path / "cron" / "output" / "plain" / "2026-05-19.md").write_text("## Response\n\nPlain")
+    (tmp_path / "cron" / "output" / "thread" / "2026-05-19.md").write_text("## Response\n\nThread")
+
+    items = {item.job_id: item for item in collect_situation_items(tmp_path)}
+
+    assert items["plain"].telegram_url == "https://t.me/valid_name"
+    assert items["thread"].telegram_url == "https://t.me/Valid_Name123/987"
+    jobs_html = render_jobs_page(list(items.values()))
+    dashboard_html = render_dashboard(list(items.values()))
+    detail_html = render_acta_detail_report(
+        "# Thread\n\nPublic username follow-up.",
+        {"job_id": "thread", "job_name": "Thread Channel", "run_time": "2026-05-19T10:00:00+00:00"},
+        telegram_url=items["thread"].telegram_url,
+    )
+    assert 'href="https://t.me/valid_name"' in jobs_html
+    assert 'href="https://t.me/Valid_Name123/987"' in jobs_html
+    assert 'href="https://t.me/valid_name"' in dashboard_html
+    assert 'href="https://t.me/Valid_Name123/987"' in detail_html
+
+
+def test_rejects_invalid_public_telegram_username_links_from_delivery_and_origin_metadata(tmp_path: Path):
+    invalid_jobs = [
+        {"id": "slash", "name": "Slash", "schedule": "daily", "deliver": "telegram:@bad/name:12"},
+        {"id": "protocol", "name": "Protocol", "schedule": "daily", "deliver": "telegram:@https://evil.example:12"},
+        {"id": "control", "name": "Control", "schedule": "daily", "deliver": "telegram:@bad\nname:12"},
+        {"id": "short", "name": "Short", "schedule": "daily", "deliver": "telegram:@abcd"},
+        {"id": "chars", "name": "Chars", "schedule": "daily", "deliver": "telegram:@bad-name:12"},
+        {"id": "digit", "name": "Digit", "schedule": "daily", "deliver": "telegram:@1valid:12"},
+        {"id": "path", "name": "Path", "schedule": "daily", "deliver": "telegram:@valid_name/../../evil:12"},
+        {"id": "thread", "name": "Thread", "schedule": "daily", "deliver": "telegram:@valid_name:not-a-number"},
+        {
+            "id": "origin",
+            "name": "Origin",
+            "schedule": "daily",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "@bad/name", "thread_id": "12"},
+        },
+        {
+            "id": "origin_thread",
+            "name": "Origin Thread",
+            "schedule": "daily",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "@valid_name", "thread_id": "abc"},
+        },
+    ]
+    for job in invalid_jobs:
+        (tmp_path / "cron" / "output" / job["id"]).mkdir(parents=True)
+        (tmp_path / "cron" / "output" / job["id"] / "2026-05-19.md").write_text("## Response\n\nInvalid")
+    (tmp_path / "cron" / "jobs.json").write_text(json.dumps(invalid_jobs))
+
+    items = collect_situation_items(tmp_path)
+
+    assert {item.job_id: item.telegram_url for item in items} == {job["id"]: None for job in invalid_jobs}
+    jobs_html = render_jobs_page(items)
+    dashboard_html = render_dashboard(items)
+    assert "THREAD" not in jobs_html
+    assert "ASK TELEGRAM" not in dashboard_html
+    for item in items:
+        detail_html = render_acta_detail_report(
+            "# Invalid\n\nNo follow-up link.",
+            {"job_id": item.job_id, "job_name": item.name, "run_time": "2026-05-19T10:00:00+00:00"},
+            telegram_url=item.telegram_url,
+        )
+        assert "Ask follow-up in Telegram" not in detail_html
+        assert "https://t.me/" not in detail_html
+
+
 def test_detail_report_can_link_back_to_telegram_thread():
     html = render_acta_detail_report(
         "# Operator Brief\n\nUseful signal.",
