@@ -4227,6 +4227,12 @@ def main(
     Toolset Examples:
         - "research": Web search, extract, crawl + vision tools
     """
+    if query == "mcp" and model == "serve":
+        from mcp_serve import run_mcp_server
+
+        run_mcp_server(verbose=verbose)
+        return
+
     print("🤖 AI Agent with Tool Calling")
     print("=" * 50)
     

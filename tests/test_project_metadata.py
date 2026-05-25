@@ -1,6 +1,7 @@
 """Regression tests for packaging metadata in pyproject.toml."""
 
 from pathlib import Path
+import json
 import tomllib
 
 
@@ -11,11 +12,15 @@ def _load_optional_dependencies():
     return project["optional-dependencies"]
 
 
-def _load_package_data():
+def _load_setuptools_config():
     pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     with pyproject_path.open("rb") as handle:
         tool = tomllib.load(handle)["tool"]
-    return tool["setuptools"]["package-data"]
+    return tool["setuptools"]
+
+
+def _load_package_data():
+    return _load_setuptools_config()["package-data"]
 
 
 def test_matrix_extra_not_in_all():
@@ -110,6 +115,46 @@ def test_feishu_extra_includes_qrcode_for_qr_login():
 
     feishu_extra = optional_dependencies["feishu"]
     assert any(dep.startswith("qrcode") for dep in feishu_extra)
+
+
+def test_mcp_server_module_is_packaged_for_cli_entrypoint():
+    """`hermes mcp serve` imports top-level mcp_serve from wheel installs."""
+    setuptools_config = _load_setuptools_config()
+
+    assert "mcp_serve" in setuptools_config["py-modules"]
+
+
+def test_mcp_registry_metadata_matches_packaging_contract():
+    """Keep root server.json aligned with the PyPI package entry point."""
+    root = Path(__file__).resolve().parents[1]
+    with (root / "server.json").open(encoding="utf-8") as handle:
+        server = json.load(handle)
+
+    package = server["packages"][0]
+    assert server["name"] == "io.github.nousresearch/hermes-agent"
+    assert package["registryType"] == "pypi"
+    assert package["registryBaseUrl"] == "https://pypi.org"
+    assert package["identifier"] == "hermes-agent"
+    assert package["runtimeHint"] == "uvx"
+    assert package["transport"] == {"type": "stdio"}
+    assert package["packageArguments"] == [
+        {"type": "positional", "value": "mcp"},
+        {"type": "positional", "value": "serve"},
+    ]
+    assert "version" not in package, (
+        "Do not pin server.json to a possibly stale PyPI artifact; registry "
+        "submission should use the latest released wheel after this change ships."
+    )
+
+    publisher_meta = server["_meta"]["io.modelcontextprotocol.registry/publisher-provided"][
+        "io.github.nousresearch/hermes-agent"
+    ]
+    assert publisher_meta["recommendedInstall"] == 'pip install "hermes-agent[mcp]"'
+    assert publisher_meta["launchCommand"] == "hermes-agent mcp serve"
+    assert publisher_meta["fallbackLaunchCommand"] == "hermes mcp serve"
+
+    optional_dependencies = _load_optional_dependencies()
+    assert "mcp" in optional_dependencies
 
 
 def test_dashboard_plugin_manifests_and_assets_are_packaged():
