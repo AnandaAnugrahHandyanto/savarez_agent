@@ -5690,6 +5690,56 @@ def get_xai_oauth_auth_status() -> Dict[str, Any]:
         }
 
 
+def get_copilot_auth_status() -> Dict[str, Any]:
+    """Status snapshot for Hermes-managed GitHub Copilot auth."""
+    try:
+        from hermes_cli.copilot_auth import (
+            _read_hermes_copilot_state,
+            read_hermes_copilot_token,
+            resolve_copilot_token,
+            validate_copilot_token,
+        )
+
+        state = _read_hermes_copilot_state()
+        token, stored_source = read_hermes_copilot_token()
+        try:
+            resolved_token, resolved_source = resolve_copilot_token()
+        except ValueError as exc:
+            return {
+                "logged_in": False,
+                "auth_store": str(_auth_file_path()),
+                "error": str(exc),
+                "source": f"auth.json:{stored_source}" if token else "",
+                "has_token": bool(token),
+            }
+
+        active_token = resolved_token or token
+        valid, _msg = validate_copilot_token(active_token) if active_token else (False, "")
+        token_prefix = ""
+        if active_token.startswith("github_pat_"):
+            token_prefix = "github_pat_"
+        elif active_token:
+            token_prefix = active_token[:4]
+
+        return {
+            "logged_in": bool(active_token and valid),
+            "auth_store": str(_auth_file_path()),
+            "auth_type": state.get("auth_mode") or "github-token",
+            "source": resolved_source or (f"auth.json:{stored_source}" if token else ""),
+            "last_login": state.get("last_login"),
+            "token_prefix": state.get("token_prefix") or token_prefix,
+            "has_token": bool(active_token),
+            "supported_token_type": bool(active_token and valid),
+            "api_base_url": DEFAULT_GITHUB_MODELS_BASE_URL,
+        }
+    except Exception as exc:
+        return {
+            "logged_in": False,
+            "auth_store": str(_auth_file_path()),
+            "error": str(exc),
+        }
+
+
 def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
@@ -5762,6 +5812,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_nous_auth_status()
     if target == "openai-codex":
         return get_codex_auth_status()
+    if target == "copilot":
+        return get_copilot_auth_status()
     if target == "xai-oauth":
         return get_xai_oauth_auth_status()
     if target == "qwen-oauth":

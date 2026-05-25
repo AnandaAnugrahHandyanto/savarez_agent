@@ -366,6 +366,24 @@ def _remove_copilot_gh(provider: str, removed) -> RemovalResult:
     ])
 
 
+def _remove_copilot_device_code(provider: str, removed) -> RemovalResult:
+    """Hermes-owned Copilot OAuth state lives in auth.json providers.copilot."""
+    from hermes_cli.auth import _load_auth_store, _save_auth_store
+
+    auth_store = _load_auth_store()
+    providers = auth_store.get("providers")
+    if isinstance(providers, dict) and providers.pop("copilot", None) is not None:
+        if auth_store.get("active_provider") == "copilot":
+            auth_store["active_provider"] = None
+        _save_auth_store(auth_store)
+        cleaned = ["Removed Hermes Copilot OAuth state from auth.json."]
+    else:
+        cleaned = []
+    return RemovalResult(cleaned=cleaned, hints=[
+        "Run `hermes auth add copilot` to re-enable if needed.",
+    ])
+
+
 def _remove_custom_config(provider: str, removed) -> RemovalResult:
     """Custom provider pools are seeded from custom_providers config or
     model.api_key.  Both are in config.yaml — modifying that from here
@@ -394,6 +412,12 @@ def _register_all_sources() -> None:
         match_fn=lambda src: src == "gh_cli" or src.startswith("env:"),
         remove_fn=_remove_copilot_gh,
         description="gh auth token / COPILOT_GITHUB_TOKEN / GH_TOKEN",
+    ))
+    register(RemovalStep(
+        provider="copilot", source_id="device_code",
+        match_fn=lambda src: src == "device_code" or src.endswith(":device_code"),
+        remove_fn=_remove_copilot_device_code,
+        description="auth.json providers.copilot",
     ))
     register(RemovalStep(
         provider="*", source_id="env:",

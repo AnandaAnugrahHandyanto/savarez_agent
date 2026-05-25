@@ -78,6 +78,68 @@ class TestResolveToken:
         assert token == "gho_valid_oauth"
         assert source == "GITHUB_TOKEN"
 
+
+    def test_hermes_auth_json_second_priority(self, monkeypatch, tmp_path):
+        import json
+        from hermes_cli.copilot_auth import resolve_copilot_token
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "providers": {
+                "copilot": {
+                    "auth_mode": "github-oauth",
+                    "source": "device-code",
+                    "token": "gho_from_auth_json",
+                }
+            },
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+        monkeypatch.setenv("GH_TOKEN", "gho_from_gh_env")
+        monkeypatch.setenv("GITHUB_TOKEN", "gho_from_github_env")
+
+        token, source = resolve_copilot_token()
+
+        assert token == "gho_from_auth_json"
+        assert source == "auth.json:device-code"
+
+    def test_explicit_copilot_env_overrides_auth_json(self, monkeypatch, tmp_path):
+        import json
+        from hermes_cli.copilot_auth import resolve_copilot_token
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "providers": {"copilot": {"token": "gho_from_auth_json"}},
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "gho_explicit_env")
+
+        token, source = resolve_copilot_token()
+
+        assert token == "gho_explicit_env"
+        assert source == "COPILOT_GITHUB_TOKEN"
+
+    def test_classic_pat_in_auth_json_raises(self, monkeypatch, tmp_path):
+        import json
+        from hermes_cli.copilot_auth import resolve_copilot_token
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "providers": {"copilot": {"token": "ghp_classic_pat_nope"}},
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+        monkeypatch.setenv("GH_TOKEN", "gho_would_otherwise_work")
+
+        with pytest.raises(ValueError, match="auth.json"):
+            resolve_copilot_token()
+
     def test_gh_cli_fallback(self, monkeypatch):
         from hermes_cli.copilot_auth import resolve_copilot_token
         monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)

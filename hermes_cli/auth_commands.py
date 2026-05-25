@@ -33,7 +33,7 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "google-gemini-cli", "minimax-oauth"}
+_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "copilot", "xai-oauth", "qwen-oauth", "google-gemini-cli", "minimax-oauth"}
 
 
 def _get_custom_provider_names() -> list:
@@ -335,6 +335,36 @@ def auth_add_command(args) -> None:
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
         return
 
+    if provider == "copilot":
+        from hermes_cli.copilot_auth import (
+            copilot_device_code_login,
+            save_hermes_copilot_token,
+        )
+
+        token = copilot_device_code_login(
+            timeout_seconds=getattr(args, "timeout", None) or 300,
+        )
+        if not token:
+            raise SystemExit("Copilot OAuth login did not return credentials.")
+        save_hermes_copilot_token(token, source="device-code")
+        label = (getattr(args, "label", None) or "").strip() or label_from_token(
+            token,
+            _oauth_default_label(provider, len(pool.entries()) + 1),
+        )
+        entry = PooledCredential(
+            provider=provider,
+            id=uuid.uuid4().hex[:6],
+            label=label,
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source=f"{SOURCE_MANUAL}:device_code",
+            access_token=token,
+            base_url=_provider_base_url(provider),
+        )
+        pool.add_entry(entry)
+        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        return
+
     if provider == "xai-oauth":
         creds = auth_mod._xai_oauth_loopback_login(
             timeout_seconds=getattr(args, "timeout", None) or 20.0,
@@ -515,7 +545,7 @@ def auth_status_command(args) -> None:
         return
 
     print(f"{provider}: logged in")
-    for key in ("auth_type", "client_id", "redirect_uri", "scope", "expires_at", "api_base_url"):
+    for key in ("auth_type", "source", "has_token", "supported_token_type", "token_prefix", "last_login", "client_id", "redirect_uri", "scope", "expires_at", "api_base_url"):
         value = status.get(key)
         if value:
             print(f"  {key}: {value}")

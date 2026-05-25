@@ -1621,7 +1621,13 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
             token, source = resolve_copilot_token()
             if token:
                 api_token = get_copilot_api_token(token)
-                source_name = "gh_cli" if "gh" in source.lower() else f"env:{source}"
+                source_lower = source.lower()
+                if source_lower.startswith("auth.json"):
+                    source_name = "device_code"
+                elif "gh auth token" in source_lower:
+                    source_name = "gh_cli"
+                else:
+                    source_name = f"env:{source}"
                 if not _is_suppressed(provider, source_name):
                     active_sources.add(source_name)
                     pconfig = PROVIDER_REGISTRY.get(provider)

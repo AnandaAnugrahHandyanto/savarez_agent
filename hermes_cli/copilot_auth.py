@@ -9,11 +9,12 @@ Token type support (per GitHub docs):
   ghu_          GitHub App token      ✓  (via environment variable)
   ghp_          Classic PAT           ✗  NOT SUPPORTED
 
-Credential search order (matching Copilot CLI behaviour):
+Credential search order:
   1. COPILOT_GITHUB_TOKEN env var
-  2. GH_TOKEN env var
-  3. GITHUB_TOKEN env var
-  4. gh auth token  CLI fallback
+  2. Hermes auth store (~/.hermes/auth.json providers.copilot)
+  3. GH_TOKEN env var
+  4. GITHUB_TOKEN env var
+  5. gh auth token  CLI fallback
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ COPILOT_OAUTH_CLIENT_ID = "Ov23li8tweQw6odWQebz"
 _CLASSIC_PAT_PREFIX = "ghp_"
 _SUPPORTED_PREFIXES = ("gho_", "github_pat_", "ghu_")
 
-# Env var search order (matches Copilot CLI)
+# Copilot-related env vars, in their native CLI priority order.
 COPILOT_ENV_VARS = ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
 
 # Polling constants
@@ -64,14 +65,92 @@ def validate_copilot_token(token: str) -> tuple[bool, str]:
     return True, "OK"
 
 
+def _token_prefix(token: str) -> str:
+    token = (token or "").strip()
+    if token.startswith("github_pat_"):
+        return "github_pat_"
+    if len(token) >= 4:
+        return token[:4]
+    return ""
+
+
+def _read_hermes_copilot_state() -> dict:
+    try:
+        from hermes_cli import auth as auth_mod
+
+        auth_store = auth_mod._load_auth_store()
+        state = auth_mod._load_provider_state(auth_store, "copilot")
+        return state if isinstance(state, dict) else {}
+    except Exception:
+        return {}
+
+
+def read_hermes_copilot_token() -> tuple[str, str]:
+    """Read a raw GitHub token from Hermes-owned Copilot auth state."""
+    state = _read_hermes_copilot_state()
+    token = str(state.get("token") or state.get("access_token") or "").strip()
+    if not token:
+        tokens = state.get("tokens")
+        if isinstance(tokens, dict):
+            token = str(tokens.get("access_token") or "").strip()
+    source = str(state.get("source") or "auth.json").strip() or "auth.json"
+    return token, source
+
+
+def save_hermes_copilot_token(
+    token: str,
+    *,
+    source: str = "device-code",
+    auth_mode: str = "github-oauth",
+) -> None:
+    """Persist Hermes-owned Copilot auth state in ~/.hermes/auth.json."""
+    token = (token or "").strip()
+    valid, msg = validate_copilot_token(token)
+    if not valid:
+        raise ValueError(msg)
+
+    from datetime import datetime, timezone
+    from hermes_cli import auth as auth_mod
+
+    state = {
+        "auth_mode": auth_mode,
+        "source": source,
+        "token": token,
+        "last_login": datetime.now(timezone.utc).isoformat(),
+        "token_prefix": _token_prefix(token),
+    }
+    with auth_mod._auth_store_lock():
+        auth_store = auth_mod._load_auth_store()
+        auth_mod._store_provider_state(auth_store, "copilot", state)
+        auth_mod._save_auth_store(auth_store)
+
+
 def resolve_copilot_token() -> tuple[str, str]:
     """Resolve a GitHub token suitable for Copilot API use.
 
     Returns (token, source) where source describes where the token came from.
     Raises ValueError if only a classic PAT is available.
     """
-    # 1. Check env vars in priority order
-    for env_var in COPILOT_ENV_VARS:
+    # 1. Explicit Copilot env var wins over Hermes-owned state.
+    val = os.getenv("COPILOT_GITHUB_TOKEN", "").strip()
+    if val:
+        valid, msg = validate_copilot_token(val)
+        if valid:
+            return val, "COPILOT_GITHUB_TOKEN"
+        logger.warning("Token from COPILOT_GITHUB_TOKEN is not supported: %s", msg)
+
+    # 2. Hermes-owned auth store.
+    token, stored_source = read_hermes_copilot_token()
+    if token:
+        valid, msg = validate_copilot_token(token)
+        if not valid:
+            raise ValueError(
+                f"Token from Hermes auth.json is not supported. {msg}"
+            )
+        return token, f"auth.json:{stored_source}"
+
+    # 3. Remaining env vars in priority order.
+    for env_var in ("GH_TOKEN", "GITHUB_TOKEN"):
         val = os.getenv(env_var, "").strip()
         if val:
             valid, msg = validate_copilot_token(val)
@@ -82,7 +161,7 @@ def resolve_copilot_token() -> tuple[str, str]:
                 continue
             return val, env_var
 
-    # 2. Fall back to gh auth token
+    # 4. Fall back to gh auth token
     token = _try_gh_cli_token()
     if token:
         valid, msg = validate_copilot_token(token)

@@ -4,6 +4,7 @@ import os
 from unittest.mock import patch
 
 from gateway.config import (
+    BridgeConfig,
     GatewayConfig,
     HomeChannel,
     Platform,
@@ -185,6 +186,34 @@ class TestStreamingConfig:
         assert restored.fresh_final_after_seconds == 60.0
 
 
+class TestBridgeConfig:
+    def test_defaults_match_session_bridge_spec(self):
+        restored = BridgeConfig.from_dict({})
+
+        assert restored.enabled is True
+        assert restored.max_age_minutes == 1440
+        assert restored.max_messages == 15
+        assert restored.include_summary is True
+        assert restored.freshness_threshold_minutes == 30
+
+    def test_from_dict_coerces_bool_and_positive_numbers(self):
+        restored = BridgeConfig.from_dict(
+            {
+                "enabled": "false",
+                "max_age_minutes": "-1",
+                "max_messages": "0",
+                "include_summary": "false",
+                "freshness_threshold": "45",
+            }
+        )
+
+        assert restored.enabled is False
+        assert restored.max_age_minutes == 1440
+        assert restored.max_messages == 15
+        assert restored.include_summary is False
+        assert restored.freshness_threshold_minutes == 45
+
+
 class TestGatewayConfigRoundtrip:
     def test_full_roundtrip(self):
         config = GatewayConfig(
@@ -199,6 +228,7 @@ class TestGatewayConfigRoundtrip:
             quick_commands={"limits": {"type": "exec", "command": "echo ok"}},
             group_sessions_per_user=False,
             thread_sessions_per_user=True,
+            bridge=BridgeConfig(max_messages=7, enabled=False),
         )
         d = config.to_dict()
         restored = GatewayConfig.from_dict(d)
@@ -209,6 +239,8 @@ class TestGatewayConfigRoundtrip:
         assert restored.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
         assert restored.group_sessions_per_user is False
         assert restored.thread_sessions_per_user is True
+        assert restored.bridge.enabled is False
+        assert restored.bridge.max_messages == 7
 
     def test_roundtrip_preserves_unauthorized_dm_behavior(self):
         config = GatewayConfig(
@@ -293,6 +325,30 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.thread_sessions_per_user is True
+
+    def test_bridges_bridge_config_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "bridge:\n"
+            "  enabled: \"false\"\n"
+            "  max_age_minutes: 60\n"
+            "  max_messages: 5\n"
+            "  include_summary: \"false\"\n"
+            "  freshness_threshold: 10\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.bridge.enabled is False
+        assert config.bridge.max_age_minutes == 60
+        assert config.bridge.max_messages == 5
+        assert config.bridge.include_summary is False
+        assert config.bridge.freshness_threshold_minutes == 10
 
     def test_thread_sessions_per_user_defaults_to_false(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
@@ -452,6 +508,51 @@ class TestLoadGatewayConfig:
         assert config.platforms[Platform.TELEGRAM].extra["channel_prompts"] == {
             "-1001234567": "Research assistant",
             "789": "Creative writing",
+        }
+
+    def test_bridges_telegram_slash_commands_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "telegram:\n"
+            "  slash_commands:\n"
+            "    mode: none\n"
+            "    users:\n"
+            '      "888933588": all\n'
+            '      "*": minimal\n',
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.TELEGRAM].extra["slash_commands"] == {
+            "mode": "none",
+            "users": {"888933588": "all", "*": "minimal"},
+        }
+
+    def test_platforms_telegram_extra_slash_commands_still_works(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    enabled: true\n"
+            "    extra:\n"
+            "      slash_commands:\n"
+            "        mode: persona\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.TELEGRAM].extra["slash_commands"] == {
+            "mode": "persona"
         }
 
     def test_bridges_slack_channel_prompts_from_config_yaml(self, tmp_path, monkeypatch):
