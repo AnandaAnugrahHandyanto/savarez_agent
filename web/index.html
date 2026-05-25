@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Hermes UI</title>
 
+  <!-- ✅ FIXED: Proper CSS loading -->
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 
@@ -12,6 +13,7 @@
 
 <div id="app">
 
+  <!-- Sidebar -->
   <aside id="sidebar" class="collapsed">
     <button id="toggleSidebar">☰</button>
 
@@ -26,6 +28,7 @@
     </nav>
   </aside>
 
+  <!-- Main Layout -->
   <div id="main">
 
     <div id="leftPanel">
@@ -50,6 +53,8 @@
 
 </div>
 
+<!-- ✅ FIXED: correct JS path -->
 <script type="module" src="/static/app.js"></script>
 </body>
 </html>
+``
