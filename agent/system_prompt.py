@@ -100,6 +100,32 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 
+    # Language guidance -- instruct the model to respond in the user's preferred language
+    # when configured via display.language in config.yaml.
+    try:
+        from agent.i18n import get_language
+        _lang = get_language()
+        _DISPLAY_LANG_MAP = {
+            "zh": "简体中文",
+            "zh-hant": "繁體中文",
+            "ja": "日本語",
+            "de": "Deutsch",
+            "es": "Español",
+            "fr": "Français",
+            "tr": "Türkçe",
+            "uk": "Українська",
+        }
+        if _lang and _lang != "en":
+            _display_name = _DISPLAY_LANG_MAP.get(_lang, _lang)
+            stable_parts.append(
+                f"The user prefers responses in {_display_name}. "
+                f"Reply to ALL user messages in {_display_name}. "
+                f"Keep code, commands, tool names, and file paths in their original "
+                f"form -- only translate conversational text."
+            )
+    except Exception:
+        pass
+
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []
     if "memory" in agent.valid_tool_names:
