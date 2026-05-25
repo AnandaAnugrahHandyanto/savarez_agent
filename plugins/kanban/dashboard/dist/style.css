@@ -64,17 +64,15 @@
 
 .hermes-kanban-columns {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.75rem;
   align-items: start;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.hermes-kanban-columns::-webkit-scrollbar {
-  display: none;
 }
 
 .hermes-kanban-column {
-  flex: 0 0 280px;
+  flex: 1 1 220px;
+  min-width: 200px;
+  max-width: 360px;
   display: flex;
   flex-direction: column;
   background: color-mix(in srgb, var(--color-card) 85%, transparent);
@@ -84,6 +82,14 @@
   min-height: 200px;
   max-height: calc(100vh - 220px);
   transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+/* On wide screens (≥3 columns comfortably), stretch columns to fill the row */
+@media (min-width: 1200px) {
+  .hermes-kanban-column {
+    max-width: 1fr;
+    max-width: calc(33.333% - 0.5rem);
+  }
 }
 
 .hermes-kanban-column--drop {
