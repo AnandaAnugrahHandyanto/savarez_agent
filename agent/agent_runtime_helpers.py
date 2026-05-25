@@ -1566,6 +1566,15 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     if block_message is not None:
         return json.dumps({"error": block_message}, ensure_ascii=False)
 
+    try:
+        from model_tools import _data_isolation_guard
+
+        isolation_block = _data_isolation_guard(function_name, function_args, effective_task_id)
+    except Exception:
+        isolation_block = None
+    if isolation_block is not None:
+        return isolation_block
+
     if function_name == "todo":
         from tools.todo_tool import todo_tool as _todo_tool
         return _todo_tool(
@@ -1800,7 +1809,11 @@ def looks_like_codex_intermediate_ack(
         return False
 
     has_future_ack = bool(
-        re.search(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b", assistant_text)
+        re.search(
+            r"\b(i['’]ll|i will|let me|i can do that|i can help with that|"
+            r"je vais|je peux|laisse-moi|laissez-moi)\b",
+            assistant_text,
+        )
     )
     if not has_future_ack:
         return False
@@ -1825,6 +1838,19 @@ def looks_like_codex_intermediate_ack(
         "walkthrough",
         "report back",
         "summarize",
+        "lire",
+        "examiner",
+        "vérifier",
+        "verifier",
+        "corriger",
+        "lancer",
+        "tester",
+        "chercher",
+        "trouver",
+        "parcourir",
+        "repérer",
+        "reperer",
+        "brancher",
     )
     workspace_markers = (
         "directory",
@@ -1840,6 +1866,12 @@ def looks_like_codex_intermediate_ack(
         "file tree",
         "files",
         "path",
+        "projet",
+        "dépôt",
+        "depot",
+        "fichier",
+        "répertoire",
+        "repertoire",
     )
 
     user_text = (user_message or "").strip().lower()
@@ -2167,7 +2199,8 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
             existing = getattr(agent, "_pending_steer", None)
             agent._pending_steer = (existing + "\n" + steer_text) if existing else steer_text
         return
-    marker = f"\n\nUser guidance: {steer_text}"
+    is_interruption_context = str(steer_text).lstrip().startswith("---\n⚠️ Interruption")
+    marker = f"\n\n{steer_text}" if is_interruption_context else f"\n\nUser guidance: {steer_text}"
     existing_content = messages[target_idx].get("content", "")
     if not isinstance(existing_content, str):
         # Anthropic multimodal content blocks — preserve them and append

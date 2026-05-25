@@ -513,7 +513,24 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             if not guardrail_decision.allows_execution:
                 _guardrail_block_decision = guardrail_decision
 
-        _execution_blocked = _block_msg is not None or _guardrail_block_decision is not None
+        _isolation_block_msg: Optional[str] = None
+        if _block_msg is None and _guardrail_block_decision is None:
+            try:
+                from model_tools import _data_isolation_guard
+
+                _isolation_block_msg = _data_isolation_guard(
+                    function_name,
+                    function_args,
+                    effective_task_id,
+                )
+            except Exception:
+                _isolation_block_msg = None
+
+        _execution_blocked = (
+            _block_msg is not None
+            or _guardrail_block_decision is not None
+            or _isolation_block_msg is not None
+        )
 
         if _execution_blocked:
             # Tool blocked by plugin or guardrail policy — skip counters,
@@ -595,6 +612,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             # Tool blocked by tool-loop guardrail — synthesize exactly one
             # tool result for the original tool_call_id without executing.
             function_result = agent._guardrail_block_result(_guardrail_block_decision)
+            tool_duration = 0.0
+        elif _isolation_block_msg is not None:
+            function_result = _isolation_block_msg
             tool_duration = 0.0
         elif function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool

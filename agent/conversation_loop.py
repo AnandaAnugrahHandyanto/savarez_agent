@@ -405,6 +405,7 @@ def run_conversation(
 
     # Initialize conversation (copy to avoid mutating the caller's list)
     messages = list(conversation_history) if conversation_history else []
+    turn_start_message_count = len(messages)
 
     # Hydrate todo store from conversation history (gateway creates a fresh
     # AIAgent per message, so the in-memory store is empty -- we need to
@@ -751,7 +752,12 @@ def run_conversation(
             for _si in range(len(messages) - 1, -1, -1):
                 _sm = messages[_si]
                 if isinstance(_sm, dict) and _sm.get("role") == "tool":
-                    marker = f"\n\nUser guidance: {_pre_api_steer}"
+                    _is_interruption_context = str(_pre_api_steer).lstrip().startswith("---\n⚠️ Interruption")
+                    marker = (
+                        f"\n\n{_pre_api_steer}"
+                        if _is_interruption_context
+                        else f"\n\nUser guidance: {_pre_api_steer}"
+                    )
                     existing = _sm.get("content", "")
                     if isinstance(existing, str):
                         _sm["content"] = existing + marker
@@ -3880,15 +3886,39 @@ def run_conversation(
                 agent._empty_content_retries = 0
                 agent._thinking_prefill_retries = 0
 
-                if (
+                _provider_id = (getattr(agent, "provider", "") or "").lower()
+                _is_tool_ack_sensitive_provider = (
                     agent.api_mode == "codex_responses"
+                    or _provider_id == "copilot-acp"
+                )
+                _is_kanban_worker_turn = bool(
+                    os.environ.get("HERMES_KANBAN_TASK")
+                    or (user_message or "").strip().lower().startswith("work kanban task ")
+                )
+                _looks_like_intermediate_ack = agent._looks_like_codex_intermediate_ack(
+                    user_message=user_message,
+                    assistant_content=final_response,
+                    messages=[] if _is_kanban_worker_turn else messages,
+                )
+                _has_tool_result = any(
+                    isinstance(msg, dict) and msg.get("role") == "tool"
+                    for msg in messages
+                )
+                _kanban_prose_stop = bool(
+                    _is_kanban_worker_turn
+                    and _provider_id == "copilot-acp"
+                    and not _has_tool_result
+                    and final_response
+                    and len(final_response) < 1200
+                )
+                _ack_continuation_limit = 8 if (
+                    _is_kanban_worker_turn and _provider_id == "copilot-acp"
+                ) else 2
+                if (
+                    _is_tool_ack_sensitive_provider
                     and agent.valid_tool_names
-                    and codex_ack_continuations < 2
-                    and agent._looks_like_codex_intermediate_ack(
-                        user_message=user_message,
-                        assistant_content=final_response,
-                        messages=messages,
-                    )
+                    and codex_ack_continuations < _ack_continuation_limit
+                    and (_looks_like_intermediate_ack or _kanban_prose_stop)
                 ):
                     codex_ack_continuations += 1
                     interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
@@ -3898,8 +3928,9 @@ def run_conversation(
                     continue_msg = {
                         "role": "user",
                         "content": (
-                            "[System: Continue now. Execute the required tool calls and only "
-                            "send your final answer after completing the task.]"
+                            "[System: Continue now. Execute the required tool calls. "
+                            "For Kanban worker tasks, do not send a final answer until "
+                            "you have called kanban_complete or kanban_block.]"
                         ),
                     }
                     messages.append(continue_msg)
@@ -3990,6 +4021,46 @@ def run_conversation(
                 messages.append({"role": "assistant", "content": final_response})
                 break
     
+    _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
+    if (
+        _kanban_task
+        and final_response is not None
+        and not any(
+            isinstance(msg, dict)
+            and msg.get("role") == "tool"
+            and msg.get("name") in {"kanban_complete", "kanban_block"}
+            for msg in messages[turn_start_message_count:]
+        )
+    ):
+        _preview = agent._strip_think_blocks(str(final_response)).strip()
+        if len(_preview) > 500:
+            _preview = _preview[:497].rstrip() + "..."
+        try:
+            _ra().handle_function_call(
+                "kanban_block",
+                {
+                    "task_id": _kanban_task,
+                    "reason": (
+                        "Worker produced a final text response without calling "
+                        "kanban_complete or kanban_block. Response preview: "
+                        f"{_preview}"
+                    ),
+                },
+                task_id=effective_task_id,
+            )
+            logger.info(
+                "kanban_block called for task %s after final text without "
+                "kanban lifecycle transition",
+                _kanban_task,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to call kanban_block after final text without kanban "
+                "lifecycle transition for task %s",
+                _kanban_task,
+                exc_info=True,
+            )
+
     if final_response is None and (
         api_call_count >= agent.max_iterations
         or agent.iteration_budget.remaining <= 0
@@ -4014,7 +4085,6 @@ def run_conversation(
         # protocol violation).  The agent loop strips tools before calling
         # _handle_max_iterations, so the model cannot call kanban_block
         # itself — we must do it on its behalf.
-        _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
         if _kanban_task:
             try:
                 _ra().handle_function_call(
@@ -4194,6 +4264,24 @@ def run_conversation(
             break
 
     # Build result with interrupt info if applicable
+    steering_breakpoint = None
+    if isinstance(final_response, str) and "<hermes_steering_breakpoint>" in final_response:
+        _bp_re = re.compile(
+            r"\s*<hermes_steering_breakpoint>(.*?)</hermes_steering_breakpoint>\s*",
+            re.DOTALL,
+        )
+        _bp_match = _bp_re.search(final_response)
+        if _bp_match:
+            _bp_raw = _bp_match.group(1).strip()
+            try:
+                _bp_data = json.loads(_bp_raw)
+                if isinstance(_bp_data, dict):
+                    steering_breakpoint = _bp_data
+            except Exception as exc:
+                logger.warning("Invalid steering breakpoint metadata: %s", exc)
+                steering_breakpoint = {"raw": _bp_raw}
+            final_response = _bp_re.sub("", final_response).strip()
+
     result = {
         "final_response": final_response,
         "last_reasoning": last_reasoning,
@@ -4223,6 +4311,8 @@ def run_conversation(
         "cost_source": agent.session_cost_source,
         "session_id": agent.session_id,
     }
+    if steering_breakpoint is not None:
+        result["steering_breakpoint"] = steering_breakpoint
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
     # If a /steer landed after the final assistant turn (no more tool

@@ -121,6 +121,17 @@ class TestSteerInjection:
         assert "User guidance:" in content
         assert "stop after next step" in content
 
+    def test_interruption_context_keeps_distinct_block_marker(self):
+        agent = _bare_agent()
+        context = "---\n⚠️ Interruption — itération 7/90 en cours.\nMessage de user: \"stop\"\n---"
+        agent.steer(context)
+        messages = [{"role": "tool", "content": "output", "tool_call_id": "1"}]
+        agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
+        content = messages[-1]["content"]
+        assert "User guidance:" not in content
+        assert "⚠️ Interruption" in content
+        assert 'Message de user: "stop"' in content
+
     def test_multimodal_content_list_preserved(self):
         """Anthropic-style list content should be preserved, with the steer
         appended as a text block."""
