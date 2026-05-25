@@ -853,6 +853,8 @@ def _render_jobs_rows(items: Sequence[CronSituationItem], now: datetime) -> list
         latest = item.latest_time.isoformat() if item.latest_time else "No run yet"
         age = _age_label(item.latest_time, now)
         schedule = item.schedule or "manual"
+        source_path = item.latest_md or item.latest_html
+        source_label = source_path.name if source_path else "no-source"
         artifact_url = item.artifact_url if item.enabled and _is_safe_signed_acta_artifact_url(item.artifact_url) else None
         href = html.escape(artifact_url, quote=True) if artifact_url else ""
         open_attr = f' data-open-url="{href}"' if href else ' aria-disabled="true"'
@@ -872,7 +874,7 @@ def _render_jobs_rows(items: Sequence[CronSituationItem], now: datetime) -> list
 <div class="job-row {status_class}{openable_class}"{open_attr}>
   {open_overlay}
   <div class="job-rank">{index:02d}</div>
-  <div class="job-main"><b>{_safe_text(item.name)}</b><span>{_safe_text(item.job_id)} · {_safe_text(item.deliver or "local")}{_telegram_link_html(item)}</span></div>
+  <div class="job-main"><b>{_safe_text(item.name)}</b><span>{_safe_text(item.job_id)} · SOURCE {_safe_text(source_label)} · {_safe_text(item.deliver or "local")}{_telegram_link_html(item)}</span></div>
   <div class="job-schedule"><em>SCHEDULE</em>{_safe_text(schedule)}</div>
   <div class="job-last"><em>LAST RUN</em><time>{_safe_text(latest)}</time><small><span class="confidence-chip">{_safe_text(confidence)}</span><span>{_safe_text(status_label)}</span><span>{_safe_text(age)}</span>{open_state}</small></div>
 </div>"""

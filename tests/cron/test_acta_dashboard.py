@@ -1187,12 +1187,36 @@ def test_jobs_subpage_shows_active_relevant_last_runs(tmp_path: Path):
     assert "15 9 * * *" in html
     assert "LAST RUN" in html
     assert "2026-05-19T08" in html
+    assert "SOURCE 2026-05-19_08-00-00.md" in html
+    assert "SOURCE 2026-05-19_09-00-00.md" in html
     assert '<span class="confidence-chip">CONF HIGH</span>' in html
     assert '<span class="confidence-chip">CONF LOW/GAP</span>' in html
     assert "<span>fresh</span>" in html
     assert "<span>silent</span>" in html
     assert "Disabled Brief" not in html
     assert "Hidden Brief" not in html
+
+
+def test_jobs_subpage_source_provenance_escapes_filename_only():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    item = item_cls(
+        job_id="escaped",
+        name="Escaped Source Brief",
+        schedule="daily",
+        deliver="local",
+        enabled=True,
+        latest_md=Path('/tmp/private/<img src=x onerror=alert(1)>.md'),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Escaped filename.",
+    )
+
+    html = render_jobs_page([item], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
+
+    assert "/tmp/private" not in html
+    assert "SOURCE &lt;img src=x onerror=alert(1)&gt;.md" in html
+    assert "<img src=x" not in html
 
 
 def test_jobs_subpage_suppresses_unsafe_thread_links():
