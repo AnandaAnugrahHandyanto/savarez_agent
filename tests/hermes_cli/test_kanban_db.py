@@ -3138,7 +3138,7 @@ def test_detect_stale_does_not_tick_failure_counter(kanban_home, monkeypatch):
 # Corruption guard (issue #30687)
 # ---------------------------------------------------------------------------
 
-def _write_corrupt_db(path: Path) -> bytes:
+def _write_corrupt_db(path: Path, token: str = "") -> bytes:
     """Write a kanban DB with a VALID SQLite header but malformed page content.
 
     This is the corruption shape the integrity guard specifically targets
@@ -3155,7 +3155,7 @@ def _write_corrupt_db(path: Path) -> bytes:
     header += b"\x00\x00\x00\x0c\x00\x00\x23\x46\x00\x00\x00\x00"
     header = header.ljust(100, b"\x00")
     payload = b"definitely not a valid sqlite page \x00\x01\x02\x03" * 64
-    blob = header + payload
+    blob = header + payload + token.encode("utf-8")
     path.write_bytes(blob)
     return blob
 
@@ -3187,6 +3187,72 @@ def test_connect_refuses_corrupt_existing_file(tmp_path):
 
     with pytest.raises(kb.KanbanDbCorruptError):
         kb.connect(db_path=db_path)
+
+
+def test_corrupt_db_quarantine_is_idempotent_and_preserves_sidecars(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    original = _write_corrupt_db(db_path, token="first")
+    wal = tmp_path / "kanban.db-wal"
+    shm = tmp_path / "kanban.db-shm"
+    wal.write_bytes(b"wal-first")
+    shm.write_bytes(b"shm-first")
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    with pytest.raises(kb.KanbanDbCorruptError) as first:
+        kb.init_db(db_path=db_path)
+
+    backup = first.value.backup_path
+    assert backup is not None
+    assert backup.exists()
+    assert backup.read_bytes() == original
+    assert kb._corrupt_db_marker_path(db_path).exists()
+
+    with pytest.raises(kb.KanbanDbCorruptError) as second:
+        kb.init_db(db_path=db_path)
+
+    assert second.value.backup_path == backup
+    assert "already quarantined" in str(second.value)
+    assert len(list(tmp_path.glob("kanban.db.corrupt.*.bak"))) == 1
+
+
+def test_corrupt_db_quarantine_backup_retention_is_capped(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    wal = tmp_path / "kanban.db-wal"
+    shm = tmp_path / "kanban.db-shm"
+
+    for generation in range(kb.CORRUPT_DB_BACKUP_RETENTION + 2):
+        _write_corrupt_db(db_path, token=f"generation-{generation}")
+        wal.write_bytes(f"wal-{generation}".encode("utf-8"))
+        shm.write_bytes(f"shm-{generation}".encode("utf-8"))
+
+        with pytest.raises(kb.KanbanDbCorruptError):
+            kb.init_db(db_path=db_path)
+
+    backups = sorted(tmp_path.glob("kanban.db.corrupt.*.bak"))
+
+    assert len(backups) == kb.CORRUPT_DB_BACKUP_RETENTION
+
+    marker = kb._load_corrupt_db_marker(db_path)
+    assert marker is not None
+    assert marker["retention_limit"] == kb.CORRUPT_DB_BACKUP_RETENTION
+    assert Path(marker["backup_path"]).name in {backup.name for backup in backups}
+
+
+def test_prune_corrupt_db_backups_removes_stale_sidecars(tmp_path):
+    db_path = tmp_path / "kanban.db"
+
+    for generation in range(5):
+        backup = tmp_path / f"kanban.db.corrupt.20260525_13000{generation}.bak"
+        backup.write_text(f"backup-{generation}", encoding="utf-8")
+        Path(str(backup) + "-wal").write_text(f"wal-{generation}", encoding="utf-8")
+        Path(str(backup) + "-shm").write_text(f"shm-{generation}", encoding="utf-8")
+        time.sleep(0.01)
+
+    kb._prune_corrupt_db_backups(db_path, keep=2)
+
+    assert len(list(tmp_path.glob("kanban.db.corrupt.*.bak"))) == 2
+    assert len(list(tmp_path.glob("kanban.db.corrupt.*.bak-wal"))) == 2
+    assert len(list(tmp_path.glob("kanban.db.corrupt.*.bak-shm"))) == 2
 
 
 def test_locked_healthy_db_does_not_classify_as_corrupt(tmp_path, monkeypatch):
@@ -3338,4 +3404,3 @@ def test_maybe_emit_scratch_tip_skips_non_scratch_workspaces(kanban_home, caplog
                 "SELECT kind FROM task_events WHERE task_id = ?", (tid,),
             ).fetchall()
             assert "tip_scratch_workspace" not in [e["kind"] for e in events]
-

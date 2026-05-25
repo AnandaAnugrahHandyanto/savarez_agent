@@ -105,6 +105,19 @@ def _resolve_board(board: Optional[str]) -> Optional[str]:
     return normed
 
 
+def _board_unreadable_error(board: Optional[str], exc: BaseException) -> HTTPException:
+    slug = board or kanban_db.get_current_board()
+    message = f"kanban board {slug!r} is unreadable: {exc}"
+    return HTTPException(
+        status_code=422,
+        detail={
+            "error": "kanban_board_unreadable",
+            "board": slug,
+            "message": message,
+        },
+    )
+
+
 def _conn(board: Optional[str] = None):
     """Open a kanban_db connection, creating the schema on first use.
 
@@ -119,9 +132,13 @@ def _conn(board: Optional[str] = None):
     """
     try:
         kanban_db.init_db(board=board)
+        return kanban_db.connect(board=board)
+    except (sqlite3.DatabaseError, kanban_db.KanbanDbCorruptError) as exc:
+        log.warning("kanban board read failed: %s", exc)
+        raise _board_unreadable_error(board, exc)
     except Exception as exc:
-        log.warning("kanban init_db failed: %s", exc)
-    return kanban_db.connect(board=board)
+        log.warning("kanban init/connect failed: %s", exc)
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -480,6 +497,8 @@ def get_board(
             "latest_event_id": int(latest_event_id),
             "now": int(time.time()),
         }
+    except (sqlite3.DatabaseError, kanban_db.KanbanDbCorruptError) as exc:
+        raise _board_unreadable_error(board, exc)
     finally:
         conn.close()
 

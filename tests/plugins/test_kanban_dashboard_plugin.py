@@ -41,6 +41,17 @@ def _load_plugin_router():
     return mod.router
 
 
+def _write_integrity_corrupt_db(path: Path) -> bytes:
+    """Write a file that passes the header check but fails integrity_check."""
+    header = b"SQLite format 3\x00" + b"\x10\x00\x02\x02\x00\x40\x20\x20"
+    header += b"\x00\x00\x00\x0c\x00\x00\x23\x46\x00\x00\x00\x00"
+    header = header.ljust(100, b"\x00")
+    payload = b"broken sqlite page payload \x00\x01\x02\x03" * 64
+    blob = header + payload
+    path.write_bytes(blob)
+    return blob
+
+
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME with an empty kanban DB."""
@@ -191,6 +202,38 @@ def test_board_query_param_default_overrides_current_board_pointer(client):
     assert pinned_ids == {default_task["id"]}
 
 
+def test_get_board_corrupt_pinned_board_returns_clean_http_error(client):
+    """A stale browser pin to a malformed board DB must not surface as raw 500."""
+    kb.create_board("researchos")
+    kb.create_board("stale-corrupt")
+    kb.set_current_board("researchos")
+    kb.kanban_db_path(board="stale-corrupt").write_bytes(b"not a sqlite database")
+
+    r = client.get("/api/plugins/kanban/board?board=stale-corrupt")
+
+    assert r.status_code == 422
+    body = r.json()
+    assert body["detail"]["error"] == "kanban_board_unreadable"
+    assert body["detail"]["board"] == "stale-corrupt"
+    assert "stale-corrupt" in body["detail"]["message"]
+
+
+def test_get_board_integrity_corrupt_pinned_board_returns_clean_http_error(client):
+    """Integrity-check corruption should also surface as the clean 422 shape."""
+    kb.create_board("researchos")
+    kb.create_board("stale-integrity-corrupt")
+    kb.set_current_board("researchos")
+    _write_integrity_corrupt_db(kb.kanban_db_path(board="stale-integrity-corrupt"))
+
+    r = client.get("/api/plugins/kanban/board?board=stale-integrity-corrupt")
+
+    assert r.status_code == 422
+    body = r.json()
+    assert body["detail"]["error"] == "kanban_board_unreadable"
+    assert body["detail"]["board"] == "stale-integrity-corrupt"
+    assert "stale-integrity-corrupt" in body["detail"]["message"]
+
+
 def test_dashboard_select_filters_use_sdk_value_change_handler():
     """Tenant/assignee filters must work with the dashboard SDK Select API.
 
@@ -245,6 +288,21 @@ def test_dashboard_initial_board_uses_backend_current_when_unpinned():
     assert "if (!storedBoard && !board && data && data.current)" in js
     assert "setBoard(data.current);" in js
     assert 'readSelectedBoard() || "default"' not in js
+
+
+def test_dashboard_stale_or_corrupt_stored_board_falls_back_to_backend_current():
+    """Bad localStorage board pins should heal to /boards current, not default."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "function fallbackToCurrentBoard(reason)" in js
+    assert "const fallback = currentBoardRef.current || \"default\";" in js
+    assert "SDK.fetchJSON(`${API}/boards`)" in js
+    assert "writeSelectedBoard(slug);" in js
+    assert "fallbackToCurrentBoard(err);" in js
+    assert "setBoard(\"default\");" not in js
 
 
 # ---------------------------------------------------------------------------

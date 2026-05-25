@@ -502,10 +502,29 @@
     const [taskEventTick, setTaskEventTick] = useState({});
 
     const cursorRef = useRef(0);
+    const currentBoardRef = useRef(null);
     const reloadTimerRef = useRef(null);
     const wsRef = useRef(null);
     const wsBackoffRef = useRef(1000);
     const wsClosedRef = useRef(false);
+
+    function fallbackToCurrentBoard(reason) {
+      const fallback = currentBoardRef.current || "default";
+      function applyFallback(slug) {
+        if (board === slug) return Promise.reject(reason);
+        setBoard(slug);
+        writeSelectedBoard(slug);
+        setError(null);
+        return Promise.resolve(slug);
+      }
+      if (currentBoardRef.current) return applyFallback(fallback);
+      return SDK.fetchJSON(`${API}/boards`)
+        .then(function (data) {
+          currentBoardRef.current = (data && data.current) || fallback;
+          return applyFallback(currentBoardRef.current);
+        })
+        .catch(function () { return applyFallback(fallback); });
+    }
 
     // --- load config once ---------------------------------------------------
     useEffect(function () {
@@ -535,6 +554,7 @@
           setError(null);
         })
         .catch(function (err) {
+          if (board) return fallbackToCurrentBoard(err);
           setError(String(err && err.message ? err.message : err));
         })
         .finally(function () { setLoading(false); });
@@ -546,6 +566,7 @@
         .then(function (data) {
           const boards = (data && data.boards) || [];
           const storedBoard = readSelectedBoard();
+          currentBoardRef.current = (data && data.current) || "default";
           setBoardList(boards);
           if (!storedBoard && !board && data && data.current) {
             setBoard(data.current);
@@ -553,10 +574,10 @@
           }
           // If the stored slug isn't in the list any longer (board was
           // deleted in the CLI while dashboard was open), fall back to
-          // default so the UI doesn't hang on a 404.
-          if (board && board !== "default" && !boards.find(function (b) { return b.slug === board; })) {
-            setBoard("default");
-            writeSelectedBoard("default");
+          // the backend's active board so a stale browser pin cannot strand
+          // /kanban on an unreadable or missing board.
+          if (board && !boards.find(function (b) { return b.slug === board; })) {
+            fallbackToCurrentBoard("selected board is no longer available");
           }
         })
         .catch(function () { /* non-fatal */ });

@@ -151,6 +151,8 @@ _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # 2 KB per comment
 # ---------------------------------------------------------------------------
 
 DEFAULT_BOARD = "default"
+CORRUPT_DB_BACKUP_RETENTION = 3
+_CORRUPT_DB_MARKER_SUFFIX = ".corrupt-quarantine.json"
 
 # Slug validator: lowercase alphanumerics, digits, hyphens; 1–64 chars.
 # Strict enough to stop traversal (`..`) and embedded path separators, loose
@@ -1026,6 +1028,170 @@ class KanbanDbCorruptError(RuntimeError):
         )
 
 
+def _corrupt_db_marker_path(path: Path) -> Path:
+    """Return the durable per-board quarantine marker path."""
+    resolved = path.resolve()
+    parent = resolved.parent
+    marker = parent / f"{resolved.name}{_CORRUPT_DB_MARKER_SUFFIX}"
+    return marker if marker.parent == parent else parent / f"kanban.db{_CORRUPT_DB_MARKER_SUFFIX}"
+
+
+def _corrupt_db_sidecar_paths(path: Path) -> dict[str, Path]:
+    """Return the DB path and its WAL/SHM sidecars."""
+    resolved = path.resolve()
+    parent = resolved.parent
+    base_name = resolved.name
+    return {
+        "db": resolved,
+        "wal": parent / f"{base_name}-wal",
+        "shm": parent / f"{base_name}-shm",
+    }
+
+
+def _corrupt_db_snapshot(path: Path) -> dict[str, dict[str, int | bool | None]]:
+    """Capture a cheap on-disk fingerprint for a corrupt DB and its sidecars."""
+    snapshot: dict[str, dict[str, int | bool | None]] = {}
+    for label, artifact in _corrupt_db_sidecar_paths(path).items():
+        info: dict[str, int | bool | None] = {
+            "exists": False,
+            "size": None,
+            "mtime_ns": None,
+        }
+        try:
+            stat = artifact.stat()
+        except OSError:
+            pass
+        else:
+            info["exists"] = True
+            info["size"] = int(stat.st_size)
+            info["mtime_ns"] = int(stat.st_mtime_ns)
+        snapshot[label] = info
+    return snapshot
+
+
+def _load_corrupt_db_marker(path: Path) -> Optional[dict[str, Any]]:
+    """Best-effort load of the quarantine marker."""
+    marker = _corrupt_db_marker_path(path)
+    try:
+        raw = marker.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        _log.warning("kanban corrupt marker unreadable at %s: %s", marker, exc)
+        return None
+    try:
+        payload = json.loads(raw)
+    except ValueError as exc:
+        _log.warning("kanban corrupt marker invalid at %s: %s", marker, exc)
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _write_corrupt_db_marker(
+    path: Path,
+    *,
+    snapshot: dict[str, dict[str, int | bool | None]],
+    reason: str,
+    backup_path: Optional[Path],
+) -> None:
+    """Persist the latest corrupt-board quarantine state."""
+    marker = _corrupt_db_marker_path(path)
+    payload = {
+        "version": 1,
+        "status": "quarantined",
+        "db_path": str(path.resolve()),
+        "snapshot": snapshot,
+        "reason": reason,
+        "backup_path": str(backup_path) if backup_path is not None else None,
+        "quarantined_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "retention_limit": CORRUPT_DB_BACKUP_RETENTION,
+    }
+    tmp = marker.with_name(f"{marker.name}.tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        tmp.replace(marker)
+    except OSError as exc:
+        _log.warning("failed to persist kanban corrupt marker %s: %s", marker, exc)
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def _clear_corrupt_db_marker(path: Path) -> None:
+    """Best-effort removal of a stale quarantine marker after recovery."""
+    marker = _corrupt_db_marker_path(path)
+    try:
+        marker.unlink()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        _log.debug("failed to remove kanban corrupt marker %s: %s", marker, exc)
+
+
+def _marker_backup_path(payload: dict[str, Any]) -> Optional[Path]:
+    """Return the main backup path recorded in a quarantine marker."""
+    raw = payload.get("backup_path")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    backup = Path(raw).expanduser()
+    try:
+        exists = backup.exists()
+    except OSError:
+        exists = False
+    return backup if exists else None
+
+
+def _existing_corrupt_quarantine(
+    path: Path,
+    snapshot: dict[str, dict[str, int | bool | None]],
+) -> tuple[Optional[Path], Optional[str]] | None:
+    """Return a matching persisted quarantine for the current corrupt files."""
+    payload = _load_corrupt_db_marker(path)
+    if not payload:
+        return None
+    try:
+        db_path = str(path.resolve())
+    except OSError:
+        db_path = str(path)
+    if payload.get("db_path") != db_path:
+        return None
+    if payload.get("snapshot") != snapshot:
+        return None
+    reason = str(payload.get("reason") or "").strip() or None
+    return (_marker_backup_path(payload), reason)
+
+
+def _prune_corrupt_db_backups(path: Path, keep: int = CORRUPT_DB_BACKUP_RETENTION) -> None:
+    """Cap retained corrupt-board backups and delete matching sidecars."""
+    if keep < 1:
+        keep = 1
+    resolved = path.resolve()
+    parent = resolved.parent
+    backups: list[Path] = []
+    for candidate in parent.glob(f"{resolved.name}.corrupt.*.bak"):
+        if candidate.parent != parent:
+            continue
+        backups.append(candidate)
+    backups.sort(
+        key=lambda candidate: (
+            candidate.stat().st_mtime_ns if candidate.exists() else -1,
+            candidate.name,
+        ),
+        reverse=True,
+    )
+    for stale in backups[keep:]:
+        for artifact in (stale, parent / f"{stale.name}-wal", parent / f"{stale.name}-shm"):
+            try:
+                artifact.unlink()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                _log.warning("failed pruning kanban corrupt backup %s: %s", artifact, exc)
+
+
 def _backup_corrupt_db(path: Path) -> Optional[Path]:
     """Copy a corrupt DB (and its WAL/SHM sidecars) to a timestamped backup.
 
@@ -1128,7 +1294,25 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
         reason = f"sqlite refused to open file: {exc}"
     if reason is None:
         return
+    snapshot = _corrupt_db_snapshot(resolved)
+    existing = _existing_corrupt_quarantine(resolved, snapshot)
+    if existing is not None:
+        backup, prior_reason = existing
+        _prune_corrupt_db_backups(resolved)
+        detail = prior_reason or reason
+        if backup is not None:
+            detail = f"{detail} (board already quarantined; no new backup created)"
+        else:
+            detail = f"{detail} (board already quarantined; previous backup is unavailable)"
+        raise KanbanDbCorruptError(resolved, backup, detail)
     backup = _backup_corrupt_db(resolved)
+    _prune_corrupt_db_backups(resolved)
+    _write_corrupt_db_marker(
+        resolved,
+        snapshot=snapshot,
+        reason=reason,
+        backup_path=backup,
+    )
     raise KanbanDbCorruptError(resolved, backup, reason)
 
 
@@ -1193,6 +1377,7 @@ def connect(
                 conn.executescript(SCHEMA_SQL)
                 _migrate_add_optional_columns(conn)
                 _INITIALIZED_PATHS.add(resolved)
+        _clear_corrupt_db_marker(path)
     except Exception:
         conn.close()
         raise
