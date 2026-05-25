@@ -30,7 +30,9 @@ from typing import List, Dict, Any, Set, Optional
 # Edit this once to update all platforms simultaneously.
 _HERMES_CORE_TOOLS = [
     # Web
-    "web_search", "web_extract",
+    "web_search", "web_extract", "search_router",
+    # File/config safety helpers
+    "hermes_config_safe_update", "hermes_env_safe_update", "hermes_runtime_effect_check",
     # Terminal + process management
     "terminal", "process",
     # File manipulation
@@ -49,7 +51,7 @@ _HERMES_CORE_TOOLS = [
     # Planning & memory
     "todo", "memory",
     # Session history search
-    "session_search",
+    "session_search", "session_search_exact",
     # Clarifying questions
     "clarify",
     # Code execution + delegation
@@ -378,7 +380,7 @@ TOOLSETS = {
             # Planning & memory
             "todo", "memory",
             # Session history search
-            "session_search",
+            "session_search", "session_search_exact",
             # Code execution + delegation
             "execute_code", "delegate_task",
             # Cronjob management

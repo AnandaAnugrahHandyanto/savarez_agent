@@ -1590,6 +1590,21 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             db=session_db,
             current_session_id=agent.session_id,
         )
+    elif function_name == "session_search_exact":
+        session_db = agent._get_session_db_for_recall()
+        if not session_db:
+            from hermes_state import format_session_db_unavailable
+            return json.dumps({"success": False, "error": format_session_db_unavailable()})
+        from tools.session_search_exact_tool import session_search_exact as _session_search_exact
+        return _session_search_exact(
+            query=function_args.get("query", ""),
+            role_filter=function_args.get("role_filter") or None,
+            source_filter=function_args.get("source_filter") or None,
+            limit=function_args.get("limit", 10),
+            group_by_session=function_args.get("group_by_session", True),
+            match_mode=function_args.get("match_mode", "auto"),
+            db=session_db,
+        )
     elif function_name == "memory":
         target = function_args.get("target", "memory")
         from tools.memory_tool import memory_tool as _memory_tool
