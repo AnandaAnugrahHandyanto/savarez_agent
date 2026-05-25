@@ -112,6 +112,25 @@ def test_valid_contract_creates_approve_executor_contract_review_outcome_candida
     assert outcome["next_step_recommendation"]["writes_approval_audit"] is False
 
 
+def test_review_outcome_id_is_canonical_for_valid_contract_review_outcome():
+    outcome = create_human_approval_token_real_write_executor_contract_review_outcome(
+        _contract(),
+        reviewer="contract-reviewer",
+    )
+
+    assert outcome["review_outcome_id"] == (
+        "memory-human-approval-token-real-write-executor-contract-review-outcome:"
+        "v0.1:62341452751cc123"
+    )
+    assert (
+        create_human_approval_token_real_write_executor_contract_review_outcome(
+            _contract(),
+            reviewer="contract-reviewer",
+        )["review_outcome_id"]
+        == outcome["review_outcome_id"]
+    )
+
+
 def test_locked_contract_rejects():
     contract = _contract(outcome="request_changes")
 
