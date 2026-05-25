@@ -2028,6 +2028,63 @@ def test_catalog_outputs_local_artifact_base_uses_file_clickable_html_sources():
     assert 'href="/outputs/encoded-traversal"' in html
 
 
+def test_source_outputs_read_toggle_only_for_signed_rows():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    base = dict(
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_10-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
+        status="fresh",
+    )
+    signed = item_cls(
+        **base,
+        job_id="signed-output",
+        name="Signed Source Output",
+        excerpt="Signed rows get explicit read controls.",
+        artifact_url="https://acta.imperatr.com/r/signed-output/detail.html?exp=1&sig=abc",
+        telegram_url="https://t.me/c/3566991387/86",
+    )
+    unsafe = item_cls(
+        **base,
+        job_id="unsafe-output",
+        name="Unsafe Source Output",
+        excerpt="Unsafe rows fail closed.",
+        artifact_url="https://evil.example/r/unsafe-output/detail.html?exp=1&sig=abc",
+        telegram_url="javascript:alert(1)",
+    )
+
+    html = render_outputs_page([signed, unsafe], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
+    rows = re.findall(r"<article class=\"output-row[^>]*>.*?</article>", html, re.S)
+    row_by_title = {}
+    for row in rows:
+        title_match = re.search(r"<b>(.*?)</b>", row, re.S)
+        assert title_match is not None
+        row_by_title[title_match.group(1)] = row
+
+    assert '<div class="stat">Unread <b data-unread-count="1">1</b></div>' in html
+    signed_row = row_by_title["Signed Source Output"]
+    assert 'data-read-key="output:signed-output:2026-05-19T10:00:00+00:00"' in signed_row
+    assert 'data-read-title="Signed Source Output"' in signed_row
+    assert '<span class="read-state">UNREAD</span>' in signed_row
+    assert '<button class="read-toggle" type="button" aria-label="Mark output read: Signed Source Output">Mark read</button><span class="open">SIGNED</span>' in signed_row
+    assert '<a class="ask" href="https://t.me/c/3566991387/86"' in signed_row
+    assert 'data-open-url="https://acta.imperatr.com/r/signed-output/detail.html?exp=1&amp;sig=abc"' in signed_row
+    assert '<a class="output-open-overlay" href="https://acta.imperatr.com/r/signed-output/detail.html?exp=1&amp;sig=abc"' in signed_row
+
+    unsafe_row = row_by_title["Unsafe Source Output"]
+    assert 'aria-disabled="true"' in unsafe_row
+    assert "read-toggle" not in unsafe_row
+    assert "data-read-key" not in unsafe_row
+    assert "data-read-title" not in unsafe_row
+    assert "read-state" not in unsafe_row
+    assert "data-open-url" not in unsafe_row
+    assert "output-open-overlay" not in unsafe_row
+    assert "https://evil.example" not in html
+
+
 def test_run_history_scans_multiple_files_excludes_acta_and_joins_job_metadata(tmp_path: Path):
     for job_id in ("daily", "htmlonly", "acta-situation-room"):
         (tmp_path / "cron" / "output" / job_id).mkdir(parents=True)
@@ -2138,6 +2195,7 @@ def test_run_history_published_rows_open_signed_detail_without_prompt_or_path_le
     assert 'data-open-url="https://acta.imperatr.com/r/run-details/daily-2026-05-20_08-00-00.html?exp=1&amp;sig=abc"' in html
     assert 'href="https://acta.imperatr.com/r/run-details/daily-2026-05-20_08-00-00.html?exp=1&amp;sig=abc"' in html
     assert '<article class="output-row readable unread fresh" data-read-key="run:daily:2026-05-20_08-00-00" data-read-title="Daily Brief"' in html
+    assert '<button class="read-toggle" type="button" aria-label="Mark output read: Daily Brief">Mark read</button><span class="open">SIGNED</span>' in html
     assert re.search(r'<span class="read-state">UNREAD</span><span class="confidence-chip">[^<]+</span>', html)
     assert '<div class="stat">Unread <b data-unread-count="1">1</b></div>' in html
     assert "document.querySelectorAll('.output-row.readable')" in html
@@ -2205,6 +2263,7 @@ def test_run_history_unsafe_or_missing_artifact_url_remains_disabled():
         assert "data-read-key" not in article
         assert "data-read-title" not in article
         assert "read-state" not in article
+        assert "read-toggle" not in article
 
 
 def test_run_history_rejects_symlinked_run_files(tmp_path: Path):

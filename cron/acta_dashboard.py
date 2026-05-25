@@ -1579,10 +1579,16 @@ def render_outputs_page(
         read_key = f"output:{item.job_id}:{latest}"
         read_class = " readable unread" if signed_href else ""
         read_attr = f' data-read-key="{_safe_text(read_key)}"' if signed_href else ""
+        read_title_attr = f' data-read-title="{html.escape(item.name, quote=True)}"' if signed_href else ""
         read_state_chip = '<span class="read-state">UNREAD</span>' if signed_href else ""
+        read_toggle = (
+            f'<button class="read-toggle" type="button" aria-label="Mark output read: {html.escape(item.name, quote=True)}">Mark read</button>'
+            if signed_href
+            else ""
+        )
         rows.append(
             f"""
-<article class="output-row{read_class} {_status_class(item)}"{read_attr}{row_open_attr}>
+<article class="output-row{read_class} {_status_class(item)}"{read_attr}{read_title_attr}{row_open_attr}>
   {open_overlay}
   <div class="output-rank">{index:02d}</div>
   <div class="output-main">
@@ -1590,7 +1596,7 @@ def render_outputs_page(
     <p>{_safe_text(item.excerpt or "No visible response was produced for this run.")}</p>
     <div class="output-meta">{read_state_chip}<span class="confidence-chip">{_safe_text(confidence)}</span><span>{_safe_text(status_label)}</span><span>{_safe_text(category)}</span><span>{_safe_text(age)}</span><span>SCHEDULE {_safe_text(item.schedule or "manual")}</span><span>SOURCE {_safe_text(source)}</span><span>JOB {_safe_text(item.job_id)}</span><span>{_safe_text(item.deliver or "local")}</span><span>{_safe_text(latest)}</span>{followup_meta}</div>
   </div>
-  <div class="output-actions">{open_action}{ask_action}</div>
+  <div class="output-actions">{read_toggle}{open_action}{ask_action}</div>
 </article>"""
         )
     read_state_script = _outputs_read_state_script()
@@ -1737,6 +1743,11 @@ def render_runs_page(runs: Sequence[ActaRunItem], generated_at: datetime | None 
         read_key_attr = f' data-read-key="{html.escape(read_key, quote=True)}"' if signed_href else ""
         read_title_attr = f' data-read-title="{html.escape(item.name, quote=True)}"' if signed_href else ""
         read_state_chip = '<span class="read-state">UNREAD</span>' if signed_href else ""
+        read_toggle = (
+            f'<button class="read-toggle" type="button" aria-label="Mark output read: {html.escape(item.name, quote=True)}">Mark read</button>'
+            if signed_href
+            else ""
+        )
         open_action = '<span class="open">SIGNED</span>' if signed_href else '<span class="muted">HISTORY</span>'
         rows.append(
             f"""
@@ -1748,7 +1759,7 @@ def render_runs_page(runs: Sequence[ActaRunItem], generated_at: datetime | None 
     <p>{_safe_text(item.excerpt)}</p>
     <div class="output-meta">{read_state_chip}<span class="confidence-chip">{_safe_text(confidence)}</span><span>{_safe_text(item.status)}</span><span>{_safe_text(kind)}</span><span>{_safe_text(age)}</span><span>RUN {_safe_text(run_time)}</span><span>SOURCE {_safe_text(Path(item.source_name).name)}</span><span>JOB {_safe_text(item.job_id)}</span><span>SCHEDULE {_safe_text(item.schedule or 'manual')}</span><span>{_safe_text(item.deliver or 'local')}</span>{followup}</div>
   </div>
-  <div class="output-actions">{open_action}</div>
+  <div class="output-actions">{read_toggle}{open_action}</div>
 </article>"""
         )
     read_state_script = _outputs_read_state_script()
