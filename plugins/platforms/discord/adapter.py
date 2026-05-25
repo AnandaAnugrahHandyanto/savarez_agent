@@ -736,10 +736,10 @@ class DiscordAdapter(BasePlatformAdapter):
                     return
 
                 # Ignore Discord system messages (thread renames, pins, member joins, etc.)
-                # Allow default, reply, and thread-creation message types.
-                # thread_starter_message: first message in a thread created via "Create Thread" button
-                # thread_created: system message when a thread is created (may contain starter content)
-                if message.type not in {discord.MessageType.default, discord.MessageType.reply, discord.MessageType.thread_starter_message, discord.MessageType.thread_created}:
+                # Allow default, reply, and thread_starter_message types.
+                # thread_starter_message (MessageType 21): first message in a manually
+                # created thread — carries the user's actual content.
+                if message.type not in {discord.MessageType.default, discord.MessageType.reply, discord.MessageType.thread_starter_message}:
                     return
 
                 # Bot message filtering (DISCORD_ALLOW_BOTS):
