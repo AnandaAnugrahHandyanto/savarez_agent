@@ -13057,6 +13057,13 @@ Examples:
     logs_parser.set_defaults(func=cmd_logs)
 
     # =========================================================================
+    # agents-os command — local Doni/Hermes operating layer
+    # =========================================================================
+    from hermes_cli.agents_os import register_subparser as register_agents_os_subparser
+
+    register_agents_os_subparser(subparsers)
+
+    # =========================================================================
     # Parse and execute
     # =========================================================================
     # Pre-process argv so unquoted multi-word session names after -c / -r
