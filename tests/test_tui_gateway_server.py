@@ -3015,6 +3015,70 @@ def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
     assert ("session.info", "sid", {"model": "x"}) in emitted
 
 
+def test_mirror_slash_browser_connect_sets_env(monkeypatch):
+    """Mirror of /browser connect via slash.exec must set BROWSER_CDP_URL in
+    the gateway process so the AIAgent sees it."""
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    cleanup_calls: list[str] = []
+
+    def _cleanup_all():
+        cleanup_calls.append(os.environ.get("BROWSER_CDP_URL", ""))
+
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=_cleanup_all,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        _stub_urlopen(monkeypatch, ok=True)
+        session = _session(running=False)
+        session["agent"] = types.SimpleNamespace(model="x")
+        warning = server._mirror_slash_side_effects(
+            "sid", session, "/browser connect http://127.0.0.1:9222"
+        )
+
+    assert warning == ""
+    assert os.environ.get("BROWSER_CDP_URL") == "http://127.0.0.1:9222"
+    assert cleanup_calls == ["", "http://127.0.0.1:9222"]
+
+
+def test_mirror_slash_browser_disconnect_clears_env(monkeypatch):
+    """Mirror of /browser disconnect via slash.exec must clear BROWSER_CDP_URL
+    in the gateway process."""
+    os.environ["BROWSER_CDP_URL"] = "http://127.0.0.1:9222"
+    cleanup_calls: list[str] = []
+
+    def _cleanup_all():
+        cleanup_calls.append(os.environ.get("BROWSER_CDP_URL", ""))
+
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=_cleanup_all,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    try:
+        with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+            session = _session(running=False)
+            session["agent"] = types.SimpleNamespace(model="x")
+            warning = server._mirror_slash_side_effects(
+                "sid", session, "/browser disconnect"
+            )
+
+        assert warning == ""
+        assert os.environ.get("BROWSER_CDP_URL") is None
+        assert cleanup_calls == ["http://127.0.0.1:9222", ""]
+    finally:
+        os.environ.pop("BROWSER_CDP_URL", None)
+
+
+def test_mirror_slash_browser_status_is_noop(monkeypatch):
+    """Mirror of /browser status has no side effect to mirror."""
+    session = _session(running=False)
+    session["agent"] = types.SimpleNamespace(model="x")
+    warning = server._mirror_slash_side_effects(
+        "sid", session, "/browser status"
+    )
+    assert warning == ""
+
+
 # ---------------------------------------------------------------------------
 # session.create / session.close race: fast /new churn must not orphan the
 # slash_worker subprocess or the global approval-notify registration.

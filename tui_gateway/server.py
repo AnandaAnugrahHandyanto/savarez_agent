@@ -5476,6 +5476,54 @@ def _(rid, params: dict) -> dict:
 # ── Methods: slash.exec ──────────────────────────────────────────────
 
 
+def _mirror_browser_side_effects(arg: str) -> str:
+    """Mirror /browser connect/disconnect side effects from the slash-worker
+    subprocess to the gateway process so the AIAgent sees BROWSER_CDP_URL.
+
+    Reuses the same cleanup_all_browsers + env-var pattern as the
+    browser.manage RPC, but skips the HTTP probe — the slash-worker
+    subprocess already validated the URL is reachable.
+    """
+    parts = arg.split(None, 1)
+    subcmd = parts[0].lower() if parts else ""
+
+    if subcmd == "connect":
+        url = parts[1].strip() if len(parts) > 1 else ""
+        try:
+            from hermes_cli.browser_connect import DEFAULT_BROWSER_CDP_URL
+            from tools.browser_tool import cleanup_all_browsers
+            from urllib.parse import urlparse
+
+            if not url:
+                url = DEFAULT_BROWSER_CDP_URL
+            parsed = urlparse(url if "://" in url else f"http://{url}")
+            if _is_default_local_cdp(parsed):
+                url = DEFAULT_BROWSER_CDP_URL
+                parsed = urlparse(url)
+            normalized = _normalize_cdp_url(parsed)
+            cleanup_all_browsers()
+            os.environ["BROWSER_CDP_URL"] = normalized
+            cleanup_all_browsers()
+        except Exception as e:
+            return f"browser connect mirror failed: {e}"
+
+    elif subcmd == "disconnect":
+        try:
+            from tools.browser_tool import cleanup_all_browsers
+
+            cleanup_all_browsers()
+            os.environ.pop("BROWSER_CDP_URL", None)
+            cleanup_all_browsers()
+        except Exception as e:
+            return f"browser disconnect mirror failed: {e}"
+
+    elif subcmd == "status":
+        # No side effect to mirror
+        pass
+
+    return ""
+
+
 def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     """Apply side effects that must also hit the gateway's live agent."""
     parts = command.lstrip("/").split(None, 1)
@@ -5521,6 +5569,8 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             _emit("session.info", sid, _session_info(agent))
         elif name == "reload-mcp" and agent and hasattr(agent, "reload_mcp_tools"):
             agent.reload_mcp_tools()
+        elif name == "browser":
+            return _mirror_browser_side_effects(arg)
         elif name == "stop":
             from tools.process_registry import process_registry
 
