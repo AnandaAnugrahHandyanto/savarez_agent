@@ -47,6 +47,37 @@ class TestNvidiaProfile:
         assert p.default_headers == {}
 
 
+class TestCerebrasProfile:
+    def test_registered(self):
+        p = get_provider_profile("cerebras")
+        assert p is not None
+        assert p.name == "cerebras"
+
+    def test_openai_compatible_chat_completions(self):
+        p = get_provider_profile("cerebras")
+        assert p.api_mode == "chat_completions"
+
+    def test_base_url(self):
+        p = get_provider_profile("cerebras")
+        assert p.base_url == "https://api.cerebras.ai/v1"
+
+    def test_api_key_auth_and_env_vars(self):
+        p = get_provider_profile("cerebras")
+        assert p.auth_type == "api_key"
+        assert p.env_vars == ("CEREBRAS_API_KEY", "CEREBRAS_BASE_URL")
+
+    def test_aux_model_in_fallbacks(self):
+        p = get_provider_profile("cerebras")
+        assert p.default_aux_model == "llama-3.3-70b"
+        assert p.default_aux_model in p.fallback_models
+
+    def test_no_special_request_quirks(self):
+        p = get_provider_profile("cerebras")
+        assert p.fixed_temperature is None
+        assert p.default_max_tokens is None
+        assert p.default_headers == {}
+
+
 class TestKimiProfile:
     def test_temperature_omit(self):
         p = get_provider_profile("kimi")
