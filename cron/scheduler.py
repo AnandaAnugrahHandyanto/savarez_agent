@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
-from hermes_time import now as _hermes_now
+from hermes_time import format_utc_z, now as _hermes_now, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +110,23 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
         )
         return None
 
+
+def _cron_memory_enabled(cfg: dict) -> bool:
+    """Return whether cron agents should initialize persistent memory.
+
+    Cron historically ran with ``skip_memory=True`` because the built-in
+    MEMORY.md/USER.md representation can be polluted by scheduled system
+    prompts. Some memory providers, however, intentionally expose explicit
+    tools such as ``hindsight_retain`` for autonomous jobs. Keep the legacy
+    default and require an explicit config opt-in.
+    """
+    try:
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        return bool(cron_cfg.get("memory_enabled", False))
+    except Exception:
+        return False
+
+
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
@@ -118,6 +135,14 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
     "qqbot", "yuanbao",
 })
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
 
 # Platforms that support a configured cron/notification home target, mapped to
 # the environment variable used by gateway setup/runtime config.
@@ -877,7 +902,10 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     """
     scripts_dir = _get_hermes_home() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
-    scripts_dir_resolved = scripts_dir.resolve()
+    allowed_dirs = [scripts_dir.resolve()]
+    persona_scripts_dir = Path("/workspace/projects/persona/scripts")
+    if persona_scripts_dir.exists():
+        allowed_dirs.append(persona_scripts_dir.resolve())
 
     raw = Path(script_path).expanduser()
     if raw.is_absolute():
@@ -886,13 +914,12 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         path = (scripts_dir / raw).resolve()
 
     # Guard against path traversal, absolute path injection, and symlink
-    # escape — scripts MUST reside within HERMES_HOME/scripts/.
-    try:
-        path.relative_to(scripts_dir_resolved)
-    except ValueError:
+    # escape. Scripts must stay under the managed Hermes scripts directory or
+    # the allowlisted persona scripts mount used by deterministic persona jobs.
+    if not any(_is_relative_to(path, allowed_dir) for allowed_dir in allowed_dirs):
         return False, (
             f"Blocked: script path resolves outside the scripts directory "
-            f"({scripts_dir_resolved}): {script_path!r}"
+            f"({', '.join(str(d) for d in allowed_dirs)}): {script_path!r}"
         )
 
     if not path.exists():
@@ -1250,7 +1277,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 except OSError:
                     pass
 
-        now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
+        now_iso = format_utc_z(utc_now())
 
         if not ok:
             # Script crashed / timed out / exited non-zero.  Deliver the
@@ -1333,6 +1360,14 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     if script_path:
         prerun_script = _run_job_script(script_path)
         _ran_ok, _script_output = prerun_script
+        try:
+            origin = job.get("origin")
+            if isinstance(origin, dict) and origin.get("kind") == "identity_continuity":
+                parsed_probe = json.loads(_script_output) if _script_output else {}
+                if isinstance(parsed_probe, dict):
+                    origin["last_probe"] = json.dumps(parsed_probe, ensure_ascii=False)
+        except Exception:
+            pass
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info(
                 "Job '%s' (ID: %s): wakeAgent=false, skipping agent run",
@@ -1341,7 +1376,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             silent_doc = (
                 f"# Cron Job: {job_name}\n\n"
                 f"**Job ID:** {job_id}\n"
-                f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                f"**Run Time:** {format_utc_z(utc_now())}\n\n"
                 "Script gate returned `wakeAgent=false` — agent skipped.\n"
             )
             return True, silent_doc, SILENT_MARKER, None
@@ -1360,7 +1395,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         blocked_doc = (
             f"# Cron Job: {job_name}\n\n"
             f"**Job ID:** {job_id}\n"
-            f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"**Run Time:** {format_utc_z(utc_now())}\n"
             f"**Status:** BLOCKED\n\n"
             "The assembled prompt (user prompt + loaded skill content) tripped "
             "the cron injection scanner and the agent was NOT run.\n\n"
@@ -1635,7 +1670,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             # Without a workdir, keep cwd context discovery disabled.
             skip_context_files=not bool(_job_workdir),
             load_soul_identity=True,
-            skip_memory=True,  # Cron system prompts would corrupt user representations
+            skip_memory=not _cron_memory_enabled(_cfg),
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,
@@ -1754,14 +1789,21 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # Strip leaked placeholder text that upstream may inject on empty completions.
         if final_response.strip() == "(No response generated)":
             final_response = ""
+        logged_response = final_response
+        try:
+            from identity_continuity import process_cron_response
+
+            final_response, _identity_processed = process_cron_response(job, final_response)
+        except Exception as _identity_exc:
+            logger.warning("Job '%s': identity continuity post-processing failed: %s", job_id, _identity_exc)
         # Use a separate variable for log display; keep final_response clean
         # for delivery logic (empty response = no delivery).
-        logged_response = final_response if final_response else "(No response generated)"
+        logged_response = logged_response if logged_response else "(No response generated)"
         
         output = f"""# Cron Job: {job_name}
 
 **Job ID:** {job_id}
-**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
+**Run Time:** {format_utc_z(utc_now())}
 **Schedule:** {job.get('schedule_display', 'N/A')}
 
 ## Prompt
@@ -1783,7 +1825,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         output = f"""# Cron Job: {job_name} (FAILED)
 
 **Job ID:** {job_id}
-**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
+**Run Time:** {format_utc_z(utc_now())}
 **Schedule:** {job.get('schedule_display', 'N/A')}
 
 ## Prompt

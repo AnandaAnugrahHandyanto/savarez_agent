@@ -589,6 +589,36 @@ DEFAULT_CONFIG = {
         "image_input_mode": "auto",
         "disabled_toolsets": [],
     },
+
+    "steering": {
+        # Gateway/messaging busy-message behavior.  When enabled and no
+        # explicit display.busy_input_mode override is configured, user
+        # messages sent while an agent is running are injected into the
+        # current worker after the next safe tool/API boundary instead of
+        # hard-interrupting in-flight tools.
+        "enabled": True,
+        # Only post an intermediate ack if the current tool/API step has
+        # already been running this long.  Fast steps should just finish and
+        # answer without chat noise.
+        "ack_threshold_seconds": 5,
+        "ack_timeout_seconds": 3,
+        "landing_timeout_seconds": 30,
+        "iteration_hard_timeout": 120,
+        "auto_resume": True,
+        "ack_template": "⚡️ Message reçu — je termine (itération {current}/{total}) et je te réponds.",
+        "interruption_template": (
+            "---\n"
+            "⚠️ Interruption — itération {current}/{total} en cours.\n"
+            "Message de {user}: \"{message}\"\n\n"
+            "Tu dois:\n"
+            "1. Répondre au message\n"
+            "2. Décider si tu t'arrêtes ou si tu continues:\n"
+            "   - Si le message est lié à la tâche en cours, intègre-le, réponds, et reprends le travail\n"
+            "   - Si c'est un changement de sujet ou un stop/pause explicite, réponds, puis marque un point d'arrêt structuré en terminant par:\n"
+            "     <hermes_steering_breakpoint>{{\"reason\":\"...\",\"resume_hint\":\"...\"}}</hermes_steering_breakpoint>\n"
+            "---"
+        ),
+    },
     
     "terminal": {
         "backend": "local",
@@ -933,6 +963,22 @@ DEFAULT_CONFIG = {
         "approval": {
             "provider": "auto",
             "model": "",           # fast/cheap model recommended (e.g. gemini-flash, haiku)
+            "base_url": "",
+            "api_key": "",
+            "timeout": 30,
+            "extra_body": {},
+        },
+        "conversation_turn_policy": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 20,
+            "extra_body": {},
+        },
+        "conversation_rebound": {
+            "provider": "auto",
+            "model": "",
             "base_url": "",
             "api_key": "",
             "timeout": 30,
@@ -1576,6 +1622,10 @@ DEFAULT_CONFIG = {
         # worker process (if still running host-locally) is terminated
         # before the reclaim.  0 disables stale detection entirely.
         "dispatch_stale_timeout_seconds": 14400,
+        # Production cutover guard for the Kanban service database. When true,
+        # Kanban refuses to write to the legacy per-board SQLite files and
+        # requires HERMES_KANBAN_POSTGRES_DSN to be configured.
+        "require_service_db": False,
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

@@ -21,11 +21,12 @@ import re
 import sqlite3
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 from agent.memory_manager import sanitize_context
 from hermes_constants import get_hermes_home
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,29 @@ T = TypeVar("T")
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
 SCHEMA_VERSION = 13
+
+
+def _coerce_message_timestamp(value: Any) -> float:
+    if value is None:
+        return time.time()
+    if isinstance(value, datetime):
+        dt = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return time.time()
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return time.time()
+    return time.time()
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -191,6 +215,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     source TEXT NOT NULL,
     user_id TEXT,
+    session_key TEXT,
+    origin_json TEXT,
     model TEXT,
     model_config TEXT,
     system_prompt TEXT,
@@ -585,6 +611,14 @@ class SessionDB:
             )
         except sqlite3.OperationalError as exc:
             logger.debug("idx_messages_platform_msg_id create skipped: %s", exc)
+        try:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_session_key_started "
+                "ON sessions(session_key, source, user_id, started_at DESC) "
+                "WHERE session_key IS NOT NULL"
+            )
+        except sqlite3.OperationalError as exc:
+            logger.debug("idx_sessions_session_key_started create skipped: %s", exc)
 
         # ── Schema version bookkeeping ─────────────────────────────────
         # Bump to current so future data migrations (if any) can gate on
@@ -705,17 +739,26 @@ class SessionDB:
         system_prompt: str = None,
         user_id: str = None,
         parent_session_id: str = None,
+        session_key: str = None,
+        origin_json: Any = None,
     ) -> None:
         """Shared INSERT OR IGNORE for session rows."""
+        if isinstance(origin_json, (dict, list)):
+            origin_payload = json.dumps(origin_json)
+        else:
+            origin_payload = origin_json
+
         def _do(conn):
             conn.execute(
-                """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
+                """INSERT OR IGNORE INTO sessions (id, source, user_id, session_key, origin_json, model, model_config,
                    system_prompt, parent_session_id, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     source,
                     user_id,
+                    session_key,
+                    origin_payload,
                     model,
                     json.dumps(model_config) if model_config else None,
                     system_prompt,
@@ -951,6 +994,41 @@ class SessionDB:
                 "SELECT * FROM sessions WHERE id = ?", (session_id,)
             )
             row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def get_previous_session_for_bridge(
+        self,
+        *,
+        session_key: str,
+        source: str,
+        user_id: str,
+        current_session_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the newest ended same-identity session before current."""
+        if not session_key or not source or not user_id or not current_session_id:
+            return None
+        with self._lock:
+            current = self._conn.execute(
+                "SELECT started_at FROM sessions WHERE id = ?",
+                (current_session_id,),
+            ).fetchone()
+            if not current:
+                return None
+            current_started = current["started_at"] if isinstance(current, sqlite3.Row) else current[0]
+            row = self._conn.execute(
+                """
+                SELECT * FROM sessions
+                WHERE session_key = ?
+                  AND source = ?
+                  AND user_id = ?
+                  AND id != ?
+                  AND ended_at IS NOT NULL
+                  AND started_at <= ?
+                ORDER BY started_at DESC
+                LIMIT 1
+                """,
+                (session_key, source, user_id, current_session_id, current_started),
+            ).fetchone()
         return dict(row) if row else None
 
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
@@ -1462,6 +1540,7 @@ class SessionDB:
         codex_message_items: Any = None,
         platform_message_id: str = None,
         observed: bool = False,
+        timestamp: Any = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -1492,6 +1571,7 @@ class SessionDB:
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
         stored_content = self._encode_content(content)
+        message_timestamp = _coerce_message_timestamp(timestamp)
 
         # Pre-compute tool call count
         num_tool_calls = 0
@@ -1512,7 +1592,7 @@ class SessionDB:
                     tool_call_id,
                     tool_calls_json,
                     tool_name,
-                    time.time(),
+                    message_timestamp,
                     token_count,
                     finish_reason,
                     reasoning,
@@ -1929,7 +2009,8 @@ class SessionDB:
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
-                "codex_reasoning_items, codex_message_items, platform_message_id, observed "
+                "codex_reasoning_items, codex_message_items, platform_message_id, observed, "
+                "timestamp "
                 f"FROM messages WHERE session_id IN ({placeholders}) ORDER BY id",
                 tuple(session_ids),
             ).fetchall()
@@ -1959,6 +2040,8 @@ class SessionDB:
                 msg["message_id"] = row["platform_message_id"]
             if row["observed"]:
                 msg["observed"] = True
+            if row["timestamp"] is not None:
+                msg["timestamp"] = row["timestamp"]
             # Restore reasoning fields on assistant messages so providers
             # that replay reasoning (OpenRouter, OpenAI, Nous) receive
             # coherent multi-turn reasoning context.
@@ -3276,4 +3359,3 @@ class SessionDB:
                 (error[:500], session_id),
             )
         self._execute_write(_do)
-

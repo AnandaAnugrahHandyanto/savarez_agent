@@ -301,6 +301,7 @@ def get_tool_definitions(
             registry._generation,
             cfg_fp,
             bool(os.environ.get("HERMES_KANBAN_TASK")),
+            _data_isolation_cache_key(),
         )
         cached = _tool_defs_cache.get(cache_key)
         if cached is not None:
@@ -459,6 +460,8 @@ def _compute_tool_definitions(
                     }
                     break
 
+    filtered_tools = _filter_data_isolation_tool_definitions(filtered_tools)
+
     if not quiet_mode:
         if filtered_tools:
             tool_names = [t["function"]["name"] for t in filtered_tools]
@@ -482,6 +485,88 @@ def _compute_tool_definitions(
         logger.warning("Schema sanitization skipped: %s", e)
 
     return filtered_tools
+
+
+def _data_isolation_cache_key() -> tuple | None:
+    try:
+        from gateway.session_context import get_session_env, has_explicit_session_context
+
+        if not has_explicit_session_context("HERMES_SESSION_KEY") or not get_session_env("HERMES_SESSION_KEY", ""):
+            return None
+        from gateway.data_isolation import cache_context, is_enabled
+
+        if not is_enabled():
+            return None
+        return cache_context(
+            get_session_env("HERMES_IDENTITY_KEY", ""),
+            get_session_env("HERMES_DATA_ISOLATION_LEVEL", ""),
+        )
+    except Exception:
+        logger.debug("Could not compute data isolation cache key", exc_info=True)
+        return None
+
+
+def _filter_data_isolation_tool_definitions(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    try:
+        from gateway.session_context import get_session_env, has_explicit_session_context
+
+        if not has_explicit_session_context("HERMES_SESSION_KEY") or not get_session_env("HERMES_SESSION_KEY", ""):
+            return tools
+        from gateway.data_isolation import can_advertise_tool, is_enabled
+
+        if not is_enabled():
+            return tools
+        identity_key = get_session_env("HERMES_IDENTITY_KEY", "")
+        level = get_session_env("HERMES_DATA_ISOLATION_LEVEL", "")
+        return [
+            tool
+            for tool in tools
+            if can_advertise_tool(
+                tool.get("function", {}).get("name", ""),
+                identity_key=identity_key,
+                level=level,
+            )
+        ]
+    except Exception:
+        logger.exception("Data isolation schema filter failed; denying tool schemas")
+        return []
+
+
+def _data_isolation_guard(
+    function_name: str,
+    function_args: Dict[str, Any],
+    task_id: Optional[str],
+) -> str | None:
+    try:
+        from gateway.session_context import get_session_env, has_explicit_session_context
+
+        if not has_explicit_session_context("HERMES_SESSION_KEY") or not get_session_env("HERMES_SESSION_KEY", ""):
+            return None
+        from gateway.data_isolation import (
+            check_tool_access,
+            denial_message,
+            is_enabled,
+            record_denial,
+        )
+
+        if not is_enabled():
+            return None
+        identity_key = get_session_env("HERMES_IDENTITY_KEY", "")
+        level = get_session_env("HERMES_DATA_ISOLATION_LEVEL", "")
+        decision = check_tool_access(
+            function_name,
+            function_args,
+            task_id=task_id,
+            identity_key=identity_key,
+            level=level,
+        )
+        if decision.allowed:
+            return None
+        record_denial(identity_key, level, function_name, decision.reason, decision.path)
+        return json.dumps({"error": denial_message()}, ensure_ascii=False)
+    except Exception as exc:
+        logger.exception("Data isolation guard failed")
+        return json.dumps({"error": f"Access denied: isolation guard failed ({type(exc).__name__})"}, ensure_ascii=False)
 
 
 # =============================================================================
@@ -766,6 +851,9 @@ def handle_function_call(
     """
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
+    isolation_block = _data_isolation_guard(function_name, function_args, task_id)
+    if isolation_block is not None:
+        return isolation_block
 
     try:
         if function_name in _AGENT_LOOP_TOOLS:

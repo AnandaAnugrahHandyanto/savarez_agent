@@ -21,7 +21,7 @@ from typing import Optional, Dict, List, Any, Union
 
 logger = logging.getLogger(__name__)
 
-from hermes_time import now as _hermes_now
+from hermes_time import format_utc_z, now as _hermes_now, utc_now
 from utils import atomic_replace
 
 try:
@@ -268,7 +268,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
                 dt = dt.astimezone()  # Interpret as local timezone
             return {
                 "kind": "once",
-                "run_at": dt.isoformat(),
+                "run_at": format_utc_z(dt),
                 "display": f"once at {dt.strftime('%Y-%m-%d %H:%M')}"
             }
         except ValueError as e:
@@ -280,7 +280,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         run_at = _hermes_now() + timedelta(minutes=minutes)
         return {
             "kind": "once",
-            "run_at": run_at.isoformat(),
+            "run_at": format_utc_z(run_at),
             "display": f"once in {original}"
         }
     except ValueError:
@@ -393,7 +393,7 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         else:
             # First run is now + interval
             next_run = now + timedelta(minutes=minutes)
-        return next_run.isoformat()
+        return format_utc_z(next_run)
 
     elif schedule["kind"] == "cron":
         if not HAS_CRONITER:
@@ -414,7 +414,7 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
             base_time = _ensure_aware(datetime.fromisoformat(last_run_at))
         cron = croniter(schedule["expr"], base_time)
         next_run = cron.get_next(datetime)
-        return next_run.isoformat()
+        return format_utc_z(next_run)
 
     return None
 
@@ -458,7 +458,7 @@ def save_jobs(jobs: List[Dict[str, Any]]):
     fd, tmp_path = tempfile.mkstemp(dir=str(JOBS_FILE.parent), suffix='.tmp', prefix='.jobs_')
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            json.dump({"jobs": jobs, "updated_at": _hermes_now().isoformat()}, f, indent=2)
+            json.dump({"jobs": jobs, "updated_at": format_utc_z(utc_now())}, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
         atomic_replace(tmp_path, JOBS_FILE)
@@ -614,7 +614,7 @@ def create_job(
         deliver = "origin" if origin else "local"
 
     job_id = uuid.uuid4().hex[:12]
-    now = _hermes_now().isoformat()
+    now = format_utc_z(utc_now())
 
     normalized_skills = _normalize_skill_list(skill, skills)
     normalized_model = str(model).strip() if isinstance(model, str) else None
@@ -824,7 +824,7 @@ def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, A
         {
             "enabled": False,
             "state": "paused",
-            "paused_at": _hermes_now().isoformat(),
+            "paused_at": format_utc_z(utc_now()),
             "paused_reason": reason,
         },
     )
@@ -861,7 +861,7 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
             "state": "scheduled",
             "paused_at": None,
             "paused_reason": None,
-            "next_run_at": _hermes_now().isoformat(),
+            "next_run_at": format_utc_z(utc_now()),
         },
     )
 
@@ -903,7 +903,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
         jobs = load_jobs()
         for i, job in enumerate(jobs):
             if job["id"] == job_id:
-                now = _hermes_now().isoformat()
+                now = format_utc_z(utc_now())
                 job["last_run_at"] = now
                 job["last_status"] = "ok" if success else "error"
                 job["last_error"] = error if not success else None
@@ -980,7 +980,7 @@ def advance_next_run(job_id: str) -> bool:
                 kind = job.get("schedule", {}).get("kind")
                 if kind not in {"cron", "interval"}:
                     return False
-                now = _hermes_now().isoformat()
+                now = format_utc_z(utc_now())
                 new_next = compute_next_run(job["schedule"], now)
                 if new_next and new_next != job.get("next_run_at"):
                     job["next_run_at"] = new_next

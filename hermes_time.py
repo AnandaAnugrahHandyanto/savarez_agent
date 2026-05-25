@@ -15,7 +15,8 @@ crashes due to a bad timezone string.
 
 import logging
 import os
-from datetime import datetime
+import re
+from datetime import datetime, timezone
 from hermes_constants import get_config_path
 from typing import Optional
 
@@ -32,6 +33,8 @@ except ImportError:
 _cached_tz: Optional[ZoneInfo] = None
 _cached_tz_name: Optional[str] = None
 _cache_resolved: bool = False
+_UTC_Z_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+PARIS_TZ = ZoneInfo("Europe/Paris")
 
 
 def _resolve_timezone_name() -> str:
@@ -101,4 +104,55 @@ def now() -> datetime:
     # No timezone configured — use server-local (still tz-aware)
     return datetime.now().astimezone()
 
+
+def utc_now() -> datetime:
+    """Return the current UTC time as a timezone-aware datetime."""
+    return datetime.now(timezone.utc)
+
+
+def format_utc_z(dt: datetime) -> str:
+    """Format a datetime as canonical UTC ``YYYY-MM-DDTHH:MM:SSZ``."""
+    if dt.tzinfo is None:
+        raise ValueError("format_utc_z() requires a timezone-aware datetime")
+    utc_dt = dt.astimezone(timezone.utc).replace(microsecond=0)
+    return utc_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_utc_z(value: str) -> datetime:
+    """Strictly parse canonical UTC ``YYYY-MM-DDTHH:MM:SSZ`` strings."""
+    if not isinstance(value, str) or not _UTC_Z_RE.fullmatch(value):
+        raise ValueError(f"Expected UTC-Z timestamp YYYY-MM-DDTHH:MM:SSZ, got {value!r}")
+    return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+
+def utc_to_paris(value: datetime | str, *, format: str = "short") -> str:
+    """Render a UTC datetime/string in Paris civil time for display only."""
+    dt = parse_utc_z(value) if isinstance(value, str) else value
+    if dt.tzinfo is None:
+        raise ValueError("utc_to_paris() requires a timezone-aware datetime")
+    paris_dt = dt.astimezone(PARIS_TZ)
+    if format == "iso":
+        return paris_dt.isoformat(timespec="seconds")
+    if format == "long":
+        return paris_dt.strftime("%Y-%m-%d %H:%M:%S %Z")
+    return paris_dt.strftime("%Y-%m-%d %H:%M")
+
+
+def paris_now() -> datetime:
+    """Return current Paris civil time."""
+    return utc_now().astimezone(PARIS_TZ)
+
+
+def paris_hour_for_sinusoid(dt_utc: datetime | str) -> float:
+    """Return fractional Paris civil hour for deterministic day/night curves."""
+    dt = parse_utc_z(dt_utc) if isinstance(dt_utc, str) else dt_utc
+    if dt.tzinfo is None:
+        raise ValueError("paris_hour_for_sinusoid() requires a timezone-aware datetime")
+    paris_dt = dt.astimezone(PARIS_TZ)
+    return (
+        paris_dt.hour
+        + paris_dt.minute / 60
+        + paris_dt.second / 3600
+        + paris_dt.microsecond / 3_600_000_000
+    )
 

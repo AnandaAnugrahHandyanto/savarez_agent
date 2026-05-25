@@ -130,6 +130,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
 
     CommandDef("personality", "Set a predefined personality", "Configuration",
                args_hint="[name]"),
+    CommandDef("identity", "Show or explicitly evolve Judy/Hermes identity continuity", "Configuration",
+               args_hint="[status|evolve <yaml>]", subcommands=("status", "evolve")),
     CommandDef("statusbar", "Toggle the context/model status bar", "Configuration",
                cli_only=True, aliases=("sb",)),
     CommandDef("verbose", "Cycle tool progress display: off -> new -> all -> verbose",

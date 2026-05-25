@@ -258,6 +258,26 @@ def test_get_platform_tools_preserves_explicit_empty_selection():
     assert enabled.isdisjoint(configurable)
 
 
+def test_get_platform_tools_keeps_kanban_after_tool_discovery():
+    """Runtime-registered kanban tools must stay in platform composites."""
+    import model_tools  # noqa: F401 - triggers built-in tool registration
+
+    config = {
+        "platform_toolsets": {
+            "telegram": [
+                "browser", "clarify", "code_execution", "computer_use",
+                "cronjob", "delegation", "file", "image_gen", "memory",
+                "messaging", "moa", "session_search", "skills", "terminal",
+                "todo", "tts", "vision", "web",
+            ]
+        }
+    }
+
+    enabled = _get_platform_tools(config, "telegram", include_default_mcp_servers=False)
+
+    assert "kanban" in enabled
+
+
 def test_apply_toolset_change_from_default_does_not_enable_default_off_toolsets():
     """Disabling one default toolset on a fresh config must not persist
     default-off toolsets as explicitly enabled.

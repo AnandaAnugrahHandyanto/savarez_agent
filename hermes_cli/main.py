@@ -39,6 +39,8 @@ Usage:
     hermes uninstall           Uninstall Hermes Agent
     hermes acp                 Run as an ACP server for editor integration
     hermes sessions browse     Interactive session picker with search
+    hermes contacts list       List data-isolation contacts
+    hermes contacts set-level <identity_key> <level>
 
     hermes claw migrate --dry-run  # Preview migration without changes
 """
@@ -4693,7 +4695,7 @@ def _model_flow_copilot(config, current_model=""):
         deactivate_provider,
         resolve_api_key_provider_credentials,
     )
-    from hermes_cli.config import save_env_value, load_config, save_config
+    from hermes_cli.config import load_config, save_config
     from hermes_cli.models import (
         _PROVIDER_MODELS,
         fetch_api_models,
@@ -4734,12 +4736,15 @@ def _model_flow_copilot(config, current_model=""):
 
         if choice == "1":
             try:
-                from hermes_cli.copilot_auth import copilot_device_code_login
+                from hermes_cli.copilot_auth import (
+                    copilot_device_code_login,
+                    save_hermes_copilot_token,
+                )
 
                 token = copilot_device_code_login()
                 if token:
-                    save_env_value("COPILOT_GITHUB_TOKEN", token)
-                    print("  Copilot token saved.")
+                    save_hermes_copilot_token(token, source="device-code")
+                    print("  Copilot token saved in Hermes auth store.")
                     print()
                 else:
                     print("  Login cancelled or failed.")
@@ -4768,8 +4773,10 @@ def _model_flow_copilot(config, current_model=""):
                     return
             except ImportError:
                 pass
-            save_env_value("COPILOT_GITHUB_TOKEN", new_key)
-            print("  Token saved.")
+            from hermes_cli.copilot_auth import save_hermes_copilot_token
+
+            save_hermes_copilot_token(new_key, source="manual")
+            print("  Token saved in Hermes auth store.")
             print()
         else:
             print("  Cancelled.")
@@ -12344,6 +12351,45 @@ Examples:
         pairing_command(args)
 
     pairing_parser.set_defaults(func=cmd_pairing)
+
+    # =========================================================================
+    # contacts command
+    # =========================================================================
+    contacts_parser = subparsers.add_parser(
+        "contacts",
+        help="Manage data-isolation contacts and grants",
+        description="List interlocutors, set isolation levels, and grant scoped tool access",
+    )
+    contacts_sub = contacts_parser.add_subparsers(dest="contacts_action")
+
+    contacts_list = contacts_sub.add_parser("list", help="List known contacts")
+    contacts_list.add_argument(
+        "--configured-only",
+        action="store_true",
+        help="Only show contacts explicitly present in data_isolation.json",
+    )
+
+    contacts_set = contacts_sub.add_parser("set-level", help="Set a contact isolation level")
+    contacts_set.add_argument("identity_key", help="Canonical identity key, e.g. telegram:user:123")
+    contacts_set.add_argument("level", choices=["admin", "trusted", "guest"], help="Isolation level")
+    contacts_set.add_argument("--display-name", default="", help="Optional display name")
+
+    contacts_grant = contacts_sub.add_parser("grant", help="Add a scoped temporary project grant")
+    contacts_grant.add_argument("identity_key", help="Canonical identity key")
+    contacts_grant.add_argument(
+        "--tools",
+        required=True,
+        help="Comma-separated tool names, or * for all tools in this grant",
+    )
+    contacts_grant.add_argument("--path", help="Optional path scope for file grants")
+    contacts_grant.add_argument("--expires-at", help="Optional ISO-8601 UTC expiry")
+
+    def cmd_contacts(args):
+        from hermes_cli.contacts import contacts_command
+
+        contacts_command(args)
+
+    contacts_parser.set_defaults(func=cmd_contacts)
 
     # =========================================================================
     # skills command

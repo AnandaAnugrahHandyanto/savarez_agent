@@ -407,6 +407,51 @@ class StreamingConfig:
         )
 
 
+@dataclass
+class BridgeConfig:
+    """Configuration for prompt-only context recovery after session rotation."""
+
+    enabled: bool = True
+    max_age_minutes: int = 1440
+    max_messages: int = 15
+    include_summary: bool = True
+    freshness_threshold_minutes: int = 30
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "max_age_minutes": self.max_age_minutes,
+            "max_messages": self.max_messages,
+            "include_summary": self.include_summary,
+            "freshness_threshold_minutes": self.freshness_threshold_minutes,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "BridgeConfig":
+        if not isinstance(data, dict):
+            data = {}
+
+        def _positive_int(key: str, default: int) -> int:
+            value = _coerce_int(data.get(key), default)
+            return value if value > 0 else default
+
+        # Spec name is bridge.freshness_threshold, keep the explicit *_minutes
+        # spelling for round-trips while accepting both forms.
+        freshness = data.get("freshness_threshold_minutes")
+        if freshness is None:
+            freshness = data.get("freshness_threshold")
+
+        return cls(
+            enabled=_coerce_bool(data.get("enabled"), True),
+            max_age_minutes=_positive_int("max_age_minutes", 1440),
+            max_messages=_positive_int("max_messages", 15),
+            include_summary=_coerce_bool(data.get("include_summary"), True),
+            freshness_threshold_minutes=(
+                _coerce_int(freshness, 30) if _coerce_int(freshness, 30) > 0 else 30
+            ),
+        )
+
+
 # -----------------------------------------------------------------------------
 # Built-in platform connection checkers
 # -----------------------------------------------------------------------------
@@ -487,6 +532,9 @@ class GatewayConfig:
 
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
+
+    # Prompt-only context recovery across automatic/technical session rotation.
+    bridge: BridgeConfig = field(default_factory=BridgeConfig)
 
     # Session store pruning: drop SessionEntry records older than this many
     # days from the in-memory dict and sessions.json.  Keeps the store from
@@ -587,6 +635,7 @@ class GatewayConfig:
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
+            "bridge": self.bridge.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
         }
     
@@ -655,6 +704,7 @@ class GatewayConfig:
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
+            bridge=BridgeConfig.from_dict(data.get("bridge", {})),
             session_store_max_age_days=session_store_max_age_days,
         )
 
@@ -751,6 +801,12 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(streaming_cfg, dict):
                 gw_data["streaming"] = streaming_cfg
 
+            bridge_cfg = yaml_cfg.get("bridge")
+            if not isinstance(bridge_cfg, dict):
+                bridge_cfg = yaml_cfg.get("gateway", {}).get("bridge")
+            if isinstance(bridge_cfg, dict):
+                gw_data["bridge"] = bridge_cfg
+
             if "reset_triggers" in yaml_cfg:
                 gw_data["reset_triggers"] = yaml_cfg["reset_triggers"]
 
@@ -836,6 +892,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_allowed_chats"] = platform_cfg["group_allowed_chats"]
                 if plat == Platform.TELEGRAM and "allowed_topics" in platform_cfg:
                     bridged["allowed_topics"] = platform_cfg["allowed_topics"]
+                if plat == Platform.TELEGRAM and "slash_commands" in platform_cfg:
+                    bridged["slash_commands"] = platform_cfg["slash_commands"]
                 if "free_response_channels" in platform_cfg:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
                 if "mention_patterns" in platform_cfg:
@@ -953,6 +1011,11 @@ def load_gateway_config() -> GatewayConfig:
                         "disable_topic_auto_rename",
                         telegram_cfg["disable_topic_auto_rename"],
                     )
+                if "slash_commands" in telegram_cfg:
+                    _tg_plat, _tg_extra = _ensure_platform_extra_dict(
+                        platforms_data, Platform.TELEGRAM.value
+                    )
+                    _tg_extra["slash_commands"] = telegram_cfg["slash_commands"]
                 # Prefer telegram.require_mention; fall back to the top-level shorthand.
                 _effective_rm = telegram_cfg.get("require_mention", yaml_cfg.get("require_mention"))
                 if _effective_rm is not None and not os.getenv("TELEGRAM_REQUIRE_MENTION"):

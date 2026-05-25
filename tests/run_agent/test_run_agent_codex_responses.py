@@ -899,7 +899,7 @@ def test_run_conversation_codex_tool_round_trip(monkeypatch):
     responses = [_codex_tool_call_response(), _codex_message_response("done")]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=None):
         for call in assistant_message.tool_calls:
             messages.append(
                 {
@@ -1090,7 +1090,7 @@ def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):
 
     monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=None):
         for call in assistant_message.tool_calls:
             messages.append(
                 {
@@ -1581,6 +1581,82 @@ def test_run_conversation_codex_continues_after_ack_for_directory_listing_prompt
         and "Continue now. Execute the required tool calls" in (msg.get("content") or "")
         for msg in result["messages"]
     )
+    assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
+
+
+def test_run_conversation_codex_continues_after_french_ack(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    responses = [
+        _codex_ack_message_response(
+            "Je vais examiner le dépôt et vérifier les fichiers avant de te répondre."
+        ),
+        _codex_tool_call_response(),
+        _codex_message_response("Résumé du dépôt terminé."),
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+        for call in assistant_message.tool_calls:
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": '{"ok":true}',
+                }
+            )
+
+    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
+
+    result = agent.run_conversation("vérifie le dépôt /tmp/projet et résume ce qui compte")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Résumé du dépôt terminé."
+    assert any(
+        msg.get("role") == "user"
+        and "Continue now. Execute the required tool calls" in (msg.get("content") or "")
+        for msg in result["messages"]
+    )
+    assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
+
+
+def test_run_conversation_copilot_acp_kanban_continues_prose_until_tool(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.provider = "copilot-acp"
+    agent.max_iterations = 10
+    agent.iteration_budget = run_agent.IterationBudget(agent.max_iterations)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
+
+    responses = [
+        _codex_message_response("Je vais regarder la tâche et préparer la correction."),
+        _codex_message_response("J'ai identifié l'approche, je continue."),
+        _codex_message_response("Je vais appliquer le changement maintenant."),
+        _codex_tool_call_response(),
+        _codex_message_response("Tâche Kanban terminée."),
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=None):
+        for call in assistant_message.tool_calls:
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": '{"ok":true}',
+                }
+            )
+
+    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
+
+    result = agent.run_conversation("work kanban task task-123")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Tâche Kanban terminée."
+    continue_messages = [
+        msg for msg in result["messages"]
+        if msg.get("role") == "user"
+        and "kanban_complete or kanban_block" in (msg.get("content") or "")
+    ]
+    assert len(continue_messages) == 3
     assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
 
 

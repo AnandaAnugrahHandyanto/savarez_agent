@@ -109,7 +109,8 @@ TIPS = [
     "Set display.streaming: true to see tokens appear in real time as the model generates.",
     "Set display.show_reasoning: true to watch the model's chain-of-thought reasoning.",
     "Set display.compact: true to reduce whitespace in output for denser information.",
-    "Set display.busy_input_mode: queue to queue messages instead of interrupting the agent, or steer to inject them mid-run via /steer.",
+    "Gateway steering is on by default: busy messages are injected at safe worker boundaries; tune steering.ack_threshold_seconds to avoid noisy quick-step acks.",
+    "Set display.busy_input_mode: queue for CLI queueing, or steer to inject CLI input mid-run via /steer.",
     "Set display.resume_display: minimal to skip the full conversation recap on session resume.",
     "Set compression.threshold: 0.50 to control when auto-compression fires (default: 50% of context).",
     "Set agent.max_turns: 200 to let the agent take more tool-calling steps per turn.",
@@ -481,5 +482,4 @@ def get_random_tip(exclude_recent: int = 0) -> str:
             deduplication across sessions.
     """
     return random.choice(TIPS)
-
 

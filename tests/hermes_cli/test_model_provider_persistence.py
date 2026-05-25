@@ -177,6 +177,50 @@ class TestProviderPersistsAfterModelSave:
         assert model.get("api_mode") == "codex_responses"
         assert config["agent"]["reasoning_effort"] == "high"
 
+    def test_copilot_login_saves_auth_json_not_env(self, config_home):
+        """_model_flow_copilot stores new device-code tokens in auth.json, not .env."""
+        from hermes_cli.main import _model_flow_copilot
+        from hermes_cli.config import load_config
+
+        with patch("builtins.input", return_value="1"), patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            side_effect=[
+                {"provider": "copilot", "api_key": "", "base_url": "", "source": ""},
+                {
+                    "provider": "copilot",
+                    "api_key": "gho_device_code_token",
+                    "base_url": "https://api.githubcopilot.com",
+                    "source": "auth.json:device-code",
+                },
+            ],
+        ), patch(
+            "hermes_cli.copilot_auth.copilot_device_code_login",
+            return_value="gho_device_code_token",
+        ), patch(
+            "hermes_cli.copilot_auth.exchange_copilot_token",
+            side_effect=ValueError("offline"),
+        ), patch(
+            "hermes_cli.models.fetch_github_model_catalog",
+            return_value=[{"id": "gpt-4.1", "capabilities": {"type": "chat", "supports": {}}}],
+        ), patch(
+            "hermes_cli.auth._prompt_model_selection",
+            return_value="gpt-4.1",
+        ), patch(
+            "hermes_cli.auth.deactivate_provider",
+        ):
+            _model_flow_copilot(load_config(), "old-model")
+
+        import json
+
+        env_text = (config_home / ".env").read_text()
+        assert "COPILOT_GITHUB_TOKEN" not in env_text
+
+        auth_payload = json.loads((config_home / "auth.json").read_text())
+        state = auth_payload["providers"]["copilot"]
+        assert state["token"] == "gho_device_code_token"
+        assert state["auth_mode"] == "github-oauth"
+        assert state["source"] == "device-code"
+
     def test_named_custom_provider_preserves_explicit_api_mode(self, config_home):
         """Named custom providers should re-activate with their saved api_mode."""
         import yaml

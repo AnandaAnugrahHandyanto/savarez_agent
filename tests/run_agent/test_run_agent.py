@@ -3600,6 +3600,103 @@ class TestRunConversation:
         assert "truncated due to output length limit" in result["error"]
         mock_handle_function_call.assert_not_called()
 
+    def test_kanban_block_called_when_kanban_worker_returns_plain_text(self, agent, monkeypatch):
+        """Kanban workers must transition lifecycle even if the model stops
+        with a normal text response instead of a tool call."""
+        self._setup_agent(agent)
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_test_task_123")
+
+        prior_history = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "old_call",
+                        "type": "function",
+                        "function": {"name": "kanban_complete", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "name": "kanban_complete",
+                "tool_call_id": "old_call",
+                "content": "ok",
+            },
+        ]
+        resp = _mock_response(
+            content="I finished the work but forgot the lifecycle tool.",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch("run_agent.handle_function_call", return_value="ok") as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(
+                "do the kanban work", conversation_history=prior_history
+            )
+
+        assert result["completed"] is True
+        kanban_block_calls = [
+            c for c in mock_hfc.call_args_list
+            if c[0][0] == "kanban_block"
+        ]
+        assert len(kanban_block_calls) == 1
+        call = kanban_block_calls[0]
+        assert call[0][1]["task_id"] == "t_test_task_123"
+        assert "without calling kanban_complete or kanban_block" in call[0][1]["reason"]
+        assert "I finished the work" in call[0][1]["reason"]
+
+    def test_no_kanban_block_for_plain_text_outside_kanban_mode(self, agent, monkeypatch):
+        self._setup_agent(agent)
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+        resp = _mock_response(content="Normal final answer.", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch("run_agent.handle_function_call", return_value="ok") as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("do normal work")
+
+        assert result["completed"] is True
+        mock_hfc.assert_not_called()
+
+    def test_no_kanban_block_when_lifecycle_tool_result_current_turn(self, agent, monkeypatch):
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("kanban_complete")
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_test_task_123")
+
+        tc = _mock_tool_call(
+            name="kanban_complete",
+            arguments='{"task_id":"t_test_task_123","summary":"done"}',
+            call_id="c1",
+        )
+        tool_resp = _mock_response(
+            content="", finish_reason="tool_calls", tool_calls=[tc],
+        )
+        final_resp = _mock_response(content="Done.", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [tool_resp, final_resp]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="ok") as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("do the kanban work")
+
+        assert result["completed"] is True
+        assert [c[0][0] for c in mock_hfc.call_args_list] == ["kanban_complete"]
+
     def test_kanban_block_called_on_iteration_exhaustion(self, agent, monkeypatch):
         """Regression: kanban worker must call kanban_block when iteration
         budget is exhausted, otherwise the dispatcher sees a protocol

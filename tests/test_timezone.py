@@ -11,6 +11,7 @@ Covers:
 
 import os
 import logging
+import re
 import sys
 import pytest
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,9 @@ from unittest.mock import patch, MagicMock
 from zoneinfo import ZoneInfo
 
 import hermes_time
+
+
+UTC_Z_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 
 def _reset_hermes_time_cache():
@@ -101,6 +105,35 @@ class TestHermesTimeNow:
         _reset_hermes_time_cache()
         r2 = hermes_time.now()
         assert r2.utcoffset() == timedelta(hours=5, minutes=30)
+
+
+class TestCanonicalUtcZ:
+    def test_format_utc_z_uses_canonical_seconds(self):
+        value = hermes_time.format_utc_z(
+            datetime(2026, 5, 21, 20, 1, 2, 123456, tzinfo=timezone.utc)
+        )
+        assert value == "2026-05-21T20:01:02Z"
+        assert UTC_Z_RE.fullmatch(value)
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "19h",
+            "21:01 UTC",
+            "17:01Z",
+            "2026-05-21T22:01:00+02:00",
+            "2026-05-21T20:01:02.123Z",
+        ],
+    )
+    def test_parse_utc_z_rejects_noncanonical_values(self, value):
+        with pytest.raises(ValueError):
+            hermes_time.parse_utc_z(value)
+
+    def test_paris_conversion_uses_zoneinfo_dst_rules(self):
+        assert hermes_time.utc_to_paris("2026-01-15T12:00:00Z", format="long").endswith("CET")
+        assert hermes_time.utc_to_paris("2026-07-15T12:00:00Z", format="long").endswith("CEST")
+        assert hermes_time.paris_hour_for_sinusoid("2026-01-15T12:00:00Z") == 13
+        assert hermes_time.paris_hour_for_sinusoid("2026-07-15T12:00:00Z") == 14
 
 
 class TestGetTimezone:

@@ -205,3 +205,45 @@ def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
 
     assert "env" in captured["kwargs"]
     assert captured["kwargs"]["env"]["HOME"]
+
+
+def test_build_subprocess_env_injects_hermes_copilot_token(monkeypatch, tmp_path):
+    import json
+    from agent.copilot_acp_client import _build_subprocess_env
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {
+            "copilot": {
+                "auth_mode": "github-oauth",
+                "source": "device-code",
+                "token": "gho_from_hermes_auth",
+            }
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+
+    env = _build_subprocess_env()
+
+    assert env["COPILOT_GITHUB_TOKEN"] == "gho_from_hermes_auth"
+
+
+def test_build_subprocess_env_preserves_explicit_copilot_token(monkeypatch, tmp_path):
+    import json
+    from agent.copilot_acp_client import _build_subprocess_env
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {"copilot": {"token": "gho_from_hermes_auth"}},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "gho_explicit_env")
+
+    env = _build_subprocess_env()
+
+    assert env["COPILOT_GITHUB_TOKEN"] == "gho_explicit_env"

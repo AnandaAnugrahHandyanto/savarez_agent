@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -1056,6 +1057,61 @@ class TestRunJobSessionPersistence:
         assert set(kwargs["disabled_toolsets"]) >= {
             "cronjob", "messaging", "clarify", "terminal", "file",
         }
+
+    def test_run_job_skips_memory_by_default(self, tmp_path):
+        job = {
+            "id": "memory-default-job",
+            "name": "test",
+            "prompt": "hello",
+            "enabled_toolsets": ["memory"],
+        }
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["skip_memory"] is True
+
+    def test_run_job_can_enable_memory_from_cron_config(self, tmp_path):
+        (tmp_path / "config.yaml").write_text("cron:\n  memory_enabled: true\n", encoding="utf-8")
+        job = {
+            "id": "memory-enabled-job",
+            "name": "test",
+            "prompt": "hello",
+            "enabled_toolsets": ["memory"],
+        }
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["skip_memory"] is False
+
+    def test_no_agent_run_doc_uses_canonical_utc_z_timestamp(self, tmp_path):
+        job = {
+            "id": "no-agent-timestamp",
+            "name": "timestamp",
+            "script": "ok.py",
+            "no_agent": True,
+        }
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._run_job_script", return_value=(True, '{"wakeAgent": false}')):
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert final_response == SILENT_MARKER
+        assert error is None
+        match = re.search(r"\*\*Run Time:\*\* (.+)", output)
+        assert match
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", match.group(1))
 
     def test_run_job_enabled_toolsets_resolves_from_platform_config_when_not_set(self, tmp_path):
         """When a job has no explicit enabled_toolsets, the scheduler now

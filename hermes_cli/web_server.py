@@ -307,8 +307,16 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     },
     "display.busy_input_mode": {
         "type": "select",
-        "description": "Input behavior while agent is running",
+        "description": "CLI input behavior while agent is running; gateway steering defaults are controlled by steering.enabled",
         "options": ["interrupt", "queue", "steer"],
+    },
+    "steering.enabled": {
+        "type": "boolean",
+        "description": "Gateway: inject busy user messages into the running worker instead of hard-interrupting tools",
+    },
+    "steering.ack_threshold_seconds": {
+        "type": "number",
+        "description": "Gateway: only send a steering ack after the current step has run this many seconds",
     },
     "memory.provider": {
         "type": "select",

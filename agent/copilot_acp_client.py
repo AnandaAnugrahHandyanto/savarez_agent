@@ -71,6 +71,14 @@ def _resolve_args() -> list[str]:
 def _resolve_home_dir() -> str:
     """Return a stable HOME for child ACP processes."""
 
+    configured = os.environ.get("HERMES_COPILOT_HOME", "").strip()
+    if configured:
+        return configured
+
+    workspace_home = Path("/workspace/projects/.copilot-home")
+    if workspace_home.parent.is_dir():
+        return str(workspace_home)
+
     try:
         from hermes_constants import get_subprocess_home
 
@@ -105,7 +113,26 @@ def _resolve_home_dir() -> str:
 
 def _build_subprocess_env() -> dict[str, str]:
     env = os.environ.copy()
-    env["HOME"] = _resolve_home_dir()
+    home = _resolve_home_dir()
+    try:
+        Path(home).mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    env["HOME"] = home
+
+    if not env.get("COPILOT_GITHUB_TOKEN", "").strip():
+        try:
+            from hermes_cli.copilot_auth import (
+                read_hermes_copilot_token,
+                validate_copilot_token,
+            )
+
+            token, _source = read_hermes_copilot_token()
+            valid, _msg = validate_copilot_token(token) if token else (False, "")
+            if valid:
+                env["COPILOT_GITHUB_TOKEN"] = token
+        except Exception:
+            pass
     return env
 
 
