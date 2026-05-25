@@ -476,6 +476,16 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek/deepseek-r1-0528",
         "qwen/qwen3-235b-a22b-fp8",
     ],
+    "bytedance": [
+        "bytedance-seed-code",
+        "dola-seed-2.0-pro",
+        "dola-seed-2.0-lite",
+        "dola-seed-2.0-code",
+        "glm-5.1",
+        "glm-4.7",
+        "gpt-oss-120b",
+        "kimi-k2.5",
+    ],
 }
 
 # Vercel AI Gateway: derive the bare-model-id catalog from the curated
@@ -3557,6 +3567,47 @@ def validate_requested_model(
                     f"Note: `{requested}` was not found in the MiniMax catalog."
                     f"{suggestion_text}"
                     "\n  MiniMax does not expose a /models endpoint, so Hermes cannot verify the model name."
+                    "\n  The model may still work if it exists on the server."
+                ),
+            }
+
+    # ByteDance: the API's /models endpoint returns internal model IDs
+    # (e.g. seed-2-0-lite-260428) that differ from the user-facing names
+    # shown in the config panel (e.g. dola-seed-2.0-lite).  Validate
+    # against our static catalog instead of the live listing.
+    if normalized == "bytedance":
+        try:
+            catalog_models = provider_model_ids(normalized)
+        except Exception:
+            catalog_models = []
+        if catalog_models:
+            if requested_for_lookup in set(catalog_models):
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+            auto = get_close_matches(requested_for_lookup, catalog_models, n=1, cutoff=0.9)
+            if auto:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "corrected_model": auto[0],
+                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                }
+            suggestions = get_close_matches(requested, catalog_models, n=3, cutoff=0.5)
+            suggestion_text = ""
+            if suggestions:
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Note: `{requested}` was not found in the ByteDance catalog."
+                    f"{suggestion_text}"
                     "\n  The model may still work if it exists on the server."
                 ),
             }

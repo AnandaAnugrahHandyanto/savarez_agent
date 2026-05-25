@@ -1,0 +1,5 @@
+name: bytedance-provider
+kind: model-provider
+version: 1.0.0
+description: ByteDance / BytePlus / Volcengine Coding Plan
+author: tuancookiez-hub

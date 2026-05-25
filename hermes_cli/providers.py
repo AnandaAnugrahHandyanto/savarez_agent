@@ -190,6 +190,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="TOKENHUB_BASE_URL",
     ),
+    "bytedance": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="https://ark.ap-southeast.bytepluses.com/api/coding/v3",
+        base_url_env_var="BYTEDANCE_BASE_URL",
+    ),
     "arcee": HermesOverlay(
         transport="openai_chat",
         base_url_override="https://api.arcee.ai/api/v1",
@@ -353,6 +358,13 @@ ALIASES: Dict[str, str] = {
     # arcee
     "arcee-ai": "arcee",
     "arceeai": "arcee",
+
+    # bytedance
+    "byte-dance": "bytedance",
+    "byteplus": "bytedance",
+    "volcengine": "bytedance",
+    "doubao": "bytedance",
+    "volces": "bytedance",
 
     # gmi
     "gmi-cloud": "gmi",
