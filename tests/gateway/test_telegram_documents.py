@@ -575,6 +575,75 @@ class TestSendVoice:
         connected_adapter._bot.send_audio.assert_awaited_once()
         connected_adapter._bot.send_document.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_voice_caption_formatted_with_markdown_v2(self, connected_adapter, tmp_path):
+        """Regression #32029: voice caption must be MarkdownV2-formatted, not raw."""
+        from gateway.platforms import telegram as tg_mod
+
+        audio_file = tmp_path / "reply.ogg"
+        audio_file.write_bytes(b"OggS" + b"\x00" * 32)
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 201
+        connected_adapter._bot.send_voice = AsyncMock(return_value=mock_msg)
+
+        result = await connected_adapter.send_voice(
+            chat_id="12345",
+            audio_path=str(audio_file),
+            caption="Here is **bold** text",
+        )
+
+        assert result.success is True
+        kwargs = connected_adapter._bot.send_voice.await_args.kwargs
+        # Raw markdown must be converted to MarkdownV2 (bold: **x** -> *x*)
+        assert "**" not in kwargs["caption"]
+        assert "*bold*" in kwargs["caption"]
+        assert kwargs["parse_mode"] == tg_mod.ParseMode.MARKDOWN_V2
+
+    @pytest.mark.asyncio
+    async def test_audio_caption_formatted_with_markdown_v2(self, connected_adapter, tmp_path):
+        """The mp3/m4a audio path must format its caption the same way."""
+        from gateway.platforms import telegram as tg_mod
+
+        audio_file = tmp_path / "reply.mp3"
+        audio_file.write_bytes(b"ID3" + b"\x00" * 32)
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 202
+        connected_adapter._bot.send_audio = AsyncMock(return_value=mock_msg)
+
+        result = await connected_adapter.send_voice(
+            chat_id="12345",
+            audio_path=str(audio_file),
+            caption="Here is **bold** text",
+        )
+
+        assert result.success is True
+        kwargs = connected_adapter._bot.send_audio.await_args.kwargs
+        assert "**" not in kwargs["caption"]
+        assert "*bold*" in kwargs["caption"]
+        assert kwargs["parse_mode"] == tg_mod.ParseMode.MARKDOWN_V2
+
+    @pytest.mark.asyncio
+    async def test_voice_without_caption_sets_no_parse_mode(self, connected_adapter, tmp_path):
+        """No caption → caption and parse_mode both None (avoid empty MarkdownV2)."""
+        audio_file = tmp_path / "reply.ogg"
+        audio_file.write_bytes(b"OggS" + b"\x00" * 32)
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 203
+        connected_adapter._bot.send_voice = AsyncMock(return_value=mock_msg)
+
+        result = await connected_adapter.send_voice(
+            chat_id="12345",
+            audio_path=str(audio_file),
+        )
+
+        assert result.success is True
+        kwargs = connected_adapter._bot.send_voice.await_args.kwargs
+        assert kwargs["caption"] is None
+        assert kwargs["parse_mode"] is None
+
 
 # ---------------------------------------------------------------------------
 # TestSendDocument — outbound file attachment delivery

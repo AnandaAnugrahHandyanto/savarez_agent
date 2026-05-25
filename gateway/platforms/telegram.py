@@ -3438,6 +3438,15 @@ class TelegramAdapter(BasePlatformAdapter):
             if not os.path.exists(audio_path):
                 return SendResult(success=False, error=self._missing_media_path_error("Audio", audio_path))
             
+            # Telegram renders captions as plain text unless parse_mode is set,
+            # so convert standard markdown (**bold**, *italic*, ...) to
+            # MarkdownV2 the same way text messages are formatted. Without this
+            # the auto-TTS voice reply caption shows raw syntax characters
+            # (see issue #32029). Truncate before formatting so the 1024-char
+            # cap is applied to the source text, not mid-escape-sequence.
+            formatted_caption = self.format_message(caption[:1024]) if caption else None
+            caption_parse_mode = ParseMode.MARKDOWN_V2 if formatted_caption else None
+
             with open(audio_path, "rb") as audio_file:
                 ext = os.path.splitext(audio_path)[1].lower()
                 # .ogg / .opus files -> send as voice (round playable bubble)
@@ -3456,7 +3465,8 @@ class TelegramAdapter(BasePlatformAdapter):
                         {
                             "chat_id": int(chat_id),
                             "voice": audio_file,
-                            "caption": caption[:1024] if caption else None,
+                            "caption": formatted_caption,
+                            "parse_mode": caption_parse_mode,
                             "reply_to_message_id": reply_to_id,
                             **voice_thread_kwargs,
                             **self._notification_kwargs(metadata),
@@ -3482,7 +3492,8 @@ class TelegramAdapter(BasePlatformAdapter):
                         {
                             "chat_id": int(chat_id),
                             "audio": audio_file,
-                            "caption": caption[:1024] if caption else None,
+                            "caption": formatted_caption,
+                            "parse_mode": caption_parse_mode,
                             "reply_to_message_id": reply_to_id,
                             **audio_thread_kwargs,
                             **self._notification_kwargs(metadata),
