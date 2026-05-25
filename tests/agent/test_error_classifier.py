@@ -531,6 +531,38 @@ class TestClassifyApiError:
         result = classify_api_error(e, provider="anthropic")
         assert result.reason == FailoverReason.rate_limit
 
+    def test_anthropic_oauth_extra_usage_billing_from_400_invalid_request(self):
+        """Claude OAuth third-party-app extra-usage exhaustion is billing,
+        even when Anthropic returns it as a 400 invalid_request_error."""
+        msg = (
+            "Third-party apps now draw from your extra usage, not your plan limits. "
+            "Add more at claude.ai/settings/usage and keep going."
+        )
+        e = MockAPIError(
+            msg,
+            status_code=400,
+            body={"error": {"type": "invalid_request_error", "message": msg}},
+        )
+        result = classify_api_error(e, provider="anthropic", model="claude-opus-4-7")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
+    def test_anthropic_oauth_extra_usage_billing_without_status_code(self):
+        """Same Claude extra-usage text may be wrapped without status_code;
+        classify from message text so it doesn't burn unknown-error retries."""
+        msg = (
+            "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\","
+            "\"message\":\"Third-party apps now draw from your extra usage, "
+            "not your plan limits. Add more at claude.ai/settings/usage and keep going.\"}}"
+        )
+        result = classify_api_error(Exception(msg), provider="anthropic", model="claude-opus-4-7")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
     # ── Provider-specific: Anthropic OAuth 1M-context beta forbidden ──
 
     def test_anthropic_oauth_1m_beta_forbidden(self):

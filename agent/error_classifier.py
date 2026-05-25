@@ -103,6 +103,12 @@ _BILLING_PATTERNS = [
     "exceeded your current quota",
     "account is deactivated",
     "plan does not include",
+    # Anthropic OAuth / Claude subscription extra-usage exhaustion for
+    # third-party apps.  Anthropic can surface this as
+    # invalid_request_error / HTTP 400 instead of 402/429, so classify the
+    # explicit billing copy rather than retrying it as a format/unknown error.
+    "third-party apps now draw from your extra usage",
+    "add more at claude.ai/settings/usage",
 ]
 
 # Patterns that indicate rate limiting (transient, will resolve)
