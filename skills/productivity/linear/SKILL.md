@@ -17,6 +17,8 @@ metadata:
 
 Manage Linear issues, projects, and teams directly via the GraphQL API using `curl`. No MCP server, no OAuth flow, no extra dependencies.
 
+For native Linear Agent/App integrations — delegated issues, mentions, AgentSessions, AgentActivities, signals, and Hermes/GitHub bridge design — see `references/linear-agents.md`. Prefer the official Agent model (`actor=app`, `app:assignable`, `app:mentionable`) over personal API keys for serious agent workflows.
+
 ## Setup
 
 1. Get a personal API key from **Linear Settings > Account > Security & access > Personal API keys** (URL: https://linear.app/settings/account/security). Note: the org-level *Settings > API* page only shows OAuth apps and workspace-member keys, not personal keys.

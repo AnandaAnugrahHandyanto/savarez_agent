@@ -248,6 +248,8 @@ pytest tests/test_module.py::test_regression -v
 pytest tests/ -q
 ```
 
+For interactive/browser/runtime bugs, tests are not enough. Re-run the user's exact reproduction sequence against the real target environment (local preview, deployed preview, device/browser state) and verify the underlying signal, not just the visible UI. Examples: inspect console errors, network/media events, persisted settings/localStorage, audio/video element state, Web Audio analyser levels, process logs, or database state. If the user reports "silent", "stuck loading", or "works only after switching", prove the actual output/state transitions before claiming success.
+
 ### 4. If Fix Doesn't Work — The Rule of Three
 
 - **STOP.**

@@ -341,13 +341,20 @@ source "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/gh-env.s
 
 ### Step 2: Gather PR context
 
-Get the PR metadata, description, and list of changed files to understand scope before diving into code.
+Get the PR metadata, description, changed files, checks, and existing review feedback to understand scope before diving into code. Do not treat green checks as a substitute for reading actual review comments; inline bot/human findings can be present even when check-runs pass.
 
 **With gh:**
 ```bash
 gh pr view 123
 gh pr diff 123 --name-only
 gh pr checks 123
+# Note: `gh pr checks` exits non-zero while checks are pending or failing. Treat exit code 8 as status information, not a shell-command failure; inspect the table/JSON conclusions before deciding whether CI failed.
+
+OWNER_REPO=$(git remote get-url origin | sed -E 's|.*github\.com[:/]||; s|\.git$||')
+gh pr view 123 --json comments,latestReviews \
+  --jq '{comments:[.comments[]|{author:.author.login,createdAt,body}], reviews:[.latestReviews[]|{author:.author.login,state,submittedAt,body}]}'
+gh api "repos/$OWNER_REPO/pulls/123/comments" --paginate \
+  --jq '.[] | {id,path,line,user:.user.login,created_at,body,html_url}'
 ```
 
 **With curl:**
@@ -405,6 +412,8 @@ Go through each category: Correctness, Security, Code Quality, Testing, Performa
 ### Step 7: Post the review to GitHub
 
 Collect your findings and submit them as a formal review with inline comments.
+
+When updating an existing PR branch after addressing review feedback, prefer normal incremental commits followed by a regular `git push`. Do not amend previous commits or force-push unless the user explicitly asks for history cleanup; it can surprise reviewers and trigger unnecessary approval prompts.
 
 **With gh:**
 ```bash

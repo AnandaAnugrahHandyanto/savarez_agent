@@ -156,7 +156,20 @@ delegate_task(
 todo([{"id": "task-1", "content": "Create User model with email field", "status": "completed"}], merge=True)
 ```
 
-### 3. Final Review
+### 3. Issue-Pack Execution Mode
+
+When the input is a distilled issue pack rather than a linear implementation plan:
+
+1. Convert every issue into an explicit todo item before implementation starts.
+2. Group issues into safe parallel batches by file/ownership overlap. Do **not** dispatch parallel implementers that are likely to edit the same files or invariants.
+3. Give each subagent the full issue body, acceptance criteria, repo rules, validation command(s), and a clear "do not commit" or "commit" instruction.
+4. Keep HITL/product/security-decision issues separate from AFK implementation issues. If a decision cannot safely be made without the user, land a decision memo / threat model / ADR with current behavior, options, recommendation, and future acceptance criteria instead of silently changing behavior.
+5. After each batch, inspect the shared working tree, run targeted validation for touched areas, and only then start the next batch.
+6. Finish with one independent integration/security review over the combined diff, then run full repo validation before committing or opening a PR.
+
+This mode works well for architecture-simplification passes where many small bugs/refactors/docs improvements are discovered at once, but it needs stricter batching discipline than a sequential plan because subagents share one working tree.
+
+### 4. Final Review
 
 After ALL tasks are complete, dispatch a final integration reviewer:
 
@@ -174,7 +187,7 @@ delegate_task(
 )
 ```
 
-### 4. Verify and Commit
+### 5. Verify and Commit
 
 ```bash
 # Run full test suite
@@ -207,6 +220,7 @@ git add -A && git commit -m "feat: complete [feature name] implementation"
 - Skip reviews (spec compliance OR code quality)
 - Proceed with unfixed critical/important issues
 - Dispatch multiple implementation subagents for tasks that touch the same files
+- Treat HITL product/security decisions as ordinary implementation tasks; use decision memos/ADRs/threat models when behavior changes need human approval
 - Make subagent read the plan file (provide full text in context instead)
 - Skip scene-setting context (subagent needs to understand where the task fits)
 - Ignore subagent questions (answer before letting them proceed)

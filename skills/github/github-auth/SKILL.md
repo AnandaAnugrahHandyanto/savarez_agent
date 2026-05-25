@@ -156,6 +156,24 @@ git config --global user.email "their-email@example.com"
 
 ---
 
+## Installing `gh` on Debian/Ubuntu
+
+Use the official GitHub CLI APT repository instructions rather than distro packages or ad-hoc tarball installs when root/sudo is available:
+
+```bash
+(type -p wget >/dev/null || (sudo apt update && sudo apt install wget -y)) \
+	&& sudo mkdir -p -m 755 /etc/apt/keyrings \
+	&& out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+	&& cat $out | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+	&& sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+	&& sudo mkdir -p -m 755 /etc/apt/sources.list.d \
+	&& echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+	&& sudo apt update \
+	&& sudo apt install gh -y
+```
+
+If running as a non-sudo agent account, stop and ask the user to run the command or provide sudo; do not fall back to unofficial install paths unless the user explicitly chooses that.
+
 ## Method 2: gh CLI Authentication
 
 If `gh` is installed, it handles both API access and git credentials in one step.

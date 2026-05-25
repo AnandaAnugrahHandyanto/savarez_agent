@@ -84,6 +84,13 @@ gh repo clone owner/repo-name -- --depth 1
 
 ## 2. Creating Repositories
 
+Before the first commit in a new repo, verify Git author identity is configured. Prefer repo-local config if this environment should not impose a global identity:
+
+```bash
+git config user.name || git config user.name "Your Name"
+git config user.email || git config user.email "you@example.com"
+```
+
 **With gh:**
 
 ```bash
@@ -96,8 +103,17 @@ gh repo create my-new-project --private --description "A useful tool" --license 
 # Under an organization
 gh repo create my-org/my-new-project --public --clone
 
+# Create a private empty repo for a local scaffold, then push main
+gh repo create my-org/my-new-project --private
+cd /path/to/local/scaffold
+git init
+git checkout -B main
+git remote add origin https://github.com/my-org/my-new-project.git
+git add .
+git commit -m "chore: initial scaffold"
+git push -u origin main
+
 # From existing local directory
-cd /path/to/existing/project
 gh repo create my-project --source . --public --push
 ```
 

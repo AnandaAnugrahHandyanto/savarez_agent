@@ -149,6 +149,24 @@ The response JSON includes the PR `number` — save it for later commands.
 
 To create as a draft, add `"draft": true` to the JSON body.
 
+### Compatibility: older `gh pr create` lacks `--json`
+
+Some installed `gh` versions support `--json` on `gh pr view` but **not** on `gh pr create`. Do not assume `gh pr create --json number,url` works. Use the stable two-step pattern instead:
+
+```bash
+PR_URL=$(gh pr create \
+  --title "fix: example" \
+  --body "## Summary\n- ...\n\n## Test Plan\n- ..." \
+  --base main \
+  --head "$(git branch --show-current)")
+echo "$PR_URL"
+
+# Then fetch structured metadata if needed.
+gh pr view "$PR_URL" --json number,url,title,state,headRefName,baseRefName
+```
+
+If `gh pr create` fails because a PR already exists, recover by running `gh pr view --web` or `gh pr view <branch> --json number,url` before retrying; avoid creating duplicate PRs.
+
 ## 4. Monitoring CI Status
 
 ### Check CI Status
@@ -162,6 +180,64 @@ gh pr checks
 # Watch until all checks finish (polls every 10s)
 gh pr checks --watch
 ```
+
+If `gh pr checks` reports a failure but the provider UI is external or opaque, inspect the commit check-runs payload before guessing:
+
+```bash
+SHA=$(git rev-parse HEAD)
+gh api repos/$OWNER_REPO/commits/$SHA/check-runs \
+  --jq '.check_runs[] | {name,status,conclusion,details_url,output}'
+```
+
+This often exposes whether the failure is actionable from the repo (logs/annotations), external/provider-only (for example a deployment dashboard URL with no GitHub logs), or administrative (for example a skipped paid reviewer seat). For deployment checks that fail immediately with no repo-visible logs, run the closest local production build/check command and report both: local validation result plus the external check URL/status.
+
+### PR Readiness Requires Review-Comment Inspection
+
+Do **not** declare a PR ready just because checks are green. Before reporting completion, inspect actual human/bot review feedback too:
+
+```bash
+PR_NUMBER=123
+OWNER_REPO=$(git remote get-url origin | sed -E 's|.*github\.com[:/]||; s|\.git$||')
+
+# Top-level comments and formal review bodies.
+gh pr view $PR_NUMBER --json comments,latestReviews,statusCheckRollup \
+  --jq '{checks:[.statusCheckRollup[]|{name,status,conclusion}], comments:[.comments[]|{author:.author.login,createdAt,body}], reviews:[.latestReviews[]|{author:.author.login,state,submittedAt,body}]}'
+
+# Inline review comments, including bot findings that may not affect check status.
+gh api "repos/$OWNER_REPO/pulls/$PR_NUMBER/comments" --paginate \
+  --jq '.[] | {id,path,line,user:.user.login,created_at,updated_at,body,html_url}'
+```
+
+Treat unresolved review comments as part of the completion loop: evaluate whether they are valid, fix valid findings, push, comment with a concise fix summary, re-trigger relevant review bots when appropriate, then re-check both checks and comments. Old inline comments may remain visible after a fix; prefer current-head check-run summaries or fresh bot follow-up for final status, but explicitly account for every substantive comment. When the user asks to close resolved comments, use GraphQL review threads rather than only REST review comments: list `reviewThreads { id isResolved isOutdated path line comments }`, reply on threads that need rationale, and call `resolveReviewThread` for fixed or invalid-but-addressed findings. Verify `unresolved: []` before reporting completion.
+
+### Re-running Automated PR Review After Fixes
+
+When a PR review bot is comment-triggered (for example Codex via `@codex review`) and the user authorizes a rerun, post the trigger comment after pushing fixes, then poll both PR comments and review threads. Do not rely only on `latestReviews`: some bots report follow-up "no major issues" results as regular issue comments while stale `latestReviews` may still show an older commented review.
+
+If review feedback arrives after a PR is already open and pushed, prefer an ordinary follow-up commit and `git push` for the fix. Do not amend/rewrite the PR branch and force-push unless the user explicitly approves that history rewrite. If you already amended locally and approval is unavailable, stop and report the exact state rather than trying to achieve the same outcome with another destructive command.
+
+For multiline PR comments containing backticks, dollar signs, command substitutions, or shell metacharacters, do **not** pass the body inside double quotes on the shell command line. Write the text to a temp markdown file and use `gh pr comment --body-file /tmp/comment.md`; otherwise the shell can execute inline backticked commands before `gh` sees the body.
+
+Useful commands:
+
+```bash
+# Trigger the review bot.
+gh pr comment $PR_NUMBER --body "@codex review"
+
+# Poll regular PR comments for bot follow-up and new findings.
+gh pr view $PR_NUMBER --json comments \
+  --jq '.comments[] | {author:.author.login,createdAt,body}'
+
+# Poll review comments for inline findings.
+gh api repos/$OWNER_REPO/pulls/$PR_NUMBER/comments \
+  --jq '.[] | {id,path,line,body,user:.user.login,created_at,html_url}'
+```
+
+If the rerun surfaces a new finding, fix it, push, comment with the fix summary plus another review trigger, then wait for the bot's clean-result comment before declaring the PR ready.
+
+For AI review checks such as Cubic that attach a GitHub check-run, prefer the latest check-run `output.summary` for the current head SHA over stale inline comments or older review bodies. Some reviewers summarize only the files changed by recent commits (for example, "0 issues found across 6 files"), while old historical review comments remain visible in the PR timeline.
+
+For opaque Cloudflare Workers build checks that fail with only a dashboard URL and no GitHub annotations/log text, inspect the commit check-run payload first, then run the closest local equivalent (usually the affected app's production build, such as `bun run --filter <workspace> build`). Report the local validation result alongside the external failure URL instead of guessing at Cloudflare-side causes.
 
 **With git + curl:**
 
