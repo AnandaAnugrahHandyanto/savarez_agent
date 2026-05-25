@@ -1588,24 +1588,35 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             runtime_kwargs = {
                 "requested": job.get("provider"),
             }
+            # Issue #32239: cron jobs that inherit `provider: custom` from
+            # config.yaml must propagate `model.base_url` + `model.api_key`
+            # to resolve_runtime_provider() the same way interactive CLI
+            # does — otherwise the call falls through every provider branch
+            # and errors with "API key required" even though config.yaml
+            # has a working endpoint. The propagation has two parts:
+            #
+            #   * `explicit_base_url`: the job's own `base_url` wins; if
+            #     the job doesn't pin one, fall back to `model.base_url`.
+            #   * `explicit_api_key`: applies in both branches whenever an
+            #     `explicit_base_url` is in play — a job that pins its own
+            #     endpoint but omits an api_key should still inherit the
+            #     config key for that endpoint. `setdefault` lets a future
+            #     job-level `api_key` win without re-shaping this block.
+            _model_cfg_for_runtime = _cfg.get("model") if isinstance(_cfg, dict) else None
+            _cfg_base_url = ""
+            _cfg_api_key = ""
+            if isinstance(_model_cfg_for_runtime, dict):
+                _cfg_base_url = str(_model_cfg_for_runtime.get("base_url") or "").strip()
+                _cfg_api_key = str(_model_cfg_for_runtime.get("api_key") or "").strip()
+
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
-            else:
-                # Issue #32239: when the cron job doesn't pin a base_url,
-                # mirror cli.py's behaviour and propagate `model.base_url`
-                # + `model.api_key` from config.yaml. Without this a job
-                # that inherits `provider: custom` falls through every
-                # branch of resolve_runtime_provider and errors with
-                # "API key required" even though config.yaml has a
-                # working endpoint.
-                _model_cfg_for_runtime = _cfg.get("model") if isinstance(_cfg, dict) else None
-                if isinstance(_model_cfg_for_runtime, dict):
-                    _cfg_base_url = str(_model_cfg_for_runtime.get("base_url") or "").strip()
-                    if _cfg_base_url:
-                        runtime_kwargs["explicit_base_url"] = _cfg_base_url
-                    _cfg_api_key = str(_model_cfg_for_runtime.get("api_key") or "").strip()
-                    if _cfg_api_key:
-                        runtime_kwargs["explicit_api_key"] = _cfg_api_key
+            elif _cfg_base_url:
+                runtime_kwargs["explicit_base_url"] = _cfg_base_url
+
+            if _cfg_api_key and runtime_kwargs.get("explicit_base_url"):
+                runtime_kwargs.setdefault("explicit_api_key", _cfg_api_key)
+
             runtime = resolve_runtime_provider(**runtime_kwargs)
         except AuthError as auth_exc:
             # Primary provider auth failed — try fallback chain before giving up.
