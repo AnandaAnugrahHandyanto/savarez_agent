@@ -678,7 +678,7 @@ def _age_label(dt: datetime | None, now: datetime) -> str:
     return f"{days}d ago"
 
 
-def _confidence_label(item: CronSituationItem, now: datetime) -> str:
+def _confidence_bucket(enabled: bool, status: str, timestamp: datetime | None, now: datetime) -> str:
     """Return a compact confidence bucket derived from source state.
 
     Acta exposes confidence as an explicit operator signal, but the dashboard
@@ -687,14 +687,18 @@ def _confidence_label(item: CronSituationItem, now: datetime) -> str:
     but older visible sources are MED; silent, missing, or paused sources are
     LOW/GAP.
     """
-    if not item.enabled or item.status in {"silent", "missing"}:
+    if not enabled or status in {"silent", "missing"}:
         return "CONF LOW/GAP"
-    if item.latest_time is None:
+    if timestamp is None:
         return "CONF LOW/GAP"
-    age_seconds = max(0, int((now - item.latest_time).total_seconds()))
-    if item.status == "fresh" and age_seconds <= 24 * 60 * 60:
+    age_seconds = max(0, int((now - timestamp).total_seconds()))
+    if status == "fresh" and age_seconds <= 24 * 60 * 60:
         return "CONF HIGH"
     return "CONF MED"
+
+
+def _confidence_label(item: CronSituationItem, now: datetime) -> str:
+    return _confidence_bucket(item.enabled, item.status, item.latest_time, now)
 
 
 def _status_class(item: CronSituationItem) -> str:
@@ -801,6 +805,8 @@ def _render_jobs_rows(items: Sequence[CronSituationItem], now: datetime) -> list
     rows: list[str] = []
     for index, item in enumerate([item for item in items if item.enabled], start=1):
         status_class = _status_class(item)
+        status_label = item.status
+        confidence = _confidence_label(item, now)
         latest = item.latest_time.isoformat() if item.latest_time else "No run yet"
         age = _age_label(item.latest_time, now)
         schedule = item.schedule or "manual"
@@ -810,7 +816,7 @@ def _render_jobs_rows(items: Sequence[CronSituationItem], now: datetime) -> list
   <div class="job-rank">{index:02d}</div>
   <div class="job-main"><b>{_safe_text(item.name)}</b><span>{_safe_text(item.job_id)} · {_safe_text(item.deliver or "local")}{_telegram_link_html(item)}</span></div>
   <div class="job-schedule"><em>SCHEDULE</em>{_safe_text(schedule)}</div>
-  <div class="job-last"><em>LAST RUN</em><time>{_safe_text(latest)}</time><small>{_safe_text(age)}</small></div>
+  <div class="job-last"><em>LAST RUN</em><time>{_safe_text(latest)}</time><small><span class="confidence-chip">{_safe_text(confidence)}</span><span>{_safe_text(status_label)}</span><span>{_safe_text(age)}</span></small></div>
 </div>"""
         )
     return rows
@@ -1169,7 +1175,9 @@ h1 { margin:6px 0 8px; color:var(--text); font:720 clamp(22px,3.6vw,34px)/1.02 v
 .job-schedule, .job-last { display:grid; gap:3px; }
 .job-schedule em, .job-last em { color:var(--faint); font-style:normal; font-size:9px; letter-spacing:.1em; }
 .job-last time { color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.job-last small { color:var(--acta2); font:10px var(--mono); text-transform:uppercase; }
+.job-last small { color:var(--acta2); font:10px var(--mono); text-transform:uppercase; display:flex; flex-wrap:wrap; gap:4px; align-items:center; line-height:1.25; }
+.job-last small span { border:1px solid var(--line-soft); border-radius:999px; padding:2px 5px; background:rgba(255,255,255,.026); }
+.job-last small .confidence-chip { color:#fff; border-color:rgba(35,167,255,.34); background:rgba(117,108,255,.16); letter-spacing:.08em; }
 .silent .job-rank, .missing .job-rank, .silent .output-rank, .missing .output-rank { color:var(--red); }
 .outputs-panel { margin-top:12px; display:flex; flex-direction:column; gap:7px; }
 .output-row { display:grid; grid-template-columns:34px minmax(0,1fr) auto; gap:10px; align-items:center; padding:9px 12px; position:relative; overflow:hidden; min-height:62px; }
@@ -1516,6 +1524,7 @@ def render_runs_page(runs: Sequence[ActaRunItem], generated_at: datetime | None 
     for index, item in enumerate(runs, start=1):
         run_time = item.run_time.isoformat() if item.run_time else "unknown"
         age = _age_label(item.run_time, now) if item.run_time else "unknown"
+        confidence = _confidence_bucket(item.enabled, item.status, item.run_time, now)
         telegram_url = item.telegram_url if _is_safe_telegram_url(item.telegram_url) else ""
         followup = (
             f'<a class="followup-meta" href="{html.escape(telegram_url, quote=True)}" target="_blank" rel="noopener" aria-label="Ask follow-up in Telegram">FOLLOW-UP</a>'
@@ -1530,7 +1539,7 @@ def render_runs_page(runs: Sequence[ActaRunItem], generated_at: datetime | None 
   <div class="output-main">
     <b>{_safe_text(item.name)}</b>
     <p>{_safe_text(item.excerpt)}</p>
-    <div class="output-meta"><span>{_safe_text(item.status)}</span><span>{_safe_text(kind)}</span><span>{_safe_text(age)}</span><span>RUN {_safe_text(run_time)}</span><span>SOURCE {_safe_text(item.source_name)}</span><span>JOB {_safe_text(item.job_id)}</span><span>SCHEDULE {_safe_text(item.schedule or 'manual')}</span><span>{_safe_text(item.deliver or 'local')}</span>{followup}</div>
+    <div class="output-meta"><span class="confidence-chip">{_safe_text(confidence)}</span><span>{_safe_text(item.status)}</span><span>{_safe_text(kind)}</span><span>{_safe_text(age)}</span><span>RUN {_safe_text(run_time)}</span><span>SOURCE {_safe_text(item.source_name)}</span><span>JOB {_safe_text(item.job_id)}</span><span>SCHEDULE {_safe_text(item.schedule or 'manual')}</span><span>{_safe_text(item.deliver or 'local')}</span>{followup}</div>
   </div>
   <div class="output-actions"><span class="muted">HISTORY</span></div>
 </article>"""

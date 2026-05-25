@@ -1122,6 +1122,7 @@ def test_jobs_subpage_shows_active_relevant_last_runs(tmp_path: Path):
 
     html = render_jobs_page(
         collect_situation_items(tmp_path),
+        generated_at=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
         feed_preferences={"hidden": ["hidden"], "show_system": False},
     )
 
@@ -1133,6 +1134,10 @@ def test_jobs_subpage_shows_active_relevant_last_runs(tmp_path: Path):
     assert "15 9 * * *" in html
     assert "LAST RUN" in html
     assert "2026-05-19T08" in html
+    assert '<span class="confidence-chip">CONF HIGH</span>' in html
+    assert '<span class="confidence-chip">CONF LOW/GAP</span>' in html
+    assert "<span>fresh</span>" in html
+    assert "<span>silent</span>" in html
     assert "Disabled Brief" not in html
     assert "Hidden Brief" not in html
 
@@ -1543,6 +1548,8 @@ def test_run_history_scans_multiple_files_excludes_acta_and_joins_job_metadata(t
     assert "0 8 * * *" in html
     assert "Old daily" in html and "New daily" in html
     assert "HTML Only" in html and "HTML" in html
+    assert '<span class="confidence-chip">CONF HIGH</span>' in html
+    assert '<span>fresh</span>' in html
     assert "acta-situation-room" not in html
     assert str(tmp_path) not in html
     assert 'href="https://t.me/c/3566991387/86"' in html
