@@ -11453,3 +11453,161 @@ The only NetworkPolicy reference found is in `optional-skills/mlops/tensorrt-llm
 *Pass #83 complete — 2026-05-25T12:00:00Z*
 *Commit at scan: 5a51a1f65*
 *Next: Pass #84*
+
+## Pass #84 – Observability, Monitoring & Alerting Completeness Deep Dive – 2026-05-25T12:10:00Z
+
+**Commit scanned:** 5a51a1f65
+
+---
+
+### 1. Metrics Coverage
+
+**Overall finding: MINIMAL / NO STRUCTURED METRICS EXPORT**
+
+- **No Prometheus, Grafana, Datadog, StatsD, OpenTelemetry, or any metrics backend** integrated into the core codebase. A single test file references Grafana but no production integration exists (`tests/hermes_cli/test_update_stale_dashboard.py`).
+- **What exists instead:**
+  - `gateway/status.py` — persists `gateway_state.json` (PID, platform connectivity, active agent count, exit reason, uptime). This is a *status snapshot file*, not a metrics stream.
+  - `gateway/memory_monitor.py` — background thread logs `[MEMORY] rss=NNMB gc=(gen0,gen1,gen2) threads=N uptime=Ns` every 5 minutes. This is grep-friendly log output, not a metrics DB.
+  - `hermes_state.py` — SQLite session DB tracks `message_count`, `tool_call_count`, `api_call_count`, `input_tokens`, `output_tokens`, `estimated_cost_usd` per session. These are *session-scoped billing counters*, not platform throughput metrics.
+  - `gateway/platforms/api_server.py` — `/health/detailed` endpoint returns PID, platform connectivity, active agents, uptime JSON. No throughput/latency/error-rate metrics.
+
+**Gap:** There are no structured metrics for:
+- Message throughput per platform (messages/sec)
+- Error rates per platform (failed deliveries, auth errors, API errors)
+- API latency (time to receive vs. time to respond)
+- Queue depth or backlog size
+- Active session count as a time series
+
+---
+
+### 2. Log Completeness
+
+**Overall finding: COMPREHENSIVE STRUCTURED LOGGING EXISTS**
+
+`hermes_logging.py` (389 lines) is a well-designed logging subsystem:
+
+- **Three rotating log files** under `~/.hermes/logs/`:
+  - `agent.log` (INFO+) — all agent/tool/session activity
+  - `errors.log` (WARNING+) — errors and warnings only
+  - `gateway.log` (INFO+, gateway components only) — created in `mode="gateway"`
+- **Session context injection:** `set_session_context(session_id)` / `clear_session_context()` injects `[session_id]` into every log line via a custom `LogRecord` factory. Thread-safe via `_session_context` thread-local.
+- **Component routing:** `_ComponentFilter` routes gateway-prefixed loggers to `gateway.log` while `agent.log` remains the catch-all.
+- **Secret redaction:** `RedactingFormatter` (from `agent.redact`) redacts secrets before log files are written.
+- **Noisy logger suppression:** Third-party libs (openai, httpx, asyncio, grpc, modal, etc.) are set to WARNING.
+- **Log file rotation:** `_ManagedRotatingFileHandler` with configurable max size + backup count. Managed-mode (NixOS) group-writable chmod on rotation.
+
+**Security event logging:** CLI calls `tirith_security` scanner on startup (opt-in per `security.tirith_enabled`). Security advisories surfaced at startup via `hermes_cli/security_advisories.py`. No structured auth event log entries (login attempts, token changes, session invalidation) beyond these.
+
+**Config change logging:** `gateway/config.py` logs WARNING when configs fail to load or platform adapters are missing credentials. No dedicated config audit log and no watchdog on `~/.hermes/config.yaml` changes.
+
+**What is NOT logged:**
+- No structured auth events (login attempts, token changes, session invalidation)
+- No slow-operation markers (no latency threshold warnings)
+- No config file mutation events
+
+---
+
+### 3. Tracing (Distributed Tracing)
+
+**Overall finding: OPT-IN LANGFUSE PLUGIN ONLY — NO BUILT-IN TRACING**
+
+`plugins/observability/langfuse/` (1004 lines) is the sole tracing implementation:
+
+- **Traces LLM calls, tool usage, and conversation turns** to Langfuse (SaaS or self-hosted).
+- **Disabled by default** — requires `pip install langfuse`, `hermes plugins enable observability/langfuse`, and env vars:
+  - `HERMES_LANGFUSE_PUBLIC_KEY=pk-lf-...`
+  - `HERMES_LANGFUSE_SECRET_KEY=sk-lf-...`
+  - `HERMES_LANGFUSE_BASE_URL` (defaults to cloud.langfuse.com)
+- **Credential validation:** Rejects placeholder keys with a one-time WARNING to prevent silent trace dropping (#23823 fix).
+- **Sampling:** `HERMES_LANGFUSE_SAMPLE_RATE` (0.0–1.0, default 1.0)
+- **Trace context:** Uses `task_id` as `trace_id`, falling back to `session:{session_id}`, then `thread:{thread_ident}`. No cross-service context propagation.
+- **Trace content:** Serializes messages, tool calls, tool results, LLM usage/cost, with special handling for `read_file` payloads (head+tail preview, line counts). Max chars per field configurable (default 12000).
+- **No other tracing backends** — no OpenTelemetry, no Jaeger, no Zipkin.
+
+**Correlation IDs:** Langfuse plugin uses `task_id`/`session_id` for within-trace correlation. No cross-platform correlation ID propagation (e.g., gateway → agent → tools).
+
+**Spans:** Langfuse creates spans for generations and tools. No manual span creation for custom operations.
+
+---
+
+### 4. Alert Configuration
+
+**Overall finding: NO STRUCTURED ALERTING SYSTEM**
+
+- **No Prometheus alerts, no PagerDuty, no SNS, no webhook alerts** configured in the codebase.
+- `gateway/platforms/webhook.py` delivers to platform webhooks (DingTalk, etc.), not system alerts.
+- `gateway/session.py` tracks `restart_failure_counts` (stuck-loop counter) and `cost_status` — internal session state fields, not alerts.
+- `gateway/status.py` — `write_runtime_status()` persists `gateway_state.json` with `exit_reason`, `restart_requested`. Consumed by CLI's `send_message --check-fn` for liveness detection — process-liveness indicator, not an alert.
+- `gateway/run.py` has `monitor_for_interrupt()` for graceful interrupt detection — not an external alert.
+- Cron scheduler delivers job results but does not fire external alerts on failures beyond logging.
+
+**What could trigger alerts (based on code review):**
+- Gateway crash → `exit_reason` set, `restart_requested` flag
+- Platform connection failures → logged as WARNING
+- Session cost exhaustion → `cost_status` = "exhausted"
+- Memory exhaustion → `[MEMORY]` log lines every 5 minutes
+
+None of these feed into a notification system. Operator must monitor logs manually.
+
+---
+
+### 5. Dashboard Completeness
+
+**Overall finding: MINIMAL HEALTH DASHBOARD — NO OPERATIONAL METRICS DASHBOARD**
+
+- **`gateway/platforms/api_server.py` — `/health` and `/health/detailed` endpoints:**
+  - `/health` — returns `{"status": "ok"}` (basic liveness)
+  - `/health/detailed` — returns: `status`, `platform`, `gateway_state`, `platforms` (dict), `active_agents`, `exit_reason`, `updated_at`, `pid`
+
+- **`gateway/status.py` — `gateway_state.json`:**
+  - PID, lock file, gateway kind, state, exit reason, restart requested flag, active agents, platform states, timestamps. Written atomically. Designed for cross-process / cross-container discovery.
+
+- **Memory monitoring** (`gateway/memory_monitor.py`):
+  - Every 5 minutes, a `[MEMORY]` line is written to `gateway.log`. Can be grepped for RSS time series. No GUI dashboard.
+
+- **`tui_gateway/entry.py` — PTY-side event publisher:**
+  - Opens back-WS to dashboard at startup to mirror dispatcher events to sidebar. Live event stream for UI, not metrics.
+
+- **`plugins/hermes-achievements/dashboard/plugin_api.py`:**
+  - Provides achievement data to dashboard (plugin events, config events). Gamification, not operational metrics.
+
+- **`plugins/example-dashboard/`:**
+  - Empty directory (no files).
+
+**What's missing:**
+- No Grafana dashboard for system health
+- No message throughput visualization per platform
+- No error rate graph
+- No latency histogram
+- No active session count time series
+- No token usage / cost dashboard
+- No alerting rules in any dashboard system
+
+---
+
+### Summary of Observability Gaps
+
+| Area | Status | Notes |
+|---|---|---|
+| Metrics (throughput) | ❌ None | No structured metrics export. Status file is snapshot, not stream. |
+| Metrics (error rates) | ❌ None | No per-platform error counters. Failures logged but not metered. |
+| Metrics (latency) | ❌ None | No API latency tracking anywhere in codebase. |
+| Log completeness | ✅ Good | Rotating logs, session context, secret redaction, component routing. Security event logging is minimal. |
+| Tracing | ⚠️ Opt-in | Langfuse plugin only. Disabled by default. No OpenTelemetry. |
+| Correlation IDs | ⚠️ Partial | Langfuse uses task_id/session_id. No cross-platform propagation. |
+| Alert configuration | ❌ None | No alerting system. Platform failures logged, not paged. |
+| Dashboard (health) | ⚠️ Basic | `/health/detailed` JSON endpoint. No Grafana/visual dashboard. |
+| Dashboard (platform-specific) | ❌ None | No per-platform throughput/error dashboards. |
+| Memory monitoring | ✅ Good | Periodic RSS+GC+thread count logging to log file. |
+
+**Key risks:**
+1. No way to detect silent message delivery failures without reading gateway.log manually.
+2. No latency visibility — slow platform API calls are invisible until they cause timeouts.
+3. No alerting on gateway crash — operator must notice the process is down.
+4. Langfuse tracing is opt-in, so production deployments likely have zero distributed tracing.
+
+---
+
+*Pass #84 complete — 2026-05-25T12:10:00Z*
+*Commit at scan: 5a51a1f65*
+*Next: Pass #85*
