@@ -29,3 +29,7 @@ def serve_spa(full_path: str):
 async def chat(data: dict):
     user_input = data.get("message", "")
     return {"response": f"Echo: {user_input}"}
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
