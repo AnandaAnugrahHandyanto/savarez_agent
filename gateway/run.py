@@ -1061,7 +1061,7 @@ logger = logging.getLogger(__name__)
 _AGENT_PENDING_SENTINEL = object()
 
 
-def _resolve_runtime_agent_kwargs() -> dict:
+def _resolve_runtime_agent_kwargs(target_model: str | None = None) -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
 
     Provider is read from ``config.yaml`` ``model.provider`` (the single
@@ -1069,6 +1069,13 @@ def _resolve_runtime_agent_kwargs() -> dict:
     var lookups internally for legacy compatibility, but the gateway does
     not consult environment variables for behavioral config — config.yaml
     is authoritative.
+
+    target_model: Optional active model name. When passed, providers that
+    derive ``api_mode`` per-model (Copilot, OpenCode Zen/Go) compute it
+    from this model instead of the stale ``model.default`` in config.
+    Without this, mid-session ``/model`` switches caused resolver and
+    normalizer to disagree, flapping the agent route signature and
+    forcing a full agent rebuild on every turn.
 
     If the primary provider fails with an authentication error, attempt to
     resolve credentials using the fallback provider chain from config.yaml
@@ -1081,7 +1088,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
     from hermes_cli.auth import AuthError
 
     try:
-        runtime = resolve_runtime_provider()
+        runtime = resolve_runtime_provider(target_model=target_model)
     except AuthError as auth_exc:
         # Primary provider auth failed (expired token, revoked key, etc.).
         # Try the fallback provider chain before raising.
@@ -2389,7 +2396,7 @@ class GatewayRunner:
                 list(self._session_model_overrides.keys())[:5] if self._session_model_overrides else "[]",
             )
 
-        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        runtime_kwargs = _resolve_runtime_agent_kwargs(target_model=model)
         runtime_model = runtime_kwargs.pop("model", None)
         if runtime_model:
             logger.info(
@@ -8025,7 +8032,7 @@ class GatewayRunner:
                 from agent.model_metadata import get_model_context_length
 
                 _msg_cwd = os.environ.get("TERMINAL_CWD", os.path.expanduser("~"))
-                _msg_runtime = _resolve_runtime_agent_kwargs()
+                _msg_runtime = _resolve_runtime_agent_kwargs(target_model=self._model)
                 _msg_config_ctx = None
                 try:
                     _msg_cfg = _load_gateway_config()
@@ -9225,7 +9232,7 @@ class GatewayRunner:
 
         # Resolve runtime credentials for probing
         try:
-            runtime = _resolve_runtime_agent_kwargs()
+            runtime = _resolve_runtime_agent_kwargs(target_model=model)
             provider = provider or runtime.get("provider")
             base_url = base_url or runtime.get("base_url")
             api_key = runtime.get("api_key")
