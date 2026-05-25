@@ -227,7 +227,7 @@ KANBAN_GUIDANCE = (
     "structured metadata (changed_files / tests_run / diff_path) into a "
     "`kanban_comment` first, then end with "
     "`kanban_block(reason=\"review-required: <one-line summary>\")` so a "
-    "reviewer can approve+unblock or request changes. Reviewing-then-"
+    "reviewer can approve or reject it with `kanban_review`. Reviewing-then-"
     "completing is more honest than auto-completing work that still needs "
     "eyes on it.\n"
     "6. **If follow-up work appears, create it; don't do it.** Use "

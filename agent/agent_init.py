@@ -188,6 +188,7 @@ def init_agent(
     chat_name: str = None,
     chat_type: str = None,
     thread_id: str = None,
+    identity_key: str = None,
     gateway_session_key: str = None,
     skip_context_files: bool = False,
     load_soul_identity: bool = False,
@@ -270,6 +271,7 @@ def init_agent(
     agent._chat_name = chat_name
     agent._chat_type = chat_type
     agent._thread_id = thread_id
+    agent._identity_key = identity_key
     agent._gateway_session_key = gateway_session_key  # Stable per-chat key (e.g. agent:main:telegram:dm:123)
     # Pluggable print function — CLI replaces this with _cprint so that
     # raw ANSI status lines are routed through prompt_toolkit's renderer
@@ -1122,6 +1124,8 @@ def init_agent(
                         _init_kwargs["chat_type"] = agent._chat_type
                     if agent._thread_id:
                         _init_kwargs["thread_id"] = agent._thread_id
+                    if agent._identity_key:
+                        _init_kwargs["identity_key"] = agent._identity_key
                     # Thread gateway session key for stable per-chat Honcho session isolation
                     if agent._gateway_session_key:
                         _init_kwargs["gateway_session_key"] = agent._gateway_session_key
