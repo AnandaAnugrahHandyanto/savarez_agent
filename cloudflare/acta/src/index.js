@@ -23,9 +23,12 @@ const LOGIN_HEADERS = {
 
 function headersForKey(key) {
   // The stable Acta dashboard is an app-like reader/inbox and needs a tiny
-  // inline script for local read/unread state and swipe gestures. Signed detail
-  // reports and archive pages remain scriptless by default.
-  if (key === "public/index.html") return INTERACTIVE_DASHBOARD_HEADERS;
+  // inline script for local read/unread state and swipe gestures. Published
+  // archive day snapshots use the same dashboard renderer; archive indexes and
+  // signed detail reports remain scriptless by default.
+  if (key === "public/index.html" || /^public\/archive\/[0-9]{4}-[0-9]{2}-[0-9]{2}\.html$/.test(key)) {
+    return INTERACTIVE_DASHBOARD_HEADERS;
+  }
   // Outputs are curated interactive artifacts. They still require Acta auth,
   // but unlike cron detail reports they need inline JS for drawers, filters,
   // and mobile controls to work.

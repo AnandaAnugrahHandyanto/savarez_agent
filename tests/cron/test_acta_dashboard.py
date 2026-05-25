@@ -1871,6 +1871,15 @@ def test_build_dashboard_publishes_outputs_index(tmp_path: Path, monkeypatch):
 def test_acta_worker_routes_published_public_surfaces():
     worker = Path("cloudflare/acta/src/index.js").read_text(encoding="utf-8")
 
+    assert 'pathname === "/archive" || pathname === "/archive/"' in worker
+    assert 'return "public/archive/index.html"' in worker
+    assert 'return `public/archive/${match[1]}.html`' in worker
+    assert 'key === "public/archive/index.html"' in worker
+    assert 'return `${base}/archive`' in worker
+    assert 'key.match(/^public\\/archive\\/([0-9]{4}-[0-9]{2}-[0-9]{2})\\.html$/)' in worker
+    assert 'return `${base}/archive/${archiveMatch[1]}`' in worker
+    assert '/^public\\/archive\\/[0-9]{4}-[0-9]{2}-[0-9]{2}\\.html$/.test(key)' in worker
+    assert 'key === "public/archive/index.html" || /^public\\/archive' not in worker
     assert 'pathname === "/runs" || pathname === "/runs/"' in worker
     assert 'return "public/runs/index.html"' in worker
     assert 'key === "public/runs/index.html"' in worker
