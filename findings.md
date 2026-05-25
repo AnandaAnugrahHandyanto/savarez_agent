@@ -10893,3 +10893,239 @@ Five explicit Revert commits found in recent history, indicating features that h
 
 ---
 *Commit at scan: 5a51a1f65*
+
+## Pass #81 – Adversarial Attack Surface — MITRE ATT&CK for AI Agents Deep Dive – 2026-05-25T02:30:00Z
+
+---
+
+### Overview
+
+This pass evaluates the Hermes Agent system against the MITRE ATT&CK framework for AI agents, focusing on five primary threat vectors: prompt injection, context window exhaustion, tool poisoning, agent hallucination exploitation, and long-running session exploitation. Each area is analyzed with an attacker's perspective to identify weaknesses, gaps, and existing mitigations.
+
+---
+
+### 1. PROMPT INJECTION
+
+#### 1.1 Direct User Message Override of System Prompts
+
+**Can user messages override system prompts?**
+
+Partial defense exists but is not airtight. The system uses a layered prompt assembly:
+
+- **System prompt tier** (`agent/prompt_builder.py`): identity (SOUL.md), Nous subscription, tool guidance, skills, environment/platform hints — assembled before user context.
+- **Context file tier**: AGENTS.md, .cursorrules, .cursor/rules/ scanned by `_CONTEXT_THREAT_PATTERNS` regex scanner before injection.
+- **User messages**: passed as `user_message` into `run_conversation()` and appended as `{"role": "user", ...}` in the messages list.
+
+User messages cannot directly replace the system prompt, but **context files (AGENTS.md, .cursorrules, SOUL.md, .hermes.md)** are loaded from the working directory and injected into the system prompt. An attacker who can place or modify these files in the project's working directory can inject instructions that become part of the system prompt.
+
+**_CONTEXT_THREAT_PATTERNS** (agent/prompt_builder.py lines 36–47) detects:
+- `ignore previous/all/above/prior instructions` (prompt_injection)
+- `do not tell the user` (deception_hide)
+- `system prompt override` (sys_prompt_override)
+- `disregard your/all/any instructions/rules/guidelines` (disregard_rules)
+- `act as if you have no restrictions` (bypass_restrictions)
+- HTML comment injection, hidden divs, translate-and-execute, curl exfil, secret reading
+
+**Weakness**: Pattern matching is regex-based but context files are **blocked** (replaced with `[BLOCKED: ...]` message) only when patterns match. An attacker using synonym substitution, obfuscation, or rare encodings (e.g., mixed Unicode homoglyphs) could bypass these patterns. The patterns are not comprehensive.
+
+**Severity**: MEDIUM — context files in the working directory are a direct injection vector; detection is helpful but not airtight.
+
+#### 1.2 Indirect Prompt Injection via Context Files
+
+`.cursorrules`, `AGENTS.md`, `SOUL.md`, `.hermes.md`, `.cursor/rules/{*.md}` are loaded from `TERMINAL_CWD` and injected into the system prompt. The `_scan_context_content()` function applies threat pattern detection, but:
+
+- **Only files matching known names** are scanned — an attacker could create a new file with an injection payload that is not scanned.
+- **Pattern matching is naive** (regex search, case-insensitive) — sophisticated obfuscaters can evade.
+- **Invisible unicode** (U+200B, U+FEFF, etc.) is detected in `_CONTEXT_INVISIBLE_CHARS` but only in `_scan_context_content()`. If the injection uses a character not in that denylist, it passes.
+- **Blocking is logged but not enforced at API level** — the system logs a warning and substitutes `[BLOCKED: ...]` but the underlying file read is not prevented for other consumers.
+
+#### 1.3 Skill Command Injection (Slash Commands as User Message Injection)
+
+**Critical finding from prior passes**: Slash commands (e.g., `/my-skill`) are injected as **user messages** (not system prompts) to preserve prompt caching. This means:
+
+- An attacker who can craft a malicious skill file in `~/.hermes/skills/` can inject instructions via skill invocation.
+- Skills are loaded by `_load_skill_payload()` in `agent/skill_commands.py`, which calls `skill_view()` from `tools/skills_tool.py`.
+- `_INJECTION_PATTERNS` in `skills_tool.py` uses **naive substring matching** (case-insensitive `any(p in _content_lower for p in _INJECTION_PATTERNS)`), NOT regex. This is significantly weaker than the regex-based scanner in `prompt_builder.py`.
+- When injection is detected, `logging.getLogger(__name__).warning(...)` is called **but the file is still served**.
+- **No hash/signature/checksum verification** on skill files.
+
+**Impact**: A compromised or malicious skill file in `~/.hermes/skills/` can modify agent behavior. The warning-to-console path is logged but execution proceeds.
+
+#### 1.4 Tool Output Injection
+
+Tool outputs are appended as `tool` role messages in the conversation. A compromised or malicious tool (e.g., a compromised MCP server, a tampered tool definition) could return content designed to manipulate the agent's next actions.
+
+- `tools/skills_tool.py` uses `_scan_context_content()` for skill file reads, but general tool outputs are not passed through a content scanner.
+- `_sanitize_tool_error()` in `model_tools.py` strips `HERMES_BREAK`, `HERMES_TOOL_ERROR`, `HERMES_TOOL_RESULT` structural tokens from error messages only.
+- Tool results from the `terminal` tool, `delegate_task`, `memory`, `browser_*` tools are stored in SQLite (via `append_message()` in `hermes_state.py`) and can accumulate over a session.
+- **No output validation** is applied to tool results before they are stored or fed back into the conversation.
+
+**Severity**: MEDIUM — compromised tool data flows directly into conversation history without validation.
+
+---
+
+### 2. CONTEXT WINDOW EXHAUSTION (DoS via Tokens)
+
+#### 2.1 Token Limits and Compression
+
+- **max_iterations default: 90** (`run_agent.py`, `cron/scheduler.py`) — limits tool-call iterations per turn budget.
+- **Context compression**: `agent/context_compressor.py` self-compresses via auxiliary LLM when context approaches limit. SUMMARY_PREFIX marks compacted content as "REFERENCE ONLY — NOT active instructions."
+- **Model context windows**: `get_model_context_length()` from `agent/model_metadata.py` provides per-model limits.
+- **max_tokens enforcement**: `test_ctx_halving_fix.py` tests context-halving when `input_tokens + max_tokens > context_window`.
+
+**Existing mitigations**:
+- Iterative compression with tail-protection (protects most recent messages).
+- `_MIN_SUMMARY_TOKENS=2000`, `_SUMMARY_RATIO=0.20`, `_SUMMARY_TOKENS_CEILING=12000` budget controls.
+- Oversized tool results saved to temp file instead of truncation (`tools/tool_result_storage.py`).
+
+**Remaining risk**: An attacker who can send repeated large messages (e.g., via a messaging platform gateway) could:
+1. Fill the context window faster than compression kicks in.
+2. Trigger repeated compression cycles that consume API budget.
+3. Exhaust the `iteration_budget` before the legitimate user gets value.
+
+#### 2.2 Input Size Limits
+
+- **No per-message max length enforcement at the agent level** — messages are accepted and token-counted post-submission.
+- On the gateway side (`gateway/platforms/`), platform-specific rate limits exist (e.g., `gateway/platforms/signal_rate_limit.py`), but these are per-platform and not uniform.
+- Telegram: `send_message` tool handles large messages but with a character-based limit (not token-based).
+- The batch runner accepts `ephemeral_system_prompt` but no per-job input size cap.
+
+**Attack vector**: A messaging platform attacker sends very large messages repeatedly. Since token counting happens after receipt, the cost is borne by the API budget. No incoming DLP/limit at the gateway receive layer.
+
+**Severity**: MEDIUM — DoS via budget exhaustion is possible, especially on platforms with no per-message limits.
+
+#### 2.3 Mid-Conversation Exhaustion
+
+- **Session splitting**: `hermes_state.py` uses `parent_session_id` chains for compression-triggered session splitting. Compressed sessions store system_prompt snapshots.
+- **Skills prompt snapshot**: `agent/prompt_builder.py` writes `_skills_prompt_snapshot_path()` to disk, used across sessions for Claude's 1-hour prompt cache.
+- **Memory context**: `MEMORY.md` and `USER.md` are loaded into the system prompt. Old memory entries are not evicted or expired.
+
+**Risk**: Long-running sessions accumulate memory entries that can increase the system prompt size over time. No maximum memory size per session.
+
+---
+
+### 3. TOOL POISONING
+
+#### 3.1 Compromised Tool Data
+
+- Tool definitions are loaded via `tools/registry.py` at import time. Each tool file calls `registry.register()` at module level.
+- **No integrity verification** for tool implementations — no hash, signature, or content audit before registration.
+- **MCP tools** (`tools/mcp_tool.py`): `_MCP_INJECTION_PATTERNS` uses naive substring matching against `mcp*` command output. The MCP server itself is an external process — its output is not validated.
+- `sanitize_tool_schemas()` in `tools/schema_sanitizer.py` filters tool schemas but not tool execution output.
+- `maybe_persist_tool_result()` in `tools/tool_result_storage.py` saves oversized results to disk (temp files).
+
+#### 3.2 Output Validation
+
+- **Tool guardrails** (`agent/tool_guardrails.py`): tracks per-turn tool-call observations. Config has `warnings_enabled` (default True) and `hard_stop_enabled` (default False — opt-in).
+- Guardrails are designed to detect **tool loops** (repeated calls to the same failing tool), not **malicious tool output**.
+- `_sanitize_tool_error()` strips HERMES structural tokens from errors, but not from normal tool results.
+- **No output content scanning** between tool execution and storage in SQLite.
+
+#### 3.3 Cross-Tool Manipulation
+
+- **Concurrent tool execution**: `_MAX_TOOL_WORKERS=8` threads in `agent/tool_executor.py`. Concurrent tools can run simultaneously.
+- One tool's output is available to subsequent tools via `messages.append(make_tool_result_message(...))`.
+- **No tool output filtering** between tools — a `terminal` tool output could contain instructions that influence a subsequent `write_file` tool.
+- **Skill tools**: `skill_manage` is in `MUTATING_TOOL_NAMES`. A compromised skill file could cause the agent to modify other skills.
+- **`delegate_task`** tool spawns subagents with `skip_context_files=True` and `skip_memory=True` — good isolation — but inherits the parent's API key.
+
+**Severity**: HIGH for tools with write access (terminal, write_file, patch, skill_manage) when operating in hostile environments.
+
+---
+
+### 4. AGENT HALLUCINATION EXPLOITATION
+
+#### 4.1 Social Engineering
+
+The agent's `KawaiiSpinner` display and rich tool output make it visually engaging — users may anthropomorphize it and share sensitive information they would withhold from human assistants.
+
+- **`memory` tool**: can write to `MEMORY.md`/`USER.md` persistently. A social engineer who convinces the agent to save fabricated user preferences could manipulate future interactions.
+- **`/reload-skills`**: reloads skills from disk — if an attacker can modify `~/.hermes/skills/`, reloading creates a window for injected skill content to take effect.
+- **No user confirmation prompt** for most skill invocations — only "Confirm prompt for destructive slash commands" was added (RELEASE_v0.14.0).
+
+#### 4.2 Prompt Extraction
+
+- **System prompt is not redacted** in error messages — the agent's identity (SOUL.md, tool guidance) is visible in normal responses.
+- `sanitize_title()` strips bidirectional/RTL/zero-width characters — good — but `append_message()` and tool args do not receive equivalent sanitization.
+- The agent may inadvertently reveal `MEMORY.md`/`USER.md` content in responses — these contain agent's persistent memory of user preferences.
+- **Slash command payloads**: `/new`, `/resume`, `/title`, `/sessions`, etc. — session IDs are passed as parameters. Predictable session IDs (timestamp + 6-char UUID prefix) could be enumerated.
+
+#### 4.3 Impersonation
+
+- **`/sessions` browsing**: Lists previous sessions with titles. An attacker with access to the same Hermes install could enumerate session metadata.
+- **Session ID truncation** (6 hex chars, 24 bits entropy) — `findings.md` P38-2 documents this. Session IDs appear in URLs and database rows.
+- **ACP adapter** (`acp_adapter/server.py`): stdio-based; any client with stdin/stdout access can supply any session_id. Within the user's own `~/.hermes/state.db`, this is intended behavior, but cross-user exposure on shared systems is a concern.
+- **`/busy` slash command** (RELEASE_v0.12.0): busy input mode — a running session could be left in a state that prevents legitimate user interaction.
+
+---
+
+### 5. LONG-RUNNING SESSION EXPLOITATION
+
+#### 5.1 Session Manipulation Over Time
+
+- **SQLite session store** (`hermes_state.py`): WAL mode with FTS5 full-text search. Sessions persist across the `~/.hermes/state.db` file.
+- **`session_id` generation**: timestamp prefix + 6-char UUID v4 suffix. Predictable in time-ordered enumeration.
+- **Message history accumulation**: Every user/assistant/tool message is stored in `messages` table with FTS5 indexing. Over time, this accumulates sensitive context.
+- **`update_system_prompt()`**: stores full assembled system prompt snapshot per session. After compression, the snapshot reflects the compressed state — old context is NOT accessible but the snapshot itself could be large.
+- **Background review thread** (`agent/background_review.py`): Spawns a subagent after every turn. This background agent has access to the same session context. No user-facing flag to disable it (only `_memory_nudge_interval=0` and `_skill_nudge_interval=0` to suppress nudge prompts).
+
+#### 5.2 Session Fixation
+
+- **ACP sessions**: Any client supplying an existing `session_id` can resume that session. The ACP protocol is stdio — same-user process access is the assumed boundary.
+- **Gateway session context** (`HERMES_SESSION_PLATFORM`): Set per-platform. No cross-platform session fixation concern identified within the same user account.
+- **Session branching** (`/branch`): Creates new session linked via `parent_session_id`. Branch session IDs use the same truncated UUID pattern.
+
+#### 5.3 Context Accumulation
+
+- **`messages` table**: Stores full message content including tool results. No automatic purge or expiration.
+- **Token counters**: `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens` are tracked per session.
+- **`estimated_cost_usd`, `actual_cost_usd`**: Cost tracking per session — useful for budget exhaustion monitoring but not exposed via any anti-abuse mechanism.
+- **FTS5 triggers**: `messages_fts` and `messages_fts_trigram` are auto-updated on insert/update/delete — any message content is immediately searchable.
+
+---
+
+### Summary of Findings
+
+| Category | Finding | Severity |
+|----------|---------|----------|
+| **Prompt Injection** | Context files (AGENTS.md, .cursorrules, etc.) are scanned but bypassable via obfuscation | MEDIUM |
+| **Prompt Injection** | Skill files have no integrity check — warning logged but file served anyway | MEDIUM |
+| **Prompt Injection** | Skills use naive substring injection scanning (vs. regex elsewhere) | MEDIUM |
+| **Tool Poisoning** | No output validation between tool execution and storage | MEDIUM |
+| **Tool Poisoning** | MCP tool output uses substring matching, not comprehensive | MEDIUM |
+| **Context DoS** | No per-message input length enforcement at gateway receive | MEDIUM |
+| **Session Security** | Session ID uses only 6 hex chars (24 bits entropy) — predictable | MEDIUM |
+| **Hallucination Exploit** | Memory (MEMORY.md/USER.md) can be manipulated via conversation | MEDIUM |
+| **Cross-Tool** | Concurrent tools have no output filtering between executions | MEDIUM |
+| **Session Accumulation** | No message purge/expiration in SQLite store — unbounded growth | LOW |
+
+---
+
+### Mitigations Already Present
+
+- `_CONTEXT_THREAT_PATTERNS` regex scanner for context files (prompt_builder.py)
+- Invisible unicode character scanning in context files
+- Context compression with "REFERENCE ONLY" designation
+- Tool loop guardrails (opt-in hard stop)
+- Per-session system prompt snapshots (audit trail)
+- Skills use trusted directory enforcement + external skills dir allowlist
+- `skip_context_files=True` and `skip_memory=True` for subagents
+- Token budget tracking per session
+
+---
+
+### Recommendations (Priority Order)
+
+1. **Enforce skill file integrity**: Add SHA256/checksum verification for skill files in `~/.hermes/skills/`. Log-and-block on mismatch.
+2. **Unify injection scanning**: Apply the regex-based `_CONTEXT_THREAT_PATTERNS` scanner to skill file loads (not just substring matching).
+3. **Session ID entropy**: Use full UUID v4 for session IDs instead of timestamp+6-char truncation.
+4. **Per-message input limits at gateway layer**: Add token-based message size limits at platform gateway receive, before token counting.
+5. **Tool output validation**: Add a content scanner step between tool execution and message append (especially for terminal, write_file, delegate_task).
+6. **Message expiration**: Implement TTL or size-based purge for `messages` table entries to prevent unbounded accumulation.
+7. **Background review opt-out**: Expose a user-facing flag to disable the background review thread entirely.
+8. **Cross-tool output filtering**: Prevent one tool's output from being passed directly as arguments to another tool without validation.
+
+---
+
+*Pass #81 complete — 2026-05-25T02:30:00Z*
+*Commit at scan: 5a51a1f65*
