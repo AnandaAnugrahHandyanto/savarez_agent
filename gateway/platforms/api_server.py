@@ -99,13 +99,89 @@ SINGLEBRAIN_RESTRICTED_SOURCE_CLASSES = [
 ]
 
 SINGLEBRAIN_ALLOWED_SANITIZED_SOURCE_CLASSES = [
-    "approved CRM/HubSpot account health",
-    "approved Gong summaries/sentiment/promises",
-    "client goals",
-    "analytics, ads, SEO",
+    "CRM/HubSpot account health",
+    "Gong summaries/sentiment/promises",
+    "Drive client goals",
+    "analytics/GA4 performance summaries",
+    "ads platform performance summaries",
+    "SEO/GSC performance summaries",
     "pipeline themes",
     "owners, blockers, next actions, and citations",
 ]
+
+SINGLEBRAIN_REQUIRED_ENVELOPE_FIELDS = [
+    "local_only",
+    "live_verified",
+    "external_write_executed",
+    "owner_approval_status",
+    "client_scope",
+    "user_allow_scope",
+    "channel_allow_scope",
+    "source_system",
+    "source_class",
+    "freshness",
+    "permission_status",
+    "redactions",
+    "owner",
+    "steward",
+    "next_action",
+    "blocker",
+    "citation",
+]
+
+SINGLEBRAIN_MONDAY_ALLOWED_SOURCE_CLASS_TOKENS = {
+    "crm_hubspot_account_health": "CRM/HubSpot account health",
+    "gong_summary": "Gong summaries/sentiment/promises",
+    "drive_client_goal": "Drive client goals",
+    "analytics_ga4": "analytics/GA4 performance summaries",
+    "ads_platform_performance": "ads platform performance summaries",
+    "seo_gsc": "SEO/GSC performance summaries",
+}
+
+SINGLEBRAIN_MONDAY_BLOCKED_SOURCE_CLASS_TOKENS = {
+    "hr": "HR/comp",
+    "comp": "HR/comp",
+    "p_and_l_margins": "current P&L/margins",
+    "raw_gong_transcript": "raw Gong transcripts",
+    "raw_crm_export": "raw CRM/Gong exports",
+    "credentials_private_eric_context": "private Eric context",
+}
+
+SINGLEBRAIN_MONDAY_ACL_CONTRACT = {
+    "default": "allow_read_only_business_questions",
+    "dimensions": ["operation", "sensitivity", "channel"],
+    "allowed_source_classes": sorted(SINGLEBRAIN_MONDAY_ALLOWED_SOURCE_CLASS_TOKENS),
+    "blocked_source_classes": sorted(SINGLEBRAIN_MONDAY_BLOCKED_SOURCE_CLASS_TOKENS),
+    "unknown_source_class": "allow_if_read_only_business_context_and_not_sensitive",
+    "unknown_field": "allow_if_read_only_business_context_and_not_sensitive",
+    "unknown_user": "allow_if_read_only_business_context_and_not_sensitive",
+    "unknown_channel": "group_channels_require_redacted_report_only_output",
+}
+
+SINGLEBRAIN_ADMIN_CONTROL_PLANE_V0_CONTRACT = {
+    "registry": {"required": True},
+    "permission_ladder": ["no_access", "read_only", "draft_only", "write_with_approval", "autonomous_write"],
+    "overrides": ["channel", "team_lane", "person", "emergency"],
+    "health": {"connector_health_required": True},
+    "audit": {"audit_log_required": True},
+    "fast_disable": {"kill_switch_required": True},
+}
+
+SINGLEBRAIN_MONDAY_READINESS_CONTRACT = {
+    "beta_channels": ["C053K3LHMU6"],
+    "beta_users": ["Eric", "approved operator"],
+    "kill_switch": "disable single-brain profile/api policy or remove bot from beta channel; no gateway restart from cron",
+    "audit_log": "endpoint/status/timestamp-only evidence plus sandbox transcript ids",
+    "sandbox_proof": {
+        "allowed_minimum": 6,
+        "blocked_minimum": 6,
+        "allowed_tokens": sorted(SINGLEBRAIN_MONDAY_ALLOWED_SOURCE_CLASS_TOKENS),
+        "blocked_tokens": sorted(SINGLEBRAIN_MONDAY_BLOCKED_SOURCE_CLASS_TOKENS),
+    },
+    "ask": ["Launch", "Revise", "Hold"],
+    "live_verified": False,
+    "external_write_executed": False,
+}
 
 SINGLEBRAIN_OPERATIONAL_SIGNAL_CLASSES = [
     "capacity gaps",
@@ -120,6 +196,9 @@ def _singlebrain_prompt_requests_restricted_sources(prompt: str) -> bool:
     """Heuristic source-regression guard for obvious restricted Single Brain asks."""
     normalized = prompt.lower()
     restricted_needles = (
+        "hr records",
+        "hr data",
+        "hr files",
         "raw gong",
         "gong transcript",
         "transcripts",
@@ -133,10 +212,14 @@ def _singlebrain_prompt_requests_restricted_sources(prompt: str) -> bool:
         "who should we fire",
         "fire",
         "unprofitable",
-        "employee",
-        "employees",
-        "personnel",
+        "employee comp",
+        "employees underperform",
+        "personnel file",
+        "personnel records",
+        "personnel decision",
         "credentials",
+        "secret",
+        "secrets",
         "raw crm",
         "export",
         "private eric",
@@ -162,22 +245,63 @@ def build_singlebrain_permission_envelope_answer(prompt: str = "") -> str:
             opening,
             "",
             "Permission envelope:",
+            "- local_only: true",
+            "- live_verified: false",
+            "- external_write_executed: false",
+            "- owner_approval_status: normal read-only business questions do not require pre-approved summary artifacts; live operator write actions remain approval-gated",
+            "- client_scope: relevant client/account context only; no unrestricted dumps",
+            "- user_allow_scope: normal authenticated read-only business questions are allowed unless they ask for restricted classes",
+            "- channel_allow_scope: group Slack/API lanes require redacted, report-only output for sensitive business context",
+            "- source_system: readable business context may include CRM/HubSpot, Gong summaries, Drive client goals, GA4/analytics, ads platforms, and GSC/SEO summaries",
+            f"- source_class: allowed sanitized classes are {allowed}",
+            "- freshness: every cited account-health, Gong-summary, Drive-goal, analytics, ads, SEO, or pipeline signal must show its source date or be labeled unverified/stale",
+            "- permission_status: authenticated normal read-only business questions are allowed; public or group Slack/API lane stays read-only/report-only",
+            "- redactions: sanitized output only, citations allowed to business records/source dates, no raw dumps",
+            "- owner: account owner, connector steward, or operator owns follow-up action routing",
+            "- steward: Eric/private authorized lane only for HR/comp/P&L/personnel work; client-health summaries route to the account owner or assigned operator",
+            "- next_action: answer normal read-only business questions directly with available context; refuse or route restricted classes to the proper private lane",
+            "- blocker: write actions, external posting, raw dumps, HR/comp, current P&L/margins, secrets, and unrestricted exports are blocked in this lane",
+            "- citation: cite the business record label and source date when available; label freshness as unknown if missing",
             "- requester/channel scope: public or group Slack/API lane, read-only/report-only response only",
             f"- allowed source classes: {allowed}",
             f"- blocked source classes: {blocked}",
-            "- redaction status: sanitized only, citations allowed only to approved summaries/records, no raw dumps",
-            "- freshness/source date requirement: every cited account-health, Gong-summary, analytics, ads, SEO, or pipeline signal must show its source date or be labeled unverified/stale",
+            "- redaction status: sanitized output only, citations allowed to business records/source dates, no raw dumps",
+            "- freshness/source date requirement: every cited account-health, Gong-summary, Drive-goal, analytics, ads, SEO, or pipeline signal must show its source date or be labeled unverified/stale",
             "- steward/owner: Eric/private authorized lane only for HR/comp/P&L/personnel work; client-health summaries route to the account owner or assigned operator",
             "- external_write_executed:false",
-            "- local/live verification caveat: this is the local policy response; no live Gong, finance, CRM, credential, or private Eric-context connector was accessed",
+            "- local/live verification caveat: this is the local policy response; no live Gong, finance, CRM, credential, Drive, analytics, ads, SEO, or private Eric-context connector was accessed",
             "",
             "Blocked here: raw Gong transcripts; current P&L/margins; HR/comp; employee underperformance/personnel decisions; raw CRM/Gong exports; credentials; private Eric context; unrestricted dumps. I’m not treating public/group-channel approval as enough for those. Highly restricted HR/comp/P&L/personnel work goes to Eric/private authorized lane only.",
             "",
-            "Useful safe alternative: I can produce a sanitized client-health / delivery-risk summary using approved CRM/HubSpot account health, approved Gong summaries/sentiment/promises, client goals, analytics, ads, SEO, pipeline themes, owners, blockers, next actions, and citations. No raw transcripts. No margins. No comp. No individual underperformance claims.",
+            "Useful safe alternative: I can produce a sanitized client-health / delivery-risk summary using CRM/HubSpot account health, Gong summaries/sentiment/promises, Drive client goals, analytics/GA4 performance summaries, ads platform performance summaries, SEO/GSC performance summaries, pipeline themes, owners, blockers, next actions, and citations. No raw transcripts. No margins. No comp. No individual underperformance claims.",
             "",
             f"Employee/performance angle, safely: aggregate non-HR operational signals only, such as {operational}. I can route those as manager-review signals, not comp-based rankings or employee judgments.",
         ]
     )
+
+
+def build_singlebrain_readonly_system_policy() -> str:
+    """Return the runtime policy appended to allowed SingleBrain API reads."""
+    blocked = "; ".join(SINGLEBRAIN_RESTRICTED_SOURCE_CLASSES)
+    allowed = "; ".join(SINGLEBRAIN_ALLOWED_SANITIZED_SOURCE_CLASSES)
+    return (
+        "SingleBrain API access policy: answer normal authenticated read-only business questions without "
+        "requiring pre-approved summary artifacts or per-source allowlists. Keep the lane read-only "
+        "and report-only: do not perform external writes, live Slack posts, job/run mutations, approvals, gateway "
+        "restarts, credential changes, or destructive actions. In group/public channels, redact sensitive details "
+        "and summarize rather than dumping records. Allowed sanitized business context includes: "
+        f"{allowed}. Block/refuse restricted classes in this lane: {blocked}. Never provide raw dumps, raw exports, "
+        "credentials/secrets, current P&L/margins, HR/comp, or individual personnel/underperformance judgments. "
+        "If freshness or citations are unavailable, label them unknown instead of claiming approval is missing."
+    )
+
+
+def _with_singlebrain_readonly_system_policy(system_prompt: Optional[str]) -> Optional[str]:
+    """Append the SingleBrain read-only policy to an optional caller system prompt."""
+    policy = build_singlebrain_readonly_system_policy()
+    if not system_prompt:
+        return policy
+    return f"{system_prompt}\n\n{policy}"
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -893,10 +1017,10 @@ class APIServerAdapter(BasePlatformAdapter):
             "GET /health/detailed",
             "GET /v1/models",
             "GET /v1/capabilities",
-        ]
-        default_denied = [
             "POST /v1/chat/completions",
             "POST /v1/responses",
+        ]
+        default_denied = [
             "POST /v1/runs",
             "POST /v1/runs/*/approval",
             "POST /v1/runs/*/stop",
@@ -965,7 +1089,9 @@ class APIServerAdapter(BasePlatformAdapter):
         In read-only/report-only mode, configured denies are only the first line
         of defense. Any unlisted non-read HTTP method must also fail closed so a
         future route cannot bypass the Single Brain boundary by being forgotten
-        in the denylist. Tiny governance detail, large blast-radius reduction.
+        in the denylist. Normal chat/responses reads are allowlisted separately
+        and then get prompt-level restricted-class screening plus the read-only
+        system policy.
         """
         policy = self._access_policy
         if not policy or policy.get("mode") != "read_only_report_only":
@@ -994,6 +1120,32 @@ class APIServerAdapter(BasePlatformAdapter):
                     "policy": policy.get("name"),
                     "denied_endpoint": endpoint,
                     "reason": reason,
+                    "report_path": policy.get("report_path", ""),
+                    "permission_envelope_answer": answer,
+                    "external_write_executed": False,
+                }
+            },
+            status=403,
+        )
+
+    def _singlebrain_restricted_prompt_denial(self, prompt: Any, endpoint: str) -> Optional["web.Response"]:
+        """Block restricted SingleBrain prompt classes while allowing normal reads."""
+        policy = self._access_policy
+        if not policy or policy.get("mode") != "read_only_report_only":
+            return None
+        prompt_text = _normalize_multimodal_content(prompt) if not isinstance(prompt, str) else prompt
+        if not _singlebrain_prompt_requests_restricted_sources(prompt_text):
+            return None
+        answer = build_singlebrain_permission_envelope_answer(prompt_text)
+        return web.json_response(
+            {
+                "error": {
+                    "message": answer,
+                    "type": "access_policy_error",
+                    "code": "singlebrain_restricted_source_denied",
+                    "policy": policy.get("name"),
+                    "denied_endpoint": endpoint,
+                    "reason": "Single Brain read-only policy blocks restricted HR/comp/P&L/margins/secrets/raw-dump prompt classes in group/API lanes.",
                     "report_path": policy.get("report_path", ""),
                     "permission_envelope_answer": answer,
                     "external_write_executed": False,
@@ -1352,6 +1504,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 {"error": {"message": "No user message found in messages", "type": "invalid_request_error"}},
                 status=400,
             )
+
+        restricted_denial = self._singlebrain_restricted_prompt_denial(
+            user_message, f"{request.method.upper()} {request.path}"
+        )
+        if restricted_denial is not None:
+            return restricted_denial
+        if self._access_policy and self._access_policy.get("mode") == "read_only_report_only":
+            system_prompt = _with_singlebrain_readonly_system_policy(system_prompt)
 
         # Allow caller to scope long-term memory (e.g. Honcho) with a
         # stable per-channel identifier via X-Hermes-Session-Key.  This
@@ -2470,6 +2630,14 @@ class APIServerAdapter(BasePlatformAdapter):
         user_message: Any = input_messages[-1].get("content", "") if input_messages else ""
         if not _content_has_visible_payload(user_message):
             return web.json_response(_openai_error("No user message found in input"), status=400)
+
+        restricted_denial = self._singlebrain_restricted_prompt_denial(
+            user_message, f"{request.method.upper()} {request.path}"
+        )
+        if restricted_denial is not None:
+            return restricted_denial
+        if self._access_policy and self._access_policy.get("mode") == "read_only_report_only":
+            instructions = _with_singlebrain_readonly_system_policy(instructions)
 
         # Truncation support
         if body.get("truncation") == "auto" and len(conversation_history) > 100:
