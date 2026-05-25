@@ -3188,7 +3188,6 @@ class BasePlatformAdapter(ABC):
                 # True globally and no ``/voice off`` has been issued.
                 _tts_path = None
                 if (self._should_auto_tts_for_chat(event.source.chat_id)
-                        and event.message_type == MessageType.VOICE
                         and text_content
                         and not media_files):
                     try:
