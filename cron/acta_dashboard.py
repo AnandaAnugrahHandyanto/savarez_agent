@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import html
 import json
 import os
@@ -11,6 +13,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from urllib.parse import parse_qs, urlparse
 
 try:
     import yaml
@@ -29,6 +32,89 @@ from cron.html_publish import HtmlArtifactPublishError, publish_html_artifact
 
 ACTA_DASHBOARD_CSP = f"{CSP}; script-src 'unsafe-inline'"
 DEFAULT_HIDDEN_JOBS = ("e9b0a041ced3", "P Morning Audio Briefing")
+
+
+def _is_safe_http_or_root_url(value: str | None, *, host_suffix: str | None = None) -> bool:
+    """Return whether a rendered Acta href is safe to expose as a clickable URL."""
+    if not value:
+        return False
+    if "\\" in value or any(ord(char) < 32 or ord(char) == 127 for char in value):
+        return False
+    parsed = urlparse(value)
+    if parsed.scheme in {"http", "https"}:
+        if host_suffix is not None and parsed.scheme != "https":
+            return False
+        return host_suffix is None or parsed.hostname == host_suffix or (parsed.hostname or "").endswith(f".{host_suffix}")
+    return not parsed.scheme and not parsed.netloc and value.startswith("/") and not value.startswith("//")
+
+
+def _has_sig_query(value: str) -> bool:
+    return bool(parse_qs(urlparse(value).query).get("sig"))
+
+
+def _is_safe_signed_acta_artifact_url(value: str | None) -> bool:
+    """Return whether an Acta artifact URL is safe and signed for clickable output rows."""
+    if not _is_safe_http_or_root_url(value, host_suffix="acta.imperatr.com"):
+        return False
+    assert value is not None
+    parsed = urlparse(value)
+    if parsed.scheme == "https" and parsed.hostname != "acta.imperatr.com":
+        return False
+    return _has_sig_query(value)
+
+
+def _is_safe_telegram_url(value: str | None) -> bool:
+    """Return whether a Telegram URL is an absolute HTTPS Telegram link."""
+    if not _is_safe_http_or_root_url(value, host_suffix="t.me"):
+        return False
+    assert value is not None
+    return urlparse(value).scheme == "https"
+
+
+def _inline_script_csp(script: str) -> str:
+    digest = base64.b64encode(hashlib.sha256(script.encode("utf-8")).digest()).decode("ascii")
+    return f"{CSP}; script-src 'sha256-{digest}'"
+
+
+def _outputs_read_state_script() -> str:
+    return """
+(function(){
+  var KEY='acta:read:v1';
+  var COOKIE='acta_read_v1';
+  function readFromCookie(){
+    var parts=(document.cookie||'').split('; ');
+    for(var i=0;i<parts.length;i++){
+      if(parts[i].indexOf(COOKIE+'=')===0){
+        try{ return JSON.parse(decodeURIComponent(parts[i].slice(COOKIE.length+1)))||{}; }catch(e){ return {}; }
+      }
+    }
+    return {};
+  }
+  function writeToCookie(value){
+    try{ document.cookie=COOKIE+'='+encodeURIComponent(JSON.stringify(value))+'; Max-Age=31536000; Path=/; SameSite=Lax; Secure'; }catch(e){}
+  }
+  var state=readFromCookie();
+  try{ state=JSON.parse(localStorage.getItem(KEY)||JSON.stringify(state)||'{}')||state||{}; }catch(e){ state=state||{}; }
+  function save(){ try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){} writeToCookie(state); }
+  function apply(el){
+    var k=el.dataset.readKey || '';
+    var isRead=!!state[k];
+    el.classList.toggle('read', isRead);
+    el.classList.toggle('unread', !isRead);
+    var label=el.querySelector('.read-state');
+    if(label) label.textContent=isRead?'READ':'UNREAD';
+  }
+  document.querySelectorAll('.output-row.readable').forEach(function(el){
+    apply(el);
+    el.querySelectorAll('.output-open-overlay').forEach(function(anchor){
+      anchor.addEventListener('click', function(){
+        var k=el.dataset.readKey || '';
+        if(k){ state[k]=true; save(); apply(el); }
+      });
+    });
+  });
+})();
+""".strip()
 
 
 @dataclass(frozen=True)
@@ -901,6 +987,9 @@ h1 { margin:6px 0 8px; color:var(--text); font:720 clamp(22px,3.6vw,34px)/1.02 v
 .output-row[data-open-url] { cursor:pointer; }
 .output-row[aria-disabled='true'] { cursor:default; }
 .output-row[data-open-url]:hover { border-color:rgba(35,167,255,.55); box-shadow:0 0 24px rgba(35,167,255,.10); }
+.output-row.read { opacity:.70; }
+.output-row.read .output-main b { color:#c8c8c8; }
+.output-row .read-state { color:#fff; }
 .output-open-overlay { position:absolute; inset:0; z-index:1; border:0; text-decoration:none; }
 .output-actions { position:relative; z-index:2; pointer-events:none; }
 .output-actions a { pointer-events:auto; }
@@ -1014,6 +1103,8 @@ def render_outputs_page(
     silent = 0
     missing = 0
     for index, item in enumerate(ordered_items, start=1):
+        artifact_url = item.artifact_url if _is_safe_signed_acta_artifact_url(item.artifact_url) else ""
+        telegram_url = item.telegram_url if _is_safe_telegram_url(item.telegram_url) else ""
         status_label = "paused" if not item.enabled else item.status
         if item.status == "fresh":
             fresh += 1
@@ -1021,14 +1112,14 @@ def render_outputs_page(
             silent += 1
         elif item.status == "missing":
             missing += 1
-        if item.artifact_url:
+        if artifact_url:
             signed += 1
         latest = item.latest_time.isoformat() if item.latest_time else "No run yet"
         age = _age_label(item.latest_time, now)
         confidence = _confidence_label(item, now)
         category = "system" if _is_system_item(item) else "brief"
         source = item.latest_md.name if item.latest_md else (item.latest_html.name if item.latest_html else item.job_id)
-        signed_href = html.escape(item.artifact_url, quote=True) if item.artifact_url else ""
+        signed_href = html.escape(artifact_url, quote=True) if artifact_url else ""
         row_open_attr = f' data-open-url="{signed_href}"' if signed_href else ' aria-disabled="true"'
         open_overlay = (
             f'<a class="output-open-overlay" href="{signed_href}" aria-label="Open artifact for {html.escape(item.name, quote=True)}"></a>'
@@ -1037,36 +1128,42 @@ def render_outputs_page(
         )
         open_action = '<span class="open">SIGNED</span>' if signed_href else '<span class="muted">No signed link</span>'
         ask_action = (
-            f'<a class="ask" href="{html.escape(item.telegram_url, quote=True)}" target="_blank" rel="noopener" '
+            f'<a class="ask" href="{html.escape(telegram_url, quote=True)}" target="_blank" rel="noopener" '
             'aria-label="Ask follow-up in Telegram">ASK</a>'
-            if item.telegram_url
+            if telegram_url
             else ""
         )
         followup_meta = (
-            f'<a class="followup-meta" href="{html.escape(item.telegram_url, quote=True)}" target="_blank" rel="noopener" '
+            f'<a class="followup-meta" href="{html.escape(telegram_url, quote=True)}" target="_blank" rel="noopener" '
             'aria-label="Ask follow-up in Telegram" title="Ask follow-up in Telegram">FOLLOW-UP</a>'
-            if item.telegram_url
+            if telegram_url
             else '<span>NO FOLLOW-UP</span>'
         )
+        read_key = f"output:{item.job_id}:{latest}"
+        read_class = " readable unread" if signed_href else ""
+        read_attr = f' data-read-key="{_safe_text(read_key)}"' if signed_href else ""
+        read_state_chip = '<span class="read-state">UNREAD</span>' if signed_href else ""
         rows.append(
             f"""
-<article class="output-row {_status_class(item)}"{row_open_attr}>
+<article class="output-row{read_class} {_status_class(item)}"{read_attr}{row_open_attr}>
   {open_overlay}
   <div class="output-rank">{index:02d}</div>
   <div class="output-main">
     <b>{_safe_text(item.name)}</b>
     <p>{_safe_text(item.excerpt or "No visible response was produced for this run.")}</p>
-    <div class="output-meta"><span class="confidence-chip">{_safe_text(confidence)}</span><span>{_safe_text(status_label)}</span><span>{_safe_text(category)}</span><span>{_safe_text(age)}</span><span>SCHEDULE {_safe_text(item.schedule or "manual")}</span><span>SOURCE {_safe_text(source)}</span><span>JOB {_safe_text(item.job_id)}</span><span>{_safe_text(item.deliver or "local")}</span><span>{_safe_text(latest)}</span>{followup_meta}</div>
+    <div class="output-meta">{read_state_chip}<span class="confidence-chip">{_safe_text(confidence)}</span><span>{_safe_text(status_label)}</span><span>{_safe_text(category)}</span><span>{_safe_text(age)}</span><span>SCHEDULE {_safe_text(item.schedule or "manual")}</span><span>SOURCE {_safe_text(source)}</span><span>JOB {_safe_text(item.job_id)}</span><span>{_safe_text(item.deliver or "local")}</span><span>{_safe_text(latest)}</span>{followup_meta}</div>
   </div>
   <div class="output-actions">{open_action}{ask_action}</div>
 </article>"""
         )
+    read_state_script = _outputs_read_state_script()
+    outputs_csp = _inline_script_csp(read_state_script)
     return f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no">
-<meta http-equiv="Content-Security-Policy" content="{html.escape(CSP, quote=False)}">
+<meta http-equiv="Content-Security-Policy" content="{html.escape(outputs_csp, quote=False)}">
 <title>Acta Outputs</title>
 <style>{_acta_page_css()}</style>
 </head>
@@ -1082,6 +1179,7 @@ def render_outputs_page(
   </section>
   <footer>Generated {html.escape(now.isoformat())}. Signed Acta links expire automatically.</footer>
 </main>
+<script>{read_state_script}</script>
 </body>
 </html>
 """
@@ -1139,9 +1237,10 @@ def render_acta_detail_report(
     if source_filename:
         footer_bits.append(f"<span><b>SOURCE</b> {html.escape(Path(source_filename).name)}</span>")
     followup_link = ""
-    if telegram_url:
+    safe_telegram_url = telegram_url if _is_safe_telegram_url(telegram_url) else ""
+    if safe_telegram_url:
         followup_link = (
-            f'<a class="followup" href="{html.escape(telegram_url, quote=True)}" '
+            f'<a class="followup" href="{html.escape(safe_telegram_url, quote=True)}" '
             'target="_blank" rel="noopener" aria-label="Ask follow-up in Telegram" title="Ask follow-up in Telegram">Ask</a>'
         )
     actions = f'<div class="actions">{followup_link}<a class="back" href="/outputs">Outputs</a><a class="back" href="/">Back</a></div>'

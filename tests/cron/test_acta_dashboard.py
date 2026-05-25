@@ -783,6 +783,14 @@ def test_outputs_page_uses_v9_shell_and_signed_source_rows():
     assert '<a class="active" href="/outputs">Outputs</a>' in html
     assert 'href="https://acta.imperatr.com/r/lead/detail.html?exp=1&amp;sig=abc"' in html
     assert 'data-open-url="https://acta.imperatr.com/r/lead/detail.html?exp=1&amp;sig=abc"' in html
+    assert '<article class="output-row readable unread fresh" data-read-key="output:lead:2026-05-19T10:00:00+00:00"' in html
+    assert '<span class="read-state">UNREAD</span>' in html
+    assert "document.querySelectorAll('.output-row.readable')" in html
+    assert "el.querySelectorAll('.output-open-overlay')" in html
+    assert "state[k]=true; save(); apply(el);" in html
+    assert "script-src 'sha256-" in html
+    assert "script-src 'unsafe-inline'" not in html
+    assert "COOKIE='acta_read_v1'" in html
     assert '<a class="output-open-overlay" href="https://acta.imperatr.com/r/lead/detail.html?exp=1&amp;sig=abc"' in html
     assert '<span class="open">SIGNED</span>' in html
     assert "Open signed" not in html
@@ -809,6 +817,147 @@ def test_outputs_page_uses_v9_shell_and_signed_source_rows():
     assert "Bloomberg" not in html
     assert "generated-file" not in html.lower()
     assert "Generated files" not in html
+
+
+def test_outputs_page_gates_unsafe_links_and_read_state_to_signed_rows():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    unsafe = item_cls(
+        job_id='unsafe" onclick="bad',
+        name="Unsafe Brief",
+        schedule="daily",
+        deliver="telegram:-1003566991387:86",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_10-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Unsafe URLs should not become clickable.",
+        artifact_url="javascript:alert(1)",
+        telegram_url="javascript:alert(2)",
+    )
+
+    html = render_outputs_page([unsafe], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
+
+    assert "javascript:alert" not in html
+    assert 'class="output-row fresh" aria-disabled="true"' in html
+    assert 'data-read-key="output:unsafe' not in html
+    assert '<span class="read-state">UNREAD</span>' not in html
+    assert '<span class="muted">No signed link</span>' in html
+    assert "NO FOLLOW-UP" in html
+    assert 'onclick="bad' not in html
+
+
+def test_outputs_page_rejects_protocol_relative_and_suspicious_artifact_urls():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    for url in ("//evil.example/path?sig=abc", "///evil.example/path?sig=abc", "/\\evil?sig=abc", "/ok\npath?sig=abc"):
+        item = item_cls(
+            job_id="unsafe",
+            name="Unsafe Brief",
+            schedule="daily",
+            deliver="telegram",
+            enabled=True,
+            latest_md=Path("/tmp/2026-05-19_10-00-00.md"),
+            latest_html=None,
+            latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
+            status="fresh",
+            excerpt="Unsafe URL should not become clickable.",
+            artifact_url=url,
+        )
+
+        html = render_outputs_page([item], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
+
+        assert 'class="output-row fresh" aria-disabled="true"' in html
+        assert 'data-read-key="output:unsafe' not in html
+        assert '<span class="read-state">UNREAD</span>' not in html
+        assert '<span class="muted">No signed link</span>' in html
+        assert "evil.example" not in html
+
+
+def test_outputs_page_requires_signed_acta_artifact_url_for_read_state():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    unsigned = item_cls(
+        job_id="unsigned",
+        name="Unsigned Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_10-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Same-host but unsigned.",
+        artifact_url="https://acta.imperatr.com/r/lead/detail.html?exp=1",
+    )
+    signed_root = item_cls(
+        job_id="signed-root",
+        name="Signed Root Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_10-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Root-relative and signed.",
+        artifact_url="/r/lead/detail.html?exp=1&sig=abc",
+    )
+
+    html = render_outputs_page([unsigned, signed_root], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
+
+    assert 'href="https://acta.imperatr.com/r/lead/detail.html?exp=1"' not in html
+    assert 'data-read-key="output:unsigned' not in html
+    assert 'data-open-url="/r/lead/detail.html?exp=1&amp;sig=abc"' in html
+    assert 'data-read-key="output:signed-root' in html
+    assert "Signed <b>1</b>" in html
+
+
+def test_outputs_page_rejects_http_downgrade_urls():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    item = item_cls(
+        job_id="downgrade",
+        name="Downgrade Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_10-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="HTTP links should not become clickable.",
+        artifact_url="http://acta.imperatr.com/r/lead/detail.html?sig=abc",
+        telegram_url="http://t.me/c/3566991387/86",
+    )
+
+    html = render_outputs_page([item], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
+
+    assert "http://acta.imperatr.com" not in html
+    assert "http://t.me" not in html
+    assert 'data-read-key="output:downgrade' not in html
+    assert "NO FOLLOW-UP" in html
+
+
+def test_outputs_page_rejects_root_relative_telegram_urls():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    item = item_cls(
+        job_id="root-telegram",
+        name="Root Telegram Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_10-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Root-relative Telegram should not become clickable.",
+        artifact_url="/r/lead/detail.html?sig=abc",
+        telegram_url="/c/3566991387/86",
+    )
+
+    html = render_outputs_page([item], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
+
+    assert 'href="/c/3566991387/86"' not in html
+    assert "NO FOLLOW-UP" in html
+    assert 'data-open-url="/r/lead/detail.html?sig=abc"' in html
 
 
 def test_build_dashboard_publishes_outputs_index(tmp_path: Path, monkeypatch):

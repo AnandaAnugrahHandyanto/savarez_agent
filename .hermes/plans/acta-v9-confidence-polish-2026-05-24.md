@@ -10,6 +10,7 @@
 2. Make the home row read-state/confidence metadata visually tighter and more v9-native without changing open/read behavior.
 3. Add focused regression coverage for confidence labels and no old-design remnants.
 4. Polish the mobile bottom navigation away from flat black terminal chrome while preserving the same Today/Jobs/Archive/Outputs links and delayed reveal behavior.
+5. Harden `/outputs` as a source-object surface: direct row opens, safe signed/Telegram URL gating, CSP-hashed read-state persistence, and regression coverage for unsigned/unsafe rows.
 
 ## Out of scope
 - No auth/session changes.
