@@ -1680,6 +1680,7 @@ class GatewayRunner:
     _restart_task_started: bool = False
     _restart_detached: bool = False
     _restart_via_service: bool = False
+    _shutdown_notifications_suppressed: bool = False
     _stop_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
@@ -1723,6 +1724,7 @@ class GatewayRunner:
         self._restart_task_started = False
         self._restart_detached = False
         self._restart_via_service = False
+        self._shutdown_notifications_suppressed = False
         self._stop_task: Optional[asyncio.Task] = None
         
         # Track running agents per session for interrupt support
@@ -3443,6 +3445,18 @@ class GatewayRunner:
         messages can be delivered. Best-effort: individual send failures are
         logged and swallowed so they never block the shutdown sequence.
         """
+        # Skip user-facing shutdown notices when another gateway is taking
+        # over via `--replace`. Without this guard, a duplicate-LaunchAgent
+        # configuration where two services point at the same HERMES_HOME
+        # would cause every ~5s `--replace` teardown to broadcast the
+        # warning to active chats, producing an indefinite chat-spam loop
+        # (#32008). The replacing gateway emits its own startup notice.
+        if self._shutdown_notifications_suppressed:
+            logger.info(
+                "Shutdown notifications suppressed (planned --replace takeover)"
+            )
+            return
+
         active = self._snapshot_running_agents()
 
         action = "restarting" if self._restart_requested else "shutting down"
@@ -18845,6 +18859,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             logger.debug("snapshot_shutdown_context failed: %s", _e)
 
         if planned_takeover:
+            # Mute the user-facing shutdown notice on the way out — the
+            # replacing gateway will be back online immediately and will
+            # emit its own startup/restart notification. See #32008.
+            runner._shutdown_notifications_suppressed = True
             logger.info(
                 "Received %s as a planned --replace takeover — exiting cleanly",
                 _shutdown_ctx["signal"] if _shutdown_ctx else "SIGTERM",

@@ -622,3 +622,74 @@ async def test_shutdown_notifications_use_cached_live_thread_source_when_origin_
         "⚠️ Gateway shutting down — Your current task will be interrupted.",
         metadata={"thread_id": "topic-7"},
     )
+
+
+# ── #32008: suppress shutdown notice on planned --replace takeover ──────
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_suppressed_on_planned_replace_takeover(caplog):
+    """A planned --replace takeover must not emit user-facing shutdown notices.
+
+    Issue #32008: a duplicate-LaunchAgent configuration where two services
+    point at the same HERMES_HOME causes the two gateways to flap-fight via
+    `--replace`, broadcasting the shutdown warning every ~5s. Setting
+    ``_shutdown_notifications_suppressed`` (done in the signal handler when
+    the takeover marker is consumed) must short-circuit the per-session and
+    home-channel send paths before any adapter call.
+    """
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="42")
+    session_key = build_session_key(source)
+    runner._running_agents[session_key] = object()
+    runner.session_store._entries[session_key] = MagicMock(origin=None)
+    runner._cache_session_source(session_key, source)
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-99",
+        name="Ops Home",
+    )
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="shutdown"))
+
+    runner._shutdown_notifications_suppressed = True
+
+    with caplog.at_level("INFO", logger="gateway.run"):
+        await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send.assert_not_called()
+    suppressed_lines = [
+        r for r in caplog.records
+        if r.levelname == "INFO"
+        and "Shutdown notifications suppressed" in r.getMessage()
+        and "--replace takeover" in r.getMessage()
+    ]
+    assert suppressed_lines, (
+        "Expected INFO line noting the planned --replace takeover suppression; "
+        f"got records: {[(r.levelname, r.getMessage()) for r in caplog.records]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_default_flag_is_false():
+    """Default behavior is unchanged: the suppression flag defaults to False so
+    normal/unexpected shutdowns still emit notifications. Guards against a
+    future refactor silently flipping the class-level default to True."""
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="55")
+    session_key = build_session_key(source)
+    runner._running_agents[session_key] = object()
+    runner.session_store._entries[session_key] = MagicMock(origin=None)
+    runner._cache_session_source(session_key, source)
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="shutdown"))
+
+    # Sanity-check: the helper does not set this attribute, so it must come
+    # from the class-level default.
+    assert runner._shutdown_notifications_suppressed is False
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send.assert_awaited_once_with(
+        "55",
+        "⚠️ Gateway shutting down — Your current task will be interrupted.",
+        metadata=None,
+    )
