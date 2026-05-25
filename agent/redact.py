@@ -152,7 +152,7 @@ _JWT_RE = re.compile(
 
 # Discord user/role mentions: <@123456789012345678> or <@!123456789012345678>
 # Snowflake IDs are 17-20 digit integers that resolve to specific Discord accounts.
-_DISCORD_MENTION_RE = re.compile(r"<@!?(\d{17,20})>")
+
 
 # E.164 phone numbers: +<country><number>, 7-15 digits
 # Negative lookahead prevents matching hex strings or identifiers
@@ -424,9 +424,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if "&" in text and "=" in text:
         text = _redact_form_body(text)
 
-    # Discord user/role mentions (<@snowflake_id>)
-    if "<@" in text:
-        text = _DISCORD_MENTION_RE.sub(lambda m: f"<@{'!' if '!' in m.group(0) else ''}***>", text)
+    
 
     # E.164 phone numbers (Signal, WhatsApp)
     if "+" in text:
