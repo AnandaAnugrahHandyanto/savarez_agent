@@ -2193,6 +2193,31 @@ class BasePlatformAdapter(ABC):
         return lower.endswith('.gif')
 
     @staticmethod
+    def _is_placeholder_media_path(path: str) -> bool:
+        """Return True for documentation/example paths that should not be delivered.
+
+        Agents sometimes mention examples such as ``MEDIA:/absolute/path`` or
+        ``/absolute/path/to/chart.png`` while explaining how to attach files.
+        Those are not real attachments; treating them as media produces noisy
+        platform warnings.  Keep the filter intentionally narrow so genuinely
+        missing generated files still surface as delivery failures.
+        """
+        normalized = path.strip().strip("`\"'")
+        if normalized.startswith("file://"):
+            normalized = normalized[7:]
+        normalized = os.path.expanduser(normalized)
+        lowered = normalized.lower().replace("\\", "/")
+        parts = [p for p in lowered.split("/") if p]
+        part_stems = [p.rsplit(".", 1)[0] for p in parts]
+        placeholder_prefixes = (
+            ["absolute", "path"],
+            ["absolute", "path", "to"],
+            ["ruta", "absoluta"],
+            ["path", "to"],
+        )
+        return any(part_stems[:len(prefix)] == prefix for prefix in placeholder_prefixes)
+
+    @staticmethod
     def extract_images(content: str) -> Tuple[List[Tuple[str, str]], str]:
         """
         Extract image URLs from markdown and HTML image tags in a response.
@@ -2415,16 +2440,18 @@ class BasePlatformAdapter(ABC):
         media_pattern = re.compile(
             r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$))[`"']?'''
         )
+        found_media_tag = False
         for match in media_pattern.finditer(content):
+            found_media_tag = True
             path = match.group("path").strip()
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
-            if path:
+            if path and not BasePlatformAdapter._is_placeholder_media_path(path):
                 media.append((os.path.expanduser(path), has_voice_tag))
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
-        if media:
+        if found_media_tag:
             cleaned = media_pattern.sub('', cleaned)
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
