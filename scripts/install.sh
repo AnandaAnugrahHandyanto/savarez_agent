@@ -966,13 +966,14 @@ clone_repo() {
         # GitHub commonly returns 1 when authentication succeeds but no shell is
         # provided, and 255 when authentication or connection fails.
         # Use StrictHostKeyChecking=accept-new to avoid host key verification hangs in CI.
+        local git_ssh_command="ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new"
         local ssh_probe_status=0
         ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
             -T "git@${ssh_host}" >/dev/null 2>&1 || ssh_probe_status=$?
         
         if [ "$ssh_probe_status" -eq 0 ] || [ "$ssh_probe_status" -eq 1 ]; then
             log_info "Cloning via SSH..."
-            if git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR"; then
+            if GIT_SSH_COMMAND="$git_ssh_command" git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR"; then
                 log_success "Cloned via SSH"
             else
                 rm -rf "$INSTALL_DIR" 2>/dev/null
