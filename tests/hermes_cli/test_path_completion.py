@@ -185,41 +185,94 @@ class TestFileSizeLabel:
 
 
 class TestGetProjectFilesWindowsCrossMount:
-    """_get_project_files() should skip paths on a different Windows mount point."""
+    """_get_project_files() should skip paths on a different Windows mount point.
 
-    def test_cross_mount_path_is_skipped(self, monkeypatch, tmp_path):
-        """Simulate rg returning a cross-mount path; expect it to be skipped, not crash."""
-        import subprocess
+    Regression coverage for #31915 — typing ``@`` to invoke file autocomplete
+    on Windows used to crash the prompt_toolkit event loop when ``rg``/``fd``
+    returned a path on a different drive or a UNC/device path (e.g.
+    ``\\\\.\\nul``), because ``os.path.relpath`` raises ``ValueError`` in
+    that case.  These tests simulate the failure on any platform so the
+    regression is caught in CI without needing a Windows runner.
+    """
 
-        cwd = str(tmp_path)
-        cross_mount_path = "/dev/null" if os.sep == "/" else "D:\\other\\file.txt"
+    @staticmethod
+    def _install_cross_mount_fakes(monkeypatch, bad_path):
+        """Patch subprocess/os helpers so ``bad_path`` triggers the cross-mount branch.
 
-        # Patch subprocess.run to return the cross-mount path as if rg emitted it.
+        Returns nothing — patches are scoped to the test via ``monkeypatch``.
+        """
+        import subprocess as _subprocess
+
         class FakeProc:
             returncode = 0
-            stdout = cross_mount_path + "\n"
+            stdout = bad_path + "\n"
             stderr = ""
 
-        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: FakeProc())
+        monkeypatch.setattr(_subprocess, "run", lambda *a, **kw: FakeProc())
 
-        # Patch os.path.relpath to raise ValueError when called with the cross-mount path,
-        # simulating the Windows cross-drive behaviour regardless of the test platform.
         original_relpath = os.path.relpath
+        original_isabs = os.path.isabs
 
         def patched_relpath(path, start=None):
-            if path == cross_mount_path:
+            if path == bad_path:
                 raise ValueError("path is on mount 'X:', start on mount 'Y:'")
             return original_relpath(path, start) if start is not None else original_relpath(path)
 
         monkeypatch.setattr(os.path, "relpath", patched_relpath)
-        # Ensure the path registers as absolute so the relpath branch is taken.
-        monkeypatch.setattr(os.path, "isabs", lambda p: p == cross_mount_path or os.path.isabs(p))
+        monkeypatch.setattr(
+            os.path, "isabs", lambda p: p == bad_path or original_isabs(p)
+        )
+
+    def test_cross_drive_path_is_skipped(self, monkeypatch, tmp_path):
+        """Cross-drive path (e.g. ``D:\\file.txt`` when cwd is on ``C:``) is
+        skipped without raising, protecting the prompt_toolkit event loop."""
+        cwd = str(tmp_path)
+        cross_drive_path = "D:\\other\\file.txt" if os.sep != "/" else "/mnt/other/file.txt"
+
+        self._install_cross_mount_fakes(monkeypatch, cross_drive_path)
 
         completer = SlashCommandCompleter()
-        # Bypass the rg/fd availability check by pre-clearing cache forcing a scan.
         completer._file_cache_cwd = cwd
 
         files = completer._get_project_files()
 
-        # The cross-mount path must not appear in the result; no exception was raised.
-        assert cross_mount_path not in files
+        assert cross_drive_path not in files
+
+    def test_unc_device_path_is_skipped(self, monkeypatch, tmp_path):
+        """UNC/device paths (``\\\\.\\nul``, ``\\\\?\\C:\\...``) also trigger
+        the ``ValueError`` branch and must be skipped without crashing."""
+        cwd = str(tmp_path)
+        unc_device_path = "\\\\.\\nul"
+
+        self._install_cross_mount_fakes(monkeypatch, unc_device_path)
+
+        completer = SlashCommandCompleter()
+        completer._file_cache_cwd = cwd
+
+        files = completer._get_project_files()
+
+        assert unc_device_path not in files
+
+    def test_skip_emits_debug_log(self, monkeypatch, tmp_path, caplog):
+        """When a cross-mount path is skipped, a debug log line should be
+        emitted so the suppression is observable in future Windows triage."""
+        import logging as _logging
+
+        cwd = str(tmp_path)
+        cross_drive_path = "D:\\other\\file.txt"
+
+        self._install_cross_mount_fakes(monkeypatch, cross_drive_path)
+
+        completer = SlashCommandCompleter()
+        completer._file_cache_cwd = cwd
+
+        with caplog.at_level(_logging.DEBUG, logger="hermes_cli.commands"):
+            completer._get_project_files()
+
+        skipped = [
+            r for r in caplog.records
+            if r.name == "hermes_cli.commands"
+            and "Skipping cross-mount path" in r.getMessage()
+        ]
+        assert skipped, "expected a debug log entry when a cross-mount path is skipped"
+        assert cross_drive_path in skipped[0].getMessage()

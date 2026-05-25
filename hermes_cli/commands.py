@@ -1461,7 +1461,12 @@ class SlashCommandCompleter(Completer):
                                 # Windows: os.path.relpath() raises ValueError
                                 # for cross-mount paths (e.g. \\.\\ device paths
                                 # or a different drive letter from cwd).  Skip
-                                # these paths rather than crashing the event loop.
+                                # these paths rather than crashing the
+                                # prompt_toolkit event loop in @-autocomplete.
+                                logger.debug(
+                                    "Skipping cross-mount path during file autocomplete: %s",
+                                    p,
+                                )
                                 continue
                         else:
                             rel = p
