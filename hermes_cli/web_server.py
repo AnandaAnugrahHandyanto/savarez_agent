@@ -218,6 +218,8 @@ async def host_header_middleware(request: Request, call_next):
     """
     # Store the bound host on app.state so this middleware can read it —
     # set by start_server() at listen time.
+    if getattr(app.state, "insecure", False):
+        return await call_next(request)
     bound_host = getattr(app.state, "bound_host", None)
     if bound_host:
         host_header = request.headers.get("host", "")
@@ -3319,6 +3321,8 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
 
     Allows loopback clients only.
     """
+    if getattr(app.state, "insecure", False):
+        return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
         return True
@@ -3334,6 +3338,8 @@ def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:
     header on WebSocket handshakes; when present, require it to target the
     same bound dashboard host.
     """
+    if getattr(app.state, "insecure", False):
+        return True
     bound_host = getattr(app.state, "bound_host", None)
     if not bound_host:
         return True
@@ -4684,6 +4690,7 @@ def start_server(
     # PTY child uses to publish events to the dashboard sidebar.
     app.state.bound_host = host
     app.state.bound_port = port
+    app.state.insecure = allow_public
 
     if open_browser:
         import webbrowser
