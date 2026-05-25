@@ -4657,7 +4657,7 @@ class HermesCLI:
 
         api_key = runtime.get("api_key")
         base_url = runtime.get("base_url")
-        resolved_provider = runtime.get("provider", "openrouter")
+        resolved_provider = runtime.get("provider_id") or runtime.get("provider", "openrouter")
         resolved_api_mode = runtime.get("api_mode", self.api_mode)
         resolved_acp_command = runtime.get("command")
         resolved_acp_args = list(runtime.get("args") or [])
@@ -7474,7 +7474,13 @@ class HermesCLI:
         if persist_global:
             save_config_value("model.default", result.new_model)
             if result.provider_changed:
-                save_config_value("model.provider", result.target_provider)
+                # Bare `custom` remains valid for unnamed custom endpoints.
+                # The actual named-provider fix is preserving `provider_id`
+                # upstream so we do not collapse `custom:<name>` to `custom`.
+                save_config_value(
+                    "model.provider",
+                    result.target_provider,
+                )
             _cprint("    Saved to config.yaml (--global)")
         else:
             _cprint("    (session only — add --global to persist)")
@@ -7711,7 +7717,13 @@ class HermesCLI:
         if persist_global:
             save_config_value("model.default", result.new_model)
             if result.provider_changed:
-                save_config_value("model.provider", result.target_provider)
+                # Bare `custom` remains valid for unnamed custom endpoints.
+                # The actual named-provider fix is preserving `provider_id`
+                # upstream so we do not collapse `custom:<name>` to `custom`.
+                save_config_value(
+                    "model.provider",
+                    result.target_provider,
+                )
             _cprint("    Saved to config.yaml (--global)")
         else:
             _cprint("    (session only — add --global to persist)")
