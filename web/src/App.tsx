@@ -350,6 +350,7 @@ export default function App() {
   // the flag is off — see AnalyticsPage), but hiding the nav entry avoids
   // surfacing misleading token/cost numbers in the sidebar.  Default off.
   const [showTokenAnalytics, setShowTokenAnalytics] = useState(false);
+  const [pendingApprovalCount, setPendingApprovalCount] = useState(0);
   useEffect(() => {
     api
       .getConfig()
@@ -361,6 +362,23 @@ export default function App() {
       })
       .catch(() => setShowTokenAnalytics(false));
   }, []);
+
+  const refreshApprovalSummary = useCallback(() => {
+    api
+      .getOpsApprovalSummary()
+      .then((summary) => setPendingApprovalCount(summary.pending_count ?? 0))
+      .catch(() => setPendingApprovalCount(0));
+  }, []);
+
+  useEffect(() => {
+    refreshApprovalSummary();
+    const timer = window.setInterval(refreshApprovalSummary, 30_000);
+    window.addEventListener("focus", refreshApprovalSummary);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshApprovalSummary);
+    };
+  }, [refreshApprovalSummary]);
 
   // A plugin can replace the built-in /chat page via `tab.override: "/chat"`
   // in its manifest.  When one does, `buildRoutes` already swaps the route
@@ -560,6 +578,7 @@ export default function App() {
                     closeMobile={closeMobile}
                     item={item}
                     key={item.path}
+                    pendingApprovalCount={pendingApprovalCount}
                     t={t}
                   />
                 ))}
@@ -587,6 +606,7 @@ export default function App() {
                         closeMobile={closeMobile}
                         item={item}
                         key={item.path}
+                        pendingApprovalCount={pendingApprovalCount}
                         t={t}
                       />
                     ))}
@@ -686,8 +706,9 @@ export default function App() {
   );
 }
 
-function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
+function SidebarNavLink({ closeMobile, item, pendingApprovalCount, t }: SidebarNavLinkProps) {
   const { path, label, labelKey, icon: Icon } = item;
+  const showApprovalBadge = path === "/approvals" && pendingApprovalCount > 0;
 
   const navLabel = labelKey
     ? ((t.app.nav as Record<string, string>)[labelKey] ?? label)
@@ -719,6 +740,15 @@ function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
           <>
             <Icon className="h-3.5 w-3.5 shrink-0" />
             <span className="truncate">{navLabel}</span>
+            {showApprovalBadge && (
+              <span
+                aria-label={`${pendingApprovalCount} pending approvals`}
+                className="ml-auto rounded-full border border-amber-300/50 bg-amber-400/20 px-1.5 py-0.5 text-[0.65rem] leading-none text-amber-100"
+                title={`${pendingApprovalCount} pending approvals`}
+              >
+                {pendingApprovalCount > 99 ? "99+" : pendingApprovalCount}
+              </span>
+            )}
 
             <span
               aria-hidden
@@ -860,6 +890,7 @@ interface NavItem {
 interface SidebarNavLinkProps {
   closeMobile: () => void;
   item: NavItem;
+  pendingApprovalCount: number;
   t: Translations;
 }
 
