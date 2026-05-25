@@ -163,6 +163,37 @@ def check_telegram_requirements() -> bool:
     return True
 
 
+def _proxy_request_limits(max_connections: int):
+    """``httpx.Limits`` for the proxy-path Telegram request pools, or ``None``.
+
+    PTB's ``HTTPXRequest`` only sets ``max_connections`` and leaves
+    ``keepalive_expiry`` at httpx's 5s default. Behind a flaky local HTTP
+    proxy the general (``_request[1]``) and getUpdates pools accumulate
+    half-closed (``CLOSED`` in lsof) sockets faster than httpx evicts them —
+    httpcore's tunnel-proxy path doesn't always release the socket on
+    ``ConnectError`` — eventually walking into the macOS 256-fd limit after a
+    day or two (#31599). Reuse the gateway-wide CLOSE_WAIT tuning from #18451
+    (bound idle keepalive connections, expire idle sockets aggressively) while
+    keeping ``max_connections`` at the adapter's configured ceiling so
+    concurrent ``send_message`` calls aren't throttled.
+
+    Returns ``None`` when httpx isn't importable so the caller falls back to
+    PTB's built-in limits.
+    """
+    from gateway.platforms._http_client_limits import platform_httpx_limits
+
+    base = platform_httpx_limits()
+    if base is None:
+        return None
+    import httpx
+
+    return httpx.Limits(
+        max_connections=max_connections,
+        max_keepalive_connections=base.max_keepalive_connections,
+        keepalive_expiry=base.keepalive_expiry,
+    )
+
+
 # Matches every character that MarkdownV2 requires to be backslash-escaped
 # when it appears outside a code span or fenced code block.
 _MDV2_ESCAPE_RE = re.compile(r'([_*\[\]()~`>#\+\-=|{}.!\\])')
@@ -1430,8 +1461,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             elif proxy_url:
                 logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
-                request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
-                get_updates_request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
+                # Bound idle keepalive and expire idle sockets aggressively so
+                # the proxy tunnel's lingering CLOSED sockets can't starve the
+                # pool and exhaust the process fd limit (#31599).
+                proxy_limits = _proxy_request_limits(request_kwargs["connection_pool_size"])
+                proxy_extra = {"httpx_kwargs": {"limits": proxy_limits}} if proxy_limits is not None else {}
+                request = HTTPXRequest(**request_kwargs, proxy=proxy_url, **proxy_extra)
+                get_updates_request = HTTPXRequest(**request_kwargs, proxy=proxy_url, **proxy_extra)
             else:
                 if disable_fallback:
                     logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)
