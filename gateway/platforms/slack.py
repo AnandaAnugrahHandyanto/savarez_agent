@@ -609,6 +609,23 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_assistant_thread_context_changed(event, say):
                 await self._handle_assistant_thread_lifecycle_event(event)
 
+            # Plugin lifecycle hook: fired before the native slash fallback is
+            # registered, so plugins can register app.command(...) handlers
+            # with higher Bolt matching priority.
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _invoke_hook(
+                    "on_slack_app_init",
+                    app=self._app,
+                    adapter=self,
+                    profile=getattr(self.config, "profile_name", None),
+                    web_clients=self._team_clients,
+                    bot_user_id=self._bot_user_id,
+                )
+            except Exception:
+                logger.exception("[%s] on_slack_app_init hook failed; aborting Slack start", self.name)
+                raise
+
             # Register slash command handler(s)
             #
             # Every gateway command from COMMAND_REGISTRY is a native Slack
@@ -659,23 +676,6 @@ class SlackAdapter(BasePlatformAdapter):
                 "hermes_confirm_cancel",
             ):
                 self._app.action(_action_id)(self._handle_slash_confirm_action)
-
-            # Plugin lifecycle hook: fired after native handlers are
-            # registered and before Socket Mode starts. Plugins can register
-            # additional app.command/action/view/event handlers here.
-            try:
-                from hermes_cli.plugins import invoke_hook as _invoke_hook
-                _invoke_hook(
-                    "on_slack_app_init",
-                    app=self._app,
-                    adapter=self,
-                    profile=getattr(self.config, "profile_name", None),
-                    web_clients=self._team_clients,
-                    bot_user_id=self._bot_user_id,
-                )
-            except Exception:
-                logger.exception("[%s] on_slack_app_init hook failed; aborting Slack start", self.name)
-                raise
 
             # Start Socket Mode handler in background
             self._handler = AsyncSocketModeHandler(self._app, app_token, proxy=proxy_url)
