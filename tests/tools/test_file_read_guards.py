@@ -82,7 +82,18 @@ class TestDevicePathBlocking(unittest.TestCase):
         self.assertTrue(_is_blocked_device("/proc/12345/fd/2"))
 
     def test_proc_fd_other_not_blocked(self):
-        self.assertFalse(_is_blocked_device("/proc/self/fd/3"))
+        # On CI runners fd 3 may be open and point to a blocked device
+        # (pipe, log file, or tty).  Force os.path.realpath to return a
+        # known-safe path so the test is deterministic.
+        _real_realpath = os.path.realpath
+
+        def _mock_realpath(path):
+            if path == "/proc/self/fd/3":
+                return "/dev/null"
+            return _real_realpath(path)
+
+        with patch("os.path.realpath", side_effect=_mock_realpath):
+            self.assertFalse(_is_blocked_device("/proc/self/fd/3"))
 
     def test_proc_sensitive_pseudo_files_blocked(self):
         """environ/cmdline/maps under /proc/<pid> must be blocked (issue #4427)."""
