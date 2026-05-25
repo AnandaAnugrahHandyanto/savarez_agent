@@ -1345,6 +1345,9 @@ class BasePlatformAdapter(ABC):
         self._auto_tts_default: bool = False
         self._auto_tts_enabled_chats: set = set()
         self._auto_tts_disabled_chats: set = set()
+        # When True, TTS fires on ALL message types (not just voice input).
+        # Driven by voice.auto_tts_always in config.yaml.
+        self._auto_tts_always: bool = False
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
@@ -3188,6 +3191,7 @@ class BasePlatformAdapter(ABC):
                 # True globally and no ``/voice off`` has been issued.
                 _tts_path = None
                 if (self._should_auto_tts_for_chat(event.source.chat_id)
+                        and (event.message_type == MessageType.VOICE or self._auto_tts_always)
                         and text_content
                         and not media_files):
                     try:
