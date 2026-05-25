@@ -765,6 +765,52 @@ def _is_system_item(item: CronSituationItem) -> bool:
     return "situation room refresh" in lowered or (item.deliver or "").lower() == "local"
 
 
+_DEV_FEED_KEYWORDS = (
+    "startup sprint",
+    "sprint ceo",
+    "self-healing",
+    "self-healing sentinel",
+    "repair loop",
+    "qa smoke",
+    "smoke run",
+    "user-testing sweep",
+    "user testing sweep",
+    "user testing",
+    "security audit",
+    "security scan",
+    "app security",
+    "vesta import",
+    "vesta startup",
+    "acta startup",
+    "minerva startup",
+    "praetor startup",
+)
+
+
+def _feed_lane(item: CronSituationItem) -> str:
+    """Classify Acta source rows into operator-readable feed lanes.
+
+    High-frequency autonomous app-development jobs are useful, but when they
+    share the same stream as daily life/news automations they bury the user's
+    actual daily briefing surface. Keep system/local jobs separate, isolate
+    SDLC/dev loops, and let everything else remain in the daily-life feed.
+    """
+    if _is_system_item(item):
+        return "system"
+    haystack = f"{item.job_id} {item.name}".casefold()
+    if any(keyword in haystack for keyword in _DEV_FEED_KEYWORDS):
+        return "dev"
+    return "daily"
+
+
+def _feed_lane_label(lane: str) -> str:
+    return {
+        "daily": "Daily life feed",
+        "dev": "Development sprint cycles",
+        "system": "System/local jobs",
+    }.get(lane, "Other feed")
+
+
 def _config_list(value: object) -> list[str]:
     if isinstance(value, str):
         return [value]
@@ -909,13 +955,24 @@ def render_dashboard(
             return "PAUSED"
         return "OUT"
 
-    lead_item = next((item for item in ordered_items if item.status == "fresh" and not _is_system_item(item)), ordered_items[0] if ordered_items else None)
-    feed_items = [item for item in ordered_items if item is not lead_item]
+    daily_items = [item for item in ordered_items if _feed_lane(item) == "daily"]
+    dev_items = [item for item in ordered_items if _feed_lane(item) == "dev"]
+    system_items = [item for item in ordered_items if _feed_lane(item) == "system"]
+    lead_item = next(
+        (item for item in daily_items if item.status == "fresh"),
+        daily_items[0] if daily_items else (ordered_items[0] if ordered_items else None),
+    )
+    grouped_feed_items: dict[str, list[CronSituationItem]] = {
+        "daily": [item for item in daily_items if item is not lead_item],
+        "dev": [item for item in dev_items if item is not lead_item],
+        "system": [item for item in system_items if item is not lead_item],
+    }
 
-    rows: list[str] = []
+    rows_by_lane: dict[str, list[str]] = {"daily": [], "dev": [], "system": []}
     read_order: list[str] = []
     audit_rows: list[str] = []
-    for index, item in enumerate(feed_items):
+
+    def append_feed_row(item: CronSituationItem, index: int, lane: str) -> None:
         status_class = _status_class(item)
         status_label = "paused" if not item.enabled else item.status
         latest = item.latest_time.isoformat() if item.latest_time else "No run yet"
@@ -942,9 +999,9 @@ def render_dashboard(
         swipe_action = '<div class="swipe-action" aria-hidden="true">MARK READ</div>' if href else ""
         read_state = '<span class="read-state">UNREAD</span>' if href else ""
         row_read_dot = '<span class="read-dot"></span>' if href else ""
-        rows.append(
+        rows_by_lane[lane].append(
             f"""
-<section class="brief-row{readable_class} {status_class}"{open_attr}>
+<section class="brief-row{readable_class} {status_class}" data-feed-lane="{_safe_text(lane)}"{open_attr}>
   {open_overlay}
   {swipe_action}
   <div class="swipe-content">
@@ -952,14 +1009,14 @@ def render_dashboard(
     <div class="brief-copy">
       <h2>{_safe_text(item.name)}</h2>
       <p>{_safe_text(item.excerpt)}</p>
-      <div class="row-kicker">{read_state}<span class="confidence-chip">{_safe_text(confidence)}</span><span>{_safe_text(status_label)}</span><span>{_safe_text(age)}</span><span>{_safe_text(item.schedule or "manual")}</span></div>
+      <div class="row-kicker"><span class="lane-chip">{_safe_text(_feed_lane_label(lane))}</span>{read_state}<span class="confidence-chip">{_safe_text(confidence)}</span><span>{_safe_text(status_label)}</span><span>{_safe_text(age)}</span><span>{_safe_text(item.schedule or "manual")}</span></div>
       <div class="source-line">{_safe_text(item.job_id)} · {_safe_text(item.deliver or "local")} · {_safe_text(latest)}</div>
     </div>
     <span class="card-actions"><span class="open-label">{open_label}</span>{ask_link}</span>
   </div>
 </section>"""
         )
-        if len(read_order) < 4:
+        if len(read_order) < 4 and lane == "daily":
             read_order.append(
                 f"""
 <div class="order-row {status_class}">
@@ -968,14 +1025,42 @@ def render_dashboard(
   <span>{_safe_text(row_signal)}</span>
 </div>"""
             )
-        if item.latest_time and len(audit_rows) < 4:
-            audit_rows.append(
-                f"""
+
+    for lane, lane_items in grouped_feed_items.items():
+        for index, item in enumerate(lane_items):
+            append_feed_row(item, index, lane)
+
+    for item in ordered_items:
+        if item is lead_item or not item.latest_time or len(audit_rows) >= 4:
+            continue
+        lane = _feed_lane(item)
+        status_label = "paused" if not item.enabled else item.status
+        audit_rows.append(
+            f"""
 <div class="audit-row">
   <time>{_safe_text(item.latest_time.strftime('%H:%M'))}</time>
-  <div><b>{_safe_text(item.name)}</b><span>{_safe_text(status_label)} · {_safe_text(item.job_id)}</span></div>
+  <div><b>{_safe_text(item.name)}</b><span>{_safe_text(_feed_lane_label(lane))} · {_safe_text(status_label)} · {_safe_text(item.job_id)}</span></div>
 </div>"""
-            )
+        )
+
+    def _feed_section(lane: str, title: str, subtitle: str) -> str:
+        lane_rows = ''.join(rows_by_lane[lane])
+        if not lane_rows:
+            empty_message = "No additional outputs in this lane yet." if lead_item and _feed_lane(lead_item) == lane else "No visible outputs in this lane yet."
+            lane_rows = f'<p class="empty-feed">{html.escape(empty_message)}</p>'
+        return f"""
+<div class="feed-section lane-section-{lane}">
+  <div class="feed-section-title"><b>{html.escape(title)}</b><span>{html.escape(subtitle)}</span></div>
+  <section class="feed" data-feed-lane="{html.escape(lane, quote=True)}">{lane_rows}</section>
+</div>"""
+
+    daily_section = _feed_section("daily", "Daily life feed", "news, newsletters, weather, sports, lunch")
+    dev_section = _feed_section("dev", "Development sprint cycles", "Acta, Vesta, QA, security, app agents")
+    system_section = (
+        _feed_section("system", "System/local jobs", "refreshers and silent maintenance")
+        if system_items or (lead_item and _feed_lane(lead_item) == "system")
+        else ""
+    )
 
     jobs_rows = _render_jobs_rows(ordered_items, now)
 
@@ -1070,6 +1155,14 @@ h1 {{ grid-column:1; font:720 clamp(18px,2.3vw,24px)/1.08 var(--ui); letter-spac
 .readable.read .read-dot {{ background:transparent; box-shadow:inset 0 0 0 1px var(--faint); }}
 .readable.read h1, .readable.read h2 {{ color:#c8c8c8; }}
 .feed {{ display:flex; flex-direction:column; gap:6px; border-top:0; }}
+.feed-section {{ margin:0 0 14px; }}
+.feed-section-title {{ display:flex; align-items:flex-end; justify-content:space-between; gap:10px; margin:10px 0 7px; color:#fff; font:800 10px var(--mono); letter-spacing:.11em; text-transform:uppercase; }}
+.feed-section-title span {{ color:var(--muted); font-weight:600; letter-spacing:.06em; text-align:right; }}
+.empty-feed {{ margin:0; border:1px dashed var(--line-soft); border-radius:13px; padding:12px; color:var(--muted); font:12px var(--mono); text-transform:uppercase; letter-spacing:.06em; background:rgba(255,255,255,.018); }}
+.lane-chip {{ border-color:rgba(117,108,255,.44) !important; color:#fff; background:rgba(117,108,255,.18) !important; }}
+.brief-row[data-feed-lane='dev'] .swipe-content:before {{ background:linear-gradient(180deg,#ffb86b,var(--acta)); }}
+.brief-row[data-feed-lane='system'] .swipe-content:before {{ background:rgba(245,247,251,.34); }}
+.brief-row[data-feed-lane='dev'] {{ background:rgba(255,184,107,.035); }}
 .brief-row {{ display:block; border:1px solid var(--line-soft); border-radius:13px; text-decoration:none; color:inherit; cursor:pointer; position:relative; overflow:hidden; background:rgba(255,255,255,.028); }}
 .swipe-content {{ display:grid; grid-template-columns:34px minmax(0,1fr) auto; gap:9px; align-items:center; padding:8px 10px; min-height:64px; position:relative; z-index:1; background:transparent; transition:transform .22s cubic-bezier(.2,.8,.2,1), opacity .18s ease, background .18s ease; will-change:transform; }}
 .swipe-content:before {{ content:""; width:2px; height:36px; border-radius:999px; background:rgba(117,108,255,.78); position:absolute; left:0; top:50%; transform:translateY(-50%); }}
@@ -1181,10 +1274,10 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
           <div class="output-summary"><b>{visible}/{active}</b><span>fresh</span><span>{missing} gaps</span></div>
           <div class="meta"><span>{html.escape(day_label)}</span><span>{_safe_text(lead_confidence)}</span><span>{silent} silent</span><span>{len(archive_dates)} archive days</span><span>{lead_row_meta}</span>{lead_ask_link}</div>
         </article>
-        <div class="panel-title"><b>Output Stream</b><span>signed rows open</span></div>
-        <section class="feed">
-          {''.join(rows)}
-        </section>
+        <div class="panel-title"><b>Output Streams</b><span>daily life separated from dev cycles</span></div>
+        {daily_section}
+        {dev_section}
+        {system_section}
       </div>
       <aside class="side">
         <section class="card"><div class="card-head">Read Order <span>PRIORITIZED</span></div><div class="readorder">{''.join(read_order) or '<p class="prompt">No outputs yet.</p>'}</div></section>

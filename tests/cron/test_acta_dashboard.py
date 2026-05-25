@@ -6,6 +6,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from cron.acta_dashboard import (
+    _feed_lane,
     _outputs_read_state_script,
     acta_dashboard_config,
     apply_feed_preferences,
@@ -133,6 +134,158 @@ def test_dashboard_uses_acta_imperatr_suite_board_palette(tmp_path: Path):
     assert "Delivery Routes" not in html
     assert "Bloomberg" not in html
     assert "Your cron command center" not in html
+
+
+def test_dashboard_separates_daily_life_and_development_sprint_feeds(tmp_path: Path):
+    jobs = [
+        {"id": "news", "name": "Morning Newsletter", "schedule": "daily", "deliver": "telegram"},
+        {"id": "vesta", "name": "Vesta Startup Sprint CEO loop", "schedule": "*/30 * * * *", "deliver": "telegram"},
+        {"id": "qa", "name": "Weekly app user-testing sweep", "schedule": "weekly", "deliver": "telegram"},
+    ]
+    for job in jobs:
+        (tmp_path / "cron" / "output" / job["id"]).mkdir(parents=True)
+    (tmp_path / "cron" / "jobs.json").write_text(json.dumps(jobs))
+    (tmp_path / "cron" / "output" / "news" / "2026-05-19_09-00-00.md").write_text("## Response\n\nDaily signal")
+    (tmp_path / "cron" / "output" / "vesta" / "2026-05-19_09-10-00.md").write_text("## Response\n\nSprint signal")
+    (tmp_path / "cron" / "output" / "qa" / "2026-05-19_09-20-00.md").write_text("## Response\n\nQA signal")
+
+    items = collect_situation_items(tmp_path)
+    lanes = {item.job_id: _feed_lane(item) for item in items}
+    html = render_dashboard(items)
+
+    assert lanes == {"news": "daily", "vesta": "dev", "qa": "dev"}
+    assert "Output Streams" in html
+    assert "Daily life feed" in html
+    assert "Development sprint cycles" in html
+    assert 'data-feed-lane="daily"' in html
+    assert 'data-feed-lane="dev"' in html
+    assert html.index("Daily life feed") < html.index("Development sprint cycles")
+
+
+def test_dashboard_dev_only_lead_is_not_duplicated_in_dev_lane_read_keys():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    lead = item_cls(
+        job_id="vesta-startup",
+        name="Vesta Startup Sprint CEO loop",
+        schedule="*/30 * * * *",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_10-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Sprint signal.",
+        artifact_url="https://acta.imperatr.com/r/vesta-startup/detail.html?exp=1&sig=abc",
+    )
+
+    html = render_dashboard([lead], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
+    dev_section = html[html.index('lane-section-dev') :]
+
+    assert _feed_lane(lead) == "dev"
+    assert html.count("<h1>Vesta Startup Sprint CEO loop</h1>") == 1
+    assert html.count("<h2>Vesta Startup Sprint CEO loop</h2>") == 0
+    assert html.count('data-read-key="vesta-startup:') == 1
+    assert "No additional outputs in this lane yet." in dev_section
+    assert "No visible outputs in this lane yet." not in dev_section
+
+
+def test_dashboard_system_only_lead_keeps_system_lane_visible():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    lead = item_cls(
+        job_id="acta-refresh",
+        name="Situation Room Refresh",
+        schedule="*/15 * * * *",
+        deliver="local",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_10-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Dashboard refreshed.",
+    )
+
+    html = render_dashboard([lead], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
+    system_section = html[html.index('lane-section-system') :]
+
+    assert _feed_lane(lead) == "system"
+    assert "System/local jobs" in system_section
+    assert html.count("<h1>Situation Room Refresh</h1>") == 1
+    assert html.count("<h2>Situation Room Refresh</h2>") == 0
+    assert "No additional outputs in this lane yet." in system_section
+    assert "No visible outputs in this lane yet." not in system_section
+
+
+def test_feed_lane_classifies_generic_dev_job_names_without_catching_daily_life():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+
+    def item(name: str):
+        return item_cls(
+            job_id=name.lower().replace(" ", "-"),
+            name=name,
+            schedule="daily",
+            deliver="telegram",
+            enabled=True,
+            latest_md=None,
+            latest_html=None,
+            latest_time=None,
+            status="fresh",
+            excerpt="Signal.",
+        )
+
+    dev_names = ["Self-healing repair loop", "QA smoke run", "User testing notes", "security audit"]
+    daily_names = ["Daily life notes", "News roundup", "Weather brief", "Sports scores", "Lunch ideas"]
+
+    assert {name: _feed_lane(item(name)) for name in dev_names} == {name: "dev" for name in dev_names}
+    assert {name: _feed_lane(item(name)) for name in daily_names} == {name: "daily" for name in daily_names}
+
+
+def test_dashboard_audit_trail_preserves_ordered_recency_across_lanes():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    lead = item_cls(
+        job_id="daily-lead",
+        name="Daily Lead Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_11-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 11, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Lead daily signal.",
+    )
+    dev = item_cls(
+        job_id="vesta-startup",
+        name="Vesta Startup Sprint CEO loop",
+        schedule="*/30 * * * *",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_10-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Dev signal.",
+    )
+    daily_followup = item_cls(
+        job_id="daily-followup",
+        name="Daily Follow Up",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_09-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 9, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Follow-up daily signal.",
+    )
+
+    html = render_dashboard([lead, dev, daily_followup], generated_at=datetime(2026, 5, 19, 12, tzinfo=timezone.utc))
+    audit_start = html.index('<section class="card"><div class="card-head">Audit Trail')
+    audit_section = html[audit_start : html.index("Operator Assist", audit_start)]
+
+    assert "Daily Lead Brief" not in audit_section
+    assert audit_section.index("Vesta Startup Sprint CEO loop") < audit_section.index("Daily Follow Up")
+    assert "Development sprint cycles · fresh · vesta-startup" in audit_section
+    assert "Daily life feed · fresh · daily-followup" in audit_section
 
 
 def test_collects_telegram_thread_links_from_delivery_targets(tmp_path: Path):
