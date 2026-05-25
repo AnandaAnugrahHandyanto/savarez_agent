@@ -94,9 +94,6 @@ class TestConstants:
     def test_default_deployment(self, plugin):
         assert plugin.DEFAULT_DEPLOYMENT == "gpt-image-2"
 
-    def test_default_api_version_preview(self, plugin):
-        assert "preview" in plugin.DEFAULT_API_VERSION
-
     def test_valid_quality_values(self, plugin):
         assert plugin.VALID_QUALITY_VALUES == {"low", "medium", "high"}
 
@@ -169,7 +166,7 @@ class TestGenerateQualityFromConfig:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text("image_gen: {}\n")
         fake_client = _fake_url_client()
-        with patch("openai.AzureOpenAI", return_value=fake_client):
+        with patch("openai.OpenAI", return_value=fake_client):
             result = provider.generate("a fox")
         assert result["success"] is True
         assert fake_client.images.generate.call_args.kwargs["quality"] == "medium"
@@ -179,7 +176,7 @@ class TestGenerateQualityFromConfig:
         monkeypatch.setenv("AZURE_FOUNDRY_IMAGE_QUALITY", "low")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         fake_client = _fake_url_client()
-        with patch("openai.AzureOpenAI", return_value=fake_client):
+        with patch("openai.OpenAI", return_value=fake_client):
             result = provider.generate("a fox")
         assert result["success"] is True
         assert fake_client.images.generate.call_args.kwargs["quality"] == "low"
@@ -192,7 +189,7 @@ class TestGenerateQualityFromConfig:
             "image_gen:\n  azure_foundry:\n    quality: high\n"
         )
         fake_client = _fake_url_client()
-        with patch("openai.AzureOpenAI", return_value=fake_client):
+        with patch("openai.OpenAI", return_value=fake_client):
             result = provider.generate("a fox")
         assert result["success"] is True
         assert fake_client.images.generate.call_args.kwargs["quality"] == "high"
@@ -202,7 +199,7 @@ class TestGenerateQualityFromConfig:
         monkeypatch.setenv("AZURE_FOUNDRY_IMAGE_QUALITY", "high")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         fake_client = _fake_url_client()
-        with patch("openai.AzureOpenAI", return_value=fake_client):
+        with patch("openai.OpenAI", return_value=fake_client):
             result = provider.generate("a fox")
         assert result.get("quality") == "high"
 
@@ -223,7 +220,7 @@ class TestGenerateDeployment:
         monkeypatch.setenv("AZURE_FOUNDRY_IMAGE_DEPLOYMENT", "my-deploy")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         fake_client = _fake_url_client()
-        with patch("openai.AzureOpenAI", return_value=fake_client):
+        with patch("openai.OpenAI", return_value=fake_client):
             provider.generate("a fox")
         assert fake_client.images.generate.call_args.kwargs["model"] == "my-deploy"
 
@@ -233,7 +230,7 @@ class TestGenerateDeployment:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text("image_gen: {}\n")
         fake_client = _fake_url_client()
-        with patch("openai.AzureOpenAI", return_value=fake_client):
+        with patch("openai.OpenAI", return_value=fake_client):
             provider.generate("a fox")
         assert fake_client.images.generate.call_args.kwargs["model"] == "gpt-image-2"
 
@@ -242,7 +239,7 @@ class TestGenerateDeployment:
         monkeypatch.setenv("AZURE_FOUNDRY_IMAGE_DEPLOYMENT", "my-deploy")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         fake_client = _fake_url_client()
-        with patch("openai.AzureOpenAI", return_value=fake_client):
+        with patch("openai.OpenAI", return_value=fake_client):
             result = provider.generate("a fox")
         assert result["model"] == "my-deploy"
 
@@ -256,7 +253,7 @@ class TestGenerateHappyPath:
         _set_creds(monkeypatch)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         fake_client = _fake_url_client("https://cdn.example.com/out.png")
-        with patch("openai.AzureOpenAI", return_value=fake_client):
+        with patch("openai.OpenAI", return_value=fake_client):
             result = provider.generate("a cat")
         assert result["success"] is True
         assert result["image"] == "https://cdn.example.com/out.png"
@@ -273,7 +270,7 @@ class TestGenerateHappyPath:
         fake_resp.data = [fake_item]
         fake_client = MagicMock()
         fake_client.images.generate.return_value = fake_resp
-        with patch("openai.AzureOpenAI", return_value=fake_client):
+        with patch("openai.OpenAI", return_value=fake_client):
             result = provider.generate("a dog")
         assert result["success"] is True
         assert result["image"].endswith(".png")
@@ -289,7 +286,7 @@ class TestGenerateHappyPath:
         fake_resp.data = [fake_item]
         fake_client = MagicMock()
         fake_client.images.generate.return_value = fake_resp
-        with patch("openai.AzureOpenAI", return_value=fake_client):
+        with patch("openai.OpenAI", return_value=fake_client):
             result = provider.generate("a fox")
         assert result.get("revised_prompt") == "a swift arctic fox"
 
@@ -297,7 +294,7 @@ class TestGenerateHappyPath:
         _set_creds(monkeypatch)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         fake_client = _fake_url_client()
-        with patch("openai.AzureOpenAI", return_value=fake_client):
+        with patch("openai.OpenAI", return_value=fake_client):
             provider.generate("a fox", aspect_ratio="landscape")
         assert fake_client.images.generate.call_args.kwargs["size"] == "1536x1024"
 
@@ -305,7 +302,7 @@ class TestGenerateHappyPath:
         _set_creds(monkeypatch)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         fake_client = _fake_url_client()
-        with patch("openai.AzureOpenAI", return_value=fake_client):
+        with patch("openai.OpenAI", return_value=fake_client):
             provider.generate("a fox", aspect_ratio="portrait")
         assert fake_client.images.generate.call_args.kwargs["size"] == "1024x1536"
 
@@ -322,8 +319,7 @@ class TestGenerateErrors:
         assert result["error_type"] == "invalid_argument"
 
     def test_missing_credentials_returns_auth_error(self, provider, monkeypatch, tmp_path):
-        for k in ("AZURE_FOUNDRY_IMAGE_KEY", "AZURE_FOUNDRY_IMAGE_ENDPOINT",
-                  "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT"):
+        for k in ("AZURE_FOUNDRY_IMAGE_KEY", "AZURE_FOUNDRY_IMAGE_ENDPOINT"):
             monkeypatch.delenv(k, raising=False)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text("image_gen: {}\n")
@@ -343,7 +339,7 @@ class TestGenerateErrors:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         fake_client = MagicMock()
         fake_client.images.generate.side_effect = RuntimeError("quota exceeded")
-        with patch("openai.AzureOpenAI", return_value=fake_client):
+        with patch("openai.OpenAI", return_value=fake_client):
             result = provider.generate("a cat")
         assert result["success"] is False
         assert result["error_type"] == "api_error"
@@ -356,7 +352,7 @@ class TestGenerateErrors:
         fake_resp.data = []
         fake_client = MagicMock()
         fake_client.images.generate.return_value = fake_resp
-        with patch("openai.AzureOpenAI", return_value=fake_client):
+        with patch("openai.OpenAI", return_value=fake_client):
             result = provider.generate("a cat")
         assert result["success"] is False
         assert result["error_type"] == "empty_response"
@@ -371,7 +367,7 @@ class TestGenerateErrors:
         fake_resp.data = [fake_item]
         fake_client = MagicMock()
         fake_client.images.generate.return_value = fake_resp
-        with patch("openai.AzureOpenAI", return_value=fake_client):
+        with patch("openai.OpenAI", return_value=fake_client):
             result = provider.generate("a cat")
         assert result["success"] is False
         assert result["error_type"] == "empty_response"
@@ -383,8 +379,7 @@ class TestGenerateErrors:
 
 class TestIsAvailable:
     def test_false_when_no_env(self, provider, monkeypatch, tmp_path):
-        for k in ("AZURE_FOUNDRY_IMAGE_KEY", "AZURE_FOUNDRY_IMAGE_ENDPOINT",
-                  "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT"):
+        for k in ("AZURE_FOUNDRY_IMAGE_KEY", "AZURE_FOUNDRY_IMAGE_ENDPOINT"):
             monkeypatch.delenv(k, raising=False)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text("image_gen: {}\n")
@@ -392,15 +387,13 @@ class TestIsAvailable:
 
     def test_false_when_only_key(self, provider, monkeypatch, tmp_path):
         monkeypatch.setenv("AZURE_FOUNDRY_IMAGE_KEY", "sk-test")
-        for k in ("AZURE_FOUNDRY_IMAGE_ENDPOINT", "AZURE_OPENAI_ENDPOINT"):
-            monkeypatch.delenv(k, raising=False)
+        monkeypatch.delenv("AZURE_FOUNDRY_IMAGE_ENDPOINT", raising=False)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text("image_gen: {}\n")
         assert not provider.is_available()
 
     def test_false_when_only_endpoint(self, provider, monkeypatch, tmp_path):
-        for k in ("AZURE_FOUNDRY_IMAGE_KEY", "AZURE_OPENAI_API_KEY"):
-            monkeypatch.delenv(k, raising=False)
+        monkeypatch.delenv("AZURE_FOUNDRY_IMAGE_KEY", raising=False)
         monkeypatch.setenv("AZURE_FOUNDRY_IMAGE_ENDPOINT", "https://my.openai.azure.com")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text("image_gen: {}\n")
@@ -447,7 +440,8 @@ class TestSetupSchema:
         assert "name" in provider.get_setup_schema()
 
     def test_has_env_vars(self, provider):
-        assert len(provider.get_setup_schema()["env_vars"]) > 0
+        # env_vars may be empty when setup_interactive() handles setup
+        assert isinstance(provider.get_setup_schema()["env_vars"], list)
 
     def test_has_badge(self, provider):
         assert "badge" in provider.get_setup_schema()
@@ -502,19 +496,18 @@ class TestConfigResolution:
         assert creds["endpoint"] == "https://env.openai.azure.com"
         assert creds["deployment"] == "my-deploy"
 
-    def test_resolve_credentials_from_config(self, plugin, monkeypatch, tmp_path):
-        monkeypatch.setenv("MY_KEY", "config-key")
-        for k in ("AZURE_FOUNDRY_IMAGE_KEY", "AZURE_FOUNDRY_IMAGE_ENDPOINT"):
+    def test_resolve_credentials_from_config_endpoint(self, plugin, monkeypatch, tmp_path):
+        """Endpoint and deployment resolve from config.yaml when env vars absent."""
+        for k in ("AZURE_FOUNDRY_IMAGE_KEY", "AZURE_FOUNDRY_IMAGE_ENDPOINT",
+                  "AZURE_FOUNDRY_IMAGE_DEPLOYMENT"):
             monkeypatch.delenv(k, raising=False)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text(
             "image_gen:\n"
             "  azure_foundry:\n"
             "    endpoint: \"https://cfg.openai.azure.com\"\n"
-            "    api_key_env: MY_KEY\n"
             "    deployment_name: cfg-deploy\n"
         )
         creds = plugin._resolve_credentials()
-        assert creds["api_key"] == "config-key"
         assert creds["endpoint"] == "https://cfg.openai.azure.com"
         assert creds["deployment"] == "cfg-deploy"
