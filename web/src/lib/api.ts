@@ -142,6 +142,21 @@ export const api = {
     });
   },
 
+  // Ops approvals: writable decision state, no execution hook
+  getOpsApprovals: () => fetchJSON<OpsApproval[]>("/api/ops/approvals"),
+  createOpsApproval: (approval: OpsApprovalCreate) =>
+    fetchJSON<OpsApproval>("/api/ops/approvals", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(approval),
+    }),
+  decideOpsApproval: (id: string, action: "approve" | "reject" | "clarify" | "snooze", body: OpsApprovalDecision) =>
+    fetchJSON<OpsApproval>(`/api/ops/approvals/${encodeURIComponent(id)}/${action}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+
   // Cron jobs
   getCronJobs: (profile = "all") =>
     fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
@@ -555,6 +570,49 @@ export interface ModelsAnalyticsResponse {
     total_api_calls: number;
   };
   period_days: number;
+}
+
+export interface OpsApproval {
+  id: string;
+  created_at: string;
+  created_by: string;
+  project: string;
+  profile: string;
+  risk_label: string;
+  title: string;
+  proposed_action: string;
+  target: string;
+  preview: string;
+  reason: string;
+  rollback_or_verification: string;
+  blocked_until_approved: boolean;
+  status: "pending" | "approved" | "rejected" | "expired" | "clarification_requested" | "snoozed";
+  expires_at: string;
+  decided_at?: string | null;
+  decided_by?: string | null;
+  decision_note?: string | null;
+  execution_allowed: boolean;
+  execution_result?: unknown;
+  generated_command?: string | null;
+}
+
+export interface OpsApprovalCreate {
+  title: string;
+  project: string;
+  profile?: string;
+  risk_label: string;
+  proposed_action: string;
+  target: string;
+  preview: string;
+  reason: string;
+  rollback_or_verification: string;
+  created_by?: string;
+  expires_at?: string;
+}
+
+export interface OpsApprovalDecision {
+  decided_by: string;
+  decision_note?: string;
 }
 
 export interface CronJob {

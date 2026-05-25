@@ -2581,6 +2581,110 @@ class CronJobUpdate(BaseModel):
     updates: dict
 
 
+class ApprovalCreate(BaseModel):
+    title: str
+    project: str
+    profile: str = "default"
+    risk_label: str
+    proposed_action: str
+    target: str
+    preview: str
+    reason: str
+    rollback_or_verification: str
+    created_by: str = "dashboard"
+    expires_at: Optional[str] = None
+
+
+class ApprovalDecision(BaseModel):
+    decided_by: str
+    decision_note: Optional[str] = None
+
+
+def _model_dump(body: BaseModel) -> Dict[str, Any]:
+    if hasattr(body, "model_dump"):
+        return body.model_dump(exclude_none=True)  # type: ignore[attr-defined]
+    return body.dict(exclude_none=True)
+
+
+def _approval_store():
+    from hermes_cli.ops_approvals import ApprovalStore
+    return ApprovalStore()
+
+
+def _approval_error(exc: Exception) -> HTTPException:
+    detail = str(exc) or "Invalid approval request"
+    status = 404 if "not found" in detail.lower() else 400
+    return HTTPException(status_code=status, detail=detail)
+
+
+@app.get("/api/ops/approvals")
+async def list_ops_approvals():
+    try:
+        return _approval_store().list()
+    except Exception as exc:
+        raise _approval_error(exc) from exc
+
+
+@app.post("/api/ops/approvals")
+async def create_ops_approval(body: ApprovalCreate):
+    try:
+        return _approval_store().create(_model_dump(body))
+    except Exception as exc:
+        raise _approval_error(exc) from exc
+
+
+@app.post("/api/ops/approvals/{approval_id}/approve")
+async def approve_ops_approval(approval_id: str, body: ApprovalDecision):
+    try:
+        return _approval_store().decide(
+            approval_id,
+            "approved",
+            decided_by=body.decided_by,
+            decision_note=body.decision_note,
+        )
+    except Exception as exc:
+        raise _approval_error(exc) from exc
+
+
+@app.post("/api/ops/approvals/{approval_id}/reject")
+async def reject_ops_approval(approval_id: str, body: ApprovalDecision):
+    try:
+        return _approval_store().decide(
+            approval_id,
+            "rejected",
+            decided_by=body.decided_by,
+            decision_note=body.decision_note,
+        )
+    except Exception as exc:
+        raise _approval_error(exc) from exc
+
+
+@app.post("/api/ops/approvals/{approval_id}/clarify")
+async def clarify_ops_approval(approval_id: str, body: ApprovalDecision):
+    try:
+        return _approval_store().decide(
+            approval_id,
+            "clarification_requested",
+            decided_by=body.decided_by,
+            decision_note=body.decision_note,
+        )
+    except Exception as exc:
+        raise _approval_error(exc) from exc
+
+
+@app.post("/api/ops/approvals/{approval_id}/snooze")
+async def snooze_ops_approval(approval_id: str, body: ApprovalDecision):
+    try:
+        return _approval_store().decide(
+            approval_id,
+            "snoozed",
+            decided_by=body.decided_by,
+            decision_note=body.decision_note,
+        )
+    except Exception as exc:
+        raise _approval_error(exc) from exc
+
+
 _CRON_PROFILE_LOCK = threading.RLock()
 
 
