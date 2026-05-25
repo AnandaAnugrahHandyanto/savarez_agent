@@ -314,9 +314,12 @@ def _detect_claude_code_version() -> str:
 
 
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
-# Claude Code MCP tools use mcp__<server>__<tool>. A single mcp_ prefix is
-# classified by Anthropic as third-party tool traffic under Claude OAuth.
+# Claude Code MCP tools use mcp__<server>__<tool>. Tyler's fork uses the
+# explicit hermes server namespace for built-in Hermes tools to avoid Claude
+# Max/OAuth classifier false positives; native MCP server tools already named
+# mcp_<server>_<tool> must still be preserved, not double-prefixed.
 _MCP_TOOL_PREFIX = "mcp__hermes__"
+_NATIVE_MCP_PREFIX = "mcp_"
 
 _OAUTH_SYSTEM_TEXT_REPLACEMENTS = (
     ("Hermes Agent", "Claude Code"),
@@ -2194,15 +2197,14 @@ def build_anthropic_kwargs(
             if isinstance(block, dict) and block.get("type") == "text":
                 block["text"] = _sanitize_oauth_system_text(block.get("text", ""))
 
-        # 3. Prefix tool names with mcp_ (Claude Code convention)
-        #    Skip names that already begin with the marker — native MCP server
-        #    tools (from mcp_servers: in config.yaml) are registered under their
-        #    full mcp_<server>_<tool> name and would double-prefix otherwise,
-        #    breaking round-trip registry lookup in normalize_response. GH-25255.
+        # 3. Prefix built-in Hermes tool names for Claude Code OAuth.
+        #    Preserve native MCP server tools (mcp_<server>_<tool>) and already
+        #    namespaced Claude Code-style tools to avoid double-prefixing.
         if anthropic_tools:
             for tool in anthropic_tools:
-                if "name" in tool and not tool["name"].startswith(_MCP_TOOL_PREFIX):
-                    tool["name"] = _MCP_TOOL_PREFIX + tool["name"]
+                name = tool.get("name")
+                if name and not name.startswith((_MCP_TOOL_PREFIX, _NATIVE_MCP_PREFIX)):
+                    tool["name"] = _MCP_TOOL_PREFIX + name
 
         # 4. Prefix tool names in message history (tool_use and tool_result blocks)
         for msg in anthropic_messages:
@@ -2211,8 +2213,9 @@ def build_anthropic_kwargs(
                 for block in content:
                     if isinstance(block, dict):
                         if block.get("type") == "tool_use" and "name" in block:
-                            if not block["name"].startswith(_MCP_TOOL_PREFIX):
-                                block["name"] = _MCP_TOOL_PREFIX + block["name"]
+                            name = block["name"]
+                            if not name.startswith((_MCP_TOOL_PREFIX, _NATIVE_MCP_PREFIX)):
+                                block["name"] = _MCP_TOOL_PREFIX + name
                         elif block.get("type") == "tool_result" and "tool_use_id" in block:
                             pass  # tool_result uses ID, not name
 
