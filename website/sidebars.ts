@@ -355,7 +355,6 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-bundled-software-development',
                   collapsed: true,
                   items: [
-                    'user-guide/skills/bundled/software-development/software-development-code-wiki',
                     'user-guide/skills/bundled/software-development/software-development-debugging-hermes-tui-commands',
                     'user-guide/skills/bundled/software-development/software-development-hermes-agent-skill-authoring',
                     'user-guide/skills/bundled/software-development/software-development-node-inspect-debugger',
@@ -590,6 +589,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-software-development',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/optional/software-development/software-development-code-wiki',
                     'user-guide/skills/optional/software-development/software-development-rest-graphql-debug',
                   ],
                 },

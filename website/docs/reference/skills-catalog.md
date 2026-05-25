@@ -182,7 +182,6 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| [`code-wiki`](/user-guide/skills/bundled/software-development/software-development-code-wiki) | Generate wiki docs + Mermaid diagrams for any codebase. | `software-development/code-wiki` |
 | [`debugging-hermes-tui-commands`](/user-guide/skills/bundled/software-development/software-development-debugging-hermes-tui-commands) | Debug Hermes TUI slash commands: Python, gateway, Ink UI. | `software-development/debugging-hermes-tui-commands` |
 | [`hermes-agent-skill-authoring`](/user-guide/skills/bundled/software-development/software-development-hermes-agent-skill-authoring) | Author in-repo SKILL.md: frontmatter, validator, structure. | `software-development/hermes-agent-skill-authoring` |
 | [`node-inspect-debugger`](/user-guide/skills/bundled/software-development/software-development-node-inspect-debugger) | Debug Node.js via --inspect + Chrome DevTools Protocol CLI. | `software-development/node-inspect-debugger` |
