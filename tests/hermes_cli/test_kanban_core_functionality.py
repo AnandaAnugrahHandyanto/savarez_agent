@@ -1256,6 +1256,44 @@ def test_migration_renames_legacy_event_kinds(tmp_path, monkeypatch):
         conn.close()
 
 
+def test_migration_normalizes_legacy_completed_status_and_unblocks_children(
+    tmp_path, monkeypatch
+):
+    """Legacy boards that stored task.status='completed' should be healed
+    to 'done' on init_db(), and blocked children should promote to
+    ready immediately after the repair."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="legacy parent")
+        child = kb.create_task(conn, title="legacy child", parents=[parent])
+        assert kb.get_task(conn, child).status == "todo"
+
+        now = int(time.time())
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='completed', completed_at=? WHERE id=?",
+                (now, parent),
+            )
+
+        assert kb.get_task(conn, parent).status == "completed"
+        assert kb.get_task(conn, child).status == "todo"
+
+        kb.init_db()
+
+        healed_parent = kb.get_task(conn, parent)
+        healed_child = kb.get_task(conn, child)
+        assert healed_parent is not None and healed_parent.status == "done"
+        assert healed_child is not None and healed_child.status == "ready"
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Assignees (item 4 from Multica)
 # ---------------------------------------------------------------------------

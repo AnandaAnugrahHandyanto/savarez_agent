@@ -1465,6 +1465,16 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             (new, old),
         )
 
+    # Legacy external boards have been observed with task.status='completed'
+    # even though the kernel has always used 'done'. Normalize those rows so
+    # dependency gates, dashboard promotion, and child auto-unblock logic all
+    # converge on the canonical status vocabulary.
+    repaired_completed = conn.execute(
+        "UPDATE tasks SET status = 'done' WHERE status = 'completed'"
+    ).rowcount
+    if repaired_completed:
+        recompute_ready(conn)
+
 
 @contextlib.contextmanager
 def write_txn(conn: sqlite3.Connection):
