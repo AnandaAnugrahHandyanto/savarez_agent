@@ -110,7 +110,11 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    aliases: ['exit', 'q'],
+    // NB: no 'q' alias — it collides with the Python-side `/queue` alias
+    // (hermes_cli/commands.py), and TUI-local commands are dispatched before
+    // the backend, so `/q` was resolving to /quit (exit) instead of /queue.
+    // `/quit` and `/exit` are explicit enough for exiting. See #31983.
+    aliases: ['exit'],
     help: 'exit hermes',
     name: 'quit',
     run: (_arg, ctx) => ctx.session.die()

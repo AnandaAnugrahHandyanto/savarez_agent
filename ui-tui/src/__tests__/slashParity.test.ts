@@ -110,4 +110,13 @@ describe('slash parity matrix', () => {
       expect(routes[name], `mutating command must not fallback: ${name}`).not.toBe('fallback')
     }
   })
+
+  it('does not shadow the backend /queue alias `q` with a TUI-local command', () => {
+    // Regression for #31983: the TUI `quit` command used to carry an alias
+    // `q`, which collides with the Python-side `/queue` alias. TUI-local
+    // commands dispatch before the backend, so `/q` resolved to /quit
+    // (session.die) instead of queueing a prompt. `q` must NOT be a local
+    // name/alias so it falls through to the backend /queue.
+    expect(LOCAL_COMMAND_NAMES.has('q')).toBe(false)
+  })
 })
