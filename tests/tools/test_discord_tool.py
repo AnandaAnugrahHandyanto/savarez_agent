@@ -455,6 +455,8 @@ class TestCreateThread:
         result = json.loads(discord_core(action="create_thread", channel_id="11", name="New Thread"))
         assert result["success"] is True
         assert result["thread_id"] == "800"
+        assert result["delivery_target"] == "discord:11:800"
+        assert "does not switch the active Hermes conversation" in result["note"]
         # Verify the API call
         mock_req.assert_called_once_with(
             "POST", "/channels/11/threads", "test-token",
@@ -469,6 +471,8 @@ class TestCreateThread:
             action="create_thread", channel_id="11", name="Discussion", message_id="1001",
         ))
         assert result["success"] is True
+        assert result["delivery_target"] == "discord:11:801"
+        assert "send_message(target='discord:11:801'" in result["note"]
         mock_req.assert_called_once_with(
             "POST", "/channels/11/messages/1001/threads", "test-token",
             body={"name": "Discussion", "auto_archive_duration": 1440},
@@ -591,6 +595,7 @@ class TestRegistration:
         assert "fetch_messages(channel_id)" in desc
         assert "search_members(guild_id, query)" in desc
         assert "create_thread(channel_id, name)" in desc
+        assert "does not rebind the active conversation" in desc
         # Admin actions should NOT be in core description
         assert "list_guilds()" not in desc
         assert "add_role(" not in desc

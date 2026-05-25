@@ -447,10 +447,18 @@ def _create_thread(
             "type": 11,  # PUBLIC_THREAD
         }
     thread = _discord_request("POST", path, token, body=body)
+    thread_target = f"discord:{channel_id}:{thread['id']}"
     return json.dumps({
         "success": True,
         "thread_id": thread["id"],
         "name": thread.get("name"),
+        "delivery_target": thread_target,
+        "note": (
+            "create_thread only creates the Discord thread resource; it does not "
+            "switch the active Hermes conversation into that thread. Use "
+            f"send_message(target='{thread_target}', ...) for follow-up delivery, "
+            "or use the Discord /thread command when you want Hermes to continue there."
+        ),
     })
 
 
@@ -510,7 +518,11 @@ _ACTION_MANIFEST: List[Tuple[str, str, str]] = [
     ("pin_message", "(channel_id, message_id)", "pin a message"),
     ("unpin_message", "(channel_id, message_id)", "unpin a message"),
     ("delete_message", "(channel_id, message_id)", "delete a message"),
-    ("create_thread", "(channel_id, name)", "create a public thread; optional message_id anchor"),
+    (
+        "create_thread",
+        "(channel_id, name)",
+        "create a public thread; optional message_id anchor; does not switch conversation context",
+    ),
     ("add_role", "(guild_id, user_id, role_id)", "assign a role"),
     ("remove_role", "(guild_id, user_id, role_id)", "remove a role"),
 ]
@@ -656,7 +668,10 @@ def _build_schema(
             "Available actions:\n"
             f"{manifest_block}\n\n"
             "Use the channel_id from the current conversation context. "
-            "Use search_members to look up user IDs by name prefix."
+            "Use search_members to look up user IDs by name prefix. "
+            "create_thread only creates the thread resource; it does not rebind the "
+            "active conversation. Use the returned delivery_target with send_message "
+            "for follow-up delivery into that thread."
             f"{content_note}"
         )
 
@@ -691,7 +706,10 @@ def _build_schema(
         },
         "name": {
             "type": "string",
-            "description": "New thread name (create_thread).",
+            "description": (
+                "New thread name (create_thread). This action creates the thread "
+                "resource only; it does not switch the active conversation there."
+            ),
         },
         "limit": {
             "type": "integer",
