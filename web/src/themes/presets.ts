@@ -201,11 +201,24 @@ export const cleanDarkTheme: DashboardTheme = {
     ...DEFAULT_TYPOGRAPHY,
     baseSize: "15px",
     lineHeight: "1.6",
+    letterSpacing: "0",
   },
   layout: {
     ...DEFAULT_LAYOUT,
     radius: "0.375rem",
   },
+  customCSS: `
+    /* Route decorative utility fonts through Clean Dark's readable stacks
+       while this theme is active. Other themes keep the decorative fonts. */
+    .font-mondwest,
+    .font-expanded,
+    .font-compressed { font-family: var(--theme-font-sans) !important; }
+    .font-courier { font-family: var(--theme-font-mono) !important; }
+
+    /* Keep tiny uppercase labels (sidebar status strip, etc.) legible. */
+    .text-\[0\.55rem\] { font-size: 0.7rem !important; }
+    .tracking-\[0\.12em\] { letter-spacing: 0.04em !important; }
+  `,
 };
 
 /**
