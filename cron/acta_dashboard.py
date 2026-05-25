@@ -30,7 +30,6 @@ from hermes_constants import get_hermes_home
 from cron.html_artifacts import CSP, REPORT_END, REPORT_START, HtmlReportMetadata, render_html_report, render_report_body
 from cron.html_publish import HtmlArtifactPublishError, publish_html_artifact
 
-ACTA_DASHBOARD_CSP = f"{CSP}; script-src 'unsafe-inline'"
 DEFAULT_HIDDEN_JOBS = ("e9b0a041ced3", "P Morning Audio Briefing")
 
 
@@ -76,6 +75,15 @@ def _inline_script_csp(script: str) -> str:
     return f"{CSP}; script-src 'sha256-{digest}'"
 
 
+def _inline_style_and_script_csp(style: str, script: str) -> str:
+    style_digest = base64.b64encode(hashlib.sha256(style.encode("utf-8")).digest()).decode("ascii")
+    csp = _inline_script_csp(script)
+    style_source = "style-src 'unsafe-inline'"
+    if style_source not in csp:
+        raise RuntimeError("base CSP style-src directive missing unsafe-inline placeholder")
+    return csp.replace(style_source, f"style-src 'sha256-{style_digest}'")
+
+
 def _outputs_read_state_script() -> str:
     return """
 (function(){
@@ -112,6 +120,158 @@ def _outputs_read_state_script() -> str:
         if(k){ state[k]=true; save(); apply(el); }
       });
     });
+  });
+})();
+""".strip()
+
+
+def _dashboard_inline_script() -> str:
+    return """
+(function(){
+  var KEY='acta:read:v1';
+  var COOKIE='acta_read_v1';
+  function readFromCookie(){
+    var parts=(document.cookie||'').split('; ');
+    for(var i=0;i<parts.length;i++){
+      if(parts[i].indexOf(COOKIE+'=')===0){
+        try{ return JSON.parse(decodeURIComponent(parts[i].slice(COOKIE.length+1)))||{}; }catch(e){ return {}; }
+      }
+    }
+    return {};
+  }
+  function writeToCookie(value){
+    try{ document.cookie=COOKIE+'='+encodeURIComponent(JSON.stringify(value))+'; Max-Age=31536000; Path=/; SameSite=Lax; Secure'; }catch(e){}
+  }
+  var state=readFromCookie();
+  try{ state=JSON.parse(localStorage.getItem(KEY)||JSON.stringify(state)||'{}')||state||{}; }catch(e){ state=state||{}; }
+  function save(){ try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){} writeToCookie(state); }
+  var pull=document.querySelector('.pull-refresh');
+  var mobileBar=document.querySelector('.mobilebar');
+  var topNav=document.querySelector('.date-nav');
+  function setMobileBarVisible(visible){ if(mobileBar) mobileBar.classList.toggle('visible', !!visible); }
+  if(mobileBar && topNav){
+    if('IntersectionObserver' in window){
+      new IntersectionObserver(function(entries){
+        var entry=entries[0];
+        setMobileBarVisible(!entry.isIntersecting && window.matchMedia('(max-width: 980px)').matches);
+      }, {root:null, threshold:0.01}).observe(topNav);
+    } else {
+      var navBottom=topNav.offsetTop+topNav.offsetHeight;
+      function updateMobileBar(){ setMobileBarVisible(window.matchMedia('(max-width: 980px)').matches && window.scrollY>navBottom); }
+      window.addEventListener('scroll', updateMobileBar, {passive:true});
+      window.addEventListener('resize', updateMobileBar, {passive:true});
+      updateMobileBar();
+    }
+  }
+  var psx=0, psy=0, pdy=0, pulling=false, ptrReady=false;
+  function ptrStart(ev){
+    if(window.scrollY>2) return;
+    var t=(ev.touches&&ev.touches[0]) || ev;
+    psx=t.clientX||0; psy=t.clientY||0; pdy=0; pulling=true; ptrReady=false;
+  }
+  function ptrMove(ev){
+    if(!pulling || !pull) return;
+    var t=(ev.touches&&ev.touches[0]) || ev;
+    var dx=Math.abs((t.clientX||0)-psx); pdy=(t.clientY||0)-psy;
+    if(pdy>12 && pdy>dx*1.25 && window.scrollY<=2){
+      var y=Math.min(72, Math.max(0, pdy*.55));
+      pull.classList.add('visible');
+      ptrReady=y>=54;
+      pull.classList.toggle('ready', ptrReady);
+      pull.textContent=ptrReady?'RELEASE TO REFRESH':'PULL TO REFRESH';
+      if(ev.cancelable) ev.preventDefault();
+    }
+  }
+  function ptrEnd(){
+    if(!pulling) return;
+    pulling=false;
+    if(ptrReady){
+      if(pull){ pull.textContent='REFRESHING'; pull.classList.add('visible','ready'); }
+      location.reload();
+      return;
+    }
+    if(pull){ pull.classList.remove('visible','ready'); pull.textContent='PULL TO REFRESH'; }
+  }
+  document.addEventListener('touchstart', ptrStart, {passive:true});
+  document.addEventListener('touchmove', ptrMove, {passive:false});
+  document.addEventListener('touchend', ptrEnd, {passive:true});
+  document.addEventListener('touchcancel', ptrEnd, {passive:true});
+  function apply(el){
+    var k=el.dataset.readKey || '';
+    var isRead=!!state[k];
+    el.classList.toggle('read', isRead);
+    el.classList.toggle('unread', !isRead);
+    var label=el.querySelector('.read-state');
+    if(label) label.textContent=isRead?'READ':'UNREAD';
+    var action=el.querySelector('.swipe-action');
+    if(action) action.textContent=isRead?'MARK UNREAD':'MARK READ';
+  }
+  function toggle(el){
+    var k=el.dataset.readKey || '';
+    if(!k) return;
+    state[k]=!state[k];
+    save();
+    apply(el);
+    el.classList.add('swipe-peek');
+    setTimeout(function(){ el.classList.remove('swipe-peek'); }, 260);
+  }
+  document.querySelectorAll('.readable').forEach(function(el){
+    apply(el);
+    var sx=0, sy=0, dx=0, swiping=false, didSwipe=false, active=false;
+    function openReadable(){
+      var k=el.dataset.readKey || '';
+      if(k){ state[k]=true; save(); apply(el); }
+      var openUrl=el.dataset.openUrl || '';
+      if(openUrl) window.location.href=openUrl;
+    }
+    function point(ev){
+      var t=(ev.touches&&ev.touches[0]) || ev;
+      return {x:t.clientX||0, y:t.clientY||0};
+    }
+    function start(ev){
+      var p=point(ev); sx=p.x; sy=p.y; dx=0; swiping=false; didSwipe=false; active=true;
+    }
+    function move(ev){
+      if(!active) return;
+      var p=point(ev); dx=p.x-sx;
+      var dy=Math.abs(p.y-sy);
+      if(dx>10 && Math.abs(dx)>dy*1.15){
+        swiping=true; didSwipe=true; el.classList.add('swiping','swipe-peek');
+        if(ev.cancelable) ev.preventDefault();
+      }
+    }
+    function end(ev){
+      if(!active) return;
+      active=false;
+      if(swiping){
+        if(ev.cancelable) ev.preventDefault();
+        if(dx>58) toggle(el);
+      }
+      el.classList.remove('swiping');
+      if(didSwipe){
+        setTimeout(function(){ el.classList.remove('swipe-peek'); }, 220);
+      } else {
+        el.classList.remove('swipe-peek');
+      }
+    }
+    el.addEventListener('click', function(ev){
+      if(didSwipe){ ev.preventDefault(); ev.stopPropagation(); didSwipe=false; return; }
+      if(ev.target && ev.target.closest && ev.target.closest('a')) return;
+      openReadable();
+    }, true);
+    el.querySelectorAll('.row-open-overlay').forEach(function(anchor){
+      anchor.addEventListener('click', function(){
+        var k=el.dataset.readKey || '';
+        if(k){ state[k]=true; save(); apply(el); }
+      });
+    });
+    el.addEventListener('touchstart', start, {passive:true});
+    el.addEventListener('touchmove', move, {passive:false});
+    el.addEventListener('touchend', end, {passive:false});
+    el.addEventListener('pointerdown', function(ev){ if(ev.pointerType==='touch'||ev.pointerType==='pen') start(ev); });
+    el.addEventListener('pointermove', function(ev){ if(ev.pointerType==='touch'||ev.pointerType==='pen') move(ev); });
+    el.addEventListener('pointerup', function(ev){ if(ev.pointerType==='touch'||ev.pointerType==='pen') end(ev); });
+    el.addEventListener('pointercancel', end);
   });
 })();
 """.strip()
@@ -608,13 +768,15 @@ def render_dashboard(
     )
     lead_read_key = html.escape(_read_key(lead_item), quote=True) if lead_item else ""
     lead_confidence = _confidence_label(lead_item, now) if lead_item else "CONF LOW/GAP"
+    dashboard_script = _dashboard_inline_script()
+    dashboard_csp_placeholder = "__ACTA_DASHBOARD_CSP__"
 
-    return f"""<!doctype html>
+    page_html = f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no">
-<meta http-equiv="Content-Security-Policy" content="{html.escape(ACTA_DASHBOARD_CSP, quote=False)}">
+<meta http-equiv="Content-Security-Policy" content="{dashboard_csp_placeholder}">
 <title>Acta Situation Room</title>
 <meta name="description" content="Acta Imperatr situation room: private briefing packets, source provenance, jobs, and archive in a compact operator surface.">
 <style>
@@ -785,162 +947,15 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
   </main>
 </div>
 <nav class="mobilebar"><a href="/">TODAY</a><a href="/jobs">JOBS</a><a href="/archive">ARCHIVE</a><a href="/outputs">OUTPUTS</a></nav>
-<script>
-(function(){{
-  var KEY='acta:read:v1';
-  var COOKIE='acta_read_v1';
-  function readFromCookie(){{
-    var parts=(document.cookie||'').split('; ');
-    for(var i=0;i<parts.length;i++){{
-      if(parts[i].indexOf(COOKIE+'=')===0){{
-        try{{ return JSON.parse(decodeURIComponent(parts[i].slice(COOKIE.length+1)))||{{}}; }}catch(e){{ return {{}}; }}
-      }}
-    }}
-    return {{}};
-  }}
-  function writeToCookie(value){{
-    try{{ document.cookie=COOKIE+'='+encodeURIComponent(JSON.stringify(value))+'; Max-Age=31536000; Path=/; SameSite=Lax; Secure'; }}catch(e){{}}
-  }}
-  var state=readFromCookie();
-  try{{ state=JSON.parse(localStorage.getItem(KEY)||JSON.stringify(state)||'{{}}')||state||{{}}; }}catch(e){{ state=state||{{}}; }}
-  function save(){{ try{{ localStorage.setItem(KEY, JSON.stringify(state)); }}catch(e){{}} writeToCookie(state); }}
-  var pull=document.querySelector('.pull-refresh');
-  var mobileBar=document.querySelector('.mobilebar');
-  var topNav=document.querySelector('.date-nav');
-  function setMobileBarVisible(visible){{ if(mobileBar) mobileBar.classList.toggle('visible', !!visible); }}
-  if(mobileBar && topNav){{
-    if('IntersectionObserver' in window){{
-      new IntersectionObserver(function(entries){{
-        var entry=entries[0];
-        setMobileBarVisible(!entry.isIntersecting && window.matchMedia('(max-width: 980px)').matches);
-      }}, {{root:null, threshold:0.01}}).observe(topNav);
-    }} else {{
-      var navBottom=topNav.offsetTop+topNav.offsetHeight;
-      function updateMobileBar(){{ setMobileBarVisible(window.matchMedia('(max-width: 980px)').matches && window.scrollY>navBottom); }}
-      window.addEventListener('scroll', updateMobileBar, {{passive:true}});
-      window.addEventListener('resize', updateMobileBar, {{passive:true}});
-      updateMobileBar();
-    }}
-  }}
-  var psx=0, psy=0, pdy=0, pulling=false, ptrReady=false;
-  function ptrStart(ev){{
-    if(window.scrollY>2) return;
-    var t=(ev.touches&&ev.touches[0]) || ev;
-    psx=t.clientX||0; psy=t.clientY||0; pdy=0; pulling=true; ptrReady=false;
-  }}
-  function ptrMove(ev){{
-    if(!pulling || !pull) return;
-    var t=(ev.touches&&ev.touches[0]) || ev;
-    var dx=Math.abs((t.clientX||0)-psx); pdy=(t.clientY||0)-psy;
-    if(pdy>12 && pdy>dx*1.25 && window.scrollY<=2){{
-      var y=Math.min(72, Math.max(0, pdy*.55));
-      pull.classList.add('visible');
-      ptrReady=y>=54;
-      pull.classList.toggle('ready', ptrReady);
-      pull.textContent=ptrReady?'RELEASE TO REFRESH':'PULL TO REFRESH';
-      pull.style.transform='translate(-50%,'+y+'px)';
-      if(ev.cancelable) ev.preventDefault();
-    }}
-  }}
-  function ptrEnd(){{
-    if(!pulling) return;
-    pulling=false;
-    if(ptrReady){{
-      if(pull){{ pull.textContent='REFRESHING'; pull.classList.add('visible','ready'); pull.style.transform='translate(-50%,54px)'; }}
-      location.reload();
-      return;
-    }}
-    if(pull){{ pull.classList.remove('visible','ready'); pull.style.transform=''; pull.textContent='PULL TO REFRESH'; }}
-  }}
-  document.addEventListener('touchstart', ptrStart, {{passive:true}});
-  document.addEventListener('touchmove', ptrMove, {{passive:false}});
-  document.addEventListener('touchend', ptrEnd, {{passive:true}});
-  document.addEventListener('touchcancel', ptrEnd, {{passive:true}});
-  function apply(el){{
-    var k=el.dataset.readKey || '';
-    var isRead=!!state[k];
-    el.classList.toggle('read', isRead);
-    el.classList.toggle('unread', !isRead);
-    var label=el.querySelector('.read-state');
-    if(label) label.textContent=isRead?'READ':'UNREAD';
-    var action=el.querySelector('.swipe-action');
-    if(action) action.textContent=isRead?'MARK UNREAD':'MARK READ';
-  }}
-  function toggle(el){{
-    var k=el.dataset.readKey || '';
-    if(!k) return;
-    state[k]=!state[k];
-    save();
-    apply(el);
-    el.classList.add('swipe-peek');
-    setTimeout(function(){{ el.classList.remove('swipe-peek'); }}, 260);
-  }}
-  document.querySelectorAll('.readable').forEach(function(el){{
-    apply(el);
-    var content=el.querySelector('.swipe-content') || el;
-    var sx=0, sy=0, dx=0, swiping=false, didSwipe=false, active=false;
-    function openReadable(){{
-      var k=el.dataset.readKey || '';
-      if(k){{ state[k]=true; save(); apply(el); }}
-      var openUrl=el.dataset.openUrl || '';
-      if(openUrl) window.location.href=openUrl;
-    }}
-    function point(ev){{
-      var t=(ev.touches&&ev.touches[0]) || ev;
-      return {{x:t.clientX||0, y:t.clientY||0}};
-    }}
-    function start(ev){{
-      var p=point(ev); sx=p.x; sy=p.y; dx=0; swiping=false; didSwipe=false; active=true;
-    }}
-    function move(ev){{
-      if(!active) return;
-      var p=point(ev); dx=p.x-sx;
-      var dy=Math.abs(p.y-sy);
-      if(dx>10 && Math.abs(dx)>dy*1.15){{
-        swiping=true; didSwipe=true; el.classList.add('swiping','swipe-peek');
-        content.style.transform='translateX('+Math.min(dx,96)+'px)';
-        if(ev.cancelable) ev.preventDefault();
-      }}
-    }}
-    function end(ev){{
-      if(!active) return;
-      active=false;
-      if(swiping){{
-        if(ev.cancelable) ev.preventDefault();
-        if(dx>58) toggle(el);
-      }}
-      el.classList.remove('swiping');
-      content.style.transform='';
-      if(didSwipe){{
-        setTimeout(function(){{ el.classList.remove('swipe-peek'); }}, 220);
-      }} else {{
-        el.classList.remove('swipe-peek');
-      }}
-    }}
-    el.addEventListener('click', function(ev){{
-      if(didSwipe){{ ev.preventDefault(); ev.stopPropagation(); didSwipe=false; return; }}
-      if(ev.target && ev.target.closest && ev.target.closest('a')) return;
-      openReadable();
-    }}, true);
-    el.querySelectorAll('.row-open-overlay').forEach(function(anchor){{
-      anchor.addEventListener('click', function(){{
-        var k=el.dataset.readKey || '';
-        if(k){{ state[k]=true; save(); apply(el); }}
-      }});
-    }});
-    el.addEventListener('touchstart', start, {{passive:true}});
-    el.addEventListener('touchmove', move, {{passive:false}});
-    el.addEventListener('touchend', end, {{passive:false}});
-    el.addEventListener('pointerdown', function(ev){{ if(ev.pointerType==='touch'||ev.pointerType==='pen') start(ev); }});
-    el.addEventListener('pointermove', function(ev){{ if(ev.pointerType==='touch'||ev.pointerType==='pen') move(ev); }});
-    el.addEventListener('pointerup', function(ev){{ if(ev.pointerType==='touch'||ev.pointerType==='pen') end(ev); }});
-    el.addEventListener('pointercancel', end);
-  }});
-}})();
-</script>
+<script>{dashboard_script}</script>
 </body>
 </html>
 """
+    style_match = re.search(r"<style>(.*?)</style>", page_html, re.S)
+    if not style_match:
+        raise RuntimeError("dashboard style block missing")
+    dashboard_csp = _inline_style_and_script_csp(style_match.group(1), dashboard_script)
+    return page_html.replace(dashboard_csp_placeholder, html.escape(dashboard_csp, quote=False), 1)
 
 
 

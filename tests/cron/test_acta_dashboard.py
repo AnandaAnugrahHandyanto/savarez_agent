@@ -1,4 +1,7 @@
+import base64
+import hashlib
 import json
+import re
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -376,8 +379,19 @@ def test_lead_brief_is_clickable_and_read_state_enabled(tmp_path: Path):
     assert ".brief-row > .swipe-content" in html
     assert ".brief-row > :not(.row-open-overlay)" not in html
     assert "el.querySelectorAll('.row-open-overlay')" in html
-    assert "script-src 'unsafe-inline'" in html
+    assert "script-src 'sha256-" in html
+    assert "style-src 'sha256-" in html
+    assert "unsafe-inline" not in html
     assert "localStorage" in html
+    csp = re.search(r'Content-Security-Policy" content="([^"]+)"', html)
+    style = re.search(r"<style>(.*?)</style>", html, re.S)
+    script = re.search(r"<script>(.*?)</script>", html, re.S)
+    assert csp and style and script
+    style_hash = base64.b64encode(hashlib.sha256(style.group(1).encode("utf-8")).digest()).decode("ascii")
+    script_hash = base64.b64encode(hashlib.sha256(script.group(1).encode("utf-8")).digest()).decode("ascii")
+    assert f"style-src 'sha256-{style_hash}'" in csp.group(1)
+    assert f"script-src 'sha256-{script_hash}'" in csp.group(1)
+    assert ".style." not in script.group(1)
 
 
 def test_feed_rows_are_keyboard_accessible_signed_links():
