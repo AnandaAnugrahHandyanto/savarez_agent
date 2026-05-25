@@ -4135,6 +4135,238 @@ class TestCredentialPoolRecovery:
         assert captured["status_code"] == 429
         assert captured["error_context"]["reason"] == "device_code_exhausted"
 
+    def test_mark_exhausted_and_rotate_api_key_hint_when_current_is_none(self, monkeypatch):
+        from agent.credential_pool import CredentialPool, PooledCredential, STATUS_EXHAUSTED
+
+        # Suppress file I/O — these tests exercise in-memory pool state only.
+        monkeypatch.setattr(CredentialPool, "_persist", lambda self: None)
+
+        entry1 = PooledCredential(
+            provider="opencode-go",
+            id="key-a",
+            label="primary",
+            auth_type="api_key",
+            priority=0,
+            source="manual",
+            access_token="sk-key-a",
+        )
+        entry2 = PooledCredential(
+            provider="opencode-go",
+            id="key-b",
+            label="secondary",
+            auth_type="api_key",
+            priority=1,
+            source="manual",
+            access_token="sk-key-b",
+        )
+        pool = CredentialPool("opencode-go", [entry1, entry2])
+        # Simulate the TOCTOU race: another process already rotated, so _current_id is None.
+        pool._current_id = None
+
+        result = pool.mark_exhausted_and_rotate(
+            api_key_hint="sk-key-b",
+            status_code=429,
+            error_context={"reason": "usage_limit_reached"},
+        )
+
+        entries_by_id = {e.id: e for e in pool._entries}
+        # Only the entry whose key matched the hint should be exhausted.
+        assert entries_by_id["key-b"].last_status == STATUS_EXHAUSTED
+        assert entries_by_id["key-a"].last_status != STATUS_EXHAUSTED
+        # Pool must have rotated to the remaining healthy entry.
+        assert result is not None
+        assert result.id == "key-a"
+        assert pool.current() is not None
+        assert pool.current().id == "key-a"
+
+    def test_mark_exhausted_and_rotate_api_key_hint_normal_rotation(self, monkeypatch):
+        """Normal case: pool is healthy, api_key_hint correctly identifies the failed key."""
+        from agent.credential_pool import CredentialPool, PooledCredential, STATUS_EXHAUSTED
+
+        monkeypatch.setattr(CredentialPool, "_persist", lambda self: None)
+
+        entry1 = PooledCredential(
+            provider="opencode-go",
+            id="key-a",
+            label="primary",
+            auth_type="api_key",
+            priority=0,
+            source="manual",
+            access_token="sk-key-a",
+        )
+        entry2 = PooledCredential(
+            provider="opencode-go",
+            id="key-b",
+            label="secondary",
+            auth_type="api_key",
+            priority=1,
+            source="manual",
+            access_token="sk-key-b",
+        )
+        pool = CredentialPool("opencode-go", [entry1, entry2])
+        # Simulate normal operation: pool has selected its first entry.
+        pool._current_id = "key-a"
+        assert pool.current() is not None
+        assert pool.current().id == "key-a"
+
+        # key-a hits 429 → api_key_hint identifies it
+        result = pool.mark_exhausted_and_rotate(
+            api_key_hint="sk-key-a",
+            status_code=429,
+            error_context={"reason": "usage_limit_reached"},
+        )
+
+        entries_by_id = {e.id: e for e in pool._entries}
+        # Only key-a should be exhausted.
+        assert entries_by_id["key-a"].last_status == STATUS_EXHAUSTED
+        assert entries_by_id["key-b"].last_status != STATUS_EXHAUSTED
+        # Pool rotates to key-b.
+        assert result is not None
+        assert result.id == "key-b"
+        assert pool.current().id == "key-b"
+
+    def test_mark_exhausted_and_rotate_exhausts_all_keys_returns_none(self, monkeypatch):
+        """Exhaust both keys: first rotation succeeds, second returns None."""
+        from agent.credential_pool import CredentialPool, PooledCredential, STATUS_EXHAUSTED
+
+        monkeypatch.setattr(CredentialPool, "_persist", lambda self: None)
+
+        entry1 = PooledCredential(
+            provider="opencode-go",
+            id="key-a",
+            label="first",
+            auth_type="api_key",
+            priority=0,
+            source="manual",
+            access_token="sk-key-a",
+        )
+        entry2 = PooledCredential(
+            provider="opencode-go",
+            id="key-b",
+            label="second",
+            auth_type="api_key",
+            priority=1,
+            source="manual",
+            access_token="sk-key-b",
+        )
+        pool = CredentialPool("opencode-go", [entry1, entry2])
+        pool._current_id = "key-a"
+
+        # Exhaust key-a.
+        result1 = pool.mark_exhausted_and_rotate(
+            api_key_hint="sk-key-a",
+            status_code=429,
+            error_context={"reason": "usage_limit_reached"},
+        )
+        assert result1 is not None
+        assert result1.id == "key-b"
+        assert pool.current().id == "key-b"
+
+        # Exhaust key-b — nothing left.
+        result2 = pool.mark_exhausted_and_rotate(
+            api_key_hint="sk-key-b",
+            status_code=429,
+        )
+        assert result2 is None
+        assert pool.current() is None
+
+    def test_mark_exhausted_and_rotate_hint_matches_already_exhausted_entry(self, monkeypatch):
+        """api_key_hint matches an entry that another process already exhausted.
+        
+        Simulates the worst TOCTOU: Process A exhausted key-b, Process B still
+        has api_key_hint=sk-key-b but the entry is already STATUS_EXHAUSTED.
+        Should not crash or double-exhaust — falls through to _select_unlocked()."""
+        from agent.credential_pool import CredentialPool, PooledCredential, STATUS_EXHAUSTED
+
+        monkeypatch.setattr(CredentialPool, "_persist", lambda self: None)
+
+        entry1 = PooledCredential(
+            provider="opencode-go",
+            id="key-a",
+            label="first",
+            auth_type="api_key",
+            priority=0,
+            source="manual",
+            access_token="sk-key-a",
+        )
+        entry2 = PooledCredential(
+            provider="opencode-go",
+            id="key-b",
+            label="second",
+            auth_type="api_key",
+            priority=1,
+            source="manual",
+            access_token="sk-key-b",
+        )
+        entry3 = PooledCredential(
+            provider="opencode-go",
+            id="key-c",
+            label="third",
+            auth_type="api_key",
+            priority=2,
+            source="manual",
+            access_token="sk-key-c",
+        )
+        pool = CredentialPool("opencode-go", [entry1, entry2, entry3])
+        pool._current_id = None
+
+        # Another process already exhausted key-b.
+        entry2.last_status = STATUS_EXHAUSTED
+
+        # Process B still has api_key_hint=sk-key-b → finds key-b, but it's
+        # already exhausted. Must fall through to the next available entry.
+        result = pool.mark_exhausted_and_rotate(
+            api_key_hint="sk-key-b",
+            status_code=429,
+        )
+
+        assert result is not None
+        # Pool skips the already-exhausted key-b and rotates to key-a,
+        # but does NOT mark key-a exhausted — key-a didn't fail.
+        assert result.id == "key-a"
+        entries_by_id = {e.id: e for e in pool._entries}
+        assert entries_by_id["key-b"].last_status == STATUS_EXHAUSTED  # already was
+        assert entries_by_id["key-a"].last_status != STATUS_EXHAUSTED  # preserved
+        assert entries_by_id["key-c"].last_status != STATUS_EXHAUSTED  # preserved
+
+    def test_mark_exhausted_and_rotate_api_key_hint_fallback_when_no_match(self, monkeypatch):
+        from agent.credential_pool import CredentialPool, PooledCredential, STATUS_EXHAUSTED
+
+        monkeypatch.setattr(CredentialPool, "_persist", lambda self: None)
+
+        entry1 = PooledCredential(
+            provider="opencode-go",
+            id="key-a",
+            label="first",
+            auth_type="api_key",
+            priority=0,
+            source="manual",
+            access_token="sk-key-a",
+        )
+        entry2 = PooledCredential(
+            provider="opencode-go",
+            id="key-b",
+            label="second",
+            auth_type="api_key",
+            priority=1,
+            source="manual",
+            access_token="sk-key-b",
+        )
+        pool = CredentialPool("opencode-go", [entry1, entry2])
+        pool._current_id = None
+
+        # A hint that matches no entry must not crash; it falls back to
+        # _select_unlocked(), which picks the first available entry (priority 0).
+        result = pool.mark_exhausted_and_rotate(
+            api_key_hint="sk-nonexistent-key",
+            status_code=429,
+        )
+
+        entries_by_id = {e.id: e for e in pool._entries}
+        assert entries_by_id["key-a"].last_status == STATUS_EXHAUSTED
+        assert result is not None
+        assert result.id == "key-b"
+
 
 class TestMaxTokensParam:
     """Verify _max_tokens_param returns the correct key for each provider."""
