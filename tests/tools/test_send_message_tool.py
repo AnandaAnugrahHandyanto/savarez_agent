@@ -241,6 +241,7 @@ class TestSendMessageTool:
             "hello",
             thread_id=None,
             media_files=[],
+            force_document=False,
         )
 
     def test_resolved_slack_topic_name_preserves_thread_id(self):
@@ -270,6 +271,7 @@ class TestSendMessageTool:
             "hello",
             thread_id="1777357381.688839",
             media_files=[],
+            force_document=False,
         )
 
     def test_send_to_platform_passes_thread_id_to_slack_sender(self):
