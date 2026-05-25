@@ -41,11 +41,7 @@ docker run -d \
 
 Port 8642 exposes the gateway's [OpenAI-compatible API server](./features/api-server.md) and health endpoint. It's optional if you only use chat platforms (Telegram, Discord, etc.), but required if you want the dashboard or external tools to reach the gateway.
 
-Opening any port on an internet facing machine is a security risk. You should not do it unless you understand the risks.
-
-## Running the dashboard
-
-The built-in web dashboard runs as an optional side-process inside the same container as the gateway. Set `HERMES_DASHBOARD=1` and expose port `9119` alongside the gateway's `8642`:
+Note: the API server is gated on `API_SERVER_ENABLED=true`. To expose it beyond `127.0.0.1` inside the container, also set `API_SERVER_HOST=0.0.0.0` and an `API_SERVER_KEY` (minimum 8 characters — generate one with `openssl rand -hex 32`). Example:
 
 ```sh
 docker run -d \
@@ -53,7 +49,25 @@ docker run -d \
   --restart unless-stopped \
   -v ~/.hermes:/opt/data \
   -p 8642:8642 \
-  -p 9119:9119 \
+  -e API_SERVER_ENABLED=true \
+  -e API_SERVER_HOST=0.0.0.0 \
+  -e API_SERVER_KEY="$(openssl rand -hex 32)" \
+  -e API_SERVER_CORS_ORIGINS='*' \
+  nousresearch/hermes-agent gateway run
+```
+
+Opening any port on an internet facing machine is a security risk. You should not do it unless you understand the risks.
+
+## Running the dashboard
+
+The built-in web dashboard runs as an optional side-process inside the same container as the gateway. Set `HERMES_DASHBOARD=1` to run the dashboard on container loopback (`127.0.0.1`) by default:
+
+```sh
+docker run -d \
+  --name hermes \
+  --restart unless-stopped \
+  -v ~/.hermes:/opt/data \
+  -p 8642:8642 \
   -e HERMES_DASHBOARD=1 \
   nousresearch/hermes-agent gateway run
 ```
@@ -63,11 +77,11 @@ The entrypoint starts `hermes dashboard` in the background (running as the non-r
 | Environment variable | Description | Default |
 |---------------------|-------------|---------|
 | `HERMES_DASHBOARD` | Set to `1` (or `true` / `yes`) to launch the dashboard alongside the main command | *(unset — dashboard not started)* |
-| `HERMES_DASHBOARD_HOST` | Bind address for the dashboard HTTP server | `0.0.0.0` |
+| `HERMES_DASHBOARD_HOST` | Bind address for the dashboard HTTP server | `127.0.0.1` |
 | `HERMES_DASHBOARD_PORT` | Port for the dashboard HTTP server | `9119` |
 | `HERMES_DASHBOARD_TUI` | Set to `1` to expose the in-browser Chat tab (embedded `hermes --tui` via PTY/WebSocket) | *(unset)* |
 
-The default `HERMES_DASHBOARD_HOST=0.0.0.0` is required for the host to reach the dashboard through the published port; the entrypoint automatically passes `--insecure` to `hermes dashboard` in that case. Override to `127.0.0.1` if you want to restrict the dashboard to in-container access only (e.g. behind a reverse proxy in a sidecar).
+By default, the dashboard stays on loopback to avoid exposing the unauthenticated web surface over the network. To publish it intentionally, set `HERMES_DASHBOARD_HOST=0.0.0.0` and configure your own trusted network boundary/reverse proxy. In that case you must explicitly add `--insecure` behavior by passing host/flags in your command path (the entrypoint no longer auto-enables insecure mode).
 
 :::note
 The dashboard side-process is **not supervised** — if it crashes, it stays down until the container restarts. Running it as a separate container is not supported: the dashboard's gateway-liveness detection requires a shared PID namespace with the gateway process.
@@ -181,6 +195,10 @@ docker run -it --rm \
 
 Direct `-e` flags override values from `.env`. This is useful for CI/CD or secrets-manager integrations where you don't want keys on disk.
 
+:::note Looking for Docker as the **terminal backend**?
+This page covers running Hermes itself inside Docker. If you want Hermes to execute the agent's `terminal` / `execute_code` calls inside a Docker sandbox container (one persistent container per Hermes process), that's a separate config block — `terminal.backend: docker` plus `terminal.docker_image`, `terminal.docker_volumes`, `terminal.docker_forward_env`, `terminal.docker_run_as_host_user`, and `terminal.docker_extra_args`. See [Configuration → Docker Backend](configuration.md#docker-backend) for the full set.
+:::
+
 ## Docker Compose example
 
 For persistent deployment with both the gateway and dashboard, a `docker-compose.yaml` is convenient:
@@ -256,6 +274,10 @@ The entrypoint script (`docker/entrypoint.sh`) bootstraps the data volume on fir
 - Optionally launches `hermes dashboard` as a background side-process when `HERMES_DASHBOARD=1` (see [Running the dashboard](#running-the-dashboard))
 - Then runs `hermes` with whatever arguments you pass
 
+:::warning
+Do not override the image entrypoint unless you keep `/opt/hermes/docker/entrypoint.sh` in the command chain. The entrypoint drops root privileges to the `hermes` user before gateway state files are created. Starting `hermes gateway run` as root inside the official image is refused by default because it can leave root-owned files in `/opt/data` and break later dashboard or gateway starts. Set `HERMES_ALLOW_ROOT_GATEWAY=1` only when you intentionally accept that risk.
+:::
+
 ## Upgrading
 
 Pull the latest image and recreate the container. Your data directory is untouched.
@@ -282,6 +304,139 @@ docker compose up -d
 When using Docker as the execution environment (not the methods above, but when the agent runs commands inside a Docker sandbox — see [Configuration → Docker Backend](./configuration.md#docker-backend)), Hermes reuses a single long-lived container for all tool calls and automatically bind-mounts the skills directory (`~/.hermes/skills/`) and any credential files declared by skills into that container as read-only volumes. Skill scripts, templates, and references are available inside the sandbox without manual configuration, and because the container persists for the life of the Hermes process, any dependencies you install or files you write stay around for the next tool call.
 
 The same syncing happens for SSH and Modal backends — skills and credential files are uploaded via rsync or the Modal mount API before each command.
+
+## Connecting to local inference servers (vLLM, Ollama, etc.)
+
+When running Hermes in Docker and your inference server (vLLM, Ollama, text-generation-inference, etc.) is also running on the host or in another container, networking requires extra attention.
+
+### Docker Compose (recommended)
+
+Put both services on the same Docker network. This is the most reliable approach:
+
+```yaml
+services:
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: vllm
+    command: >
+      --model Qwen/Qwen2.5-7B-Instruct
+      --served-model-name my-model
+      --host 0.0.0.0
+      --port 8000
+    ports:
+      - "8000:8000"
+    networks:
+      - hermes-net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes
+    restart: unless-stopped
+    command: gateway run
+    ports:
+      - "8642:8642"
+    volumes:
+      - ~/.hermes:/opt/data
+    networks:
+      - hermes-net
+
+networks:
+  hermes-net:
+    driver: bridge
+```
+
+Then in your `~/.hermes/config.yaml`, use the **container name** as the hostname:
+
+```yaml
+model:
+  provider: custom
+  model: my-model
+  base_url: http://vllm:8000/v1
+  api_key: "none"
+```
+
+:::tip Key points
+- Use the **container name** (`vllm`) as the hostname — not `localhost` or `127.0.0.1`, which refer to the Hermes container itself.
+- The `model` value must match the `--served-model-name` you passed to vLLM.
+- Set `api_key` to any non-empty string (vLLM requires the header but doesn't validate it by default).
+- Do **not** include a trailing slash in `base_url`.
+:::
+
+### Standalone Docker run (no Compose)
+
+If your inference server runs directly on the host (not in Docker), use `host.docker.internal` on macOS/Windows, or `--network host` on Linux:
+
+**macOS / Windows:**
+
+```sh
+docker run -d \
+  --name hermes \
+  -v ~/.hermes:/opt/data \
+  -p 8642:8642 \
+  nousresearch/hermes-agent gateway run
+```
+
+```yaml
+# config.yaml
+model:
+  provider: custom
+  model: my-model
+  base_url: http://host.docker.internal:8000/v1
+  api_key: "none"
+```
+
+**Linux (host networking):**
+
+```sh
+docker run -d \
+  --name hermes \
+  --network host \
+  -v ~/.hermes:/opt/data \
+  nousresearch/hermes-agent gateway run
+```
+
+```yaml
+# config.yaml
+model:
+  provider: custom
+  model: my-model
+  base_url: http://127.0.0.1:8000/v1
+  api_key: "none"
+```
+
+:::warning With `--network host`, the `-p` flag is ignored — all container ports are directly exposed on the host.
+:::
+
+### Verifying connectivity
+
+From inside the Hermes container, confirm the inference server is reachable:
+
+```sh
+docker exec hermes curl -s http://vllm:8000/v1/models
+```
+
+You should see a JSON response listing your served model. If this fails, check:
+
+1. Both containers are on the same Docker network (`docker network inspect hermes-net`)
+2. The inference server is listening on `0.0.0.0`, not `127.0.0.1`
+3. The port number matches
+
+### Ollama
+
+Ollama works the same way. If Ollama runs on the host, use `host.docker.internal:11434` (macOS/Windows) or `127.0.0.1:11434` (Linux with `--network host`). If Ollama runs in its own container on the same Docker network:
+
+```yaml
+model:
+  provider: custom
+  model: llama3
+  base_url: http://ollama:11434/v1
+  api_key: "none"
+```
 
 ## Troubleshooting
 
