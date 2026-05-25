@@ -24,6 +24,7 @@ agents:
     role_summary: 复杂代码修改、命令执行、git 操作。
     model_ref: claude_opus
     runtime: claude_code_cli
+    skills: [github-pr-workflow, codebase-inspection]
     tools: [file, terminal, git]
     permission: ask
     can_delegate: false
@@ -35,6 +36,7 @@ agents:
     aliases: [低成本快工, deepseek]
     role_summary: 小改、小测试、低风险机械执行。
     model_ref: deepseek_pro
+    skills: [spike, github-issues]
     tools: [file, terminal]
     permission: ask
     can_delegate: false
@@ -47,6 +49,7 @@ agents:
     role_summary: 外部 Codex CLI 审查器。
     model_ref: codex_cli
     runtime: codex_cli
+    skills: [codex-superpowers, github-code-review]
     tools: [file, mcp-codegraph]
     permission: read_only
     can_delegate: false
@@ -366,6 +369,7 @@ def test_managed_read_only_profile_blocks_write_tools(tmp_path, monkeypatch):
     assert profile["permission_mode"] == "read_only"
     assert profile["isolation"] == "readonly"
     assert {"write_file", "patch"} <= set(profile["blocked_tools"])
+    assert profile["skills"] == ["codex-superpowers", "github-code-review"]
 
 
 def test_managed_preflight_loads_policy_yaml_and_blocks_delete_file(tmp_path, monkeypatch):

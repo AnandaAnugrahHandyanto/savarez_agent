@@ -3632,6 +3632,7 @@ def _load_managed_subagent_profile(agent_id: str) -> tuple[Optional[dict], Optio
                     "role_summary": agent.role_summary,
                     "model_ref": agent.model_ref,
                     "runtime": agent.runtime,
+                    "skills": list(agent.skills),
                     "type": agent.role,
                     "capabilities": list(agent.capabilities),
                 }
@@ -3644,6 +3645,7 @@ def _load_managed_subagent_profile(agent_id: str) -> tuple[Optional[dict], Optio
                     "model": "default",
                     "model_ref": agent.model_ref,
                     "runtime": agent.runtime,
+                    "skills": list(agent.skills),
                     "toolsets": list(agent.tools),
                     "blocked_tools": blocked_tools,
                     "permission_mode": agent.permission.value,

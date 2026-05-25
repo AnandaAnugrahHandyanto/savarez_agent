@@ -7,6 +7,7 @@ agents:
     aliases: [Hermes 技术翻译官, 技术翻译官, 技术中间层, 技术参谋, nesta]
     role_summary: 技术中间层、需求拆解、策略判断，承接原 nesta 职责。
     model_ref: deepseek_pro
+    skills: [hermes-subagent-delegation, hermes-multi-agent-research, hermes-gateway-debug, codebase-inspection, github-repo-risk-assessment, design-md, humanizer-zh]
     tools: [file, mcp-codegraph]
     permission: read_only
     can_delegate: false
@@ -20,6 +21,7 @@ agents:
     role_summary: 外部 Claude Code CLI 执行器；后端由 CC Switch 控制。
     model_ref: claude_opus
     runtime: claude_code_cli
+    skills: [github-pr-workflow, github-repo-management, github-issues, codebase-inspection, python-debugpy, node-inspect-debugger, nextjs-standalone-deployment, spike, open-design-ops]
     tools: [file, terminal, git, mcp-codegraph]
     permission: ask
     can_delegate: false
@@ -32,6 +34,7 @@ agents:
     aliases: [DeepSeek 低成本快工, 低成本快工, 快工, 小改工, deepseek]
     role_summary: 小改、小测试、低风险机械执行；不负责复杂重构和高风险操作。
     model_ref: deepseek_pro
+    skills: [codebase-inspection, spike, python-debugpy, node-inspect-debugger, debugging-hermes-tui-commands, github-issues]
     tools: [file, terminal]
     permission: ask
     can_delegate: false
@@ -45,6 +48,7 @@ agents:
     role_summary: 外部 Codex CLI 审查器；用于只读审查、架构/实现方案评估。
     model_ref: codex_cli
     runtime: codex_cli
+    skills: [codex-superpowers, github-code-review, github-repo-risk-assessment, codebase-inspection, playwright-mcp]
     tools: [file, terminal, mcp-codegraph]
     permission: read_only
     can_delegate: false
@@ -57,6 +61,7 @@ agents:
     aliases: [Intelligence 情报研究员, 情报研究员, 调研员, 竞品研究, intelligence]
     role_summary: 调研、竞品、资料收集、信息核验。
     model_ref: deepseek_flash
+    skills: [competitive-intelligence]
     tools: [file, web]
     permission: ask
     can_delegate: false
@@ -69,6 +74,7 @@ agents:
     aliases: [Pirlo 商业策划师, 商业策划师, 方案策划, 提案策划, pirlo]
     role_summary: 商业方案、PPT 提案、内容结构。
     model_ref: deepseek_pro
+    skills: [humanizer, humanizer-zh, claude-design, sketch, baoyu-infographic, baoyu-comic, architecture-diagram, comfyui]
     tools: [file]
     permission: read_only
     can_delegate: false
@@ -81,6 +87,7 @@ agents:
     aliases: [TARS 桌面操作员, 桌面操作员, GUI 操作员, 截图员, tars]
     role_summary: 桌面、浏览器 GUI、截图、视觉验证。
     model_ref: tars_gpt54
+    skills: [browser-automation-for-blocked-sites, macos-computer-use, playwright-mcp]
     tools: [desktop, browser]
     permission: ask
     can_delegate: false
@@ -93,6 +100,7 @@ agents:
     aliases: [Ambrosini 质量门卫, 质量门卫, 验收官, 风险审核, ambrosini]
     role_summary: 高风险验收、最终质量门。
     model_ref: deepseek_pro
+    skills: [codex-superpowers, github-code-review, playwright-mcp]
     tools: [file]
     permission: read_only
     can_delegate: false

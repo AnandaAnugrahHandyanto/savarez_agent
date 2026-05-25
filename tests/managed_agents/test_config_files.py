@@ -51,6 +51,7 @@ def test_managed_agents_aliases_and_user_facing_fields_are_consistent():
         assert agent.aliases
         assert agent.role_summary
         assert agent.model_ref
+        assert agent.skills
 
 
 def test_managed_agents_model_refs_are_declared_in_models_config():
@@ -80,6 +81,51 @@ def test_codegraph_is_scoped_to_code_understanding_agents():
     assert "mcp-codegraph" in registry.get("codex").tools
     assert "mcp-codegraph" in registry.get("claude").tools
     assert "mcp-codegraph" not in registry.get("deepseek-tui").tools
+
+
+def test_managed_agents_skill_whitelists_are_declared():
+    registry = load_agent_registry(CONFIG_DIR / "agents.yaml")
+
+    assert "hermes-subagent-delegation" in registry.get("hermes-internal").skills
+    assert "github-pr-workflow" in registry.get("claude").skills
+    assert "debugging-hermes-tui-commands" in registry.get("deepseek-tui").skills
+    assert "codex-superpowers" in registry.get("codex").skills
+    assert registry.get("intelligence").skills == ("competitive-intelligence",)
+    assert "claude-design" in registry.get("pirlo").skills
+    assert "browser-automation-for-blocked-sites" in registry.get("agent-tars").skills
+    assert "github-code-review" in registry.get("ambrosini").skills
+    assert "kanban" not in registry.agents
+
+
+def test_active_skill_frontmatter_uses_canonical_agent_ids():
+    valid_agents = {
+        "hermes",
+        "hermes-internal",
+        "claude",
+        "deepseek-tui",
+        "codex",
+        "intelligence",
+        "pirlo",
+        "agent-tars",
+        "ambrosini",
+    }
+    skills_root = Path("/Users/gu/.hermes/skills")
+
+    for skill_path in skills_root.rglob("SKILL.md"):
+        if ".archive" in skill_path.parts:
+            continue
+        text = skill_path.read_text(encoding="utf-8")
+        if not text.startswith("---"):
+            continue
+        end = text.find("\n---", 3)
+        assert end != -1, f"{skill_path} is missing closing frontmatter delimiter"
+        metadata = yaml.safe_load(text[3:end]) or {}
+        agents = metadata.get("agents") or []
+        if isinstance(agents, str):
+            agents = [agents]
+        assert "nesta" not in agents, str(skill_path)
+        assert "openclaw" not in agents, str(skill_path)
+        assert set(agents) <= valid_agents, f"{skill_path}: {agents}"
 
 
 def test_managed_agents_policy_config_loads_and_enforces_priority():
