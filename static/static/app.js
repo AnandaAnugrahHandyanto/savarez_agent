@@ -4,12 +4,12 @@ function App() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [logs, setLogs] = useState([]);
-  const [leftWidth, setLeftWidth] = useState(340);
-  const [rightWidth, setRightWidth] = useState(300);
+  const [leftWidth, setLeftWidth] = useState(320);
+  const [rightWidth, setRightWidth] = useState(280);
   const [dragLeft, setDragLeft] = useState(false);
   const [dragRight, setDragRight] = useState(false);
 
-  // -------- LOG POLLING --------
+  // ✅ Logs polling
   useEffect(() => {
     const interval = setInterval(async () => {
       const res = await fetch("/logs");
@@ -20,7 +20,7 @@ function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // -------- RESIZE --------
+  // ✅ Resize logic
   useEffect(() => {
     function move(e) {
       if (dragLeft) setLeftWidth(Math.max(250, e.clientX));
@@ -38,20 +38,21 @@ function App() {
     };
   }, [dragLeft, dragRight]);
 
-  // -------- SEND STREAM --------
+  // ✅ Streaming chat
   async function sendMessage() {
     if (!input) return;
 
     setMessages(m => [...m, { role: "user", text: input }]);
+    const userInput = input;
     setInput("");
 
-    const response = await fetch("/chat/stream", {
+    const res = await fetch("/chat/stream", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ message: input })
+      body: JSON.stringify({ message: userInput })
     });
 
-    const reader = response.body.getReader();
+    const reader = res.body.getReader();
     const decoder = new TextDecoder();
 
     let aiMsg = { role: "assistant", text: "" };
@@ -66,7 +67,7 @@ function App() {
 
       setMessages(m => {
         const copy = [...m];
-        copy[copy.length - 1] = {...aiMsg};
+        copy[copy.length - 1] = { ...aiMsg };
         return copy;
       });
     }
@@ -75,69 +76,44 @@ function App() {
   return (
     React.createElement("div", {style:{display:"flex",height:"100vh"}} ,
 
-      // LEFT PANEL
-      React.createElement("div",{style:{width:leftWidth,background:"#f4f4f4"}} ,
+      React.createElement("div",{style:{width:leftWidth,background:"#f4f4f4",padding:10}},
         React.createElement("h3",null,"Controls"),
         React.createElement("button",{onClick:()=>fetch("/restart",{method:"POST"})},"Restart")
       ),
 
-      // LEFT RESIZER
-      React.createElement("div",{
-        style:{width:5,background:"#ddd",cursor:"col-resize"},
-        onMouseDown:()=>setDragLeft(true)
-      }),
+      React.createElement("div",{style:{width:5,cursor:"col-resize",background:"#ddd"},onMouseDown:()=>setDragLeft(true)}),
 
-      // CENTER CHAT
-      React.createElement("div",{style:{flex:1,display:"flex",flexDirection:"column"}} ,
-
+      React.createElement("div",{style:{flex:1,display:"flex",flexDirection:"column"}},
         React.createElement("div",{style:{flex:1,overflow:"auto",padding:10}},
           messages.map((m,i)=>
-            React.createElement("div",{key:i,
-              style:{textAlign:m.role==="user"?"right":"left"}},
-              React.createElement("div",{
-                style:{
-                  display:"inline-block",
-                  background:m.role==="user"?"black":"#eee",
-                  color:m.role==="user"?"white":"black",
-                  padding:10,
-                  margin:5,
-                  borderRadius:10
-                }
-              },m.text)
+            React.createElement("div",{key:i,style:{textAlign:m.role==="user"?"right":"left"}},
+              React.createElement("div",{style:{
+                display:"inline-block",
+                background:m.role==="user"?"black":"#eee",
+                color:m.role==="user"?"white":"black",
+                padding:10,
+                margin:5,
+                borderRadius:10
+              }},m.text)
             )
           )
         ),
 
-        React.createElement("div",{style:{display:"flex",borderTop:"1px solid #ccc"}} ,
-          React.createElement("input",{
-            value:input,
-            onChange:e=>setInput(e.target.value),
-            style:{flex:1,padding:10}
-          }),
+        React.createElement("div",{style:{display:"flex",borderTop:"1px solid #ccc"}},
+          React.createElement("input",{value:input,onChange:e=>setInput(e.target.value),style:{flex:1,padding:10}}),
           React.createElement("button",{onClick:sendMessage},"Send")
         )
       ),
 
-      // RIGHT RESIZER
-      React.createElement("div",{
-        style:{width:5,background:"#ddd",cursor:"col-resize"},
-        onMouseDown:()=>setDragRight(true)
-      }),
+      React.createElement("div",{style:{width:5,cursor:"col-resize",background:"#ddd"},onMouseDown:()=>setDragRight(true)}),
 
-      // RIGHT LOGS
-      React.createElement("div",{style:{
-        width:rightWidth,
-        background:"#111",
-        color:"#0f0",
-        padding:10,
-        overflow:"auto"
-      }},
+      React.createElement("div",{style:{width:rightWidth,background:"#111",color:"#0f0",padding:10,overflow:"auto"}},
         logs.map((l,i)=>React.createElement("div",{key:i},l))
       )
     )
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(
-  React.createElement(App)
-);
+ReactDOM.createRoot(document.getElementById("root"))
+  .render(React.createElement(App));
+``
