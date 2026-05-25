@@ -86,6 +86,26 @@ def test_approval_store_marks_expired_items(_isolate_hermes_home):
     assert listed[0]["status"] == "expired"
 
 
+def test_draft_proposal_packet_validates_without_writing_state(_isolate_hermes_home):
+    from hermes_cli.ops_approvals import ApprovalStore, draft_proposal_packet
+
+    packet = draft_proposal_packet(_valid_request(
+        created_by="Jenny",
+        source_surface="discord",
+        source_ref="thread:ops message:456",
+        conversation_excerpt="A gated restart was requested.",
+        related_paths=["/home/jenny/.hermes/hermes-agent/hermes_cli/ops_approvals.py"],
+    ))
+    store = ApprovalStore()
+
+    assert packet["created_by"] == "Jenny"
+    assert packet["risk_label"] == "Live-service"
+    assert packet["source_surface"] == "discord"
+    assert packet["related_paths"] == ["/home/jenny/.hermes/hermes-agent/hermes_cli/ops_approvals.py"]
+    assert store.list() == []
+    assert not store.inbox_path.exists()
+
+
 def test_proposal_ingestion_records_chat_context_and_stays_pending(_isolate_hermes_home):
     from hermes_cli.ops_approvals import ApprovalStore
 
@@ -114,6 +134,41 @@ def test_proposal_ingestion_records_chat_context_and_stays_pending(_isolate_herm
     assert proposal["conversation_excerpt"].startswith("Travis: proceed")
     assert proposal["related_paths"] == ["/home/jenny/.hermes/hermes-agent/hermes_cli/web_server.py"]
     assert proposal["execution_allowed"] is False
+
+
+def test_ops_approvals_module_cli_can_draft_json_proposal_without_creating_record(_isolate_hermes_home, tmp_path):
+    import json
+    import subprocess
+    import sys
+
+    from hermes_cli.ops_approvals import ApprovalStore
+
+    payload_path = tmp_path / "draft-input.json"
+    output_path = tmp_path / "draft-output.json"
+    payload_path.write_text(json.dumps(_valid_request(
+        title="Create gated proposal packet",
+        risk_label="Draft-only",
+        source_surface="discord",
+        source_ref="thread:test message:789",
+        related_paths=["/tmp/example.txt"],
+    )))
+
+    result = subprocess.run(
+        [sys.executable, "-m", "hermes_cli.ops_approvals", "draft", "--json-file", str(payload_path), "--output", str(output_path)],
+        check=True,
+        cwd=str(payload_path.parent),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    packet = json.loads(output_path.read_text())
+
+    assert str(output_path) in result.stdout
+    assert packet["title"] == "Create gated proposal packet"
+    assert packet["created_by"] == "test"
+    assert packet["source_ref"] == "thread:test message:789"
+    assert packet["related_paths"] == ["/tmp/example.txt"]
+    assert ApprovalStore().list() == []
 
 
 def test_ops_approvals_module_cli_can_ingest_json_proposal(_isolate_hermes_home, tmp_path):

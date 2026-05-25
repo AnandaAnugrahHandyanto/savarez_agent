@@ -93,6 +93,34 @@ def _atomic_write_json(path: Path, payload: Any) -> None:
     os.replace(tmp, path)
 
 
+def draft_proposal_packet(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a validated approval proposal packet without creating a record.
+
+    Jenny can use this when a workflow reaches a gated side-effect boundary: draft
+    the packet, show/review it, then submit it through the existing propose path.
+    This helper intentionally does not write state or execute anything.
+    """
+    risk_label = _required_text(data, "risk_label")
+    if risk_label not in ALLOWED_RISK_LABELS:
+        raise ApprovalError(f"Invalid risk_label: {risk_label}")
+    return {
+        "title": _required_text(data, "title"),
+        "project": _required_text(data, "project"),
+        "profile": str(data.get("profile") or "default").strip() or "default",
+        "risk_label": risk_label,
+        "proposed_action": _required_text(data, "proposed_action"),
+        "target": _required_text(data, "target"),
+        "preview": _required_text(data, "preview"),
+        "reason": _required_text(data, "reason"),
+        "rollback_or_verification": _required_text(data, "rollback_or_verification"),
+        "created_by": _optional_text(data, "created_by", "Jenny") or "Jenny",
+        "source_surface": _optional_text(data, "source_surface"),
+        "source_ref": _optional_text(data, "source_ref"),
+        "conversation_excerpt": _optional_text(data, "conversation_excerpt"),
+        "related_paths": _string_list(data, "related_paths"),
+    }
+
+
 class ApprovalStore:
     """JSON/JSONL approval inbox under the active HERMES_HOME."""
 
@@ -243,7 +271,7 @@ class ApprovalStore:
         side-effect boundary. It records source context and still creates only a
         pending decision record; it never executes the proposed action.
         """
-        payload = dict(data)
+        payload = draft_proposal_packet(data)
         payload["proposal_kind"] = "gated_action"
         proposal = self.create(payload)
         self._append_audit(
@@ -305,11 +333,31 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Hermes Ops approval ledger helper")
     sub = parser.add_subparsers(dest="command")
 
+    draft = sub.add_parser("draft", help="Validate and print an approval proposal JSON packet without creating it")
+    draft.add_argument("--json-file", help="Path to a JSON proposal payload; defaults to stdin")
+    draft.add_argument("--output", help="Optional path to write the normalized proposal JSON")
+
     propose = sub.add_parser("propose", help="Create a pending gated-action approval from JSON")
     propose.add_argument("--json-file", help="Path to a JSON proposal payload; defaults to stdin")
     propose.add_argument("--json", action="store_true", help="Print the created approval as JSON")
 
     args = parser.parse_args(argv)
+    if args.command == "draft":
+        try:
+            packet = draft_proposal_packet(_load_json_payload(args.json_file))
+            rendered = json.dumps(packet, indent=2, sort_keys=True) + "\n"
+            if args.output:
+                output_path = Path(args.output)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(rendered)
+                print(str(output_path))
+            else:
+                print(rendered, end="")
+        except Exception as exc:
+            print(f"approval draft failed: {exc}", file=sys.stderr)
+            return 2
+        return 0
+
     if args.command == "propose":
         try:
             created = ApprovalStore().propose_from_context(_load_json_payload(args.json_file))
