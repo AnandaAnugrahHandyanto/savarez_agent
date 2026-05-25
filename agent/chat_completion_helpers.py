@@ -36,7 +36,11 @@ from urllib.parse import urlparse, parse_qs, urlunparse
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import classify_api_error, FailoverReason
-from agent.model_metadata import is_local_endpoint
+from agent.model_metadata import (
+    estimate_messages_tokens_rough,
+    estimate_tokens_rough,
+    is_local_endpoint,
+)
 from agent.message_sanitization import (
     _sanitize_surrogates,
     _sanitize_messages_surrogates,
@@ -1805,6 +1809,19 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             message=mock_message,
             finish_reason=effective_finish_reason,
         )
+        # Fall back to rough estimation for providers that don't send usage
+        # data in stream chunks (MiniMax, Kimi, etc.).  A None usage object
+        # or one missing both token fields is treated as "no data received".
+        _raw = usage_obj
+        _prompt = getattr(_raw, "prompt_tokens", None) if _raw else None
+        _completion = getattr(_raw, "completion_tokens", None) if _raw else None
+        if _prompt is None and _completion is None:
+            _est = estimate_messages_tokens_rough(api_kwargs.get("messages") or [])
+            _comp_text = "".join(content_parts) if content_parts else ""
+            usage_obj = SimpleNamespace(
+                prompt_tokens=_est,
+                completion_tokens=estimate_tokens_rough(_comp_text),
+            )
         return SimpleNamespace(
             id="stream-" + str(uuid.uuid4()),
             model=model_name,
