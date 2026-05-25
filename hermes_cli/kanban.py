@@ -265,6 +265,9 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Switch to the new board after creating it")
     b_create.add_argument("--default-workdir", default=None,
                           help="Default workspace path for tasks created on this board")
+    b_create.add_argument("--dispatcher-owner", default=None,
+                          help="Profile slug that owns dispatching for this board. "
+                               "Default board defaults to 'hermes' if not set.")
 
     b_rm = boards_sub.add_parser(
         "rm", aliases=["remove", "delete"],
@@ -300,6 +303,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     b_set_wd.add_argument("slug")
     b_set_wd.add_argument("path", nargs="?", default=None,
                           help="Absolute path to use as default workdir. Omit to clear.")
+
+    b_set_owner = boards_sub.add_parser(
+        "set-owner",
+        help="Set the dispatcher profile that owns this board",
+    )
+    b_set_owner.add_argument("slug", help="Board slug")
+    b_set_owner.add_argument("profile", nargs="?", default=None,
+                             help="Profile slug to assign as dispatcher owner. Omit to clear.")
 
     # --- create ---
     p_create = sub.add_parser("create", help="Create a new task")
@@ -977,6 +988,8 @@ def _dispatch_boards(args: argparse.Namespace) -> int:
         return _cmd_boards_rename(args)
     if sub == "set-default-workdir":
         return _cmd_boards_set_default_workdir(args)
+    if sub == "set-owner":
+        return _cmd_boards_set_owner(args)
     print(f"kanban boards: unknown action {sub!r}", file=sys.stderr)
     return 2
 
@@ -1048,6 +1061,7 @@ def _cmd_boards_create(args: argparse.Namespace) -> int:
         icon=args.icon,
         color=args.color,
         default_workdir=args.default_workdir,
+        dispatcher_owner=getattr(args, "dispatcher_owner", None),
     )
     verb = "already exists" if already else "created"
     print(f"Board {meta['slug']!r} {verb}.")
@@ -1149,6 +1163,26 @@ def _cmd_boards_set_default_workdir(args: argparse.Namespace) -> int:
         print(f"Board {normed!r} default workdir set to {new_val!r}.")
     else:
         print(f"Board {normed!r} default workdir cleared.")
+    return 0
+
+
+def _cmd_boards_set_owner(args: argparse.Namespace) -> int:
+    try:
+        normed = kb._normalize_board_slug(args.slug)
+    except ValueError as exc:
+        print(f"kanban boards set-owner: {exc}", file=sys.stderr)
+        return 2
+    if not normed or not kb.board_exists(normed):
+        print(f"kanban boards set-owner: board {args.slug!r} does not exist",
+              file=sys.stderr)
+        return 1
+    profile = args.profile or None
+    meta = kb.set_dispatcher_owner(normed, profile)
+    owner = meta.get("dispatcher_owner")
+    if owner:
+        print(f"Board {normed!r} dispatcher owner set to {owner!r}.")
+    else:
+        print(f"Board {normed!r} dispatcher owner cleared.")
     return 0
 
 

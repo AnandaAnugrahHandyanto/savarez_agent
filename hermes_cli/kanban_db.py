@@ -411,6 +411,7 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "icon": "",
         "color": "",
         "default_workdir": None,
+        "dispatcher_owner": None,
         "created_at": None,
         "archived": False,
     }
@@ -438,6 +439,7 @@ def write_board_metadata(
     color: Optional[str] = None,
     archived: Optional[bool] = None,
     default_workdir: Optional[str] = None,
+    dispatcher_owner: Optional[str] = None,
 ) -> dict:
     """Create / update ``board.json`` for ``board``.
 
@@ -461,6 +463,8 @@ def write_board_metadata(
         meta["archived"] = bool(archived)
     if default_workdir is not None:
         meta["default_workdir"] = str(default_workdir) if default_workdir else None
+    if dispatcher_owner is not None:
+        meta["dispatcher_owner"] = str(dispatcher_owner) if dispatcher_owner else None
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -481,6 +485,7 @@ def create_board(
     icon: Optional[str] = None,
     color: Optional[str] = None,
     default_workdir: Optional[str] = None,
+    dispatcher_owner: Optional[str] = None,
 ) -> dict:
     """Create a new board directory + DB + metadata. Idempotent.
 
@@ -491,6 +496,10 @@ def create_board(
     normed = _normalize_board_slug(slug)
     if not normed:
         raise ValueError("board slug is required")
+    # Default board defaults to owner "hermes" on first creation so the
+    # core profile keeps dispatching it when no owner was set explicitly.
+    if normed == DEFAULT_BOARD and dispatcher_owner is None:
+        dispatcher_owner = "hermes"
     meta = write_board_metadata(
         normed,
         name=name,
@@ -498,10 +507,16 @@ def create_board(
         icon=icon,
         color=color,
         default_workdir=default_workdir,
+        dispatcher_owner=dispatcher_owner,
     )
     # Touch the DB so list_boards() sees it immediately.
     init_db(board=normed)
     return meta
+
+
+def set_dispatcher_owner(board: str, profile: Optional[str]) -> dict:
+    """Set or clear the dispatcher_owner for a board. Returns updated metadata."""
+    return write_board_metadata(board, dispatcher_owner=profile)
 
 
 def list_boards(*, include_archived: bool = True) -> list[dict]:

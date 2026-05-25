@@ -1053,6 +1053,17 @@ display:
 #     base_url: "https://ollama.com/v1"
 
 # =============================================================================
+# Kanban
+# =============================================================================
+# kanban:
+#   dispatch_in_gateway: true     # set false to disable the embedded dispatcher
+#
+# Board dispatcher ownership is set per-board, not in this file.
+# Use: hermes kanban boards set-owner <slug> <profile>
+# or:  hermes kanban boards create <slug> --dispatcher-owner <profile>
+# Default board is owned by the 'hermes' profile.
+
+# =============================================================================
 # Privacy
 # =============================================================================
 # privacy:

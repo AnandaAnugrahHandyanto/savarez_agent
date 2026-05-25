@@ -5131,6 +5131,13 @@ class GatewayRunner:
             logger.warning("kanban dispatcher: kanban_db not importable; dispatcher disabled")
             return
 
+        _own_profile: Optional[str] = (
+            os.environ.get("HERMES_KANBAN_DISPATCHER_PROFILE")
+            or cfg.get("profile")
+            or os.environ.get("HERMES_PROFILE")
+            or None
+        )
+
         interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)
         interval = max(interval, 1.0)  # sanity floor — tighter than this is a footgun
 
@@ -5300,6 +5307,12 @@ class GatewayRunner:
                 boards = _kb.list_boards(include_archived=False)
             except Exception:
                 boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+            # Skip boards whose dispatcher_owner doesn't match this gateway's
+            # profile. None means "any gateway" for backwards compatibility.
+            boards = [
+                b for b in boards
+                if b.get("dispatcher_owner") is None or b.get("dispatcher_owner") == _own_profile
+            ]
             out: list[tuple[str, "Optional[object]"]] = []
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
@@ -5322,6 +5335,12 @@ class GatewayRunner:
                 boards = _kb.list_boards(include_archived=False)
             except Exception:
                 boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+            # Skip boards whose dispatcher_owner doesn't match this gateway's
+            # profile. None means "any gateway" for backwards compatibility.
+            boards = [
+                b for b in boards
+                if b.get("dispatcher_owner") is None or b.get("dispatcher_owner") == _own_profile
+            ]
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
                 conn = None
