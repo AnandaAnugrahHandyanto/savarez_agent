@@ -347,3 +347,32 @@ def test_decompose_no_aux_client_configured(kanban_home):
 
     assert outcome.ok is False
     assert "no auxiliary client" in outcome.reason
+
+
+def test_list_triage_ids_closes_kanban_connection(monkeypatch):
+    """The gateway auto-decomposer calls list_triage_ids once per tick.
+
+    sqlite3.Connection.__exit__ commits/rolls back but does not close the
+    database handle, so the helper must explicitly close kb.connect()'s result
+    instead of relying on ``with kb.connect()``.
+    """
+
+    class FakeConn:
+        def __init__(self):
+            self.closed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def close(self):
+            self.closed = True
+
+    conn = FakeConn()
+    monkeypatch.setattr(decomp.kb, "connect", lambda: conn)
+    monkeypatch.setattr(decomp.kb, "list_tasks", lambda *args, **kwargs: [])
+
+    assert decomp.list_triage_ids() == []
+    assert conn.closed is True
