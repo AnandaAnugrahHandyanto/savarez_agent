@@ -163,7 +163,7 @@ A long tail of native-Windows fixes shipped alongside the beta — taskkill-base
 ## 🤖 Models & Providers
 
 ### New providers
-- **xAI Grok OAuth (SuperGrok Subscription) provider** ([#26534](https://github.com/NousResearch/hermes-agent/pull/26534))
+- **xAI Grok OAuth (SuperGrok / Premium+) provider** ([#26534](https://github.com/NousResearch/hermes-agent/pull/26534))
 - **NovitaAI provider** (salvage #7219) (@kshitijk4poor) ([#25507](https://github.com/NousResearch/hermes-agent/pull/25507))
 - **NVIDIA NIM billing origin header** (salvage #25211) ([#26585](https://github.com/NousResearch/hermes-agent/pull/26585))
 

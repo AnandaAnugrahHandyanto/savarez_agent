@@ -1,12 +1,12 @@
 ---
 sidebar_position: 16
-title: "xAI Grok OAuth (SuperGrok Subscription)"
-description: "Sign in with your SuperGrok subscription to use Grok models in Hermes Agent — no API key required"
+title: "xAI Grok OAuth (SuperGrok / Premium+)"
+description: "Sign in with your SuperGrok or X Premium+ subscription to use Grok models in Hermes Agent — no API key required"
 ---
 
-# xAI Grok OAuth (SuperGrok Subscription)
+# xAI Grok OAuth (SuperGrok / Premium+)
 
-Hermes Agent supports xAI Grok through a browser-based OAuth login flow against [accounts.x.ai](https://accounts.x.ai), using your existing **SuperGrok subscription**. No `XAI_API_KEY` is required — log in once and Hermes automatically refreshes your session in the background.
+Hermes Agent supports xAI Grok through a browser-based OAuth login flow against [accounts.x.ai](https://accounts.x.ai), using your existing **SuperGrok or X Premium+ subscription**. No `XAI_API_KEY` is required — log in once and Hermes automatically refreshes your session in the background.
 
 The transport reuses the `codex_responses` adapter (xAI exposes a Responses-style endpoint), so reasoning, tool-calling, streaming, and prompt caching work without any adapter changes.
 
@@ -17,7 +17,7 @@ The same OAuth bearer token is also reused by every direct-to-xAI surface in Her
 | Item | Value |
 |------|-------|
 | Provider ID | `xai-oauth` |
-| Display name | xAI Grok OAuth (SuperGrok Subscription) |
+| Display name | xAI Grok OAuth (SuperGrok / Premium+) |
 | Auth type | Browser OAuth 2.0 PKCE (loopback callback) |
 | Transport | xAI Responses API (`codex_responses`) |
 | Default model | `grok-4.3` |
@@ -30,7 +30,7 @@ The same OAuth bearer token is also reused by every direct-to-xAI surface in Her
 
 - Python 3.9+
 - Hermes Agent installed
-- An active SuperGrok subscription on your xAI account
+- An active SuperGrok or X Premium+ subscription on your xAI account
 - A browser available on the local machine (or use `--no-browser` for remote sessions)
 
 ## Quick Start
@@ -38,7 +38,7 @@ The same OAuth bearer token is also reused by every direct-to-xAI surface in Her
 ```bash
 # Launch the provider and model picker
 hermes model
-# → Select "xAI Grok OAuth (SuperGrok Subscription)" from the provider list
+# → Select "xAI Grok OAuth (SuperGrok / Premium+)" from the provider list
 # → Hermes opens your browser to accounts.x.ai
 # → Approve access in the browser
 # → Pick a model (grok-4.3 is at the top)
@@ -95,7 +95,7 @@ The `◆ Auth Providers` section will show the current state of every provider, 
 
 ```bash
 hermes model
-# → Select "xAI Grok OAuth (SuperGrok Subscription)"
+# → Select "xAI Grok OAuth (SuperGrok / Premium+)"
 # → Pick from the model list (grok-4.3 is pinned to the top)
 ```
 
@@ -139,7 +139,7 @@ hermes tools
 # → Text-to-Speech       → "xAI TTS"
 # → Image Generation     → "xAI Grok Imagine (image)"
 # → Video Generation     → "xAI Grok Imagine"
-# → X (Twitter) Search   → "xAI Grok OAuth (SuperGrok Subscription)"
+# → X (Twitter) Search   → "xAI Grok OAuth (SuperGrok / Premium+)"
 ```
 
 If OAuth tokens are already stored, the picker confirms it and skips the credential prompt. If neither OAuth nor `XAI_API_KEY` is set, the picker offers a 3-choice menu: OAuth login, paste API key, or skip.

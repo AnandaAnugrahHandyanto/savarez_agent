@@ -2905,7 +2905,7 @@ def _model_flow_openai_codex(config, current_model=""):
 
 
 def _model_flow_xai_oauth(_config, current_model=""):
-    """xAI Grok OAuth (SuperGrok Subscription) provider: ensure logged in, then pick model."""
+    """xAI Grok OAuth (SuperGrok / Premium+) provider: ensure logged in, then pick model."""
     from hermes_cli.auth import (
         get_xai_oauth_auth_status,
         _prompt_model_selection,
@@ -2920,7 +2920,7 @@ def _model_flow_xai_oauth(_config, current_model=""):
 
     status = get_xai_oauth_auth_status()
     if status.get("logged_in"):
-        print("  xAI Grok OAuth (SuperGrok Subscription) credentials: ✓")
+        print("  xAI Grok OAuth (SuperGrok / Premium+) credentials: ✓")
         print()
         print("    1. Use existing credentials")
         print("    2. Reauthenticate (new OAuth login)")
@@ -2950,7 +2950,7 @@ def _model_flow_xai_oauth(_config, current_model=""):
         elif choice == "3":
             return
     else:
-        print("Not logged into xAI Grok OAuth (SuperGrok Subscription). Starting login...")
+        print("Not logged into xAI Grok OAuth (SuperGrok / Premium+). Starting login...")
         print()
         try:
             mock_args = argparse.Namespace()
@@ -2980,7 +2980,7 @@ def _model_flow_xai_oauth(_config, current_model=""):
     if selected:
         _save_model_choice(selected)
         _update_config_for_provider("xai-oauth", base_url)
-        print(f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok Subscription)")
+        print(f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok / Premium+)")
     else:
         print("No change.")
 

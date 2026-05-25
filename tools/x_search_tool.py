@@ -7,12 +7,12 @@ The tool registers when **either** xAI credential path is available:
 
 * ``XAI_API_KEY`` is set in ``~/.hermes/.env`` or the process environment
   (paid xAI API key), OR
-* The user is signed in via xAI Grok OAuth — SuperGrok subscription —
+* The user is signed in via xAI Grok OAuth — SuperGrok / Premium+ —
   i.e. ``hermes auth add xai-oauth`` has been run and the stored refresh
   token still works.
 
 Credential preference at call time matches
-:func:`tools.xai_http.resolve_xai_http_credentials`: SuperGrok OAuth first,
+:func:`tools.xai_http.resolve_xai_http_credentials`: SuperGrok / Premium+ OAuth first,
 direct OAuth resolver second, ``XAI_API_KEY`` last. That helper also
 auto-refreshes the OAuth access token when it's within the refresh skew
 window, so a ``True`` from :func:`check_x_search_requirements` means the
@@ -118,7 +118,7 @@ def _resolve_xai_bearer() -> Tuple[str, str, str]:
     if not api_key:
         raise RuntimeError(
             "No xAI credentials available. Run `hermes auth add xai-oauth` "
-            "to sign in with your SuperGrok subscription, or set XAI_API_KEY."
+            "to sign in with your SuperGrok / Premium+ subscription, or set XAI_API_KEY."
         )
     base_url = str(creds.get("base_url") or DEFAULT_XAI_BASE_URL).strip().rstrip("/")
     source = str(creds.get("provider") or "xai")

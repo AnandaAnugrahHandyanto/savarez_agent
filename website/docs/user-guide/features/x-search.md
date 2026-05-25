@@ -17,7 +17,7 @@ The `x_search` tool lets the agent search X (Twitter) posts, profiles, and threa
 
 | Credential | Source | Setup |
 |------------|--------|-------|
-| **SuperGrok OAuth** (preferred) | Browser login at `accounts.x.ai`, refreshed automatically | `hermes auth add xai-oauth` — see [xAI Grok OAuth (SuperGrok Subscription)](../../guides/xai-grok-oauth.md) |
+| **SuperGrok OAuth** (preferred) | Browser login at `accounts.x.ai`, refreshed automatically | `hermes auth add xai-oauth` — see [xAI Grok OAuth (SuperGrok / Premium+)](../../guides/xai-grok-oauth.md) |
 | **`XAI_API_KEY`** | Paid xAI API key | Set in `~/.hermes/.env` |
 
 Both hit the same endpoint with the same payload — the only difference is the bearer token. **When both are configured, SuperGrok OAuth wins** so x_search runs against your subscription quota instead of paid API spend.
@@ -35,7 +35,7 @@ hermes tools
 
 The picker offers two credential choices:
 
-1. **xAI Grok OAuth (SuperGrok Subscription)** — opens the browser to `accounts.x.ai` if you're not already logged in
+1. **xAI Grok OAuth (SuperGrok / Premium+)** — opens the browser to `accounts.x.ai` if you're not already logged in
 2. **xAI API key** — prompts for `XAI_API_KEY`
 
 Either choice satisfies the gating. You can pick whichever credentials you already have; the tool works identically with both. If both end up configured, OAuth is preferred at call time.
@@ -112,6 +112,6 @@ Two possible causes:
 
 ## See Also
 
-- [xAI Grok OAuth (SuperGrok Subscription)](../../guides/xai-grok-oauth.md) — the OAuth setup guide
+- [xAI Grok OAuth (SuperGrok / Premium+)](../../guides/xai-grok-oauth.md) — the OAuth setup guide
 - [Web Search & Extract](web-search.md) — for general (non-X) web search
 - [Tools Reference](../../reference/tools-reference.md) — full tool catalog
