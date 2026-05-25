@@ -56,6 +56,7 @@ def test_cursor_mcp_doctor_reports_portable_setup(tmp_path, monkeypatch):
     assert checks["skills_context_tools"]["status"] == "ok"
     assert checks["agent_registry"]["status"] == "ok"
     assert "town_brief" in result["skills_context_tools"]
+    assert "town_handoff_bundle" in result["skills_context_tools"]
     assert result["suggested_cursor_mcp_json"]["mcpServers"]["hermes"]["command"] == (
         "${workspaceFolder}/hermes-mcp-serve"
     )

@@ -10,10 +10,10 @@ Messaging tools (10) — OpenClaw channel bridge surface plus channels_list:
   events_poll, events_wait, messages_send, permissions_list_open,
   permissions_respond, channels_list
 
-Optional skills/knowledge tools (11) when hermes_skills_mcp is available:
-  fleet_context_snapshot, agent_health_summary, town_brief, skills_list,
-  skills_read, agents_list, agents_get, knowledge_read, knowledge_query,
-  learnings_read, artifacts_list
+Optional skills/knowledge tools (12) when hermes_skills_mcp is available:
+  fleet_context_snapshot, agent_health_summary, town_brief,
+  town_handoff_bundle, skills_list, skills_read, agents_list, agents_get,
+  knowledge_read, knowledge_query, learnings_read, artifacts_list
 
 Usage:
     hermes mcp serve
@@ -864,8 +864,9 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
 
     # -- Skills / Knowledge Layer tools ------------------------------------
     # Registers: fleet_context_snapshot, agent_health_summary, town_brief,
-    #            skills_list, skills_read, agents_list, agents_get,
-    #            knowledge_read, knowledge_query, learnings_read, artifacts_list
+    #            town_handoff_bundle, skills_list, skills_read, agents_list,
+    #            agents_get, knowledge_read, knowledge_query, learnings_read,
+    #            artifacts_list
     try:
         from hermes_skills_mcp import register_skills_tools
         register_skills_tools(mcp)

@@ -13,7 +13,7 @@ arguments:
 1. `knowledge_read(artifact="held_spec_ledger")` — check if spec is held
 2. `knowledge_read(artifact="latest_state")` — operational context
 3. `knowledge_read(artifact="contradiction_ledger")` — conflicts affecting this spec
-4. `learnings_read()` — any memory entries about this spec
+4. `learnings_read(file="memory.md")` — read-only memory/reference entries about this spec
 
 ## Step 2: Determine spec state
 

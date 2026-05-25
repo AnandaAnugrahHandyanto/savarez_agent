@@ -16,10 +16,11 @@ read-only tools that let MCP clients discover and read:
 Paths resolve via HERMES_AGENTS_DIR (runtime fleet), then HERMES_REPO,
 then HERMES_HOME — same profile conventions as mcp_serve.py.
 
-Tool surface (11 tools; read-only by design):
+Tool surface (12 tools; read-only by design):
   fleet_context_snapshot — one-call bounded fleet bootstrap for IDEs
   agent_health_summary — compact actionable fleet health anomalies
   town_brief — human-facing Cursor/Town integration brief
+  town_handoff_bundle — bounded agent/spec handoff context bundle
   knowledge_query — bounded keyword query over knowledge graph artifacts
   skills_list          — list available agent SOUL.md files and repo skills
   skills_read          — read a specific skill/SOUL.md document
@@ -275,6 +276,34 @@ def _find_held_spec_ledger_path() -> Optional[Path]:
         if path.exists():
             return path
     return None
+
+
+def _find_contradiction_ledger_path() -> Optional[Path]:
+    artifacts_dir = _get_artifacts_dir()
+    if not artifacts_dir:
+        return None
+    path = artifacts_dir / "ops" / "contradiction_ledger" / "latest.md"
+    if path.exists():
+        return path
+    return None
+
+
+def _matching_lines(content: str, terms: list[str], *, limit: int = 12) -> list[str]:
+    """Return bounded lines matching any non-empty search term."""
+    needles = [term.lower() for term in terms if term]
+    if not needles:
+        return []
+    matches: list[str] = []
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        if any(needle in lowered for needle in needles):
+            matches.append(line[:240])
+        if len(matches) >= limit:
+            break
+    return matches
 
 
 def _extract_held_spec_flags(content: str) -> list[str]:
@@ -568,6 +597,7 @@ def build_town_brief() -> dict:
 
     next_actions = [
         "Use town_brief or fleet_context_snapshot(summary=True) at Cursor session start.",
+        "Use learnings_read(file='memory.md') for read-only HOT memory/reference context.",
         "Use agents_get(name) and skills_read(name) before modifying a named agent.",
         "Use knowledge_read('held_spec_ledger') before changing governed specs or pipelines.",
     ]
@@ -597,8 +627,16 @@ def build_town_brief() -> dict:
             "stale_heartbeats": len(snapshot.get("stale_heartbeats") or []),
             "held_spec_flags": snapshot.get("held_spec_flags_count", 0),
             "missing_layers": len(snapshot.get("missing_layers") or []),
+            "memory_files": 1 if snapshot.get("hot_learnings_present") else 0,
         },
         "registry_summary": snapshot.get("registry_summary", {}),
+        "memory": {
+            "read_only": True,
+            "hot_memory_present": bool(snapshot.get("hot_learnings_present")),
+            "hot_memory_path": snapshot.get("hot_learnings_path"),
+            "tool": "learnings_read(file='memory.md')",
+            "note": "Skills/context mode includes read-only .learnings memory/reference reads.",
+        },
         "gateway": {
             "reachable": bool(snapshot.get("gateway_reachable")),
             "skills_context_available": True,
@@ -610,10 +648,140 @@ def build_town_brief() -> dict:
             "town_brief()",
             "agent_health_summary()",
             "fleet_context_snapshot(summary=True)",
+            "learnings_read(file='memory.md')",
             "knowledge_read(artifact='held_spec_ledger')",
         ],
         "next_actions": next_actions,
     }
+
+
+def build_town_handoff_bundle(
+    *,
+    agent_name: str = "",
+    spec_id: str = "",
+    include_learnings: bool = True,
+) -> dict:
+    """Build a bounded read-only context bundle for Cursor agent handoffs."""
+    agent_name = str(agent_name or "").strip()
+    spec_id = str(spec_id or "").strip()
+    search_terms = [term for term in (agent_name, spec_id) if term]
+    registry = _registry_agents(_load_agent_registry())
+    agents_dir = _find_agents_dir()
+    latest_state = _bounded_read(_find_latest_state_path())
+    held_ledger = _bounded_read(_find_held_spec_ledger_path())
+    contradiction_ledger = _bounded_read(_find_contradiction_ledger_path())
+    learnings_dir = _get_learnings_dir()
+    hot_learnings = (
+        _bounded_read(learnings_dir / "memory.md", max_chars=2_000)
+        if include_learnings and learnings_dir else
+        {"present": False, "path": str(learnings_dir / "memory.md") if learnings_dir else None, "content": ""}
+    )
+
+    bundle: dict = {
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "writes_allowed": False,
+        "inputs": {
+            "agent_name": agent_name or None,
+            "spec_id": spec_id or None,
+            "include_learnings": include_learnings,
+        },
+        "source_of_truth": _source_of_truth_label(agents_dir),
+        "paths": {
+            "agents_dir": str(agents_dir) if agents_dir else None,
+            "registry": str(_find_agent_registry()) if _find_agent_registry() else None,
+            "latest_state": latest_state.get("path"),
+            "held_spec_ledger": held_ledger.get("path"),
+            "contradiction_ledger": contradiction_ledger.get("path"),
+            "hot_learnings": hot_learnings.get("path"),
+        },
+        "town": build_town_brief(),
+        "knowledge": {
+            "latest_state": latest_state,
+            "held_spec_ledger": held_ledger,
+            "contradiction_ledger": contradiction_ledger,
+            "matches": {
+                "latest_state": _matching_lines(str(latest_state.get("content") or ""), search_terms),
+                "held_spec_ledger": _matching_lines(str(held_ledger.get("content") or ""), search_terms),
+                "contradiction_ledger": _matching_lines(
+                    str(contradiction_ledger.get("content") or ""),
+                    search_terms,
+                ),
+            },
+        },
+        "learnings": {
+            "hot": hot_learnings,
+            "matches": _matching_lines(str(hot_learnings.get("content") or ""), search_terms),
+        },
+        "memory": {
+            "read_only": True,
+            "source": ".learnings",
+            "hot": hot_learnings,
+            "matches": _matching_lines(str(hot_learnings.get("content") or ""), search_terms),
+            "tool": "learnings_read(file='memory.md')",
+        },
+        "next_actions": [
+            "Treat SOUL.md/IDENTITY/HEARTBEAT as behavioral truth for named-agent work.",
+            "Treat AGENT_REGISTRY.json as index/discovery only.",
+            "Use learnings_read(file='memory.md') for read-only HOT memory/reference context.",
+            "Check held_spec_ledger and contradiction_ledger before governed edits.",
+            "Do not write to .learnings, artifacts, registry, or SOUL files through MCP.",
+        ],
+    }
+
+    if agent_name:
+        agent: dict = {
+            "name": agent_name,
+            "found": False,
+            "registry": registry.get(agent_name),
+        }
+        soul = _find_soul_md(agent_name)
+        if soul:
+            agent["found"] = True
+            agent["soul_md"] = _bounded_read(soul, max_chars=8_000)
+        heartbeat = _find_heartbeat(agent_name)
+        if heartbeat:
+            agent["found"] = True
+            agent["heartbeat"] = heartbeat
+        if agents_dir:
+            agent_dir = _safe_child_path(agents_dir, agent_name)
+            if agent_dir and agent_dir.is_dir():
+                agent["found"] = True
+                files = []
+                for item in sorted(agent_dir.iterdir()):
+                    if item.name.startswith("."):
+                        continue
+                    files.append({
+                        "name": item.name,
+                        "type": "directory" if item.is_dir() else "file",
+                        "size": item.stat().st_size if item.is_file() else None,
+                        "modified": _file_mtime_iso(item),
+                    })
+                    if len(files) >= _SNAPSHOT_LIST_CAP:
+                        break
+                agent["files"] = files
+        if agent["registry"] is not None:
+            agent["found"] = True
+        if not agent["found"]:
+            agent["error"] = f"Agent not found: {agent_name}"
+        bundle["agent"] = agent
+
+    if spec_id:
+        bundle["spec"] = {
+            "id": spec_id,
+            "held_matches": bundle["knowledge"]["matches"]["held_spec_ledger"],
+            "contradiction_matches": bundle["knowledge"]["matches"]["contradiction_ledger"],
+            "latest_state_matches": bundle["knowledge"]["matches"]["latest_state"],
+            "guardrails": [
+                "If held_matches are present, do not implement constrained changes without operator approval.",
+                "If contradiction_matches are present, resolve or escalate conflicts before editing.",
+                "If no matches are present, absence in local artifacts is not proof of approval.",
+            ],
+        }
+
+    if not agent_name and not spec_id:
+        bundle["warning"] = "No agent_name or spec_id supplied; returning general Town handoff context."
+
+    return bundle
 
 
 def _find_heartbeat(agent_name: str) -> Optional[dict]:
@@ -828,6 +996,31 @@ def register_skills_tools(mcp) -> None:
         and recommended next MCP calls for Cursor agents.
         """
         return json.dumps(build_town_brief(), indent=2)
+
+    # -- town_handoff_bundle -----------------------------------------------
+
+    @mcp.tool()
+    def town_handoff_bundle(
+        agent_name: str = "",
+        spec_id: str = "",
+        include_learnings: bool = True,
+    ) -> str:
+        """Return a bounded read-only context bundle for Cursor handoffs.
+
+        Use this before handing a named agent or governed spec to another
+        Cursor agent. The bundle packages source-of-truth paths, agent
+        SOUL/registry/heartbeat context, latest-state snippets, held-spec
+        and contradiction matches, and HOT learnings excerpts. It never
+        writes fleet state.
+        """
+        return json.dumps(
+            build_town_handoff_bundle(
+                agent_name=agent_name,
+                spec_id=spec_id,
+                include_learnings=include_learnings,
+            ),
+            indent=2,
+        )
 
     # -- skills_list -------------------------------------------------------
 
@@ -1156,9 +1349,9 @@ def register_skills_tools(mcp) -> None:
     def learnings_read(
         file: str = "memory.md",
     ) -> str:
-        """Read Hermes learnings/memory files.
+        """Read Hermes learnings/memory reference files.
 
-        The .learnings/ directory contains the agent's persistent memory:
+        The .learnings/ directory contains read-only memory/reference files:
           - memory.md: HOT tier memory (loaded every session, 100-line cap)
           - projects/: Per-project/namespace memory files
           - domains/: Per-domain knowledge files
@@ -1354,4 +1547,4 @@ def register_skills_tools(mcp) -> None:
             },
         }, indent=2)
 
-    logger.debug("Registered 11 skills/knowledge MCP tools")
+    logger.debug("Registered 12 skills/knowledge MCP tools")

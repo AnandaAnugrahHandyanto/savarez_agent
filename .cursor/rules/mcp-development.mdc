@@ -15,7 +15,7 @@ alwaysApply: false
 ## Architecture
 
 - `mcp_serve.py` — Main MCP server entry point (stdio transport)
-- `hermes_skills_mcp.py` — Standalone module providing 11 read-only skills/knowledge tools
+- `hermes_skills_mcp.py` — Standalone module providing 12 read-only skills/knowledge tools
 - `.cursor/mcp.json` — Cursor auto-connects to the server defined here
 - Transport: stdio (no HTTP, no gateway dependency for skills tools)
 
@@ -23,7 +23,7 @@ alwaysApply: false
 
 | Surface | Module | Tools | Gateway Required |
 |---------|--------|-------|-----------------|
-| Skills & Knowledge | `hermes_skills_mcp.py` | 11 read-only | No |
+| Skills & Knowledge | `hermes_skills_mcp.py` | 12 read-only | No |
 | Messaging & Ops | `mcp_serve.py` core | 10 messaging tools | Yes |
 
 ### Skills tools (read-only, no gateway)
@@ -32,14 +32,15 @@ alwaysApply: false
 |------|-------|---------|
 | `fleet_context_snapshot()` | — | Bounded session bootstrap: mode, paths, registry, memory, knowledge, held-spec flags |
 | `agent_health_summary()` | — | Compact actionable fleet health anomalies |
-| `town_brief()` | — | Human-facing Cursor/Town status, source-of-truth paths, and next MCP calls |
+| `town_brief()` | — | Human-facing Cursor/Town status, source-of-truth paths, memory/read status, and next MCP calls |
+| `town_handoff_bundle(agent_name?, spec_id?)` | optional strings | Bounded agent/spec handoff context bundle with memory/reference matches |
 | `skills_list()` | — | All SOUL.md files and repo skills |
 | `skills_read(name)` | agent/skill name | Full SOUL.md or skill content |
 | `agents_list(include_heartbeat)` | bool | Registry + optional heartbeat |
 | `agents_get(name)` | agent name | Full detail: registry, SOUL.md, heartbeat, files |
 | `knowledge_read(artifact)` | artifact key | Knowledge layer content |
 | `knowledge_query(question)` | question | Bounded keyword query over knowledge graph artifacts |
-| `learnings_read(file?)` | optional path | .learnings/ memory files |
+| `learnings_read(file?)` | optional path | .learnings/ memory/reference files |
 | `artifacts_list(path?)` | optional subpath | artifacts/ directory listing |
 
 ### Messaging tools (require gateway)

@@ -261,6 +261,9 @@ def test_town_brief_reports_cursor_bootstrap_context(snapshot_env):
     _write_registry(agents_dir, {"alpha": {"lane": "A", "status": "active"}})
     (agents_dir / "alpha").mkdir()
     (agents_dir / "alpha" / "HEARTBEAT.md").write_text("ok\n", encoding="utf-8")
+    learnings = repo / ".learnings"
+    learnings.mkdir()
+    (learnings / "memory.md").write_text("alpha memory\n", encoding="utf-8")
     knowledge = repo / "artifacts" / "ops" / "held_spec_ledger"
     knowledge.mkdir(parents=True)
     (knowledge / "latest.md").write_text("HELD: wait for validation\n", encoding="utf-8")
@@ -273,8 +276,57 @@ def test_town_brief_reports_cursor_bootstrap_context(snapshot_env):
     assert result["source_of_truth"] == "HERMES_REPO/agents"
     assert result["counts"]["agents"] == 1
     assert result["counts"]["held_spec_flags"] == 1
+    assert result["counts"]["memory_files"] == 1
+    assert result["memory"]["hot_memory_present"] is True
+    assert result["memory"]["tool"] == "learnings_read(file='memory.md')"
+    assert "learnings_read(file='memory.md')" in result["recommended_cursor_calls"]
     assert "town_brief()" in result["recommended_cursor_calls"]
     assert result["gateway"]["skills_context_available"] is True
+
+
+def test_town_handoff_bundle_packages_agent_and_spec_context(snapshot_env):
+    repo, _home, mcp = snapshot_env
+    agents_dir = repo / "agents"
+    _write_registry(
+        agents_dir,
+        {"alpha": {"lane": "A", "status": "active", "authority": "observe_only"}},
+    )
+    agent_dir = agents_dir / "alpha"
+    agent_dir.mkdir()
+    (agent_dir / "SOUL.md").write_text("# Alpha\nFollow Spec 123.\n", encoding="utf-8")
+    (agent_dir / "HEARTBEAT.md").write_text("ok\n", encoding="utf-8")
+    (repo / ".learnings").mkdir()
+    (repo / ".learnings" / "memory.md").write_text("alpha likes dry runs\n", encoding="utf-8")
+
+    latest = repo / "artifacts" / "ops" / "knowledge_layer"
+    latest.mkdir(parents=True)
+    (latest / "latest_state.md").write_text("Spec 123 active for alpha\n", encoding="utf-8")
+    held = repo / "artifacts" / "ops" / "held_spec_ledger"
+    held.mkdir(parents=True)
+    (held / "latest.md").write_text("HELD: Spec 123 waits on validation\n", encoding="utf-8")
+    contradictions = repo / "artifacts" / "ops" / "contradiction_ledger"
+    contradictions.mkdir(parents=True)
+    (contradictions / "latest.md").write_text(
+        "Spec 123 conflicts with old alpha procedure\n",
+        encoding="utf-8",
+    )
+    tools = _registered_tools(mcp)
+
+    result = json.loads(tools.town_handoff_bundle("alpha", "Spec 123"))
+
+    assert result["writes_allowed"] is False
+    assert result["source_of_truth"] == "HERMES_REPO/agents"
+    assert result["agent"]["found"] is True
+    assert result["agent"]["registry"]["lane"] == "A"
+    assert "Follow Spec 123" in result["agent"]["soul_md"]["content"]
+    assert result["spec"]["held_matches"] == ["HELD: Spec 123 waits on validation"]
+    assert result["spec"]["contradiction_matches"] == [
+        "Spec 123 conflicts with old alpha procedure"
+    ]
+    assert result["learnings"]["matches"] == ["alpha likes dry runs"]
+    assert result["memory"]["read_only"] is True
+    assert result["memory"]["source"] == ".learnings"
+    assert result["memory"]["matches"] == ["alpha likes dry runs"]
 
 
 def test_knowledge_query_matches_bounded_graph(snapshot_env):

@@ -47,20 +47,21 @@ Hermes MCP is really two products behind one server:
 
 ### Skills / context mode (no gateway)
 
-**Works offline** from disk: custom agents, registry, learnings, knowledge layer, artifacts.
+**Works offline** from disk: custom agents, registry, learnings/memory, knowledge layer, artifacts.
 
 | Tool | Purpose |
 |------|---------|
 | `fleet_context_snapshot` | One-call bounded fleet bootstrap for IDEs |
 | `agent_health_summary` | Compact actionable health anomalies without the full registry dump |
 | `town_brief` | Human-facing Town/Cursor status, source-of-truth paths, and next MCP calls |
+| `town_handoff_bundle` | Bounded agent/spec context package for Cursor handoffs |
 | `skills_list` | Agent SOUL.md dirs + repo `skills/` catalog |
 | `skills_read` | Read SOUL.md or skill files |
 | `agents_list` | Registry + optional heartbeat files |
 | `agents_get` | Registry entry + SOUL + files for one agent |
 | `knowledge_read` | `latest_state`, held specs, operator brief, etc. |
 | `knowledge_query` | Bounded deterministic keyword query over knowledge graph artifacts |
-| `learnings_read` | `.learnings/memory.md` and namespaces |
+| `learnings_read` | Read-only `.learnings/memory.md` memory/reference and namespaces |
 | `artifacts_list` | Browse `artifacts/` tree |
 
 Use this mode for: editing agents, pipeline code, audits, PRs, and Cursor Cloud sessions that only need fleet cognition.
@@ -69,6 +70,15 @@ For a concise session start, call `town_brief()` first. Use
 `fleet_context_snapshot(summary=True)` when the agent needs structured
 bootstrap data without text blobs, and use the full snapshot only when a task
 needs learnings or latest-state excerpts.
+
+Skills/context mode still includes read-only memory/reference access through
+`learnings_read(file="memory.md")`; it only lacks gateway-backed live messaging
+and approvals.
+
+For handoffs between Cursor agents, call `town_handoff_bundle(agent_name=...,
+spec_id=...)` to collect bounded SOUL, registry, heartbeat, latest-state,
+held-spec, contradiction, and HOT `.learnings/memory.md` context without
+mutating fleet state.
 
 ### Live ops / gateway mode
 
@@ -130,5 +140,5 @@ A common mature layout:
 
 | Item | Benefit |
 |------|---------|
-| Spec-aware edit guards | Prevents governed edits without held-spec and contradiction context |
+| Spec-aware automatic edit guards | Prevents governed edits without held-spec and contradiction context |
 | Agent dependency graph | Shows Lane A/B/C, pipeline dependencies, and stale heartbeat impact |
