@@ -22,6 +22,7 @@ import sys
 import threading
 import time
 import urllib.parse
+from datetime import datetime
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -771,6 +772,494 @@ async def get_action_status(name: str, lines: int = 200):
         "pid": pid,
         "lines": tail,
     }
+
+
+_AGENT_STATUSES = ("working", "idle", "needs_input", "blocked", "failed", "done", "scheduled")
+_AGENT_ATTENTION_ORDER = {
+    "failed": 0,
+    "blocked": 1,
+    "needs_input": 2,
+    "working": 3,
+    "scheduled": 4,
+    "done": 5,
+    "idle": 6,
+}
+_NEEDS_INPUT_MARKERS = (
+    "?",
+    "approve",
+    "approval",
+    "proceed",
+    "confirm",
+    "clarify",
+    "승인",
+    "확인",
+    "진행할까요",
+    "필요합니다",
+)
+_BLOCKED_MARKERS = (
+    "blocked",
+    "failed",
+    "failure",
+    "error",
+    "traceback",
+    "exception",
+    "auth failed",
+    "token expired",
+    "permission denied",
+    "막힘",
+    "실패",
+    "오류",
+    "에러",
+)
+
+
+def _agent_identity_from_session(session: Dict[str, Any]) -> Tuple[str, str, str]:
+    """Infer display identity from a session row without inventing state."""
+    haystack = " ".join(
+        str(session.get(k) or "") for k in ("source", "title", "preview", "model")
+    ).lower()
+    if "openclaw" in haystack or "댕댕" in haystack:
+        return "OpenClaw", "openclaw", "dog"
+    if "omx" in haystack:
+        return "OMX Worker", "omx_worker", "omx"
+    if "codex" in haystack:
+        return "Codex Worker", "codex_worker", "codex"
+
+    source = str(session.get("source") or "session").strip() or "session"
+    return f"Hermes {source.title()}", "hermes_session", "hermes"
+
+
+def _session_agent_status(session: Dict[str, Any], now: Optional[float] = None) -> str:
+    text = " ".join(str(session.get(k) or "") for k in ("title", "preview")).lower()
+    if any(marker in text for marker in _BLOCKED_MARKERS):
+        return "blocked"
+    if any(marker in text for marker in _NEEDS_INPUT_MARKERS):
+        return "needs_input"
+    if session.get("ended_at") is not None:
+        return "done"
+    if session.get("is_active"):
+        return "working"
+
+    now = time.time() if now is None else now
+    last_active = session.get("last_active") or session.get("started_at") or 0
+    try:
+        recent = (now - float(last_active)) < 300
+    except (TypeError, ValueError):
+        recent = False
+    return "working" if recent else "idle"
+
+
+def _agent_from_session(session: Dict[str, Any], now: Optional[float] = None) -> Dict[str, Any]:
+    """Convert a dashboard session row into an Agent Situation Board record."""
+    raw_id = str(session.get("id") or session.get("session_id") or "unknown")
+    name, kind, avatar = _agent_identity_from_session(session)
+    status = _session_agent_status(session, now=now)
+    source = str(session.get("source") or "session")
+    title = session.get("title") or "Untitled session"
+    preview = session.get("preview") or title
+    tool_calls = int(session.get("tool_call_count") or 0)
+    messages = int(session.get("message_count") or 0)
+    actions = ["peek", "open"]
+    if status in {"working", "idle", "needs_input", "blocked"}:
+        actions.append("reply")
+
+    return {
+        "id": f"session:{raw_id}",
+        "name": name,
+        "kind": kind,
+        "avatar": avatar,
+        "status": status,
+        "source": source,
+        "location": source,
+        "title": title,
+        "current_task": preview,
+        "progress": None,
+        "started_at": session.get("started_at"),
+        "last_signal_at": session.get("last_active") or session.get("started_at"),
+        "last_signal": f"{tool_calls} tool calls · {messages} messages",
+        "links": [{"label": "Sessions", "href": "/sessions"}],
+        "actions": actions,
+        "metadata": {
+            "model": session.get("model"),
+            "message_count": messages,
+            "tool_call_count": tool_calls,
+            "ended_at": session.get("ended_at"),
+        },
+    }
+
+
+def _coerce_agent_timestamp(value: Any) -> Optional[float]:
+    """Best-effort conversion of dashboard-adapter timestamps to epoch seconds."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            pass
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def _short_text(value: Any, fallback: str = "") -> str:
+    text = str(value or fallback or "").strip()
+    return text[:200]
+
+
+def _agent_from_cron_job(job: Dict[str, Any], now: Optional[float] = None) -> Dict[str, Any]:
+    """Convert a cron job record into an Agent Situation Board record."""
+    job_id = _short_text(job.get("id"), "unknown")
+    name = _short_text(job.get("name") or job.get("prompt") or job_id, "cron job")
+    enabled = bool(job.get("enabled", True))
+    state = _short_text(job.get("state"), "scheduled").lower()
+    error = job.get("last_error") or job.get("error") or job.get("delivery_error")
+    status = "failed" if error else ("scheduled" if enabled and state != "paused" else "idle")
+    if state in {"running", "working"}:
+        status = "working"
+    schedule_display = _short_text(job.get("schedule_display") or job.get("schedule"), "?")
+    next_run = job.get("next_run_at")
+    last_run = job.get("last_run_at")
+    last_signal_at = _coerce_agent_timestamp(last_run) or _coerce_agent_timestamp(next_run) or now
+    last_signal = f"next: {next_run or 'not scheduled'} · {schedule_display}"
+    if error:
+        last_signal = _short_text(error)
+
+    return {
+        "id": f"cron:{job_id}",
+        "name": f"Cron: {name}",
+        "kind": "cron_job",
+        "avatar": "clock",
+        "status": status,
+        "source": "cron",
+        "location": _short_text(job.get("deliver"), "scheduler"),
+        "title": name,
+        "current_task": _short_text(job.get("prompt") or job.get("script") or name),
+        "progress": None,
+        "started_at": _coerce_agent_timestamp(job.get("created_at")),
+        "last_signal_at": last_signal_at,
+        "last_signal": last_signal,
+        "links": [{"label": "Cron", "href": "/cron"}],
+        "actions": ["peek", "open"],
+        "metadata": {
+            "schedule": job.get("schedule"),
+            "schedule_display": schedule_display,
+            "next_run_at": next_run,
+            "last_run_at": last_run,
+            "state": state,
+            "enabled": enabled,
+            "profile": job.get("profile"),
+            "repeat": job.get("repeat"),
+        },
+    }
+
+
+def _kanban_status_to_agent_status(status: str) -> str:
+    return {
+        "running": "working",
+        "blocked": "blocked",
+        "review": "needs_input",
+        "done": "done",
+        "scheduled": "scheduled",
+        "ready": "scheduled",
+        "todo": "scheduled",
+        "triage": "needs_input",
+        "archived": "done",
+    }.get((status or "").lower(), "idle")
+
+
+def _agent_identity_from_text(text: str) -> Tuple[str, str]:
+    haystack = text.lower()
+    if "omx" in haystack:
+        return "omx", "omx"
+    if "codex" in haystack:
+        return "codex", "codex"
+    if "openclaw" in haystack or "댕댕" in haystack:
+        return "dog", "openclaw"
+    return "kanban", "kanban"
+
+
+def _task_field(task: Any, key: str, default: Any = None) -> Any:
+    if isinstance(task, dict):
+        return task.get(key, default)
+    return getattr(task, key, default)
+
+
+def _agent_from_kanban_task(task: Any, *, board: str = "default", now: Optional[float] = None) -> Dict[str, Any]:
+    """Convert a Kanban task/worker row into an Agent Situation Board record."""
+    task_id = _short_text(_task_field(task, "id"), "unknown")
+    title = _short_text(_task_field(task, "title"), "Untitled task")
+    assignee = _short_text(_task_field(task, "assignee"), "unassigned")
+    raw_status = _short_text(_task_field(task, "status"), "todo").lower()
+    agent_status = _kanban_status_to_agent_status(raw_status)
+    text = " ".join([assignee, title, _short_text(_task_field(task, "body"))])
+    avatar, _identity = _agent_identity_from_text(text)
+    priority = int(_task_field(task, "priority", 0) or 0)
+    pid = _task_field(task, "worker_pid")
+    failures = int(_task_field(task, "consecutive_failures", 0) or 0)
+    last_failure = _task_field(task, "last_failure_error")
+    last_signal_at = (
+        _coerce_agent_timestamp(_task_field(task, "last_heartbeat_at"))
+        or _coerce_agent_timestamp(_task_field(task, "started_at"))
+        or _coerce_agent_timestamp(_task_field(task, "created_at"))
+        or now
+    )
+    signal_bits = [raw_status, f"priority {priority}"]
+    if pid:
+        signal_bits.append(f"pid {pid}")
+    if failures:
+        signal_bits.append(f"failures {failures}")
+    if last_failure and agent_status in {"blocked", "failed"}:
+        signal_bits.append(_short_text(last_failure, "failure"))
+
+    return {
+        "id": f"kanban:{board}:{task_id}",
+        "name": f"Kanban: {assignee}",
+        "kind": "kanban_worker",
+        "avatar": avatar,
+        "status": agent_status,
+        "source": "kanban",
+        "location": f"board:{board}",
+        "title": title,
+        "current_task": title,
+        "progress": None,
+        "started_at": _coerce_agent_timestamp(_task_field(task, "started_at")) or _coerce_agent_timestamp(_task_field(task, "created_at")),
+        "last_signal_at": last_signal_at,
+        "last_signal": " · ".join(signal_bits),
+        "links": [{"label": "Kanban", "href": f"/kanban?board={urllib.parse.quote(board)}"}],
+        "actions": ["peek", "open"],
+        "metadata": {
+            "task_id": task_id,
+            "board": board,
+            "assignee": assignee,
+            "raw_status": raw_status,
+            "priority": priority,
+            "worker_pid": pid,
+            "consecutive_failures": failures,
+            "last_failure_error": last_failure,
+            "workspace_kind": _task_field(task, "workspace_kind"),
+            "workspace_path": _task_field(task, "workspace_path"),
+        },
+    }
+
+
+def _agent_from_background_process(proc: Dict[str, Any], now: Optional[float] = None) -> Dict[str, Any]:
+    """Convert a managed terminal background process into an Agent record."""
+    session_id = _short_text(proc.get("session_id") or proc.get("id"), "unknown")
+    command = _short_text(proc.get("command"), session_id)
+    raw_status = _short_text(proc.get("status"), "running").lower()
+    exit_code = proc.get("exit_code")
+    if raw_status == "running":
+        status = "working"
+    elif exit_code not in (None, 0, "0"):
+        status = "failed"
+    else:
+        status = "done"
+    started_at = _coerce_agent_timestamp(proc.get("started_at"))
+    uptime = proc.get("uptime_seconds")
+    pid = proc.get("pid")
+    signal_bits = [raw_status]
+    if pid:
+        signal_bits.append(f"pid {pid}")
+    if uptime is not None:
+        signal_bits.append(f"{uptime}s")
+    if raw_status != "running" and exit_code is not None:
+        signal_bits.append(f"exit {exit_code}")
+
+    return {
+        "id": f"process:{session_id}",
+        "name": f"Process: {session_id}",
+        "kind": "background_process",
+        "avatar": "terminal",
+        "status": status,
+        "source": "process",
+        "location": _short_text(proc.get("cwd"), "terminal"),
+        "title": command,
+        "current_task": command,
+        "progress": None,
+        "started_at": started_at,
+        "last_signal_at": now or started_at,
+        "last_signal": " · ".join(signal_bits),
+        "links": [{"label": "Processes", "href": "/agents"}],
+        "actions": ["peek", "open"],
+        "metadata": {
+            "session_id": session_id,
+            "pid": pid,
+            "cwd": proc.get("cwd"),
+            "exit_code": exit_code,
+            "output_preview": proc.get("output_preview"),
+        },
+    }
+
+
+def _normalise_agent_filter(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    text = value.strip().lower()
+    if not text or text == "all":
+        return None
+    return text
+
+
+def _build_agents_response(
+    sessions: List[Dict[str, Any]],
+    *,
+    extra_agents: Optional[List[Dict[str, Any]]] = None,
+    now: Optional[float] = None,
+    source_filter: Optional[str] = None,
+    status_filter: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build the read-only Agent Situation Board payload."""
+    now = time.time() if now is None else now
+    agents = [_agent_from_session(session, now=now) for session in sessions]
+    agents.extend(extra_agents or [])
+
+    requested_source = _normalise_agent_filter(source_filter)
+    requested_status = _normalise_agent_filter(status_filter)
+    if requested_source:
+        agents = [agent for agent in agents if str(agent.get("source", "")).lower() == requested_source]
+    if requested_status:
+        agents = [agent for agent in agents if str(agent.get("status", "")).lower() == requested_status]
+
+    agents.sort(
+        key=lambda agent: (
+            _AGENT_ATTENTION_ORDER.get(agent["status"], 99),
+            -(float(agent.get("last_signal_at") or 0)),
+            agent["name"],
+        )
+    )
+
+    summary = {status: 0 for status in _AGENT_STATUSES}
+    for agent in agents:
+        summary[agent["status"]] = summary.get(agent["status"], 0) + 1
+
+    events = []
+    for agent in agents[:20]:
+        if not agent.get("last_signal_at"):
+            continue
+        level = "warning" if agent["status"] in {"blocked", "failed", "needs_input"} else "info"
+        events.append(
+            {
+                "ts": agent["last_signal_at"],
+                "agent_id": agent["id"],
+                "level": level,
+                "message": agent.get("last_signal") or agent.get("current_task") or agent["status"],
+            }
+        )
+
+    return {
+        "generated_at": now,
+        "summary": summary,
+        "agents": agents,
+        "events": events,
+        "filters": {"source": requested_source or "all", "status": requested_status or "all"},
+    }
+
+
+def _load_cron_agent_rows(limit: int, now: float) -> List[Dict[str, Any]]:
+    try:
+        from cron.jobs import list_jobs
+        jobs = list_jobs(include_disabled=True)
+    except Exception:
+        _log.exception("Failed to load cron jobs for Agent Situation Board")
+        return []
+    return [_agent_from_cron_job(job, now=now) for job in jobs[:limit]]
+
+
+def _load_kanban_agent_rows(limit: int, now: float) -> List[Dict[str, Any]]:
+    try:
+        from hermes_cli.kanban_db import connect, list_boards, list_tasks
+    except Exception:
+        _log.exception("Failed to import kanban helpers for Agent Situation Board")
+        return []
+
+    agents: List[Dict[str, Any]] = []
+    try:
+        boards = list_boards(include_archived=False)
+    except Exception:
+        _log.exception("Failed to list kanban boards for Agent Situation Board")
+        return []
+
+    for board_info in boards:
+        if len(agents) >= limit:
+            break
+        board = str(board_info.get("slug") or board_info.get("id") or "default")
+        conn = None
+        try:
+            conn = connect(board=board)
+            tasks = list_tasks(
+                conn,
+                include_archived=False,
+                limit=max(1, limit - len(agents)),
+                order_by="updated",
+            )
+        except ValueError:
+            try:
+                tasks = list_tasks(conn, include_archived=False, limit=max(1, limit - len(agents))) if conn else []
+            except Exception:
+                _log.exception("Failed to list kanban tasks for board %s", board)
+                tasks = []
+        except Exception:
+            _log.exception("Failed to list kanban tasks for board %s", board)
+            tasks = []
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        agents.extend(_agent_from_kanban_task(task, board=board, now=now) for task in tasks)
+    return agents
+
+
+def _load_background_process_agent_rows(limit: int, now: float) -> List[Dict[str, Any]]:
+    try:
+        from tools.process_registry import process_registry
+        processes = process_registry.list_sessions()
+    except Exception:
+        _log.exception("Failed to load background processes for Agent Situation Board")
+        return []
+    return [_agent_from_background_process(proc, now=now) for proc in processes[:limit]]
+
+
+@app.get("/api/agents")
+async def get_agents(limit: int = 50, source: Optional[str] = None, status: Optional[str] = None):
+    """Read-only Agent Situation Board aggregator."""
+    try:
+        from hermes_state import SessionDB
+        db = SessionDB()
+        try:
+            limit = max(1, min(limit, 200))
+            sessions = db.list_sessions_rich(limit=limit, offset=0)
+            now = time.time()
+            for session in sessions:
+                session["is_active"] = (
+                    session.get("ended_at") is None
+                    and (now - session.get("last_active", session.get("started_at", 0))) < 300
+                )
+            extra_agents: List[Dict[str, Any]] = []
+            extra_agents.extend(_load_cron_agent_rows(limit, now))
+            extra_agents.extend(_load_kanban_agent_rows(limit, now))
+            extra_agents.extend(_load_background_process_agent_rows(limit, now))
+            return _build_agents_response(
+                sessions,
+                extra_agents=extra_agents,
+                now=now,
+                source_filter=source,
+                status_filter=status,
+            )
+        finally:
+            db.close()
+    except Exception:
+        _log.exception("GET /api/agents failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/sessions")
