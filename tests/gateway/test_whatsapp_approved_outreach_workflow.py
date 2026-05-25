@@ -11,6 +11,7 @@ from gateway.platforms.base import MessageEvent, SendResult
 from gateway.session import SessionEntry, SessionSource
 from gateway.whatsapp_message_store import append_whatsapp_record
 from gateway.whatsapp_approved_outreach import (
+    WHATSAPP_DEFAULT_COMMUNICATION_SKILL_NAME,
     bind_whatsapp_outreach_plan_to_cron_job,
     load_whatsapp_outreach_run_records,
     load_whatsapp_outreach_state,
@@ -184,6 +185,10 @@ async def test_instruction_triggered_outreach_sends_one_bounded_follow_up(
             },
         )
     )
+    monkeypatch.setattr(
+        "gateway.whatsapp_approved_outreach._draft_whatsapp_message_via_skill",
+        lambda **_kwargs: pytest.fail("skill drafting should be bypassed"),
+    )
 
     result = await runner._handle_message(
         _make_event(
@@ -201,6 +206,8 @@ async def test_instruction_triggered_outreach_sends_one_bounded_follow_up(
     assert "Status: ready" in result
     assert "trigger_source: owner_instruction" in result
     assert "run_status: completed" in result
+    assert "message_generation_mode: operator_text_override" in result
+    assert "draft_outcome: send_message" in result
     assert "execution_status: sent" in result
     assert "dispatch_group_id: dispatch-123" in result
     assert "message_id: bridge-msg-9" in result
@@ -229,6 +236,10 @@ async def test_instruction_triggered_outreach_sends_one_bounded_follow_up(
     report_row = outreach_state["reports"][0]
 
     assert plan_row["plan_status"] == "active"
+    assert (
+        plan_row["communication_skill_name"]
+        == WHATSAPP_DEFAULT_COMMUNICATION_SKILL_NAME
+    )
     assert plan_row["operator_objective"] == "request the revised quote"
     assert target_row["plan_id"] == plan_row["plan_id"]
     assert target_row["conversation_key"] == "whatsapp:dm:15551230000"
@@ -245,6 +256,9 @@ async def test_instruction_triggered_outreach_sends_one_bounded_follow_up(
     assert execution_row["run_id"] == run_row["run_id"]
     assert execution_row["plan_target_id"] == target_row["plan_target_id"]
     assert execution_row["execution_status"] == "sent"
+    assert execution_row["message_generation_mode"] == "operator_text_override"
+    assert execution_row["draft_outcome"] == "send_message"
+    assert execution_row["outbound_message_text"] == "Following up on the revised quote."
     assert execution_row["resolved_conversation_key"] == "whatsapp:dm:15551230000"
     assert execution_row["resolved_destination_key"] == "whatsapp:dm:15551230000"
     assert execution_row["resolved_destination_chat_id"] == "15551230000@s.whatsapp.net"
@@ -253,6 +267,107 @@ async def test_instruction_triggered_outreach_sends_one_bounded_follow_up(
     assert report_row["plan_id"] == plan_row["plan_id"]
     assert report_row["run_id"] == run_row["run_id"]
     assert report_row["report_status"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_instruction_triggered_outreach_loads_skill_and_sends_generated_message(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / ".hermes"
+    base_dir = hermes_home / "gateway" / "whatsapp-records"
+    base_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    _append_record(
+        base_dir,
+        record_id="record-1",
+        text="Prior vendor thread context.",
+        participant_role="external_party",
+        message_id="msg-1",
+        effective_event_at="2024-06-02T09:01:00Z",
+    )
+
+    loader_calls: list[str] = []
+    agent_prompts: list[str] = []
+
+    def _fake_load_skill_payload(skill_identifier: str, task_id: str | None = None):
+        loader_calls.append(skill_identifier)
+        return (
+            {
+                "success": True,
+                "name": "whatsapp-communications",
+                "content": "Draft one bounded WhatsApp decision.",
+                "raw_content": "---\nname: whatsapp-communications\n---\n# Skill\n",
+            },
+            tmp_path / "skills" / "communication" / "whatsapp-communications",
+            "whatsapp-communications",
+        )
+
+    class _FakeAgent:
+        def __init__(self, *args, **kwargs):
+            self.kwargs = kwargs
+
+        def run_conversation(
+            self,
+            user_message,
+            system_message=None,
+            conversation_history=None,
+            task_id=None,
+        ):
+            agent_prompts.append(user_message)
+            assert system_message is not None
+            assert conversation_history
+            assert "whatsapp-communications" in conversation_history[0]["content"]
+            return {
+                "final_response": (
+                    '{"draft_outcome":"send_message",'
+                    '"outbound_message_text":"Skill-generated follow-up.",'
+                    '"handoff_reason":null}'
+                )
+            }
+
+    monkeypatch.setattr(
+        "gateway.whatsapp_approved_outreach._load_skill_payload",
+        _fake_load_skill_payload,
+    )
+    monkeypatch.setattr("run_agent.AIAgent", _FakeAgent)
+
+    runner = _make_runner(tmp_path)
+    runner.adapters[Platform.WHATSAPP].send = AsyncMock(
+        return_value=SendResult(
+            success=True,
+            message_id="bridge-msg-skill",
+            raw_response={"dispatch_group_id": "dispatch-skill"},
+        )
+    )
+
+    result = await runner._handle_message(
+        _make_event(
+            "whatsapp outreach destination_key=whatsapp:dm:15551230000 "
+            'operator_objective="request the revised quote"'
+        )
+    )
+
+    assert loader_calls == ["whatsapp-communications"]
+    assert agent_prompts
+    assert '"communication_skill_name": "whatsapp-communications"' in agent_prompts[0]
+    assert '"message_text_override": null' in agent_prompts[0]
+    runner.adapters[Platform.WHATSAPP].send.assert_awaited_once_with(
+        "15551230000@s.whatsapp.net",
+        "Skill-generated follow-up.",
+    )
+    assert "message_generation_mode: skill_generated" in result
+    assert "draft_outcome: send_message" in result
+    assert "outbound_message_text: Skill-generated follow-up." in result
+    assert "execution_status: sent" in result
+
+    execution_row = load_whatsapp_outreach_state()["target_executions"][0]
+    assert execution_row["communication_skill_name"] == "whatsapp-communications"
+    assert execution_row["message_generation_mode"] == "skill_generated"
+    assert execution_row["communication_stage"] == "opening_outreach"
+    assert execution_row["draft_outcome"] == "send_message"
+    assert execution_row["outbound_message_text"] == "Skill-generated follow-up."
+    assert execution_row["handoff_reason"] is None
 
 
 @pytest.mark.asyncio
@@ -324,6 +439,25 @@ async def test_instruction_triggered_outreach_can_complete_without_send(
     base_dir = hermes_home / "gateway" / "whatsapp-records"
     base_dir.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(
+        "gateway.whatsapp_approved_outreach._draft_whatsapp_message_via_skill",
+        lambda **_kwargs: (
+            {
+                "communication_skill_name": "whatsapp-communications",
+                "communication_stage": "opening_outreach",
+                "operator_objective": "check whether a follow-up is needed",
+                "resolved_target": {},
+                "history_rows": [],
+                "message_text_override": None,
+                "trigger_source": "owner_instruction",
+            },
+            {
+                "draft_outcome": "no_send_required",
+                "outbound_message_text": None,
+                "handoff_reason": None,
+            },
+        ),
+    )
 
     _append_record(
         base_dir,
@@ -347,8 +481,69 @@ async def test_instruction_triggered_outreach_can_complete_without_send(
     runner.adapters[Platform.WHATSAPP].send.assert_not_awaited()
     assert "Status: ready" in result
     assert "run_status: completed" in result
+    assert "message_generation_mode: skill_generated" in result
+    assert "draft_outcome: no_send_required" in result
     assert "execution_status: no_send_required" in result
     assert "history_record_count: 1" in result
+
+
+@pytest.mark.asyncio
+async def test_instruction_triggered_outreach_can_require_handoff_from_skill(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / ".hermes"
+    base_dir = hermes_home / "gateway" / "whatsapp-records"
+    base_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(
+        "gateway.whatsapp_approved_outreach._draft_whatsapp_message_via_skill",
+        lambda **_kwargs: (
+            {
+                "communication_skill_name": "whatsapp-communications",
+                "communication_stage": "opening_outreach",
+                "operator_objective": "request the revised quote",
+                "resolved_target": {},
+                "history_rows": [],
+                "message_text_override": None,
+                "trigger_source": "owner_instruction",
+            },
+            {
+                "draft_outcome": "handoff_required",
+                "outbound_message_text": None,
+                "handoff_reason": "pricing requires owner review",
+            },
+        ),
+    )
+
+    _append_record(
+        base_dir,
+        record_id="record-1",
+        text="Prior vendor thread context.",
+        participant_role="external_party",
+        message_id="msg-1",
+        effective_event_at="2024-06-02T09:01:00Z",
+    )
+
+    runner = _make_runner(tmp_path)
+    runner.adapters[Platform.WHATSAPP].send = AsyncMock()
+
+    result = await runner._handle_message(
+        _make_event(
+            "whatsapp outreach destination_key=whatsapp:dm:15551230000 "
+            'operator_objective="request the revised quote"'
+        )
+    )
+
+    runner.adapters[Platform.WHATSAPP].send.assert_not_awaited()
+    assert "message_generation_mode: skill_generated" in result
+    assert "draft_outcome: handoff_required" in result
+    assert "execution_status: handoff_required" in result
+    assert "handoff_reason: pricing requires owner review" in result
+
+    execution_row = load_whatsapp_outreach_state()["target_executions"][0]
+    assert execution_row["draft_outcome"] == "handoff_required"
+    assert execution_row["outbound_message_text"] is None
+    assert execution_row["handoff_reason"] == "pricing requires owner review"
 
 
 @pytest.mark.asyncio

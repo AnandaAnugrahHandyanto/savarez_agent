@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from agent.skill_commands import _build_skill_message, _load_skill_payload
 from hermes_constants import get_hermes_home
 
 from gateway.whatsapp_message_store import (
@@ -38,6 +39,19 @@ _OUTREACH_PREFIXES = (
 )
 WHATSAPP_OUTREACH_STATE_SCHEMA_VERSION = 1
 WHATSAPP_OUTREACH_PLAN_WORKFLOW_BINDING_TYPE = "whatsapp_outreach_plan"
+WHATSAPP_DEFAULT_COMMUNICATION_SKILL_NAME = "whatsapp-communications"
+WHATSAPP_ALLOWED_COMMUNICATION_STAGES = (
+    "opening_outreach",
+    "follow_up",
+    "clarification",
+    "negotiation",
+    "closeout",
+)
+WHATSAPP_ALLOWED_DRAFT_OUTCOMES = (
+    "send_message",
+    "no_send_required",
+    "handoff_required",
+)
 _JSON_PRIMITIVE_TYPES = (str, int, float, bool, type(None))
 
 _OUTREACH_STATE_LOCK = threading.Lock()
@@ -602,6 +616,169 @@ def _status_basis_for_execution_status(execution_status: str) -> str:
     return "direct_conversation_evidence"
 
 
+def _normalized_communication_skill_name(value: Any) -> str:
+    return (
+        str(value or "").strip() or WHATSAPP_DEFAULT_COMMUNICATION_SKILL_NAME
+    )
+
+
+def _select_communication_stage(history_rows: list[dict[str, Any]]) -> str:
+    if any(row.get("participant_role") == "agent" for row in history_rows):
+        return "follow_up"
+    return "opening_outreach"
+
+
+def _parse_draft_response_payload(raw_response: str) -> dict[str, Any]:
+    text = str(raw_response or "").strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if len(lines) >= 3 and lines[-1].strip() == "```":
+            text = "\n".join(lines[1:-1]).strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end < start:
+        raise ValueError("communication draft response was not valid JSON")
+    payload = json.loads(text[start : end + 1])
+    if not isinstance(payload, dict):
+        raise ValueError("communication draft response must be a JSON object")
+    return payload
+
+
+def _normalize_whatsapp_communication_draft(
+    raw_draft: dict[str, Any],
+) -> dict[str, Any]:
+    draft_outcome = str(raw_draft.get("draft_outcome") or "").strip()
+    if draft_outcome not in WHATSAPP_ALLOWED_DRAFT_OUTCOMES:
+        raise ValueError(f"unsupported draft_outcome: {draft_outcome or '<empty>'}")
+
+    outbound_message_text = (
+        str(raw_draft.get("outbound_message_text") or "").strip() or None
+    )
+    handoff_reason = str(raw_draft.get("handoff_reason") or "").strip() or None
+
+    if draft_outcome == "send_message":
+        if not outbound_message_text:
+            raise ValueError("send_message draft requires outbound_message_text")
+        if handoff_reason is not None:
+            raise ValueError("send_message draft must not include handoff_reason")
+    elif draft_outcome == "handoff_required":
+        if not handoff_reason:
+            raise ValueError("handoff_required draft requires handoff_reason")
+        if outbound_message_text is not None:
+            raise ValueError(
+                "handoff_required draft must not include outbound_message_text"
+            )
+    else:
+        if outbound_message_text is not None:
+            raise ValueError(
+                "no_send_required draft must not include outbound_message_text"
+            )
+        if handoff_reason is not None:
+            raise ValueError("no_send_required draft must not include handoff_reason")
+
+    return {
+        "draft_outcome": draft_outcome,
+        "outbound_message_text": outbound_message_text,
+        "handoff_reason": handoff_reason,
+    }
+
+
+def _build_whatsapp_communication_draft_request(
+    *,
+    communication_skill_name: str,
+    operator_objective: str,
+    resolved_target: dict[str, Any],
+    history_rows: list[dict[str, Any]],
+    message_text_override: str | None,
+    trigger_source: str,
+) -> dict[str, Any]:
+    communication_stage = _select_communication_stage(history_rows)
+    if communication_stage not in WHATSAPP_ALLOWED_COMMUNICATION_STAGES:
+        raise ValueError(f"unsupported communication_stage: {communication_stage}")
+    return {
+        "communication_skill_name": communication_skill_name,
+        "communication_stage": communication_stage,
+        "operator_objective": operator_objective,
+        "resolved_target": _json_safe_value(resolved_target),
+        "history_rows": _json_safe_value(history_rows),
+        "message_text_override": message_text_override,
+        "trigger_source": trigger_source,
+    }
+
+
+def _draft_whatsapp_message_via_skill(
+    *,
+    communication_skill_name: str,
+    operator_objective: str,
+    resolved_target: dict[str, Any],
+    history_rows: list[dict[str, Any]],
+    message_text_override: str | None,
+    trigger_source: str,
+    task_id: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    loaded = _load_skill_payload(communication_skill_name, task_id=task_id)
+    if not loaded:
+        raise ValueError(
+            f"communication skill '{communication_skill_name}' could not be loaded"
+        )
+
+    loaded_skill, skill_dir, skill_name = loaded
+    skill_message = _build_skill_message(
+        loaded_skill,
+        skill_dir,
+        (
+            f'[IMPORTANT: The "{skill_name}" skill is loaded for this exact '
+            "WhatsApp approved-outreach execution. Follow it for this one "
+            "bounded communication decision.]"
+        ),
+        runtime_note=(
+            "Decide one bounded WhatsApp communication outcome for one already "
+            "resolved target. Do not resolve targets, widen scope, or call the "
+            "WhatsApp bridge."
+        ),
+        session_id=task_id,
+    )
+    draft_request = _build_whatsapp_communication_draft_request(
+        communication_skill_name=communication_skill_name,
+        operator_objective=operator_objective,
+        resolved_target=resolved_target,
+        history_rows=history_rows,
+        message_text_override=message_text_override,
+        trigger_source=trigger_source,
+    )
+
+    from run_agent import AIAgent
+
+    agent = AIAgent(
+        quiet_mode=True,
+        skip_memory=True,
+        platform="whatsapp",
+        session_id=task_id,
+    )
+    result = agent.run_conversation(
+        (
+            "Return one JSON object only for this WhatsApp communication draft.\n"
+            "Allowed draft_outcome values: send_message, no_send_required, "
+            "handoff_required.\n"
+            "Include outbound_message_text only for send_message.\n"
+            "Include handoff_reason only for handoff_required.\n"
+            "Do not include markdown fences or extra prose.\n\n"
+            "WhatsAppCommunicationDraftRequest:\n"
+            f"{json.dumps(draft_request, ensure_ascii=False, indent=2)}"
+        ),
+        system_message=(
+            "You are producing a bounded WhatsApp communication draft for Hermes. "
+            "Follow the loaded skill. Return valid JSON only."
+        ),
+        conversation_history=[{"role": "user", "content": skill_message}],
+        task_id=task_id,
+    )
+    final_response = str((result or {}).get("final_response") or "")
+    return draft_request, _normalize_whatsapp_communication_draft(
+        _parse_draft_response_payload(final_response)
+    )
+
+
 def _persist_whatsapp_outreach_run_record(record: dict[str, Any]) -> Path:
     with _OUTREACH_STATE_LOCK:
         state = load_whatsapp_outreach_state()
@@ -905,6 +1082,9 @@ async def execute_whatsapp_approved_outreach(
                     "plan_id": plan_id,
                     "plan_status": "active",
                     "trigger_mode": "instruction_only",
+                    "communication_skill_name": (
+                        WHATSAPP_DEFAULT_COMMUNICATION_SKILL_NAME
+                    ),
                     "operator_objective": normalized_request["operator_objective"],
                     "created_by_session_id": None,
                     "approved_by_principal": approved_by_principal,
@@ -928,14 +1108,21 @@ async def execute_whatsapp_approved_outreach(
             else:
                 plan_row = dict(plan_row)
                 plan_row["plan_status"] = "active"
+                plan_row["communication_skill_name"] = _normalized_communication_skill_name(
+                    plan_row.get("communication_skill_name")
+                )
                 plan_row["approved_at_utc"] = (
                     plan_row.get("approved_at_utc") or approved_at_utc
                 )
                 plan_targets = [dict(existing_target)]
 
         plan_id = str(plan_row["plan_id"])
+        plan_row["communication_skill_name"] = _normalized_communication_skill_name(
+            plan_row.get("communication_skill_name")
+        )
         plan_row["trigger_mode"] = _determine_plan_trigger_mode(
-            len(plan_targets), has_cron_binding=bool(plan_row.get("linked_cron_job_id"))
+            len(plan_targets),
+            has_cron_binding=bool(plan_row.get("linked_cron_job_id")),
         )
         run_id = f"warun-{uuid4()}"
         run = {
@@ -981,6 +1168,12 @@ async def execute_whatsapp_approved_outreach(
                 "history_window_start_utc": None,
                 "history_window_end_utc": None,
                 "history_record_count": 0,
+                "communication_skill_name": plan_row["communication_skill_name"],
+                "communication_stage": None,
+                "message_generation_mode": None,
+                "draft_outcome": None,
+                "outbound_message_text": None,
+                "handoff_reason": None,
                 "dispatch_group_id": None,
                 "message_id": None,
                 "last_error": None,
@@ -1084,34 +1277,77 @@ async def execute_whatsapp_approved_outreach(
             "history_window_start_utc": history_window_start_utc,
             "history_window_end_utc": history_window_end_utc,
             "history_record_count": len(continuity_rows),
+            "communication_skill_name": plan_row["communication_skill_name"],
             "last_error": None,
         })
 
-        if send_callable is None:
-            execution["execution_status"] = "blocked"
-            execution["last_error"] = "WhatsApp adapter unavailable"
-        elif normalized_request["message_text"] is None:
-            execution["execution_status"] = "no_send_required"
+        outbound_message_text = normalized_request["message_text"]
+        execution["communication_stage"] = _select_communication_stage(continuity_rows)
+        if normalized_request["message_text"] is not None:
+            execution["message_generation_mode"] = "operator_text_override"
+            execution["draft_outcome"] = "send_message"
+            execution["outbound_message_text"] = outbound_message_text
         else:
-            send_result = await send_callable(
-                str(resolved_target["destination_chat_id"]),
-                normalized_request["message_text"],
-            )
-            raw_response = _safe_instance_attr(send_result, "raw_response") or {}
-            if isinstance(raw_response, dict):
-                execution["dispatch_group_id"] = _json_safe_string(
-                    raw_response.get("dispatch_group_id")
+            try:
+                draft_request, draft = _draft_whatsapp_message_via_skill(
+                    communication_skill_name=plan_row["communication_skill_name"],
+                    operator_objective=str(plan_row.get("operator_objective") or ""),
+                    resolved_target=resolved_target,
+                    history_rows=continuity_rows,
+                    message_text_override=normalized_request["message_text"],
+                    trigger_source=str(normalized_request["trigger_source"]),
+                    task_id=run_id,
                 )
-            execution["message_id"] = _json_safe_string(
-                _safe_instance_attr(send_result, "message_id")
-            )
-            if _safe_instance_attr(send_result, "success") is True:
-                execution["execution_status"] = "sent"
+                execution["communication_skill_name"] = draft_request[
+                    "communication_skill_name"
+                ]
+                execution["communication_stage"] = draft_request[
+                    "communication_stage"
+                ]
+                execution["message_generation_mode"] = "skill_generated"
+                execution["draft_outcome"] = draft["draft_outcome"]
+                execution["outbound_message_text"] = draft["outbound_message_text"]
+                execution["handoff_reason"] = draft["handoff_reason"]
+                if draft["draft_outcome"] == "send_message":
+                    outbound_message_text = draft["outbound_message_text"]
+                elif draft["draft_outcome"] == "no_send_required":
+                    outbound_message_text = None
+                    execution["execution_status"] = "no_send_required"
+                else:
+                    outbound_message_text = None
+                    execution["execution_status"] = "handoff_required"
+            except Exception as exc:
+                execution["execution_status"] = "blocked"
+                execution["last_error"] = _json_safe_string(str(exc))
+
+        if execution.get("execution_status") not in {
+            "blocked",
+            "no_send_required",
+            "handoff_required",
+        }:
+            if send_callable is None:
+                execution["execution_status"] = "blocked"
+                execution["last_error"] = "WhatsApp adapter unavailable"
             else:
-                execution["execution_status"] = "send_failed"
-                execution["last_error"] = _json_safe_string(
-                    _safe_instance_attr(send_result, "error")
+                send_result = await send_callable(
+                    str(resolved_target["destination_chat_id"]),
+                    str(outbound_message_text),
                 )
+                raw_response = _safe_instance_attr(send_result, "raw_response") or {}
+                if isinstance(raw_response, dict):
+                    execution["dispatch_group_id"] = _json_safe_string(
+                        raw_response.get("dispatch_group_id")
+                    )
+                execution["message_id"] = _json_safe_string(
+                    _safe_instance_attr(send_result, "message_id")
+                )
+                if _safe_instance_attr(send_result, "success") is True:
+                    execution["execution_status"] = "sent"
+                else:
+                    execution["execution_status"] = "send_failed"
+                    execution["last_error"] = _json_safe_string(
+                        _safe_instance_attr(send_result, "error")
+                    )
 
         observable_status = _observable_status_from_history_and_execution(
             continuity_rows,
@@ -1122,6 +1358,10 @@ async def execute_whatsapp_approved_outreach(
             row_uncertainties.append(
                 "observable status is bounded to preserved history before the next reply arrives"
             )
+        if execution.get("execution_status") == "handoff_required" and execution.get(
+            "handoff_reason"
+        ):
+            row_uncertainties.append(str(execution["handoff_reason"]))
         if execution.get("last_error"):
             row_uncertainties.append(str(execution["last_error"]))
         target_rows.append({
@@ -1280,6 +1520,7 @@ def format_whatsapp_approved_outreach_result(result: dict[str, Any]) -> str:
 
     lines.extend([
         f"plan_id: {plan.get('plan_id')}",
+        f"communication_skill_name: {plan.get('communication_skill_name')}",
         f"run_id: {run.get('run_id')}",
         f"workflow_binding_type: {run.get('workflow_binding_type')}",
         f"workflow_binding_id: {run.get('workflow_binding_id')}",
@@ -1290,6 +1531,9 @@ def format_whatsapp_approved_outreach_result(result: dict[str, Any]) -> str:
         f"target_count: {run.get('target_count')}",
         f"completed_target_count: {run.get('completed_target_count')}",
         f"failed_target_count: {run.get('failed_target_count')}",
+        f"message_generation_mode: {execution.get('message_generation_mode')}",
+        f"communication_stage: {execution.get('communication_stage')}",
+        f"draft_outcome: {execution.get('draft_outcome')}",
         f"execution_status: {execution.get('execution_status')}",
         f"destination_chat_id: {resolved_target.get('destination_chat_id')}",
         f"conversation_key: {resolved_target.get('conversation_key')}",
@@ -1302,6 +1546,12 @@ def format_whatsapp_approved_outreach_result(result: dict[str, Any]) -> str:
         f"dispatch_group_id: {execution.get('dispatch_group_id')}",
         f"message_id: {execution.get('message_id')}",
     ])
+    if execution.get("outbound_message_text"):
+        lines.append(
+            f"outbound_message_text: {execution.get('outbound_message_text')}"
+        )
+    if execution.get("handoff_reason"):
+        lines.append(f"handoff_reason: {execution.get('handoff_reason')}")
     if execution.get("last_error"):
         lines.append(f"last_error: {execution.get('last_error')}")
     if isinstance(report, dict):
