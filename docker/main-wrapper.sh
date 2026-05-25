@@ -24,6 +24,9 @@ if [ -f /opt/data/.env ]; then
 fi
 export HERMES_HOME=/opt/data
 export HOME=/opt/data
+if [ "${1:-}" = "gateway" ]; then
+    export HERMES_GATEWAY_SESSION=1
+fi
 
 if [ $# -eq 0 ]; then
     exec s6-setuidgid hermes hermes
