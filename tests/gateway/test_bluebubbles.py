@@ -613,9 +613,608 @@ class TestBlueBubblesAttachmentDownload:
         assert "/download/force" not in normal_url
         assert "/download/force" in force_url
         assert normal_timeout == 60.0
-        assert force_timeout >= 600.0, (
-            f"force timeout {force_timeout} too short; server polls for 10 min"
+        # Force timeout must exceed normal and match the configured default
+        # so a single cached attempt can't accidentally stretch into the
+        # iCloud-poll window.
+        assert force_timeout > normal_timeout
+        assert force_timeout == 300.0
+
+    def test_force_download_timeout_configurable_via_extra(self, monkeypatch):
+        """extra['force_download_timeout_seconds'] overrides the default."""
+        adapter = _make_adapter(
+            monkeypatch, force_download_timeout_seconds=120
         )
+        assert adapter.force_download_timeout == 120.0
+
+    def test_force_download_timeout_configurable_via_env(self, monkeypatch):
+        """BLUEBUBBLES_FORCE_DOWNLOAD_TIMEOUT env var overrides the default."""
+        monkeypatch.setenv("BLUEBUBBLES_FORCE_DOWNLOAD_TIMEOUT", "45")
+        # Reload via _make_adapter helper after env is set
+        from gateway.platforms.bluebubbles import BlueBubblesAdapter
+        from gateway.config import PlatformConfig
+
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={"server_url": "http://localhost:1234", "password": "secret"},
+        )
+        adapter = BlueBubblesAdapter(cfg)
+        assert adapter.force_download_timeout == 45.0
+
+    def test_force_download_timeout_invalid_falls_back_to_default(
+        self, monkeypatch
+    ):
+        """Non-numeric override is ignored; default stands."""
+        adapter = _make_adapter(
+            monkeypatch, force_download_timeout_seconds="not-a-number"
+        )
+        assert adapter.force_download_timeout == 300.0
+
+    def test_on_slow_path_invoked_before_force_download(self, monkeypatch):
+        """on_slow_path callback fires once, just before /download/force."""
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        import asyncio
+        import httpx
+
+        events = []
+
+        class FailingResponse:
+            def raise_for_status(self):
+                raise httpx.HTTPError("500")
+
+        class SuccessResponse:
+            content = b"forced"
+
+            def raise_for_status(self):
+                pass
+
+        async def mock_get(url, **kwargs):
+            if "/download/force" in url:
+                events.append("force-get")
+                return SuccessResponse()
+            events.append("normal-get")
+            return FailingResponse()
+
+        adapter.client = type(
+            "MockClient", (), {"get": staticmethod(mock_get)}
+        )()
+        monkeypatch.setattr(
+            "gateway.platforms.bluebubbles.cache_image_from_bytes",
+            lambda data, ext: f"/tmp/x{ext}",
+        )
+
+        async def slow_cb():
+            events.append("slow-cb")
+
+        asyncio.get_event_loop().run_until_complete(
+            adapter._download_attachment(
+                "att-guid",
+                {"mimeType": "image/png"},
+                on_slow_path=slow_cb,
+            )
+        )
+
+        assert events == ["normal-get", "slow-cb", "force-get"]
+
+    def test_on_slow_path_not_invoked_on_normal_success(self, monkeypatch):
+        """Normal download succeeds → slow-path callback never fires."""
+        adapter = _make_adapter(monkeypatch)
+        import asyncio
+
+        events = []
+
+        class SuccessResponse:
+            content = b"ok"
+
+            def raise_for_status(self):
+                pass
+
+        async def mock_get(url, **kwargs):
+            return SuccessResponse()
+
+        adapter.client = type(
+            "MockClient", (), {"get": staticmethod(mock_get)}
+        )()
+        monkeypatch.setattr(
+            "gateway.platforms.bluebubbles.cache_image_from_bytes",
+            lambda data, ext: f"/tmp/x{ext}",
+        )
+
+        async def slow_cb():
+            events.append("slow-cb")
+
+        asyncio.get_event_loop().run_until_complete(
+            adapter._download_attachment(
+                "att-guid",
+                {"mimeType": "image/png"},
+                on_slow_path=slow_cb,
+            )
+        )
+
+        assert events == []
+
+    def test_on_slow_path_exceptions_swallowed(self, monkeypatch):
+        """Raising callback doesn't crash the download flow."""
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        import asyncio
+        import httpx
+
+        class FailingResponse:
+            def raise_for_status(self):
+                raise httpx.HTTPError("500")
+
+        class SuccessResponse:
+            content = b"forced"
+
+            def raise_for_status(self):
+                pass
+
+        async def mock_get(url, **kwargs):
+            if "/download/force" in url:
+                return SuccessResponse()
+            return FailingResponse()
+
+        adapter.client = type(
+            "MockClient", (), {"get": staticmethod(mock_get)}
+        )()
+        monkeypatch.setattr(
+            "gateway.platforms.bluebubbles.cache_image_from_bytes",
+            lambda data, ext: f"/tmp/x{ext}",
+        )
+
+        async def bad_cb():
+            raise RuntimeError("boom")
+
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter._download_attachment(
+                "att-guid",
+                {"mimeType": "image/png"},
+                on_slow_path=bad_cb,
+            )
+        )
+
+        assert result == "/tmp/x.png"
+
+
+class TestBlueBubblesAttachmentLoopBehavior:
+    """End-to-end webhook handler tests for the cached-path probe + deferred
+    force-download delivery flow."""
+
+    def _webhook_request(self, payload):
+        from unittest.mock import MagicMock
+
+        req = MagicMock()
+        req.query = {"password": "secret"}
+        req.headers = {}
+
+        async def _read():
+            import json
+            return json.dumps(payload).encode("utf-8")
+
+        req.read = _read
+        return req
+
+    @staticmethod
+    def _drain_background(adapter):
+        import asyncio
+        pending = list(adapter._background_tasks)
+        if pending:
+            asyncio.get_event_loop().run_until_complete(
+                asyncio.gather(*pending, return_exceptions=True)
+            )
+
+    def _install_message_recorder(self, adapter, monkeypatch):
+        """Capture every outbound send() and every dispatched MessageEvent."""
+        import asyncio
+        sent_messages = []
+        delivered_events = []
+
+        async def fake_send(chat_id, content, **kwargs):
+            sent_messages.append((chat_id, content))
+            from gateway.platforms.base import SendResult
+            return SendResult(success=True, message_id="ok")
+
+        async def fake_handle_message(event):
+            delivered_events.append(event)
+
+        monkeypatch.setattr(adapter, "send", fake_send)
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(
+            adapter, "mark_read", lambda *a, **k: asyncio.sleep(0)
+        )
+        return sent_messages, delivered_events
+
+    def _install_http(self, adapter, monkeypatch, mock_get):
+        adapter.client = type(
+            "MockClient", (), {"get": staticmethod(mock_get)}
+        )()
+        monkeypatch.setattr(
+            "gateway.platforms.bluebubbles.cache_image_from_bytes",
+            lambda data, ext: f"/tmp/x{ext}",
+        )
+
+    def test_status_message_sent_inline_before_handler_returns(
+        self, monkeypatch
+    ):
+        """When any attachment misses the cached path, the '📎 Fetching…'
+        status is sent SYNCHRONOUSLY before the webhook returns OK. The
+        force-download is deferred to a background task so the message is
+        not yet delivered when the handler returns."""
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        import asyncio
+        import httpx
+
+        sent_messages, delivered_events = self._install_message_recorder(
+            adapter, monkeypatch
+        )
+
+        class FailingResponse:
+            def raise_for_status(self):
+                raise httpx.HTTPError("500")
+
+        class SuccessResponse:
+            content = b"forced"
+
+            def raise_for_status(self):
+                pass
+
+        async def mock_get(url, **kwargs):
+            if "/download/force" in url:
+                await asyncio.sleep(0.2)
+                return SuccessResponse()
+            return FailingResponse()
+
+        self._install_http(adapter, monkeypatch, mock_get)
+
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "msg-1",
+                "text": "hi",
+                "chatGuid": "iMessage;-;+15551234567",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "attachments": [{"guid": "att-1", "mimeType": "image/png"}],
+            },
+        }
+        req = self._webhook_request(payload)
+
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(adapter._handle_webhook(req))
+
+        try:
+            notices = [m for _, m in sent_messages if "Fetching attachment" in m]
+            assert len(notices) == 1, sent_messages
+            assert delivered_events == [], (
+                "message must NOT be delivered before force-download completes"
+            )
+            assert len(adapter._background_tasks) >= 1, (
+                "expected a deferred background task to be tracked"
+            )
+        finally:
+            self._drain_background(adapter)
+
+        assert len(delivered_events) == 1
+        assert delivered_events[0].media_urls == ["/tmp/x.png"]
+
+    def test_status_message_sent_once_for_multiple_force_attachments(
+        self, monkeypatch
+    ):
+        """N un-cached attachments emit exactly ONE status notice, not N."""
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        import asyncio
+        import httpx
+
+        sent_messages, delivered_events = self._install_message_recorder(
+            adapter, monkeypatch
+        )
+
+        class FailingResponse:
+            def raise_for_status(self):
+                raise httpx.HTTPError("500")
+
+        class SuccessResponse:
+            content = b"forced"
+
+            def raise_for_status(self):
+                pass
+
+        async def mock_get(url, **kwargs):
+            if "/download/force" in url:
+                return SuccessResponse()
+            return FailingResponse()
+
+        self._install_http(adapter, monkeypatch, mock_get)
+
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "msg-2",
+                "text": "hi",
+                "chatGuid": "iMessage;-;+15551234567",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "attachments": [
+                    {"guid": f"att-{i}", "mimeType": "image/png"}
+                    for i in range(3)
+                ],
+            },
+        }
+        req = self._webhook_request(payload)
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(adapter._handle_webhook(req))
+        self._drain_background(adapter)
+
+        notices = [m for _, m in sent_messages if "Fetching attachment" in m]
+        assert len(notices) == 1, (
+            f"expected 1 notice for 3 force-needed attachments, got "
+            f"{len(notices)}: {sent_messages}"
+        )
+        # All 3 attachments should have arrived in the deferred MessageEvent.
+        assert len(delivered_events) == 1
+        assert len(delivered_events[0].media_urls) == 3
+
+    def test_no_status_message_when_all_attachments_cached(self, monkeypatch):
+        """All attachments served from cache → zero status notices, inline
+        delivery (no deferred task spawned)."""
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        import asyncio
+
+        sent_messages, delivered_events = self._install_message_recorder(
+            adapter, monkeypatch
+        )
+
+        class SuccessResponse:
+            content = b"cached"
+
+            def raise_for_status(self):
+                pass
+
+        async def mock_get(url, **kwargs):
+            return SuccessResponse()
+
+        self._install_http(adapter, monkeypatch, mock_get)
+
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "msg-3",
+                "text": "hi",
+                "chatGuid": "iMessage;-;+15551234567",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "attachments": [{"guid": "att-1", "mimeType": "image/png"}],
+            },
+        }
+        req = self._webhook_request(payload)
+        asyncio.get_event_loop().run_until_complete(adapter._handle_webhook(req))
+        self._drain_background(adapter)
+
+        notices = [m for _, m in sent_messages if "Fetching attachment" in m]
+        assert notices == []
+        assert len(delivered_events) == 1
+        assert delivered_events[0].media_urls == ["/tmp/x.png"]
+
+    def test_force_downloads_run_concurrently_in_background(self, monkeypatch):
+        """Multiple un-cached attachments do not serialize their
+        force-download timeouts — total wall time is bounded by the slowest,
+        not the sum (measured across handler + background drain)."""
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        import asyncio
+        import httpx
+        import time
+
+        sent_messages, delivered_events = self._install_message_recorder(
+            adapter, monkeypatch
+        )
+
+        in_flight = {"force": 0, "max_concurrent_force": 0}
+
+        class FailingResponse:
+            def raise_for_status(self):
+                raise httpx.HTTPError("500")
+
+        class SuccessResponse:
+            content = b"forced"
+
+            def raise_for_status(self):
+                pass
+
+        async def mock_get(url, **kwargs):
+            if "/download/force" in url:
+                in_flight["force"] += 1
+                in_flight["max_concurrent_force"] = max(
+                    in_flight["max_concurrent_force"], in_flight["force"]
+                )
+                await asyncio.sleep(0.05)
+                in_flight["force"] -= 1
+                return SuccessResponse()
+            return FailingResponse()
+
+        self._install_http(adapter, monkeypatch, mock_get)
+
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "msg-4",
+                "text": "hi",
+                "chatGuid": "iMessage;-;+15551234567",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "attachments": [
+                    {"guid": "att-1", "mimeType": "image/png"},
+                    {"guid": "att-2", "mimeType": "image/png"},
+                    {"guid": "att-3", "mimeType": "image/png"},
+                ],
+            },
+        }
+        req = self._webhook_request(payload)
+
+        loop = asyncio.get_event_loop()
+        start = time.monotonic()
+        loop.run_until_complete(adapter._handle_webhook(req))
+        self._drain_background(adapter)
+        elapsed = time.monotonic() - start
+
+        # Three sequential force-downloads would be ≥ 3*0.05 = 0.15s.
+        # Concurrent should finish in roughly 0.05s + scheduling overhead.
+        assert elapsed < 0.13, (
+            f"attachments ran sequentially: {elapsed:.3f}s for 3 × 0.05s"
+        )
+        assert in_flight["max_concurrent_force"] >= 2, (
+            f"expected ≥2 concurrent force-downloads, "
+            f"observed peak {in_flight['max_concurrent_force']}"
+        )
+        assert len(delivered_events) == 1
+
+    def test_webhook_returns_before_force_download_completes(self, monkeypatch):
+        """The webhook handler must not block on /download/force. It returns
+        OK as soon as the status notice is sent; force-download finishes
+        later in the background."""
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        import asyncio
+        import httpx
+
+        sent_messages, delivered_events = self._install_message_recorder(
+            adapter, monkeypatch
+        )
+
+        class FailingResponse:
+            def raise_for_status(self):
+                raise httpx.HTTPError("500")
+
+        class SuccessResponse:
+            content = b"forced"
+
+            def raise_for_status(self):
+                pass
+
+        # 500ms force-download — long enough to clearly show the handler
+        # returning before it completes, short enough to not slow tests.
+        async def mock_get(url, **kwargs):
+            if "/download/force" in url:
+                await asyncio.sleep(0.5)
+                return SuccessResponse()
+            return FailingResponse()
+
+        self._install_http(adapter, monkeypatch, mock_get)
+
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "msg-5",
+                "text": "hi",
+                "chatGuid": "iMessage;-;+15551234567",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "attachments": [{"guid": "att-1", "mimeType": "image/png"}],
+            },
+        }
+        req = self._webhook_request(payload)
+
+        import time
+        loop = asyncio.get_event_loop()
+        start = time.monotonic()
+        loop.run_until_complete(adapter._handle_webhook(req))
+        handler_elapsed = time.monotonic() - start
+
+        # Handler should return in well under the 500ms force-download.
+        assert handler_elapsed < 0.3, (
+            f"webhook handler blocked on force-download: {handler_elapsed:.3f}s"
+        )
+        # Message NOT yet delivered.
+        assert delivered_events == []
+        # Drain the background and verify it eventually lands.
+        self._drain_background(adapter)
+        assert len(delivered_events) == 1
+
+    def test_failed_force_download_still_delivers_text(self, monkeypatch):
+        """If the force-download fails entirely, the user's text is still
+        delivered (without the attachment) so the agent at least sees the
+        message."""
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        import asyncio
+        import httpx
+
+        sent_messages, delivered_events = self._install_message_recorder(
+            adapter, monkeypatch
+        )
+
+        class FailingResponse:
+            def raise_for_status(self):
+                raise httpx.HTTPError("500")
+
+        async def mock_get(url, **kwargs):
+            return FailingResponse()
+
+        self._install_http(adapter, monkeypatch, mock_get)
+
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "msg-6",
+                "text": "what is this?",
+                "chatGuid": "iMessage;-;+15551234567",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "attachments": [{"guid": "att-1", "mimeType": "image/png"}],
+            },
+        }
+        req = self._webhook_request(payload)
+        asyncio.get_event_loop().run_until_complete(adapter._handle_webhook(req))
+        self._drain_background(adapter)
+
+        assert len(delivered_events) == 1
+        assert delivered_events[0].text == "what is this?"
+        assert delivered_events[0].media_urls == []
+
+    def test_attachment_only_message_passes_early_validation(self, monkeypatch):
+        """An attachment-only message (no text) must not be rejected as
+        'missing message fields' before the attachment is fetched."""
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        import asyncio
+
+        sent_messages, delivered_events = self._install_message_recorder(
+            adapter, monkeypatch
+        )
+
+        class SuccessResponse:
+            content = b"cached"
+
+            def raise_for_status(self):
+                pass
+
+        async def mock_get(url, **kwargs):
+            return SuccessResponse()
+
+        self._install_http(adapter, monkeypatch, mock_get)
+
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "msg-7",
+                "text": "",
+                "chatGuid": "iMessage;-;+15551234567",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "attachments": [{"guid": "att-1", "mimeType": "image/png"}],
+            },
+        }
+        req = self._webhook_request(payload)
+        asyncio.get_event_loop().run_until_complete(adapter._handle_webhook(req))
+        self._drain_background(adapter)
+
+        assert len(delivered_events) == 1
+        assert delivered_events[0].text == "(attachment)"
+        assert delivered_events[0].media_urls == ["/tmp/x.png"]
 
 
 # ---------------------------------------------------------------------------
