@@ -11611,3 +11611,154 @@ None of these feed into a notification system. Operator must monitor logs manual
 *Pass #84 complete — 2026-05-25T12:10:00Z*
 *Commit at scan: 5a51a1f65*
 *Next: Pass #85*
+
+---
+
+## Pass #85 – API Rate Limiting, Quotas & Cost Management Deep Dive – 2026-05-25T12:30:00Z
+
+Scope: run_agent.py, agent/error_classifier.py, agent/retry_utils.py, agent/iteration_budget.py, agent/account_usage.py, agent/gemini_native_adapter.py, gateway/session.py, gateway/config.py, gateway/platforms/api_server.py, gateway/platforms/signal_rate_limit.py, gateway/platforms/slack.py, gateway/platforms/feishu.py, hermes_cli/auth_commands.py, hermes_cli/doctor.py
+
+---
+
+### P85-1 · Per-user API rate limiting only at gateway webhooks — no unified per-key throttle — MEDIUM
+
+**File:** `gateway/platforms/feishu.py`, `gateway/platforms/api_server.py`
+
+Feishu implements a sliding-window rate limiter at the webhook handler level (120 req/min per `app_id:path:remote_ip` composite key, see `_check_webhook_rate_limit` at line 3362). The API server (`api_server.py`) enforces only a global concurrency cap (`_MAX_CONCURRENT_RUNS`, line 2902) and an API-key check (line 778-790) — no per-user or per-key rate limiting.
+
+**Implication:** A single compromised API key or a single abusive user can exhaust the global concurrent-run budget, starving all other users. There is no per-key request-rate limit.
+
+**Recommendation:** Add per-key rate limiting to api_server similar to Feishu's webhook limiter.
+
+---
+
+### P85-2 · API server auth bypass when no key is configured — MEDIUM
+
+**File:** `gateway/platforms/api_server.py` lines 778-779
+
+```python
+if not self._api_key:
+    return None  # No key configured — allow all (local-only use)
+```
+
+When `API_SERVER_KEY` is not set, the server allows all requests without authentication. The comment says "local-only use" but the code does not enforce local network restriction — any client that can reach the port can authenticate.
+
+**Implication:** If the API server is exposed (e.g., in a container or multi-tenant environment), unauthenticated actors can make arbitrary API calls at the cost of the server's concurrent-run budget.
+
+**Recommendation:** Require `API_SERVER_KEY` to be set in any non-loopback deployment.
+
+---
+
+### P85-3 · Cost tracking fields exist in SessionData but are never populated — LOW
+
+**File:** `gateway/session.py` lines 450-451
+
+```python
+estimated_cost_usd: float = 0.0
+cost_status: str = "unknown"
+```
+
+`SessionData` stores `estimated_cost_usd` and `cost_status` as fields, and they are serialized in `to_dict()` (line 509) and deserialized in `from_dict()` (line 565), but there is no code in the examined files that ever computes or writes these fields. The fields remain at their default values throughout the session lifecycle.
+
+**Implication:** Users cannot see estimated costs per session via the session store. Cost tracking is effectively stubbed out.
+
+**Recommendation:** Wire `estimated_cost_usd` and `cost_status` to actual API usage data from the account_usage module, or remove the fields if they are not planned.
+
+---
+
+### P85-4 · `account_usage.py` only fetches data for three providers — others have no cost visibility — LOW
+
+**File:** `agent/account_usage.py` lines 308-326
+
+`fetch_account_usage()` dispatches to specialized fetchers only for `openai-codex`, `anthropic`, and `openrouter`. All other providers (Gemini, Azure OpenAI, custom URLs, etc.) return `None` — no usage snapshot.
+
+**Implication:** Users on non-supported providers have no programmatic visibility into their API usage, quota windows, or credit balances via Hermes tooling.
+
+**Recommendation:** Extend `account_usage.py` with fetchers for the most common providers (at minimum Google/Gemini).
+
+---
+
+### P85-5 · Error classifier `billing` vs `rate_limit` disambiguation is heuristic — MEDIUM
+
+**File:** `agent/error_classifier.py` lines 92-135
+
+The classifier uses string pattern matching (`_BILLING_PATTERNS`, `_RATE_LIMIT_PATTERNS`, `_USAGE_LIMIT_PATTERNS`) to distinguish billing exhaustion from transient rate limiting. These lists are checked in order — billing patterns are checked first, then rate limit patterns.
+
+The disambiguation is fragile: `"usage limit"` appears in `_USAGE_LIMIT_PATTERNS` but not in either billing or rate-limit specific lists, meaning it falls through to the catch-all retry path rather than rotating credentials.
+
+**Implication:** A genuine billing exhaustion error that doesn't match any `_BILLING_PATTERNS` entry would be treated as retryable, burning retry budget against an irreversible quota exhaustion. Conversely, some rate-limit errors may match billing patterns due to imprecise wording.
+
+**Recommendation:** Add structured fields (e.g., `error_context["quota_type"] = "daily"|"monthly"|"requests_per_min"`) from provider error responses so classification is data-driven, not string-matching driven.
+
+---
+
+### P85-6 · Account-level rate limits bypass credential rotation for Gemini CLI — MEDIUM
+
+**File:** `run_agent.py` lines 254-270, `agent/gemini_native_adapter.py` lines 121-125
+
+The retry logic in run_agent.py explicitly detects `provider == "google-gemini-cli"` and skips credential rotation on 429 because "CloudCode / Gemini CLI quotas are account-wide — all pool entries share the same throttle window." This is correct behavior, but it means a 429 from a Gemini CLI credential immediately triggers fallback without attempting backoff and retry against the same key.
+
+**Implication:** Users with `google-gemini-cli` provider who hit a transient rate limit (not a quota exhaustion) are immediately moved to fallback rather than waiting for the cooldown. This may be overly aggressive for transient 429s.
+
+**Recommendation:** Distinguish between account-level quota exhaustion (429 with "quota" in message) vs transient throttling for Gemini CLI, applying rotation only for the former.
+
+---
+
+### P85-7 · No retry budget limiting — retries can consume all remaining iteration budget — MEDIUM
+
+**File:** `run_agent.py` (main retry loop), `agent/retry_utils.py`
+
+`jittered_backoff()` in `agent/retry_utils.py` implements exponential backoff with jitter but is called without any cap on the number of retries. The `IterationBudget` (agent/iteration_budget.py) is checked in the main loop but retries that occur after a failed API call consume from the same `iteration_budget.remaining`.
+
+**Implication:** A series of retryable errors (e.g., repeated 429s from a rate-limited provider) can consume the entire iteration budget with zero useful output, leaving the user with no response and no remaining budget.
+
+**Recommendation:** Implement a separate retry budget (max N retries per call) that is independent of the iteration budget, or add a "retry cost" that is charged separately to avoid burning the full iteration budget on retries alone.
+
+---
+
+### P85-8 · Slack retry uses fixed exponential backoff (1s, 2s) — MEDIUM
+
+**File:** `gateway/platforms/slack.py` lines 2626-2632
+
+```python
+retry_after = 1.0 * (2 ** attempt)  # 1s, 2s
+```
+
+The Slack platform retry logic uses plain exponential backoff without jitter. This creates a thundering-herd risk: if many Hermes sessions are running concurrently and Slack rate-limits them simultaneously, they will all retry at the same instants (1s, 3s, 7s...).
+
+**Contrast:** `agent/retry_utils.py` implements jittered backoff specifically to avoid this scenario (line 4: "thundering-herd retry spikes").
+
+**Recommendation:** Use `jittered_backoff()` from `agent/retry_utils.py` in the Slack adapter as well.
+
+---
+
+### P85-9 · Signal rate limit error detection is fragile — covers only three patterns — LOW
+
+**File:** `gateway/platforms/signal_rate_limit.py` lines 106-119
+
+`_is_signal_rate_limit_error()` matches only three specific error forms:
+1. Typed `RATELIMIT_ERROR` code (signal-cli >= v0.14.3)
+2. Legacy `[429]` / `RateLimitException` substrings
+3. libsignal-net `RetryLaterException` / `Retry after N seconds` in attachment upload errors
+
+This means any other signal-cli rate limit error (newer error codes, different message formats, future API changes) would not be caught and would not trigger the rate limit handling path.
+
+**Recommendation:** Add a broader catch-all for 429 HTTP responses from signal-cli, not just string-matching on specific known formats.
+
+---
+
+### P85-10 · Iteration budget is per-agent not per-session — subagent budgets are independent — INFO
+
+**File:** `agent/iteration_budget.py` lines 20-29
+
+Each `AIAgent` instance (parent or subagent) gets its own independent `IterationBudget`. The parent's budget is capped at `max_iterations` (default 90). Subagents default to `delegation.max_iterations` (default 50). The docstring notes: "total iterations across parent + subagents can exceed the parent's cap."
+
+**Implication:** A parent agent delegating to many subagents could accumulate total iterations far exceeding what the user intended, consuming API budget at a rate higher than expected based on the parent's `max_iterations` setting alone.
+
+**Recommendation:** Document this behavior clearly and consider whether subagent iteration budgets should be drawn from the parent's remaining budget.
+
+---
+
+*Pass #85 complete — 2026-05-25T12:35:00Z*
+*Commit at scan: 5a51a1f65*
+*Next: Pass #86*
