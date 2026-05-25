@@ -96,6 +96,12 @@ VALID_TRANSITIONS: dict[str, set[str]] = {
     "ORCHESTRATOR_TRIAGE":          {"ARCHITECT_SPEC"},
     "ARCHITECT_SPEC":               {"ARCHITECT_READY_FOR_DEV"},
     "ARCHITECT_READY_FOR_DEV":      {"DEV_COMPLETE"},
+    "DEV_COMPLETE":                 {"AUDIT_REVIEW"},
+    "AUDIT_REVIEW":                 {"AUDIT_PASSED"},
+    "AUDIT_PASSED":                 {"ARCHITECT_RECONCILE"},
+    "ARCHITECT_RECONCILE":          {"ARCHITECT_ACCEPTED"},
+    "ARCHITECT_ACCEPTED":           {"DEFAULT_FINAL_REVIEW"},
+    "DEFAULT_FINAL_REVIEW":         {"DONE"},
 }
 
 STATE_OWNERS: dict[str, str] = {
@@ -106,6 +112,12 @@ STATE_OWNERS: dict[str, str] = {
     "ARCHITECT_SPEC":               "architect_os",
     "ARCHITECT_READY_FOR_DEV":      "dev_os",
     "DEV_COMPLETE":                 "audit_os",
+    "AUDIT_REVIEW":                 "audit_os",
+    "AUDIT_PASSED":                 "architect_os",
+    "ARCHITECT_RECONCILE":          "architect_os",
+    "ARCHITECT_ACCEPTED":           "default",
+    "DEFAULT_FINAL_REVIEW":         "default",
+    "DONE":                         "default",
 }
 
 WORKFLOW_INITIAL_STATE = "PRODUCTION_ORDER_CREATED"
@@ -244,6 +256,61 @@ REQUIRED_DEVOS_BUILD_PACKET_FIELDS = {
     "test_status",
     "limitations_or_notes",
     "next_handoff_target",
+}
+
+ARCHITECT_RECONCILE_HANDOFF_TEMPLATE: dict[str, Any] = {
+    "from_profile": "audit_os",
+    "to_profile": "architect_os",
+    "current_state": "AUDIT_PASSED",
+    "requested_next_state": "ARCHITECT_RECONCILE",
+    "reference_workflow_spec": WORKFLOW_SPEC_SOURCE,
+}
+
+REQUIRED_AUDITOS_REVIEW_PACKET_FIELDS = {
+    "production_order_id",
+    "owner_profile",
+    "source_state",
+    "review_result",
+    "summary",
+    "evidence",
+    "tests_reviewed",
+    "verdict",
+    "risks_or_notes",
+    "next_handoff_target",
+}
+
+DEFAULT_FINAL_REVIEW_HANDOFF_TEMPLATE: dict[str, Any] = {
+    "from_profile": "architect_os",
+    "to_profile": "default",
+    "current_state": "ARCHITECT_ACCEPTED",
+    "requested_next_state": "DEFAULT_FINAL_REVIEW",
+    "reference_workflow_spec": WORKFLOW_SPEC_SOURCE,
+}
+
+REQUIRED_ARCHITECT_RECONCILE_PACKET_FIELDS = {
+    "production_order_id",
+    "owner_profile",
+    "source_state",
+    "reconcile_result",
+    "summary",
+    "architecture_alignment",
+    "drift_assessment",
+    "spec_patch_needed",
+    "risks_or_notes",
+    "next_handoff_target",
+}
+
+REQUIRED_DEFAULT_FINAL_REVIEW_PACKET_FIELDS = {
+    "production_order_id",
+    "owner_profile",
+    "source_state",
+    "final_review_result",
+    "summary",
+    "original_brief_alignment",
+    "artifacts_reviewed",
+    "evidence_summary",
+    "final_status",
+    "next_action",
 }
 
 # Child card definitions for production Kanban graph (from spec section 7 + feature brief section 8)
@@ -997,14 +1064,62 @@ def _require_non_empty_field(
     field_name: str,
     *,
     aliases: tuple[str, ...] = (),
+    label: str = "DevOS build packet",
 ) -> Any:
     for key in (field_name, *aliases):
         if key in packet and packet[key] not in (None, "", [], {}):
             return packet[key]
     alias_text = f" (or {', '.join(aliases)})" if aliases else ""
     raise ValueError(
-        f"DevOS build packet missing required field: {field_name}{alias_text}"
+        f"{label} missing required field: {field_name}{alias_text}"
     )
+
+
+def _missing_required_fields(
+    packet: dict[str, Any],
+    required_fields: set[str],
+) -> list[str]:
+    return sorted(
+        field for field in required_fields
+        if field not in packet or packet[field] in (None, "", [], {})
+    )
+
+
+def _coerce_packet_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip().lower()
+    return json.dumps(value, sort_keys=True, default=str).lower()
+
+
+def _require_positive_result(
+    value: Any,
+    *,
+    field_name: str,
+    label: str,
+    positive_tokens: tuple[str, ...],
+) -> None:
+    text = _coerce_packet_text(value)
+    if not text:
+        raise ValueError(f"{label} {field_name} must be non-empty")
+    negative_tokens = (
+        "fail",
+        "failed",
+        "reject",
+        "rejected",
+        "blocked",
+        "partial",
+        "needs_approval",
+        "needs approval",
+        "cancelled",
+        "canceled",
+        "rework",
+    )
+    if any(token in text for token in negative_tokens):
+        raise ValueError(f"{label} {field_name} is not a happy-path result")
+    if not any(token in text for token in positive_tokens):
+        raise ValueError(
+            f"{label} {field_name} must clearly indicate a happy-path result"
+        )
 
 
 def _normalize_test_status(value: Any) -> str:
@@ -1100,6 +1215,223 @@ def create_auditos_handoff(
         "Audit requires unavailable environment access.",
     ]
     packet["limitations_or_notes"] = devos_packet["limitations_or_notes"]
+    return packet
+
+
+def validate_auditos_review_packet(
+    packet: dict[str, Any],
+    *,
+    expected_production_order_id: str,
+    expected_source_state: str,
+) -> dict[str, Any]:
+    """Validate the explicit AuditOS review packet for the happy path."""
+    label = "AuditOS review packet"
+    if not isinstance(packet, dict):
+        raise ValueError(f"{label} must be a JSON object")
+
+    missing = _missing_required_fields(packet, REQUIRED_AUDITOS_REVIEW_PACKET_FIELDS)
+    if missing:
+        raise ValueError(
+            f"{label} missing required field(s): " + ", ".join(missing)
+        )
+
+    if packet["production_order_id"] != expected_production_order_id:
+        raise ValueError(
+            f"{label} production_order_id does not match the requested production order"
+        )
+    if packet["owner_profile"] != "audit_os":
+        raise ValueError(f"{label} owner_profile must be 'audit_os'")
+    if packet["source_state"] not in {"DEV_COMPLETE", "AUDIT_REVIEW"}:
+        raise ValueError(
+            f"{label} source_state must be 'DEV_COMPLETE' or 'AUDIT_REVIEW'"
+        )
+    if packet["source_state"] != expected_source_state:
+        raise ValueError(
+            f"{label} source_state must match current production order state "
+            f"{expected_source_state!r}"
+        )
+    if packet["next_handoff_target"] != "architect_os":
+        raise ValueError(f"{label} next_handoff_target must be 'architect_os'")
+
+    _require_positive_result(
+        packet["verdict"],
+        field_name="verdict",
+        label=label,
+        positive_tokens=("pass", "passed", "accept", "accepted", "approve", "approved"),
+    )
+    _require_positive_result(
+        packet["review_result"],
+        field_name="review_result",
+        label=label,
+        positive_tokens=("pass", "passed", "accept", "accepted", "approve", "approved"),
+    )
+
+    return packet
+
+
+def create_architect_reconcile_handoff(
+    po: ProductionOrder,
+    audit_packet: dict[str, Any],
+) -> dict[str, Any]:
+    """Create the ArchitectOS reconcile handoff from AuditOS review output."""
+    packet = dict(ARCHITECT_RECONCILE_HANDOFF_TEMPLATE)
+    packet["production_order_id"] = po.production_order_id
+    packet["audit_summary"] = audit_packet["summary"]
+    packet["audit_evidence"] = audit_packet["evidence"]
+    packet["tests_reviewed"] = audit_packet["tests_reviewed"]
+    packet["risks_or_notes"] = audit_packet["risks_or_notes"]
+    packet["acceptance_criteria"] = [
+        "Confirm the accepted implementation preserves the ArchitectOS spec.",
+        "Confirm no source-truth patch is required before final review.",
+    ]
+    packet["stop_conditions"] = [
+        "Implementation drift is found.",
+        "Spec patch or rework is required.",
+        "Rework owner is unclear.",
+    ]
+    return packet
+
+
+def validate_architect_reconcile_packet(
+    packet: dict[str, Any],
+    *,
+    expected_production_order_id: str,
+    expected_source_state: str,
+) -> dict[str, Any]:
+    """Validate the explicit ArchitectOS reconciliation packet."""
+    label = "ArchitectOS reconcile packet"
+    if not isinstance(packet, dict):
+        raise ValueError(f"{label} must be a JSON object")
+
+    missing = _missing_required_fields(
+        packet,
+        REQUIRED_ARCHITECT_RECONCILE_PACKET_FIELDS,
+    )
+    if missing:
+        raise ValueError(
+            f"{label} missing required field(s): " + ", ".join(missing)
+        )
+
+    if packet["production_order_id"] != expected_production_order_id:
+        raise ValueError(
+            f"{label} production_order_id does not match the requested production order"
+        )
+    if packet["owner_profile"] != "architect_os":
+        raise ValueError(f"{label} owner_profile must be 'architect_os'")
+    if packet["source_state"] not in {"AUDIT_PASSED", "ARCHITECT_RECONCILE"}:
+        raise ValueError(
+            f"{label} source_state must be 'AUDIT_PASSED' or 'ARCHITECT_RECONCILE'"
+        )
+    if packet["source_state"] != expected_source_state:
+        raise ValueError(
+            f"{label} source_state must match current production order state "
+            f"{expected_source_state!r}"
+        )
+    if packet["next_handoff_target"] != "default":
+        raise ValueError(f"{label} next_handoff_target must be 'default'")
+
+    _require_positive_result(
+        packet["reconcile_result"],
+        field_name="reconcile_result",
+        label=label,
+        positive_tokens=("accept", "accepted", "align", "aligned", "pass", "passed"),
+    )
+    _require_positive_result(
+        packet["architecture_alignment"],
+        field_name="architecture_alignment",
+        label=label,
+        positive_tokens=("align", "aligned", "accept", "accepted", "pass", "passed"),
+    )
+    spec_patch_text = _coerce_packet_text(packet["spec_patch_needed"])
+    if spec_patch_text not in {"false", "no", "none", "not needed", "not_required", "not required"}:
+        raise ValueError(
+            f"{label} spec_patch_needed must clearly indicate no patch is required"
+        )
+
+    return packet
+
+
+def create_default_final_review_handoff(
+    po: ProductionOrder,
+    reconcile_packet: dict[str, Any],
+) -> dict[str, Any]:
+    """Create the Default Hermes final-review handoff from reconciliation."""
+    packet = dict(DEFAULT_FINAL_REVIEW_HANDOFF_TEMPLATE)
+    packet["production_order_id"] = po.production_order_id
+    packet["reconcile_summary"] = reconcile_packet["summary"]
+    packet["architecture_alignment"] = reconcile_packet["architecture_alignment"]
+    packet["drift_assessment"] = reconcile_packet["drift_assessment"]
+    packet["risks_or_notes"] = reconcile_packet["risks_or_notes"]
+    packet["inputs"] = (
+        f"Parent card ID: {po.parent_kanban_card_id}; "
+        f"Child card IDs: {', '.join(po.child_kanban_card_ids)}; "
+        "Review frozen brief, DevOS result, AuditOS result, and ArchitectOS reconciliation."
+    )
+    packet["expected_output"] = "Final done report for Jarren"
+    packet["acceptance_criteria"] = [
+        "Final output matches the approved brief.",
+        "All stage gates are complete and accepted.",
+    ]
+    packet["stop_conditions"] = [
+        "Final output does not match the approved brief.",
+        "Required audit or reconciliation evidence is missing.",
+        "Scope changed without approval.",
+    ]
+    return packet
+
+
+def validate_default_final_review_packet(
+    packet: dict[str, Any],
+    *,
+    expected_production_order_id: str,
+    expected_source_state: str,
+) -> dict[str, Any]:
+    """Validate the explicit Default Hermes final-review packet."""
+    label = "Default final review packet"
+    if not isinstance(packet, dict):
+        raise ValueError(f"{label} must be a JSON object")
+
+    missing = _missing_required_fields(
+        packet,
+        REQUIRED_DEFAULT_FINAL_REVIEW_PACKET_FIELDS,
+    )
+    if missing:
+        raise ValueError(
+            f"{label} missing required field(s): " + ", ".join(missing)
+        )
+
+    if packet["production_order_id"] != expected_production_order_id:
+        raise ValueError(
+            f"{label} production_order_id does not match the requested production order"
+        )
+    if packet["owner_profile"] not in {"default", "default_hermes", "hermes"}:
+        raise ValueError(
+            f"{label} owner_profile must be 'default', 'default_hermes', or 'hermes'"
+        )
+    if packet["source_state"] not in {"ARCHITECT_ACCEPTED", "DEFAULT_FINAL_REVIEW"}:
+        raise ValueError(
+            f"{label} source_state must be 'ARCHITECT_ACCEPTED' or "
+            "'DEFAULT_FINAL_REVIEW'"
+        )
+    if packet["source_state"] != expected_source_state:
+        raise ValueError(
+            f"{label} source_state must match current production order state "
+            f"{expected_source_state!r}"
+        )
+
+    _require_positive_result(
+        packet["final_review_result"],
+        field_name="final_review_result",
+        label=label,
+        positive_tokens=("done", "complete", "completed", "accept", "accepted", "pass", "passed"),
+    )
+    _require_positive_result(
+        packet["final_status"],
+        field_name="final_status",
+        label=label,
+        positive_tokens=("done", "complete", "completed", "accept", "accepted", "pass", "passed"),
+    )
+
     return packet
 
 
@@ -1511,6 +1843,272 @@ def run_devos_complete_bridge(
         (auditos_card_id,),
     )
 
+    return po
+
+
+def _load_existing_production_order(
+    conn: sqlite3.Connection,
+    production_order_id: str,
+) -> ProductionOrder:
+    matches = [
+        order for order in list_production_orders(conn)
+        if order.production_order_id == production_order_id
+    ]
+    if not matches:
+        raise ValueError(f"production order {production_order_id!r} not found")
+    return matches[0]
+
+
+def _assert_bridge_preconditions(
+    conn: sqlite3.Connection,
+    po: ProductionOrder,
+    *,
+    expected_states: set[str],
+    expected_owner: str,
+) -> None:
+    if po.current_state not in expected_states:
+        expected_text = ", ".join(sorted(expected_states))
+        raise StateTransitionError(
+            f"Production order {po.production_order_id} is in {po.current_state!r}; "
+            f"expected one of {expected_text!r}"
+        )
+    if po.current_owner_profile != expected_owner:
+        raise StateTransitionError(
+            f"Production order {po.production_order_id} is owned by "
+            f"{po.current_owner_profile!r}; expected {expected_owner!r}"
+        )
+    if not po.parent_kanban_card_id:
+        raise ValueError("production order parent Kanban card is missing")
+    if len(po.child_kanban_card_ids) != 6:
+        raise ValueError(
+            f"production order Kanban graph must have 6 child cards; "
+            f"found {len(po.child_kanban_card_ids)}"
+        )
+    if len(set(po.child_kanban_card_ids)) != 6:
+        raise ValueError("production order Kanban graph contains duplicate child card IDs")
+
+    placeholders = ",".join(["?"] * len(po.child_kanban_card_ids))
+    existing_child_count = conn.execute(
+        f"SELECT COUNT(*) AS n FROM tasks WHERE id IN ({placeholders})",
+        tuple(po.child_kanban_card_ids),
+    ).fetchone()["n"]
+    if existing_child_count != 6:
+        raise ValueError(
+            f"production order Kanban graph references {6 - existing_child_count} "
+            "missing child card(s)"
+        )
+
+
+def _sync_child_current_state(conn: sqlite3.Connection, po: ProductionOrder) -> None:
+    for cid in po.child_kanban_card_ids:
+        conn.execute(
+            "UPDATE tasks SET current_state = ? WHERE id = ?",
+            (po.current_state, cid),
+        )
+
+
+def run_auditos_review_complete_bridge(
+    conn: sqlite3.Connection,
+    *,
+    production_order_id: str,
+    review_packet: dict[str, Any],
+) -> ProductionOrder:
+    """Advance DEV_COMPLETE/AUDIT_REVIEW to AUDIT_PASSED for an existing order."""
+    po = _load_existing_production_order(conn, production_order_id)
+    _assert_bridge_preconditions(
+        conn,
+        po,
+        expected_states={"DEV_COMPLETE", "AUDIT_REVIEW"},
+        expected_owner="audit_os",
+    )
+    packet = validate_auditos_review_packet(
+        review_packet,
+        expected_production_order_id=production_order_id,
+        expected_source_state=po.current_state,
+    )
+
+    audit_card_id = po.child_kanban_card_ids[3]
+    reconcile_card_id = po.child_kanban_card_ids[4]
+    reconcile_handoff = create_architect_reconcile_handoff(po, packet)
+
+    freeze_result_on_card(conn, audit_card_id, packet)
+    freeze_handoff_on_card(conn, reconcile_card_id, reconcile_handoff)
+
+    if po.current_state == "DEV_COMPLETE":
+        transition_state(
+            conn,
+            po,
+            "AUDIT_REVIEW",
+            "audit_os",
+            result="audit review started",
+            next_action="complete_audit_review",
+            card_id=po.parent_kanban_card_id,
+            event_type="audit_review_started",
+        )
+
+    transition_state(
+        conn,
+        po,
+        "AUDIT_PASSED",
+        "audit_os",
+        result="audit review passed; ArchitectOS reconcile handoff attached",
+        next_action="dispatch_architect_reconcile",
+        card_id=po.parent_kanban_card_id,
+        event_type="audit_review_completed",
+    )
+
+    log_workflow_event(
+        conn,
+        po.production_order_id,
+        "handoff_created",
+        from_state="AUDIT_REVIEW",
+        to_state="AUDIT_PASSED",
+        owner_profile="audit_os",
+        kanban_card_id=reconcile_card_id,
+        result="ArchitectOS reconcile handoff packet attached",
+        next_action="dispatch_architect_reconcile",
+    )
+
+    _sync_child_current_state(conn, po)
+    conn.execute(
+        "UPDATE tasks SET status = 'ready' WHERE id = ?",
+        (reconcile_card_id,),
+    )
+    return po
+
+
+def run_architect_reconcile_bridge(
+    conn: sqlite3.Connection,
+    *,
+    production_order_id: str,
+    reconcile_packet: dict[str, Any],
+) -> ProductionOrder:
+    """Advance AUDIT_PASSED/ARCHITECT_RECONCILE to ARCHITECT_ACCEPTED."""
+    po = _load_existing_production_order(conn, production_order_id)
+    _assert_bridge_preconditions(
+        conn,
+        po,
+        expected_states={"AUDIT_PASSED", "ARCHITECT_RECONCILE"},
+        expected_owner="architect_os",
+    )
+    packet = validate_architect_reconcile_packet(
+        reconcile_packet,
+        expected_production_order_id=production_order_id,
+        expected_source_state=po.current_state,
+    )
+
+    reconcile_card_id = po.child_kanban_card_ids[4]
+    final_card_id = po.child_kanban_card_ids[5]
+    final_handoff = create_default_final_review_handoff(po, packet)
+
+    freeze_result_on_card(conn, reconcile_card_id, packet)
+    freeze_handoff_on_card(conn, final_card_id, final_handoff)
+
+    if po.current_state == "AUDIT_PASSED":
+        transition_state(
+            conn,
+            po,
+            "ARCHITECT_RECONCILE",
+            "architect_os",
+            result="architect reconciliation started",
+            next_action="complete_architect_reconcile",
+            card_id=po.parent_kanban_card_id,
+            event_type="architect_reconcile_started",
+        )
+
+    transition_state(
+        conn,
+        po,
+        "ARCHITECT_ACCEPTED",
+        "architect_os",
+        result="architecture reconciled; final review handoff attached",
+        next_action="dispatch_default_final_review",
+        card_id=po.parent_kanban_card_id,
+        event_type="architect_reconcile_completed",
+    )
+
+    log_workflow_event(
+        conn,
+        po.production_order_id,
+        "handoff_created",
+        from_state="ARCHITECT_RECONCILE",
+        to_state="ARCHITECT_ACCEPTED",
+        owner_profile="architect_os",
+        kanban_card_id=final_card_id,
+        result="Default final review handoff packet attached",
+        next_action="dispatch_default_final_review",
+    )
+
+    _sync_child_current_state(conn, po)
+    conn.execute(
+        "UPDATE tasks SET status = 'ready' WHERE id = ?",
+        (final_card_id,),
+    )
+    return po
+
+
+def run_default_final_review_bridge(
+    conn: sqlite3.Connection,
+    *,
+    production_order_id: str,
+    final_packet: dict[str, Any],
+) -> ProductionOrder:
+    """Advance ARCHITECT_ACCEPTED/DEFAULT_FINAL_REVIEW to DONE."""
+    po = _load_existing_production_order(conn, production_order_id)
+    _assert_bridge_preconditions(
+        conn,
+        po,
+        expected_states={"ARCHITECT_ACCEPTED", "DEFAULT_FINAL_REVIEW"},
+        expected_owner="default",
+    )
+    packet = validate_default_final_review_packet(
+        final_packet,
+        expected_production_order_id=production_order_id,
+        expected_source_state=po.current_state,
+    )
+
+    final_card_id = po.child_kanban_card_ids[5]
+    freeze_result_on_card(conn, final_card_id, packet)
+
+    if po.current_state == "ARCHITECT_ACCEPTED":
+        transition_state(
+            conn,
+            po,
+            "DEFAULT_FINAL_REVIEW",
+            "default",
+            result="default final review started",
+            next_action="complete_default_final_review",
+            card_id=po.parent_kanban_card_id,
+            event_type="default_final_review_started",
+        )
+
+    transition_state(
+        conn,
+        po,
+        "DONE",
+        "default",
+        result="workflow completed",
+        next_action=packet["next_action"],
+        card_id=po.parent_kanban_card_id,
+        event_type="default_final_review_completed",
+    )
+
+    log_workflow_event(
+        conn,
+        po.production_order_id,
+        "workflow_completed",
+        owner_profile="default",
+        kanban_card_id=po.parent_kanban_card_id,
+        result=str(packet["final_status"]),
+        next_action=packet["next_action"],
+    )
+
+    po.final_status = str(packet["final_status"])
+    _sync_child_current_state(conn, po)
+    conn.execute(
+        "UPDATE tasks SET status = 'done' WHERE id = ?",
+        (final_card_id,),
+    )
     return po
 
 

@@ -936,6 +936,60 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     po_dev_complete.add_argument("--json", action="store_true",
                                  help="Emit JSON output")
 
+    po_audit_complete = po_sub.add_parser(
+        "audit-complete",
+        help="Run AuditOS review completion for an existing production order",
+    )
+    po_audit_complete.add_argument(
+        "production_order_id",
+        help="Production order ID in DEV_COMPLETE or AUDIT_REVIEW",
+    )
+    po_audit_complete.add_argument("--board", default=None,
+                                   help="Kanban board slug (default: current board)")
+    po_audit_complete.add_argument(
+        "--review-file",
+        required=True,
+        help="Path to a JSON file containing the AuditOS review packet",
+    )
+    po_audit_complete.add_argument("--json", action="store_true",
+                                   help="Emit JSON output")
+
+    po_architect_reconcile = po_sub.add_parser(
+        "architect-reconcile",
+        help="Run ArchitectOS reconciliation completion for an existing production order",
+    )
+    po_architect_reconcile.add_argument(
+        "production_order_id",
+        help="Production order ID in AUDIT_PASSED or ARCHITECT_RECONCILE",
+    )
+    po_architect_reconcile.add_argument("--board", default=None,
+                                        help="Kanban board slug (default: current board)")
+    po_architect_reconcile.add_argument(
+        "--reconcile-file",
+        required=True,
+        help="Path to a JSON file containing the ArchitectOS reconcile packet",
+    )
+    po_architect_reconcile.add_argument("--json", action="store_true",
+                                        help="Emit JSON output")
+
+    po_final_review = po_sub.add_parser(
+        "final-review",
+        help="Run Default Hermes final review completion for an existing production order",
+    )
+    po_final_review.add_argument(
+        "production_order_id",
+        help="Production order ID in ARCHITECT_ACCEPTED or DEFAULT_FINAL_REVIEW",
+    )
+    po_final_review.add_argument("--board", default=None,
+                                 help="Kanban board slug (default: current board)")
+    po_final_review.add_argument(
+        "--final-file",
+        required=True,
+        help="Path to a JSON file containing the Default final review packet",
+    )
+    po_final_review.add_argument("--json", action="store_true",
+                                 help="Emit JSON output")
+
     return kanban_parser
 
 
@@ -2783,6 +2837,9 @@ def _cmd_production_order(args: argparse.Namespace) -> int:
         list_production_orders,
         log_workflow_event,
         run_architect_spec_bridge,
+        run_architect_reconcile_bridge,
+        run_auditos_review_complete_bridge,
+        run_default_final_review_bridge,
         run_devos_complete_bridge,
         run_full_bridge,
         run_orchestrator_triage_bridge,
@@ -3017,6 +3074,162 @@ def _cmd_production_order(args: argparse.Namespace) -> int:
         else:
             print(format_production_order_status(po))
             print("\nSlice 7 DevOS completion complete: AuditOS handoff attached.")
+        return 0
+
+    if po_action == "audit-complete":
+        po_id = getattr(args, "production_order_id", None)
+        review_file = getattr(args, "review_file", None)
+        if not po_id:
+            print(
+                "kanban production-order audit-complete: production_order_id is required",
+                file=sys.stderr,
+            )
+            return 1
+        if not review_file:
+            print(
+                "kanban production-order audit-complete: --review-file is required",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            with open(review_file, "r", encoding="utf-8") as f:
+                review_packet = stdlib_json.load(f)
+        except (OSError, stdlib_json.JSONDecodeError) as exc:
+            print(
+                f"kanban production-order audit-complete: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            with kb.connect(board=board) as conn:
+                po = run_auditos_review_complete_bridge(
+                    conn,
+                    production_order_id=po_id,
+                    review_packet=review_packet,
+                )
+        except Exception as exc:
+            print(
+                f"kanban production-order audit-complete: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+
+        if getattr(args, "json", False):
+            print(stdlib_json.dumps({
+                "production_order_id": po.production_order_id,
+                "parent_card_id": po.parent_kanban_card_id,
+                "child_card_ids": po.child_kanban_card_ids,
+                "current_state": po.current_state,
+                "current_owner_profile": po.current_owner_profile,
+                "next_action": "dispatch_architect_reconcile",
+            }, indent=2))
+        else:
+            print(format_production_order_status(po))
+            print("\nAuditOS review complete: ArchitectOS reconcile handoff attached.")
+        return 0
+
+    if po_action == "architect-reconcile":
+        po_id = getattr(args, "production_order_id", None)
+        reconcile_file = getattr(args, "reconcile_file", None)
+        if not po_id:
+            print(
+                "kanban production-order architect-reconcile: production_order_id is required",
+                file=sys.stderr,
+            )
+            return 1
+        if not reconcile_file:
+            print(
+                "kanban production-order architect-reconcile: --reconcile-file is required",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            with open(reconcile_file, "r", encoding="utf-8") as f:
+                reconcile_packet = stdlib_json.load(f)
+        except (OSError, stdlib_json.JSONDecodeError) as exc:
+            print(
+                f"kanban production-order architect-reconcile: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            with kb.connect(board=board) as conn:
+                po = run_architect_reconcile_bridge(
+                    conn,
+                    production_order_id=po_id,
+                    reconcile_packet=reconcile_packet,
+                )
+        except Exception as exc:
+            print(
+                f"kanban production-order architect-reconcile: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+
+        if getattr(args, "json", False):
+            print(stdlib_json.dumps({
+                "production_order_id": po.production_order_id,
+                "parent_card_id": po.parent_kanban_card_id,
+                "child_card_ids": po.child_kanban_card_ids,
+                "current_state": po.current_state,
+                "current_owner_profile": po.current_owner_profile,
+                "next_action": "dispatch_default_final_review",
+            }, indent=2))
+        else:
+            print(format_production_order_status(po))
+            print("\nArchitectOS reconciliation complete: final review handoff attached.")
+        return 0
+
+    if po_action == "final-review":
+        po_id = getattr(args, "production_order_id", None)
+        final_file = getattr(args, "final_file", None)
+        if not po_id:
+            print(
+                "kanban production-order final-review: production_order_id is required",
+                file=sys.stderr,
+            )
+            return 1
+        if not final_file:
+            print(
+                "kanban production-order final-review: --final-file is required",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            with open(final_file, "r", encoding="utf-8") as f:
+                final_packet = stdlib_json.load(f)
+        except (OSError, stdlib_json.JSONDecodeError) as exc:
+            print(
+                f"kanban production-order final-review: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            with kb.connect(board=board) as conn:
+                po = run_default_final_review_bridge(
+                    conn,
+                    production_order_id=po_id,
+                    final_packet=final_packet,
+                )
+        except Exception as exc:
+            print(
+                f"kanban production-order final-review: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+
+        if getattr(args, "json", False):
+            print(stdlib_json.dumps({
+                "production_order_id": po.production_order_id,
+                "parent_card_id": po.parent_kanban_card_id,
+                "child_card_ids": po.child_kanban_card_ids,
+                "current_state": po.current_state,
+                "current_owner_profile": po.current_owner_profile,
+                "next_action": po.final_status or "done",
+            }, indent=2))
+        else:
+            print(format_production_order_status(po))
+            print("\nDefault final review complete: workflow marked DONE.")
         return 0
 
     if po_action == "show":

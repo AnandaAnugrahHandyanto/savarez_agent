@@ -52,12 +52,18 @@ from hermes_cli.production_order_db import (
     list_production_orders,
     log_workflow_event,
     run_architect_spec_bridge,
+    run_architect_reconcile_bridge,
+    run_auditos_review_complete_bridge,
+    run_default_final_review_bridge,
     run_devos_complete_bridge,
     run_full_bridge,
     run_orchestrator_triage_bridge,
     transition_state,
+    validate_auditos_review_packet,
     validate_architect_spec_packet,
+    validate_architect_reconcile_packet,
     validate_brief,
+    validate_default_final_review_packet,
     validate_devos_build_packet,
     validate_state_transition,
 )
@@ -191,6 +197,90 @@ def create_ready_for_dev_order(conn, sample_brief) -> ProductionOrder:
         conn,
         production_order_id=po.production_order_id,
         architect_packet=architect_spec_packet(po.production_order_id),
+    )
+
+
+def audit_review_packet(production_order_id: str, source_state: str = "DEV_COMPLETE") -> dict:
+    """Minimal AuditOS review/result packet for happy-path tests."""
+    return {
+        "production_order_id": production_order_id,
+        "owner_profile": "audit_os",
+        "source_state": source_state,
+        "review_result": "passed",
+        "summary": "Audit verified the implementation and evidence.",
+        "evidence": ["tests passed", "changed files reviewed"],
+        "tests_reviewed": ["pytest tests/hermes_cli/test_production_order_bridge.py -q"],
+        "verdict": "PASS",
+        "risks_or_notes": ["No blocking risks found."],
+        "next_handoff_target": "architect_os",
+    }
+
+
+def architect_reconcile_packet(
+    production_order_id: str,
+    source_state: str = "AUDIT_PASSED",
+) -> dict:
+    """Minimal ArchitectOS reconciliation packet for happy-path tests."""
+    return {
+        "production_order_id": production_order_id,
+        "owner_profile": "architect_os",
+        "source_state": source_state,
+        "reconcile_result": "accepted",
+        "summary": "Implementation remains aligned with the approved architecture.",
+        "architecture_alignment": "aligned",
+        "drift_assessment": "No architecture drift.",
+        "spec_patch_needed": False,
+        "risks_or_notes": ["No rework needed."],
+        "next_handoff_target": "default",
+    }
+
+
+def final_review_packet(
+    production_order_id: str,
+    source_state: str = "ARCHITECT_ACCEPTED",
+) -> dict:
+    """Minimal Default Hermes final-review packet for happy-path tests."""
+    return {
+        "production_order_id": production_order_id,
+        "owner_profile": "default",
+        "source_state": source_state,
+        "final_review_result": "accepted",
+        "summary": "Final review confirms the approved brief is complete.",
+        "original_brief_alignment": "Matches the approved brief.",
+        "artifacts_reviewed": ["DevOS result", "AuditOS result", "ArchitectOS reconcile result"],
+        "evidence_summary": "All stage evidence is present and accepted.",
+        "final_status": "DONE",
+        "next_action": "report_done_to_jarren",
+    }
+
+
+def create_dev_complete_order(conn, sample_brief) -> ProductionOrder:
+    """Advance a fresh production order through Slice 7."""
+    po = create_ready_for_dev_order(conn, sample_brief)
+    return run_devos_complete_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        devos_packet=devos_build_packet(po.production_order_id),
+    )
+
+
+def create_audit_passed_order(conn, sample_brief) -> ProductionOrder:
+    """Advance a fresh production order through AuditOS happy path."""
+    po = create_dev_complete_order(conn, sample_brief)
+    return run_auditos_review_complete_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        review_packet=audit_review_packet(po.production_order_id),
+    )
+
+
+def create_architect_accepted_order(conn, sample_brief) -> ProductionOrder:
+    """Advance a fresh production order through ArchitectOS reconciliation."""
+    po = create_audit_passed_order(conn, sample_brief)
+    return run_architect_reconcile_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        reconcile_packet=architect_reconcile_packet(po.production_order_id),
     )
 
 # ---------------------------------------------------------------------------
@@ -415,6 +505,13 @@ def test_valid_state_transitions():
     assert validate_state_transition("ORCHESTRATOR_TRIAGE", "ARCHITECT_SPEC", "orchestrator_os")
     # ARCHITECT_SPEC -> ARCHITECT_READY_FOR_DEV
     assert validate_state_transition("ARCHITECT_SPEC", "ARCHITECT_READY_FOR_DEV", "architect_os")
+    assert validate_state_transition("ARCHITECT_READY_FOR_DEV", "DEV_COMPLETE", "dev_os")
+    assert validate_state_transition("DEV_COMPLETE", "AUDIT_REVIEW", "audit_os")
+    assert validate_state_transition("AUDIT_REVIEW", "AUDIT_PASSED", "audit_os")
+    assert validate_state_transition("AUDIT_PASSED", "ARCHITECT_RECONCILE", "architect_os")
+    assert validate_state_transition("ARCHITECT_RECONCILE", "ARCHITECT_ACCEPTED", "architect_os")
+    assert validate_state_transition("ARCHITECT_ACCEPTED", "DEFAULT_FINAL_REVIEW", "default")
+    assert validate_state_transition("DEFAULT_FINAL_REVIEW", "DONE", "default")
 
 
 def test_invalid_state_transition_rejected():
@@ -1345,6 +1442,411 @@ def test_dev_complete_show_events_text_remains_human_readable(capsys, conn, samp
     assert "dev_build_completed" in captured.out
     assert "handoff_created" in captured.out
     assert "dispatch_audit_os" not in captured.out
+
+
+# ---------------------------------------------------------------------------
+# AuditOS / ArchitectOS Reconcile / Final Review Bridges
+# ---------------------------------------------------------------------------
+
+
+def _po_event_types(conn, production_order_id: str) -> list[str]:
+    rows = conn.execute(
+        "SELECT event_type FROM production_order_events "
+        "WHERE production_order_id = ? ORDER BY id",
+        (production_order_id,),
+    ).fetchall()
+    return [row["event_type"] for row in rows]
+
+
+def _assert_six_card_graph_preserved(conn, po: ProductionOrder, original_child_ids: list[str]) -> None:
+    assert po.child_kanban_card_ids == original_child_ids
+    assert len(po.child_kanban_card_ids) == 6
+    assert len(set(po.child_kanban_card_ids)) == 6
+    link_count = conn.execute(
+        "SELECT COUNT(*) AS n FROM task_links WHERE parent_id = ?",
+        (po.parent_kanban_card_id,),
+    ).fetchone()["n"]
+    assert link_count == 6
+
+
+def test_validate_auditos_review_packet_accepts_minimal_packet():
+    packet = audit_review_packet("PO-20260525-test")
+
+    validated = validate_auditos_review_packet(
+        packet,
+        expected_production_order_id="PO-20260525-test",
+        expected_source_state="DEV_COMPLETE",
+    )
+
+    assert validated is packet
+
+
+def test_validate_architect_reconcile_packet_accepts_minimal_packet():
+    packet = architect_reconcile_packet("PO-20260525-test")
+
+    validated = validate_architect_reconcile_packet(
+        packet,
+        expected_production_order_id="PO-20260525-test",
+        expected_source_state="AUDIT_PASSED",
+    )
+
+    assert validated is packet
+
+
+def test_validate_default_final_review_packet_accepts_minimal_packet():
+    packet = final_review_packet("PO-20260525-test")
+
+    validated = validate_default_final_review_packet(
+        packet,
+        expected_production_order_id="PO-20260525-test",
+        expected_source_state="ARCHITECT_ACCEPTED",
+    )
+
+    assert validated is packet
+
+
+def test_auditos_review_bridge_moves_existing_order_to_audit_passed(conn, sample_brief):
+    po = create_dev_complete_order(conn, sample_brief)
+    original_child_ids = list(po.child_kanban_card_ids)
+
+    completed = run_auditos_review_complete_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        review_packet=audit_review_packet(po.production_order_id),
+    )
+
+    assert completed.current_state == "AUDIT_PASSED"
+    assert completed.current_owner_profile == "architect_os"
+    _assert_six_card_graph_preserved(conn, completed, original_child_ids)
+
+    audit_card = kb.get_task(conn, original_child_ids[3])
+    reconcile_card = kb.get_task(conn, original_child_ids[4])
+    assert audit_card is not None
+    assert reconcile_card is not None
+    assert audit_card.body is not None
+    assert reconcile_card.body is not None
+    assert "--- RESULT PACKET ---" in audit_card.body
+    assert '"owner_profile": "audit_os"' in audit_card.body
+    assert "--- HANDOFF PACKET ---" in reconcile_card.body
+    assert '"to_profile": "architect_os"' in reconcile_card.body
+    assert reconcile_card.status == "ready"
+
+    event_types = _po_event_types(conn, po.production_order_id)
+    assert event_types[-3:] == [
+        "audit_review_started",
+        "audit_review_completed",
+        "handoff_created",
+    ]
+
+
+def test_architect_reconcile_bridge_moves_existing_order_to_architect_accepted(conn, sample_brief):
+    po = create_audit_passed_order(conn, sample_brief)
+    original_child_ids = list(po.child_kanban_card_ids)
+
+    completed = run_architect_reconcile_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        reconcile_packet=architect_reconcile_packet(po.production_order_id),
+    )
+
+    assert completed.current_state == "ARCHITECT_ACCEPTED"
+    assert completed.current_owner_profile == "default"
+    _assert_six_card_graph_preserved(conn, completed, original_child_ids)
+
+    reconcile_card = kb.get_task(conn, original_child_ids[4])
+    final_card = kb.get_task(conn, original_child_ids[5])
+    assert reconcile_card is not None
+    assert final_card is not None
+    assert reconcile_card.body is not None
+    assert final_card.body is not None
+    assert "--- RESULT PACKET ---" in reconcile_card.body
+    assert '"owner_profile": "architect_os"' in reconcile_card.body
+    assert "--- HANDOFF PACKET ---" in final_card.body
+    assert '"to_profile": "default"' in final_card.body
+    assert final_card.status == "ready"
+
+    event_types = _po_event_types(conn, po.production_order_id)
+    assert event_types[-3:] == [
+        "architect_reconcile_started",
+        "architect_reconcile_completed",
+        "handoff_created",
+    ]
+
+
+def test_default_final_review_bridge_moves_existing_order_to_done(conn, sample_brief):
+    po = create_architect_accepted_order(conn, sample_brief)
+    original_child_ids = list(po.child_kanban_card_ids)
+
+    completed = run_default_final_review_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        final_packet=final_review_packet(po.production_order_id),
+    )
+
+    assert completed.current_state == "DONE"
+    assert completed.current_owner_profile == "default"
+    assert completed.final_status == "DONE"
+    _assert_six_card_graph_preserved(conn, completed, original_child_ids)
+
+    final_card = kb.get_task(conn, original_child_ids[5])
+    assert final_card is not None
+    assert final_card.body is not None
+    assert "--- RESULT PACKET ---" in final_card.body
+    assert '"owner_profile": "default"' in final_card.body
+    assert final_card.status == "done"
+
+    event_types = _po_event_types(conn, po.production_order_id)
+    assert event_types[-3:] == [
+        "default_final_review_started",
+        "default_final_review_completed",
+        "workflow_completed",
+    ]
+
+
+def test_full_happy_path_chain_from_dev_complete_to_done(conn, sample_brief):
+    po = create_dev_complete_order(conn, sample_brief)
+    original_parent_id = po.parent_kanban_card_id
+    original_child_ids = list(po.child_kanban_card_ids)
+
+    po = run_auditos_review_complete_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        review_packet=audit_review_packet(po.production_order_id),
+    )
+    po = run_architect_reconcile_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        reconcile_packet=architect_reconcile_packet(po.production_order_id),
+    )
+    po = run_default_final_review_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        final_packet=final_review_packet(po.production_order_id),
+    )
+
+    assert po.current_state == "DONE"
+    assert po.current_owner_profile == "default"
+    assert po.parent_kanban_card_id == original_parent_id
+    _assert_six_card_graph_preserved(conn, po, original_child_ids)
+    assert po.repo_or_workspace == sample_brief["target repo or workspace"]
+    assert any(s.to_state == "AUDIT_REVIEW" for s in po.stage_history)
+    assert any(s.to_state == "AUDIT_PASSED" for s in po.stage_history)
+    assert any(s.to_state == "ARCHITECT_RECONCILE" for s in po.stage_history)
+    assert any(s.to_state == "ARCHITECT_ACCEPTED" for s in po.stage_history)
+    assert any(s.to_state == "DEFAULT_FINAL_REVIEW" for s in po.stage_history)
+    assert any(s.to_state == "DONE" for s in po.stage_history)
+
+    event_types = _po_event_types(conn, po.production_order_id)
+    assert "audit_review_completed" in event_types
+    assert "architect_reconcile_completed" in event_types
+    assert "default_final_review_completed" in event_types
+    assert "workflow_completed" in event_types
+    assert event_types.count("handoff_created") >= 5
+
+
+@pytest.mark.parametrize(
+    ("po_action", "file_attr", "expected"),
+    [
+        ("audit-complete", "review_file", "--review-file is required"),
+        ("architect-reconcile", "reconcile_file", "--reconcile-file is required"),
+        ("final-review", "final_file", "--final-file is required"),
+    ],
+)
+def test_remaining_bridge_cli_commands_require_packet_files(capsys, po_action, file_attr, expected):
+    args = {
+        "po_action": po_action,
+        "production_order_id": "PO-20260525-test",
+        "board": None,
+        "json": False,
+        "review_file": None,
+        "reconcile_file": None,
+        "final_file": None,
+    }
+    args[file_attr] = None
+
+    rc = _cmd_production_order(argparse.Namespace(**args))
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert expected in captured.err
+
+
+@pytest.mark.parametrize(
+    ("bridge_name", "po_factory", "packet_factory", "runner", "mutator", "expected_message"),
+    [
+        ("audit", create_dev_complete_order, audit_review_packet, run_auditos_review_complete_bridge, lambda p: p.pop("summary"), "summary"),
+        ("audit", create_dev_complete_order, audit_review_packet, run_auditos_review_complete_bridge, lambda p: p.__setitem__("production_order_id", "PO-wrong"), "production_order_id"),
+        ("audit", create_dev_complete_order, audit_review_packet, run_auditos_review_complete_bridge, lambda p: p.__setitem__("owner_profile", "dev_os"), "owner_profile"),
+        ("audit", create_dev_complete_order, audit_review_packet, run_auditos_review_complete_bridge, lambda p: p.__setitem__("source_state", "ARCHITECT_READY_FOR_DEV"), "source_state"),
+        ("audit", create_dev_complete_order, audit_review_packet, run_auditos_review_complete_bridge, lambda p: p.__setitem__("verdict", "FAIL"), "happy-path"),
+        ("reconcile", create_audit_passed_order, architect_reconcile_packet, run_architect_reconcile_bridge, lambda p: p.pop("summary"), "summary"),
+        ("reconcile", create_audit_passed_order, architect_reconcile_packet, run_architect_reconcile_bridge, lambda p: p.__setitem__("production_order_id", "PO-wrong"), "production_order_id"),
+        ("reconcile", create_audit_passed_order, architect_reconcile_packet, run_architect_reconcile_bridge, lambda p: p.__setitem__("owner_profile", "audit_os"), "owner_profile"),
+        ("reconcile", create_audit_passed_order, architect_reconcile_packet, run_architect_reconcile_bridge, lambda p: p.__setitem__("source_state", "AUDIT_REVIEW"), "source_state"),
+        ("reconcile", create_audit_passed_order, architect_reconcile_packet, run_architect_reconcile_bridge, lambda p: p.__setitem__("reconcile_result", "rejected"), "happy-path"),
+        ("final", create_architect_accepted_order, final_review_packet, run_default_final_review_bridge, lambda p: p.pop("summary"), "summary"),
+        ("final", create_architect_accepted_order, final_review_packet, run_default_final_review_bridge, lambda p: p.__setitem__("production_order_id", "PO-wrong"), "production_order_id"),
+        ("final", create_architect_accepted_order, final_review_packet, run_default_final_review_bridge, lambda p: p.__setitem__("owner_profile", "audit_os"), "owner_profile"),
+        ("final", create_architect_accepted_order, final_review_packet, run_default_final_review_bridge, lambda p: p.__setitem__("source_state", "ARCHITECT_RECONCILE"), "source_state"),
+        ("final", create_architect_accepted_order, final_review_packet, run_default_final_review_bridge, lambda p: p.__setitem__("final_status", "rejected"), "happy-path"),
+    ],
+)
+def test_remaining_bridge_packet_failures_do_not_mutate_state(
+    conn,
+    sample_brief,
+    bridge_name,
+    po_factory,
+    packet_factory,
+    runner,
+    mutator,
+    expected_message,
+):
+    po = po_factory(conn, sample_brief)
+    original_state = po.current_state
+    original_owner = po.current_owner_profile
+    original_event_count = conn.execute(
+        "SELECT COUNT(*) AS n FROM production_order_events WHERE production_order_id = ?",
+        (po.production_order_id,),
+    ).fetchone()["n"]
+    original_bodies = {
+        cid: kb.get_task(conn, cid).body
+        for cid in po.child_kanban_card_ids
+        if kb.get_task(conn, cid) is not None
+    }
+    packet = packet_factory(po.production_order_id)
+    mutator(packet)
+
+    with pytest.raises(ValueError, match=expected_message):
+        if bridge_name == "audit":
+            runner(conn, production_order_id=po.production_order_id, review_packet=packet)
+        elif bridge_name == "reconcile":
+            runner(conn, production_order_id=po.production_order_id, reconcile_packet=packet)
+        else:
+            runner(conn, production_order_id=po.production_order_id, final_packet=packet)
+
+    refreshed = [
+        order for order in list_production_orders(conn)
+        if order.production_order_id == po.production_order_id
+    ][0]
+    refreshed_event_count = conn.execute(
+        "SELECT COUNT(*) AS n FROM production_order_events WHERE production_order_id = ?",
+        (po.production_order_id,),
+    ).fetchone()["n"]
+    assert refreshed.current_state == original_state
+    assert refreshed.current_owner_profile == original_owner
+    assert refreshed.child_kanban_card_ids == po.child_kanban_card_ids
+    assert refreshed_event_count == original_event_count
+    for cid, body in original_bodies.items():
+        task = kb.get_task(conn, cid)
+        assert task is not None
+        assert task.body == body
+
+
+def test_remaining_bridge_cli_json_outputs(capsys, conn, tmp_path, sample_brief):
+    po = create_dev_complete_order(conn, sample_brief)
+    audit_path = tmp_path / "audit.json"
+    audit_path.write_text(json.dumps(audit_review_packet(po.production_order_id)), encoding="utf-8")
+
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="audit-complete",
+        production_order_id=po.production_order_id,
+        board=None,
+        review_file=str(audit_path),
+        json=True,
+    ))
+    captured = capsys.readouterr()
+    assert rc == 0
+    parsed = json.loads(captured.out)
+    assert parsed["current_state"] == "AUDIT_PASSED"
+    assert parsed["current_owner_profile"] == "architect_os"
+
+    reconcile_path = tmp_path / "reconcile.json"
+    reconcile_path.write_text(
+        json.dumps(architect_reconcile_packet(po.production_order_id)),
+        encoding="utf-8",
+    )
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="architect-reconcile",
+        production_order_id=po.production_order_id,
+        board=None,
+        reconcile_file=str(reconcile_path),
+        json=True,
+    ))
+    captured = capsys.readouterr()
+    assert rc == 0
+    parsed = json.loads(captured.out)
+    assert parsed["current_state"] == "ARCHITECT_ACCEPTED"
+    assert parsed["current_owner_profile"] == "default"
+
+    final_path = tmp_path / "final.json"
+    final_path.write_text(json.dumps(final_review_packet(po.production_order_id)), encoding="utf-8")
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="final-review",
+        production_order_id=po.production_order_id,
+        board=None,
+        final_file=str(final_path),
+        json=True,
+    ))
+    captured = capsys.readouterr()
+    assert rc == 0
+    parsed = json.loads(captured.out)
+    assert parsed["current_state"] == "DONE"
+    assert parsed["current_owner_profile"] == "default"
+
+
+def test_completed_workflow_show_events_json_is_strict_json(capsys, conn, sample_brief):
+    po = create_architect_accepted_order(conn, sample_brief)
+    po = run_default_final_review_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        final_packet=final_review_packet(po.production_order_id),
+    )
+
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="show",
+        production_order_id=po.production_order_id,
+        board=None,
+        events=True,
+        json=True,
+    ))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    parsed = json.loads(captured.out)
+    assert captured.err == ""
+    assert parsed["current_state"] == "DONE"
+    assert parsed["current_owner_profile"] == "default"
+    event_types = [event["event_type"] for event in parsed["events"]]
+    assert "audit_review_completed" in event_types
+    assert "architect_reconcile_completed" in event_types
+    assert "default_final_review_completed" in event_types
+    assert "workflow_completed" in event_types
+    assert "\n  Events (" not in captured.out
+
+
+def test_completed_workflow_show_events_text_remains_human_readable(capsys, conn, sample_brief):
+    po = create_architect_accepted_order(conn, sample_brief)
+    po = run_default_final_review_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        final_packet=final_review_packet(po.production_order_id),
+    )
+
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="show",
+        production_order_id=po.production_order_id,
+        board=None,
+        events=True,
+        json=False,
+    ))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "Events (" in captured.out
+    assert "audit_review_completed" in captured.out
+    assert "architect_reconcile_completed" in captured.out
+    assert "default_final_review_completed" in captured.out
+    assert "workflow_completed" in captured.out
 
 
 # ---------------------------------------------------------------------------
