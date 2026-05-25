@@ -65,6 +65,7 @@ _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+_LIFECYCLE_NOTIFY_TIMEOUT_SECS_DEFAULT = 3.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
@@ -2071,7 +2072,7 @@ class GatewayRunner:
                 if mode in {"voice_only", "all"} and key.startswith(prefix)
             )
 
-    async def _safe_adapter_disconnect(self, adapter, platform) -> None:
+    async def _safe_adapter_disconnect(self, adapter, platform) -> bool:
         """Call adapter.disconnect() defensively, swallowing any error.
 
         Used when adapter.connect() failed or raised — the adapter may
@@ -2088,18 +2089,21 @@ class GatewayRunner:
                 await adapter.disconnect()
             else:
                 await asyncio.wait_for(adapter.disconnect(), timeout=timeout)
+            return True
         except asyncio.TimeoutError:
             logger.warning(
                 "Timed out after %.1fs while disconnecting %s adapter; continuing shutdown",
                 timeout,
                 platform.value if platform is not None else "adapter",
             )
+            return False
         except Exception as e:
             logger.debug(
                 "Defensive %s disconnect after failed connect raised: %s",
                 platform.value if platform is not None else "adapter",
                 e,
             )
+            return False
 
     def _adapter_disconnect_timeout_secs(self) -> float:
         """Return the per-adapter disconnect timeout used during shutdown."""
@@ -2131,6 +2135,25 @@ class GatewayRunner:
                 return max(0.0, timeout)
         return _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT
 
+    def _lifecycle_notify_timeout_secs(self) -> float:
+        """Return the per-message timeout for lifecycle notifications."""
+        env_names = (
+            "HERMES_GATEWAY_LIFECYCLE_NOTIFY_TIMEOUT",
+            # Backward-compatible alias from the original shutdown-only guard.
+            "HERMES_GATEWAY_SHUTDOWN_NOTIFY_TIMEOUT",
+        )
+        for env_name in env_names:
+            raw = os.getenv(env_name, "").strip()
+            if not raw:
+                continue
+            try:
+                timeout = float(raw)
+            except ValueError:
+                logger.warning("Ignoring invalid %s=%r", env_name, raw)
+            else:
+                return max(0.0, timeout)
+        return _LIFECYCLE_NOTIFY_TIMEOUT_SECS_DEFAULT
+
     async def _connect_adapter_with_timeout(self, adapter, platform) -> bool:
         """Connect an adapter without allowing one platform to block others."""
         timeout = self._platform_connect_timeout_secs()
@@ -2141,6 +2164,37 @@ class GatewayRunner:
         except asyncio.TimeoutError as exc:
             raise TimeoutError(
                 f"{platform.value} connect timed out after {timeout:g}s"
+            ) from exc
+
+    async def _send_lifecycle_notification(
+        self,
+        adapter,
+        chat_id: str,
+        content: str,
+        **send_kwargs,
+    ):
+        """Send a lifecycle notice without letting platform backoff stall."""
+        if getattr(adapter, "platform", None) == Platform.WEIXIN:
+            metadata = dict(send_kwargs.get("metadata") or {})
+            metadata.update(
+                {
+                    "weixin_send_chunk_retries": 0,
+                    "weixin_send_chunk_retry_delay_seconds": 0,
+                    "weixin_send_chunk_rate_limit_backoff_seconds": 0,
+                }
+            )
+            send_kwargs["metadata"] = metadata
+        timeout = self._lifecycle_notify_timeout_secs()
+        if timeout <= 0:
+            return await adapter.send(chat_id, content, **send_kwargs)
+        try:
+            return await asyncio.wait_for(
+                adapter.send(chat_id, content, **send_kwargs),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(
+                f"lifecycle notification send timed out after {timeout:g}s"
             ) from exc
 
     @property
@@ -3430,7 +3484,12 @@ class GatewayRunner:
                 # correct forum topic / thread.
                 metadata = {"thread_id": thread_id} if thread_id else None
 
-                result = await adapter.send(chat_id, msg, metadata=metadata)
+                result = await self._send_lifecycle_notification(
+                    adapter,
+                    chat_id,
+                    msg,
+                    metadata=metadata,
+                )
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
                         "Failed to send shutdown notification to %s:%s: %s",
@@ -3476,9 +3535,18 @@ class GatewayRunner:
             try:
                 metadata = {"thread_id": home.thread_id} if home.thread_id else None
                 if metadata:
-                    result = await adapter.send(str(home.chat_id), msg, metadata=metadata)
+                    result = await self._send_lifecycle_notification(
+                        adapter,
+                        str(home.chat_id),
+                        msg,
+                        metadata=metadata,
+                    )
                 else:
-                    result = await adapter.send(str(home.chat_id), msg)
+                    result = await self._send_lifecycle_notification(
+                        adapter,
+                        str(home.chat_id),
+                        msg,
+                    )
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
                         "Failed to send shutdown notification to home channel %s:%s: %s",
@@ -6033,19 +6101,17 @@ class GatewayRunner:
                     await adapter.cancel_background_tasks()
                 except Exception as e:
                     logger.debug("✗ %s background-task cancel error: %s", platform.value, e)
-                try:
-                    await adapter.disconnect()
+                if await self._safe_adapter_disconnect(adapter, platform):
                     logger.info(
                         "✓ %s disconnected (%.2fs)",
                         platform.value,
                         time.monotonic() - _adapter_started_at,
                     )
-                except Exception as e:
-                    logger.error(
-                        "✗ %s disconnect error after %.2fs: %s",
+                else:
+                    logger.warning(
+                        "✗ %s disconnect incomplete after %.2fs; continuing shutdown",
                         platform.value,
                         time.monotonic() - _adapter_started_at,
-                        e,
                     )
             logger.info(
                 "Shutdown phase: all adapters disconnected at +%.2fs",
@@ -14368,7 +14434,8 @@ class GatewayRunner:
                 return None
 
             metadata = {"thread_id": thread_id} if thread_id else None
-            result = await adapter.send(
+            result = await self._send_lifecycle_notification(
+                adapter,
                 str(chat_id),
                 "♻ Gateway restarted successfully. Your session continues.",
                 metadata=metadata,
@@ -14413,7 +14480,7 @@ class GatewayRunner:
         skipped = skip_targets or set()
         message = "♻️ Gateway online — Hermes is back and ready."
 
-        for platform, adapter in self.adapters.items():
+        for platform, adapter in list(self.adapters.items()):
             home = self.config.get_home_channel(platform)
             if not home or not home.chat_id:
                 continue
@@ -14433,9 +14500,18 @@ class GatewayRunner:
             try:
                 metadata = {"thread_id": home.thread_id} if home.thread_id else None
                 if metadata:
-                    result = await adapter.send(str(home.chat_id), message, metadata=metadata)
+                    result = await self._send_lifecycle_notification(
+                        adapter,
+                        str(home.chat_id),
+                        message,
+                        metadata=metadata,
+                    )
                 else:
-                    result = await adapter.send(str(home.chat_id), message)
+                    result = await self._send_lifecycle_notification(
+                        adapter,
+                        str(home.chat_id),
+                        message,
+                    )
                 if result is not None and getattr(result, "success", True) is False:
                     logger.warning(
                         "Home-channel startup notification failed for %s:%s: %s",
