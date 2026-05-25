@@ -1451,6 +1451,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
         self._message_text_cache: Dict[str, Optional[str]] = {}
         self._app_lock_identity: Optional[str] = None
+        self._tenant_access_token: Optional[str] = None
+        self._tenant_access_token_expires_at: float = 0.0
         self._text_batch_state = FeishuBatchState()
         self._pending_text_batches = self._text_batch_state.events
         self._pending_text_batch_tasks = self._text_batch_state.tasks
@@ -2106,25 +2108,9 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"Image file not found: {image_path}")
 
         try:
-            import io as _io
-            with open(image_path, "rb") as f:
-                image_bytes = f.read()
-            # Wrap in BytesIO so lark SDK's MultipartEncoder can read .name and .tell()
-            image_file = _io.BytesIO(image_bytes)
-            image_file.name = os.path.basename(image_path)
-            body = self._build_image_upload_body(
-                image_type=_FEISHU_IMAGE_UPLOAD_TYPE,
-                image=image_file,
-            )
-            request = self._build_image_upload_request(body)
-            upload_response = await asyncio.to_thread(self._client.im.v1.image.create, request)
-            image_key = self._extract_response_field(upload_response, "image_key")
+            image_key = await asyncio.to_thread(self._upload_feishu_image_http1, image_path)
             if not image_key:
-                return self._response_error_result(
-                    upload_response,
-                    default_message="image upload failed",
-                    override_error="Feishu image upload missing image_key",
-                )
+                return SendResult(success=False, error="Feishu image upload missing image_key")
 
             if caption:
                 post_payload = self._build_media_post_payload(
@@ -4317,21 +4303,14 @@ class FeishuAdapter(BasePlatformAdapter):
             requested_message_type=outbound_message_type,
         )
         try:
-            with open(file_path, "rb") as file_obj:
-                body = self._build_file_upload_body(
-                    file_type=upload_file_type,
-                    file_name=display_name,
-                    file=file_obj,
-                )
-                request = self._build_file_upload_request(body)
-                upload_response = await asyncio.to_thread(self._client.im.v1.file.create, request)
-            file_key = self._extract_response_field(upload_response, "file_key")
+            file_key = await asyncio.to_thread(
+                self._upload_feishu_file_http1,
+                file_path,
+                file_type=upload_file_type,
+                file_name=display_name,
+            )
             if not file_key:
-                return self._response_error_result(
-                    upload_response,
-                    default_message="file upload failed",
-                    override_error="Feishu file upload missing file_key",
-                )
+                return SendResult(success=False, error="Feishu file upload missing file_key")
 
             if caption:
                 media_tag = {
@@ -4441,6 +4420,89 @@ class FeishuAdapter(BasePlatformAdapter):
             message_id=self._extract_response_field(response, "message_id"),
             raw_response=response,
         )
+
+    def _upload_feishu_image_http1(self, image_path: str) -> str:
+        """Upload an image through raw HTTP/1.1 to avoid SDK multipart HTTP/2 resets."""
+        filename = os.path.basename(image_path)
+        with open(image_path, "rb") as image_file:
+            data = {"image_type": _FEISHU_IMAGE_UPLOAD_TYPE}
+            mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+            files = {"image": (filename, image_file, mime_type)}
+            payload = self._post_feishu_media_upload("/open-apis/im/v1/images", data=data, files=files)
+        image_key = payload.get("image_key")
+        if not image_key:
+            raise RuntimeError("Feishu image upload missing image_key")
+        return str(image_key)
+
+    def _upload_feishu_file_http1(self, file_path: str, *, file_type: str, file_name: str) -> str:
+        """Upload a file through raw HTTP/1.1 to avoid SDK multipart HTTP/2 resets."""
+        with open(file_path, "rb") as file_obj:
+            data = {"file_type": file_type, "file_name": file_name}
+            mime_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+            files = {"file": (file_name, file_obj, mime_type)}
+            payload = self._post_feishu_media_upload("/open-apis/im/v1/files", data=data, files=files)
+        file_key = payload.get("file_key")
+        if not file_key:
+            raise RuntimeError("Feishu file upload missing file_key")
+        return str(file_key)
+
+    def _post_feishu_media_upload(self, path: str, *, data: Dict[str, str], files: Dict[str, Any]) -> Dict[str, Any]:
+        import httpx
+
+        base_url = _onboard_open_base_url(self._domain_name)
+        try:
+            with httpx.Client(timeout=30.0, http2=False, trust_env=False) as client:
+                token = self._get_tenant_access_token(client)
+                response = client.post(
+                    f"{base_url}{path}",
+                    headers={"Authorization": f"Bearer {token}"},
+                    data=data,
+                    files=files,
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except Exception as exc:
+            logger.error("[Feishu] Raw media upload failed for %s: %s", path, exc, exc_info=True)
+            raise
+
+        code = payload.get("code", 0)
+        if code != 0:
+            msg = payload.get("msg") or payload.get("message") or "media upload failed"
+            raise RuntimeError(f"[{code}] {msg}")
+        data_payload = payload.get("data") or {}
+        if not isinstance(data_payload, dict):
+            raise RuntimeError("Feishu media upload returned invalid data")
+        return data_payload
+
+    def _get_tenant_access_token(self, client: Any) -> str:
+        now = time.time()
+        if self._tenant_access_token and self._tenant_access_token_expires_at - 60 > now:
+            return self._tenant_access_token
+
+        base_url = _onboard_open_base_url(self._domain_name)
+        response = client.post(
+            f"{base_url}/open-apis/auth/v3/tenant_access_token/internal",
+            json={"app_id": self._app_id, "app_secret": self._app_secret},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        code = payload.get("code", 0)
+        if code != 0:
+            msg = payload.get("msg") or payload.get("message") or "tenant access token request failed"
+            raise RuntimeError(f"[{code}] {msg}")
+
+        token = payload.get("tenant_access_token")
+        if not token:
+            raise RuntimeError("Feishu tenant access token response missing tenant_access_token")
+
+        expires_in = payload.get("expire", 7200)
+        try:
+            expires_at = now + max(0, int(expires_in))
+        except (TypeError, ValueError):
+            expires_at = now + 7200
+        self._tenant_access_token = str(token)
+        self._tenant_access_token_expires_at = expires_at
+        return self._tenant_access_token
 
     # =========================================================================
     # Connection internals — websocket / webhook setup

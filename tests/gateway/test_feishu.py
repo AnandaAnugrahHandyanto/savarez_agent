@@ -2126,13 +2126,6 @@ class TestAdapterBehavior(unittest.TestCase):
         adapter = FeishuAdapter(PlatformConfig())
         captured = {}
 
-        class _FileAPI:
-            def create(self, request):
-                return SimpleNamespace(
-                    success=lambda: True,
-                    data=SimpleNamespace(file_key="file_123"),
-                )
-
         class _MessageAPI:
             def reply(self, request):
                 captured["request"] = request
@@ -2144,7 +2137,6 @@ class TestAdapterBehavior(unittest.TestCase):
         adapter._client = SimpleNamespace(
             im=SimpleNamespace(
                 v1=SimpleNamespace(
-                    file=_FileAPI(),
                     message=_MessageAPI(),
                 )
             )
@@ -2153,12 +2145,15 @@ class TestAdapterBehavior(unittest.TestCase):
         async def _direct(func, *args, **kwargs):
             return func(*args, **kwargs)
 
-        with tempfile.NamedTemporaryFile("wb", suffix=".pdf", delete=False) as tmp:
-            tmp.write(b"%PDF-1.4 test")
+        with tempfile.NamedTemporaryFile("wb", suffix=".txt", delete=False) as tmp:
+            tmp.write(b"hello")
             file_path = tmp.name
 
         try:
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            with (
+                patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
+                patch.object(adapter, "_upload_feishu_file_http1", return_value="file_123"),
+            ):
                 result = asyncio.run(
                     adapter.send_document(
                         chat_id="oc_chat",
@@ -2179,15 +2174,33 @@ class TestAdapterBehavior(unittest.TestCase):
         from gateway.platforms.feishu import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
-        captured = {}
+        captured = {"client_kwargs": [], "http_posts": []}
 
-        class _FileAPI:
-            def create(self, request):
-                captured["upload_request"] = request
-                return SimpleNamespace(
-                    success=lambda: True,
-                    data=SimpleNamespace(file_key="file_123"),
-                )
+        class _HTTPResponse:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return self._payload
+
+        class _HTTPClient:
+            def __init__(self, *args, **kwargs):
+                captured["client_kwargs"].append(kwargs)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+            def post(self, url, **kwargs):
+                captured["http_posts"].append((url, kwargs))
+                if url.endswith("/open-apis/auth/v3/tenant_access_token/internal"):
+                    return _HTTPResponse({"code": 0, "tenant_access_token": "tenant_token", "expire": 7200})
+                return _HTTPResponse({"code": 0, "data": {"file_key": "file_123"}})
 
         class _MessageAPI:
             def create(self, request):
@@ -2200,7 +2213,6 @@ class TestAdapterBehavior(unittest.TestCase):
         adapter._client = SimpleNamespace(
             im=SimpleNamespace(
                 v1=SimpleNamespace(
-                    file=_FileAPI(),
                     message=_MessageAPI(),
                 )
             )
@@ -2209,19 +2221,28 @@ class TestAdapterBehavior(unittest.TestCase):
         async def _direct(func, *args, **kwargs):
             return func(*args, **kwargs)
 
-        with tempfile.NamedTemporaryFile("wb", suffix=".pdf", delete=False) as tmp:
-            tmp.write(b"%PDF-1.4 test")
+        with tempfile.NamedTemporaryFile("wb", suffix=".txt", delete=False) as tmp:
+            tmp.write(b"hello")
             file_path = tmp.name
 
         try:
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            with (
+                patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
+                patch("httpx.Client", _HTTPClient),
+            ):
                 result = asyncio.run(adapter.send_document(chat_id="oc_chat", file_path=file_path))
         finally:
             os.unlink(file_path)
 
         self.assertTrue(result.success)
         self.assertEqual(result.message_id, "om_file_msg")
-        self.assertEqual(captured["upload_request"].request_body.file_type, "pdf")
+        self.assertEqual(captured["client_kwargs"][0]["http2"], False)
+        self.assertEqual(captured["client_kwargs"][0]["trust_env"], False)
+        upload_url, upload_kwargs = captured["http_posts"][1]
+        self.assertTrue(upload_url.endswith("/open-apis/im/v1/files"))
+        self.assertEqual(upload_kwargs["data"]["file_type"], "stream")
+        self.assertEqual(upload_kwargs["files"]["file"][0], os.path.basename(file_path))
+        self.assertEqual(upload_kwargs["headers"]["Authorization"], "Bearer tenant_token")
         self.assertEqual(
             captured["message_request"].request_body.content,
             '{"file_key": "file_123"}',
@@ -2235,13 +2256,6 @@ class TestAdapterBehavior(unittest.TestCase):
         adapter = FeishuAdapter(PlatformConfig())
         captured = {}
 
-        class _FileAPI:
-            def create(self, request):
-                return SimpleNamespace(
-                    success=lambda: True,
-                    data=SimpleNamespace(file_key="file_123"),
-                )
-
         class _MessageAPI:
             def create(self, request):
                 captured["message_request"] = request
@@ -2253,7 +2267,6 @@ class TestAdapterBehavior(unittest.TestCase):
         adapter._client = SimpleNamespace(
             im=SimpleNamespace(
                 v1=SimpleNamespace(
-                    file=_FileAPI(),
                     message=_MessageAPI(),
                 )
             )
@@ -2267,7 +2280,10 @@ class TestAdapterBehavior(unittest.TestCase):
             file_path = tmp.name
 
         try:
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            with (
+                patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
+                patch.object(adapter, "_upload_feishu_file_http1", return_value="file_123"),
+            ):
                 result = asyncio.run(
                     adapter.send_document(chat_id="oc_chat", file_path=file_path, caption="报告请看")
                 )
@@ -2286,15 +2302,33 @@ class TestAdapterBehavior(unittest.TestCase):
         from gateway.platforms.feishu import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
-        captured = {}
+        captured = {"client_kwargs": [], "http_posts": []}
 
-        class _ImageAPI:
-            def create(self, request):
-                captured["upload_request"] = request
-                return SimpleNamespace(
-                    success=lambda: True,
-                    data=SimpleNamespace(image_key="img_123"),
-                )
+        class _HTTPResponse:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return self._payload
+
+        class _HTTPClient:
+            def __init__(self, *args, **kwargs):
+                captured["client_kwargs"].append(kwargs)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+            def post(self, url, **kwargs):
+                captured["http_posts"].append((url, kwargs))
+                if url.endswith("/open-apis/auth/v3/tenant_access_token/internal"):
+                    return _HTTPResponse({"code": 0, "tenant_access_token": "tenant_token", "expire": 7200})
+                return _HTTPResponse({"code": 0, "data": {"image_key": "img_123"}})
 
         class _MessageAPI:
             def create(self, request):
@@ -2307,7 +2341,6 @@ class TestAdapterBehavior(unittest.TestCase):
         adapter._client = SimpleNamespace(
             im=SimpleNamespace(
                 v1=SimpleNamespace(
-                    image=_ImageAPI(),
                     message=_MessageAPI(),
                 )
             )
@@ -2321,18 +2354,145 @@ class TestAdapterBehavior(unittest.TestCase):
             image_path = tmp.name
 
         try:
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            with (
+                patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
+                patch("httpx.Client", _HTTPClient),
+            ):
                 result = asyncio.run(adapter.send_image_file(chat_id="oc_chat", image_path=image_path))
         finally:
             os.unlink(image_path)
 
         self.assertTrue(result.success)
         self.assertEqual(result.message_id, "om_image_msg")
-        self.assertEqual(captured["upload_request"].request_body.image_type, "message")
+        self.assertEqual(captured["client_kwargs"][0]["http2"], False)
+        self.assertEqual(captured["client_kwargs"][0]["trust_env"], False)
+        upload_url, upload_kwargs = captured["http_posts"][1]
+        self.assertTrue(upload_url.endswith("/open-apis/im/v1/images"))
+        self.assertEqual(upload_kwargs["data"]["image_type"], "message")
+        self.assertEqual(upload_kwargs["files"]["image"][0], os.path.basename(image_path))
+        self.assertEqual(upload_kwargs["headers"]["Authorization"], "Bearer tenant_token")
         self.assertEqual(
             captured["message_request"].request_body.content,
             '{"image_key": "img_123"}',
         )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_image_file_propagates_raw_upload_api_error(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        class _HTTPResponse:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return self._payload
+
+        class _HTTPClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+            def post(self, url, **kwargs):
+                if url.endswith("/open-apis/auth/v3/tenant_access_token/internal"):
+                    return _HTTPResponse({"code": 0, "tenant_access_token": "tenant_token", "expire": 7200})
+                return _HTTPResponse({"code": 999, "msg": "upload rejected"})
+
+        class _MessageAPI:
+            def create(self, request):
+                raise AssertionError("message send should not run after upload failure")
+
+        adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI())))
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".png", delete=False) as tmp:
+            tmp.write(b"\x89PNG\r\n\x1a\n")
+            image_path = tmp.name
+
+        try:
+            with (
+                patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
+                patch("httpx.Client", _HTTPClient),
+            ):
+                result = asyncio.run(adapter.send_image_file(chat_id="oc_chat", image_path=image_path))
+        finally:
+            os.unlink(image_path)
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "[999] upload rejected")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_raw_upload_helpers_reuse_cached_tenant_access_token(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"token_posts": 0, "upload_urls": []}
+
+        class _HTTPResponse:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return self._payload
+
+        class _HTTPClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+            def post(self, url, **kwargs):
+                if url.endswith("/open-apis/auth/v3/tenant_access_token/internal"):
+                    captured["token_posts"] += 1
+                    return _HTTPResponse({"code": 0, "tenant_access_token": "tenant_token", "expire": 7200})
+                captured["upload_urls"].append(url)
+                if url.endswith("/open-apis/im/v1/images"):
+                    return _HTTPResponse({"code": 0, "data": {"image_key": "img_123"}})
+                return _HTTPResponse({"code": 0, "data": {"file_key": "file_123"}})
+
+        with tempfile.NamedTemporaryFile("wb", suffix=".png", delete=False) as image_tmp:
+            image_tmp.write(b"\x89PNG\r\n\x1a\n")
+            image_path = image_tmp.name
+        with tempfile.NamedTemporaryFile("wb", suffix=".txt", delete=False) as file_tmp:
+            file_tmp.write(b"hello")
+            file_path = file_tmp.name
+
+        try:
+            with patch("httpx.Client", _HTTPClient):
+                image_key = adapter._upload_feishu_image_http1(image_path)
+                file_key = adapter._upload_feishu_file_http1(
+                    file_path,
+                    file_type="stream",
+                    file_name=os.path.basename(file_path),
+                )
+        finally:
+            os.unlink(image_path)
+            os.unlink(file_path)
+
+        self.assertEqual(image_key, "img_123")
+        self.assertEqual(file_key, "file_123")
+        self.assertEqual(captured["token_posts"], 1)
+        self.assertEqual(len(captured["upload_urls"]), 2)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_image_file_with_caption_uses_single_post_message(self):
@@ -2341,13 +2501,6 @@ class TestAdapterBehavior(unittest.TestCase):
 
         adapter = FeishuAdapter(PlatformConfig())
         captured = {}
-
-        class _ImageAPI:
-            def create(self, request):
-                return SimpleNamespace(
-                    success=lambda: True,
-                    data=SimpleNamespace(image_key="img_123"),
-                )
 
         class _MessageAPI:
             def create(self, request):
@@ -2360,7 +2513,6 @@ class TestAdapterBehavior(unittest.TestCase):
         adapter._client = SimpleNamespace(
             im=SimpleNamespace(
                 v1=SimpleNamespace(
-                    image=_ImageAPI(),
                     message=_MessageAPI(),
                 )
             )
@@ -2374,7 +2526,10 @@ class TestAdapterBehavior(unittest.TestCase):
             image_path = tmp.name
 
         try:
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            with (
+                patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
+                patch.object(adapter, "_upload_feishu_image_http1", return_value="img_123"),
+            ):
                 result = asyncio.run(
                     adapter.send_image_file(chat_id="oc_chat", image_path=image_path, caption="截图说明")
                 )
@@ -2394,14 +2549,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
         adapter = FeishuAdapter(PlatformConfig())
         captured = {}
-
-        class _FileAPI:
-            def create(self, request):
-                captured["upload_request"] = request
-                return SimpleNamespace(
-                    success=lambda: True,
-                    data=SimpleNamespace(file_key="file_video_123"),
-                )
+        upload_file = Mock(return_value="file_video_123")
 
         class _MessageAPI:
             def create(self, request):
@@ -2414,7 +2562,6 @@ class TestAdapterBehavior(unittest.TestCase):
         adapter._client = SimpleNamespace(
             im=SimpleNamespace(
                 v1=SimpleNamespace(
-                    file=_FileAPI(),
                     message=_MessageAPI(),
                 )
             )
@@ -2428,13 +2575,17 @@ class TestAdapterBehavior(unittest.TestCase):
             video_path = tmp.name
 
         try:
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            with (
+                patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
+                patch.object(adapter, "_upload_feishu_file_http1", upload_file),
+            ):
                 result = asyncio.run(adapter.send_video(chat_id="oc_chat", video_path=video_path))
         finally:
             os.unlink(video_path)
 
         self.assertTrue(result.success)
-        self.assertEqual(captured["upload_request"].request_body.file_type, "mp4")
+        upload_file.assert_called_once()
+        self.assertEqual(upload_file.call_args.kwargs["file_type"], "mp4")
         self.assertEqual(captured["message_request"].request_body.msg_type, "media")
         self.assertEqual(captured["message_request"].request_body.content, '{"file_key": "file_video_123"}')
 
@@ -2445,14 +2596,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
         adapter = FeishuAdapter(PlatformConfig())
         captured = {}
-
-        class _FileAPI:
-            def create(self, request):
-                captured["upload_request"] = request
-                return SimpleNamespace(
-                    success=lambda: True,
-                    data=SimpleNamespace(file_key="file_audio_123"),
-                )
+        upload_file = Mock(return_value="file_audio_123")
 
         class _MessageAPI:
             def create(self, request):
@@ -2465,7 +2609,6 @@ class TestAdapterBehavior(unittest.TestCase):
         adapter._client = SimpleNamespace(
             im=SimpleNamespace(
                 v1=SimpleNamespace(
-                    file=_FileAPI(),
                     message=_MessageAPI(),
                 )
             )
@@ -2479,13 +2622,17 @@ class TestAdapterBehavior(unittest.TestCase):
             audio_path = tmp.name
 
         try:
-            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            with (
+                patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
+                patch.object(adapter, "_upload_feishu_file_http1", upload_file),
+            ):
                 result = asyncio.run(adapter.send_voice(chat_id="oc_chat", audio_path=audio_path))
         finally:
             os.unlink(audio_path)
 
         self.assertTrue(result.success)
-        self.assertEqual(captured["upload_request"].request_body.file_type, "opus")
+        upload_file.assert_called_once()
+        self.assertEqual(upload_file.call_args.kwargs["file_type"], "opus")
         self.assertEqual(captured["message_request"].request_body.msg_type, "audio")
         self.assertEqual(captured["message_request"].request_body.content, '{"file_key": "file_audio_123"}')
 
