@@ -160,6 +160,41 @@ class TestSlashCommands:
         runner._handle_status_command.assert_awaited_once()
         runner._handle_message_with_agent.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_notebooklm_empty_args_returns_usage(self, adapter, runner, platform):
+        send = await send_and_capture(adapter, "/notebooklm", platform)
+
+        send.assert_called_once()
+        response_text = send.call_args[1].get("content") or send.call_args[0][1]
+        assert "Usage: /notebooklm" in response_text
+        runner._handle_message_with_agent.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_notebooklm_payload_becomes_agent_turn(self, adapter, runner, platform):
+        send = await send_and_capture(
+            adapter, "/notebooklm url https://example.com/a", platform
+        )
+
+        send.assert_called_once()
+        response_text = send.call_args[1].get("content") or send.call_args[0][1]
+        assert response_text == "agent-handled-default"
+        runner._handle_message_with_agent.assert_awaited_once()
+        event = runner._handle_message_with_agent.await_args.args[0]
+        assert event.text.startswith(
+            "Run the NotebookLM LearnPack workflow for: url https://example.com/a"
+        )
+        assert "URL source" in event.text
+
+    @pytest.mark.asyncio
+    async def test_notebooklm_alias_payload_preserves_chinese_text(
+        self, adapter, runner, platform
+    ):
+        await send_and_capture(adapter, "/nlm 知识库里的 agent memory", platform)
+
+        runner._handle_message_with_agent.assert_awaited_once()
+        event = runner._handle_message_with_agent.await_args.args[0]
+        assert "知识库里的 agent memory" in event.text
+
 
 
 class TestSessionLifecycle:

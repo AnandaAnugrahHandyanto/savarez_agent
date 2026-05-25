@@ -7428,6 +7428,20 @@ class GatewayRunner:
         if canonical == "kanban":
             return await self._handle_kanban_command(event)
 
+        if canonical == "notebooklm":
+            from hermes_cli.notebooklm_command import (
+                build_notebooklm_learnpack_prompt,
+                notebooklm_usage,
+            )
+
+            payload = event.get_command_args().strip()
+            prompt = build_notebooklm_learnpack_prompt(payload)
+            if not prompt:
+                return notebooklm_usage()
+            event.text = prompt
+            command = None
+            canonical = None
+
         if canonical == "retry":
             return await self._handle_retry_command(event)
         

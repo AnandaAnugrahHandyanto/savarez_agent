@@ -8484,6 +8484,21 @@ class HermesCLI:
             self._handle_curator_command(cmd_original)
         elif canonical == "kanban":
             self._handle_kanban_command(cmd_original)
+        elif canonical == "notebooklm":
+            from hermes_cli.notebooklm_command import (
+                build_notebooklm_learnpack_prompt,
+                notebooklm_usage,
+            )
+
+            parts = cmd_original.split(maxsplit=1)
+            payload = parts[1].strip() if len(parts) > 1 else ""
+            prompt = build_notebooklm_learnpack_prompt(payload)
+            if not prompt:
+                _cprint(notebooklm_usage())
+            elif hasattr(self, "_pending_input"):
+                self._pending_input.put(prompt)
+                suffix = "..." if len(payload) > 80 else ""
+                _cprint(f"  Queued NotebookLM LearnPack task: {payload[:80]}{suffix}")
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)

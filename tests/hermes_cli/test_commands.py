@@ -109,6 +109,8 @@ class TestResolveCommand:
         assert resolve_command("reload_mcp").name == "reload-mcp"
         assert resolve_command("codex_runtime").name == "codex-runtime"
         assert resolve_command("tasks").name == "agents"
+        assert resolve_command("nlm").name == "notebooklm"
+        assert resolve_command("learnpack").name == "notebooklm"
 
     def test_topic_is_gateway_command(self):
         topic = resolve_command("topic")
@@ -119,6 +121,7 @@ class TestResolveCommand:
     def test_leading_slash_stripped(self):
         assert resolve_command("/help").name == "help"
         assert resolve_command("/bg").name == "background"
+        assert resolve_command("/notebooklm").name == "notebooklm"
 
     def test_unknown_returns_none(self):
         assert resolve_command("nonexistent") is None
