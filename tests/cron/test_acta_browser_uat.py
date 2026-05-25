@@ -114,6 +114,21 @@ def test_validate_feed_contract_detects_qa_pipeline_canary_in_daily_lane():
     assert "Development sprint output is commingled into Daily life feed" in acta_browser_uat._validate_feed_contract(dom)
 
 
+def test_validate_feed_contract_counts_lane_tagged_lead_as_daily_row():
+    dom = """
+    <html><body>
+      <h1>Output Streams</h1>
+      <article class="lead" data-feed-lane="daily"><span class="lane-chip">Daily</span>Morning newsletter</article>
+      <h2>Daily life feed</h2>
+      <p class="empty-feed">No additional outputs in this lane yet.</p>
+      <h2>Development sprint cycles</h2>
+      <section class="brief-row" data-feed-lane="dev"><span class="lane-chip">Dev</span>User testing sweep</section>
+    </body></html>
+    """
+
+    assert acta_browser_uat._validate_feed_contract(dom) == []
+
+
 def test_url_target_rejects_userinfo():
     args = type("Args", (), {"html": None, "url": "https://user:secret@example.com/acta"})()
 

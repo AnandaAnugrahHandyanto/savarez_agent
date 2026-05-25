@@ -9,6 +9,8 @@ import html
 import json
 import os
 import re
+import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -1136,6 +1138,8 @@ def render_dashboard(
     lead_row_meta = "row opens" if lead_href else "signed rows only"
     initial_unread_count = readable_feed_count + (1 if lead_href else 0)
     lead_confidence = _confidence_label(lead_item, now) if lead_item else "CONF LOW/GAP"
+    lead_lane = _feed_lane(lead_item) if lead_item else "system"
+    lead_lane_label = _feed_lane_label(lead_lane)
     dashboard_script = _dashboard_inline_script()
     dashboard_csp_placeholder = "__ACTA_DASHBOARD_CSP__"
 
@@ -1315,9 +1319,9 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
     <nav class="date-nav"><a class="nav-link primary" href="/">Today</a><a class="nav-link" href="/outputs">Outputs</a><a class="nav-link" href="/runs">Runs</a><a class="nav-link" href="/jobs">Jobs</a><a class="nav-link" href="/archive">Archive</a></nav>
     <section class="content">
       <div>
-        <article class="{lead_class}"{lead_read_attr}{lead_href_attr}>
+        <article class="{lead_class}" data-feed-lane="{_safe_text(lead_lane)}"{lead_read_attr}{lead_href_attr}>
           {lead_open_overlay}
-          <div class="label">{lead_label_read_state}<span>{_safe_text(lead_confidence)}</span><span>today</span><span>{lead_open_hint}</span></div>
+          <div class="label"><span class="lane-chip">{_safe_text(lead_lane_label)}</span>{lead_label_read_state}<span>{_safe_text(lead_confidence)}</span><span>today</span><span>{lead_open_hint}</span></div>
           <h1>{_safe_text(lead_title)}</h1>
           <p>{_safe_text(lead_excerpt)}</p>
           <div class="output-summary"><b>{visible}/{active}</b><span>fresh</span><span>{missing} gaps</span></div>
@@ -2154,9 +2158,52 @@ def attach_artifact_urls(
     return linked
 
 
+def _run_browser_uat_preflight(
+    dashboard_path: Path,
+    *,
+    artifact_dir: Path,
+    timeout: int = 45,
+) -> None:
+    """Run the real-browser Acta UAT harness before publishing the dashboard."""
+    harness_path = Path(__file__).resolve().parents[1] / "scripts" / "acta_browser_uat.py"
+    if not harness_path.exists():
+        raise RuntimeError(f"Acta browser UAT harness is missing: {harness_path}")
+    cmd = [
+        sys.executable,
+        str(harness_path),
+        "--html",
+        str(dashboard_path),
+        "--artifact-dir",
+        str(artifact_dir),
+        "--timeout",
+        str(timeout),
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=harness_path.parents[1],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout + 15,
+        )
+    except subprocess.TimeoutExpired as exc:
+        output = exc.output or exc.stdout or ""
+        if isinstance(output, bytes):
+            output = output.decode(errors="replace")
+        raise RuntimeError(
+            "Acta browser UAT preflight timed out; publish aborted.\n"
+            f"{output.strip()}"
+        ) from exc
+    if result.returncode != 0:
+        output = result.stdout.strip()
+        raise RuntimeError(f"Acta browser UAT preflight failed; publish aborted.\n{output}")
+
+
 def build_dashboard(
     hermes_home: Path | None = None,
     publish: bool = False,
+    uat_preflight: bool = True,
 ) -> tuple[Path, str | None]:
     home = hermes_home or get_hermes_home()
     if load_dotenv is not None:
@@ -2171,7 +2218,6 @@ def build_dashboard(
     items = collect_situation_items(home, run_date=selected_date)
     if publish:
         publish_settings["enabled"] = True
-        items = attach_artifact_urls(items, publish_settings, output_dir / "details")
     generated_at = datetime.now(timezone.utc)
     dashboard_html = render_dashboard(
         items,
@@ -2183,6 +2229,21 @@ def build_dashboard(
     dashboard_path = output_dir / f"{generated_at.strftime('%Y-%m-%d_%H-%M-%S')}.html"
     dashboard_path.parent.mkdir(parents=True, exist_ok=True)
     dashboard_path.write_text(dashboard_html, encoding="utf-8")
+    if publish and uat_preflight and os.environ.get("ACTA_SKIP_BROWSER_UAT") != "1":
+        _run_browser_uat_preflight(
+            dashboard_path,
+            artifact_dir=output_dir / "uat" / generated_at.strftime("%Y-%m-%d_%H-%M-%S"),
+        )
+    if publish:
+        items = attach_artifact_urls(items, publish_settings, output_dir / "details")
+        dashboard_html = render_dashboard(
+            items,
+            generated_at=generated_at,
+            selected_date=selected_date,
+            archive_dates=dates,
+            feed_preferences=acta_dashboard_config(config),
+        )
+        dashboard_path.write_text(dashboard_html, encoding="utf-8")
     dashboard_url: str | None = None
     if publish:
         # Stable homepage: https://acta.imperatr.com/
@@ -2266,8 +2327,13 @@ def build_dashboard(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build the Acta cron situation-room dashboard")
     parser.add_argument("--publish", action="store_true", help="Upload dashboard/detail pages to Acta and print signed URL")
+    parser.add_argument(
+        "--skip-uat-preflight",
+        action="store_true",
+        help="Skip the real-browser Acta UAT gate before publishing (also available via ACTA_SKIP_BROWSER_UAT=1)",
+    )
     args = parser.parse_args(argv)
-    path, url = build_dashboard(publish=args.publish)
+    path, url = build_dashboard(publish=args.publish, uat_preflight=not args.skip_uat_preflight)
     print(path)
     if url:
         print(url)

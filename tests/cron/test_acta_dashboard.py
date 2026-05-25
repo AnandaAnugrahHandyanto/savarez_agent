@@ -2,13 +2,17 @@ import base64
 import hashlib
 import json
 import re
+import subprocess
 from datetime import date, datetime, timezone
 from pathlib import Path
+
+import pytest
 
 from cron.acta_dashboard import (
     _dashboard_inline_script,
     _feed_lane,
     _outputs_read_state_script,
+    _run_browser_uat_preflight,
     acta_dashboard_config,
     apply_feed_preferences,
     attach_artifact_urls,
@@ -159,6 +163,7 @@ def test_dashboard_separates_daily_life_and_development_sprint_feeds(tmp_path: P
     assert "Daily life feed" in html
     assert "Development sprint cycles" in html
     assert 'data-feed-lane="daily"' in html
+    assert 'class="lane-chip">Daily life feed</span>' in html
     assert 'data-feed-lane="dev"' in html
     assert html.index("Daily life feed") < html.index("Development sprint cycles")
 
@@ -463,6 +468,119 @@ def test_build_dashboard_local_only(tmp_path: Path):
     assert url is None
     assert path.exists()
     assert "Acta Imperatr situation room" in path.read_text()
+
+
+def _write_publishable_dashboard_fixture(home: Path) -> None:
+    (home / "cron" / "output" / "daily").mkdir(parents=True)
+    (home / "cron" / "output" / "dev").mkdir(parents=True)
+    (home / "cron" / "jobs.json").write_text(
+        json.dumps(
+            [
+                {"id": "daily", "name": "Morning newsletter digest", "schedule": "daily", "deliver": "telegram"},
+                {"id": "dev", "name": "Vesta Startup Sprint CEO loop", "schedule": "every 120m", "deliver": "telegram"},
+            ]
+        )
+    )
+    (home / "cron" / "output" / "daily" / "2026-05-19_09-00-00.md").write_text("## Response\n\nDaily signal")
+    (home / "cron" / "output" / "dev" / "2026-05-19_09-10-00.md").write_text("## Response\n\nSprint signal")
+
+
+def test_publish_runs_browser_uat_before_uploading_any_artifacts(tmp_path: Path, monkeypatch):
+    _write_publishable_dashboard_fixture(tmp_path)
+    events = []
+
+    def fake_uat(path: Path, *, artifact_dir: Path, timeout: int = 45) -> None:
+        events.append(("uat", path.exists(), artifact_dir.name, timeout))
+
+    def fake_publish(path, job, settings):
+        events.append(("publish", settings.get("object_key")))
+        return f"https://acta.example/{settings.get('object_key')}"
+
+    monkeypatch.setattr("cron.acta_dashboard._run_browser_uat_preflight", fake_uat)
+    monkeypatch.setattr("cron.acta_dashboard.publish_html_artifact", fake_publish)
+
+    path, url = build_dashboard(tmp_path, publish=True)
+
+    assert path.exists()
+    assert url == "https://acta.example/public/index.html"
+    assert events[0][0] == "uat"
+    assert any(event == ("publish", "public/index.html") for event in events)
+
+
+def test_publish_aborts_without_uploads_when_browser_uat_fails(tmp_path: Path, monkeypatch):
+    _write_publishable_dashboard_fixture(tmp_path)
+    published = []
+
+    def fake_uat(path: Path, *, artifact_dir: Path, timeout: int = 45) -> None:
+        raise RuntimeError("Acta browser UAT preflight failed; publish aborted.")
+
+    def fake_publish(path, job, settings):
+        published.append(settings.get("object_key"))
+        return "https://acta.example/should-not-publish"
+
+    monkeypatch.setattr("cron.acta_dashboard._run_browser_uat_preflight", fake_uat)
+    monkeypatch.setattr("cron.acta_dashboard.publish_html_artifact", fake_publish)
+
+    with pytest.raises(RuntimeError, match="publish aborted"):
+        build_dashboard(tmp_path, publish=True)
+
+    assert published == []
+
+
+def test_publish_skip_uat_preflight_escape_hatch(tmp_path: Path, monkeypatch):
+    _write_publishable_dashboard_fixture(tmp_path)
+    events = []
+
+    def fake_uat(path: Path, *, artifact_dir: Path, timeout: int = 45) -> None:
+        events.append(("uat", str(path)))
+
+    def fake_publish(path, job, settings):
+        events.append(("publish", settings.get("object_key")))
+        return f"https://acta.example/{settings.get('object_key')}"
+
+    monkeypatch.setattr("cron.acta_dashboard._run_browser_uat_preflight", fake_uat)
+    monkeypatch.setattr("cron.acta_dashboard.publish_html_artifact", fake_publish)
+
+    build_dashboard(tmp_path, publish=True, uat_preflight=False)
+
+    assert not any(event[0] == "uat" for event in events)
+    assert any(event == ("publish", "public/index.html") for event in events)
+
+
+def test_publish_skip_uat_preflight_env_escape_hatch(tmp_path: Path, monkeypatch):
+    _write_publishable_dashboard_fixture(tmp_path)
+    events = []
+
+    def fake_uat(path: Path, *, artifact_dir: Path, timeout: int = 45) -> None:
+        events.append(("uat", str(path)))
+
+    def fake_publish(path, job, settings):
+        events.append(("publish", settings.get("object_key")))
+        return f"https://acta.example/{settings.get('object_key')}"
+
+    monkeypatch.setattr("cron.acta_dashboard._run_browser_uat_preflight", fake_uat)
+    monkeypatch.setattr("cron.acta_dashboard.publish_html_artifact", fake_publish)
+    monkeypatch.setenv("ACTA_SKIP_BROWSER_UAT", "1")
+
+    build_dashboard(tmp_path, publish=True)
+
+    assert not any(event[0] == "uat" for event in events)
+    assert any(event == ("publish", "public/index.html") for event in events)
+
+
+def test_browser_uat_preflight_timeout_fails_closed(tmp_path: Path, monkeypatch):
+    dashboard_path = tmp_path / "dashboard.html"
+    dashboard_path.write_text("<html><body>Acta</body></html>")
+
+    def fake_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"], output="partial browser log")
+
+    monkeypatch.setattr("cron.acta_dashboard.subprocess.run", fake_run)
+
+    with pytest.raises(RuntimeError, match="timed out; publish aborted") as excinfo:
+        _run_browser_uat_preflight(dashboard_path, artifact_dir=tmp_path / "uat", timeout=1)
+
+    assert "partial browser log" in str(excinfo.value)
 
 
 def test_available_dates_and_date_filtered_items(tmp_path: Path):
@@ -2434,7 +2552,7 @@ def test_build_dashboard_publishes_outputs_index(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr("cron.acta_dashboard.publish_html_artifact", fake_publish)
 
-    path, url = build_dashboard(tmp_path, publish=True)
+    path, url = build_dashboard(tmp_path, publish=True, uat_preflight=False)
 
     assert path.exists()
     assert url == "https://acta.imperatr.com/"

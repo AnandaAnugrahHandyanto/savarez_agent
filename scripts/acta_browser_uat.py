@@ -20,8 +20,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 
-DEV_ROW_RE = re.compile(r"<section\b(?=[^>]*\bclass=\"[^\"]*brief-row)(?=[^>]*\bdata-feed-lane=\"dev\")[\s\S]*?</section>", re.I)
-DAILY_ROW_RE = re.compile(r"<section\b(?=[^>]*\bclass=\"[^\"]*brief-row)(?=[^>]*\bdata-feed-lane=\"daily\")[\s\S]*?</section>", re.I)
+DEV_ROW_RE = re.compile(r"<(?:section|article)\b(?=[^>]*\bclass=\"[^\"]*(?:brief-row|lead)\b)(?=[^>]*\bdata-feed-lane=\"dev\")[\s\S]*?</(?:section|article)>", re.I)
+DAILY_ROW_RE = re.compile(r"<(?:section|article)\b(?=[^>]*\bclass=\"[^\"]*(?:brief-row|lead)\b)(?=[^>]*\bdata-feed-lane=\"daily\")[\s\S]*?</(?:section|article)>", re.I)
 DEV_JOB_RE = re.compile(
     r"startup sprint|sprint ceo|self-healing sentinel|user[- ]testing sweep|qa pipeline|qa canary|operator sprint|security scan|app security|vesta import|vesta startup|acta startup|minerva startup|praetor startup",
     re.I,
