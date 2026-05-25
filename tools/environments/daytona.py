@@ -87,10 +87,14 @@ class DaytonaEnvironment(BaseEnvironment):
         labels = {"hermes_task_id": task_id}
         # task_id collapses to "default" for subagents sharing a parent's
         # container; Daytona requires globally-unique names so concurrent
-        # processes need a uuid suffix to avoid DaytonaConflictError.  The
-        # hermes_task_id label still carries logical task identity for
-        # persistent-resume via list(labels=...).
-        sandbox_name = f"hermes-{task_id}-{uuid.uuid4().hex[:8]}"
+        # non-persistent processes need a uuid suffix to avoid
+        # DaytonaConflictError. Persistent sandboxes keep the deterministic
+        # `hermes-<task_id>` name so name-based `get()` resume continues to
+        # work; concurrent persistent starts converge on the same sandbox.
+        if self._persistent:
+            sandbox_name = f"hermes-{task_id}"
+        else:
+            sandbox_name = f"hermes-{task_id}-{uuid.uuid4().hex[:12]}"
 
         if self._persistent:
             try:

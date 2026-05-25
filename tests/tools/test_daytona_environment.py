@@ -148,9 +148,7 @@ class TestPersistence:
         env = make_env(get_side_effect=lambda name: existing, persistent=True,
                        task_id="mytask")
         existing.start.assert_called_once()
-        env._mock_client.get.assert_called_once()
-        get_name = env._mock_client.get.call_args[0][0]
-        assert get_name.startswith("hermes-mytask-")
+        env._mock_client.get.assert_called_once_with("hermes-mytask")
         env._mock_client.create.assert_not_called()
 
     def test_persistent_resumes_legacy_via_list(self, make_env, daytona_sdk):
@@ -174,11 +172,10 @@ class TestPersistence:
             task_id="mytask",
         )
         env._mock_client.create.assert_called_once()
-        # Sandbox name is uuid-suffixed for uniqueness (#28299); verify the
-        # prefix only and that the label-based legacy lookup still uses the
-        # logical task id.
-        get_name = env._mock_client.get.call_args[0][0]
-        assert get_name.startswith("hermes-mytask-")
+        # Persistent sandboxes keep deterministic names so name-based
+        # `get()` resume works on the next start. Verify both the name-based
+        # lookup and the label-based legacy fallback use the logical id.
+        env._mock_client.get.assert_called_with("hermes-mytask")
         env._mock_client.list.assert_called_with(
             labels={"hermes_task_id": "mytask"}, limit=1)
 
@@ -214,9 +211,11 @@ class TestSandboxNameUniqueness:
     """
 
     @pytest.fixture(autouse=True)
-    def _capture_params(self, daytona_sdk):
+    def _capture_params(self, daytona_sdk, monkeypatch):
         _ParamsCapture.instances.clear()
-        daytona_sdk.CreateSandboxFromImageParams = _ParamsCapture
+        monkeypatch.setattr(
+            daytona_sdk, "CreateSandboxFromImageParams", _ParamsCapture
+        )
         yield
         _ParamsCapture.instances.clear()
 
@@ -251,6 +250,19 @@ class TestSandboxNameUniqueness:
         # And the name still carries the logical task id (Daytona ops still
         # need a recognizable prefix even though uniqueness is on the suffix).
         assert kwargs["name"].startswith("hermes-mytask-")
+
+    def test_persistent_keeps_deterministic_name(self, make_env, daytona_sdk):
+        # Persistent sandboxes must NOT get a uuid suffix or the name-based
+        # `get()` resume path is broken on every restart. Concurrent
+        # persistent starts on the same task_id intentionally converge.
+        make_env(
+            get_side_effect=daytona_sdk.DaytonaError("not found"),
+            persistent=True,
+            task_id="mytask",
+        )
+        kwargs = _ParamsCapture.instances[-1].kwargs
+        assert kwargs["name"] == "hermes-mytask"
+        assert kwargs["labels"] == {"hermes_task_id": "mytask"}
 
 
 # ---------------------------------------------------------------------------
