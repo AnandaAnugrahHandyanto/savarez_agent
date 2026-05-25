@@ -2518,6 +2518,17 @@ def _recover_provider_pool(provider: str, exc: Exception) -> bool:
         if refreshed is not None:
             _evict_cached_clients(normalized)
             return True
+
+        # If recovery is entered from an auto-resolved auxiliary client,
+        # load_pool() above creates a fresh CredentialPool with no current_id.
+        # In that case try_refresh_current() is a no-op, even though the
+        # selected Codex/Anthropic OAuth token may simply need a forced refresh
+        # after a server-side 401.  Try the provider runtime resolver before
+        # marking the only pooled credential exhausted.
+        if _refresh_provider_credentials(normalized):
+            _evict_cached_clients(normalized)
+            return True
+
         next_entry = pool.mark_exhausted_and_rotate(
             status_code=status_code if status_code is not None else 401,
             error_context=error_context,
@@ -4936,6 +4947,15 @@ def call_llm(
                     "Auxiliary %s: recovered %s via credential-pool rotation after %s",
                     task or "call", pool_provider, type(recovery_err).__name__,
                 )
+                # The failed client may be cached under provider="auto" rather
+                # than the concrete pool provider.  Provider-level eviction only
+                # clears keys such as "openai-codex"; evict the actual stale
+                # instance too so the retry rebuilds with freshly refreshed
+                # credentials.
+                try:
+                    _evict_cached_client_instance(client)
+                except Exception:
+                    logger.debug("Auxiliary: cache eviction after pool recovery failed", exc_info=True)
                 return _retry_same_provider_sync(
                     task=task,
                     resolved_provider=resolved_provider,

@@ -2104,3 +2104,48 @@ def test_codex_oauth_nonterminal_refresh_does_not_quarantine(tmp_path, monkeypat
     tokens = auth_payload["providers"]["openai-codex"].get("tokens", {})
     assert tokens.get("access_token") == "old-access-token"
     assert tokens.get("refresh_token") == "old-refresh-token"
+
+
+def test_codex_refresh_syncs_auth_store_before_spending_refresh_token(tmp_path, monkeypatch):
+    """A non-exhausted Codex pool entry can still be stale after another process rotates auth.json.
+
+    Regression guard for long-running gateway auxiliary clients: the pool entry
+    may have last_status OK and a JWT exp in the future, so selection won't sync
+    it. On a server-side 401, try_refresh_current() must adopt the newer
+    auth.json token pair before calling the Codex refresh endpoint; otherwise it
+    replays a consumed/stale refresh token and marks the only credential
+    exhausted.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    from agent.credential_pool import load_pool
+    import hermes_cli.auth as auth_mod
+
+    _write_auth_store(tmp_path, _codex_auth_store("access-OLD", "refresh-OLD"))
+    pool = load_pool("openai-codex")
+    entry = pool.select()
+    assert entry is not None
+    assert entry.access_token == "access-OLD"
+
+    # Another process refreshed/reauthed and wrote a fresh singleton, but this
+    # in-memory pool entry is still OK-status and stale.
+    _write_auth_store(tmp_path, _codex_auth_store("access-NEW", "refresh-NEW"))
+
+    seen = {}
+
+    def fake_refresh(access_token, refresh_token):
+        seen["access_token"] = access_token
+        seen["refresh_token"] = refresh_token
+        return {
+            "access_token": "access-REFRESHED",
+            "refresh_token": "refresh-REFRESHED",
+            "last_refresh": "2026-04-28T01:00:00Z",
+        }
+
+    monkeypatch.setattr(auth_mod, "refresh_codex_oauth_pure", fake_refresh)
+
+    refreshed = pool._refresh_entry(entry, force=True)
+
+    assert seen == {"access_token": "access-NEW", "refresh_token": "refresh-NEW"}
+    assert refreshed is not None
+    assert refreshed.access_token == "access-REFRESHED"
+    assert refreshed.refresh_token == "refresh-REFRESHED"

@@ -1849,6 +1849,50 @@ class TestAuxiliaryAuthRefreshRetry:
         assert stale_client.chat.completions.create.call_count == 1
         assert fresh_client.chat.completions.create.call_count == 1
 
+    def test_recover_provider_pool_force_refreshes_auto_resolved_codex_before_exhausting(self):
+        pool = MagicMock()
+        pool.has_credentials.return_value = True
+        pool.try_refresh_current.return_value = None
+
+        with (
+            patch("agent.auxiliary_client.load_pool", return_value=pool),
+            patch("agent.auxiliary_client._refresh_provider_credentials", return_value=True) as mock_refresh,
+            patch("agent.auxiliary_client._evict_cached_clients") as mock_evict,
+        ):
+            from agent.auxiliary_client import _recover_provider_pool
+
+            assert _recover_provider_pool("openai-codex", _AuxAuth401()) is True
+
+        mock_refresh.assert_called_once_with("openai-codex")
+        mock_evict.assert_called_with("openai-codex")
+        pool.mark_exhausted_and_rotate.assert_not_called()
+
+    def test_call_llm_evicts_auto_cached_client_after_pool_auth_recovery(self):
+        stale_client = MagicMock()
+        stale_client.base_url = "https://chatgpt.com/backend-api/codex"
+        stale_client.chat.completions.create.side_effect = _AuxAuth401("stale auto codex token")
+
+        fresh_client = MagicMock()
+        fresh_client.base_url = "https://chatgpt.com/backend-api/codex"
+        fresh_client.chat.completions.create.return_value = _DummyResponse("fresh-auto")
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("auto", "gpt-5.4", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "gpt-5.4"), (fresh_client, "gpt-5.4")]),
+            patch("agent.auxiliary_client._recoverable_pool_provider", return_value="openai-codex"),
+            patch("agent.auxiliary_client._recover_provider_pool", return_value=True),
+            patch("agent.auxiliary_client._evict_cached_client_instance") as mock_evict_instance,
+        ):
+            resp = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert resp.choices[0].message.content == "fresh-auto"
+        mock_evict_instance.assert_called_once_with(stale_client)
+        assert stale_client.chat.completions.create.call_count == 1
+        assert fresh_client.chat.completions.create.call_count == 1
+
     def test_call_llm_refreshes_anthropic_on_401_for_non_vision(self):
         stale_client = MagicMock()
         stale_client.base_url = "https://api.anthropic.com"

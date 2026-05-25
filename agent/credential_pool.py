@@ -797,16 +797,19 @@ class CredentialPool:
                     except Exception as wexc:
                         logger.debug("Failed to write refreshed token to credentials file: %s", wexc)
             elif self.provider == "openai-codex":
-                # Adopt fresher tokens from auth.json before spending the
-                # refresh_token — single-use tokens consumed by another Hermes
-                # process sharing the same auth.json singleton would otherwise
-                # trigger ``refresh_token_reused`` on the next POST.
+                # Codex refresh tokens are single-use. Another Hermes process
+                # (or `hermes model` / `hermes auth`) may have already rotated
+                # the singleton token pair in auth.json while this pool entry
+                # still looks OK because its JWT exp is in the future. Adopt
+                # the fresher singleton before spending our refresh_token;
+                # otherwise a long-running gateway can keep replaying a stale
+                # pool token and mark the only credential exhausted on 401.
                 synced = self._sync_codex_entry_from_auth_store(entry)
                 if synced is not entry:
                     entry = synced
                 refreshed = auth_mod.refresh_codex_oauth_pure(
                     entry.access_token,
-                    entry.refresh_token,
+                    entry.refresh_token or "",
                 )
                 updated = replace(
                     entry,
@@ -890,6 +893,31 @@ class CredentialPool:
                     # Credentials file had a valid (non-expired) token — use it directly
                     logger.debug("Credentials file has valid token, using without refresh")
                     return synced
+            # For openai-codex: same race as Nous/xAI — another process may
+            # have consumed the refresh token between our proactive sync and
+            # the HTTP call. Re-check auth.json and adopt the fresh tokens if
+            # they have rotated since. This prevents long-running gateway
+            # processes from exhausting the only pool entry while fresh tokens
+            # are already on disk.
+            if self.provider == "openai-codex":
+                synced = self._sync_codex_entry_from_auth_store(entry)
+                if synced.access_token != entry.access_token or synced.refresh_token != entry.refresh_token:
+                    logger.debug(
+                        "Codex refresh failed but auth.json has newer tokens — adopting"
+                    )
+                    updated = replace(
+                        synced,
+                        last_status=STATUS_OK,
+                        last_status_at=None,
+                        last_error_code=None,
+                        last_error_reason=None,
+                        last_error_message=None,
+                        last_error_reset_at=None,
+                    )
+                    self._replace_entry(synced, updated)
+                    self._persist()
+                    self._sync_device_code_entry_to_auth_store(updated)
+                    return updated
             # For xai-oauth: same race as nous — another process may have
             # consumed the refresh token between our proactive sync and the
             # HTTP call.  Re-check auth.json and adopt the fresh tokens if
