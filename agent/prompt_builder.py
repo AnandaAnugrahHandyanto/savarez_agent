@@ -34,21 +34,57 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _CONTEXT_THREAT_PATTERNS = [
-    (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
-    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
+    # \u2500\u2500 Prompt injection \u2500\u2500
+    (r'ignore\s+(?:\w+\s+)*(previous|all|above|prior)\s+(?:\w+\s+)*instructions', "prompt_injection"),
+    (r'you\s+are\s+(?:\w+\s+)*now\s+(?:a|an|the)\s+', "role_hijack"),
+    (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user', "deception_hide"),
     (r'system\s+prompt\s+override', "sys_prompt_override"),
-    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
-    (r'act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)', "bypass_restrictions"),
+    (r'disregard\s+(?:\w+\s+)*(your|all|any)\s+(?:\w+\s+)*(instructions|rules|guidelines)', "disregard_rules"),
+    (r'act\s+as\s+(if|though)\s+(?:\w+\s+)*you\s+(?:\w+\s+)*(have\s+no|don\'t\s+have)\s+(?:\w+\s+)*(restrictions|limits|rules)', "bypass_restrictions"),
+    (r'pretend\s+(?:\w+\s+)*(you\s+are|to\s+be)\s+', "role_pretend"),
+    (r'output\s+(?:\w+\s+)*(system|initial)\s+prompt', "leak_system_prompt"),
+    (r'(respond|answer|reply)\s+without\s+(?:\w+\s+)*(restrictions|limitations|filters|safety)', "remove_filters"),
+    (r'you\s+have\s+been\s+(?:\w+\s+)*(updated|upgraded|patched)\s+to', "fake_update"),
+    (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)', "translate_execute"),
     (r'<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->', "html_comment_injection"),
     (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none', "hidden_div"),
-    (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)', "translate_execute"),
+    # \u2500\u2500 Exfiltration \u2500\u2500
     (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
-    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
+    (r'wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_wget"),
+    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)', "read_secrets"),
+    (r'(send|post|upload|transmit)\s+.*\s+(to|at)\s+https?://', "send_to_url"),
+    (r'(include|output|print|share)\s+(?:\w+\s+)*(conversation|chat\s+history|previous\s+messages|full\s+context|entire\s+context)', "context_exfil"),
+    # \u2500\u2500 Persistence / SSH backdoor \u2500\u2500
+    (r'authorized_keys', "ssh_backdoor"),
+    (r'\$HOME/\.ssh|\~/\.ssh', "ssh_access"),
+    (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env', "hermes_env"),
+    (r'(update|modify|edit|write|change|append|add\s+to)\s+.*(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)', "agent_config_mod"),
+    (r'(update|modify|edit|write|change|append|add\s+to)\s+.*\.hermes/(config\.yaml|SOUL\.md)', "hermes_config_mod"),
+    # \u2500\u2500 Hardcoded secrets \u2500\u2500
+    (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\'][A-Za-z0-9+/=_-]{20,}', "hardcoded_secret"),
 ]
 
+# Invisible unicode characters for injection detection.
+# Aligned with memory_tool.py/_INVISIBLE_CHARS \u2014 includes directional
+# isolates (U+2066-U+2069) and invisible math operators (U+2062-U+2064).
 _CONTEXT_INVISIBLE_CHARS = {
-    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
-    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
+    '\u200b',  # zero-width space
+    '\u200c',  # zero-width non-joiner
+    '\u200d',  # zero-width joiner
+    '\u2060',  # word joiner
+    '\u2062',  # invisible times
+    '\u2063',  # invisible separator
+    '\u2064',  # invisible plus
+    '\ufeff',  # zero-width no-break space (BOM)
+    '\u202a',  # left-to-right embedding
+    '\u202b',  # right-to-left embedding
+    '\u202c',  # pop directional formatting
+    '\u202d',  # left-to-right override
+    '\u202e',  # right-to-left override
+    '\u2066',  # left-to-right isolate
+    '\u2067',  # right-to-left isolate
+    '\u2068',  # first strong isolate
+    '\u2069',  # pop directional isolate
 }
 
 
