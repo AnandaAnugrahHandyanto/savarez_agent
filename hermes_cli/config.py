@@ -1023,6 +1023,7 @@ DEFAULT_CONFIG = {
             "extra_body": {},
         },
         "title_generation": {
+            "enabled": True,
             "provider": "auto",
             "model": "",
             "base_url": "",
@@ -1627,6 +1628,10 @@ DEFAULT_CONFIG = {
         # raise these to keep more early failure evidence.
         "worker_log_rotate_bytes": 2 * 1024 * 1024,
         "worker_log_backup_count": 1,
+        # Optional per-worker chat iteration cap. When unset, Kanban workers
+        # inherit agent.max_turns like normal chat sessions. Set this to give
+        # board tasks a different budget without changing CLI/gateway turns.
+        "worker_max_turns": None,
         # Profile that decomposes tasks in the Triage column. When unset,
         # falls back to the default profile (the one `hermes` launches with
         # no -p flag). Set this to a dedicated 'orchestrator' profile if you

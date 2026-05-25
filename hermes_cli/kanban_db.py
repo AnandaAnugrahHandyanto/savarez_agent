@@ -5397,6 +5397,15 @@ def _positive_int(value: Any, default: int, *, minimum: int = 1) -> int:
     return parsed if parsed >= minimum else default
 
 
+def _load_kanban_config() -> dict:
+    try:
+        from hermes_cli.config import load_config
+
+        return load_config().get("kanban") or {}
+    except Exception:
+        return {}
+
+
 def worker_log_rotation_config(kanban_cfg: Optional[dict] = None) -> tuple[int, int]:
     """Return ``(rotate_bytes, backup_count)`` for worker log rotation.
 
@@ -5405,12 +5414,7 @@ def worker_log_rotation_config(kanban_cfg: Optional[dict] = None) -> tuple[int, 
     raise either value from ``config.yaml`` without changing dispatcher code.
     """
     if kanban_cfg is None:
-        try:
-            from hermes_cli.config import load_config
-
-            kanban_cfg = (load_config().get("kanban") or {})
-        except Exception:
-            kanban_cfg = {}
+        kanban_cfg = _load_kanban_config()
     max_bytes = _positive_int(
         (kanban_cfg or {}).get("worker_log_rotate_bytes"),
         DEFAULT_LOG_ROTATE_BYTES,
@@ -5422,6 +5426,20 @@ def worker_log_rotation_config(kanban_cfg: Optional[dict] = None) -> tuple[int, 
         minimum=0,
     )
     return max_bytes, backup_count
+
+
+def worker_max_turns_config(kanban_cfg: Optional[dict] = None) -> Optional[int]:
+    """Return the Kanban-only worker iteration cap, if configured."""
+    if kanban_cfg is None:
+        kanban_cfg = _load_kanban_config()
+    raw = (kanban_cfg or {}).get("worker_max_turns")
+    if raw in (None, ""):
+        return None
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 1 else None
 
 
 def _rotated_log_path(log_path: Path, generation: int) -> Path:
@@ -5778,10 +5796,11 @@ def _default_spawn(
                 cmd.extend(["--skills", sk])
     if task.model_override:
         cmd.extend(["-m", task.model_override])
-    cmd.extend([
-        "chat",
-        "-q", prompt,
-    ])
+    worker_max_turns = worker_max_turns_config()
+    if worker_max_turns is not None:
+        cmd.extend(["chat", "--max-turns", str(worker_max_turns), "-q", prompt])
+    else:
+        cmd.extend(["chat", "-q", prompt])
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so
     # `hermes kanban log` on a specific board reads its own file and

@@ -9,6 +9,7 @@ from agent.title_generator import (
     generate_title,
     auto_title_session,
     maybe_auto_title,
+    _title_generation_enabled,
 )
 
 
@@ -160,6 +161,30 @@ class TestAutoTitleSession:
             db.set_session_title.assert_not_called()
 
 
+class TestTitleGenerationEnabled:
+    """Tests for the auxiliary.title_generation.enabled toggle."""
+
+    def test_defaults_to_enabled_when_config_missing(self):
+        with patch("hermes_cli.config.load_config", return_value={}):
+            assert _title_generation_enabled() is True
+
+    @pytest.mark.parametrize("value", [False, "false", "off", "disabled", "0", "no"])
+    def test_false_values_disable_title_generation(self, value):
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"auxiliary": {"title_generation": {"enabled": value}}},
+        ):
+            assert _title_generation_enabled() is False
+
+    @pytest.mark.parametrize("value", [True, "true", "on", "1", "yes"])
+    def test_true_values_enable_title_generation(self, value):
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"auxiliary": {"title_generation": {"enabled": value}}},
+        ):
+            assert _title_generation_enabled() is True
+
+
 class TestMaybeAutoTitle:
     """Tests for maybe_auto_title() — the fire-and-forget entry point."""
 
@@ -238,3 +263,18 @@ class TestMaybeAutoTitle:
 
     def test_skips_if_no_session_db(self):
         maybe_auto_title(None, "sess-1", "hello", "response", [])  # no db
+
+    def test_skips_when_title_generation_disabled(self):
+        db = MagicMock()
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+
+        with patch("agent.title_generator._title_generation_enabled", return_value=False), patch(
+            "agent.title_generator.auto_title_session"
+        ) as mock_auto:
+            maybe_auto_title(db, "sess-1", "hello", "hi there", history)
+            import time
+            time.sleep(0.1)
+            mock_auto.assert_not_called()

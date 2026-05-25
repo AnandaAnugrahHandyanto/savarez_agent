@@ -130,6 +130,32 @@ def auto_title_session(
         logger.debug("Failed to set auto-generated title: %s", e)
 
 
+def _title_generation_enabled() -> bool:
+    """Return whether automatic session-title generation is enabled.
+
+    Operators can disable the background title-generation LLM call with:
+    ``auxiliary.title_generation.enabled: false``.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+    except Exception:
+        return True
+
+    aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
+    task_config = aux.get("title_generation", {}) if isinstance(aux, dict) else {}
+    if not isinstance(task_config, dict):
+        return True
+
+    raw = task_config.get("enabled", True)
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        return raw.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+    return bool(raw)
+
+
 def maybe_auto_title(
     session_db,
     session_id: str,
@@ -143,9 +169,14 @@ def maybe_auto_title(
     """Fire-and-forget title generation after the first exchange.
 
     Only generates a title when:
+    - ``auxiliary.title_generation.enabled`` is not false
     - This appears to be the first user→assistant exchange
     - No title is already set
     """
+    if not _title_generation_enabled():
+        logger.debug("Auto-title generation disabled by config")
+        return
+
     if not session_db or not session_id or not user_message or not assistant_response:
         return
 
