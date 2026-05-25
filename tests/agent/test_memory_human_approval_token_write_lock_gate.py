@@ -205,6 +205,15 @@ def test_write_lock_checklist_is_deterministic():
     ]
 
 
+def test_valid_token_write_lock_gate_id_matches_v0_1_baseline():
+    gate = create_human_approval_token_write_lock_gate(
+        _dry_run(),
+        operator="token-write-lock-operator",
+    )
+
+    assert gate["gate_id"] == "memory-human-approval-token-write-lock-gate:v0.1:542fbd0ab45dea4f"
+
+
 def test_input_token_dry_run_is_not_mutated():
     dry_run = _dry_run()
     before = deepcopy(dry_run)

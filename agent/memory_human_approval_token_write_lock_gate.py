@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from copy import deepcopy
 from typing import Any, Mapping
 
@@ -11,6 +9,13 @@ from agent.memory_human_approval_token_issuance_dry_run import (
     explain_human_approval_token_issuance_dry_run,
     recommend_human_approval_token_issuance_dry_run_action,
     validate_human_approval_token_issuance_dry_run,
+)
+from agent.memory_read_only_candidate_utils import (
+    build_stable_digest,
+    deep_copy_mapping,
+    summarize_candidates,
+    validate_forbidden_true_keys_false_or_absent,
+    validate_policy_flags,
 )
 
 
@@ -253,12 +258,8 @@ def validate_human_approval_token_write_lock_gate(gate: Mapping[str, Any]) -> di
         errors.append("source_pattern_ids_must_match_source_token_issuance_dry_run_snapshot")
     if gate.get("source_fact_ids") != list(source_snapshot.get("source_fact_ids", []) or []):
         errors.append("source_fact_ids_must_match_source_token_issuance_dry_run_snapshot")
-    for forbidden_key in _FORBIDDEN_TRUE_KEYS:
-        if gate.get(forbidden_key) is True:
-            errors.append(f"{forbidden_key}_must_be_false_or_absent")
-    for key, expected in MEMORY_HUMAN_APPROVAL_TOKEN_WRITE_LOCK_GATE_POLICY.items():
-        if policy.get(key) is not expected:
-            errors.append(f"policy_{key}_must_be_{str(expected).lower()}")
+    errors.extend(validate_forbidden_true_keys_false_or_absent(gate, _FORBIDDEN_TRUE_KEYS))
+    errors.extend(validate_policy_flags(policy, MEMORY_HUMAN_APPROVAL_TOKEN_WRITE_LOCK_GATE_POLICY))
 
     return {"valid": not errors, "errors": _dedupe(errors)}
 
@@ -353,20 +354,13 @@ def recommend_human_approval_token_write_lock_action(gate: Mapping[str, Any]) ->
 def summarize_human_approval_token_write_lock_gates(
     gates: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
 ) -> dict[str, Any]:
-    by_block_type: dict[str, int] = {}
-    by_status: dict[str, int] = {}
-    by_lock_reason: dict[str, int] = {}
+    candidate_summary = summarize_candidates(gates, "gate_status")
+    lock_reason_summary = summarize_candidates(gates, "lock_reason")
     locked_count = 0
     eligible_count = 0
     valid_count = 0
     invalid_count = 0
     for gate in gates:
-        block_type = str(gate.get("block_type"))
-        by_block_type[block_type] = by_block_type.get(block_type, 0) + 1
-        status = str(gate.get("gate_status"))
-        by_status[status] = by_status.get(status, 0) + 1
-        reason = str(gate.get("lock_reason"))
-        by_lock_reason[reason] = by_lock_reason.get(reason, 0) + 1
         if gate.get("gate_status") == MEMORY_HUMAN_APPROVAL_TOKEN_WRITE_LOCK_GATE_LOCKED:
             locked_count += 1
         if gate.get("gate_status") == MEMORY_HUMAN_APPROVAL_TOKEN_WRITE_LOCK_GATE_ELIGIBLE:
@@ -382,9 +376,9 @@ def summarize_human_approval_token_write_lock_gates(
         "eligible_count": eligible_count,
         "valid_count": valid_count,
         "invalid_count": invalid_count,
-        "by_block_type": dict(sorted(by_block_type.items())),
-        "by_status": dict(sorted(by_status.items())),
-        "by_lock_reason": dict(sorted(by_lock_reason.items())),
+        "by_block_type": candidate_summary["by_block_type"],
+        "by_status": candidate_summary["by_status"],
+        "by_lock_reason": lock_reason_summary["by_status"],
         "policy": dict(MEMORY_HUMAN_APPROVAL_TOKEN_WRITE_LOCK_GATE_POLICY),
     }
 
@@ -527,12 +521,11 @@ def _gate_id(gate: Mapping[str, Any]) -> str:
         "token_dry_run_validation": gate.get("token_dry_run_validation", {}),
         "policy": gate.get("policy", {}),
     }
-    payload = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str)
-    return f"memory-human-approval-token-write-lock-gate:v0.1:{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]}"
+    return build_stable_digest("memory-human-approval-token-write-lock-gate:v0.1", identity)
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
-    return deepcopy(dict(value)) if isinstance(value, Mapping) else {}
+    return deep_copy_mapping(value)
 
 
 def _dedupe(values: list[str]) -> list[str]:
