@@ -167,6 +167,78 @@ class TestInjectEnvVarsFromManifest:
         assert OPTIONAL_ENV_VARS == before
 
 
+# ── kind → UI category mapping ───────────────────────────────────────────────
+
+
+def _write_manifest(plugin_dir: Path, kind: str | None, env_name: str = "DEMO_VAR") -> Path:
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    body: dict = {
+        "name": plugin_dir.name,
+        "label": plugin_dir.name.title(),
+        "requires_env": [{"name": env_name, "description": "x"}],
+    }
+    if kind is not None:
+        body["kind"] = kind
+    manifest_path = plugin_dir / "plugin.yaml"
+    manifest_path.write_text(yaml.dump(body), encoding="utf-8")
+    return manifest_path
+
+
+class TestKindToCategoryMapping:
+    """`kind:` field overrides the caller's default_category so dashboard UI renders them."""
+
+    def test_kind_platform_maps_to_messaging(self, tmp_path, snapshot_optional_env_vars):
+        manifest_path = _write_manifest(tmp_path / "max-messenger", kind="platform", env_name="MAX_TOKEN_TEST")
+        _inject_env_vars_from_manifest(manifest_path, tmp_path / "max-messenger", "plugins")
+        assert OPTIONAL_ENV_VARS["MAX_TOKEN_TEST"]["category"] == "messaging"
+
+    def test_kind_tool_maps_to_tool(self, tmp_path, snapshot_optional_env_vars):
+        manifest_path = _write_manifest(tmp_path / "demo-tool", kind="tool", env_name="DEMO_TOOL_VAR")
+        _inject_env_vars_from_manifest(manifest_path, tmp_path / "demo-tool", "plugins")
+        assert OPTIONAL_ENV_VARS["DEMO_TOOL_VAR"]["category"] == "tool"
+
+    def test_kind_mcp_maps_to_tool(self, tmp_path, snapshot_optional_env_vars):
+        manifest_path = _write_manifest(tmp_path / "demo-mcp", kind="mcp", env_name="DEMO_MCP_VAR")
+        _inject_env_vars_from_manifest(manifest_path, tmp_path / "demo-mcp", "plugins")
+        assert OPTIONAL_ENV_VARS["DEMO_MCP_VAR"]["category"] == "tool"
+
+    def test_kind_provider_maps_to_provider(self, tmp_path, snapshot_optional_env_vars):
+        manifest_path = _write_manifest(tmp_path / "demo-provider", kind="provider", env_name="DEMO_PROV_VAR")
+        _inject_env_vars_from_manifest(manifest_path, tmp_path / "demo-provider", "plugins")
+        assert OPTIONAL_ENV_VARS["DEMO_PROV_VAR"]["category"] == "provider"
+
+    def test_kind_model_provider_maps_to_provider(self, tmp_path, snapshot_optional_env_vars):
+        manifest_path = _write_manifest(tmp_path / "demo-mprov", kind="model-provider", env_name="DEMO_MPROV_VAR")
+        _inject_env_vars_from_manifest(manifest_path, tmp_path / "demo-mprov", "plugins")
+        assert OPTIONAL_ENV_VARS["DEMO_MPROV_VAR"]["category"] == "provider"
+
+    def test_unknown_kind_falls_back_to_default_category(self, tmp_path, snapshot_optional_env_vars):
+        manifest_path = _write_manifest(tmp_path / "demo-weird", kind="weird-thing", env_name="DEMO_WEIRD_VAR")
+        _inject_env_vars_from_manifest(manifest_path, tmp_path / "demo-weird", "plugins")
+        assert OPTIONAL_ENV_VARS["DEMO_WEIRD_VAR"]["category"] == "plugins"
+
+    def test_missing_kind_falls_back_to_default_category(self, tmp_path, snapshot_optional_env_vars):
+        manifest_path = _write_manifest(tmp_path / "demo-nokind", kind=None, env_name="DEMO_NOKIND_VAR")
+        _inject_env_vars_from_manifest(manifest_path, tmp_path / "demo-nokind", "setting")
+        assert OPTIONAL_ENV_VARS["DEMO_NOKIND_VAR"]["category"] == "setting"
+
+    def test_explicit_entry_category_wins_over_kind_mapping(self, tmp_path, snapshot_optional_env_vars):
+        # Entry-level `category:` overrides everything (kind-derived and default).
+        plugin_dir = tmp_path / "demo-explicit"
+        plugin_dir.mkdir()
+        manifest_path = plugin_dir / "plugin.yaml"
+        manifest_path.write_text(yaml.dump({
+            "name": "demo-explicit",
+            "label": "Demo",
+            "kind": "platform",
+            "requires_env": [
+                {"name": "DEMO_EXPLICIT_VAR", "description": "x", "category": "setting"},
+            ],
+        }), encoding="utf-8")
+        _inject_env_vars_from_manifest(manifest_path, plugin_dir, "plugins")
+        assert OPTIONAL_ENV_VARS["DEMO_EXPLICIT_VAR"]["category"] == "setting"
+
+
 # ── _inject_env_vars_from_plugins_dir ────────────────────────────────────────
 
 

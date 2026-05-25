@@ -5480,6 +5480,18 @@ _inject_profile_env_vars()
 
 _plugin_env_vars_injected = False
 
+# Maps a plugin manifest's ``kind:`` to the UI category bucket the dashboard
+# renders. Without this, user-installed plugins land in a category the
+# frontend doesn't render (EnvPage.tsx only iterates messaging/tool/setting/
+# provider), and their env vars are silently dropped from KEYS / CONFIG.
+_KIND_TO_UI_CATEGORY = {
+    "platform": "messaging",
+    "tool": "tool",
+    "mcp": "tool",
+    "provider": "provider",
+    "model-provider": "provider",
+}
+
 
 def _merge_plugin_env_entry(name: str, meta: dict, label: str, default_category: str) -> None:
     """Merge one ``requires_env`` / ``optional_env`` entry into OPTIONAL_ENV_VARS.
@@ -5523,14 +5535,15 @@ def _inject_env_vars_from_manifest(manifest_path: Path, plugin_dir: Path, defaul
         return
     if not isinstance(manifest, dict):
         return
+    effective_category = _KIND_TO_UI_CATEGORY.get(manifest.get("kind"), default_category)
     label = manifest.get("label") or manifest.get("name") or plugin_dir.name
     entries = list(manifest.get("requires_env") or [])
     entries.extend(manifest.get("optional_env") or [])
     for entry in entries:
         if isinstance(entry, str):
-            _merge_plugin_env_entry(entry, {}, label, default_category)
+            _merge_plugin_env_entry(entry, {}, label, effective_category)
         elif isinstance(entry, dict) and entry.get("name"):
-            _merge_plugin_env_entry(entry["name"], entry, label, default_category)
+            _merge_plugin_env_entry(entry["name"], entry, label, effective_category)
 
 
 def _inject_env_vars_from_plugins_dir(
