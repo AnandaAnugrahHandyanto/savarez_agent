@@ -195,6 +195,10 @@ class TestSkillMatchesPlatformTermux:
         fm = {"platforms": ["macos"]}
         with patch("agent.skill_utils.sys.platform", "darwin"), patch(
             "agent.skill_utils.is_termux", return_value=False
+        ):
+            assert skill_matches_platform(fm) is True
+
+
 class TestSkillMatchesPlatformFreeBSD:
     """FreeBSD reports sys.platform as "freebsd15" (etc.). Skills tagged
     platforms:[linux] must load there because FreeBSD is a POSIX-compatible

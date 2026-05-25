@@ -151,9 +151,6 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
     if not isinstance(platforms, list):
         platforms = [platforms]
     current = sys.platform
-    # FreeBSD is POSIX-compatible; treat it as linux for skill compatibility.
-    if current.startswith("freebsd"):
-        current = "linux"
     running_in_termux = is_termux()
     for platform in platforms:
         normalized = str(platform).lower().strip()
