@@ -1001,6 +1001,17 @@ def _parse_wake_gate(script_output: str) -> bool:
     return gate.get("wakeAgent", True) is not False
 
 
+def _cron_skill_index_scope(job: dict) -> list[str]:
+    """Return explicit cron-bound skills for scoping the system skill index."""
+    skills = job.get("skills")
+    if skills is None:
+        legacy_skill = job.get("skill")
+        skills = [legacy_skill] if legacy_skill else []
+    elif isinstance(skills, str):
+        skills = [skills]
+    return [str(name).strip() for name in skills if str(name).strip()]
+
+
 def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first.
 
@@ -1640,6 +1651,9 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             session_id=_cron_session_id,
             session_db=_session_db,
         )
+        _cron_skill_scope = _cron_skill_index_scope(job)
+        if _cron_skill_scope:
+            setattr(agent, "_skill_index_scope", _cron_skill_scope)
         
         # Run the agent with an *inactivity*-based timeout: the job can run
         # for hours if it's actively calling tools / receiving stream tokens,

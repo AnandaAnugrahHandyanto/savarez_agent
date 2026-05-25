@@ -266,6 +266,86 @@ class TestBuildSkillsSystemPrompt:
         assert "Debug Python scripts" in result
         assert "available_skills" in result
 
+    def test_scoped_skill_index_hides_unbound_skills(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for name, desc in [
+            ("crawler-news", "Crawl configured source URLs"),
+            ("freshrss-triage", "Read FreshRSS feeds"),
+        ]:
+            skill_dir = tmp_path / "skills" / "cron" / name
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {desc}\n---\n"
+            )
+
+        result = build_skills_system_prompt(scoped_skill_names=["crawler-news"])
+
+        assert "crawler-news" in result
+        assert "Crawl configured source URLs" in result
+        assert "freshrss-triage" not in result
+        assert "Read FreshRSS feeds" not in result
+
+    def test_scoped_skill_index_matches_directory_name(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "cron" / "ai-news-zh"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: localized-news\ndescription: Crawl configured source URLs\n---\n"
+        )
+
+        result = build_skills_system_prompt(scoped_skill_names=["ai-news-zh"])
+
+        assert "localized-news" in result
+        assert "Crawl configured source URLs" in result
+
+    def test_scoped_skill_index_includes_related_skills(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        primary = tmp_path / "skills" / "cron" / "crawler-news"
+        primary.mkdir(parents=True)
+        (primary / "SKILL.md").write_text(
+            "---\n"
+            "name: crawler-news\n"
+            "description: Crawl configured source URLs\n"
+            "metadata:\n"
+            "  hermes:\n"
+            "    related_skills: [shared-news-rules]\n"
+            "---\n"
+        )
+        related = tmp_path / "skills" / "cron" / "shared-news-rules"
+        related.mkdir(parents=True)
+        (related / "SKILL.md").write_text(
+            "---\nname: shared-news-rules\ndescription: Normalize news output\n---\n"
+        )
+        unrelated = tmp_path / "skills" / "cron" / "freshrss-triage"
+        unrelated.mkdir(parents=True)
+        (unrelated / "SKILL.md").write_text(
+            "---\nname: freshrss-triage\ndescription: Read FreshRSS feeds\n---\n"
+        )
+
+        result = build_skills_system_prompt(scoped_skill_names=["crawler-news"])
+
+        assert "crawler-news" in result
+        assert "shared-news-rules" in result
+        assert "Normalize news output" in result
+        assert "freshrss-triage" not in result
+
+    def test_unscoped_skill_index_uses_distinct_cache_entry(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for name in ["first-skill", "second-skill"]:
+            skill_dir = tmp_path / "skills" / "tools" / name
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {name}\n---\n"
+            )
+
+        scoped = build_skills_system_prompt(scoped_skill_names=["first-skill"])
+        unscoped = build_skills_system_prompt()
+
+        assert "first-skill" in scoped
+        assert "second-skill" not in scoped
+        assert "first-skill" in unscoped
+        assert "second-skill" in unscoped
+
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cat_dir = tmp_path / "skills" / "tools"

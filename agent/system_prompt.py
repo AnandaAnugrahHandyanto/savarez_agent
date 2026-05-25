@@ -178,6 +178,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         skills_prompt = _r.build_skills_system_prompt(
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,
+            scoped_skill_names=getattr(agent, "_skill_index_scope", None),
         )
     else:
         skills_prompt = ""

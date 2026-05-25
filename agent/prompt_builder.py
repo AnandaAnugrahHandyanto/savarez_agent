@@ -897,6 +897,15 @@ def _write_skills_snapshot(
         logger.debug("Could not write skills prompt snapshot: %s", e)
 
 
+def _normalize_related_skill_names(raw: object) -> list[str]:
+    """Normalize related/linked skill metadata from skill frontmatter."""
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    return [str(name).strip() for name in raw if str(name).strip()]
+
+
 def _build_snapshot_entry(
     skill_file: Path,
     skills_dir: Path,
@@ -917,6 +926,14 @@ def _build_snapshot_entry(
     if isinstance(platforms, str):
         platforms = [platforms]
 
+    hermes_metadata = frontmatter.get("metadata", {})
+    if isinstance(hermes_metadata, dict):
+        hermes_metadata = hermes_metadata.get("hermes", {})
+    else:
+        hermes_metadata = {}
+    if not isinstance(hermes_metadata, dict):
+        hermes_metadata = {}
+
     return {
         "skill_name": skill_name,
         "category": category,
@@ -924,6 +941,7 @@ def _build_snapshot_entry(
         "description": description,
         "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
+        "related_skills": _normalize_related_skill_names(hermes_metadata.get("related_skills")),
     }
 
 
@@ -981,9 +999,63 @@ def _skill_should_show(
     return True
 
 
+def _normalize_skill_index_scope(skill_names: "list[str] | tuple[str, ...] | set[str] | None") -> set[str] | None:
+    """Normalize an optional skill-index allowlist.
+
+    ``None`` means unscoped/full index. An empty collection means scoped to no
+    skills, which intentionally produces no advertised skill index.
+    """
+    if skill_names is None:
+        return None
+    return {str(name).strip() for name in skill_names if str(name).strip()}
+
+
+def _skill_in_index_scope(
+    frontmatter_name: str,
+    skill_name: str,
+    scoped_skill_names: "set[str] | None",
+) -> bool:
+    """Return True when a skill should appear under the optional scope."""
+    if scoped_skill_names is None:
+        return True
+    return frontmatter_name in scoped_skill_names or skill_name in scoped_skill_names
+
+
+def _expand_skill_index_scope(
+    skill_entries: list[dict],
+    scoped_skill_names: "set[str] | None",
+) -> set[str] | None:
+    """Include skills referenced by explicitly scoped skills.
+
+    Skill metadata commonly uses ``metadata.hermes.related_skills`` for linked
+    procedures.  Cron-bound skills should be able to advertise those linked
+    helpers without exposing the entire global profile index.
+    """
+    if scoped_skill_names is None:
+        return None
+    expanded = set(scoped_skill_names)
+    changed = True
+    while changed:
+        changed = False
+        for entry in skill_entries:
+            if not _skill_in_index_scope(
+                str(entry.get("frontmatter_name", "")),
+                str(entry.get("skill_name", "")),
+                expanded,
+            ):
+                continue
+            for related in entry.get("related_skills") or []:
+                related_name = str(related).strip()
+                if related_name and related_name not in expanded:
+                    expanded.add(related_name)
+                    changed = True
+    return expanded
+
+
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
+    scoped_skill_names: "list[str] | tuple[str, ...] | set[str] | None" = None,
 ) -> str:
     """Build a compact skill index for the system prompt.
 
@@ -998,7 +1070,13 @@ def build_skills_system_prompt(
     scanned alongside the local ``~/.hermes/skills/`` directory.  External dirs
     are read-only — they appear in the index but new skills are always created
     in the local dir.  Local skills take precedence when names collide.
+
+    ``scoped_skill_names`` restricts the advertised index to a fixed set of
+    skill names.  This is used by cron jobs with explicit bound skills so their
+    system prompt does not pre-advertise unrelated skills from the global
+    profile while the bound skill content is already injected in the user turn.
     """
+    scoped_skill_names = _normalize_skill_index_scope(scoped_skill_names)
     skills_dir = get_skills_dir()
     external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
 
@@ -1022,6 +1100,7 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        None if scoped_skill_names is None else tuple(sorted(scoped_skill_names)),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1037,14 +1116,16 @@ def build_skills_system_prompt(
 
     if snapshot is not None:
         # Fast path: use pre-parsed metadata from disk
-        for entry in snapshot.get("skills", []):
-            if not isinstance(entry, dict):
-                continue
+        snapshot_entries = [entry for entry in snapshot.get("skills", []) if isinstance(entry, dict)]
+        scoped_skill_names = _expand_skill_index_scope(snapshot_entries, scoped_skill_names)
+        for entry in snapshot_entries:
             skill_name = entry.get("skill_name") or ""
             category = entry.get("category") or "general"
             frontmatter_name = entry.get("frontmatter_name") or skill_name
             platforms = entry.get("platforms") or []
             if not skill_matches_platform({"platforms": platforms}):
+                continue
+            if not _skill_in_index_scope(frontmatter_name, skill_name, scoped_skill_names):
                 continue
             if frontmatter_name in disabled or skill_name in disabled:
                 continue
@@ -1064,13 +1145,20 @@ def build_skills_system_prompt(
     else:
         # Cold path: full filesystem scan + write snapshot for next time
         skill_entries: list[dict] = []
+        parsed_skill_entries: list[tuple[dict, bool, dict]] = []
         for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
             is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
             entry = _build_snapshot_entry(skill_file, skills_dir, frontmatter, desc)
             skill_entries.append(entry)
+            parsed_skill_entries.append((entry, is_compatible, frontmatter))
+
+        scoped_skill_names = _expand_skill_index_scope(skill_entries, scoped_skill_names)
+        for entry, is_compatible, frontmatter in parsed_skill_entries:
             if not is_compatible:
                 continue
             skill_name = entry["skill_name"]
+            if not _skill_in_index_scope(entry["frontmatter_name"], skill_name, scoped_skill_names):
+                continue
             if entry["frontmatter_name"] in disabled or skill_name in disabled:
                 continue
             if not _skill_should_show(
@@ -1116,15 +1204,27 @@ def build_skills_system_prompt(
     for ext_dir in external_dirs:
         if not ext_dir.exists():
             continue
+        parsed_external_entries: list[tuple[dict, bool, dict]] = []
         for skill_file in iter_skill_index_files(ext_dir, "SKILL.md"):
             try:
                 is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
+                entry = _build_snapshot_entry(skill_file, ext_dir, frontmatter, desc)
+                parsed_external_entries.append((entry, is_compatible, frontmatter))
+            except Exception as e:
+                logger.debug("Error reading external skill %s: %s", skill_file, e)
+        scoped_skill_names = _expand_skill_index_scope(
+            [entry for entry, _is_compatible, _frontmatter in parsed_external_entries],
+            scoped_skill_names,
+        )
+        for entry, is_compatible, frontmatter in parsed_external_entries:
+            try:
                 if not is_compatible:
                     continue
-                entry = _build_snapshot_entry(skill_file, ext_dir, frontmatter, desc)
                 skill_name = entry["skill_name"]
                 frontmatter_name = entry["frontmatter_name"]
                 if frontmatter_name in seen_skill_names:
+                    continue
+                if not _skill_in_index_scope(frontmatter_name, skill_name, scoped_skill_names):
                     continue
                 if frontmatter_name in disabled or skill_name in disabled:
                     continue
@@ -1139,7 +1239,7 @@ def build_skills_system_prompt(
                     (frontmatter_name, entry["description"])
                 )
             except Exception as e:
-                logger.debug("Error reading external skill %s: %s", skill_file, e)
+                logger.debug("Error reading external skill metadata %s: %s", entry, e)
 
         # External category descriptions
         for desc_file in iter_skill_index_files(ext_dir, "DESCRIPTION.md"):
