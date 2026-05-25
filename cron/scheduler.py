@@ -1574,7 +1574,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             provider_sort=pr.get("sort"),
             openrouter_min_coding_score=(_cfg.get("openrouter") or {}).get("min_coding_score"),
             enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
-            disabled_toolsets=["cronjob", "messaging", "clarify"],
+            disabled_toolsets=["cronjob", "messaging", "clarify", "memory"],
             quiet_mode=True,
             # Cron jobs should always inherit the user's SOUL.md identity from
             # HERMES_HOME. When a workdir is configured, also inject project
