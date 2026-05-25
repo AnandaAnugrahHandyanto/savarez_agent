@@ -737,6 +737,64 @@ def test_reconstructed_order_uses_snake_case_repo_alias(conn, snake_case_brief):
     assert reconstructed.repo_or_workspace == snake_case_brief["target_repo_or_workspace"]
 
 
+def test_production_order_show_events_json_is_strict_json(capsys, conn, sample_brief):
+    """``show --events --json`` emits one strict JSON object with events embedded."""
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="show",
+        production_order_id=po.production_order_id,
+        board=None,
+        events=True,
+        json=True,
+    ))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    parsed = json.loads(captured.out)
+    assert parsed["production_order_id"] == po.production_order_id
+    assert "\n  Events (" not in captured.out
+    assert "events" in parsed
+    assert [event["event_type"] for event in parsed["events"]] == [
+        "brief_approved",
+        "production_order_created",
+        "kanban_graph_created",
+        "state_transitioned",
+        "handoff_created",
+    ]
+
+
+def test_production_order_show_events_text_still_prints_block(capsys, conn, sample_brief):
+    """``show --events`` keeps human-readable event output outside JSON mode."""
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="show",
+        production_order_id=po.production_order_id,
+        board=None,
+        events=True,
+        json=False,
+    ))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "\n  Events (5):" in captured.out
+    assert "brief_approved" in captured.out
+    assert "handoff_created" in captured.out
+
+
 # ---------------------------------------------------------------------------
 # Negative Tests
 # ---------------------------------------------------------------------------

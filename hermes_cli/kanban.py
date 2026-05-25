@@ -2856,6 +2856,21 @@ def _cmd_production_order(args: argparse.Namespace) -> int:
             return 1
         po = match[0]
 
+        events = []
+        if getattr(args, "events", False):
+            try:
+                with kb.connect(board=board) as conn:
+                    events = conn.execute(
+                        "SELECT * FROM production_order_events "
+                        "WHERE production_order_id = ? "
+                        "ORDER BY id",
+                        (po_id,),
+                    ).fetchall()
+            except Exception as exc:
+                print(f"kanban production-order show: events: {exc}",
+                      file=sys.stderr)
+                return 1
+
         if getattr(args, "json", False):
             result = {
                 "production_order_id": po.production_order_id,
@@ -2875,34 +2890,37 @@ def _cmd_production_order(args: argparse.Namespace) -> int:
                 ],
                 "blockers": po.blockers,
             }
+            if getattr(args, "events", False):
+                result["events"] = [
+                    {
+                        "id": ev["id"],
+                        "production_order_id": ev["production_order_id"],
+                        "timestamp": ev["timestamp"],
+                        "event_type": ev["event_type"],
+                        "from_state": ev["from_state"],
+                        "to_state": ev["to_state"],
+                        "owner_profile": ev["owner_profile"],
+                        "kanban_card_id": ev["kanban_card_id"],
+                        "result": ev["result"],
+                        "error": ev["error"],
+                        "next_action": ev["next_action"],
+                    }
+                    for ev in events
+                ]
             print(stdlib_json.dumps(result, indent=2))
         else:
             print(format_production_order_status(po))
-
-        # Show events if requested.
-        if getattr(args, "events", False):
-            try:
-                with kb.connect(board=board) as conn:
-                    events = conn.execute(
-                        "SELECT * FROM production_order_events "
-                        "WHERE production_order_id = ? "
-                        "ORDER BY id",
-                        (po_id,),
-                    ).fetchall()
-            except Exception as exc:
-                print(f"  (events: {exc})")
-                return 1
-
-            if not events:
-                print("  No events logged.")
-            else:
-                print(f"\n  Events ({len(events)}):")
-                for ev in events:
-                    print(
-                        f"    [{ev['id']}] {ev['event_type']} "
-                        f"{ev['from_state'] or ''} → {ev['to_state'] or ''} "
-                        f"({ev['owner_profile'] or '?'})"
-                    )
+            if getattr(args, "events", False):
+                if not events:
+                    print("  No events logged.")
+                else:
+                    print(f"\n  Events ({len(events)}):")
+                    for ev in events:
+                        print(
+                            f"    [{ev['id']}] {ev['event_type']} "
+                            f"{ev['from_state'] or ''} → {ev['to_state'] or ''} "
+                            f"({ev['owner_profile'] or '?'})"
+                        )
 
         return 0
 
