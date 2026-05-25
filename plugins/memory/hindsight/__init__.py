@@ -1441,9 +1441,20 @@ class HindsightMemoryProvider(MemoryProvider):
                          self._turn_counter, self._turn_counter + (self._retain_every_n_turns - self._turn_counter % self._retain_every_n_turns))
             return
 
-        logger.debug("sync_turn: retaining %d turns, total session content %d chars",
-                     len(self._session_turns), sum(len(t) for t in self._session_turns))
-        content = "[" + ",".join(self._session_turns) + "]"
+        document_id, update_mode = self._resolve_retain_target(self._document_id)
+        if update_mode == "append":
+            # Modern Hindsight appends to the server-side document, so retain
+            # only the turns buffered since the previous retain. Re-sending
+            # prior turns would make Hindsight re-extract duplicate facts.
+            turns_to_retain = list(self._session_turns)
+            self._session_turns = []
+        else:
+            # Legacy Hindsight replaces the document on each retain. Keep the
+            # cumulative resend so earlier turns are not overwritten/lost.
+            turns_to_retain = list(self._session_turns)
+        logger.debug("sync_turn: retaining %d buffered turns, content %d chars, mode=%s",
+                     len(turns_to_retain), sum(len(t) for t in turns_to_retain), update_mode)
+        content = "[" + ",".join(turns_to_retain) + "]"
 
         lineage_tags: list[str] = []
         if self._session_id:
@@ -1454,11 +1465,10 @@ class HindsightMemoryProvider(MemoryProvider):
         # Snapshot the state needed for the retain. The writer may run after
         # _session_turns / _turn_index are mutated by a later sync_turn().
         metadata_snapshot = self._build_metadata(
-            message_count=len(self._session_turns) * 2,
+            message_count=len(turns_to_retain) * 2,
             turn_index=self._turn_index,
         )
-        num_turns = len(self._session_turns)
-        document_id, update_mode = self._resolve_retain_target(self._document_id)
+        num_turns = len(turns_to_retain)
         bank_id = self._bank_id
         retain_async_flag = self._retain_async
         retain_context = self._retain_context

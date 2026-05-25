@@ -756,8 +756,12 @@ class TestSyncTurn:
         assert item["metadata"]["turn_index"] == "3"
         assert item["metadata"]["message_count"] == "6"
 
-    def test_sync_turn_accumulates_full_session(self, provider_with_config):
-        """Each retain sends the ENTIRE session, not just the latest batch."""
+    def test_sync_turn_append_mode_retains_only_new_buffered_turns(self, provider_with_config, monkeypatch):
+        """Append-capable APIs get only new turns, not the already-retained session."""
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._check_api_supports_update_mode_append",
+            lambda *a, **kw: True,
+        )
         p = provider_with_config(retain_every_n_turns=2)
 
         p.sync_turn("turn1-user", "turn1-asst")
@@ -771,7 +775,35 @@ class TestSyncTurn:
         p._retain_queue.join()
 
         content = p._client.aretain_batch.call_args.kwargs["items"][0]["content"]
-        # Should contain ALL turns from the session
+        # Previously-retained turns must not be sent again, otherwise
+        # Hindsight extracts duplicate facts on every retain.
+        assert "turn1-user" not in content
+        assert "turn2-user" not in content
+        assert "turn3-user" in content
+        assert "turn4-user" in content
+
+    def test_sync_turn_legacy_replace_mode_keeps_cumulative_session(self, provider_with_config, monkeypatch):
+        """Legacy APIs replace documents, so each retain must resend prior turns."""
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._check_api_supports_update_mode_append",
+            lambda *a, **kw: False,
+        )
+        p = provider_with_config(retain_every_n_turns=2)
+
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+        p._retain_queue.join()
+
+        p._client.aretain_batch.reset_mock()
+
+        p.sync_turn("turn3-user", "turn3-asst")
+        p.sync_turn("turn4-user", "turn4-asst")
+        p._retain_queue.join()
+
+        call_kwargs = p._client.aretain_batch.call_args.kwargs
+        content = call_kwargs["items"][0]["content"]
+        assert call_kwargs["document_id"].startswith("test-session-")
+        assert "update_mode" not in call_kwargs["items"][0]
         assert "turn1-user" in content
         assert "turn2-user" in content
         assert "turn3-user" in content
