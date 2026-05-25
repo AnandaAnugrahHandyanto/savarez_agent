@@ -8311,7 +8311,7 @@ class HermesCLI:
                 "The current conversation history will be discarded.",
                 cmd_original=cmd_original,
             ) is None:
-                return
+                return True
             self.new_session(silent=True)
             _clear_output_history()
             # Clear terminal screen.  Inside the TUI, Rich's console.clear()
@@ -8445,7 +8445,7 @@ class HermesCLI:
                 "The current conversation history will be discarded.",
                 cmd_original=cmd_original,
             ) is None:
-                return
+                return True
             self.new_session(title=title)
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
@@ -8472,7 +8472,7 @@ class HermesCLI:
                 "This removes the last user/assistant exchange from history.",
                 cmd_original=cmd_original,
             ) is None:
-                return
+                return True
             self.undo_last()
         elif canonical == "branch":
             self._handle_branch_command(cmd_original)
@@ -14688,9 +14688,9 @@ class HermesCLI:
                     except (Exception, KeyboardInterrupt) as e:
                         logger.debug("Could not delete session on exit: %s", e)
             # Plugin hook: on_session_end — safety net for interrupted exits.
-            # run_conversation() already fires this per-turn on normal completion,
-            # so only fire here if the agent was mid-turn (_agent_running) when
-            # the exit occurred, meaning run_conversation's hook didn't fire.
+            # run_conversation() fires on_turn_end per-message, not
+            # on_session_end, so only fire here if the agent was mid-turn
+            # (_agent_running) when the exit occurred.
             if self.agent and getattr(self, '_agent_running', False):
                 try:
                     from hermes_cli.plugins import invoke_hook as _invoke_hook
