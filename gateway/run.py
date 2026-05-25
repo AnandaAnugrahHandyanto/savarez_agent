@@ -11555,9 +11555,16 @@ class GatewayRunner:
         audio_path = None
         actual_path = None
         try:
-            from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
+            from tools.tts_tool import (
+                text_to_speech_tool,
+                _strip_markdown_for_tts,
+                resolve_tts_text_limit,
+            )
 
-            tts_text = _strip_markdown_for_tts(text[:4000])
+            tts_text = _strip_markdown_for_tts(text)
+            max_chars = resolve_tts_text_limit()
+            if isinstance(max_chars, int) and max_chars > 0:
+                tts_text = tts_text[:max_chars]
             if not tts_text:
                 return
 

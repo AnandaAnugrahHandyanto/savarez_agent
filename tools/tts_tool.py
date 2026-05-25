@@ -278,6 +278,19 @@ def _resolve_max_text_length(
     return FALLBACK_MAX_TEXT_LENGTH
 
 
+def resolve_tts_text_limit(tts_config: Optional[Dict[str, Any]] = None) -> int:
+    """Return the active TTS provider's input-character cap.
+
+    Gateway auto-voice replies should use the same cap as
+    ``text_to_speech_tool`` instead of a separate hard-coded 4000-char limit.
+    The provider-specific resolver still enforces safe bounds and supports
+    user overrides such as ``tts.providers.<name>.max_text_length`` for custom
+    command providers.
+    """
+    cfg = tts_config if isinstance(tts_config, dict) else _load_tts_config()
+    return _resolve_max_text_length(_get_provider(cfg), cfg)
+
+
 # ===========================================================================
 # Config loader -- reads tts: section from ~/.hermes/config.yaml
 # ===========================================================================

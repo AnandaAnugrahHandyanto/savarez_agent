@@ -434,6 +434,31 @@ class TestSendVoiceReply:
         assert call_args.kwargs.get("chat_id") == "123"
 
     @pytest.mark.asyncio
+    async def test_send_voice_reply_uses_tts_provider_limit_not_legacy_4000(self, runner):
+        mock_adapter = AsyncMock()
+        mock_adapter.send_voice = AsyncMock()
+        event = _make_event()
+        runner.adapters[event.source.platform] = mock_adapter
+
+        captured = {}
+
+        def fake_tts(*, text, output_path=None):
+            captured["text"] = text
+            return json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
+
+        long_text = "A" * 6000
+        with patch("tools.tts_tool.text_to_speech_tool", side_effect=fake_tts), \
+             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("tools.tts_tool.resolve_tts_text_limit", return_value=12000), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.unlink"), \
+             patch("os.makedirs"):
+            await runner._send_voice_reply(event, long_text)
+
+        assert len(captured["text"]) == 6000
+        mock_adapter.send_voice.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_auto_voice_reply_uses_thread_metadata_helper(self, runner):
         from gateway.config import Platform
 

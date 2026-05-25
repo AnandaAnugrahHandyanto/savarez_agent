@@ -15,6 +15,7 @@ from tools.tts_tool import (
     FALLBACK_MAX_TEXT_LENGTH,
     PROVIDER_MAX_TEXT_LENGTH,
     _resolve_max_text_length,
+    resolve_tts_text_limit,
 )
 
 
@@ -75,6 +76,19 @@ class TestResolveMaxTextLength:
     def test_missing_provider_section_uses_default(self):
         cfg = {"provider": "openai"}  # no "openai" key
         assert _resolve_max_text_length("openai", cfg) == 4096
+
+    def test_active_limit_uses_command_provider_override(self):
+        cfg = {
+            "provider": "christopher_knight",
+            "providers": {
+                "christopher_knight": {
+                    "type": "command",
+                    "command": "tts --in {input_path} --out {output_path}",
+                    "max_text_length": 12000,
+                }
+            },
+        }
+        assert resolve_tts_text_limit(cfg) == 12000
 
     # --- ElevenLabs model-aware ---
 

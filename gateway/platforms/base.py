@@ -2229,9 +2229,22 @@ class BasePlatformAdapter(ABC):
     def prepare_tts_text(self, text: str) -> str:
         """Prepare text for TTS. Override to filter tool output, code, etc.
 
-        Default strips markdown formatting and truncates to 4000 chars.
+        Default strips markdown formatting and caps to the active TTS
+        provider's configured input limit. This keeps gateway auto-voice
+        replies aligned with ``text_to_speech_tool`` instead of imposing a
+        second 4000-character ceiling.
         """
-        return re.sub(r'[*_`#\[\]()]', '', text)[:4000].strip()
+        cleaned = re.sub(r'[*_`#\[\]()]', '', text).strip()
+        if not cleaned:
+            return ""
+        try:
+            from tools.tts_tool import resolve_tts_text_limit
+            max_chars = resolve_tts_text_limit()
+        except Exception:
+            max_chars = 4000
+        if isinstance(max_chars, int) and max_chars > 0:
+            cleaned = cleaned[:max_chars]
+        return cleaned.strip()
 
     async def play_tts(
         self,
