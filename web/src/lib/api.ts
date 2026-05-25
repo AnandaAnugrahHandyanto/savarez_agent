@@ -63,6 +63,13 @@ async function getSessionToken(): Promise<string> {
 
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getAgents: (params: { limit?: number; source?: string; status?: string } = {}) => {
+    const qs = new URLSearchParams();
+    qs.set("limit", String(params.limit ?? 50));
+    if (params.source && params.source !== "all") qs.set("source", params.source);
+    if (params.status && params.status !== "all") qs.set("status", params.status);
+    return fetchJSON<AgentsResponse>(`/api/agents?${qs.toString()}`);
+  },
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -380,6 +387,68 @@ export interface StatusResponse {
   latest_config_version: number;
   release_date: string;
   version: string;
+}
+
+export type AgentStatus =
+  | "working"
+  | "idle"
+  | "needs_input"
+  | "blocked"
+  | "failed"
+  | "done"
+  | "scheduled";
+
+export type AgentKind =
+  | "openclaw"
+  | "hermes_session"
+  | "codex_worker"
+  | "omx_worker"
+  | "cron_job"
+  | "kanban_worker"
+  | "background_process";
+
+export type AgentAction =
+  | "peek"
+  | "open"
+  | "reply"
+  | "wake"
+  | "dispatch"
+  | "pause"
+  | "resume"
+  | "stop";
+
+export interface AgentSummary {
+  id: string;
+  name: string;
+  kind: AgentKind;
+  avatar: "dog" | "hermes" | "codex" | "omx" | "bot" | "clock" | "kanban" | "terminal";
+  status: AgentStatus;
+  source: string;
+  location?: string | null;
+  title?: string | null;
+  current_task?: string | null;
+  progress?: number | null;
+  started_at?: number | string | null;
+  last_signal_at?: number | string | null;
+  last_signal?: string | null;
+  links: Array<{ label: string; href: string }>;
+  actions: AgentAction[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface AgentEvent {
+  ts: number | string;
+  agent_id: string;
+  level: "info" | "warning" | "error";
+  message: string;
+}
+
+export interface AgentsResponse {
+  generated_at: number | string;
+  summary: Record<AgentStatus, number>;
+  agents: AgentSummary[];
+  events: AgentEvent[];
+  filters?: { source: string; status: string };
 }
 
 export interface SessionInfo {
