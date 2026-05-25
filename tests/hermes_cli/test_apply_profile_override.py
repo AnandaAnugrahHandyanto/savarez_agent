@@ -139,3 +139,59 @@ class TestApplyProfileOverrideHermesHomeGuard:
         _apply_profile_override()
 
         assert os.environ.get("HERMES_HOME") is None
+
+
+class TestApplyProfileOverrideCronSkip:
+    """Regression guard for issue #32046.
+
+    Cron commands use --profile to pin a job's target profile, NOT to switch
+    the CLI's HERMES_HOME.  If we switch HERMES_HOME here, the cron job gets
+    stored in the target profile's jobs.json (where no scheduler ticks it)
+    instead of the active profile's jobs.json with profile= pin set.
+    """
+
+    def test_cron_create_with_profile_does_not_switch_hermes_home(
+        self, tmp_path, monkeypatch
+    ):
+        """hermes cron create --profile oracle must NOT switch HERMES_HOME.
+
+        The --profile flag for cron is a job-level pin, not a CLI-level
+        HERMES_HOME switch.  The job should land in the active profile's
+        jobs.json with profile='oracle' set.
+        """
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+        (hermes_root / "profiles" / "oracle").mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(
+            sys, "argv",
+            ["hermes", "cron", "create", "0 3 * * *", "do something", "--profile", "oracle"],
+        )
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        # HERMES_HOME must NOT be set — cron command should not switch profiles
+        assert os.environ.get("HERMES_HOME") is None
+
+    def test_cron_list_with_profile_does_not_switch_hermes_home(
+        self, tmp_path, monkeypatch
+    ):
+        """hermes cron list (any cron subcommand) must not trigger profile switch."""
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+        (hermes_root / "profiles" / "oracle").mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(
+            sys, "argv",
+            ["hermes", "cron", "list", "--profile", "oracle"],
+        )
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        assert os.environ.get("HERMES_HOME") is None

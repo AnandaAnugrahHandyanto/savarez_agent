@@ -181,10 +181,22 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # Falls back to ~/.hermes/active_profile for sticky default.
 # ---------------------------------------------------------------------------
 def _apply_profile_override() -> None:
-    """Pre-parse --profile/-p and set HERMES_HOME before module imports."""
+    """Pre-parse --profile/-p and set HERMES_HOME before module imports.
+
+    Cron commands use --profile to pin a job's target profile, NOT to switch
+    the CLI's HERMES_HOME.  If we switch HERMES_HOME here, the cron job gets
+    stored in the target profile's jobs.json (where no scheduler ticks it)
+    instead of the active profile's jobs.json with profile= pin set.
+    See issue #32046.
+    """
     argv = sys.argv[1:]
     profile_name = None
     consume = 0
+
+    # 0. Skip profile override for cron subcommands — their --profile flag
+    # is a job-level pin, not a CLI-level HERMES_HOME switch.
+    if argv and argv[0] == "cron":
+        return
 
     # 1. Check for explicit -p / --profile flag
     for i, arg in enumerate(argv):
