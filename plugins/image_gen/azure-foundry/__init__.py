@@ -17,8 +17,9 @@ Resolution order (first hit wins):
 
        AZURE_FOUNDRY_IMAGE_ENDPOINT   — Azure resource endpoint
                                         e.g. https://my-resource.openai.azure.com
-       AZURE_FOUNDRY_IMAGE_KEY        — API key
+       AZURE_FOUNDRY_IMAGE_KEY        — API key (not needed for Entra ID)
        AZURE_FOUNDRY_IMAGE_DEPLOYMENT — deployment name (default: gpt-image-2)
+       AZURE_FOUNDRY_IMAGE_AUTH_MODE  — ``api_key`` (default) or ``entra_id``
        AZURE_FOUNDRY_IMAGE_QUALITY    — quality tier: low / medium / high (default: medium)
 
 2. ``image_gen.azure_foundry`` section in ``config.yaml``::
@@ -27,11 +28,19 @@ Resolution order (first hit wins):
          provider: azure_foundry
          azure_foundry:
            endpoint: "https://my-resource.openai.azure.com"
-           api_key_env: "AZURE_FOUNDRY_IMAGE_KEY"   # env var name, not the key itself
            deployment_name: "gpt-image-2"
+           auth_mode: "api_key"         # or "entra_id" for keyless auth
 
-3. Global ``AZURE_OPENAI_*`` fallback env vars
-   (``AZURE_OPENAI_API_KEY`` + ``AZURE_OPENAI_ENDPOINT``).
+Authentication
+--------------
+**API key** (default): set ``AZURE_FOUNDRY_IMAGE_KEY`` in ``.env``.
+
+**Microsoft Entra ID**: keyless RBAC auth via ``azure-identity``'s
+``DefaultAzureCredential`` chain (az login, managed identity, workload
+identity, service principal env vars). Set
+``image_gen.azure_foundry.auth_mode: entra_id`` in ``config.yaml``
+or ``AZURE_FOUNDRY_IMAGE_AUTH_MODE=entra_id``. No API key needed;
+requires the ``Azure AI User`` role on the Foundry resource.
 
 Quality
 -------
@@ -121,37 +130,32 @@ def _load_azure_foundry_config() -> Dict[str, Any]:
 
 
 def _resolve_credentials() -> Dict[str, Any]:
-    """Resolve endpoint, API key, and deployment name.
+    """Resolve endpoint, API key, deployment name, and auth mode.
 
-    Returns a dict with keys: ``endpoint``, ``api_key``, ``deployment``.
-    Empty string means not configured.
+    Returns a dict with keys: ``endpoint``, ``api_key``, ``deployment``,
+    ``auth_mode``. ``api_key`` is empty string when ``auth_mode`` is
+    ``"entra_id"``.
     """
     # 1. Dedicated env vars
     endpoint = os.environ.get("AZURE_FOUNDRY_IMAGE_ENDPOINT", "").strip()
     api_key = os.environ.get("AZURE_FOUNDRY_IMAGE_KEY", "").strip()
     deployment = os.environ.get("AZURE_FOUNDRY_IMAGE_DEPLOYMENT", "").strip()
+    auth_mode = os.environ.get("AZURE_FOUNDRY_IMAGE_AUTH_MODE", "").strip().lower()
 
     # 2. config.yaml fills gaps
     cfg = _load_azure_foundry_config()
     if not endpoint:
         endpoint = str(cfg.get("endpoint") or "").strip()
-    if not api_key:
-        key_env = str(cfg.get("api_key_env") or "").strip()
-        if key_env:
-            api_key = os.environ.get(key_env, "").strip()
     if not deployment:
         deployment = str(cfg.get("deployment_name") or "").strip()
-
-    # 3. Global Azure OpenAI fallback (endpoint + key only)
-    if not endpoint:
-        endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
-    if not api_key:
-        api_key = os.environ.get("AZURE_OPENAI_API_KEY", "").strip()
+    if not auth_mode:
+        auth_mode = str(cfg.get("auth_mode") or "").strip().lower()
 
     return {
         "endpoint": endpoint,
         "api_key": api_key,
         "deployment": deployment or DEFAULT_DEPLOYMENT,
+        "auth_mode": auth_mode or "api_key",
     }
 
 
@@ -164,6 +168,7 @@ class AzureFoundryImageGenProvider(ImageGenProvider):
     """Azure AI Foundry gpt-image-2 image generation backend.
 
     Uses ``openai.OpenAI`` with Azure OpenAI v1 ``base_url``.
+    Supports API key and Microsoft Entra ID (keyless) authentication.
     Quality (low / medium / high) is resolved from config, not from the caller.
     """
 
@@ -177,7 +182,11 @@ class AzureFoundryImageGenProvider(ImageGenProvider):
 
     def is_available(self) -> bool:
         creds = _resolve_credentials()
-        return bool(creds.get("endpoint") and creds.get("api_key"))
+        if not creds.get("endpoint"):
+            return False
+        if creds.get("auth_mode") == "entra_id":
+            return True
+        return bool(creds.get("api_key"))
 
     def list_models(self) -> List[Dict[str, Any]]:
         """Return one entry for the configured deployment."""
@@ -196,6 +205,159 @@ class AzureFoundryImageGenProvider(ImageGenProvider):
     def default_model(self) -> Optional[str]:
         return _resolve_credentials()["deployment"]
 
+    def setup_interactive(self, config: dict) -> bool:
+        """Interactive setup wizard for hermes tools.
+
+        Prompts for endpoint URL, deployment name, and auth mode (API key
+        or Microsoft Entra ID).  Saves endpoint/deployment/auth_mode to
+        ``image_gen.azure_foundry`` in config and (for API key mode) the
+        key to ``AZURE_FOUNDRY_IMAGE_KEY`` in .env.
+        """
+        import getpass
+        from hermes_cli.config import get_env_value, save_env_value
+        from hermes_cli.cli_output import print_success
+
+        # Load existing values so the wizard can show defaults.
+        _img = config.get("image_gen") or {}
+        _az = _img.get("azure_foundry") if isinstance(_img, dict) else None
+        cur: dict = _az if isinstance(_az, dict) else {}
+        current_endpoint = str(cur.get("endpoint") or "").strip()
+        current_deployment = str(cur.get("deployment_name") or "").strip()
+        current_auth_mode = str(cur.get("auth_mode") or "api_key").strip().lower()
+        current_key = get_env_value("AZURE_FOUNDRY_IMAGE_KEY") or ""
+
+        print()
+        print("  Azure AI Foundry \u2014 Image Generation Setup")
+        print("  " + "\u2500" * 46)
+        print()
+
+        # ── Step 1: Endpoint URL ──────────────────────────────────────
+        _ep_placeholder = current_endpoint or "https://<resource>.openai.azure.com"
+        try:
+            endpoint_input = input(f"  Endpoint URL [{_ep_placeholder}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\n  Cancelled.")
+            return False
+        effective_endpoint = endpoint_input or current_endpoint
+        if not effective_endpoint:
+            print("  No endpoint provided. Cancelled.")
+            return False
+        if not effective_endpoint.startswith(("http://", "https://")):
+            print(f"  Invalid URL: {effective_endpoint!r} (must start with https://)")
+            return False
+
+        # ── Step 2: Deployment name ───────────────────────────────────
+        _dep_default = current_deployment or DEFAULT_DEPLOYMENT
+        try:
+            dep_input = input(f"  Deployment name [{_dep_default}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\n  Cancelled.")
+            return False
+        effective_deployment = dep_input or _dep_default
+
+        # ── Step 3: Auth mode ─────────────────────────────────────────
+        print()
+        print("  Authentication:")
+        print("    1. API key          (saved to AZURE_FOUNDRY_IMAGE_KEY in .env)")
+        print("    2. Microsoft Entra ID  (keyless \u2014 az login / managed identity / workload identity)")
+        print("       Requires the 'Azure AI User' role on the Foundry resource.")
+        try:
+            _auth_default = "2" if current_auth_mode == "entra_id" else "1"
+            auth_input = (
+                input(f"  Auth mode [1/2] ({_auth_default}): ").strip() or _auth_default
+            )
+        except (KeyboardInterrupt, EOFError):
+            print("\n  Cancelled.")
+            return False
+        use_entra = auth_input == "2"
+        auth_mode_label = "entra_id" if use_entra else "api_key"
+
+        # ── Step 4: Credentials ───────────────────────────────────────
+        effective_key = ""
+
+        if use_entra:
+            try:
+                from agent.azure_identity_adapter import (
+                    EntraIdentityConfig,
+                    describe_active_credential,
+                    has_azure_identity_installed,
+                )
+            except ImportError as exc:
+                print(f"\n  \u26a0 Could not import azure-identity adapter: {exc}")
+                print("  Falling back to API key auth.")
+                use_entra = False
+                auth_mode_label = "api_key"
+
+        if use_entra:
+            print()
+            if not has_azure_identity_installed():
+                print("  azure-identity is not installed.")
+                print("  It will be auto-installed on first use, or run: pip install azure-identity")
+            else:
+                print("  \u25d0 Probing Microsoft Entra ID credential chain (up to 10 s)...")
+                _entra_cfg = EntraIdentityConfig()
+                info = describe_active_credential(config=_entra_cfg, timeout_seconds=10.0)
+                if info.get("ok"):
+                    _sources = info.get("env_sources") or []
+                    _tag = ", ".join(_sources) if _sources else "default chain"
+                    print(f"  \u2713 Entra ID token acquired ({_tag})")
+                else:
+                    _err = info.get("error") or "credential chain exhausted"
+                    _hint = info.get("hint") or (
+                        "Run `az login`, attach a managed identity, or set "
+                        "AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET."
+                    )
+                    print(f"  \u26a0 {_err}")
+                    print(f"    Hint: {_hint}")
+                    try:
+                        _ans = input("  Save Entra config anyway and validate later? [Y/n]: ").strip().lower()
+                    except (KeyboardInterrupt, EOFError):
+                        print("\n  Cancelled.")
+                        return False
+                    if _ans and _ans not in ("y", "yes"):
+                        print("  Cancelled.")
+                        return False
+        else:
+            print()
+            try:
+                _key_hint = current_key[:8] + "..." if current_key else "required"
+                key_input = getpass.getpass(f"  API key [{_key_hint}]: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print("\n  Cancelled.")
+                return False
+            effective_key = key_input or current_key
+            if not effective_key:
+                print("  No API key provided. Cancelled.")
+                return False
+
+        # ── Persist ───────────────────────────────────────────────────
+        if not use_entra:
+            save_env_value("AZURE_FOUNDRY_IMAGE_KEY", effective_key)
+
+        img_section = config.setdefault("image_gen", {})
+        if not isinstance(img_section, dict):
+            img_section = {}
+            config["image_gen"] = img_section
+
+        az_section = img_section.setdefault("azure_foundry", {})
+        if not isinstance(az_section, dict):
+            az_section = {}
+            img_section["azure_foundry"] = az_section
+
+        az_section["endpoint"] = effective_endpoint
+        az_section["deployment_name"] = effective_deployment
+        az_section["auth_mode"] = auth_mode_label
+
+        img_section["provider"] = self.name
+        img_section["use_gateway"] = False
+
+        _auth_label = "Microsoft Entra ID (keyless)" if use_entra else "API key"
+        print_success(f"  Azure AI Foundry image gen configured:")
+        print_success(f"    Endpoint:   {effective_endpoint}")
+        print_success(f"    Deployment: {effective_deployment}")
+        print_success(f"    Auth:       {_auth_label}")
+        return True
+
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
             "name": "Azure AI Foundry",
@@ -205,29 +367,6 @@ class AzureFoundryImageGenProvider(ImageGenProvider):
                 "resource with an image generation deployment."
             ),
             "env_vars": [
-                {
-                    "key": "AZURE_FOUNDRY_IMAGE_ENDPOINT",
-                    "prompt": "Azure resource endpoint (e.g. https://my-resource.openai.azure.com)",
-                    "url": "https://portal.azure.com",
-                    "secret": False,
-                },
-                {
-                    "key": "AZURE_FOUNDRY_IMAGE_KEY",
-                    "prompt": "Azure API key",
-                    "url": "https://portal.azure.com",
-                },
-                {
-                    "key": "AZURE_FOUNDRY_IMAGE_DEPLOYMENT",
-                    "prompt": f"Deployment name (default: {DEFAULT_DEPLOYMENT})",
-                    "url": "https://ai.azure.com",
-                    "secret": False,
-                },
-                {
-                    "key": "AZURE_FOUNDRY_IMAGE_QUALITY",
-                    "prompt": f"Image quality — low / medium / high (default: {DEFAULT_QUALITY})",
-                    "url": "https://learn.microsoft.com/azure/ai-services/openai/concepts/models",
-                    "secret": False,
-                },
             ],
         }
 
@@ -270,13 +409,26 @@ class AzureFoundryImageGenProvider(ImageGenProvider):
         creds = _resolve_credentials()
         endpoint = creds.get("endpoint", "")
         api_key = creds.get("api_key", "")
+        auth_mode = creds.get("auth_mode", "api_key")
 
-        if not endpoint or not api_key:
+        if not endpoint:
             return error_response(
                 error=(
-                    "Azure AI Foundry credentials not configured. "
-                    "Set AZURE_FOUNDRY_IMAGE_ENDPOINT and AZURE_FOUNDRY_IMAGE_KEY, "
-                    "or configure image_gen.azure_foundry in config.yaml."
+                    "Azure AI Foundry endpoint not configured. "
+                    "Set AZURE_FOUNDRY_IMAGE_ENDPOINT or configure "
+                    "image_gen.azure_foundry.endpoint in config.yaml."
+                ),
+                error_type="auth_required",
+                provider=self.name,
+                aspect_ratio=aspect,
+            )
+
+        if auth_mode != "entra_id" and not api_key:
+            return error_response(
+                error=(
+                    "Azure AI Foundry API key not configured. "
+                    "Set AZURE_FOUNDRY_IMAGE_KEY in .env, or set "
+                    "image_gen.azure_foundry.auth_mode: entra_id for keyless auth."
                 ),
                 error_type="auth_required",
                 provider=self.name,
@@ -298,10 +450,32 @@ class AzureFoundryImageGenProvider(ImageGenProvider):
         base_url = endpoint.rstrip("/") + "/openai/v1/"
         size = _SIZES.get(aspect, _SIZES["square"])
 
+        # --- build auth (API key or Entra ID token provider) ---
+        if auth_mode == "entra_id":
+            try:
+                from agent.azure_identity_adapter import (
+                    EntraIdentityConfig,
+                    build_token_provider,
+                )
+                _entra_cfg = EntraIdentityConfig()
+                effective_api_key: Any = build_token_provider(config=_entra_cfg)
+            except ImportError as exc:
+                return error_response(
+                    error=(
+                        "Microsoft Entra ID auth requires azure-identity: "
+                        f"pip install azure-identity ({exc})"
+                    ),
+                    error_type="missing_dependency",
+                    provider=self.name,
+                    aspect_ratio=aspect,
+                )
+        else:
+            effective_api_key = api_key
+
         # --- API call (Azure OpenAI v1) ---
         try:
             client = openai.OpenAI(
-                api_key=api_key,
+                api_key=effective_api_key,
                 base_url=base_url,
             )
             response = client.images.generate(
