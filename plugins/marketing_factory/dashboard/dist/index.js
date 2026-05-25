@@ -11,6 +11,36 @@
 
   function cx(...parts) { return parts.filter(Boolean).join(" "); }
 
+  // ImageWithFallback — graceful placeholder while the Pollinations request is
+  // pending or if it fails. Uses inline aspectRatio (browser-native, doesn't
+  // require Tailwind's aspect-ratio plugin which the host dashboard may not
+  // include).
+  function ImageWithFallback({ url, alt, aspectRatio, className }) {
+    const [state, setState] = useState("loading"); // loading | loaded | error
+    if (!url) {
+      return h("div", {
+        style: { aspectRatio, background: "rgba(120,120,120,0.15)" },
+        className: cx("w-full rounded-lg border border-midground/15 flex items-center justify-center text-[10px] text-midground/60", className),
+      }, "no image");
+    }
+    return h("div", {
+      style: { aspectRatio, position: "relative" },
+      className: cx("w-full rounded-lg border border-midground/15 overflow-hidden", className),
+    },
+      state !== "loaded" ? h("div", {
+        className: "absolute inset-0 flex items-center justify-center text-[10px] text-midground/60 bg-midground/10",
+      }, state === "error" ? "image unavailable" : "rendering image…") : null,
+      h("img", {
+        src: url,
+        alt: alt || "",
+        loading: "lazy",
+        onLoad: () => setState("loaded"),
+        onError: () => setState("error"),
+        style: { width: "100%", height: "100%", objectFit: "cover", display: state === "error" ? "none" : "block" },
+      })
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // FactoryFloor — only visible while a campaign is actively running.
   // ---------------------------------------------------------------------------
@@ -107,7 +137,7 @@
               h("span", { className: "text-midground/60" }, "· now")
             ),
             h("p", { className: "mt-1 whitespace-pre-wrap text-sm leading-6" }, body),
-            firstImage ? h("img", { src: firstImage.url, alt: "post image", loading: "lazy", className: "mt-2 w-full rounded-2xl border border-midground/15" }) : null
+            firstImage ? h("div", { className: "mt-2" }, h(ImageWithFallback, { url: firstImage.url, alt: "post image", aspectRatio: "16/9", className: "rounded-2xl" })) : null
           )
         )
       );
@@ -118,7 +148,7 @@
           h("div", { className: "h-8 w-8 rounded-full bg-gradient-to-br from-pink-400 via-red-500 to-yellow-400" }),
           h("span", { className: "text-sm font-semibold" }, brandName)
         ),
-        firstImage ? h("img", { src: firstImage.url, alt: "post image", loading: "lazy", className: "w-full aspect-square rounded-lg border border-midground/15 object-cover mb-2" }) : null,
+        firstImage ? h("div", { className: "mb-2" }, h(ImageWithFallback, { url: firstImage.url, alt: "post image", aspectRatio: "1/1" })) : null,
         h("div", { className: "flex gap-3 text-lg mb-1" }, "♡  ◌  ⤴"),
         h("p", { className: "text-sm leading-6 whitespace-pre-wrap" },
           h("span", { className: "font-semibold mr-1" }, brandName),
@@ -127,12 +157,15 @@
       );
     }
     if (channel === "tiktok") {
-      return h("div", { className: "rounded-xl border border-midground/20 bg-black text-white p-3 relative" },
-        firstImage ? h("img", { src: firstImage.url, alt: "tiktok thumb", loading: "lazy", className: "w-full aspect-[9/16] rounded-lg object-cover mb-2 opacity-90" }) : h("div", { className: "w-full aspect-[9/16] rounded-lg bg-midground/40 mb-2" }),
-        h("div", { className: "absolute bottom-3 left-3 right-3 text-sm" },
-          h("div", { className: "font-semibold" }, brandName),
-          h("p", { className: "mt-1 whitespace-pre-wrap leading-5" }, body)
-        )
+      // Stacked layout (no absolute positioning) so the body never overlaps the
+      // image even when Pollinations is slow or fails.
+      return h("div", { className: "rounded-xl border border-midground/20 bg-black text-white p-3 flex flex-col gap-2", style: { maxWidth: "320px" } },
+        h("div", { className: "flex items-center gap-2" },
+          h("div", { className: "h-6 w-6 rounded-full bg-pink-400/40" }),
+          h("span", { className: "text-xs font-semibold" }, brandName)
+        ),
+        h(ImageWithFallback, { url: firstImage && firstImage.url, alt: "tiktok thumb", aspectRatio: "9/16" }),
+        h("p", { className: "text-sm leading-5 whitespace-pre-wrap" }, body)
       );
     }
     if (channel === "linkedin") {

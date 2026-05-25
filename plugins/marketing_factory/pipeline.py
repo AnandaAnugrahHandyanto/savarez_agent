@@ -368,7 +368,10 @@ class ImageGenAgent:
         # Pollinations: GET-based URL is the image itself; no API call required from
         # this process. The user's browser fetches it directly when rendering.
         encoded = quote(prompt[:400], safe="")
-        return f"{self.POLLINATIONS_BASE}{encoded}?model=flux&width=1024&height=1024&nologo=true"
+        # 768x768 — renders ~30-50% faster than 1024 with no visible quality
+        # loss at dashboard preview sizes. Keeps the user from staring at a
+        # "rendering image…" placeholder.
+        return f"{self.POLLINATIONS_BASE}{encoded}?model=flux&width=768&height=768&nologo=true"
 
 
 class ReviewSafetyAgent:
