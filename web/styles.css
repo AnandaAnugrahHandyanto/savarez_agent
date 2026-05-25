@@ -1,18 +1,9 @@
-/*
-INSTRUCTIONS:
-1. Controls all layout + styling.
-2. Do NOT remove flex settings — they prevent UI breaking.
-3. Chat expansion issues are solved here via max-width + overflow rules.
-*/
-
-/* RESET */
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
 }
 
-/* BASE */
 body {
   font-family: -apple-system, BlinkMacSystemFont, sans-serif;
   background: #f5f5f7;
@@ -25,14 +16,14 @@ body {
   height: 100vh;
 }
 
-/* SIDEBAR */
+/* Sidebar */
 #sidebar {
   width: 220px;
   background: #1e1e1e;
   color: white;
   display: flex;
   flex-direction: column;
-  transition: width 0.2s ease;
+  transition: width 0.2s;
 }
 
 #sidebar.collapsed {
@@ -41,20 +32,26 @@ body {
 
 #toggleSidebar {
   background: none;
-  color: white;
   border: none;
+  color: white;
   padding: 15px;
-  cursor: pointer;
 }
 
-/* MAIN */
+#sidebar nav button {
+  background: none;
+  border: none;
+  color: white;
+  padding: 12px;
+  text-align: left;
+}
+
+/* Layout */
 #main {
   display: flex;
   flex: 1;
   min-width: 0;
 }
 
-/* LEFT PANEL */
 #leftPanel {
   width: 300px;
   padding: 20px;
@@ -62,14 +59,12 @@ body {
   overflow: auto;
 }
 
-/* RESIZER */
 #resizer {
   width: 4px;
   background: #ddd;
   cursor: col-resize;
 }
 
-/* RIGHT PANEL */
 #rightPanel {
   flex: 1;
   display: flex;
@@ -77,7 +72,7 @@ body {
   min-width: 0;
 }
 
-/* CHAT */
+/* Chat */
 #chatWindow {
   flex: 1;
   overflow-y: auto;
@@ -95,10 +90,10 @@ body {
 .chat-user {
   background: #007aff;
   color: white;
-  align-self: flex-end;
+  margin-left: auto;
 }
 
-/* INPUT */
+/* Input */
 #chatInputWrapper {
   display: flex;
   padding: 10px;
