@@ -12007,3 +12007,253 @@ Scope: tools/mcp_tool.py, tools/url_safety.py, gateway/platforms/base.py, agent/
 
 *Pass #86 complete — 2026-05-26T08:30:00Z*
 *Commit at scan: 5a51a1f65*
+
+
+---
+
+## Pass #88 – Database Schema, Query Safety & ORM Usage Deep Dive – 2026-05-25T19:30:00Z
+
+Scope: hermes_state.py, hermes_cli/kanban_db.py, gateway/platforms/api_server.py, plugins/memory/retaindb/__init__.py, plugins/memory/holographic/store.py
+
+---
+
+### P88-1 · ResponseStore (api_server.py) lacks PRAGMA foreign_keys=ON and WAL fallback — LOW
+
+**File:** `gateway/platforms/api_server.py` (ResponseStore.__init__)
+
+ResponseStore creates its SQLite connection without enabling `foreign_keys=ON` and without calling `apply_wal_with_fallback`. The two other SQLite users (SessionDB, kanban_db.connect) both call:
+```python
+self._conn.execute("PRAGMA foreign_keys=ON")   # hermes_state.py:356
+apply_wal_with_fallback(self._conn)             # both hermes_state and kanban_db
+```
+ResponseStore does neither. Additionally, the response_store.db is chmod'd to 0o600 (good) but WAL mode is not explicitly set, and NFS/SMB compatibility via `apply_wal_with_fallback` is absent — so on network filesystems it will silently use DELETE journal mode with no warning.
+
+**Recommendation:** Add `self._conn.execute("PRAGMA foreign_keys=ON")` after `sqlite3.connect()` and call `apply_wal_with_fallback(self._conn, db_label="response_store.db")` to match the pattern used by SessionDB and kanban_db.
+
+---
+
+### P88-2 · ResponseStore falls back to in-memory DB on any exception — LOW
+
+**File:** `gateway/platforms/api_server.py:342-345`
+
+```python
+try:
+    self._conn = sqlite3.connect(db_path, check_same_thread=False)
+except Exception:
+    self._conn = sqlite3.connect(":memory:", check_same_thread=False)
+    self._db_path = None
+```
+
+Any exception (permission error, disk full, corruption) is silently swallowed. The in-memory store silently accepts data with no persistence, with no log or warning surfaced. Subsequent requests see an empty store with no indication why.
+
+**Recommendation:** Log a WARNING when falling back to in-memory mode. Consider setting a flag the health endpoint can report.
+
+---
+
+### P88-3 · kanban_db.py init_pragmas sets PRAGMA synchronous=NORMAL then immediately runs schema — MEDIUM
+
+**File:** `hermes_cli/kanban_db.py:1183-1193`
+
+```python
+conn.execute("PRAGMA synchronous=NORMAL")
+conn.execute("PRAGMA foreign_keys=ON")
+# immediately followed by executescript(SCHEMA_SQL)
+```
+
+`PRAGMA synchronous=NORMAL` is appropriate for WAL mode, but schema creation runs outside WAL context immediately after the pragma. The comment notes this is intentional, but the ordering leaves a brief window.
+
+**Recommendation:** Move the pragma block to the top of init_pragmas() before any schema operations, and verify the pragmas took effect.
+
+---
+
+### P88-4 · hermes_state.py messages table has no index on session_id alone — MEDIUM
+
+**File:** `hermes_state.py:252`
+
+```python
+CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+```
+
+The composite index `(session_id, timestamp)` supports queries filtered by session_id with ORDER BY timestamp. But a query like `WHERE session_id = ?` without a timestamp filter cannot efficiently use the index for covering scans. Additionally, there's no index on `messages.session_id` alone for EXISTS/COUNT queries (used in schema migration at line 890).
+
+**Recommendation:** Add `CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id)` for single-column lookups.
+
+---
+
+### P88-5 · kanban_db VALID_SORT_ORDERS order_by is allowlisted but columns are f-string interpolated — LOW
+
+**File:** `hermes_cli/kanban_db.py:1831-1837`
+
+```python
+if order_by not in VALID_SORT_ORDERS:
+    raise ValueError(f"order_by must be one of {sorted(VALID_SORT_ORDERS.keys())}")
+query += f" ORDER BY {VALID_SORT_ORDERS[order_by]}"
+```
+
+The order_by value is validated against a fixed allowlist, but the SQL fragment is interpolated via f-string. Since the allowlist is hardcoded in the same module with no user-controllable values, this is safe in practice. However, this pattern is fragile — if a developer adds a new sort key that incorporates user input, the f-string could become an injection vector.
+
+**Recommendation:** Document that new sort keys must never incorporate unsanitized user input.
+
+---
+
+### P88-6 · hermes_state.py _execute_write retries on "database is locked" only — LOW
+
+**File:** `hermes_state.py:411-423`
+
+Non-lock OperationalErrors (e.g., `database is corrupted`) propagate immediately without retry. This is correct behavior — corruption should not be retried. But other transient I/O errors would also fail fast.
+
+**Recommendation:** No change needed — behavior is intentional and appropriate.
+
+---
+
+### P88-7 · kanban_db.py get_task uses raw SQL with parameterized query — SAFE
+
+**File:** `hermes_cli/kanban_db.py:1776`
+
+```python
+row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+```
+
+Correctly parameterized. No SQL injection risk.
+
+---
+
+### P88-8 · ResponseStore uses string formatting for LIMIT — guarded by type coercion — LOW
+
+**File:** `gateway/platforms/api_server.py:68`
+
+```python
+wrapped_sql = f"SELECT * FROM ({sql.strip().rstrip(';')}) LIMIT {safe_limit}"
+```
+
+`safe_limit` is produced by `max(0, min(limit, MAX_ROWS))` with an integer type cast. If `limit` is not an integer, `min()` would fail or produce unexpected behavior. The `_reject_mutation(sql)` check only validates the SQL is a SELECT, not that the limit is properly typed.
+
+**Recommendation:** Add an explicit `int(limit)` cast and catch `ValueError` to reject non-integer limits.
+
+---
+
+### P88-9 · hermes_state.py WAL checkpoint every 50 writes is best-effort — INFO
+
+**File:** `hermes_state.py:408-448`
+
+`PRAGMA wal_checkpoint(PASSIVE)` is non-blocking and never raises, but also never guarantees any frames are checkpointed. Under sustained write pressure, the WAL file can grow unbounded. This is a known tradeoff.
+
+**Recommendation:** No change needed. Consider periodic `PRAGMA wal_checkpoint(TRUNCATE)` as a maintenance operation for very long-running processes.
+
+---
+
+### P88-10 · SQLite databases created with check_same_thread=False — INFO
+
+**Files:** `hermes_state.py:343` (SessionDB), `hermes_cli/kanban_db.py:1171` (connect), `gateway/platforms/api_server.py:343` (ResponseStore)
+
+All three use `check_same_thread=False`. SessionDB uses an explicit Python `_lock`; kanban_db uses `write_txn` (BEGIN IMMEDIATE). ResponseStore has no Python-level synchronization — concurrent writes go directly to sqlite3's internal locking.
+
+**Recommendation:** Confirm ResponseStore is only accessed from a single thread, or add a similar Python-level lock.
+
+---
+
+### P88-11 · RetainDB _WriteQueue SQLite has no PRAGMA foreign_keys — LOW
+
+**File:** `plugins/memory/retaindb/__init__.py:347-354`
+
+```python
+conn = sqlite3.connect(str(self._db_path), timeout=30)
+conn.row_factory = sqlite3.Row
+# No PRAGMA foreign_keys=ON
+```
+
+No `PRAGMA foreign_keys=ON`, no WAL mode. Connection is thread-local so WAL contention is not an issue, but foreign_keys pragma should still be set for consistency.
+
+**Recommendation:** Add `conn.execute("PRAGMA foreign_keys=ON")` in `_get_conn()`.
+
+---
+
+### P88-12 · holographic/store.py uses dynamic SET clause building with parameterized values — SAFE
+
+**File:** `plugins/memory/holographic/store.py:279-281`
+
+```python
+self._conn.execute(
+    f"UPDATE facts SET {', '.join(assignments)} WHERE fact_id = ?",
+    params,
+)
+```
+
+`assignments` and `params` are built from hardcoded method arguments (content, trust_delta, tags, category). Column names are hardcoded strings, not derived from user input. This is safe.
+
+---
+
+### P88-13 · hermes_state.py FTS triggers use IF NOT EXISTS — INFO
+
+**Files:** `hermes_state.py:260-307` (FTS_SQL and FTS_TRIGRAM_SQL)
+
+FTS5 virtual tables and triggers use `CREATE TRIGGER IF NOT EXISTS` and `CREATE VIRTUAL TABLE IF NOT EXISTS`. This means if the schema changes, existing FTS tables and triggers are NOT automatically updated. Migration code (version 11) explicitly drops and recreates them when the schema version increases. Intentional but worth noting.
+
+---
+
+### P88-14 · kanban_db.py task_runs + task_events have no FK enforcement on task_id — MEDIUM
+
+**File:** `hermes_cli/kanban_db.py:884-920`
+
+```python
+CREATE TABLE IF NOT EXISTS task_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id    TEXT NOT NULL,   -- no REFERENCES tasks(id)
+    ...
+);
+
+CREATE TABLE IF NOT EXISTS task_runs (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id             TEXT NOT NULL,   -- no REFERENCES tasks(id)
+    ...
+);
+```
+
+`PRAGMA foreign_keys=ON` is set at init, but this only enforces FKs for tables that actually declare them. Orphan rows in task_events/task_runs will not be cascade-deleted. The init_db handles orphaned running tasks via migration logic, but there's no database-level referential integrity.
+
+**Recommendation:** Add `REFERENCES tasks(id) ON DELETE CASCADE` to the `task_id` columns in both tables.
+
+---
+
+### P88-15 · ResponseStore path chmod applied at __init__, not after creation — INFO
+
+**File:** `gateway/platforms/api_server.py:370-391`
+
+`_tighten_file_permissions()` is called at the end of `__init__`, after schema creation. On first run, the file is created with default umask permissions and then tightened. There is a brief window between file creation and chmod. This is acceptable since `__init__` runs before any requests are processed.
+
+---
+
+### P88-16 · No ORM used — raw sqlite3 with parameterization throughout — SAFE
+
+All three database backends use raw `sqlite3` with Python's parameter substitution (`?` placeholders). No ORM (SQLAlchemy, Peewee, Django ORM) is used. All SQL is parameterized; there are no f-string SQL constructions that incorporate user-controlled values (beyond the safe allowlisted `order_by` in kanban_db.py).
+
+---
+
+### Summary Table
+
+| ID | Severity | Area | Finding |
+|---|---|---|---|
+| P88-1 | LOW | Connection Security | ResponseStore missing PRAGMA foreign_keys=ON and WAL fallback |
+| P88-2 | LOW | Connection Security | ResponseStore silent in-memory fallback on any DB error |
+| P88-3 | MEDIUM | Schema Design | kanban_db pragma + schema ordering issue |
+| P88-4 | MEDIUM | Schema Design | Missing standalone idx on messages.session_id |
+| P88-5 | LOW | Query Safety | order_by allowlist f-string (safe but fragile) |
+| P88-6 | LOW | ORM/Transactions | _execute_write only retries on lock errors |
+| P88-7 | SAFE | Query Safety | get_task correctly parameterized |
+| P88-8 | LOW | Query Safety | ResponseStore LIMIT via format (guarded but fragile) |
+| P88-9 | INFO | WAL/Checkpoint | Best-effort checkpoint (documented limitation) |
+| P88-10 | INFO | Thread Safety | check_same_thread=False without ResponseStore lock |
+| P88-11 | LOW | FK Enforcement | RetainDB _WriteQueue missing PRAGMA foreign_keys |
+| P88-12 | SAFE | Query Safety | holographic dynamic SET (correctly parameterized) |
+| P88-13 | INFO | Schema Migration | FTS IF NOT EXISTS schema upgrade behavior documented |
+| P88-14 | MEDIUM | FK Enforcement | task_runs/task_events missing FK on task_id |
+| P88-15 | INFO | File Permissions | chmod timing window (acceptable) |
+| P88-16 | SAFE | ORM Usage | No ORM — raw sqlite3 with parameterized queries throughout |
+
+**Risk Level:** LOW — The codebase demonstrates strong SQLite security hygiene. All queries use parameterized `?` placeholders. WAL mode with NFS fallback is correctly implemented. File permission tightening is applied to response_store.db. The main gaps are: missing standalone messages.session_id index, missing FK declarations on task_events/task_runs, ResponseStore missing PRAGMA foreign_keys and WAL fallback, and silent in-memory fallback swallowing all DB errors.
+
+---
+
+*Pass #88 complete — 2026-05-25T19:50:00Z*
+*Commit at scan: 5a51a1f65*
+*Next: Pass #89*
