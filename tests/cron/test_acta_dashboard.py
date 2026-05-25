@@ -662,6 +662,9 @@ def test_lead_brief_is_clickable_and_read_state_enabled(tmp_path: Path):
     assert '<span class="read-state">UNREAD</span>' in html
     assert 'MARK READ' in html
     assert '<button class="read-toggle" type="button" aria-label="Mark briefing read: Lead Brief">Mark read</button>' in html
+    assert '<div>UNREAD <b data-unread-count="1">1</b></div>' in html
+    assert '<a href="/">TODAY <span class="nav-count" data-unread-count="1">1</span></a>' in html
+    assert ".nav-count" in html
     assert ".row-open-overlay:focus-visible" in html
     assert ".brief-row > .swipe-content" in html
     assert ".brief-row > :not(.row-open-overlay)" not in html
@@ -731,9 +734,13 @@ def test_dashboard_read_toggle_script_updates_button_and_stays_in_row():
     assert "ev.stopPropagation();" in script
     assert "setRead(el, el.classList.contains('read') ? false : true);" in script
     assert "setRead(el, true);" in script
+    assert "function updateUnreadCount()" in script
+    assert "document.querySelectorAll('.readable[data-read-key]')" in script
+    assert "document.querySelectorAll('[data-unread-count]')" in script
+    assert "updateUnreadCount();" in script
 
 
-def test_today_dashboard_requires_signed_acta_artifact_urls_for_open_overlays():
+def test_today_dashboard_requires_signed_urls_and_unread_count_excludes_unsigned_rows():
     item_cls = collect_situation_items.__globals__["CronSituationItem"]
     signed = item_cls(
         job_id="signed",
@@ -833,6 +840,9 @@ def test_today_dashboard_requires_signed_acta_artifact_urls_for_open_overlays():
         generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc),
     )
 
+    assert '<div>UNREAD <b data-unread-count="2">2</b></div>' in html
+    assert '<span class="nav-count" data-unread-count="2">2</span>' in html
+    assert html.count('data-unread-count="2"') == 2
     assert 'data-open-url="https://acta.imperatr.com/r/signed/detail.html?exp=1&amp;sig=abc"' in html
     assert 'href="https://acta.imperatr.com/r/signed/detail.html?exp=1&amp;sig=abc"' in html
     assert 'data-open-url="/r/root/detail.html?exp=1&amp;sig=root"' in html
@@ -1101,7 +1111,7 @@ def test_mobile_bottom_nav_appears_only_after_top_nav_scrolls_out(tmp_path: Path
     html = render_dashboard(collect_situation_items(tmp_path))
 
     assert '<nav class="date-nav"' in html
-    assert '<nav class="mobilebar"><a href="/">TODAY</a><a href="/outputs">OUTPUTS</a><a href="/runs">RUNS</a><a href="/jobs">JOBS</a><a href="/archive">ARCHIVE</a></nav>' in html
+    assert '<nav class="mobilebar"><a href="/">TODAY <span class="nav-count" data-unread-count="0">0</span></a><a href="/outputs">OUTPUTS</a><a href="/runs">RUNS</a><a href="/jobs">JOBS</a><a href="/archive">ARCHIVE</a></nav>' in html
     assert '.mobilebar.visible' in html
     assert 'IntersectionObserver' in html
     assert "document.querySelector('.date-nav')" in html

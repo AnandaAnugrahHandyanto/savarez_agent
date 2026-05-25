@@ -250,12 +250,18 @@ def _dashboard_inline_script() -> str:
       button.setAttribute('aria-label', (isRead?'Mark briefing unread: ':'Mark briefing read: ')+title);
     }
   }
+  function updateUnreadCount(){
+    var unread=0;
+    document.querySelectorAll('.readable[data-read-key]').forEach(function(row){ if(!row.classList.contains('read')) unread++; });
+    document.querySelectorAll('[data-unread-count]').forEach(function(el){ el.textContent=String(unread); el.dataset.unreadCount=String(unread); });
+  }
   function setRead(el, value){
     var k=el.dataset.readKey || '';
     if(!k) return;
     state[k]=!!value;
     save();
     apply(el);
+    updateUnreadCount();
   }
   function toggle(el){
     setRead(el, el.classList.contains('read') ? false : true);
@@ -326,6 +332,7 @@ def _dashboard_inline_script() -> str:
     el.addEventListener('pointerup', function(ev){ if(ev.pointerType==='touch'||ev.pointerType==='pen') end(ev); });
     el.addEventListener('pointercancel', end);
   });
+  updateUnreadCount();
 })();
 """.strip()
 
@@ -986,8 +993,10 @@ def render_dashboard(
     rows_by_lane: dict[str, list[str]] = {"daily": [], "dev": [], "system": []}
     read_order: list[str] = []
     audit_rows: list[str] = []
+    readable_feed_count = 0
 
     def append_feed_row(item: CronSituationItem, index: int, lane: str) -> None:
+        nonlocal readable_feed_count
         status_class = _status_class(item)
         status_label = "paused" if not item.enabled else item.status
         latest = item.latest_time.isoformat() if item.latest_time else "No run yet"
@@ -1020,6 +1029,8 @@ def render_dashboard(
             if href
             else ""
         )
+        if href:
+            readable_feed_count += 1
         rows_by_lane[lane].append(
             f"""
 <section class="brief-row{readable_class} {status_class}" data-feed-lane="{_safe_text(lane)}"{open_attr}>
@@ -1117,6 +1128,7 @@ def render_dashboard(
     )
     lead_open_hint = "open first" if lead_href else "no page"
     lead_row_meta = "row opens" if lead_href else "signed rows only"
+    initial_unread_count = readable_feed_count + (1 if lead_href else 0)
     lead_confidence = _confidence_label(lead_item, now) if lead_item else "CONF LOW/GAP"
     dashboard_script = _dashboard_inline_script()
     dashboard_csp_placeholder = "__ACTA_DASHBOARD_CSP__"
@@ -1157,6 +1169,7 @@ a {{ color:inherit; }}
 .topstats {{ display:flex; gap:9px; margin-left:auto; }}
 .topstats div {{ font:10px var(--mono); color:var(--muted); border:1px solid var(--line); border-radius:999px; background:rgba(255,255,255,.045); padding:5px 8px; }}
 .topstats b {{ color:var(--text); font-weight:700; }}
+.nav-count {{ display:inline-grid; min-width:17px; height:17px; place-items:center; margin-left:4px; padding:0 4px; border:1px solid rgba(35,167,255,.36); border-radius:999px; color:#fff; background:rgba(117,108,255,.22); font:800 9px var(--mono); }}
 .content {{ padding:18px; display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:18px; }}
 .panel-title {{ display:flex; align-items:center; justify-content:space-between; gap:10px; margin:4px 0 10px; color:#fff; font:800 11px var(--mono); letter-spacing:.12em; text-transform:uppercase; }}
 .panel-title span {{ color:var(--faint); font-weight:600; letter-spacing:.08em; }}
@@ -1265,7 +1278,7 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
 .pull-refresh {{ display:none; position:fixed; left:50%; top:calc(8px + env(safe-area-inset-top, 0px)); transform:translate(-50%,-130%); min-width:150px; padding:9px 12px; border:1px solid var(--line); border-radius:999px; background:rgba(3,6,11,.96); color:var(--acta2); font:800 10px var(--mono); letter-spacing:.12em; text-align:center; z-index:5; opacity:0; transition:transform .18s ease, opacity .18s ease; box-shadow:0 12px 32px rgba(0,0,0,.55); }}
 .pull-refresh.ready {{ color:#fff; background:linear-gradient(135deg,var(--acta),var(--acta2)); border-color:transparent; }}
 .pull-refresh.visible {{ opacity:1; transform:translate(-50%,0); }}
-@media (max-width:980px) {{ .pull-refresh {{ display:block; }} .shell {{ display:block; min-width:0; width:100%; }} .rail {{ display:none; }} .main {{ width:100%; min-width:0; }} .top {{ height:50px; padding:0 max(14px, env(safe-area-inset-left, 0px)) 0 max(14px, env(safe-area-inset-left, 0px)); }} .date-nav {{ position:static; background:rgba(3,6,11,.82); padding:8px 14px; gap:8px; }} .nav-link {{ min-height:38px; display:inline-flex; align-items:center; padding:0 12px; }} .content {{ display:block; padding:12px 14px calc(132px + env(safe-area-inset-bottom, 0px)); }} .panel-title {{ margin-top:12px; }} .side {{ display:none; }} .topstats {{ display:none; }} .lead {{ margin-bottom:8px; touch-action:pan-y; }} .lead p {{ display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }} .meta {{ gap:9px; }} .feed {{ border-top:0; }} .brief-row {{ min-height:60px; touch-action:pan-y; }} .swipe-content {{ grid-template-columns:32px minmax(0,1fr) auto; gap:8px; min-height:60px; padding:7px 10px; touch-action:pan-y; }} .brief-row:hover .swipe-content {{ background:rgba(255,255,255,.05); outline:0; }} .row-signal {{ font-size:8px; }} .row-kicker {{ font-size:10px; }} .brief-copy p {{ display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }} .source-line {{ display:block; font-size:9px; margin-top:3px; }} .open-label {{ display:none; }} .card-actions {{ grid-column:3; justify-self:end; }} .ask-label {{ padding:5px 7px; font-size:10px; }} .jobs-panel {{ margin-top:18px; scroll-margin-top:100px; }} .jobs-head {{ padding-top:14px; }} .job-row {{ grid-template-columns:34px minmax(0,1fr); gap:8px 10px; padding:13px 0; }} .job-schedule, .job-last {{ grid-column:2; }} .job-main b {{ font-size:14px; }} .search {{ max-width:none; }} .mobilebar {{ display:grid; position:fixed; left:max(10px, env(safe-area-inset-left, 0px)); right:max(10px, env(safe-area-inset-right, 0px)); bottom:calc(14px + env(safe-area-inset-bottom, 0px)); min-height:62px; background:linear-gradient(180deg, rgba(7,16,24,.96), rgba(3,6,11,.94)), radial-gradient(circle at 18% 0%, rgba(117,108,255,.28), transparent 42%), radial-gradient(circle at 86% 20%, rgba(35,167,255,.18), transparent 48%); backdrop-filter:blur(18px) saturate(145%); border:1px solid rgba(117,108,255,.28); grid-template-columns:repeat(5,1fr); z-index:3; box-shadow:0 -16px 38px rgba(0,0,0,.62), 0 0 26px rgba(117,108,255,.13); opacity:0; transform:translateY(calc(100% + 24px)); pointer-events:none; transition:opacity .18s ease, transform .22s cubic-bezier(.2,.8,.2,1); }} .mobilebar.visible {{ opacity:1; transform:translateY(0); pointer-events:auto; }} .mobilebar a {{ display:grid; place-items:center; min-height:62px; color:#ddd; text-decoration:none; font:11px var(--mono); touch-action:manipulation; -webkit-tap-highlight-color:rgba(117,108,255,.18); }} .mobilebar a:first-child {{ color:var(--accent); }} }}
+@media (max-width:980px) {{ .pull-refresh {{ display:block; }} .shell {{ display:block; min-width:0; width:100%; }} .rail {{ display:none; }} .main {{ width:100%; min-width:0; }} .top {{ height:50px; padding:0 max(14px, env(safe-area-inset-left, 0px)) 0 max(14px, env(safe-area-inset-left, 0px)); }} .date-nav {{ position:static; background:rgba(3,6,11,.82); padding:8px 14px; gap:8px; }} .nav-link {{ min-height:38px; display:inline-flex; align-items:center; padding:0 12px; }} .content {{ display:block; padding:12px 14px calc(132px + env(safe-area-inset-bottom, 0px)); }} .panel-title {{ margin-top:12px; }} .side {{ display:none; }} .topstats {{ display:none; }} .lead {{ margin-bottom:8px; touch-action:pan-y; }} .lead p {{ display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }} .meta {{ gap:9px; }} .feed {{ border-top:0; }} .brief-row {{ min-height:60px; touch-action:pan-y; }} .swipe-content {{ grid-template-columns:32px minmax(0,1fr) auto; gap:8px; min-height:60px; padding:7px 10px; touch-action:pan-y; }} .brief-row:hover .swipe-content {{ background:rgba(255,255,255,.05); outline:0; }} .row-signal {{ font-size:8px; }} .row-kicker {{ font-size:10px; }} .brief-copy p {{ display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }} .source-line {{ display:block; font-size:9px; margin-top:3px; }} .open-label {{ display:none; }} .card-actions {{ grid-column:3; justify-self:end; }} .ask-label {{ padding:5px 7px; font-size:10px; }} .jobs-panel {{ margin-top:18px; scroll-margin-top:100px; }} .jobs-head {{ padding-top:14px; }} .job-row {{ grid-template-columns:34px minmax(0,1fr); gap:8px 10px; padding:13px 0; }} .job-schedule, .job-last {{ grid-column:2; }} .job-main b {{ font-size:14px; }} .search {{ max-width:none; }} .mobilebar {{ display:grid; position:fixed; left:max(10px, env(safe-area-inset-left, 0px)); right:max(10px, env(safe-area-inset-right, 0px)); bottom:calc(14px + env(safe-area-inset-bottom, 0px)); min-height:62px; background:linear-gradient(180deg, rgba(7,16,24,.96), rgba(3,6,11,.94)), radial-gradient(circle at 18% 0%, rgba(117,108,255,.28), transparent 42%), radial-gradient(circle at 86% 20%, rgba(35,167,255,.18), transparent 48%); backdrop-filter:blur(18px) saturate(145%); border:1px solid rgba(117,108,255,.28); grid-template-columns:repeat(5,1fr); z-index:3; box-shadow:0 -16px 38px rgba(0,0,0,.62), 0 0 26px rgba(117,108,255,.13); opacity:0; transform:translateY(calc(100% + 24px)); pointer-events:none; transition:opacity .18s ease, transform .22s cubic-bezier(.2,.8,.2,1); }} .mobilebar.visible {{ opacity:1; transform:translateY(0); pointer-events:auto; }} .mobilebar a {{ display:flex; align-items:center; justify-content:center; gap:3px; min-height:62px; color:#ddd; text-decoration:none; font:11px var(--mono); touch-action:manipulation; -webkit-tap-highlight-color:rgba(117,108,255,.18); }} .mobilebar a:first-child {{ color:var(--accent); }} }}
 @media (max-width:620px) {{ .top {{ gap:8px; }} .ticker {{ font-size:11px; }} .search {{ display:none; }} .lead {{ grid-template-columns:1fr; }} .output-summary {{ grid-column:1; grid-row:auto; justify-self:start; text-align:left; display:flex; align-items:center; gap:6px; min-width:0; }} h1 {{ font-size:19px; max-width:100%; }} .lead p {{ font-size:13px; line-height:1.3; }} .label {{ line-height:1.7; }} .swipe-content {{ grid-template-columns:28px minmax(0,1fr); }} h2 {{ font-size:15px; }} .row-kicker {{ flex-wrap:wrap; overflow:visible; line-height:1.25; }} .row-kicker span, .row-kicker .read-state {{ min-height:auto; display:inline-flex; align-items:center; }} .source-line {{ white-space:normal; overflow:visible; text-overflow:clip; line-height:1.25; word-break:break-word; color:var(--muted); }} .card-actions {{ grid-column:2; justify-self:start; margin-top:2px; }} .brief-copy p {{ font-size:13px; line-height:1.25; }} footer {{ font-size:11px; line-height:1.45; }} }}
 </style>
 </head>
@@ -1291,7 +1304,7 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
     <header class="top">
       <div class="ticker"><em>ACTA</em> / OUTPUTS</div>
       <div class="search">Search briefings, sources, jobs, archive…</div>
-      <div class="topstats"><div>VISIBLE <b>{visible}</b></div><div>SILENT <b>{silent}</b></div><div>MISSING <b>{missing}</b></div></div>
+      <div class="topstats"><div>UNREAD <b data-unread-count="{initial_unread_count}">{initial_unread_count}</b></div><div>VISIBLE <b>{visible}</b></div><div>SILENT <b>{silent}</b></div><div>MISSING <b>{missing}</b></div></div>
     </header>
     <nav class="date-nav"><a class="nav-link primary" href="/">Today</a><a class="nav-link" href="/outputs">Outputs</a><a class="nav-link" href="/runs">Runs</a><a class="nav-link" href="/jobs">Jobs</a><a class="nav-link" href="/archive">Archive</a></nav>
     <section class="content">
@@ -1318,7 +1331,7 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
     <footer>Generated {html.escape(now.isoformat())}. Signed Acta links expire automatically.</footer>
   </main>
 </div>
-<nav class="mobilebar"><a href="/">TODAY</a><a href="/outputs">OUTPUTS</a><a href="/runs">RUNS</a><a href="/jobs">JOBS</a><a href="/archive">ARCHIVE</a></nav>
+<nav class="mobilebar"><a href="/">TODAY <span class="nav-count" data-unread-count="{initial_unread_count}">{initial_unread_count}</span></a><a href="/outputs">OUTPUTS</a><a href="/runs">RUNS</a><a href="/jobs">JOBS</a><a href="/archive">ARCHIVE</a></nav>
 <script>{dashboard_script}</script>
 </body>
 </html>
