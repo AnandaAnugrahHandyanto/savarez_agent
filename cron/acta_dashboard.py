@@ -768,6 +768,10 @@ def _confidence_label(item: CronSituationItem, now: datetime) -> str:
     return _confidence_bucket(item.enabled, item.status, item.latest_time, now)
 
 
+def _confidence_short(label: str) -> str:
+    return label.removeprefix("CONF ")
+
+
 def _status_class(item: CronSituationItem) -> str:
     if not item.enabled:
         return "paused"
@@ -833,6 +837,14 @@ def _feed_lane_label(lane: str) -> str:
         "dev": "Development sprint cycles",
         "system": "System/local jobs",
     }.get(lane, "Other feed")
+
+
+def _feed_lane_chip(lane: str) -> str:
+    return {
+        "daily": "Daily",
+        "dev": "Dev sprint",
+        "system": "System",
+    }.get(lane, "Other")
 
 
 def _config_list(value: object) -> list[str]:
@@ -1049,7 +1061,7 @@ def render_dashboard(
     <div class="brief-copy">
       <h2>{_safe_text(item.name)}</h2>
       <p>{_safe_text(item.excerpt)}</p>
-      <div class="row-kicker"><span class="lane-chip">{_safe_text(_feed_lane_label(lane))}</span>{read_state}<span class="confidence-chip">{_safe_text(confidence)}</span><span>{_safe_text(status_label)}</span><span>{_safe_text(age)}</span><span>{_safe_text(item.schedule or "manual")}</span></div>
+      <div class="row-kicker"><span class="lane-chip" title="{_safe_text(_feed_lane_label(lane))}">{_safe_text(_feed_lane_chip(lane))}</span>{read_state}<span class="confidence-chip">{_safe_text(confidence)}</span><span>{_safe_text(status_label)}</span><span>{_safe_text(age)}</span><span>{_safe_text(item.schedule or "manual")}</span><span class="source-chip" title="{_safe_text(item.job_id)} · {_safe_text(item.deliver or "local")} · {_safe_text(latest)}">{_safe_text(item.job_id)} · {_safe_text(item.deliver or "local")}</span></div>
       <div class="source-line">{_safe_text(item.job_id)} · {_safe_text(item.deliver or "local")} · {_safe_text(latest)}</div>
     </div>
     <span class="card-actions">{read_toggle}<span class="open-label">{open_label}</span>{ask_link}</span>
@@ -1134,8 +1146,8 @@ def render_dashboard(
         if lead_href
         else ""
     )
-    lead_open_hint = "open first" if lead_href else "no page"
-    lead_row_meta = "row opens" if lead_href else "signed rows only"
+    lead_open_hint = "open" if lead_href else "no page"
+    lead_row_meta = "signed" if lead_href else "no signed page"
     initial_unread_count = readable_feed_count + (1 if lead_href else 0)
     lead_confidence = _confidence_label(lead_item, now) if lead_item else "CONF LOW/GAP"
     lead_lane = _feed_lane(lead_item) if lead_item else "system"
@@ -1288,8 +1300,8 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
 .pull-refresh {{ display:none; position:fixed; left:50%; top:calc(8px + env(safe-area-inset-top, 0px)); transform:translate(-50%,-130%); min-width:150px; padding:9px 12px; border:1px solid var(--line); border-radius:999px; background:rgba(3,6,11,.96); color:var(--acta2); font:800 10px var(--mono); letter-spacing:.12em; text-align:center; z-index:5; opacity:0; transition:transform .18s ease, opacity .18s ease; box-shadow:0 12px 32px rgba(0,0,0,.55); }}
 .pull-refresh.ready {{ color:#fff; background:linear-gradient(135deg,var(--acta),var(--acta2)); border-color:transparent; }}
 .pull-refresh.visible {{ opacity:1; transform:translate(-50%,0); }}
-@media (max-width:980px) {{ .pull-refresh {{ display:block; }} .shell {{ display:block; min-width:0; width:100%; }} .rail {{ display:none; }} .main {{ width:100%; min-width:0; }} .top {{ height:50px; padding:0 max(14px, env(safe-area-inset-left, 0px)) 0 max(14px, env(safe-area-inset-left, 0px)); }} .date-nav {{ position:static; background:rgba(3,6,11,.82); padding:8px 14px; gap:8px; }} .nav-link {{ min-height:38px; display:inline-flex; align-items:center; padding:0 12px; }} .content {{ display:block; padding:12px 14px calc(132px + env(safe-area-inset-bottom, 0px)); }} .panel-title {{ margin-top:12px; }} .side {{ display:none; }} .topstats {{ display:none; }} .lead {{ margin-bottom:8px; touch-action:pan-y; }} .lead p {{ display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }} .meta {{ gap:9px; }} .feed {{ border-top:0; }} .brief-row {{ min-height:60px; touch-action:pan-y; }} .swipe-content {{ grid-template-columns:32px minmax(0,1fr) auto; gap:8px; min-height:60px; padding:7px 10px; touch-action:pan-y; }} .brief-row:hover .swipe-content {{ background:rgba(255,255,255,.05); outline:0; }} .row-signal {{ font-size:8px; }} .row-kicker {{ font-size:10px; }} .brief-copy p {{ display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }} .source-line {{ display:block; font-size:9px; margin-top:3px; }} .open-label {{ display:none; }} .card-actions {{ grid-column:3; justify-self:end; }} .ask-label {{ padding:5px 7px; font-size:10px; }} .jobs-panel {{ margin-top:18px; scroll-margin-top:100px; }} .jobs-head {{ padding-top:14px; }} .job-row {{ grid-template-columns:34px minmax(0,1fr); gap:8px 10px; padding:13px 0; }} .job-schedule, .job-last {{ grid-column:2; }} .job-main b {{ font-size:14px; }} .search {{ max-width:none; }} .mobilebar {{ display:grid; position:fixed; left:max(10px, env(safe-area-inset-left, 0px)); right:max(10px, env(safe-area-inset-right, 0px)); bottom:calc(14px + env(safe-area-inset-bottom, 0px)); min-height:62px; background:linear-gradient(180deg, rgba(7,16,24,.96), rgba(3,6,11,.94)), radial-gradient(circle at 18% 0%, rgba(117,108,255,.28), transparent 42%), radial-gradient(circle at 86% 20%, rgba(35,167,255,.18), transparent 48%); backdrop-filter:blur(18px) saturate(145%); border:1px solid rgba(117,108,255,.28); grid-template-columns:repeat(5,1fr); z-index:3; box-shadow:0 -16px 38px rgba(0,0,0,.62), 0 0 26px rgba(117,108,255,.13); opacity:0; transform:translateY(calc(100% + 24px)); pointer-events:none; transition:opacity .18s ease, transform .22s cubic-bezier(.2,.8,.2,1); }} .mobilebar.visible {{ opacity:1; transform:translateY(0); pointer-events:auto; }} .mobilebar a {{ display:flex; align-items:center; justify-content:center; gap:3px; min-height:62px; color:#ddd; text-decoration:none; font:11px var(--mono); touch-action:manipulation; -webkit-tap-highlight-color:rgba(117,108,255,.18); }} .mobilebar a:first-child {{ color:var(--accent); }} }}
-@media (max-width:620px) {{ .top {{ gap:8px; }} .ticker {{ font-size:11px; }} .search {{ display:none; }} .lead {{ grid-template-columns:1fr; }} .output-summary {{ grid-column:1; grid-row:auto; justify-self:start; text-align:left; display:flex; align-items:center; gap:6px; min-width:0; }} h1 {{ font-size:19px; max-width:100%; }} .lead p {{ font-size:13px; line-height:1.3; }} .label {{ line-height:1.7; }} .swipe-content {{ grid-template-columns:28px minmax(0,1fr); }} h2 {{ font-size:15px; }} .row-kicker {{ flex-wrap:wrap; overflow:visible; line-height:1.25; }} .row-kicker span, .row-kicker .read-state {{ min-height:auto; display:inline-flex; align-items:center; }} .source-line {{ white-space:normal; overflow:visible; text-overflow:clip; line-height:1.25; word-break:break-word; color:var(--muted); }} .card-actions {{ grid-column:2; justify-self:start; margin-top:2px; }} .brief-copy p {{ font-size:13px; line-height:1.25; }} footer {{ font-size:11px; line-height:1.45; }} }}
+@media (max-width:980px) {{ .pull-refresh {{ display:block; }} .shell {{ display:block; min-width:0; width:100%; }} .rail {{ display:none; }} .main {{ width:100%; min-width:0; }} .top {{ height:50px; padding:0 max(14px, env(safe-area-inset-left, 0px)) 0 max(14px, env(safe-area-inset-left, 0px)); }} .date-nav {{ position:static; background:rgba(3,6,11,.82); padding:8px 14px; gap:8px; }} .nav-link {{ min-height:38px; display:inline-flex; align-items:center; padding:0 12px; }} .content {{ display:block; padding:12px 14px calc(132px + env(safe-area-inset-bottom, 0px)); }} .panel-title {{ margin-top:12px; }} .side {{ display:none; }} .topstats {{ display:none; }} .lead {{ margin-bottom:8px; touch-action:pan-y; }} .lead p {{ display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }} .meta {{ gap:6px; }} .meta span {{ padding:2px 6px; }} .feed {{ border-top:0; }} .brief-row {{ min-height:60px; touch-action:pan-y; }} .swipe-content {{ grid-template-columns:32px minmax(0,1fr) auto; gap:8px; min-height:60px; padding:7px 10px; touch-action:pan-y; }} .brief-row:hover .swipe-content {{ background:rgba(255,255,255,.05); outline:0; }} .row-signal {{ font-size:8px; }} .row-kicker {{ font-size:10px; }} .brief-copy p {{ display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }} .source-line {{ display:none; }} .open-label {{ display:none; }} .card-actions {{ grid-column:3; justify-self:end; }} .ask-label {{ padding:5px 7px; font-size:10px; }} .jobs-panel {{ margin-top:18px; scroll-margin-top:100px; }} .jobs-head {{ padding-top:14px; }} .job-row {{ grid-template-columns:34px minmax(0,1fr); gap:8px 10px; padding:13px 0; }} .job-schedule, .job-last {{ grid-column:2; }} .job-main b {{ font-size:14px; }} .search {{ max-width:none; }} .mobilebar {{ display:grid; position:fixed; left:max(10px, env(safe-area-inset-left, 0px)); right:max(10px, env(safe-area-inset-right, 0px)); bottom:calc(14px + env(safe-area-inset-bottom, 0px)); min-height:62px; background:linear-gradient(180deg, rgba(7,16,24,.96), rgba(3,6,11,.94)), radial-gradient(circle at 18% 0%, rgba(117,108,255,.28), transparent 42%), radial-gradient(circle at 86% 20%, rgba(35,167,255,.18), transparent 48%); backdrop-filter:blur(18px) saturate(145%); border:1px solid rgba(117,108,255,.28); grid-template-columns:repeat(5,1fr); z-index:3; box-shadow:0 -16px 38px rgba(0,0,0,.62), 0 0 26px rgba(117,108,255,.13); opacity:0; transform:translateY(calc(100% + 24px)); pointer-events:none; transition:opacity .18s ease, transform .22s cubic-bezier(.2,.8,.2,1); }} .mobilebar.visible {{ opacity:1; transform:translateY(0); pointer-events:auto; }} .mobilebar a {{ display:flex; align-items:center; justify-content:center; gap:3px; min-height:62px; color:#ddd; text-decoration:none; font:11px var(--mono); touch-action:manipulation; -webkit-tap-highlight-color:rgba(117,108,255,.18); }} .mobilebar a:first-child {{ color:var(--accent); }} }}
+@media (max-width:620px) {{ .top {{ gap:8px; }} .ticker {{ font-size:11px; }} .search {{ display:none; }} .lead {{ grid-template-columns:1fr; }} .output-summary {{ display:none; }} h1 {{ font-size:19px; max-width:100%; }} .lead p {{ font-size:13px; line-height:1.3; }} .label {{ line-height:1.35; gap:5px; }} .feed-section-title span {{ display:none; }} .swipe-content {{ grid-template-columns:28px minmax(0,1fr); }} h2 {{ font-size:15px; }} .row-kicker {{ flex-wrap:wrap; overflow:visible; line-height:1.25; }} .row-kicker span, .row-kicker .read-state {{ min-height:auto; display:inline-flex; align-items:center; }} .source-line {{ display:none; }} .card-actions {{ grid-column:2; justify-self:start; margin-top:2px; }} .brief-copy p {{ font-size:13px; line-height:1.25; }} footer {{ font-size:11px; line-height:1.45; }} }}
 </style>
 </head>
 <body>
@@ -1321,13 +1333,13 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
       <div>
         <article class="{lead_class}" data-feed-lane="{_safe_text(lead_lane)}"{lead_read_attr}{lead_href_attr}>
           {lead_open_overlay}
-          <div class="label"><span class="lane-chip">{_safe_text(lead_lane_label)}</span>{lead_label_read_state}<span>{_safe_text(lead_confidence)}</span><span>today</span><span>{lead_open_hint}</span></div>
+          <div class="label"><span class="lane-chip" title="{_safe_text(lead_lane_label)}">{_safe_text(_feed_lane_chip(lead_lane))}</span>{lead_label_read_state}<span title="{_safe_text(lead_confidence)}">{_safe_text(_confidence_short(lead_confidence))}</span><span>{lead_open_hint}</span></div>
           <h1>{_safe_text(lead_title)}</h1>
           <p>{_safe_text(lead_excerpt)}</p>
-          <div class="output-summary"><b>{visible}/{active}</b><span>fresh</span><span>{missing} gaps</span></div>
-          <div class="meta"><span>{html.escape(day_label)}</span><span>{_safe_text(lead_confidence)}</span><span>{silent} silent</span><span>{len(archive_dates)} archive days</span><span>{lead_row_meta}</span>{lead_read_toggle}{lead_ask_link}</div>
+          <div class="output-summary"><b>{visible}/{active}</b><span>visible</span><span>{missing} gaps</span></div>
+          <div class="meta"><span>{html.escape(day_label)}</span><span>{lead_row_meta}</span><span>{missing} gaps</span><span>{silent} quiet</span><span>{len(archive_dates)} archive days</span>{lead_read_toggle}{lead_ask_link}</div>
         </article>
-        <div class="panel-title"><b>Output Streams</b><span>daily life separated from dev cycles</span></div>
+        <div class="panel-title"><b>Output Streams</b><span>Daily / Dev split</span></div>
         {daily_section}
         {dev_section}
         {system_section}

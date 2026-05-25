@@ -163,7 +163,7 @@ def test_dashboard_separates_daily_life_and_development_sprint_feeds(tmp_path: P
     assert "Daily life feed" in html
     assert "Development sprint cycles" in html
     assert 'data-feed-lane="daily"' in html
-    assert 'class="lane-chip">Daily life feed</span>' in html
+    assert 'class="lane-chip" title="Daily life feed">Daily</span>' in html
     assert 'data-feed-lane="dev"' in html
     assert html.index("Daily life feed") < html.index("Development sprint cycles")
 
@@ -657,7 +657,7 @@ def test_dashboard_counts_exclude_morning_audio_by_default():
 
     assert "P Morning Audio Briefing" not in html
     assert 'Today <span>1</span>' in html
-    assert '<div class="output-summary"><b>1/1</b><span>fresh</span><span>0 gaps</span></div>' in html
+    assert '<div class="output-summary"><b>1/1</b><span>visible</span><span>0 gaps</span></div>' in html
     assert "metricrow" not in html
     assert "VISIBLE <b>1</b>" in html
 
@@ -741,11 +741,13 @@ def test_mobile_dashboard_does_not_duplicate_lead_in_feed(tmp_path: Path):
     assert "maximum-scale=1" in html
     assert "user-scalable=no" in html
     assert ".row-kicker { flex-wrap:wrap; overflow:visible" in html
-    assert ".source-line { display:block" in html
-    assert ".source-line { white-space:normal; overflow:visible; text-overflow:clip" in html
+    assert ".source-line { display:none; }" in html
+    assert ".feed-section-title span { display:none; }" in html
     assert ".lead { grid-template-columns:1fr; }" in html
     assert ".swipe-content { grid-template-columns:28px minmax(0,1fr); }" in html
     assert "second · telegram · 2026-05-19T09:00:00+00:00" in html
+    assert '<span>manual</span><span class="source-chip" title="second · telegram · 2026-05-19T09:00:00+00:00">second · telegram</span>' in html
+    assert '<span>0 gaps</span><span>0 quiet</span>' in html
 
 
 def test_lead_brief_is_clickable_and_read_state_enabled(tmp_path: Path):
