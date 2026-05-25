@@ -101,6 +101,8 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
+REVIEW_REQUIRED_PREFIX = "review-required"
+PARENT_UNDER_REVIEW_REASON = "parent-under-review"
 
 # A running task's claim is valid for 15 minutes by default; after that the
 # next dispatcher tick reclaims it. Workers that outlive this window should
@@ -109,6 +111,15 @@ _IS_WINDOWS = sys.platform == "win32"
 # ``HERMES_KANBAN_CLAIM_TTL_SECONDS`` to raise the default claim window for
 # long single-call MCP workflows.
 DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
+_UNSET = object()
+
+
+def _is_review_required_reason(reason: Optional[str]) -> bool:
+    return bool(reason and str(reason).strip().casefold().startswith(REVIEW_REQUIRED_PREFIX))
+
+
+def _parent_satisfies_dependency(status: str) -> bool:
+    return status in {"done", "archived", "review"}
 
 
 def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
@@ -954,6 +965,288 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 _INITIALIZED_PATHS: set[str] = set()
 _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
+_PG_DATA_TABLES = (
+    "tasks",
+    "task_links",
+    "task_comments",
+    "task_events",
+    "task_runs",
+    "kanban_notify_subs",
+)
+
+
+def _truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _kanban_require_service_db() -> bool:
+    """Return whether Kanban must use the PostgreSQL service database."""
+    if _truthy_env("HERMES_KANBAN_REQUIRE_SERVICE_DB"):
+        return True
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+        kanban_cfg = cfg.get("kanban") or {}
+        return bool(kanban_cfg.get("require_service_db", False))
+    except Exception:
+        return False
+
+
+def _kanban_postgres_dsn() -> str:
+    return os.environ.get("HERMES_KANBAN_POSTGRES_DSN", "").strip()
+
+
+def _pg_ident(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _translate_pg_sql(sql: str) -> str:
+    """Translate the small SQLite SQL subset used by this module to PostgreSQL."""
+    out = sql.replace("?", "%s")
+    out = re.sub(
+        r"INSERT\s+OR\s+IGNORE\s+INTO\s+task_links\s+\(([^)]+)\)\s+VALUES\s+\(([^)]+)\)",
+        r"INSERT INTO task_links (\1) VALUES (\2) ON CONFLICT DO NOTHING",
+        out,
+        flags=re.IGNORECASE,
+    )
+    out = re.sub(
+        r"INSERT\s+OR\s+IGNORE\s+INTO\s+kanban_notify_subs\s+\(([^)]+)\)\s+VALUES\s+\(([^)]+)\)",
+        r"INSERT INTO kanban_notify_subs (\1) VALUES (\2) ON CONFLICT DO NOTHING",
+        out,
+        flags=re.IGNORECASE,
+    )
+    return out
+
+
+class _PostgresCursor:
+    def __init__(self, cursor: Any):
+        self._cursor = cursor
+        self.rowcount = cursor.rowcount
+        self.lastrowid: Optional[int] = None
+
+    def fetchone(self) -> Any:
+        return self._cursor.fetchone()
+
+    def fetchall(self) -> list[Any]:
+        return self._cursor.fetchall()
+
+    def __iter__(self):
+        return iter(self._cursor)
+
+
+class KanbanPostgresConnection:
+    """Small DB-API shim for the existing Kanban SQL helpers.
+
+    The runtime still issues SQL against unqualified table names. On connect
+    we create temporary, automatically-updatable views named like the legacy
+    SQLite tables and constrained to one ``board_id``. Inserts through those
+    views inherit ``board_id`` from a PostgreSQL session setting.
+    """
+
+    is_postgres = True
+
+    def __init__(self, raw: Any, board_id: str):
+        self._raw = raw
+        self.board_id = board_id
+        self.row_factory = None
+
+    def execute(self, sql: str, params: Iterable[Any] = ()) -> _PostgresCursor:
+        text = _translate_pg_sql(sql)
+        lower = text.lstrip().lower()
+        wants_returning_id = (
+            lower.startswith("insert into task_comments ")
+            or lower.startswith("insert into task_events ")
+            or lower.startswith("insert into task_runs ")
+        ) and " returning " not in lower
+        if wants_returning_id:
+            text = text.rstrip().rstrip(";") + " RETURNING id"
+        cur = self._raw.cursor()
+        cur.execute(text, tuple(params or ()))
+        wrapped = _PostgresCursor(cur)
+        if wants_returning_id:
+            row = cur.fetchone()
+            if row:
+                wrapped.lastrowid = int(row["id"])
+        return wrapped
+
+    def executescript(self, sql: str) -> None:
+        with self._raw.cursor() as cur:
+            cur.execute(sql)
+
+    def commit(self) -> None:
+        try:
+            self._raw.commit()
+        except Exception:
+            if not getattr(self._raw, "autocommit", False):
+                raise
+
+    def rollback(self) -> None:
+        try:
+            self._raw.rollback()
+        except Exception:
+            if not getattr(self._raw, "autocommit", False):
+                raise
+
+    def close(self) -> None:
+        self._raw.close()
+
+    def __enter__(self) -> "KanbanPostgresConnection":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        if exc_type is None:
+            self.commit()
+        else:
+            self.rollback()
+        self.close()
+
+
+def _ensure_postgres_schema(raw: Any) -> None:
+    ddl = """
+    CREATE TABLE IF NOT EXISTS boards (
+        id TEXT PRIMARY KEY,
+        metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+        source_path TEXT,
+        migrated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS tasks (
+        board_id TEXT NOT NULL DEFAULT current_setting('hermes.kanban_board_id', true) REFERENCES boards(id),
+        id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT,
+        assignee TEXT,
+        status TEXT NOT NULL,
+        priority INTEGER DEFAULT 0,
+        created_by TEXT,
+        created_at BIGINT NOT NULL,
+        started_at BIGINT,
+        completed_at BIGINT,
+        workspace_kind TEXT NOT NULL DEFAULT 'scratch',
+        workspace_path TEXT,
+        branch_name TEXT,
+        claim_lock TEXT,
+        claim_expires BIGINT,
+        tenant TEXT,
+        result TEXT,
+        idempotency_key TEXT,
+        consecutive_failures INTEGER NOT NULL DEFAULT 0,
+        worker_pid INTEGER,
+        last_failure_error TEXT,
+        max_runtime_seconds INTEGER,
+        last_heartbeat_at BIGINT,
+        current_run_id BIGINT,
+        workflow_template_id TEXT,
+        current_step_key TEXT,
+        skills TEXT,
+        model_override TEXT,
+        max_retries INTEGER,
+        session_id TEXT,
+        PRIMARY KEY (board_id, id)
+    );
+    CREATE TABLE IF NOT EXISTS task_links (
+        board_id TEXT NOT NULL DEFAULT current_setting('hermes.kanban_board_id', true) REFERENCES boards(id),
+        parent_id TEXT NOT NULL,
+        child_id TEXT NOT NULL,
+        PRIMARY KEY (board_id, parent_id, child_id)
+    );
+    CREATE TABLE IF NOT EXISTS task_comments (
+        board_id TEXT NOT NULL DEFAULT current_setting('hermes.kanban_board_id', true) REFERENCES boards(id),
+        id BIGSERIAL,
+        task_id TEXT NOT NULL,
+        author TEXT NOT NULL,
+        body TEXT NOT NULL,
+        created_at BIGINT NOT NULL,
+        PRIMARY KEY (board_id, id)
+    );
+    CREATE TABLE IF NOT EXISTS task_events (
+        board_id TEXT NOT NULL DEFAULT current_setting('hermes.kanban_board_id', true) REFERENCES boards(id),
+        id BIGSERIAL,
+        task_id TEXT NOT NULL,
+        run_id BIGINT,
+        kind TEXT NOT NULL,
+        payload TEXT,
+        created_at BIGINT NOT NULL,
+        PRIMARY KEY (board_id, id)
+    );
+    CREATE TABLE IF NOT EXISTS task_runs (
+        board_id TEXT NOT NULL DEFAULT current_setting('hermes.kanban_board_id', true) REFERENCES boards(id),
+        id BIGSERIAL,
+        task_id TEXT NOT NULL,
+        profile TEXT,
+        step_key TEXT,
+        status TEXT NOT NULL,
+        claim_lock TEXT,
+        claim_expires BIGINT,
+        worker_pid INTEGER,
+        max_runtime_seconds INTEGER,
+        last_heartbeat_at BIGINT,
+        started_at BIGINT NOT NULL,
+        ended_at BIGINT,
+        outcome TEXT,
+        summary TEXT,
+        metadata TEXT,
+        error TEXT,
+        PRIMARY KEY (board_id, id)
+    );
+    CREATE TABLE IF NOT EXISTS kanban_notify_subs (
+        board_id TEXT NOT NULL DEFAULT current_setting('hermes.kanban_board_id', true) REFERENCES boards(id),
+        task_id TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        chat_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL DEFAULT '',
+        user_id TEXT,
+        notifier_profile TEXT,
+        created_at BIGINT NOT NULL,
+        last_event_id BIGINT NOT NULL DEFAULT 0,
+        PRIMARY KEY (board_id, task_id, platform, chat_id, thread_id)
+    );
+    """
+    with raw.cursor() as cur:
+        cur.execute(ddl)
+
+
+def _connect_postgres(board: Optional[str] = None) -> KanbanPostgresConnection:
+    dsn = _kanban_postgres_dsn()
+    if not dsn:
+        raise RuntimeError(
+            "kanban.require_service_db is true but HERMES_KANBAN_POSTGRES_DSN is not set"
+        )
+    try:
+        import psycopg
+        from psycopg.rows import dict_row
+        from psycopg.types.json import Jsonb
+    except Exception as exc:
+        raise RuntimeError(f"PostgreSQL Kanban runtime requires psycopg: {exc}") from exc
+
+    slug = _normalize_board_slug(board) if board is not None else get_current_board()
+    slug = slug or DEFAULT_BOARD
+    raw = psycopg.connect(dsn, row_factory=dict_row, autocommit=True)
+    try:
+        _ensure_postgres_schema(raw)
+        meta = read_board_metadata(slug)
+        with raw.cursor() as cur:
+            cur.execute("SELECT set_config('hermes.kanban_board_id', %s, false)", (slug,))
+            cur.execute(
+                """
+                INSERT INTO boards (id, metadata)
+                VALUES (%s, %s)
+                ON CONFLICT (id) DO UPDATE SET metadata = EXCLUDED.metadata
+                """,
+                (slug, Jsonb(meta)),
+            )
+            for table in _PG_DATA_TABLES:
+                cur.execute(f"DROP VIEW IF EXISTS pg_temp.{_pg_ident(table)}")
+                cur.execute(
+                    f"CREATE TEMP VIEW {_pg_ident(table)} AS "
+                    f"SELECT * FROM public.{_pg_ident(table)} "
+                    "WHERE board_id = current_setting('hermes.kanban_board_id', true) "
+                    "WITH CASCADED CHECK OPTION"
+                )
+    except Exception:
+        raw.close()
+        raise
+    return KanbanPostgresConnection(raw, slug)
 
 
 def _looks_like_tls_record_at(data: bytes, offset: int) -> bool:
@@ -1136,7 +1429,7 @@ def connect(
     db_path: Optional[Path] = None,
     *,
     board: Optional[str] = None,
-) -> sqlite3.Connection:
+) -> sqlite3.Connection | KanbanPostgresConnection:
     """Open (and initialize if needed) the kanban DB.
 
     WAL mode is enabled on every connection; it's a no-op after the first
@@ -1155,6 +1448,14 @@ def connect(
       ``HERMES_KANBAN_DB`` env → ``HERMES_KANBAN_BOARD`` env →
       ``<root>/kanban/current`` → ``default``.
     """
+    if _kanban_require_service_db():
+        if db_path is not None and not _truthy_env("HERMES_KANBAN_ALLOW_SQLITE_DEV"):
+            raise RuntimeError(
+                "kanban.require_service_db is true; refusing to open legacy SQLite Kanban DB "
+                "(set HERMES_KANBAN_ALLOW_SQLITE_DEV=1 only for migration/dev tooling)"
+            )
+        if db_path is None:
+            return _connect_postgres(board=board)
     if db_path is not None:
         path = db_path
     else:
@@ -1214,6 +1515,16 @@ def init_db(
     external tools that upgrade an old DB file — can call this to
     force re-migration.
     """
+    if _kanban_require_service_db():
+        if db_path is not None and not _truthy_env("HERMES_KANBAN_ALLOW_SQLITE_DEV"):
+            raise RuntimeError(
+                "kanban.require_service_db is true; refusing to initialize legacy SQLite Kanban DB "
+                "(set HERMES_KANBAN_ALLOW_SQLITE_DEV=1 only for migration/dev tooling)"
+            )
+        if db_path is None:
+            with contextlib.closing(_connect_postgres(board=board)):
+                pass
+            return Path("<kanban-postgres>")
     if db_path is not None:
         path = db_path
     else:
@@ -1465,16 +1776,106 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             (new, old),
         )
 
+    _migrate_review_required_blocks(conn)
+
+
+def _migrate_review_required_blocks(conn: sqlite3.Connection) -> None:
+    """Move legacy sticky review handoffs out of ``blocked`` and into ``review``.
+
+    Older workers used ``kanban_block(reason="review-required: ...")`` as a
+    handoff convention. Only migrate tasks whose latest block/unblock lifecycle
+    event is still that review-required block; tasks unblocked and later blocked
+    for a real reason stay in ``blocked``.
+    """
+    events_exist = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='task_events'"
+    ).fetchone() is not None
+    if not events_exist:
+        return
+    task_cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    if "status" not in task_cols:
+        return
+    now = int(time.time())
+    rows = conn.execute(
+        "SELECT id, current_run_id, status FROM tasks WHERE status IN ('blocked', 'ready')"
+    ).fetchall()
+    for row in rows:
+        event = None
+        reason = None
+        if row["status"] == "blocked":
+            event = conn.execute(
+                "SELECT id, kind, payload, run_id FROM task_events "
+                "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
+                "ORDER BY id DESC LIMIT 1",
+                (row["id"],),
+            ).fetchone()
+            if not event or event["kind"] != "blocked":
+                continue
+            if event["payload"]:
+                try:
+                    payload = json.loads(event["payload"])
+                    if isinstance(payload, dict):
+                        reason = payload.get("reason")
+                except json.JSONDecodeError:
+                    reason = None
+            if not _is_review_required_reason(reason):
+                continue
+        else:
+            reason = _misrouted_review_required_unblock_reason(conn, row["id"])
+            if not reason:
+                continue
+        if row["current_run_id"]:
+            conn.execute(
+                """
+                UPDATE task_runs
+                   SET status = COALESCE(status, 'review'),
+                       outcome = COALESCE(outcome, 'review'),
+                       summary = COALESCE(summary, ?),
+                       ended_at = COALESCE(ended_at, ?),
+                       claim_lock = NULL,
+                       claim_expires = NULL,
+                       worker_pid = NULL
+                 WHERE id = ?
+                """,
+                (reason, now, int(row["current_run_id"])),
+            )
+        conn.execute(
+            "UPDATE tasks SET status = 'review', current_run_id = NULL, "
+            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+            "WHERE id = ? AND status = ?",
+            (row["id"], row["status"]),
+        )
+        _append_event(
+            conn,
+            row["id"],
+            "migrated_to_review",
+            {
+                "from": row["status"],
+                "reason": reason,
+                "blocked_event_id": (
+                    event["id"] if event is not None else None
+                ),
+            },
+            run_id=(
+                int(event["run_id"])
+                if event is not None and event["run_id"] is not None
+                else None
+            ),
+        )
+
 
 @contextlib.contextmanager
-def write_txn(conn: sqlite3.Connection):
+def write_txn(conn: sqlite3.Connection | KanbanPostgresConnection):
     """Context manager for an IMMEDIATE write transaction.
 
     Use for any multi-statement write (creating a task + link, claiming a
     task + recording an event, etc.).  A claim CAS inside this context is
     atomic -- at most one concurrent writer can succeed.
     """
-    conn.execute("BEGIN IMMEDIATE")
+    if getattr(conn, "is_postgres", False):
+        conn.execute("BEGIN")
+    else:
+        conn.execute("BEGIN IMMEDIATE")
     try:
         yield conn
     except Exception:
@@ -1688,13 +2089,13 @@ def create_task(
                         missing = _find_missing_parents(conn, parents)
                         if missing:
                             raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
-                        # If any parent is not yet done, we're todo.
+                        # If any parent is not yet satisfied, we're todo.
                         rows = conn.execute(
                             "SELECT status FROM tasks WHERE id IN "
                             "(" + ",".join("?" * len(parents)) + ")",
                             parents,
                         ).fetchall()
-                        if any(r["status"] != "done" for r in rows):
+                        if any(not _parent_satisfies_dependency(r["status"]) for r in rows):
                             task_status = "todo"
                 # Even in triage mode we still need to validate parent ids
                 # so the eventual link rows don't dangle.
@@ -1876,6 +2277,87 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
         return True
 
 
+def update_task_fields(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    title: Any = _UNSET,
+    body: Any = _UNSET,
+    assignee: Any = _UNSET,
+    priority: Any = _UNSET,
+) -> Optional[list[str]]:
+    """Update user-editable task fields in one transaction.
+
+    Only the public ticket fields intended for agent maintenance are
+    writable here: title, body, assignee, priority. Lifecycle status,
+    workspaces, runs, links, results, and internal dispatch columns stay
+    under their dedicated helpers.
+    """
+    supplied = {
+        name: value for name, value in {
+            "title": title,
+            "body": body,
+            "assignee": assignee,
+            "priority": priority,
+        }.items()
+        if value is not _UNSET
+    }
+    if not supplied:
+        return []
+
+    if title is not _UNSET:
+        title = str(title).strip()
+        if not title:
+            raise ValueError("title cannot be empty")
+        supplied["title"] = title
+    if assignee is not _UNSET:
+        supplied["assignee"] = _canonical_assignee(assignee)
+    if priority is not _UNSET:
+        supplied["priority"] = int(priority)
+    if body is not _UNSET:
+        supplied["body"] = None if body is None else str(body)
+
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT title, body, assignee, priority, status, claim_lock "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if not row:
+            return None
+        if (
+            "assignee" in supplied
+            and row["assignee"] != supplied["assignee"]
+            and row["status"] == "running"
+            and row["claim_lock"] is not None
+        ):
+            raise RuntimeError(
+                f"cannot reassign {task_id}: currently running (claimed). "
+                "Wait for completion or reclaim the stale lock first."
+            )
+
+        changed = [
+            name for name, value in supplied.items()
+            if row[name] != value
+        ]
+        if not changed:
+            return []
+
+        sets = [f"{name} = ?" for name in supplied]
+        vals = list(supplied.values())
+        if "assignee" in changed:
+            sets.extend(["consecutive_failures = 0", "last_failure_error = NULL"])
+        vals.append(task_id)
+        cur = conn.execute(
+            f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?",
+            vals,
+        )
+        if cur.rowcount != 1:
+            return None
+        _append_event(conn, task_id, "updated", {"fields": changed})
+        return changed
+
+
 # ---------------------------------------------------------------------------
 # Links
 # ---------------------------------------------------------------------------
@@ -1895,11 +2377,11 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
             (parent_id, child_id),
         )
-        # If child was ready but parent is not yet done, demote child to todo.
+        # If child was ready but parent is not yet satisfied, demote child to todo.
         parent_status = conn.execute(
             "SELECT status FROM tasks WHERE id = ?", (parent_id,)
         ).fetchone()["status"]
-        if parent_status != "done":
+        if not _parent_satisfies_dependency(parent_status):
             conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
                 (child_id,),
@@ -2201,11 +2683,11 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
 
     A ``blocked`` status can come from two very different sources:
 
-    * **Worker- or operator-initiated** — a worker called
-      ``kanban_block(reason="review-required: ...")`` (or somebody ran
-      ``hermes kanban block <id>``).  This is a deliberate handoff that
-      should stay blocked until an operator unblocks it.  The block tool
-      emits a ``"blocked"`` event row in ``task_events``.
+    * **Worker- or operator-initiated** — a worker called ``kanban_block``
+      for a genuine blocker (or somebody ran ``hermes kanban block <id>``).
+      This is a deliberate handoff that should stay blocked until an
+      operator unblocks it. The block tool emits a ``"blocked"`` event row
+      in ``task_events``.
 
     * **Circuit-breaker** — ``_record_task_failure`` tripped after
       repeated crashes / spawn failures / timeouts.  This emits
@@ -2233,8 +2715,155 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     return bool(row) and row["kind"] == "blocked"
 
 
+def _active_parent_review_block_payload(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> Optional[dict]:
+    """Return the active auto-block payload for a parent-under-review barrier."""
+    row = conn.execute(
+        "SELECT kind, payload FROM task_events "
+        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if not row or row["kind"] != "blocked" or not row["payload"]:
+        return None
+    try:
+        payload = json.loads(row["payload"])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("reason") != PARENT_UNDER_REVIEW_REASON:
+        return None
+    return payload
+
+
+def _has_review_parent(conn: sqlite3.Connection, child_id: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM task_links l "
+        "JOIN tasks p ON p.id = l.parent_id "
+        "WHERE l.child_id = ? AND p.status = 'review' LIMIT 1",
+        (child_id,),
+    ).fetchone()
+    return bool(row)
+
+
+def _block_ready_children_for_parent_review(
+    conn: sqlite3.Connection,
+    parent_id: str,
+) -> None:
+    rows = conn.execute(
+        "SELECT c.id FROM tasks c "
+        "JOIN task_links l ON l.child_id = c.id "
+        "WHERE l.parent_id = ? AND c.status = 'ready'",
+        (parent_id,),
+    ).fetchall()
+    for row in rows:
+        child_id = row["id"]
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'blocked' "
+            "WHERE id = ? AND status = 'ready'",
+            (child_id,),
+        )
+        if cur.rowcount == 1:
+            _append_event(
+                conn,
+                child_id,
+                "blocked",
+                {"reason": PARENT_UNDER_REVIEW_REASON, "parent_id": parent_id},
+            )
+
+
+def _unblock_parent_review_children_if_clear(
+    conn: sqlite3.Connection,
+    parent_id: str,
+) -> None:
+    rows = conn.execute(
+        "SELECT c.id FROM tasks c "
+        "JOIN task_links l ON l.child_id = c.id "
+        "WHERE l.parent_id = ? AND c.status = 'blocked'",
+        (parent_id,),
+    ).fetchall()
+    for row in rows:
+        child_id = row["id"]
+        if _active_parent_review_block_payload(conn, child_id) is None:
+            continue
+        if _has_review_parent(conn, child_id):
+            continue
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'ready', "
+            "consecutive_failures = 0, last_failure_error = NULL "
+            "WHERE id = ? AND status = 'blocked'",
+            (child_id,),
+        )
+        if cur.rowcount == 1:
+            _append_event(
+                conn,
+                child_id,
+                "unblocked",
+                {"reason": "parent-approved", "parent_id": parent_id},
+            )
+
+
+def _latest_review_required_block_reason(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> Optional[str]:
+    """Return the latest review-required block reason, if it is still active."""
+    event = conn.execute(
+        "SELECT kind, payload FROM task_events "
+        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if not event or event["kind"] != "blocked" or not event["payload"]:
+        return None
+    try:
+        payload = json.loads(event["payload"])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    reason = payload.get("reason")
+    return str(reason) if _is_review_required_reason(reason) else None
+
+
+def _misrouted_review_required_unblock_reason(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> Optional[str]:
+    """Return review-required reason for legacy ``blocked -> ready`` unblocks."""
+    latest = conn.execute(
+        "SELECT id, kind FROM task_events "
+        "WHERE task_id = ? "
+        "AND kind IN ('blocked', 'unblocked', 'claimed', 'spawned', "
+        "'completed', 'submitted_for_review', 'review_rejected') "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if not latest or latest["kind"] != "unblocked":
+        return None
+    blocked = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'blocked' AND id < ? "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id, int(latest["id"])),
+    ).fetchone()
+    if not blocked or not blocked["payload"]:
+        return None
+    try:
+        payload = json.loads(blocked["payload"])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    reason = payload.get("reason")
+    return str(reason) if _is_review_required_reason(reason) else None
+
+
 def recompute_ready(conn: sqlite3.Connection) -> int:
-    """Promote ``todo`` tasks to ``ready`` when all parents are ``done`` or ``archived``.
+    """Promote ``todo`` tasks to ``ready`` when all parents satisfy dependencies.
 
     Returns the number of tasks promoted.  Safe to call inside or outside
     an existing transaction; it opens its own IMMEDIATE txn.
@@ -2243,10 +2872,7 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
     blocked purely by a parent dependency unblocks itself when the
     parent completes), *except* when the most recent block event was a
     worker-initiated ``kanban_block`` — those stay blocked until an
-    explicit ``kanban_unblock`` (#28712).  Without that guard, a
-    ``review-required`` handoff would auto-respawn, the fresh worker
-    would find nothing to do, exit cleanly, get recorded as a protocol
-    violation, and the cycle would repeat indefinitely.
+    explicit ``kanban_unblock`` (#28712).
     """
     promoted = 0
     with write_txn(conn):
@@ -2268,7 +2894,7 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            if all(_parent_satisfies_dependency(p["status"]) for p in parents):
                 # Blocked tasks also get their failure counters reset —
                 # this is effectively an auto-unblock (circuit-breaker
                 # recovery; worker-initiated blocks are skipped above).
@@ -2310,7 +2936,7 @@ def claim_task(
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
         # Structural invariant: never transition ready -> running while any
-        # parent is not yet 'done'. This is the single enforcement point
+        # parent has not yet satisfied its dependency. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,
         # release_stale_claims, manual SQL) set status='ready'. If a racy
         # writer promoted a task with undone parents, demote it back to
@@ -2320,7 +2946,7 @@ def claim_task(
         undone = conn.execute(
             "SELECT 1 FROM task_links l "
             "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived', 'review') LIMIT 1",
             (task_id,),
         ).fetchone()
         if undone:
@@ -2552,7 +3178,7 @@ def release_stale_claims(
                 cur = conn.execute(
                     "UPDATE tasks SET claim_expires = ? "
                     "WHERE id = ? AND status = 'running' "
-                    "  AND claim_lock IS ? "
+                    "  AND claim_lock = ? "
                     "  AND claim_expires IS NOT NULL "
                     "  AND claim_expires < ?",
                     (new_expires, row["id"], row["claim_lock"], now),
@@ -2587,12 +3213,14 @@ def release_stale_claims(
             row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
         )
         with write_txn(conn):
+            lock_clause = "claim_lock IS NULL" if row["claim_lock"] is None else "claim_lock = ?"
+            lock_params = () if row["claim_lock"] is None else (row["claim_lock"],)
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
-                "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
+                f"WHERE id = ? AND status = 'running' AND {lock_clause} "
                 "AND claim_expires IS NOT NULL AND claim_expires < ?",
-                (row["id"], row["claim_lock"], now),
+                (row["id"], *lock_params, now),
             )
             if cur.rowcount != 1:
                 continue
@@ -2658,12 +3286,14 @@ def reclaim_task(
         row["worker_pid"], prev_lock, signal_fn=signal_fn,
     )
     with write_txn(conn):
+        lock_clause = "claim_lock IS NULL" if prev_lock is None else "claim_lock = ?"
+        lock_params = () if prev_lock is None else (prev_lock,)
         cur = conn.execute(
             "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
             "claim_expires = NULL, worker_pid = NULL "
             "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
-            "AND claim_lock IS ?",
-            (task_id, prev_lock),
+            f"AND {lock_clause}",
+            (task_id, *lock_params),
         )
         if cur.rowcount != 1:
             return False
@@ -2868,7 +3498,7 @@ def complete_task(
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
-    """Transition ``running|ready -> done`` and record ``result``.
+    """Transition ``running|ready|review -> done`` and record ``result``.
 
     Accepts a task that is merely ``ready`` too, so a manual CLI
     completion (``hermes kanban complete <id>``) works without requiring
@@ -2926,6 +3556,11 @@ def complete_task(
         verified_cards = []
 
     with write_txn(conn):
+        existing = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        old_status = existing["status"] if existing else None
         if expected_run_id is None:
             cur = conn.execute(
                 """
@@ -2937,7 +3572,7 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked')
+                   AND status IN ('running', 'ready', 'blocked', 'review')
                 """,
                 (result, now, task_id),
             )
@@ -2952,7 +3587,7 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked')
+                   AND status IN ('running', 'ready', 'blocked', 'review')
                    AND current_run_id = ?
                 """,
                 (result, now, task_id, int(expected_run_id)),
@@ -2965,8 +3600,8 @@ def complete_task(
             summary=summary if summary is not None else result,
             metadata=metadata,
         )
-        # If complete_task was called on a never-claimed task (ready or
-        # blocked → done with no run in flight), synthesize a
+        # If complete_task was called on a never-claimed task (ready,
+        # blocked or review -> done with no run in flight), synthesize a
         # zero-duration run so the handoff fields are persisted in
         # attempt history instead of silently lost.
         if run_id is None and (summary or metadata or result):
@@ -3007,6 +3642,8 @@ def complete_task(
             completed_payload,
             run_id=run_id,
         )
+        if old_status == "review":
+            _unblock_parent_review_children_if_clear(conn, task_id)
     # Prose-scan the summary + result for t_<hex> references that do
     # not resolve. Advisory — does not block the completion. Runs in
     # its own txn so the completion itself is already durable by the
@@ -3350,40 +3987,48 @@ def block_task(
     reason: Optional[str] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
-    """Transition ``running -> blocked``."""
+    """Transition ``running|ready`` to ``blocked`` or ``review``.
+
+    ``review-required`` reasons are handoffs awaiting validation, not true
+    blockers, so they land in the dedicated ``review`` lane.
+    """
+    to_review = _is_review_required_reason(reason)
+    new_status = "review" if to_review else "blocked"
+    run_outcome = "review" if to_review else "blocked"
+    event_kind = "submitted_for_review" if to_review else "blocked"
     with write_txn(conn):
         if expected_run_id is None:
             cur = conn.execute(
                 """
                 UPDATE tasks
-                   SET status       = 'blocked',
-                       claim_lock   = NULL,
-                       claim_expires= NULL,
-                       worker_pid   = NULL
+                  SET status       = ?,
+                      claim_lock   = NULL,
+                      claim_expires= NULL,
+                      worker_pid   = NULL
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                 """,
-                (task_id,),
+                (new_status, task_id),
             )
         else:
             cur = conn.execute(
                 """
                 UPDATE tasks
-                   SET status       = 'blocked',
-                       claim_lock   = NULL,
-                       claim_expires= NULL,
-                       worker_pid   = NULL
+                  SET status       = ?,
+                      claim_lock   = NULL,
+                      claim_expires= NULL,
+                      worker_pid   = NULL
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                    AND current_run_id = ?
                 """,
-                (task_id, int(expected_run_id)),
+                (new_status, task_id, int(expected_run_id)),
             )
         if cur.rowcount != 1:
             return False
         run_id = _end_run(
             conn, task_id,
-            outcome="blocked", status="blocked",
+            outcome=run_outcome, status=new_status,
             summary=reason,
         )
         # Synthesize a run when blocking a never-claimed task so the
@@ -3391,10 +4036,47 @@ def block_task(
         if run_id is None and reason:
             run_id = _synthesize_ended_run(
                 conn, task_id,
-                outcome="blocked",
+                outcome=run_outcome,
                 summary=reason,
             )
-        _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
+        _append_event(conn, task_id, event_kind, {"reason": reason}, run_id=run_id)
+        if to_review:
+            _block_ready_children_for_parent_review(conn, task_id)
+        return True
+
+
+def reject_review_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: Optional[str] = None,
+) -> bool:
+    """Reject a review handoff and requeue the task for another worker run."""
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if not row or row["status"] != "review":
+            return False
+        undone_parents = conn.execute(
+            "SELECT 1 FROM task_links l "
+            "JOIN tasks p ON p.id = l.parent_id "
+            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived', 'review') LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        new_status = "todo" if undone_parents else "ready"
+        conn.execute(
+            "UPDATE tasks SET status = ?, current_run_id = NULL, "
+            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+            "WHERE id = ? AND status = 'review'",
+            (new_status, task_id),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "review_rejected",
+            {"reason": reason, "status": new_status},
+        )
         return True
 
 
@@ -3503,13 +4185,17 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # if parents are still in progress the task must wait in 'todo'
         # until recompute_ready picks it up. RCA: Bug 2 at
         # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
-        undone_parents = conn.execute(
-            "SELECT 1 FROM task_links l "
-            "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
-            (task_id,),
-        ).fetchone()
-        new_status = "todo" if undone_parents else "ready"
+        review_required_reason = _latest_review_required_block_reason(conn, task_id)
+        if review_required_reason:
+            new_status = "review"
+        else:
+            undone_parents = conn.execute(
+                "SELECT 1 FROM task_links l "
+                "JOIN tasks p ON p.id = l.parent_id "
+                "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived', 'review') LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            new_status = "todo" if undone_parents else "ready"
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
             "consecutive_failures = 0, last_failure_error = NULL "
@@ -3518,10 +4204,18 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         if cur.rowcount != 1:
             return False
-        _append_event(
-            conn, task_id, "unblocked",
-            {"status": new_status} if new_status != "ready" else None,
-        )
+        if new_status == "review":
+            _append_event(
+                conn,
+                task_id,
+                "submitted_for_review",
+                {"reason": review_required_reason, "via": "unblock"},
+            )
+        else:
+            _append_event(
+                conn, task_id, "unblocked",
+                {"status": new_status} if new_status != "ready" else None,
+            )
         return True
 
 
@@ -5061,27 +5755,11 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
 
 
 def has_spawnable_review(conn: sqlite3.Connection) -> bool:
-    """Return True iff there is at least one review+assigned+unclaimed task
-    whose assignee maps to a real Hermes profile.
+    """Return whether review tasks are spawnable by the dispatcher.
 
-    Mirror of :func:`has_spawnable_ready` for the review column —
-    used by the health telemetry to decide whether the dispatcher
-    should have spawned a review agent.
+    ``review`` is a manual validation lane for the dispatcher. Automated
+    review, when enabled, is driven by Kanban conscience outside this loop.
     """
-    rows = conn.execute(
-        "SELECT DISTINCT assignee FROM tasks "
-        "WHERE status = 'review' AND assignee IS NOT NULL "
-        "    AND claim_lock IS NULL"
-    ).fetchall()
-    if not rows:
-        return False
-    try:
-        from hermes_cli.profiles import profile_exists  # local import: avoids cycle
-    except Exception:
-        return True
-    for row in rows:
-        if profile_exists(row["assignee"]):
-            return True
     return False
 
 
@@ -5186,8 +5864,8 @@ def dispatch_once(
     if max_spawn is not None:
         running_count = int(
             conn.execute(
-                "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
-            ).fetchone()[0]
+                "SELECT COUNT(*) AS n FROM tasks WHERE status = 'running'"
+            ).fetchone()["n"]
         )
 
     ready_rows = conn.execute(
@@ -5201,8 +5879,8 @@ def dispatch_once(
     # pile up and time out.
     if max_in_progress is not None and ready_rows:
         in_progress = conn.execute(
-            "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
-        ).fetchone()[0]
+            "SELECT COUNT(*) AS n FROM tasks WHERE status = 'running'"
+        ).fetchone()["n"]
         if in_progress >= max_in_progress:
             return result
         # Only spawn enough to reach the cap, respecting max_spawn too.
@@ -5681,6 +6359,15 @@ def _default_spawn(
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
 
+    # Profile activation below rewrites HERMES_HOME for the child. Preserve
+    # the dispatcher's service-DB policy explicitly so worker kanban tools do
+    # not fall back to the legacy SQLite path pinned by HERMES_KANBAN_DB.
+    if _kanban_require_service_db():
+        env["HERMES_KANBAN_REQUIRE_SERVICE_DB"] = "1"
+        _service_dsn = _kanban_postgres_dsn()
+        if _service_dsn:
+            env["HERMES_KANBAN_POSTGRES_DSN"] = _service_dsn
+
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
     # (fallback_providers, toolsets, agent settings, etc.) instead of the root
     # config.  Without this, `env = dict(os.environ)` copies only the parent's
@@ -5984,7 +6671,7 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
                     pass
             lines.append("")
 
-    # Parents: prefer the most-recent 'completed' run's summary + metadata,
+    # Parents: prefer the most-recent completed/review handoff summary + metadata,
     # fall back to ``task.result`` when no run rows exist (legacy DBs,
     # or tasks completed before the runs table landed).
     parent_rows = conn.execute(
@@ -5997,9 +6684,10 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
         wrote_header = False
         for pid in parent_ids:
             pt = get_task(conn, pid)
-            if not pt or pt.status != "done":
+            if not pt or pt.status not in ("done", "review"):
                 continue
-            runs = [r for r in list_runs(conn, pid) if r.outcome == "completed"]
+            allowed_outcomes = {"completed"} if pt.status == "done" else {"review"}
+            runs = [r for r in list_runs(conn, pid) if r.outcome in allowed_outcomes]
             runs.sort(key=lambda r: r.started_at, reverse=True)
             run = runs[0] if runs else None
 

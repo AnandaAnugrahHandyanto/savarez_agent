@@ -111,9 +111,12 @@ def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_p
     assert {
         "kanban_list",
         "kanban_unblock",
+        "kanban_update",
+        "kanban_schedule",
+        "kanban_review",
     }.isdisjoint(kanban), (
         f"Board-routing tools leaked into worker schema: "
-        f"{kanban & {'kanban_list', 'kanban_unblock'}}"
+        f"{kanban & {'kanban_list', 'kanban_unblock', 'kanban_update', 'kanban_schedule', 'kanban_review'}}"
     )
 
 
@@ -134,6 +137,9 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
     names = {s["function"].get("name") for s in schema if "function" in s}
     kanban = {n for n in names if n and n.startswith("kanban_")}
     expected = {
+        "kanban_update",
+        "kanban_schedule",
+        "kanban_review",
         "kanban_list",
         "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
@@ -288,6 +294,67 @@ def test_list_rejects_bad_include_archived(monkeypatch, worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_list({"include_archived": "sometimes"})
     assert "include_archived must be" in json.loads(out).get("error", "")
+
+
+def test_update_edits_public_fields(monkeypatch, worker_env):
+    """Orchestrator kanban_update edits title/body/assignee/priority."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="a", assignee="factory")
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_update({
+        "task_id": tid,
+        "title": "new title",
+        "body": "new body",
+        "assignee": "Reviewer",
+        "priority": 7,
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert set(d["changed"]) == {"title", "body", "assignee", "priority"}
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        assert task.title == "new title"
+        assert task.body == "new body"
+        assert task.assignee == "reviewer"
+        assert task.priority == 7
+    finally:
+        conn.close()
+
+
+def test_update_rejects_worker_context(worker_env):
+    from tools import kanban_tools as kt
+    out = kt._handle_update({"task_id": worker_env, "priority": 3})
+    assert "orchestrator-only" in json.loads(out).get("error", "")
+
+
+def test_schedule_sets_task_scheduled(monkeypatch, worker_env):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="later", assignee="factory")
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_schedule({"task_id": tid, "reason": "wait until Monday"})
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["status"] == "scheduled"
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "scheduled"
+    finally:
+        conn.close()
 
 
 def test_complete_happy_path(worker_env):
@@ -1013,6 +1080,64 @@ def test_unblock_happy_path(monkeypatch, worker_env):
         conn.close()
 
 
+def test_unblock_scheduled_task_with_open_parent_returns_todo(monkeypatch, worker_env):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="worker")
+        tid = kb.create_task(conn, title="scheduled child", assignee="worker", parents=[parent])
+        assert kb.schedule_task(conn, tid, reason="wait")
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_unblock({"task_id": tid})
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["status"] == "todo"
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "todo"
+    finally:
+        conn.close()
+
+
+def test_unblock_review_required_legacy_block_allows_review_approval(monkeypatch, worker_env):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="legacy review", assignee="worker")
+        kb.claim_task(conn, tid)
+        conn.execute("UPDATE tasks SET status = 'blocked' WHERE id = ?", (tid,))
+        kb._append_event(
+            conn,
+            tid,
+            "blocked",
+            {"reason": "review-required: validate output"},
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    unblocked = json.loads(kt._handle_unblock({"task_id": tid}))
+    assert unblocked["ok"] is True
+    assert unblocked["status"] == "review"
+
+    reviewed = json.loads(
+        kt._handle_review({
+            "task_id": tid,
+            "action": "approve",
+            "summary": "approved",
+        })
+    )
+    assert reviewed["ok"] is True
+    assert reviewed["status"] == "done"
+
+
 def test_unblock_rejects_non_blocked_task(monkeypatch, worker_env):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     from tools import kanban_tools as kt
@@ -1700,7 +1825,7 @@ def test_board_param_rejects_invalid_slug(multi_board_env):
 
 
 def test_board_param_in_all_schemas():
-    """All nine kanban_* tool schemas must expose an optional ``board``
+    """All kanban_* tool schemas must expose an optional ``board``
     parameter. This pins the contract surfaced to the LLM — adding a
     new kanban tool without ``board`` will fail CI immediately."""
     from tools import kanban_tools as kt
@@ -1710,6 +1835,7 @@ def test_board_param_in_all_schemas():
         kt.KANBAN_LIST_SCHEMA,
         kt.KANBAN_COMPLETE_SCHEMA,
         kt.KANBAN_BLOCK_SCHEMA,
+        kt.KANBAN_REVIEW_SCHEMA,
         kt.KANBAN_HEARTBEAT_SCHEMA,
         kt.KANBAN_COMMENT_SCHEMA,
         kt.KANBAN_CREATE_SCHEMA,

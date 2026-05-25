@@ -767,18 +767,18 @@ def delete_task(task_id: str, board: Optional[str] = Query(None)):
 def _parents_blocking_ready(
     conn: sqlite3.Connection, task_id: str,
 ) -> list:
-    """Return parent rows (``id``, ``title``, ``status``) that aren't ``done``
+    """Return parent rows (``id``, ``title``, ``status``) not dependency-satisfied
     and therefore prevent ``task_id`` from being promoted to ``ready``.
 
     Used to enrich the 409 response from :func:`update_task` so the
     dashboard can show an actionable toast (#26744) instead of a silent
     no-op.  Returns ``[]`` when nothing blocks the transition (e.g. no
-    parents, or all parents already done).
+    parents, or all parents already done/archived/review).
     """
     rows = conn.execute(
         "SELECT t.id, t.title, t.status FROM tasks t "
         "JOIN task_links l ON l.parent_id = t.id "
-        "WHERE l.child_id = ? AND t.status != 'done'",
+        "WHERE l.child_id = ? AND t.status NOT IN ('done', 'archived', 'review')",
         (task_id,),
     ).fetchall()
     return [

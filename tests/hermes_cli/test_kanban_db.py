@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import time
@@ -67,6 +68,28 @@ def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
     assert "file is not a database" in msg
     assert "TLS record header detected at byte offset 5" in msg
     assert "53 51 4c 69 74 17 03 03 00 13" in msg
+
+
+def test_require_service_db_refuses_sqlite_without_dev_escape(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_REQUIRE_SERVICE_DB", "1")
+    monkeypatch.delenv("HERMES_KANBAN_POSTGRES_DSN", raising=False)
+    db_path = tmp_path / "kanban.db"
+
+    with pytest.raises(RuntimeError, match="refusing to open legacy SQLite"):
+        kb.connect(db_path)
+
+    monkeypatch.setenv("HERMES_KANBAN_ALLOW_SQLITE_DEV", "1")
+    with kb.connect(db_path) as conn:
+        assert conn.execute("SELECT 1").fetchone()[0] == 1
+
+
+def test_require_service_db_requires_postgres_dsn(monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_REQUIRE_SERVICE_DB", "1")
+    monkeypatch.delenv("HERMES_KANBAN_POSTGRES_DSN", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_ALLOW_SQLITE_DEV", raising=False)
+
+    with pytest.raises(RuntimeError, match="HERMES_KANBAN_POSTGRES_DSN is not set"):
+        kb.connect(board="default")
 
 
 def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
@@ -181,6 +204,68 @@ def test_create_task_unknown_parent_errors(kanban_home):
 def test_workspace_kind_validation(kanban_home):
     with kb.connect() as conn, pytest.raises(ValueError, match="workspace_kind"):
         kb.create_task(conn, title="bad ws", workspace_kind="cloud")
+
+
+def test_update_task_fields_edits_title_body_priority(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="old", body="old body", priority=1)
+        changed = kb.update_task_fields(
+            conn,
+            tid,
+            title="new",
+            body="new body",
+            priority=5,
+        )
+        task = kb.get_task(conn, tid)
+    assert changed == ["title", "body", "priority"]
+    assert task.title == "new"
+    assert task.body == "new body"
+    assert task.priority == 5
+
+
+def test_update_task_fields_reassigns_non_running_and_resets_failures(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="x", assignee="old")
+        conn.execute(
+            "UPDATE tasks SET consecutive_failures = 2, last_failure_error = 'boom' "
+            "WHERE id = ?",
+            (tid,),
+        )
+        changed = kb.update_task_fields(conn, tid, assignee="New_Profile")
+        task = kb.get_task(conn, tid)
+    assert changed == ["assignee"]
+    assert task.assignee == "new_profile"
+    assert task.consecutive_failures == 0
+    assert task.last_failure_error is None
+
+
+def test_update_task_fields_rejects_empty_title(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="x")
+        with pytest.raises(ValueError, match="title cannot be empty"):
+            kb.update_task_fields(conn, tid, title="   ")
+
+
+def test_update_task_fields_refuses_running_claimed_reassignment(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="x", assignee="old")
+        assert kb.claim_task(conn, tid, claimer="host:worker")
+        with pytest.raises(RuntimeError, match="currently running"):
+            kb.update_task_fields(conn, tid, assignee="new")
+
+
+def test_update_task_fields_writes_updated_event(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="x")
+        kb.update_task_fields(conn, tid, title="y", priority=3)
+        rows = conn.execute(
+            "SELECT kind, payload FROM task_events WHERE task_id = ? "
+            "ORDER BY id",
+            (tid,),
+        ).fetchall()
+    updated = [r for r in rows if r["kind"] == "updated"]
+    assert len(updated) == 1
+    assert json.loads(updated[0]["payload"]) == {"fields": ["title", "priority"]}
 
 
 def test_create_task_persists_worktree_branch_name(kanban_home, tmp_path):
@@ -392,6 +477,18 @@ def test_stale_claim_reclaimed(kanban_home, monkeypatch):
         assert reclaimed == 1
         assert kb.get_task(conn, t).status == "ready"
         assert killed == [signal.SIGTERM]
+
+
+def test_claim_reclaim_sql_is_postgres_compatible():
+    import inspect
+
+    stale_source = inspect.getsource(kb.release_stale_claims)
+    manual_source = inspect.getsource(kb.reclaim_task)
+
+    assert "claim_lock IS ?" not in stale_source
+    assert "claim_lock IS ?" not in manual_source
+    assert "claim_lock = ?" in stale_source
+    assert "claim_lock = ?" in manual_source
 
 
 def test_stale_claim_with_live_pid_extends_instead_of_reclaiming(
@@ -699,6 +796,59 @@ def test_unblock_resets_failure_counters(kanban_home):
         assert task.status == "ready"
         assert task.consecutive_failures == 0
         assert task.last_failure_error is None
+
+
+def test_unblock_review_required_legacy_block_routes_to_review(kanban_home):
+    """Legacy review-required blocks should reopen into review, not ready."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="needs review", assignee="a")
+        kb.claim_task(conn, t)
+        conn.execute("UPDATE tasks SET status = 'blocked' WHERE id = ?", (t,))
+        kb._append_event(
+            conn,
+            t,
+            "blocked",
+            {"reason": "review-required: approve the handoff"},
+        )
+        conn.commit()
+
+        assert kb.unblock_task(conn, t)
+        task = kb.get_task(conn, t)
+        assert task.status == "review"
+        events = conn.execute(
+            "SELECT kind, payload FROM task_events WHERE task_id = ? ORDER BY id",
+            (t,),
+        ).fetchall()
+
+    assert events[-1]["kind"] == "submitted_for_review"
+    assert json.loads(events[-1]["payload"])["via"] == "unblock"
+
+
+def test_migration_repairs_ready_review_required_unblock_misroute(kanban_home):
+    """A prior buggy unblock may have left a review-required handoff ready."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="misrouted review", assignee="a")
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (t,))
+        kb._append_event(
+            conn,
+            t,
+            "blocked",
+            {"reason": "review-required: approve the handoff"},
+        )
+        kb._append_event(conn, t, "unblocked", None)
+        conn.commit()
+
+        kb._migrate_review_required_blocks(conn)
+
+        assert kb.get_task(conn, t).status == "review"
+        event = conn.execute(
+            "SELECT kind, payload FROM task_events "
+            "WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+            (t,),
+        ).fetchone()
+
+    assert event["kind"] == "migrated_to_review"
+    assert json.loads(event["payload"])["from"] == "ready"
 
 
 # ---------------------------------------------------------------------------
@@ -1965,6 +2115,58 @@ class TestSharedBoardPaths:
         assert kb.kanban_db_path() == default_home / "kanban.db"
         assert kb.workspaces_root() == default_home / "kanban" / "workspaces"
 
+    def test_dispatcher_spawn_preserves_service_db_policy_for_profile_worker(
+        self, tmp_path, monkeypatch
+    ):
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        (default_home / "config.yaml").write_text(
+            "kanban:\n  require_service_db: true\n",
+            encoding="utf-8",
+        )
+        self._set_home(monkeypatch, tmp_path, default_home)
+        monkeypatch.setenv(
+            "HERMES_KANBAN_POSTGRES_DSN",
+            "postgresql://user:pass@127.0.0.1:55432/hermes_kanban",
+        )
+
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["cmd"] = cmd
+                captured["env"] = kwargs.get("env", {})
+                self.pid = 4242
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+        task = kb.Task(
+            id="t_service_db_env",
+            title="x",
+            body=None,
+            assignee="coder",
+            status="ready",
+            priority=0,
+            created_by=None,
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="scratch",
+            workspace_path=None,
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+        )
+        kb._default_spawn(task, str(tmp_path / "ws"))
+
+        env = captured["env"]
+        assert env["HERMES_KANBAN_REQUIRE_SERVICE_DB"] == "1"
+        assert (
+            env["HERMES_KANBAN_POSTGRES_DSN"]
+            == "postgresql://user:pass@127.0.0.1:55432/hermes_kanban"
+        )
+        assert env["HERMES_KANBAN_DB"] == str(default_home / "kanban.db")
+
     def test_dispatcher_spawn_injects_kanban_db_and_workspaces_root(
         self, tmp_path, monkeypatch
     ):
@@ -2751,74 +2953,140 @@ def test_claim_review_task_fails_when_already_claimed(kanban_home):
     assert second is None
 
 
-def test_dispatch_review_dry_run(kanban_home, all_assignees_spawnable):
-    """dispatch_once dry-run sees review tasks and reports them as spawned."""
+def test_review_required_block_routes_to_review(kanban_home):
+    """review-required handoff uses the review lane, not blocked."""
     with kb.connect() as conn:
-        t = kb.create_task(conn, title="review me", assignee="alice")
-        _set_task_status(conn, t, "review")
-        res = kb.dispatch_once(conn, dry_run=True)
-    assert len(res.spawned) == 1
-    assert res.spawned[0][0] == t
-    # Dry run must NOT mutate status.
+        t = kb.create_task(conn, title="needs review", assignee="alice")
+        claimed = kb.claim_task(conn, t)
+        assert claimed is not None
+        assert kb.block_task(
+            conn,
+            t,
+            reason="review-required: please verify",
+            expected_run_id=kb.get_task(conn, t).current_run_id,
+        )
+        task = kb.get_task(conn, t)
+        events = kb.list_events(conn, t)
+    assert task.status == "review"
+    assert events[-1].kind == "submitted_for_review"
+
+
+def test_parent_review_blocks_ready_direct_children_only(kanban_home):
+    """When a parent enters review, only direct ready children are paused."""
     with kb.connect() as conn:
-        assert kb.get_task(conn, t).status == "review"
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        ready_child = kb.create_task(conn, title="ready child", parents=[parent])
+        running_child = kb.create_task(conn, title="running child", parents=[parent])
+        grandchild = kb.create_task(conn, title="grandchild", parents=[ready_child])
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (ready_child,))
+        conn.execute("UPDATE tasks SET status = 'running' WHERE id = ?", (running_child,))
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (grandchild,))
+        conn.commit()
+
+        claimed = kb.claim_task(conn, parent)
+        assert claimed is not None
+        assert kb.block_task(
+            conn,
+            parent,
+            reason="review-required: please verify",
+            expected_run_id=kb.get_task(conn, parent).current_run_id,
+        )
+
+        ready_child_task = kb.get_task(conn, ready_child)
+        running_child_task = kb.get_task(conn, running_child)
+        grandchild_task = kb.get_task(conn, grandchild)
+        ready_child_events = kb.list_events(conn, ready_child)
+
+    assert ready_child_task.status == "blocked"
+    assert running_child_task.status == "running"
+    assert grandchild_task.status == "ready"
+    assert ready_child_events[-1].kind == "blocked"
+    assert ready_child_events[-1].payload == {
+        "reason": "parent-under-review",
+        "parent_id": parent,
+    }
 
 
-def test_dispatch_review_spawns_with_correct_skills(
-    kanban_home, all_assignees_spawnable,
-):
-    """Review tasks get sdlc-review skill set before spawning."""
-    spawned_tasks = []
-
-    def capture_spawn(task, workspace, board=None):
-        spawned_tasks.append(task)
-        return 42  # fake PID
-
+def test_parent_review_approval_unblocks_auto_blocked_children(kanban_home):
+    """Approving a review parent releases children blocked by that barrier."""
     with kb.connect() as conn:
-        t = kb.create_task(conn, title="review me", assignee="alice")
-        _set_task_status(conn, t, "review")
-        res = kb.dispatch_once(conn, spawn_fn=capture_spawn)
-    assert len(res.spawned) == 1
-    assert len(spawned_tasks) == 1
-    assert spawned_tasks[0].skills == ["sdlc-review"]
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        child = kb.create_task(conn, title="child", parents=[parent])
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (child,))
+        conn.commit()
+
+        assert kb.claim_task(conn, parent) is not None
+        assert kb.block_task(conn, parent, reason="review-required: please verify")
+        assert kb.get_task(conn, child).status == "blocked"
+
+        assert kb.complete_task(conn, parent, summary="approved")
+        child_task = kb.get_task(conn, child)
+        events = kb.list_events(conn, child)
+
+    assert child_task.status == "ready"
+    assert events[-1].kind == "unblocked"
+    assert events[-1].payload == {
+        "reason": "parent-approved",
+        "parent_id": parent,
+    }
 
 
-def test_dispatch_review_skips_unassigned(kanban_home):
-    """Unassigned review tasks go to skipped_unassigned, not spawned."""
+def test_parent_review_approval_preserves_non_auto_child_blocks(kanban_home):
+    """Approval must not clear a child manually blocked after the auto pause."""
     with kb.connect() as conn:
-        t = kb.create_task(conn, title="review floater")
-        _set_task_status(conn, t, "review")
-        res = kb.dispatch_once(conn, dry_run=True)
-    assert t in res.skipped_unassigned
-    assert not res.spawned
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        child = kb.create_task(conn, title="child", parents=[parent])
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (child,))
+        conn.commit()
+
+        assert kb.claim_task(conn, parent) is not None
+        assert kb.block_task(conn, parent, reason="review-required: please verify")
+        kb._append_event(conn, child, "blocked", {"reason": "needs-human-input"})
+        conn.commit()
+
+        assert kb.complete_task(conn, parent, summary="approved")
+        child_task = kb.get_task(conn, child)
+        events = kb.list_events(conn, child)
+
+    assert child_task.status == "blocked"
+    assert events[-1].kind != "unblocked"
 
 
-def test_dispatch_review_counts_toward_max_spawn(
-    kanban_home, all_assignees_spawnable,
-):
-    """Review spawns count against max_spawn alongside ready tasks."""
-    spawns = []
-
-    def fake_spawn(task, workspace, board=None):
-        spawns.append(task.id)
-        return 42
-
+def test_parent_review_approval_waits_for_other_review_parents(kanban_home):
+    """Fan-in children stay paused until all review parents are approved."""
     with kb.connect() as conn:
-        # Create 2 ready tasks + 1 review task, max_spawn=2
-        t1 = kb.create_task(conn, title="ready 1", assignee="alice")
-        t2 = kb.create_task(conn, title="ready 2", assignee="bob")
-        t3 = kb.create_task(conn, title="review", assignee="alice")
-        _set_task_status(conn, t3, "review")
-        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, max_spawn=2)
-    # Only 2 should spawn (ready tasks get priority in the loop)
-    assert len(res.spawned) == 2
-    assert len(spawns) == 2
+        first_parent = kb.create_task(conn, title="first parent", assignee="alice")
+        second_parent = kb.create_task(conn, title="second parent", assignee="alice")
+        child = kb.create_task(
+            conn,
+            title="child",
+            parents=[first_parent, second_parent],
+        )
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (child,))
+        conn.commit()
+
+        assert kb.claim_task(conn, first_parent) is not None
+        assert kb.block_task(conn, first_parent, reason="review-required: please verify")
+        _set_task_status(conn, second_parent, "review")
+        conn.commit()
+
+        assert kb.complete_task(conn, first_parent, summary="approved")
+        assert kb.get_task(conn, child).status == "blocked"
+
+        assert kb.complete_task(conn, second_parent, summary="approved")
+        child_task = kb.get_task(conn, child)
+        events = kb.list_events(conn, child)
+
+    assert child_task.status == "ready"
+    assert events[-1].kind == "unblocked"
+    assert events[-1].payload == {
+        "reason": "parent-approved",
+        "parent_id": second_parent,
+    }
 
 
-def test_dispatch_review_spawns_when_ready_empty(
-    kanban_home, all_assignees_spawnable,
-):
-    """When only review tasks exist, they still get dispatched."""
+def test_review_task_is_not_dispatched(kanban_home, all_assignees_spawnable):
+    """The Hermes dispatcher ignores review; auto-review lives elsewhere."""
     spawns = []
 
     def fake_spawn(task, workspace, board=None):
@@ -2829,17 +3097,29 @@ def test_dispatch_review_spawns_when_ready_empty(
         t = kb.create_task(conn, title="review me", assignee="alice")
         _set_task_status(conn, t, "review")
         res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
-    assert len(res.spawned) == 1
-    assert spawns[0] == t
+        task = kb.get_task(conn, t)
+    assert not res.spawned
+    assert not spawns
+    assert task.status == "review"
 
 
-def test_has_spawnable_review_true(kanban_home):
-    """has_spawnable_review returns True when review tasks exist with real profiles."""
+def test_dispatch_ready_ignores_review_for_max_spawn(
+    kanban_home, all_assignees_spawnable,
+):
+    """Review cards do not consume dispatcher spawn slots."""
+    spawns = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append(task.id)
+        return 42
+
     with kb.connect() as conn:
-        t = kb.create_task(conn, title="review me", assignee="default")
-        _set_task_status(conn, t, "review")
-        # default profile should exist in the test env
-        assert kb.has_spawnable_review(conn) is True
+        ready = kb.create_task(conn, title="ready", assignee="alice")
+        review = kb.create_task(conn, title="review", assignee="alice")
+        _set_task_status(conn, review, "review")
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, max_spawn=1)
+    assert res.spawned[0][0] == ready
+    assert spawns == [ready]
 
 
 def test_has_spawnable_review_false_on_empty(kanban_home):
@@ -2848,28 +3128,46 @@ def test_has_spawnable_review_false_on_empty(kanban_home):
         assert kb.has_spawnable_review(conn) is False
 
 
-def test_has_spawnable_review_false_when_only_terminal_lanes(
-    kanban_home, monkeypatch,
-):
-    """has_spawnable_review returns False when review tasks are terminal lanes."""
-    from hermes_cli import profiles
-    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+def test_has_spawnable_review_false_when_review_exists(kanban_home):
+    """Review tasks are not spawnable by the Hermes dispatcher."""
     with kb.connect() as conn:
-        t = kb.create_task(conn, title="review", assignee="orion-cc")
+        t = kb.create_task(conn, title="review", assignee="default")
         _set_task_status(conn, t, "review")
         assert kb.has_spawnable_review(conn) is False
 
 
-def test_dispatch_review_skips_nonspawnable(kanban_home, monkeypatch):
-    """Review tasks with non-existent profiles go to skipped_nonspawnable."""
-    from hermes_cli import profiles
-    monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
+def test_complete_task_accepts_review(kanban_home):
+    """Review approval can close a task directly."""
     with kb.connect() as conn:
-        t = kb.create_task(conn, title="review", assignee="orion-cc")
+        t = kb.create_task(conn, title="review", assignee="alice")
         _set_task_status(conn, t, "review")
-        res = kb.dispatch_once(conn, dry_run=True)
-    assert t in res.skipped_nonspawnable
-    assert not res.spawned
+        assert kb.complete_task(conn, t, summary="approved")
+        assert kb.get_task(conn, t).status == "done"
+
+
+def test_reject_review_requeues_ready(kanban_home):
+    """Rejected review goes back to ready so the dispatcher can claim it."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review", assignee="alice")
+        _set_task_status(conn, t, "review")
+        assert kb.reject_review_task(conn, t, reason="needs changes")
+        task = kb.get_task(conn, t)
+        events = kb.list_events(conn, t)
+    assert task.status == "ready"
+    assert events[-1].kind == "review_rejected"
+
+
+def test_review_parent_satisfies_child_dependency(kanban_home, all_assignees_spawnable):
+    """A parent in review is delivered enough for children to proceed."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        child = kb.create_task(conn, title="child", assignee="bob", parents=[parent])
+        _set_task_status(conn, parent, "review")
+        assert kb.recompute_ready(conn) == 1
+        assert kb.get_task(conn, child).status == "ready"
+        claimed = kb.claim_task(conn, child)
+    assert claimed is not None
+    assert claimed.status == "running"
 
 
 def test_review_status_in_valid_statuses():

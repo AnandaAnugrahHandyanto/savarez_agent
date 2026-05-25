@@ -389,6 +389,80 @@ def _handle_list(args: dict, **kw) -> str:
         return tool_error(f"kanban_list: {e}")
 
 
+def _handle_update(args: dict, **kw) -> str:
+    """Update public ticket fields from an orchestrator profile."""
+    guard = _require_orchestrator_tool("kanban_update")
+    if guard:
+        return guard
+    task_id = str(args.get("task_id") or "").strip()
+    if not task_id:
+        return tool_error("task_id is required")
+
+    fields: dict[str, Any] = {}
+    for name in ("title", "body", "priority"):
+        if name in args:
+            fields[name] = args.get(name)
+    if "assignee" in args:
+        fields["assignee"] = _normalize_profile(args.get("assignee"))
+    if not fields:
+        return tool_error(
+            "provide at least one field to update: title, body, assignee, priority"
+        )
+
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            changed = kb.update_task_fields(conn, task_id, **fields)
+            if changed is None:
+                return tool_error(f"task {task_id} not found")
+            task = kb.get_task(conn, task_id)
+            return _ok(
+                task_id=task_id,
+                changed=changed,
+                task=_task_summary_dict(kb, conn, task),
+            )
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_update: {e}")
+    except RuntimeError as e:
+        return tool_error(f"kanban_update: {e}")
+    except Exception as e:
+        logger.exception("kanban_update failed")
+        return tool_error(f"kanban_update: {e}")
+
+
+def _handle_schedule(args: dict, **kw) -> str:
+    """Park a task in scheduled state from an orchestrator profile."""
+    guard = _require_orchestrator_tool("kanban_schedule")
+    if guard:
+        return guard
+    tid = str(args.get("task_id") or "").strip()
+    if not tid:
+        return tool_error("task_id is required")
+    reason = args.get("reason")
+    if not reason or not str(reason).strip():
+        return tool_error("reason is required")
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            ok = kb.schedule_task(conn, tid, reason=str(reason))
+            if not ok:
+                return tool_error(f"could not schedule {tid} (unknown or not schedulable)")
+            return _ok(task_id=tid, status="scheduled")
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_schedule: {e}")
+    except RuntimeError as e:
+        return tool_error(f"kanban_schedule: {e}")
+    except Exception as e:
+        logger.exception("kanban_schedule failed")
+        return tool_error(f"kanban_schedule: {e}")
+
+
 def _handle_complete(args: dict, **kw) -> str:
     """Mark the current task done with a structured handoff."""
     tid = _default_task_id(args.get("task_id"))
@@ -512,7 +586,7 @@ def _handle_complete(args: dict, **kw) -> str:
 
 
 def _handle_block(args: dict, **kw) -> str:
-    """Transition the task to blocked with a reason a human will read."""
+    """Transition the task to blocked, or to review for review-required handoffs."""
     tid = _default_task_id(args.get("task_id"))
     if not tid:
         return tool_error(
@@ -539,7 +613,8 @@ def _handle_block(args: dict, **kw) -> str:
                     f"running/ready)"
                 )
             run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
+            task = kb.get_task(conn, tid)
+            return _ok(task_id=tid, status=task.status if task else None, run_id=run.id if run else None)
         finally:
             conn.close()
     except ValueError as e:
@@ -547,6 +622,49 @@ def _handle_block(args: dict, **kw) -> str:
     except Exception as e:
         logger.exception("kanban_block failed")
         return tool_error(f"kanban_block: {e}")
+
+
+def _handle_review(args: dict, **kw) -> str:
+    """Approve or reject a task currently waiting in review."""
+    guard = _require_orchestrator_tool("kanban_review")
+    if guard:
+        return guard
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error("task_id is required")
+    action = str(args.get("action") or "").strip().lower()
+    if action not in {"approve", "reject"}:
+        return tool_error("action must be one of: approve, reject")
+    reason = args.get("reason")
+    summary = args.get("summary")
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            task = kb.get_task(conn, str(tid))
+            if not task or task.status != "review":
+                return tool_error(f"could not {action} {tid} (not in review or unknown)")
+            if action == "approve":
+                handoff = summary or reason or "review approved"
+                ok = kb.complete_task(
+                    conn,
+                    str(tid),
+                    result=handoff,
+                    summary=handoff,
+                )
+            else:
+                ok = kb.reject_review_task(conn, str(tid), reason=reason)
+            if not ok:
+                return tool_error(f"could not {action} {tid} (not in review or unknown)")
+            updated = kb.get_task(conn, str(tid))
+            return _ok(task_id=str(tid), action=action, status=updated.status if updated else None)
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_review: {e}")
+    except Exception as e:
+        logger.exception("kanban_review failed")
+        return tool_error(f"kanban_review: {e}")
 
 
 def _handle_heartbeat(args: dict, **kw) -> str:
@@ -721,7 +839,7 @@ def _handle_create(args: dict, **kw) -> str:
 
 
 def _handle_unblock(args: dict, **kw) -> str:
-    """Transition a blocked task back to ready."""
+    """Transition a blocked or scheduled task back to ready/todo."""
     guard = _require_orchestrator_tool("kanban_unblock")
     if guard:
         return guard
@@ -737,8 +855,11 @@ def _handle_unblock(args: dict, **kw) -> str:
         try:
             ok = kb.unblock_task(conn, str(tid))
             if not ok:
-                return tool_error(f"could not unblock {tid} (not blocked or unknown)")
-            return _ok(task_id=str(tid), status="ready")
+                return tool_error(
+                    f"could not unblock {tid} (not blocked/scheduled or unknown)"
+                )
+            task = kb.get_task(conn, str(tid))
+            return _ok(task_id=str(tid), status=task.status if task else None)
         finally:
             conn.close()
     except ValueError as e:
@@ -842,8 +963,8 @@ KANBAN_LIST_SCHEMA = {
             "status": {
                 "type": "string",
                 "enum": [
-                    "triage", "todo", "ready", "running",
-                    "blocked", "done", "archived",
+                    "triage", "todo", "scheduled", "ready", "running",
+                    "blocked", "review", "done", "archived",
                 ],
                 "description": "Optional task status filter.",
             },
@@ -862,6 +983,69 @@ KANBAN_LIST_SCHEMA = {
             "board": _board_schema_prop(),
         },
         "required": [],
+    },
+}
+
+KANBAN_UPDATE_SCHEMA = {
+    "name": "kanban_update",
+    "description": (
+        "Update useful public fields on one existing Kanban task from an "
+        "orchestrator profile: title, body, assignee, and priority. "
+        "Lifecycle state changes stay in separate auditable tools "
+        "(kanban_block, kanban_unblock, kanban_schedule, kanban_complete). "
+        "Orchestrator-only — dispatcher-spawned task workers never see this tool."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Task id to update.",
+            },
+            "title": {
+                "type": "string",
+                "description": "New title. Empty titles are rejected.",
+            },
+            "body": {
+                "type": "string",
+                "description": "New body/opening post.",
+            },
+            "assignee": {
+                "type": "string",
+                "description": "New assignee/profile. Use 'none' to unassign.",
+            },
+            "priority": {
+                "type": "integer",
+                "description": "New priority.",
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id"],
+    },
+}
+
+KANBAN_SCHEDULE_SCHEMA = {
+    "name": "kanban_schedule",
+    "description": (
+        "Move a Kanban task into scheduled state with an auditable reason. "
+        "Use this when the task should wait for a known later condition, "
+        "not for ordinary human-input blockers. Orchestrator-only — "
+        "dispatcher-spawned task workers never see this tool."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Task id to park in scheduled state.",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Why this should wait, in one or two sentences.",
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id", "reason"],
     },
 }
 
@@ -964,6 +1148,8 @@ KANBAN_BLOCK_SCHEMA = {
         "Transition the task to blocked because you need human input "
         "to proceed. ``reason`` will be shown to the human on the "
         "board and included in context when someone unblocks you. "
+        "If ``reason`` starts with ``review-required``, the task is "
+        "moved to the review lane instead of blocked. "
         "Use for genuine blockers only — don't block on things you can "
         "resolve yourself."
     ),
@@ -985,6 +1171,40 @@ KANBAN_BLOCK_SCHEMA = {
             "board": _board_schema_prop(),
         },
         "required": ["reason"],
+    },
+}
+
+KANBAN_REVIEW_SCHEMA = {
+    "name": "kanban_review",
+    "description": (
+        "Approve or reject a task in the review lane. Approve closes it "
+        "as done; reject requeues it for another worker run with an "
+        "auditable reason. Orchestrator-only — review is not dispatched "
+        "by the Hermes worker dispatcher."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Task id currently in review.",
+            },
+            "action": {
+                "type": "string",
+                "enum": ["approve", "reject"],
+                "description": "Approve moves review -> done; reject moves review -> ready/todo.",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Reason for rejection or optional approval note.",
+            },
+            "summary": {
+                "type": "string",
+                "description": "Optional approval summary; falls back to reason.",
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id", "action"],
     },
 }
 
@@ -1175,7 +1395,8 @@ KANBAN_CREATE_SCHEMA = {
 KANBAN_UNBLOCK_SCHEMA = {
     "name": "kanban_unblock",
     "description": (
-        "Move a blocked Kanban task back to ready. Orchestrator-only — only "
+        "Move a blocked or scheduled Kanban task back to ready, or to todo "
+        "when parent tasks are still unfinished. Orchestrator-only — only "
         "profiles with the kanban toolset can unblock routed work; "
         "dispatcher-spawned task workers never see this tool."
     ),
@@ -1184,7 +1405,7 @@ KANBAN_UNBLOCK_SCHEMA = {
         "properties": {
             "task_id": {
                 "type": "string",
-                "description": "Blocked task id to return to ready.",
+                "description": "Blocked or scheduled task id to return to ready/todo.",
             },
             "board": _board_schema_prop(),
         },
@@ -1234,6 +1455,24 @@ registry.register(
 )
 
 registry.register(
+    name="kanban_update",
+    toolset="kanban",
+    schema=KANBAN_UPDATE_SCHEMA,
+    handler=_handle_update,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="✏",
+)
+
+registry.register(
+    name="kanban_schedule",
+    toolset="kanban",
+    schema=KANBAN_SCHEDULE_SCHEMA,
+    handler=_handle_schedule,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="📅",
+)
+
+registry.register(
     name="kanban_complete",
     toolset="kanban",
     schema=KANBAN_COMPLETE_SCHEMA,
@@ -1249,6 +1488,15 @@ registry.register(
     handler=_handle_block,
     check_fn=_check_kanban_mode,
     emoji="⏸",
+)
+
+registry.register(
+    name="kanban_review",
+    toolset="kanban",
+    schema=KANBAN_REVIEW_SCHEMA,
+    handler=_handle_review,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="🔎",
 )
 
 registry.register(

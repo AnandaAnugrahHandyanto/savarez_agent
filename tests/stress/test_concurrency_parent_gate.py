@@ -7,8 +7,8 @@ Simulates the create-then-link race described in RCA t_a6acd07d:
             emulating the pre-fix _kanban_create path.
   Thread B: repeatedly runs claim_task against every ready task.
 
-Pass criteria: no task is ever 'claimed' while any of its parents is
-not 'done'. The claim_task gate added in hermes_cli/kanban_db.py must
+Pass criteria: no task is ever 'claimed' while any of its parents has not
+satisfied its dependency. The claim_task gate added in hermes_cli/kanban_db.py must
 demote such tasks back to 'todo' and emit a 'claim_rejected' event
 instead of spawning.
 
@@ -110,12 +110,12 @@ def run() -> int:
                 if claimed is None:
                     continue
                 # Invariant: a successful claim on `tid` must mean all
-                # parents are 'done'. Check in the same connection txn
+                # parents satisfy dependencies. Check in the same connection txn
                 # so we see the post-claim state.
                 undone = conn.execute(
                     "SELECT l.parent_id, p.status FROM task_links l "
                     "JOIN tasks p ON p.id = l.parent_id "
-                    "WHERE l.child_id = ? AND p.status != 'done'",
+                    "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived', 'review')",
                     (tid,),
                 ).fetchall()
                 if undone:

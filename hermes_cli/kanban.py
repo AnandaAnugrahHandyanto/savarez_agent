@@ -38,6 +38,7 @@ _STATUS_ICONS = {
     "running":  "●",
     "scheduled":"⏱",
     "blocked":  "⊘",
+    "review":   "◌",
     "done":     "✓",
     "archived": "—",
 }
@@ -494,7 +495,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_claim.add_argument("--ttl", type=int, default=kb.DEFAULT_CLAIM_TTL_SECONDS,
                          help="Claim TTL in seconds (default: 900)")
 
-    # --- comment / complete / block / unblock / archive ---
+    # --- comment / complete / review / block / unblock / archive ---
     p_comment = sub.add_parser("comment", help="Append a comment")
     p_comment.add_argument("task_id")
     p_comment.add_argument("text", nargs="+", help="Comment body")
@@ -540,6 +541,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_block.add_argument("reason", nargs="*", help="Reason (also appended as a comment)")
     p_block.add_argument("--ids", nargs="+", default=None,
                          help="Additional task ids to block with the same reason (bulk mode)")
+
+    p_review = sub.add_parser("review", help="Approve or reject a task in review")
+    p_review.add_argument("action", choices=("approve", "reject"))
+    p_review.add_argument("task_id")
+    p_review.add_argument("reason", nargs="*", help="Reason for rejection or approval note")
 
     p_schedule = sub.add_parser("schedule", help="Park one or more tasks in Scheduled (waiting on time, not human input)")
     p_schedule.add_argument("task_id")
@@ -929,6 +935,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "comment":  _cmd_comment,
         "complete": _cmd_complete,
         "edit":     _cmd_edit,
+        "review":   _cmd_review,
         "block":    _cmd_block,
         "schedule": _cmd_schedule,
         "unblock":  _cmd_unblock,
@@ -1947,8 +1954,37 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 failed.append(tid)
                 print(f"cannot block {tid}", file=sys.stderr)
             else:
-                print(f"Blocked {tid}" + (f": {reason}" if reason else ""))
+                task = kb.get_task(conn, tid)
+                verb = "Submitted for review" if task and task.status == "review" else "Blocked"
+                print(f"{verb} {tid}" + (f": {reason}" if reason else ""))
     return 0 if not failed else 1
+
+
+def _cmd_review(args: argparse.Namespace) -> int:
+    reason = " ".join(args.reason).strip() if args.reason else None
+    author = _profile_author()
+    with kb.connect() as conn:
+        task = kb.get_task(conn, args.task_id)
+        if not task or task.status != "review":
+            print(f"cannot {args.action} {args.task_id} (not in review?)", file=sys.stderr)
+            return 1
+        if reason:
+            prefix = "REVIEW APPROVED" if args.action == "approve" else "REVIEW REJECTED"
+            kb.add_comment(conn, args.task_id, author, f"{prefix}: {reason}")
+        if args.action == "approve":
+            ok = kb.complete_task(conn, args.task_id, result=reason, summary=reason)
+            if not ok:
+                print(f"cannot approve {args.task_id} (not in review?)", file=sys.stderr)
+                return 1
+            print(f"Approved {args.task_id}")
+            return 0
+        ok = kb.reject_review_task(conn, args.task_id, reason=reason)
+        if not ok:
+            print(f"cannot reject {args.task_id} (not in review?)", file=sys.stderr)
+            return 1
+        task = kb.get_task(conn, args.task_id)
+        print(f"Rejected {args.task_id}; moved to {task.status if task else 'ready'}")
+        return 0
 
 
 def _cmd_schedule(args: argparse.Namespace) -> int:
@@ -2335,7 +2371,7 @@ def _cmd_stats(args: argparse.Namespace) -> int:
         print(json.dumps(stats, indent=2, ensure_ascii=False))
         return 0
     print("By status:")
-    for k in ("triage", "todo", "scheduled", "ready", "running", "blocked", "done"):
+    for k in ("triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done"):
         print(f"  {k:8s}  {stats['by_status'].get(k, 0)}")
     if stats["by_assignee"]:
         print("\nBy assignee:")
@@ -2671,7 +2707,8 @@ Common subcommands:
   `create <title>…`     Create a task (auto-subscribes you to events)
   `comment <id> <msg>`  Append a comment
   `complete <id>…`      Mark task(s) done
-  `block <id> [reason]` Mark blocked; `schedule <id> [reason]` parks time-delay work; `unblock <id>` to revive
+  `block <id> [reason]` Mark blocked; `review approve|reject <id>` handles review handoffs
+  `schedule <id> [reason]` parks time-delay work; `unblock <id>` to revive
   `assign <id> <profile>`  Reassign
   `boards list`         Show all boards
   `assignees`           Known profiles + counts
