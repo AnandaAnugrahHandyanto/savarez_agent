@@ -1000,6 +1000,58 @@ def test_all_acta_modules_share_compact_v9_shell():
         assert "Your cron command center" not in html, name
 
 
+def test_secondary_acta_surfaces_include_mobile_module_nav_without_stale_markers():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    item = item_cls(
+        job_id="lead",
+        name="Lead Brief",
+        schedule="daily",
+        deliver="telegram:-1003566991387:86",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_10-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Most important signed briefing.",
+        artifact_url="https://acta.imperatr.com/r/lead/detail.html?exp=1&sig=abc",
+        telegram_url="https://t.me/c/3566991387/86",
+    )
+    pages = {
+        "jobs": (render_jobs_page([item], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc)), "jobs"),
+        "archive": (render_archive_index([date(2026, 5, 19)], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc)), "archive"),
+        "outputs": (render_outputs_page([item], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc)), "outputs"),
+        "detail": (
+            render_acta_detail_report(
+                "# Lead Brief\n\nSignal body.",
+                {"job_id": "lead", "job_name": "Lead Brief", "run_time": "2026-05-19T10:00:00+00:00"},
+                telegram_url="https://t.me/c/3566991387/86",
+            ),
+            "outputs",
+        ),
+    }
+    expected = {
+        "TODAY": "/",
+        "JOBS": "/jobs",
+        "ARCHIVE": "/archive",
+        "OUTPUTS": "/outputs",
+    }
+    active_link = {
+        "jobs": '<a class="active" href="/jobs">JOBS</a>',
+        "archive": '<a class="active" href="/archive">ARCHIVE</a>',
+        "outputs": '<a class="active" href="/outputs">OUTPUTS</a>',
+    }
+
+    for name, (html, active) in pages.items():
+        assert '<nav class="mobilebar" aria-label="Acta mobile module navigation">' in html, name
+        for label, href in expected.items():
+            assert f'href="{href}"' in html and f'>{label}</a>' in html, name
+        assert active_link[active] in html, name
+        assert ".mobilebar" in html, name
+        assert "#f5a400" not in html, name
+        assert "amber" not in html.lower(), name
+        assert "generic-dashboard" not in html.lower(), name
+
+
 def test_jobs_subpage_shows_active_relevant_last_runs(tmp_path: Path):
     for job_id in ("active", "silent", "disabled", "hidden"):
         (tmp_path / "cron" / "output" / job_id).mkdir(parents=True)

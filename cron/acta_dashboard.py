@@ -991,6 +991,7 @@ a { color:inherit; }
 .nav::-webkit-scrollbar { display:none; }
 .nav a, .quick-nav a, .back { color:rgba(245,247,251,.78); text-decoration:none; border:1px solid var(--line-soft); background:rgba(255,255,255,.035); padding:7px 10px; border-radius:999px; font:11px var(--mono); text-transform:uppercase; letter-spacing:.08em; white-space:nowrap; }
 .nav a.active, .nav a:hover, .quick-nav a.active, .quick-nav a:hover, .back:hover { color:#fff; border-color:rgba(117,108,255,.46); background:rgba(117,108,255,.20); box-shadow:inset 0 0 0 1px rgba(35,167,255,.12), 0 0 18px rgba(117,108,255,.12); }
+.mobilebar { display:none; }
 main { width:min(1180px, calc(100vw - 28px)); margin:0 auto; padding:18px 0 88px; position:relative; }
 .kicker { margin:0; color:var(--acta2); font:800 10px var(--mono); text-transform:uppercase; letter-spacing:.13em; }
 h1 { margin:6px 0 8px; color:var(--text); font:720 clamp(22px,3.6vw,34px)/1.02 var(--ui); letter-spacing:-.035em; }
@@ -1071,7 +1072,7 @@ pre { overflow-x:auto; background:rgba(0,0,0,.24); border:1px solid var(--line);
 code { font-family:var(--mono); color:#b9dfff; }
 p code, li code { background:rgba(255,255,255,.055); border:1px solid var(--line); padding:1px 5px; border-radius:6px; }
 footer { color:var(--faint); margin-top:22px; font:11px var(--mono); text-align:center; }
-@media (max-width:760px) { .top { height:50px; padding:0 14px; gap:8px; } .ticker { font-size:11px; } .nav { gap:6px; } .nav a { min-height:36px; display:inline-flex; align-items:center; padding:0 10px; } main { width:100%; padding:14px 14px 96px; } h1 { font-size:22px; } .lede { font-size:13px; line-height:1.36; } .grid { grid-template-columns:1fr; } .job-row, .output-row { grid-template-columns:32px minmax(0,1fr); gap:8px 9px; padding:9px 10px; min-height:60px; } .job-schedule, .job-last, .output-actions { grid-column:2; } .job-main b, .output-main b { font-size:14px; } .output-actions { justify-self:start; } .output-meta { flex-wrap:wrap; overflow:visible; } .output-meta .followup-meta { display:inline-flex; } .actions { gap:6px; margin-left:0; overflow:auto; } .followup { max-width:132px; overflow:hidden; text-overflow:ellipsis; padding:7px 9px; } .back { padding:7px 9px; } .report-shell { border-radius:16px; padding:12px; } h1.report-title { font-size:22px; } article.report-body { font-size:14.5px; line-height:1.5; } .section-title { font-size:18px; } }
+@media (max-width:760px) { .top { height:50px; padding:0 14px; gap:8px; } .ticker { font-size:11px; } .top .nav { display:none; } .nav { gap:6px; } .nav a { min-height:36px; display:inline-flex; align-items:center; padding:0 10px; } main { width:100%; padding:14px 14px calc(118px + env(safe-area-inset-bottom, 0px)); } h1 { font-size:22px; } .lede { font-size:13px; line-height:1.36; } .grid { grid-template-columns:1fr; } .job-row, .output-row { grid-template-columns:32px minmax(0,1fr); gap:8px 9px; padding:9px 10px; min-height:60px; } .job-schedule, .job-last, .output-actions { grid-column:2; } .job-main b, .output-main b { font-size:14px; } .output-actions { justify-self:start; } .output-meta { flex-wrap:wrap; overflow:visible; } .output-meta .followup-meta { display:inline-flex; } .actions { gap:6px; margin-left:0; overflow:auto; } .followup { max-width:132px; overflow:hidden; text-overflow:ellipsis; padding:7px 9px; } .back { padding:7px 9px; } .report-shell { border-radius:16px; padding:12px; } h1.report-title { font-size:22px; } article.report-body { font-size:14.5px; line-height:1.5; } .section-title { font-size:18px; } .mobilebar { display:grid; position:fixed; left:max(10px, env(safe-area-inset-left, 0px)); right:max(10px, env(safe-area-inset-right, 0px)); bottom:calc(14px + env(safe-area-inset-bottom, 0px)); min-height:62px; background:linear-gradient(180deg, rgba(7,16,24,.96), rgba(3,6,11,.94)), radial-gradient(circle at 18% 0%, rgba(117,108,255,.28), transparent 42%), radial-gradient(circle at 86% 20%, rgba(35,167,255,.18), transparent 48%); backdrop-filter:blur(18px) saturate(145%); border:1px solid rgba(117,108,255,.28); border-radius:0; grid-template-columns:repeat(4,1fr); z-index:3; box-shadow:0 -16px 38px rgba(0,0,0,.62), 0 0 26px rgba(117,108,255,.13); } .mobilebar a { display:grid; place-items:center; min-height:62px; color:#ddd; text-decoration:none; font:11px var(--mono); touch-action:manipulation; -webkit-tap-highlight-color:rgba(117,108,255,.18); } .mobilebar a.active { color:#fff; background:rgba(117,108,255,.18); box-shadow:inset 0 2px 0 var(--acta2); } }
 """.strip()
 
 
@@ -1082,6 +1083,15 @@ def _acta_top_nav(active: str, label: str) -> str:
         for href, text, key in links
     )
     return f'<header class="top"><a class="ticker" href="/"><em>ACTA</em> / {html.escape(label.upper())}</a><nav class="nav">{nav}</nav></header>'
+
+
+def _acta_mobile_module_nav(active: str | None = None) -> str:
+    links = [("/", "TODAY", "today"), ("/jobs", "JOBS", "jobs"), ("/archive", "ARCHIVE", "archive"), ("/outputs", "OUTPUTS", "outputs")]
+    nav = "".join(
+        f'<a class="active" href="{href}">{text}</a>' if key == active else f'<a href="{href}">{text}</a>'
+        for href, text, key in links
+    )
+    return f'<nav class="mobilebar" aria-label="Acta mobile module navigation">{nav}</nav>'
 
 
 def render_jobs_page(
@@ -1117,6 +1127,7 @@ def render_jobs_page(
   </section>
   <footer>Generated {html.escape(now.isoformat())}.</footer>
 </main>
+{_acta_mobile_module_nav('jobs')}
 </body>
 </html>
 """
@@ -1211,6 +1222,7 @@ def render_outputs_page(
   </section>
   <footer>Generated {html.escape(now.isoformat())}. Signed Acta links expire automatically.</footer>
 </main>
+{_acta_mobile_module_nav('outputs')}
 <script>{read_state_script}</script>
 </body>
 </html>
@@ -1242,6 +1254,7 @@ def render_archive_index(archive_dates: Sequence[date], generated_at: datetime |
 <section class="grid">{cards}</section>
 <footer>Generated {html.escape(now.isoformat())}.</footer>
 </main>
+{_acta_mobile_module_nav('archive')}
 </body>
 </html>
 """
@@ -1296,6 +1309,7 @@ def render_acta_detail_report(
   </section>
   <footer>Signed Acta detail. Same Imperatr app shell across every drill-in.</footer>
 </main>
+{_acta_mobile_module_nav('outputs')}
 </body>
 </html>
 """
