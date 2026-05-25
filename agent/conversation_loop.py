@@ -154,6 +154,24 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # prompt) — build from scratch.
     agent._cached_system_prompt = agent._build_system_prompt(system_message)
 
+    # Plugin hook: pre_system_prompt — fired after system prompt is built
+    # but before it's persisted. Plugins can modify the system prompt
+    # (e.g. inject skill auto-load directives). The last non-None return
+    # value replaces the system prompt.
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        results = _invoke_hook(
+            "pre_system_prompt",
+            system_prompt=agent._cached_system_prompt,
+            session_id=agent.session_id,
+            model=agent.model,
+            platform=getattr(agent, "platform", None) or "",
+        )
+        if results:
+            agent._cached_system_prompt = results[-1]
+    except Exception as exc:
+        logger.warning("pre_system_prompt hook failed: %s", exc)
+
     # Plugin hook: on_session_start — fired once when a brand-new
     # session is created (not on continuation).  Plugins can use this
     # to initialise session-scoped state (e.g. warm a memory cache).
