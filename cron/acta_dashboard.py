@@ -1313,7 +1313,7 @@ def publish_catalog_output_artifacts(
             publish_html_artifact(
                 resolved,
                 {"id": "acta-output"},
-                {**publish_settings, "object_key": f"public/outputs/{item.id}/index.html"},
+                {**publish_settings, "object_key": f"public/outputs/{item.id}.html"},
             )
         except HtmlArtifactPublishError:
             continue

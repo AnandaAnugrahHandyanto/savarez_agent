@@ -100,6 +100,7 @@ function publicKeyForPath(pathname) {
   if (pathname === "/jobs" || pathname === "/jobs/") return "public/jobs/index.html";
   if (pathname === "/archive" || pathname === "/archive/") return "public/archive/index.html";
   if (pathname === "/outputs" || pathname === "/outputs/") return "public/outputs/index.html";
+  if (pathname === "/runs" || pathname === "/runs/") return "public/runs/index.html";
   const outputMatch = pathname.match(/^\/outputs\/([A-Za-z0-9._-]+)\/?$/);
   if (outputMatch) return `public/outputs/${outputMatch[1]}.html`;
   const match = pathname.match(/^\/archive\/([0-9]{4}-[0-9]{2}-[0-9]{2})\/?$/);
@@ -137,6 +138,7 @@ async function publicUrl(env, key) {
   if (key === "public/jobs/index.html") return `${base}/jobs`;
   if (key === "public/archive/index.html") return `${base}/archive`;
   if (key === "public/outputs/index.html") return `${base}/outputs`;
+  if (key === "public/runs/index.html") return `${base}/runs`;
   const outputMatch = key.match(/^public\/outputs\/([A-Za-z0-9._-]+)\.html$/);
   if (outputMatch) return `${base}/outputs/${outputMatch[1]}`;
   const archiveMatch = key.match(/^public\/archive\/([0-9]{4}-[0-9]{2}-[0-9]{2})\.html$/);

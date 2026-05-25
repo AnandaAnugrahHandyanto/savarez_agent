@@ -1480,10 +1480,21 @@ def test_build_dashboard_publishes_outputs_index(tmp_path: Path, monkeypatch):
     assert "Hermes Agent Lanes &amp; Specialist Agents" in output_publish["html"]
     assert 'href="/outputs/hermes-agent-lanes-decision-tree"' in output_publish["html"]
     assert "https://acta.imperatr.com/r/lead/detail.html?exp=1&amp;sig=abc" not in output_publish["html"]
-    backing_publish = next(item for item in published if item["object_key"] == "public/outputs/hermes-agent-lanes-decision-tree/index.html")
+    backing_publish = next(item for item in published if item["object_key"] == "public/outputs/hermes-agent-lanes-decision-tree.html")
     assert backing_publish["path"].name == "hermes-agent-lanes-decision-tree.html"
     assert "Lane decision tree" in backing_publish["html"]
     runs_publish = next(item for item in published if item["object_key"] == "public/runs/index.html")
     assert runs_publish["path"].name == "runs.html"
     assert "Acta Runs" in runs_publish["html"]
     assert "Lead Brief" in runs_publish["html"]
+
+
+def test_acta_worker_routes_published_public_surfaces():
+    worker = Path("cloudflare/acta/src/index.js").read_text(encoding="utf-8")
+
+    assert 'pathname === "/runs" || pathname === "/runs/"' in worker
+    assert 'return "public/runs/index.html"' in worker
+    assert 'key === "public/runs/index.html"' in worker
+    assert 'return `${base}/runs`' in worker
+    assert 'return `public/outputs/${outputMatch[1]}.html`' in worker
+    assert 'key.match(/^public\\/outputs\\/([A-Za-z0-9._-]+)\\.html$/)' in worker
