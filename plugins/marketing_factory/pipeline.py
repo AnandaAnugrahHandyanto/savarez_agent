@@ -190,7 +190,11 @@ class StrategyAgent:
 class CopyAgent:
     PREMIUM_CHANNELS = {"blog", "email", "linkedin"}
     MID_CHANNELS = {"x", "instagram", "tiktok", "app_store"}
-    VISUAL_CHANNELS = {"instagram", "tiktok", "app_store"}
+    # X posts perform significantly better with attached images (especially
+    # for cute pet content like Pupular), so X is treated as visual too.
+    # If a brand's image_library is empty AND MF_AUTO_IMAGES=0, the image
+    # attachment simply skips — no drafts break.
+    VISUAL_CHANNELS = {"x", "instagram", "tiktok", "app_store"}
 
     def __init__(self, image_gen: Optional["ImageGenAgent"] = None) -> None:
         self.image_gen = image_gen or ImageGenAgent()
