@@ -93,6 +93,54 @@ class TestCleanRUF100:
 
 
 
+
+class TestCleanRUF100AgentInit:
+    """RUF100 (unused noqa directive) must stay at zero for agent/agent_init.py.
+
+    RUF100 fires whenever a ``# noqa`` directive names a rule that ruff's
+    selected rule set doesn't enforce.  The stale ``# noqa: BLE001``
+    directive was removed from ``except Exception`` because BLE001 is not
+    in the enabled rule set.
+    """
+
+    TARGET = REPO_ROOT / "agent" / "agent_init.py"
+
+    def test_agent_init_py_has_zero_ruf100_violations(self):
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=RUF100",
+             "--output-format=concise", str(self.TARGET)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, (
+            f"{self.TARGET.relative_to(REPO_ROOT)} has RUF100 violation(s):\n"
+            f"{result.stdout}"
+        )
+
+
+class TestCleanRUF100AgentRuntimeHelpers:
+    """RUF100 (unused noqa directive) must stay at zero for agent/agent_runtime_helpers.py.
+
+    RUF100 fires whenever a ``# noqa`` directive names a rule that ruff's
+    selected rule set doesn't enforce.  The stale ``# noqa: BLE001``
+    directive was removed from ``except Exception`` because BLE001 is not
+    in the enabled rule set.
+    """
+
+    TARGET = REPO_ROOT / "agent" / "agent_runtime_helpers.py"
+
+    def test_agent_runtime_helpers_py_has_zero_ruf100_violations(self):
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=RUF100",
+             "--output-format=concise", str(self.TARGET)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, (
+            f"{self.TARGET.relative_to(REPO_ROOT)} has RUF100 violation(s):\n"
+            f"{result.stdout}"
+        )
+
 class TestCleanF821:
     """F821 (undefined name) must stay at zero for source files.
 
