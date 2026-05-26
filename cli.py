@@ -7141,25 +7141,13 @@ class HermesCLI:
         choices visible and lets the normal Enter key binding submit the typed
         or highlighted choice.
 
-        **Platform note (Windows dead-lock — issue #30768):**
-        The queue-based modal relies on prompt_toolkit key bindings receiving
-        keyboard events and calling ``_submit_slash_confirm_response``.  On
-        Windows (PowerShell / Windows Terminal) the prompt_toolkit input
-        channel can become unresponsive when the modal is entered from the
-        ``process_loop`` daemon thread, causing a dead-lock: the user sees the
-        confirmation panel but keystrokes never reach the key bindings and the
-        ``response_queue.get()`` blocks until the 120-second timeout expires.
-
-        To avoid this, we fall back to ``_prompt_text_input`` (a simple
-        ``input()``-based prompt) when any of these conditions hold:
-
-        * ``sys.platform == "win32"`` — native Windows console (ConPTY /
-          win32_input) does not support the modal reliably.
-        * Called from a non-main thread — the prompt_toolkit event loop only
-          runs on the main thread; key bindings can't fire from a daemon
-          thread (same rationale as the ``_prompt_text_input`` thread guard
-          in PR #23454).
-        * ``self._app`` is not set — unit tests / non-interactive contexts.
+        Slash commands are processed by ``process_loop`` on a worker thread,
+        while prompt_toolkit owns stdin on the main application loop.  On POSIX
+        terminals the worker must schedule modal open/close work onto the app
+        loop and then block on the modal response queue; falling back to raw
+        ``input()`` from the worker wedges because prompt_toolkit consumes the
+        user's keystrokes first.  Native Windows keeps the simple stdin fallback
+        for issue #30768, where the modal key bindings can fail to fire.
         """
         import threading
         import time as _time
@@ -7167,9 +7155,11 @@ class HermesCLI:
         if not choices:
             return None
 
+        app = getattr(self, "_app", None)
+
         # If prompt_toolkit is not running (unit tests / non-interactive calls),
         # keep the simple stdin fallback.
-        if not getattr(self, "_app", None):
+        if not app:
             return self._prompt_text_input("Choice [1/2/3]: ")
 
         # On Windows the prompt_toolkit input channel can deadlock when the
@@ -7180,33 +7170,75 @@ class HermesCLI:
         if sys.platform == "win32":
             return self._prompt_text_input("Choice [1/2/3]: ")
 
-        # Mirror the thread-aware guard from _prompt_text_input (PR #23454):
-        # run_in_terminal and the modal queue both depend on the main-thread
-        # event loop.  From a daemon thread the modal key bindings never fire.
-        if threading.current_thread() is not threading.main_thread():
-            return self._prompt_text_input("Choice [1/2/3]: ")
-
         response_queue = queue.Queue()
-        self._capture_modal_input_snapshot()
-        self._slash_confirm_state = {
-            "title": title,
-            "detail": detail,
-            "choices": choices,
-            "selected": 0,
-            "response_queue": response_queue,
-        }
-        self._slash_confirm_deadline = _time.monotonic() + timeout
-        self._invalidate()
+        modal_opened = False
+
+        def _open_modal() -> None:
+            nonlocal modal_opened
+            self._capture_modal_input_snapshot()
+            self._slash_confirm_state = {
+                "title": title,
+                "detail": detail,
+                "choices": choices,
+                "selected": 0,
+                "response_queue": response_queue,
+            }
+            self._slash_confirm_deadline = _time.monotonic() + timeout
+            modal_opened = True
+            self._invalidate()
+
+        def _close_modal() -> None:
+            nonlocal modal_opened
+            if not modal_opened:
+                return
+            self._slash_confirm_state = None
+            self._slash_confirm_deadline = 0
+            self._restore_modal_input_snapshot()
+            modal_opened = False
+            self._invalidate()
+
+        def _run_on_app_loop(callback, *, wait_timeout: float = 5.0) -> bool:
+            loop = getattr(app, "loop", None)
+            if loop is None or not hasattr(loop, "call_soon_threadsafe"):
+                return False
+
+            done = threading.Event()
+            errors: list[BaseException] = []
+
+            def _wrapped() -> None:
+                try:
+                    callback()
+                except BaseException as exc:  # best-effort UI modal cleanup path
+                    errors.append(exc)
+                finally:
+                    done.set()
+
+            try:
+                loop.call_soon_threadsafe(_wrapped)
+            except Exception:
+                return False
+
+            if not done.wait(wait_timeout):
+                return False
+            return not errors
+
+        in_main_thread = threading.current_thread() is threading.main_thread()
+        if in_main_thread:
+            _open_modal()
+        elif not _run_on_app_loop(_open_modal):
+            # Do not fall back to raw input() while prompt_toolkit owns stdin;
+            # that is the freeze this modal path is designed to avoid.
+            return None
 
         _last_countdown_refresh = _time.monotonic()
         try:
             while True:
                 try:
                     result = response_queue.get(timeout=1)
-                    self._slash_confirm_state = None
-                    self._slash_confirm_deadline = 0
-                    self._restore_modal_input_snapshot()
-                    self._invalidate()
+                    if in_main_thread:
+                        _close_modal()
+                    elif not _run_on_app_loop(_close_modal):
+                        _close_modal()
                     return result
                 except queue.Empty:
                     remaining = self._slash_confirm_deadline - _time.monotonic()
@@ -7217,11 +7249,11 @@ class HermesCLI:
                         _last_countdown_refresh = now
                         self._invalidate()
         finally:
-            if self._slash_confirm_state is not None:
-                self._slash_confirm_state = None
-                self._slash_confirm_deadline = 0
-                self._restore_modal_input_snapshot()
-                self._invalidate()
+            if modal_opened:
+                if in_main_thread:
+                    _close_modal()
+                elif not _run_on_app_loop(_close_modal):
+                    _close_modal()
         return None
 
     def _submit_slash_confirm_response(self, value: str | None) -> None:
@@ -7273,10 +7305,14 @@ class HermesCLI:
         if not state:
             return []
 
-        title = state.get("title") or "Confirm action"
-        detail = state.get("detail") or ""
-        choices = state.get("choices") or []
-        selected = state.get("selected", 0)
+        title = str(state.get("title") or "Confirm action")
+        detail = str(state.get("detail") or "")
+        raw_choices = state.get("choices") or []
+        choices: list[tuple[str, str, str]] = list(raw_choices)
+        try:
+            selected = int(state.get("selected", 0))
+        except (TypeError, ValueError):
+            selected = 0
 
         def _panel_box_width(title_text: str, content_lines: list[str], min_width: int = 56, max_width: int = 86) -> int:
             term_cols = shutil.get_terminal_size((100, 20)).columns

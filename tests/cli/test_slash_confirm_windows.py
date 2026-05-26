@@ -1,14 +1,15 @@
-"""Regression tests for issue #30768: /reset and /new freeze on Windows.
+"""Regression tests for destructive slash confirmations.
 
 ``_prompt_text_input_modal`` uses a queue-based modal that relies on
-prompt_toolkit key bindings receiving keyboard events.  On Windows the
-prompt_toolkit input channel can deadlock when the modal is entered from
-the ``process_loop`` daemon thread.  The fix falls back to the simpler
-``_prompt_text_input`` (stdin-based) prompt on Windows and non-main threads.
+prompt_toolkit key bindings receiving keyboard events.  The modal must not
+fall back to raw ``input()`` while the prompt_toolkit app owns stdin on POSIX;
+that wedges /reset and /new because keystrokes are consumed by the app instead
+of the worker thread's ``input()`` call.  Native Windows keeps a stdin fallback
+for issue #30768, where the modal key bindings can fail to fire.
 
 These tests verify:
 1. Windows detection triggers the stdin fallback
-2. Non-main thread detection triggers the stdin fallback
+2. Non-main POSIX calls schedule the modal on the app loop
 3. macOS/Linux main-thread path still uses the modal (no regression)
 4. No-app path still uses the stdin fallback (existing behavior)
 5. Empty choices returns None (existing behavior)
@@ -66,28 +67,54 @@ class TestModalWindowsFallback:
         mock_stdin.assert_called_once_with("Choice [1/2/3]: ")
         assert result == "1"
 
-    def test_non_main_thread_falls_back_to_stdin(self):
-        """Off the main thread, _prompt_text_input_modal should use stdin fallback."""
+    def test_non_main_thread_with_running_app_schedules_modal_on_app_loop(self):
+        """Off the main thread on POSIX, use the live modal, not raw stdin.
+
+        ``process_loop`` handles slash commands on a worker thread while
+        prompt_toolkit still owns terminal input on the main app loop. A raw
+        ``input()`` fallback wedges there because prompt_toolkit consumes the
+        user's keystrokes. The worker must publish modal state on the app loop
+        and then wait for the normal key bindings to submit the response.
+        """
         cli = _make_cli()
+        scheduled = queue.Queue()
         result_holder = {}
+
+        class FakeLoop:
+            def call_soon_threadsafe(self, callback, *args):
+                scheduled.put((callback, args))
+
+        setattr(cli._app, "loop", FakeLoop())
 
         def run_on_daemon():
             # Patch platform to "linux" so the Windows check doesn't short-circuit.
-            with patch.object(sys, "platform", "linux"), \
-                 patch.object(cli, "_prompt_text_input", return_value="2") as mock_stdin:
+            with patch.object(sys, "platform", "linux"):
                 result_holder["result"] = cli._prompt_text_input_modal(
                     title="⚠️  /reset",
                     detail="This starts a fresh session.",
                     choices=_SAMPLE_CHOICES,
+                    timeout=5,
                 )
-                result_holder["stdin_called"] = mock_stdin.called
 
-        t = threading.Thread(target=run_on_daemon, daemon=True)
-        t.start()
-        t.join(timeout=2.0)
-        assert not t.is_alive(), "daemon thread hung — modal deadlocked"
-        assert result_holder["stdin_called"] is True
-        assert result_holder["result"] == "2"
+        with patch.object(cli, "_prompt_text_input", return_value="2") as mock_stdin, \
+             patch.object(cli, "_capture_modal_input_snapshot"), \
+             patch.object(cli, "_restore_modal_input_snapshot"), \
+             patch.object(cli, "_invalidate"):
+            t = threading.Thread(target=run_on_daemon, daemon=True)
+            t.start()
+
+            callback, args = scheduled.get(timeout=1.0)
+            callback(*args)
+            assert cli._slash_confirm_state is not None
+            cli._submit_slash_confirm_response("once")
+
+            callback, args = scheduled.get(timeout=1.0)
+            callback(*args)
+            t.join(timeout=2.0)
+
+        assert not t.is_alive(), "daemon thread hung waiting for modal response"
+        mock_stdin.assert_not_called()
+        assert result_holder["result"] == "once"
 
     def test_main_thread_non_windows_uses_modal(self):
         """On macOS/Linux main thread, the queue-based modal is still used."""
@@ -182,29 +209,38 @@ class TestModalWindowsFallback:
 
         assert cli._slash_confirm_state is None
 
-    def test_non_main_thread_fallback_does_not_set_modal_state(self):
-        """Verify daemon-thread fallback doesn't leave modal state set."""
+    def test_non_main_thread_app_loop_failure_does_not_call_stdin(self):
+        """If POSIX app-loop scheduling fails, cancel instead of raw stdin."""
         cli = _make_cli()
         errors = []
+        result_holder = {}
+
+        class FailingLoop:
+            def call_soon_threadsafe(self, callback, *args):
+                raise RuntimeError("loop unavailable")
+
+        setattr(cli._app, "loop", FailingLoop())
 
         def run_on_daemon():
             try:
                 with patch.object(sys, "platform", "linux"), \
-                     patch.object(cli, "_prompt_text_input", return_value="1"):
-                    cli._prompt_text_input_modal(
+                     patch.object(cli, "_prompt_text_input", return_value="1") as mock_stdin:
+                    result_holder["result"] = cli._prompt_text_input_modal(
                         title="⚠️  /new",
                         detail="This starts a fresh session.",
                         choices=_SAMPLE_CHOICES,
                     )
-                if cli._slash_confirm_state is not None:
-                    errors.append("_slash_confirm_state should be None")
+                    result_holder["stdin_called"] = mock_stdin.called
             except Exception as exc:
                 errors.append(str(exc))
 
         t = threading.Thread(target=run_on_daemon, daemon=True)
         t.start()
         t.join(timeout=2.0)
+        assert not t.is_alive(), "daemon thread hung after app-loop scheduling failure"
         assert not errors, f"unexpected errors: {errors}"
+        assert result_holder["result"] is None
+        assert result_holder["stdin_called"] is False
         assert cli._slash_confirm_state is None
 
 
