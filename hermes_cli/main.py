@@ -6515,12 +6515,14 @@ def _run_npm_install_deterministic(
     the working tree dirty and causes the next ``hermes update`` to stash the
     lockfile — repeatedly.
     """
+    env = {**os.environ, "CI": os.environ.get("CI") or "1"}
     lockfile = cwd / "package-lock.json"
     if lockfile.exists():
         ci_cmd = [npm, "ci", *extra_args]
         ci_result = subprocess.run(
             ci_cmd,
             cwd=cwd,
+            env=env,
             capture_output=capture_output,
             text=True,
             encoding="utf-8",
@@ -6535,6 +6537,7 @@ def _run_npm_install_deterministic(
     return subprocess.run(
         install_cmd,
         cwd=cwd,
+        env=env,
         capture_output=capture_output,
         text=True,
         encoding="utf-8",

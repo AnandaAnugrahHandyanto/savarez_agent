@@ -125,11 +125,14 @@ class TestBuildWebUISkipsWhenFresh:
         (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
 
         mock_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
-        with patch("hermes_cli.main.subprocess.run", return_value=mock_cp) as mock_run:
+        with patch.dict(os.environ, {}, clear=True), patch(
+            "hermes_cli.main.subprocess.run", return_value=mock_cp
+        ) as mock_run:
             result = _run_npm_install_deterministic("/usr/bin/npm", web_dir)
 
         assert result.returncode == 0
         _, kwargs = mock_run.call_args
+        assert kwargs["env"]["CI"] == "1"
         assert kwargs["text"] is True
         assert kwargs["encoding"] == "utf-8"
         assert kwargs["errors"] == "replace"
