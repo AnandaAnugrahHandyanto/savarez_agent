@@ -6125,6 +6125,7 @@ def board_stats(conn: sqlite3.Connection) -> dict:
     done_total = by_status.get("done", 0)
     scheduled_total = by_status.get("scheduled", 0)
     ready_total = by_status.get("ready", 0)
+    blocked_total = by_status.get("blocked", 0)
 
     return {
         "by_status": by_status,
@@ -6137,6 +6138,7 @@ def board_stats(conn: sqlite3.Connection) -> dict:
         "archived_total": archived_total,
         "scheduled_total": scheduled_total,
         "ready_total": ready_total,
+        "blocked_total": blocked_total,
     }
 
 
