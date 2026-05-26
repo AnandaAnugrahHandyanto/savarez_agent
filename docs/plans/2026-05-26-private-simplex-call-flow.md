@@ -511,3 +511,9 @@ Deliver:
 - Which local STT/TTS stack should be enabled first on this Mac for low-latency calls?
 - Should Phase 1 use a stub room provider for tests before LiveKit is fully configured?
 - Is EC2 SSH inspection still needed to recover a missing SimpleX-native prototype, or should Hermes rebuild from current SimpleX source plus OpenClaw runtime concepts?
+
+## 11. Native WebRTC Bridge Status
+
+The first native bridge milestone adds tested SimpleX call signaling, explicit native call state, and a configurable media sidecar port. It does not claim full speech-to-speech until a SimpleX mobile call verifies the WebRTC media path and the local STT/TTS runtime is connected.
+
+Native calls fail loudly when `platforms.simplex.extra.native_calls.enabled` is false, when the gateway has not installed the native call handler, or when `native_calls.sidecar_command` is missing or returns a malformed protocol response.
