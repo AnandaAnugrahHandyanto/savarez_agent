@@ -847,6 +847,36 @@ def _feed_lane_chip(lane: str) -> str:
     }.get(lane, "Other")
 
 
+def _daily_topic_label(item: CronSituationItem | None) -> str:
+    if item is None:
+        return "Brief"
+    haystack = f"{item.job_id} {item.name}".casefold()
+    if any(token in haystack for token in ("weather", "outfit")):
+        return "Weather"
+    if any(token in haystack for token in ("sport", "knicks", "nba", "nfl", "yankees", "mets")):
+        return "Sports"
+    if any(token in haystack for token in ("lunch", "meal", "food")):
+        return "Food"
+    if any(token in haystack for token in ("newsletter", "news", "rundown", "brief")):
+        return "News"
+    return "Personal"
+
+
+def _attention_label(item: CronSituationItem | None, lane: str, now: datetime) -> str:
+    if item is None:
+        return "Background"
+    if not item.enabled or item.status in {"missing", "silent"}:
+        return "Needs review"
+    haystack = f"{item.job_id} {item.name} {item.excerpt}".casefold()
+    if any(token in haystack for token in ("decision", "approve", "review", "failed", "blocked", "error")):
+        return "Needs decision"
+    if lane == "dev":
+        return "Background"
+    if item.latest_time and (now - item.latest_time).total_seconds() <= 6 * 60 * 60:
+        return "Read now"
+    return "Later"
+
+
 def _config_list(value: object) -> list[str]:
     if isinstance(value, str):
         return [value]
@@ -1022,6 +1052,8 @@ def render_dashboard(
         latest = item.latest_time.isoformat() if item.latest_time else "No run yet"
         age = _age_label(item.latest_time, now)
         confidence = _confidence_label(item, now)
+        attention = _attention_label(item, lane, now)
+        topic = _daily_topic_label(item) if lane == "daily" else _feed_lane_chip(lane)
         row_signal = _row_signal(item)
         artifact_url = item.artifact_url if item.enabled and _is_safe_signed_acta_artifact_url(item.artifact_url) else None
         href = html.escape(artifact_url, quote=True) if artifact_url else ""
@@ -1061,8 +1093,8 @@ def render_dashboard(
     <div class="brief-copy">
       <h2>{_safe_text(item.name)}</h2>
       <p>{_safe_text(item.excerpt)}</p>
-      <div class="row-kicker"><span class="lane-chip" title="{_safe_text(_feed_lane_label(lane))}">{_safe_text(_feed_lane_chip(lane))}</span>{read_state}<span class="confidence-chip">{_safe_text(confidence)}</span><span>{_safe_text(status_label)}</span><span>{_safe_text(age)}</span><span>{_safe_text(item.schedule or "manual")}</span><span class="source-chip" title="{_safe_text(item.job_id)} · {_safe_text(item.deliver or "local")} · {_safe_text(latest)}">{_safe_text(item.job_id)} · {_safe_text(item.deliver or "local")}</span></div>
-      <div class="source-line">{_safe_text(item.job_id)} · {_safe_text(item.deliver or "local")} · {_safe_text(latest)}</div>
+      <div class="row-kicker"><span class="attention-chip">{_safe_text(attention)}</span><span class="lane-chip" title="{_safe_text(_feed_lane_label(lane))}">{_safe_text(topic)}</span>{read_state}<span class="trace-only confidence-chip">{_safe_text(confidence)}</span><span>{_safe_text(age)}</span><span class="trace-only">{_safe_text(status_label)}</span><span class="trace-only">{_safe_text(item.schedule or "manual")}</span></div>
+      <div class="source-line trace-only">{_safe_text(item.job_id)} · {_safe_text(item.deliver or "local")} · {_safe_text(latest)}</div>
     </div>
     <span class="card-actions">{read_toggle}<span class="open-label">{open_label}</span>{ask_link}</span>
   </div>
@@ -1097,13 +1129,24 @@ def render_dashboard(
 
     def _feed_section(lane: str, title: str, subtitle: str) -> str:
         lane_rows = ''.join(rows_by_lane[lane])
+        count = len(rows_by_lane[lane])
         if not lane_rows:
             empty_message = "No additional outputs in this lane yet." if lead_item and _feed_lane(lead_item) == lane else "No visible outputs in this lane yet."
             lane_rows = f'<p class="empty-feed">{html.escape(empty_message)}</p>'
+        title_html = f'<div class="feed-section-title"><b>{html.escape(title)}</b><span>{html.escape(subtitle)}</span></div>'
+        feed_html = f'<section class="feed" data-feed-lane="{html.escape(lane, quote=True)}">{lane_rows}</section>'
+        if lane == "dev":
+            count_label = f"{count} additional update{'s' if count != 1 else ''} · background by default"
+            return f"""
+<details class="feed-section lane-section-{lane} dev-inbox">
+  <summary><b>{html.escape(title)}</b><span>{html.escape(count_label)}</span></summary>
+  <div class="feed-section-title trace-only"><b>{html.escape(title)}</b><span>{html.escape(subtitle)}</span></div>
+  {feed_html}
+</details>"""
         return f"""
 <div class="feed-section lane-section-{lane}">
-  <div class="feed-section-title"><b>{html.escape(title)}</b><span>{html.escape(subtitle)}</span></div>
-  <section class="feed" data-feed-lane="{html.escape(lane, quote=True)}">{lane_rows}</section>
+  {title_html}
+  {feed_html}
 </div>"""
 
     daily_section = _feed_section("daily", "Daily life feed", "news, newsletters, weather, sports, lunch")
@@ -1152,6 +1195,30 @@ def render_dashboard(
     lead_confidence = _confidence_label(lead_item, now) if lead_item else "CONF LOW/GAP"
     lead_lane = _feed_lane(lead_item) if lead_item else "system"
     lead_lane_label = _feed_lane_label(lead_lane)
+    lead_attention = _attention_label(lead_item, lead_lane, now)
+    daily_topics = []
+    for item in [item for item in ([lead_item] if lead_item and lead_lane == "daily" else []) + daily_items if item is not None]:
+        label = _daily_topic_label(item)
+        if label not in daily_topics:
+            daily_topics.append(label)
+    action_items = [
+        item
+        for item in ordered_items
+        if _attention_label(item, _feed_lane(item), now) in {"Needs decision", "Needs review"}
+    ]
+    lead_digest = lead_item.name if lead_item else "No briefing output yet"
+    daily_digest_item = lead_item if lead_item and lead_lane == "daily" else (daily_items[0] if daily_items else None)
+    dev_digest_item = dev_items[0] if dev_items else None
+    action_digest_item = action_items[0] if action_items else None
+    action_count = len(action_items)
+    action_review_label = "item needs review" if action_count == 1 else "items need review"
+    digest_lines = [
+        f"Lead: {lead_digest}",
+        f"Daily: {len(daily_items)} outputs" + (f" · top {daily_digest_item.name}" if daily_digest_item else "") + (f" · {', '.join(daily_topics[:3])}" if daily_topics else ""),
+        f"Dev: {len(dev_items)} sprint updates" + (f" · top {dev_digest_item.name}" if dev_digest_item else " · background clear"),
+        f"Action: {action_count} {action_review_label}" + (f" · {action_digest_item.name}" if action_digest_item else ""),
+    ]
+    digest_html = ''.join(f"<li>{html.escape(line)}</li>" for line in digest_lines)
     dashboard_script = _dashboard_inline_script()
     dashboard_csp_placeholder = "__ACTA_DASHBOARD_CSP__"
 
@@ -1193,6 +1260,19 @@ a {{ color:inherit; }}
 .topstats b {{ color:var(--text); font-weight:700; }}
 .nav-count {{ display:inline-grid; min-width:17px; height:17px; place-items:center; margin-left:4px; padding:0 4px; border:1px solid rgba(35,167,255,.36); border-radius:999px; color:#fff; background:rgba(117,108,255,.22); font:800 9px var(--mono); }}
 .content {{ padding:18px; display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:18px; }}
+.view-mode-input {{ position:absolute; width:1px; height:1px; opacity:0; }}
+.mode-switch {{ display:inline-flex; gap:4px; border:1px solid var(--line); border-radius:999px; padding:3px; background:rgba(255,255,255,.035); margin:0 0 10px; }}
+.mode-switch label {{ cursor:pointer; color:var(--muted); border-radius:999px; padding:5px 9px; font:800 10px var(--mono); letter-spacing:.08em; text-transform:uppercase; }}
+#view-digest:checked ~ .mode-switch label[for='view-digest'], #view-trace:checked ~ .mode-switch label[for='view-trace'] {{ color:#fff; background:rgba(117,108,255,.22); }}
+#view-digest:focus-visible ~ .mode-switch label[for='view-digest'], #view-trace:focus-visible ~ .mode-switch label[for='view-trace'] {{ outline:2px solid var(--acta2); outline-offset:2px; }}
+.trace-only {{ display:none !important; }}
+#view-trace:checked ~ .content .trace-only {{ display:inline !important; }}
+#view-trace:checked ~ .content span.trace-only, #view-trace:checked ~ .content .row-kicker .trace-only, #view-trace:checked ~ .content .meta .trace-only {{ display:inline-flex !important; }}
+#view-trace:checked ~ .content .source-line.trace-only {{ display:block !important; }}
+#view-trace:checked ~ .content .feed-section-title.trace-only {{ display:flex !important; }}
+.today-brief {{ border:1px solid var(--line); border-radius:16px; padding:11px 12px; margin:0 0 10px; background:rgba(117,108,255,.075); box-shadow:0 12px 34px rgba(0,0,0,.20); }}
+.today-brief h2 {{ margin:0 0 6px; font:760 14px/1.1 var(--ui); color:#fff; letter-spacing:-.01em; }}
+.today-brief ul {{ margin:0; padding-left:18px; color:var(--body); font:12px/1.38 var(--ui); }}
 .panel-title {{ display:flex; align-items:center; justify-content:space-between; gap:10px; margin:4px 0 10px; color:#fff; font:800 11px var(--mono); letter-spacing:.12em; text-transform:uppercase; }}
 .panel-title span {{ color:var(--faint); font-weight:600; letter-spacing:.08em; }}
 .lead {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px 12px; border:1px solid var(--line); border-radius:16px; padding:12px 13px; margin-bottom:10px; text-decoration:none; color:inherit; cursor:pointer; position:relative; overflow:hidden; background:rgba(255,255,255,.035); box-shadow:0 10px 32px rgba(0,0,0,.26); }}
@@ -1222,6 +1302,12 @@ h1 {{ grid-column:1; font:720 clamp(18px,2.3vw,24px)/1.08 var(--ui); letter-spac
 .feed-section-title span {{ color:var(--muted); font-weight:600; letter-spacing:.06em; text-align:right; }}
 .empty-feed {{ margin:0; border:1px dashed var(--line-soft); border-radius:13px; padding:12px; color:var(--muted); font:12px var(--mono); text-transform:uppercase; letter-spacing:.06em; background:rgba(255,255,255,.018); }}
 .lane-chip {{ border-color:rgba(117,108,255,.44) !important; color:#fff; background:rgba(117,108,255,.18) !important; }}
+.attention-chip {{ border-color:rgba(87,167,115,.44) !important; color:#fff; background:rgba(87,167,115,.16) !important; }}
+.dev-inbox {{ border:1px solid var(--line-soft); border-radius:14px; padding:0; background:rgba(255,184,107,.025); overflow:hidden; }}
+.dev-inbox summary {{ list-style:none; cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 11px; color:#fff; font:800 10px var(--mono); letter-spacing:.1em; text-transform:uppercase; }}
+.dev-inbox summary::-webkit-details-marker {{ display:none; }}
+.dev-inbox summary span {{ color:var(--muted); font-weight:600; letter-spacing:.04em; text-align:right; }}
+.dev-inbox .feed {{ padding:0 8px 8px; }}
 .brief-row[data-feed-lane='dev'] .swipe-content:before {{ background:linear-gradient(180deg,#ffb86b,var(--acta)); }}
 .brief-row[data-feed-lane='system'] .swipe-content:before {{ background:rgba(245,247,251,.34); }}
 .brief-row[data-feed-lane='dev'] {{ background:rgba(255,184,107,.035); }}
@@ -1301,7 +1387,7 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
 .pull-refresh.ready {{ color:#fff; background:linear-gradient(135deg,var(--acta),var(--acta2)); border-color:transparent; }}
 .pull-refresh.visible {{ opacity:1; transform:translate(-50%,0); }}
 @media (max-width:980px) {{ .pull-refresh {{ display:block; }} .shell {{ display:block; min-width:0; width:100%; }} .rail {{ display:none; }} .main {{ width:100%; min-width:0; }} .top {{ height:50px; padding:0 max(14px, env(safe-area-inset-left, 0px)) 0 max(14px, env(safe-area-inset-left, 0px)); }} .date-nav {{ position:static; background:rgba(3,6,11,.82); padding:8px 14px; gap:8px; }} .nav-link {{ min-height:38px; display:inline-flex; align-items:center; padding:0 12px; }} .content {{ display:block; padding:12px 14px calc(132px + env(safe-area-inset-bottom, 0px)); }} .panel-title {{ margin-top:12px; }} .side {{ display:none; }} .topstats {{ display:none; }} .lead {{ margin-bottom:8px; touch-action:pan-y; }} .lead p {{ display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }} .meta {{ gap:6px; }} .meta span {{ padding:2px 6px; }} .feed {{ border-top:0; }} .brief-row {{ min-height:60px; touch-action:pan-y; }} .swipe-content {{ grid-template-columns:32px minmax(0,1fr) auto; gap:8px; min-height:60px; padding:7px 10px; touch-action:pan-y; }} .brief-row:hover .swipe-content {{ background:rgba(255,255,255,.05); outline:0; }} .row-signal {{ font-size:8px; }} .row-kicker {{ font-size:10px; }} .brief-copy p {{ display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }} .source-line {{ display:none; }} .open-label {{ display:none; }} .card-actions {{ grid-column:3; justify-self:end; }} .ask-label {{ padding:5px 7px; font-size:10px; }} .jobs-panel {{ margin-top:18px; scroll-margin-top:100px; }} .jobs-head {{ padding-top:14px; }} .job-row {{ grid-template-columns:34px minmax(0,1fr); gap:8px 10px; padding:13px 0; }} .job-schedule, .job-last {{ grid-column:2; }} .job-main b {{ font-size:14px; }} .search {{ max-width:none; }} .mobilebar {{ display:grid; position:fixed; left:max(10px, env(safe-area-inset-left, 0px)); right:max(10px, env(safe-area-inset-right, 0px)); bottom:calc(14px + env(safe-area-inset-bottom, 0px)); min-height:62px; background:linear-gradient(180deg, rgba(7,16,24,.96), rgba(3,6,11,.94)), radial-gradient(circle at 18% 0%, rgba(117,108,255,.28), transparent 42%), radial-gradient(circle at 86% 20%, rgba(35,167,255,.18), transparent 48%); backdrop-filter:blur(18px) saturate(145%); border:1px solid rgba(117,108,255,.28); grid-template-columns:repeat(5,1fr); z-index:3; box-shadow:0 -16px 38px rgba(0,0,0,.62), 0 0 26px rgba(117,108,255,.13); opacity:0; transform:translateY(calc(100% + 24px)); pointer-events:none; transition:opacity .18s ease, transform .22s cubic-bezier(.2,.8,.2,1); }} .mobilebar.visible {{ opacity:1; transform:translateY(0); pointer-events:auto; }} .mobilebar a {{ display:flex; align-items:center; justify-content:center; gap:3px; min-height:62px; color:#ddd; text-decoration:none; font:11px var(--mono); touch-action:manipulation; -webkit-tap-highlight-color:rgba(117,108,255,.18); }} .mobilebar a:first-child {{ color:var(--accent); }} }}
-@media (max-width:620px) {{ .top {{ gap:8px; }} .ticker {{ font-size:11px; }} .search {{ display:none; }} .lead {{ grid-template-columns:1fr; }} .output-summary {{ display:none; }} h1 {{ font-size:19px; max-width:100%; }} .lead p {{ font-size:13px; line-height:1.3; }} .label {{ line-height:1.35; gap:5px; }} .feed-section-title span {{ display:none; }} .swipe-content {{ grid-template-columns:28px minmax(0,1fr); }} h2 {{ font-size:15px; }} .row-kicker {{ flex-wrap:wrap; overflow:visible; line-height:1.25; }} .row-kicker span, .row-kicker .read-state {{ min-height:auto; display:inline-flex; align-items:center; }} .source-line {{ display:none; }} .card-actions {{ grid-column:2; justify-self:start; margin-top:2px; }} .brief-copy p {{ font-size:13px; line-height:1.25; }} footer {{ font-size:11px; line-height:1.45; }} }}
+@media (max-width:620px) {{ .top {{ gap:8px; }} .ticker {{ font-size:11px; }} .search {{ display:none; }} .lead {{ grid-template-columns:1fr; }} .output-summary {{ display:none; }} h1 {{ font-size:19px; max-width:100%; }} .lead p {{ font-size:13px; line-height:1.3; }} .label {{ line-height:1.35; gap:5px; }} .feed-section-title span {{ display:none; }} .swipe-content {{ grid-template-columns:28px minmax(0,1fr); }} h2 {{ font-size:15px; }} .row-kicker {{ flex-wrap:wrap; overflow:visible; line-height:1.25; }} .row-kicker span, .row-kicker .read-state {{ min-height:auto; display:inline-flex; align-items:center; }} .source-line {{ display:none; }} #view-trace:checked ~ .content .source-line.trace-only {{ display:block !important; white-space:normal; overflow-wrap:anywhere; word-break:break-word; overflow:visible; text-overflow:clip; line-height:1.25; }} .card-actions {{ grid-column:2; justify-self:start; margin-top:2px; }} .brief-copy p {{ font-size:13px; line-height:1.25; }} footer {{ font-size:11px; line-height:1.45; }} }}
 </style>
 </head>
 <body>
@@ -1329,15 +1415,19 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
       <div class="topstats"><div>UNREAD <b data-unread-count="{initial_unread_count}">{initial_unread_count}</b></div><div>VISIBLE <b>{visible}</b></div><div>SILENT <b>{silent}</b></div><div>MISSING <b>{missing}</b></div></div>
     </header>
     <nav class="date-nav"><a class="nav-link primary" href="/">Today</a><a class="nav-link" href="/outputs">Outputs</a><a class="nav-link" href="/runs">Runs</a><a class="nav-link" href="/jobs">Jobs</a><a class="nav-link" href="/archive">Archive</a></nav>
+    <input class="view-mode-input" id="view-digest" name="acta-view-mode" type="radio" checked>
+    <input class="view-mode-input" id="view-trace" name="acta-view-mode" type="radio">
+    <div class="mode-switch" role="radiogroup" aria-label="Acta view mode"><label for="view-digest">Digest</label><label for="view-trace">Trace</label></div>
     <section class="content">
       <div>
+        <section class="today-brief"><h2>Today’s Brief</h2><ul>{digest_html}</ul></section>
         <article class="{lead_class}" data-feed-lane="{_safe_text(lead_lane)}"{lead_read_attr}{lead_href_attr}>
           {lead_open_overlay}
-          <div class="label"><span class="lane-chip" title="{_safe_text(lead_lane_label)}">{_safe_text(_feed_lane_chip(lead_lane))}</span>{lead_label_read_state}<span title="{_safe_text(lead_confidence)}">{_safe_text(_confidence_short(lead_confidence))}</span><span>{lead_open_hint}</span></div>
+          <div class="label"><span class="attention-chip">{_safe_text(lead_attention)}</span><span class="lane-chip" title="{_safe_text(lead_lane_label)}">{_safe_text(_feed_lane_chip(lead_lane))}</span>{lead_label_read_state}<span class="trace-only" title="{_safe_text(lead_confidence)}">{_safe_text(_confidence_short(lead_confidence))}</span><span>{lead_open_hint}</span></div>
           <h1>{_safe_text(lead_title)}</h1>
           <p>{_safe_text(lead_excerpt)}</p>
-          <div class="output-summary"><b>{visible}/{active}</b><span>visible</span><span>{missing} gaps</span></div>
-          <div class="meta"><span>{html.escape(day_label)}</span><span>{lead_row_meta}</span><span>{missing} gaps</span><span>{silent} quiet</span><span>{len(archive_dates)} archive days</span>{lead_read_toggle}{lead_ask_link}</div>
+          <div class="output-summary"><b>{visible}/{active}</b><span>visible</span><span class="trace-only">{missing} gaps</span></div>
+          <div class="meta"><span>{html.escape(day_label)}</span><span>{lead_row_meta}</span><span class="trace-only">{_safe_text(lead_confidence)}</span>{lead_read_toggle}{lead_ask_link}</div>
         </article>
         <div class="panel-title"><b>Output Streams</b><span>Daily / Dev split</span></div>
         {daily_section}

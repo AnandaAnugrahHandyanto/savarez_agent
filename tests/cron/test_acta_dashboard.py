@@ -166,6 +166,15 @@ def test_dashboard_separates_daily_life_and_development_sprint_feeds(tmp_path: P
     assert 'class="lane-chip" title="Daily life feed">Daily</span>' in html
     assert 'data-feed-lane="dev"' in html
     assert html.index("Daily life feed") < html.index("Development sprint cycles")
+    assert '<details class="feed-section lane-section-dev dev-inbox">' in html
+    assert "background by default" in html
+    assert "Today’s Brief" in html
+    assert "Lead: Morning Newsletter" in html
+    assert "Daily: 1 outputs · top Morning Newsletter · News" in html
+    assert "Dev: 2 sprint updates · top Weekly app user-testing sweep" in html
+    assert '<input class="view-mode-input" id="view-digest" name="acta-view-mode" type="radio" checked>' in html
+    assert '<input class="view-mode-input" id="view-trace" name="acta-view-mode" type="radio">' in html
+    assert '<div class="mode-switch" role="radiogroup" aria-label="Acta view mode"><label for="view-digest">Digest</label><label for="view-trace">Trace</label></div>' in html
 
 
 def test_dashboard_dev_only_lead_is_not_duplicated_in_dev_lane_read_keys():
@@ -191,8 +200,88 @@ def test_dashboard_dev_only_lead_is_not_duplicated_in_dev_lane_read_keys():
     assert html.count("<h1>Vesta Startup Sprint CEO loop</h1>") == 1
     assert html.count("<h2>Vesta Startup Sprint CEO loop</h2>") == 0
     assert html.count('data-read-key="vesta-startup:') == 1
+    assert "0 additional updates · background by default" in dev_section
     assert "No additional outputs in this lane yet." in dev_section
     assert "No visible outputs in this lane yet." not in dev_section
+
+
+def test_dashboard_digest_uses_real_item_titles_and_escapes_them():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    lead = item_cls(
+        job_id="daily-lead",
+        name="News & Weather <Lead>",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_10-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Daily signal.",
+    )
+    review = item_cls(
+        job_id="qa-review",
+        name="QA Smoke Review & Fixes",
+        schedule="*/30 * * * *",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_09-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 9, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Needs review before release.",
+    )
+
+    html = render_dashboard([lead, review], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
+
+    assert "Lead: News &amp; Weather &lt;Lead&gt;" in html
+    assert "Daily: 1 outputs · top News &amp; Weather &lt;Lead&gt;" in html
+    assert "Action: 1 item needs review · QA Smoke Review &amp; Fixes" in html
+    assert "Lead: News & Weather <Lead>" not in html
+
+
+def test_dashboard_digest_pluralizes_multiple_review_actions():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    lead = item_cls(
+        job_id="daily-lead",
+        name="Daily Lead Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_10-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Daily signal.",
+    )
+    top_review = item_cls(
+        job_id="qa-review",
+        name="QA Smoke Review & Fixes",
+        schedule="*/30 * * * *",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_09-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 9, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Needs review before release.",
+    )
+    second_review = item_cls(
+        job_id="security-review",
+        name="Security Audit Review",
+        schedule="*/30 * * * *",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_08-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 8, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Needs review before deploy.",
+    )
+
+    html = render_dashboard([lead, top_review, second_review], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
+
+    assert "Action: 2 items need review · QA Smoke Review &amp; Fixes" in html
 
 
 def test_dashboard_system_only_lead_keeps_system_lane_visible():
@@ -657,7 +746,7 @@ def test_dashboard_counts_exclude_morning_audio_by_default():
 
     assert "P Morning Audio Briefing" not in html
     assert 'Today <span>1</span>' in html
-    assert '<div class="output-summary"><b>1/1</b><span>visible</span><span>0 gaps</span></div>' in html
+    assert '<div class="output-summary"><b>1/1</b><span>visible</span><span class="trace-only">0 gaps</span></div>' in html
     assert "metricrow" not in html
     assert "VISIBLE <b>1</b>" in html
 
@@ -742,12 +831,24 @@ def test_mobile_dashboard_does_not_duplicate_lead_in_feed(tmp_path: Path):
     assert "user-scalable=no" in html
     assert ".row-kicker { flex-wrap:wrap; overflow:visible" in html
     assert ".source-line { display:none; }" in html
+    assert '#view-digest:checked ~ .mode-switch label[for=\'view-digest\']' in html
+    assert ".view-mode-input { position:absolute; width:1px; height:1px; opacity:0; }" in html
+    assert ".view-mode-input { position:absolute; opacity:0; pointer-events:none; }" not in html
+    assert '#view-trace:checked ~ .mode-switch label[for=\'view-trace\']' in html
+    assert "#view-trace:checked ~ .content span.trace-only" in html
+    assert "#view-trace:checked ~ .content .source-line.trace-only { display:block !important; }" in html
+    assert "#view-trace:checked ~ .content .feed-section-title.trace-only { display:flex !important; }" in html
+    assert "#view-trace:checked ~ .content .source-line.trace-only { display:block !important; white-space:normal; overflow-wrap:anywhere; word-break:break-word; overflow:visible; text-overflow:clip; line-height:1.25; }" in html
+    assert "source-line.trace-only { display:none !important; }" not in html
+    assert "display:initial" not in html
     assert ".feed-section-title span { display:none; }" in html
     assert ".lead { grid-template-columns:1fr; }" in html
     assert ".swipe-content { grid-template-columns:28px minmax(0,1fr); }" in html
     assert "second · telegram · 2026-05-19T09:00:00+00:00" in html
-    assert '<span>manual</span><span class="source-chip" title="second · telegram · 2026-05-19T09:00:00+00:00">second · telegram</span>' in html
-    assert '<span>0 gaps</span><span>0 quiet</span>' in html
+    assert '<span class="attention-chip">Later</span>' in html
+    assert '<span class="trace-only">manual</span>' in html
+    assert '<div class="mode-switch" role="radiogroup" aria-label="Acta view mode">' in html
+    assert '<section class="today-brief"><h2>Today’s Brief</h2>' in html
 
 
 def test_lead_brief_is_clickable_and_read_state_enabled(tmp_path: Path):
@@ -1189,7 +1290,7 @@ def test_dashboard_surfaces_confidence_without_changing_read_state():
     assert "CONF HIGH" in html
     assert "CONF MED" in html
     assert "CONF LOW/GAP" in html
-    assert '<span class="confidence-chip">CONF MED</span>' in html
+    assert '<span class="trace-only confidence-chip">CONF MED</span>' in html
     assert '<span>OUT</span>' in html
     assert "#f5a400" not in html
     assert "amber" not in html.lower()
