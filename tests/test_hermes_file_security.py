@@ -35,7 +35,9 @@ class TestSecureFile:
 
 
 class TestSecureDir:
-    def test_sets_0700_on_existing_dir(self, tmp_path):
+    def test_sets_0700_on_existing_dir(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HERMES_HOME_MODE", raising=False)
+        monkeypatch.delenv("HERMES_MANAGED", raising=False)
         target = tmp_path / "logs"
         target.mkdir()
         os.chmod(target, 0o755)
@@ -43,6 +45,27 @@ class TestSecureDir:
         secure_dir(target)
 
         assert stat.S_IMODE(os.stat(target).st_mode) == 0o700
+
+    def test_honors_hermes_home_mode(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME_MODE", "0750")
+        monkeypatch.delenv("HERMES_MANAGED", raising=False)
+        target = tmp_path / "logs"
+        target.mkdir()
+        os.chmod(target, 0o755)
+
+        secure_dir(target)
+
+        assert stat.S_IMODE(os.stat(target).st_mode) == 0o750
+
+    def test_managed_mode_keeps_group_access(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_MANAGED", "true")
+        target = tmp_path / "logs"
+        target.mkdir()
+        os.chmod(target, 0o755)
+
+        secure_dir(target)
+
+        assert stat.S_IMODE(os.stat(target).st_mode) == 0o2770
 
     def test_noop_on_nonexistent_dir(self):
         secure_dir(Path("/nonexistent/path"))

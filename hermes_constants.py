@@ -268,14 +268,32 @@ def secure_file(path: Path) -> None:
         pass
 
 
+def _secure_dir_mode(default: int = 0o700) -> int:
+    """Return the chmod mode for Hermes-owned state directories."""
+    raw_managed = os.environ.get("HERMES_MANAGED", "").strip()
+    if raw_managed:
+        return 0o2770
+    try:
+        if (get_hermes_home() / ".managed").exists():
+            return 0o2770
+    except OSError:
+        pass
+
+    try:
+        mode_str = os.environ.get("HERMES_HOME_MODE", "").strip()
+        return int(mode_str, 8) if mode_str else default
+    except ValueError:
+        return default
+
+
 def secure_dir(path: Path) -> None:
-    """Set an existing directory to owner-only access permissions."""
+    """Set secure permissions on an existing Hermes-owned directory."""
     try:
         resolved = path.resolve()
         if resolved == Path("/") or len(resolved.parts) < 3:
             return
         if resolved.exists():
-            os.chmod(resolved, 0o700)
+            os.chmod(resolved, _secure_dir_mode())
     except (OSError, NotImplementedError):
         pass
 
