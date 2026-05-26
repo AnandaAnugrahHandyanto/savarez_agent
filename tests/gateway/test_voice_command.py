@@ -548,6 +548,165 @@ class TestVoiceAwareAddendum:
 
 
 # =====================================================================
+# Inworld TTS-2 speech-rule addendum
+# =====================================================================
+
+class TestInworldTts2Rules:
+    """Tests for ``_apply_inworld_tts2_rules`` — the gating that injects
+    Inworld-TTS-2-specific performance directives (instruction tags,
+    non-verbal tags, CAPS emphasis) into the per-turn system context.
+
+    The rules are gated on (a) the turn will be spoken and (b) the active TTS
+    provider is Inworld AND the configured model is ``inworld-tts-2``. Other
+    backends would render the bracketed tags as literal text.
+    """
+
+    @pytest.fixture
+    def runner(self, tmp_path):
+        return _make_runner(tmp_path)
+
+    def _setup(self, runner, voice_mode):
+        chat_id = "123"
+        key = "telegram:" + chat_id
+        if voice_mode == "off":
+            runner._voice_mode.pop(key, None)
+        else:
+            runner._voice_mode[key] = voice_mode
+        return chat_id
+
+    @staticmethod
+    def _patch_tts(monkeypatch, provider: str, model_id: str = "") -> None:
+        monkeypatch.setattr(
+            "tools.tts_tool._load_tts_config",
+            lambda: {"provider": provider, "inworld": {"model_id": model_id}},
+        )
+        monkeypatch.setattr("tools.tts_tool._get_provider", lambda _cfg: provider)
+
+    # -- gating: when the rules should NOT fire ----------------------------
+
+    def test_mode_off_returns_unchanged(self, runner, monkeypatch):
+        self._setup(runner, "off")
+        event = _make_event(message_type=MessageType.VOICE)
+        self._patch_tts(monkeypatch, "inworld", "inworld-tts-2")
+        result = runner._apply_inworld_tts2_rules(
+            event.source, event, "base context"
+        )
+        assert result == "base context"
+
+    def test_voice_only_with_text_input_returns_unchanged(self, runner, monkeypatch):
+        self._setup(runner, "voice_only")
+        event = _make_event(message_type=MessageType.TEXT)
+        self._patch_tts(monkeypatch, "inworld", "inworld-tts-2")
+        result = runner._apply_inworld_tts2_rules(
+            event.source, event, "base context"
+        )
+        assert result == "base context"
+
+    def test_non_inworld_provider_returns_unchanged(self, runner, monkeypatch):
+        self._setup(runner, "all")
+        event = _make_event(message_type=MessageType.TEXT)
+        self._patch_tts(monkeypatch, "elevenlabs", "")
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            result = runner._apply_inworld_tts2_rules(
+                event.source, event, "base context"
+            )
+        assert result == "base context"
+
+    def test_inworld_but_old_model_returns_unchanged(self, runner, monkeypatch):
+        self._setup(runner, "all")
+        event = _make_event(message_type=MessageType.TEXT)
+        self._patch_tts(monkeypatch, "inworld", "inworld-tts-1.5-max")
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            result = runner._apply_inworld_tts2_rules(
+                event.source, event, "base context"
+            )
+        assert result == "base context"
+
+    # -- gating: when the rules SHOULD fire --------------------------------
+
+    def test_inworld_tts2_with_voice_input_appends_rules(self, runner, monkeypatch):
+        self._setup(runner, "voice_only")
+        event = _make_event(message_type=MessageType.VOICE)
+        self._patch_tts(monkeypatch, "inworld", "inworld-tts-2")
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            result = runner._apply_inworld_tts2_rules(
+                event.source, event, "base context"
+            )
+        assert result.startswith("base context\n\n")
+        assert "[Inworld TTS-2 speech rules]" in result
+
+    def test_inworld_tts2_all_mode_with_text_appends_rules(self, runner, monkeypatch):
+        self._setup(runner, "all")
+        event = _make_event(message_type=MessageType.TEXT)
+        self._patch_tts(monkeypatch, "inworld", "inworld-tts-2")
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            result = runner._apply_inworld_tts2_rules(
+                event.source, event, "base context"
+            )
+        assert "[Inworld TTS-2 speech rules]" in result
+
+    def test_model_id_is_case_insensitive(self, runner, monkeypatch):
+        self._setup(runner, "all")
+        event = _make_event(message_type=MessageType.VOICE)
+        self._patch_tts(monkeypatch, "inworld", "Inworld-TTS-2")
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            result = runner._apply_inworld_tts2_rules(
+                event.source, event, "base context"
+            )
+        assert "[Inworld TTS-2 speech rules]" in result
+
+    # -- config override behavior ------------------------------------------
+
+    def test_custom_rules_from_config(self, runner, monkeypatch):
+        self._setup(runner, "all")
+        event = _make_event(message_type=MessageType.VOICE)
+        self._patch_tts(monkeypatch, "inworld", "inworld-tts-2")
+        cfg = {"voice": {"inworld_tts2_prompt": "BE EXPRESSIVE NELLIE"}}
+        with patch("gateway.run._load_gateway_config", return_value=cfg):
+            result = runner._apply_inworld_tts2_rules(
+                event.source, event, "base context"
+            )
+        assert result.endswith("BE EXPRESSIVE NELLIE")
+        assert "[Inworld TTS-2 speech rules]" not in result
+
+    def test_explicit_empty_string_disables_rules(self, runner, monkeypatch):
+        self._setup(runner, "all")
+        event = _make_event(message_type=MessageType.VOICE)
+        self._patch_tts(monkeypatch, "inworld", "inworld-tts-2")
+        cfg = {"voice": {"inworld_tts2_prompt": ""}}
+        with patch("gateway.run._load_gateway_config", return_value=cfg):
+            result = runner._apply_inworld_tts2_rules(
+                event.source, event, "base context"
+            )
+        assert result == "base context"
+
+    # -- edge cases --------------------------------------------------------
+
+    def test_empty_context_prompt_returns_just_rules(self, runner, monkeypatch):
+        self._setup(runner, "all")
+        event = _make_event(message_type=MessageType.VOICE)
+        self._patch_tts(monkeypatch, "inworld", "inworld-tts-2")
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            result = runner._apply_inworld_tts2_rules(
+                event.source, event, ""
+            )
+        assert result.startswith("[Inworld TTS-2 speech rules]")
+        assert not result.startswith("\n")
+
+    def test_lookup_exception_is_swallowed(self, runner, monkeypatch):
+        self._setup(runner, "all")
+        event = _make_event(message_type=MessageType.VOICE)
+        monkeypatch.setattr(
+            "tools.tts_tool._load_tts_config",
+            lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        result = runner._apply_inworld_tts2_rules(
+            event.source, event, "base context"
+        )
+        assert result == "base context"
+
+
+# =====================================================================
 # _send_voice_reply
 # =====================================================================
 
