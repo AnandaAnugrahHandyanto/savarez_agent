@@ -59,6 +59,7 @@ AUTHOR_MAP = {
     "schepers.zander1@gmail.com": "Strontvod",
     "ed@bebop.crew": "someaka",
     "anadi.jaggia@gmail.com": "Jaggia",
+    "amamoukhaireddine@gmail.com": "SerenityTn",
     "32201324+simpolism@users.noreply.github.com": "simpolism",
     "simpolism@gmail.com": "simpolism",
     "jake@nousresearch.com": "simpolism",
