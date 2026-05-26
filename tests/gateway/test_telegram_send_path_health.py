@@ -66,9 +66,10 @@ async def test_send_short_circuits_when_path_degraded():
 
 
 @pytest.mark.asyncio
-async def test_reconnect_storm_sets_and_heartbeat_clears_flag(monkeypatch):
-    """_handle_polling_network_error sets the flag; a successful heartbeat
-    probe in _verify_polling_after_reconnect clears it."""
+async def test_reconnect_storm_sets_and_successful_reconnect_clears_flag(monkeypatch):
+    """_handle_polling_network_error gates sends during the reconnect delay,
+    then unblocks sends as soon as start_polling succeeds. A later heartbeat
+    still verifies the path and can re-enter reconnect if the pool is wedged."""
     adapter = _make_adapter()
     adapter._app = MagicMock()
     adapter._app.updater = MagicMock()
@@ -82,8 +83,12 @@ async def test_reconnect_storm_sets_and_heartbeat_clears_flag(monkeypatch):
         "gateway.platforms.telegram.Update", MagicMock(ALL_TYPES=[])
     )
 
-    await adapter._handle_polling_network_error(OSError("Bad Gateway"))
-    assert adapter._send_path_degraded is True
+    async def assert_flag_during_delay(*_args, **_kwargs):
+        assert adapter._send_path_degraded is True
+
+    with patch("gateway.platforms.telegram.asyncio.sleep", side_effect=assert_flag_during_delay):
+        await adapter._handle_polling_network_error(OSError("Bad Gateway"))
+    assert adapter._send_path_degraded is False
 
     with patch("gateway.platforms.telegram.asyncio.sleep", new_callable=AsyncMock):
         await adapter._verify_polling_after_reconnect()
