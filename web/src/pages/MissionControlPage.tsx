@@ -13,6 +13,7 @@ import {
   FileText,
   FolderKanban,
   Gauge,
+  Globe2,
   Inbox,
   Link as LinkIcon,
   ListChecks,
@@ -286,6 +287,45 @@ const OPS_BOUNDARY_STEPS = [
   { label: "Review", detail: "Travis approval stays visible" },
   { label: "Probe", detail: "Read-only status only; config disabled" },
   { label: "Stop", detail: "Restarts/sends/deletes/cron/payment gated" },
+];
+
+const SOCIAL_PLATFORM_STATUS = [
+  {
+    platform: "YouTube",
+    published: "Needs sync",
+    scheduled: "Needs sync",
+    issuesPrivate: "Queue reset / private check needed",
+    readiness: "Canonical upload engine, but live counts require YouTube API sync.",
+    source: "AI Ops Brain notes show old queue reset; do not trust stale 2026-05-23 counts.",
+    tone: "border-red-400/30 bg-red-500/10 text-red-100",
+  },
+  {
+    platform: "Facebook",
+    published: "Needs sync",
+    scheduled: "Needs sync",
+    issuesPrivate: "Legacy old-style queue blocked",
+    readiness: "Native Reels path exists; use only approved current-quality packages.",
+    source: "Local status notes; live Graph count should be a separate gated sync.",
+    tone: "border-blue-400/30 bg-blue-500/10 text-blue-100",
+  },
+  {
+    platform: "Instagram",
+    published: "Needs sync",
+    scheduled: "0 known scheduler",
+    issuesPrivate: "Immediate publish only / API readiness check",
+    readiness: "Do not call scheduling ready until real scheduler and token check exist.",
+    source: "Ops notes: IG publishing path was separate from future scheduling support.",
+    tone: "border-pink-400/30 bg-pink-500/10 text-pink-100",
+  },
+  {
+    platform: "TikTok",
+    published: "0 verified",
+    scheduled: "0 verified",
+    issuesPrivate: "Onboarding/API not ready",
+    readiness: "Format support is not posting readiness; OAuth/app review still gated.",
+    source: "Guardrail status from social-video ops notes.",
+    tone: "border-slate-400/30 bg-slate-500/10 text-slate-100",
+  },
 ];
 
 const readablePanel = "min-w-0 rounded-xl border border-[#284848] bg-[#061f1f]/85 p-4 shadow-sm shadow-black/20";
@@ -871,6 +911,67 @@ export default function MissionControlPage() {
                 <div className={cockpitPanel}>
                   <div className="text-xs uppercase tracking-wide text-text-secondary">AI Ops Brain</div>
                   <div className="mt-1 break-all text-text-primary">/home/jenny/ai-ops-brain/PROJECT_COMMAND_CENTER.md</div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </section>
+
+        <section className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
+          <Card className={cockpitCard}>
+            <CardContent className="space-y-4 p-5">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                <div className="flex items-center gap-2 text-midground">
+                  <Globe2 className="h-5 w-5" />
+                  <H2 className="text-xl">Social platform status</H2>
+                </div>
+                <Badge tone="outline" className="border-amber-400/40 text-amber-200">
+                  read-only / counts need sync
+                </Badge>
+              </div>
+              <Typography className="text-sm leading-6 text-text-secondary">
+                Recommended shape: show counts here, but source them from a separate read-only sync. Until that exists, unknown counts stay labeled instead of guessed.
+              </Typography>
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                {SOCIAL_PLATFORM_STATUS.map((item) => (
+                  <div key={item.platform} className={cn("rounded-xl border p-4", item.tone)}>
+                    <div className="text-base font-semibold text-text-primary">{item.platform}</div>
+                    <div className="mt-3 grid gap-2 text-sm">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-text-secondary">Published</span>
+                        <span className="font-semibold text-text-primary">{item.published}</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-text-secondary">Scheduled</span>
+                        <span className="font-semibold text-text-primary">{item.scheduled}</span>
+                      </div>
+                      <div className="border-t border-white/10 pt-2">
+                        <div className="text-xs uppercase tracking-[0.08em] text-text-secondary">Issues / private</div>
+                        <div className="mt-1 text-sm leading-5 text-text-primary">{item.issuesPrivate}</div>
+                      </div>
+                    </div>
+                    <div className="mt-3 text-xs leading-5 text-text-secondary">{item.readiness}</div>
+                    <div className="mt-2 text-[0.7rem] leading-4 text-text-secondary/80">Source: {item.source}</div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className={cockpitCard}>
+            <CardContent className="space-y-4 p-5">
+              <div className="flex items-center gap-2 text-midground">
+                <FileText className="h-5 w-5" />
+                <H2 className="text-xl">Status board recommendation</H2>
+              </div>
+              <div className="space-y-3 text-sm leading-6 text-text-secondary">
+                <div className={cockpitPanel}>
+                  <div className="font-semibold text-text-primary">Do this next</div>
+                  Add a local read-only sync file/API that counts platform states and feeds this board. It should never upload, delete, schedule, or change privacy.
+                </div>
+                <div className={cockpitPanel}>
+                  <div className="font-semibold text-text-primary">Gate line</div>
+                  Live API counting for YouTube/Meta/TikTok may use existing tokens, but new token work, posting, scheduling, deletion, privacy changes, or recurring sync jobs need explicit approval.
                 </div>
               </div>
             </CardContent>
