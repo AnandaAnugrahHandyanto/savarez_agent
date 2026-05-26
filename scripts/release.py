@@ -102,6 +102,7 @@ AUTHOR_MAP = {
     "30312689+aashizpoudel@users.noreply.github.com": "aashizpoudel",
     "oleksii.lisikh@gmail.com": "olisikh",
     "jithendranaidunara@gmail.com": "JithendraNara",
+    "byquenox@gmail.com": "quen0xi",
     "jeremy@geocaching.com": "outdoorsea",
     "54763683+thedavidmurray@users.noreply.github.com": "thedavidmurray",
     "leone.parise@gmail.com": "leoneparise",
