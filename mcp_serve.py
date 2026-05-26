@@ -171,6 +171,18 @@ def _extract_attachments(msg: dict) -> List[dict]:
 
 QUEUE_LIMIT = 1000
 POLL_INTERVAL = 0.2  # seconds between DB polls (200ms)
+_MAX_LIST_LIMIT = 200
+_MAX_MESSAGES_LIMIT = 200
+_MAX_EVENTS_LIMIT = 100
+
+
+def _clamp_limit(value: int, *, default: int, maximum: int) -> int:
+    """Clamp MCP list/read limits to a safe positive range."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(maximum, parsed))
 
 
 @dataclass
@@ -465,6 +477,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             limit: Maximum number of conversations to return (default 50)
             search: Optional text to filter conversations by name
         """
+        limit = _clamp_limit(limit, default=50, maximum=_MAX_LIST_LIMIT)
         entries = _load_sessions_index()
         conversations = []
 
@@ -552,6 +565,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             session_key: The session key from conversations_list
             limit: Maximum number of messages to return (default 50, most recent)
         """
+        limit = _clamp_limit(limit, default=50, maximum=_MAX_MESSAGES_LIMIT)
         entries = _load_sessions_index()
         entry = entries.get(session_key)
         if not entry:
@@ -664,6 +678,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             session_key: Optional filter to one conversation
             limit: Maximum events to return (default 20)
         """
+        limit = _clamp_limit(limit, default=20, maximum=_MAX_EVENTS_LIMIT)
         result = bridge.poll_events(
             after_cursor=after_cursor,
             session_key=session_key,
