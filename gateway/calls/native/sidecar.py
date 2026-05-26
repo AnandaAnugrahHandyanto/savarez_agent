@@ -10,6 +10,17 @@ from .ports import NativeMediaOffer, NativeMediaStartRequest, NativeMediaStartRe
 
 logger = logging.getLogger(__name__)
 
+_PROTOCOL_FAILED = "call_sidecar_protocol_failed"
+_MALFORMED_RESPONSE_MESSAGE = "call sidecar returned malformed protocol response"
+_FAILED_RESPONSE_MESSAGE = "call sidecar returned a failed response"
+
+
+class _SidecarProtocolError(Exception):
+    def __init__(self, reason: str, message: str = _MALFORMED_RESPONSE_MESSAGE) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.message = message
+
 
 class SidecarMediaPort:
     def __init__(self, command: Sequence[str], timeout_seconds: float = 10.0) -> None:
@@ -62,14 +73,18 @@ class SidecarMediaPort:
                 )
 
             if not line:
-                return NativeMediaStartResult(
-                    ok=False,
-                    code="call_sidecar_protocol_failed",
-                    message="call sidecar exited before sending a response",
+                return self._protocol_failure(
+                    "missing_response",
+                    "call sidecar exited before sending a response",
                 )
 
-            response = json.loads(line.decode("utf-8"))
-            return self._result_from_response(response)
+            try:
+                response = json.loads(line.decode("utf-8"))
+                return self._result_from_response(response)
+            except json.JSONDecodeError:
+                return self._protocol_failure("invalid_response")
+            except _SidecarProtocolError as exc:
+                return self._protocol_failure(exc.reason, exc.message)
         except Exception:
             logger.exception("SimpleX native call sidecar failed")
             return NativeMediaStartResult(
@@ -84,27 +99,69 @@ class SidecarMediaPort:
     async def stop(self, call_id: str) -> None:
         return None
 
-    def _result_from_response(self, response: dict[str, Any]) -> NativeMediaStartResult:
-        if response.get("ok") is True:
+    def _result_from_response(self, response: Any) -> NativeMediaStartResult:
+        if not isinstance(response, dict):
+            raise _SidecarProtocolError("invalid_response")
+
+        ok = response.get("ok")
+        if not isinstance(ok, bool):
+            raise _SidecarProtocolError("invalid_ok")
+
+        if ok is True:
             offer = response.get("offer")
             if not isinstance(offer, dict):
-                raise ValueError("sidecar response is missing offer")
+                raise _SidecarProtocolError("invalid_offer")
+
+            rtc_session = offer.get("rtcSession")
+            if not isinstance(rtc_session, str):
+                raise _SidecarProtocolError("invalid_rtc_session")
+
+            rtc_ice_candidates = offer.get("rtcIceCandidates")
+            if not isinstance(rtc_ice_candidates, str):
+                raise _SidecarProtocolError("invalid_rtc_ice_candidates")
+
             capabilities = offer.get("capabilities", {})
+            if "capabilities" in offer and not isinstance(capabilities, dict):
+                raise _SidecarProtocolError("invalid_capabilities")
+
             if not isinstance(capabilities, dict):
                 capabilities = {}
             return NativeMediaStartResult(
                 ok=True,
                 offer=NativeMediaOffer(
-                    rtc_session=offer["rtcSession"],
-                    rtc_ice_candidates=offer["rtcIceCandidates"],
+                    rtc_session=rtc_session,
+                    rtc_ice_candidates=rtc_ice_candidates,
                     capabilities=capabilities,
                 ),
             )
 
+        code = response.get("code")
+        message = response.get("message")
+        if not isinstance(code, str) or not isinstance(message, str):
+            raise _SidecarProtocolError(
+                "invalid_error_response",
+                _FAILED_RESPONSE_MESSAGE,
+            )
+
         return NativeMediaStartResult(
             ok=False,
-            code=response.get("code") or "call_sidecar_protocol_failed",
-            message=response.get("message") or "call sidecar returned an invalid response",
+            code=code,
+            message=message,
+        )
+
+    def _protocol_failure(
+        self,
+        reason: str,
+        message: str = _MALFORMED_RESPONSE_MESSAGE,
+    ) -> NativeMediaStartResult:
+        logger.warning(
+            "SimpleX native call sidecar protocol failure",
+            extra={"reason": reason},
+        )
+        return NativeMediaStartResult(
+            ok=False,
+            code=_PROTOCOL_FAILED,
+            message=message,
         )
 
     async def _cleanup_process(self, process: asyncio.subprocess.Process) -> None:
