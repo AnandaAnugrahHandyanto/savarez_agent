@@ -371,7 +371,8 @@
           artifactGalleryView(ws),
           activityHistoryView(ws, auditEvents),
           item.kind === 'action' && evidenceLinks(item),
-          item.action_type === 'github_push_branch' && h('div', { className: 'text-xs text-text-secondary' }, 'Review the prepared PR here, then use Push branch when you are ready.'),
+          item.action_type === 'github_push_branch' && h('div', { className: 'visibility-os-external-hint' }, 'Push prepared branch sends code to GitHub. It does not merge or deploy.'),
+          boardMoveSafetyHint(),
           findingsView(item),
           h('div', { className: 'visibility-os-modal-actions' }, sectionActions(item))
         )
@@ -518,21 +519,58 @@
         sourceSection('Deterministic findings', bySource.deterministic)
       );
     }
+    function isDecisionItem(item) {
+      return item.kind === 'action' && ['queued','edited_by_human','needs_review','drafted'].includes(item.status || '');
+    }
+    function nextActionLabel(item) {
+      if (item.action_type === 'github_push_branch' && ['queued','edited_by_human'].includes(item.status || '')) return 'Next: review and push prepared branch';
+      if (isDecisionItem(item)) return 'Next: decide, keep in Todo, or dismiss';
+      if (item.workstream_id && item.workstream_stage) return 'Next: monitor Hermes progress';
+      if (item.can_diagnose_ci) return 'Next: ask Hermes to fix CI';
+      if (item.can_fix_issue) return 'Next: ask Hermes to prepare a fix';
+      if ((item.board_state || 'todo') === 'done') return 'Next: archive completed item when you are finished with it';
+      if ((item.board_state || 'todo') === 'archived') return 'Next: restore to Done if you need it back';
+      if ((item.board_state || 'todo') === 'in_review') return 'Next: review details and choose the safest action';
+      if ((item.board_state || 'todo') === 'in_progress') return 'Next: keep tracking progress';
+      return 'Next: triage or move into In progress';
+    }
+    function statusPill(label, tone) {
+      return h('span', { className: 'visibility-os-status-pill visibility-os-status-' + (tone || 'neutral') }, label);
+    }
+    function primaryStatusPills(item) {
+      const pills = [];
+      if (item.action_type === 'github_push_branch' && ['queued','edited_by_human'].includes(item.status || '')) pills.push(statusPill('Ready to push', 'ready'));
+      if (isDecisionItem(item)) pills.push(statusPill('Decision needed', 'decision'));
+      if (item.workstream_id && ['agent_starting','gathering_context','editing','verifying','self_auditing','independent_reviewing'].includes(item.workstream_stage || '')) pills.push(statusPill('Agent working', 'working'));
+      if ((item.status || '').indexOf('failed') !== -1 || item.board_state === 'blocked') pills.push(statusPill('Blocked', 'blocked'));
+      if ((item.board_state || '') === 'done' || ['executed','completed','approved'].includes(item.status || '')) pills.push(statusPill('Safe to archive', 'done'));
+      return pills;
+    }
+    function priorityTone(item) {
+      const score = Number(item.priority_score || 0);
+      if (score >= 40 || item.severity === 'critical') return 'critical';
+      if (score >= 30 || item.risk_level === 'high') return 'high';
+      if (score >= 20) return 'medium';
+      return 'low';
+    }
+    function boardMoveSafetyHint() {
+      return h('div', { className: 'visibility-os-safe-hint' }, 'Moving cards only changes board state. It will not push code, merge, deploy, or contact anyone.');
+    }
     function sectionActions(item) {
-      const isActionDecision = item.kind === 'action' && ['queued','edited_by_human','needs_review','drafted'].includes(item.status || '');
+      const isActionDecision = isDecisionItem(item);
       return h('div', { className: 'flex gap-2 flex-wrap pt-1' },
         item.kind === 'opportunity' && h(ActionButton, { disabled: busy, onClick: function () { viewOpportunity(item.id); } }, 'Open opportunity'),
         item.kind === 'opportunity' && item.can_diagnose_ci && h(ActionButton, { disabled: busy, onClick: function () { fixCI(item); }, className: 'border-emerald-500/50' }, 'Fix CI'),
-        item.kind === 'opportunity' && item.can_fix_issue && h(ActionButton, { disabled: busy, onClick: function () { fixIssue(item); }, className: 'border-emerald-500/50' }, 'Fix Issue'),
+        item.kind === 'opportunity' && item.can_fix_issue && h(ActionButton, { disabled: busy, onClick: function () { fixIssue(item); }, className: 'border-emerald-500/50' }, 'Prepare issue fix'),
         item.workstream_id && h(ActionButton, { disabled: busy, onClick: function () { viewWorkstream(item.workstream_id); } }, 'Open workstream'),
-        item.action_type === 'github_push_branch' && ['queued','edited_by_human'].includes(item.status) && h(ActionButton, { disabled: busy, onClick: function () { pushBranchNow(item); }, className: 'border-emerald-500/50' }, 'Push branch'),
-        isActionDecision && h(ActionButton, { disabled: busy, onClick: function () { saveActionForLater(item); } }, 'Save for later'),
-        isActionDecision && h(ActionButton, { disabled: busy, onClick: function () { rejectAction(item); }, className: 'border-red-500/50' }, 'Reject / discard'),
-        item.board_state !== 'in_progress' && h(ActionButton, { disabled: busy, onClick: function () { moveBoardState(item, 'in_progress'); } }, 'Move to In progress'),
-        item.board_state !== 'in_review' && h(ActionButton, { disabled: busy, onClick: function () { moveBoardState(item, 'in_review'); } }, 'Move to Review'),
-        item.board_state !== 'done' && h(ActionButton, { disabled: busy, onClick: function () { moveBoardState(item, 'done'); } }, 'Mark done'),
-        item.board_state !== 'archived' && h(ActionButton, { disabled: busy, onClick: function () { moveBoardState(item, 'archived'); } }, 'Archive from board'),
-        item.board_state === 'archived' && h(ActionButton, { disabled: busy, onClick: function () { moveBoardState(item, 'done'); } }, 'Unarchive')
+        item.action_type === 'github_push_branch' && ['queued','edited_by_human'].includes(item.status) && h(ActionButton, { disabled: busy, onClick: function () { pushBranchNow(item); }, className: 'border-emerald-500/50', title: 'This sends the prepared branch to GitHub. It does not merge or deploy.' }, 'Push prepared branch'),
+        isActionDecision && h(ActionButton, { disabled: busy, onClick: function () { saveActionForLater(item); }, title: 'Keeps this decision visible without taking external action.' }, 'Keep in Todo'),
+        isActionDecision && h(ActionButton, { disabled: busy, onClick: function () { rejectAction(item); }, className: 'border-red-500/50', title: 'Dismisses this proposed action. It does not contact GitHub or Slack.' }, 'Dismiss'),
+        item.board_state !== 'in_progress' && h(ActionButton, { disabled: busy, onClick: function () { moveBoardState(item, 'in_progress'); }, title: 'Only moves the card on this board.' }, 'Move to In progress'),
+        item.board_state !== 'in_review' && h(ActionButton, { disabled: busy, onClick: function () { moveBoardState(item, 'in_review'); }, title: 'Only moves the card on this board.' }, 'Move to Review'),
+        item.board_state !== 'done' && h(ActionButton, { disabled: busy, onClick: function () { moveBoardState(item, 'done'); }, title: 'Only moves the card on this board.' }, 'Mark done'),
+        item.board_state !== 'archived' && h(ActionButton, { disabled: busy, onClick: function () { moveBoardState(item, 'archived'); }, title: 'Hides the item from the active board, but keeps it in history.' }, 'Archive completed item'),
+        item.board_state === 'archived' && h(ActionButton, { disabled: busy, onClick: function () { moveBoardState(item, 'done'); } }, 'Restore to Done')
       );
     }
     function sectionCard(title, items, emptyText) {
@@ -563,9 +601,11 @@
                 item.repo && h(Badge, null, item.repo),
                 item.source_repo && h(Badge, null, item.source_repo),
                 item.workstream_stage && h(Badge, null, item.workstream_stage.replace(/_/g, ' ')),
-                item.kind === 'action' && ['queued','edited_by_human','needs_review','drafted'].includes(item.status || '') && h(Badge, null, 'Decision required'),
-                item.status && h(Badge, null, item.status)
+                isDecisionItem(item) && h(Badge, null, 'Decision needed'),
+                item.status && h(Badge, null, item.status),
+                primaryStatusPills(item)
               ),
+              h('div', { className: 'visibility-os-next-action' }, nextActionLabel(item)),
               item.current_step && h('div', { className: 'text-text-secondary' }, item.current_step),
               sectionActions(item)
             );
@@ -578,7 +618,7 @@
       const description = item.kind === 'opportunity' ? item.description : item.summary;
       return h('div', {
         key: item.kind + ':' + item.id,
-        className: 'hermes-kanban-card visibility-os-card',
+        className: 'hermes-kanban-card visibility-os-card visibility-os-priority-' + priorityTone(item),
         'data-visibility-kind': item.kind,
         draggable: true,
         role: 'button',
@@ -604,16 +644,18 @@
           h('div', { className: 'hermes-kanban-card-title' }, title),
           h(Badge, null, item.kind === 'opportunity' ? 'Opportunity' : 'Action')
         ),
+        primaryStatusPills(item).length > 0 && h('div', { className: 'hermes-kanban-card-row visibility-os-status-row' }, primaryStatusPills(item)),
         h('div', { className: 'hermes-kanban-card-row hermes-kanban-card-meta' },
           item.repo && h(Badge, null, item.repo),
           item.source_repo && h(Badge, null, item.source_repo),
           item.category && h(Badge, null, item.category),
           item.status && h(Badge, null, item.status),
-          item.kind === 'action' && ['queued','edited_by_human','needs_review','drafted'].includes(item.status || '') && h(Badge, null, 'Decision required'),
+          isDecisionItem(item) && h(Badge, null, 'Decision needed'),
           item.priority_score && h(Badge, null, 'P' + item.priority_score),
           item.board_state_actor && h(Badge, null, 'manual')
         ),
         description && h('p', { className: 'visibility-os-card-description' }, description),
+        h('div', { className: 'visibility-os-next-action' }, nextActionLabel(item)),
         item.current_step && h('div', { className: 'visibility-os-card-step' }, item.current_step),
         item.workstream_id && workstreamBadge(item),
         item.action_type === 'github_push_branch' && proposedPRView(item),
@@ -625,10 +667,10 @@
     function kanbanColumn(key, title, emptyText) {
       const items = allItems.filter(function (i) { return (i.board_state || 'todo') === key; });
       const help = {
-        todo: 'Unstarted opportunities and queued work.',
-        in_progress: 'Agent or human work currently moving.',
-        in_review: 'Proposed PRs and decisions waiting on review.',
-        done: 'Completed, resolved, rejected, or failed work.',
+        todo: 'Things worth looking at, not started yet.',
+        in_progress: 'Hermes or a human is actively working on these.',
+        in_review: 'Needs a decision, approval, or final check.',
+        done: 'Completed recently, ready to archive.',
         archived: 'Hidden history kept for auditability.'
       }[key] || '';
       function handleDrop(e) {
@@ -688,7 +730,8 @@
       h('div', { className: 'visibility-os-board-toolbar' },
         h('div', null,
           h('div', { className: 'text-sm font-bold text-midground' }, 'Kanban board'),
-          h('div', { className: 'text-xs text-text-secondary' }, 'Move cards through Todo, In progress, In review, Done, then archive them out of the active board.')
+          h('div', { className: 'text-xs text-text-secondary' }, 'Move cards through Todo, In progress, In review, Done, then archive them out of the active board.'),
+          boardMoveSafetyHint()
         ),
         h('label', { className: 'inline-flex items-center gap-2 text-xs text-text-secondary' },
           h('input', { type: 'checkbox', checked: showArchived, onChange: function (e) { setShowArchived(e.target.checked); } }),
@@ -702,14 +745,14 @@
       h('div', { className: 'visibility-os-command-center' },
         sectionCard('Needs decision', commandSections.needs_decision || [], 'No push, post, retry, or discard decisions waiting.'),
         sectionCard('Agent working now', commandSections.agent_working_now || [], 'No active agent workstreams right now.'),
-        sectionCard('Open opportunities', commandSections.open_opportunities || [], 'No unstarted opportunities.'),
-        sectionCard('Completed recently', commandSections.completed_recently || [], 'No recent completed work.')
+        sectionCard('Open opportunities', commandSections.open_opportunities || [], 'No open opportunities waiting for triage.'),
+        sectionCard('Completed recently', commandSections.completed_recently || [], 'Completed items will appear here before archiving.')
       ),
       h('div', { className: 'hermes-kanban-columns visibility-os-kanban-columns' },
-        kanbanColumn('todo', 'Todo', 'No unstarted opportunities.'),
-        kanbanColumn('in_progress', 'In progress', 'No agent or human work in progress.'),
-        kanbanColumn('in_review', 'In review', 'No proposed PRs or decisions waiting.'),
-        kanbanColumn('done', 'Done', 'No completed work yet.'),
+        kanbanColumn('todo', 'Todo', 'No open opportunities waiting for triage.'),
+        kanbanColumn('in_progress', 'In progress', 'No active Hermes workstreams right now.'),
+        kanbanColumn('in_review', 'In review', 'No decisions waiting on you.'),
+        kanbanColumn('done', 'Done', 'Completed items will appear here before archiving.'),
         showArchived ? kanbanColumn('archived', 'Archived', 'Nothing archived yet.') : null
       )
     );

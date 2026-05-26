@@ -1086,7 +1086,7 @@ def test_visibility_os_dashboard_shows_single_fix_ci_button():
     assert "Fix CI" in js
     assert "/fix-ci" in js
     assert "fixIssue" in js
-    assert "Fix Issue" in js
+    assert "Prepare issue fix" in js
     assert "/fix-issue" in js
     assert "Start Fix CI lane" not in js
     assert "Diagnose CI" not in js
@@ -1287,13 +1287,44 @@ def test_dashboard_exposes_command_center_autorefresh_reject_and_archive_control
         "setInterval(load, 15000)",
         "rejectAction",
         "/reject",
-        "Reject / discard",
-        "Save for later",
-        "Decision required",
-        "Archive from board",
-        "Unarchive",
+        "Dismiss",
+        "Keep in Todo",
+        "Decision needed",
+        "Archive completed item",
+        "Restore to Done",
     ]:
         assert expected in js
+
+
+def test_dashboard_exposes_user_facing_kanban_usability_affordances():
+    js = Path("plugins/visibility_os/dashboard/dist/index.js").read_text()
+    css = Path("plugins/visibility_os/dashboard/dist/style.css").read_text()
+    for expected in [
+        "Things worth looking at, not started yet.",
+        "Hermes or a human is actively working on these.",
+        "Needs a decision, approval, or final check.",
+        "Completed recently, ready to archive.",
+        "Next: review and push prepared branch",
+        "Next: triage or move into In progress",
+        "Moving cards only changes board state. It will not push code, merge, deploy, or contact anyone.",
+        "Push prepared branch sends code to GitHub. It does not merge or deploy.",
+        "No open opportunities waiting for triage.",
+        "No decisions waiting on you.",
+        "Ready to push",
+        "Agent working",
+        "Safe to archive",
+        "Blocked",
+    ]:
+        assert expected in js
+    for expected in [
+        "visibility-os-next-action",
+        "visibility-os-status-pill",
+        "visibility-os-priority-high",
+        "visibility-os-external-hint",
+        "border-left-width:3px",
+    ]:
+        assert expected in css
+
 
 
 def test_dashboard_plugin_manifest_entries_point_to_existing_assets():
