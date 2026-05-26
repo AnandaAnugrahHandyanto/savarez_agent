@@ -512,7 +512,8 @@ class TestWeixinOutboundMedia:
         assert len(session.post_calls) == 1
         upload_url, upload_kwargs = session.post_calls[0]
         assert upload_url == "https://upload.example.com/media"
-        assert upload_kwargs["headers"] == {"Content-Type": "application/octet-stream"}
+        assert upload_kwargs["headers"]["Content-Type"] == "application/octet-stream"
+        assert upload_kwargs["headers"]["Content-Length"] == str(len(upload_kwargs["data"]))
         assert upload_kwargs["data"]
         # Timeout is now enforced externally via asyncio.wait_for() rather than
         # aiohttp.ClientTimeout, so it no longer appears as a post() kwarg.
@@ -521,6 +522,67 @@ class TestWeixinOutboundMedia:
         media = payload["msg"]["item_list"][0]["image_item"]["media"]
         assert media["encrypt_query_param"] == "enc-param"
         assert media["aes_key"] == expected_aes_key
+
+    def test_send_file_falls_back_to_upload_param_when_upload_full_url_5xx(self, tmp_path):
+        class _UploadResponse:
+            def __init__(self, status, encrypted_param=""):
+                self.status = status
+                self.headers = {"x-encrypted-param": encrypted_param} if encrypted_param else {}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def read(self):
+                return b""
+
+            async def text(self):
+                return "temporary cdn failure"
+
+        class _RecordingSession:
+            def __init__(self):
+                self.post_calls = []
+
+            def post(self, url, **kwargs):
+                self.post_calls.append((url, kwargs))
+                if len(self.post_calls) == 1:
+                    return _UploadResponse(500)
+                return _UploadResponse(200, encrypted_param="fallback-enc-param")
+
+        image_path = tmp_path / "demo.png"
+        image_path.write_bytes(b"fake-png-bytes")
+
+        adapter = _make_adapter()
+        session = _RecordingSession()
+        adapter._session = session
+        adapter._send_session = session
+        adapter._token = "test-token"
+        adapter._base_url = "https://weixin.example.com"
+        adapter._cdn_base_url = "https://cdn.example.com/c2c"
+        adapter._token_store.get = lambda account_id, chat_id: None
+
+        with patch(
+            "gateway.platforms.weixin._get_upload_url",
+            new=AsyncMock(return_value={
+                "upload_full_url": "https://upload.example.com/media",
+                "upload_param": "encrypted=query&with spaces",
+            }),
+        ), patch("gateway.platforms.weixin._api_post", new_callable=AsyncMock) as api_post_mock:
+            message_id = asyncio.run(adapter._send_file("wxid_test123", str(image_path), ""))
+
+        assert message_id.startswith("hermes-weixin-")
+        assert len(session.post_calls) == 2
+        assert session.post_calls[0][0] == "https://upload.example.com/media"
+        assert session.post_calls[1][0].startswith("https://cdn.example.com/c2c/upload?")
+        assert "encrypted_query_param=" in session.post_calls[1][0]
+        assert session.post_calls[0][1]["headers"]["Content-Length"] == str(
+            len(session.post_calls[0][1]["data"])
+        )
+        payload = api_post_mock.await_args.kwargs["payload"]
+        media = payload["msg"]["item_list"][0]["image_item"]["media"]
+        assert media["encrypt_query_param"] == "fallback-enc-param"
 
 
 class TestWeixinRemoteMediaSafety:
