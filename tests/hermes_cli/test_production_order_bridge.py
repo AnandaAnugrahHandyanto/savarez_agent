@@ -80,7 +80,9 @@ from hermes_cli.production_order_db import (
 from hermes_cli.production_order_dispatch import (
     DispatchManifestError,
     build_dispatch_manifest,
+    build_profile_task_envelope,
     dispatch_manifest_for_order,
+    profile_task_envelope_for_order,
 )
 from hermes_cli.kanban import _cmd_production_order
 
@@ -1682,6 +1684,120 @@ def test_build_dispatch_manifest_is_read_only_and_rejects_unsupported_states(con
                 current_owner_profile="architect_os",
             )
         )
+
+
+def test_build_profile_task_envelope_happy_path_fields_and_json_serializable(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+
+    envelope = build_profile_task_envelope(conn, po.production_order_id)
+    serialized = envelope.to_dict()
+
+    assert serialized["production_order_id"] == po.production_order_id
+    assert serialized["parent_kanban_card_id"] == po.parent_kanban_card_id
+    assert serialized["child_kanban_card_id"] == po.child_kanban_card_ids[2]
+    assert serialized["target_profile"] == "dev_os"
+    assert serialized["source_state"] == "ARCHITECT_READY_FOR_DEV"
+    assert serialized["expected_next_state"] == "DEV_COMPLETE"
+    assert serialized["objective"] == sample_brief["objective"]
+    assert WORKFLOW_SPEC_SOURCE in serialized["source_truth"]
+    assert serialized["frozen_brief"] == po.source_brief
+    assert serialized["input_packet"]["packet_type"] == "devos_handoff_packet"
+    assert serialized["input_packet"]["repo_or_workspace"] == sample_brief["target repo or workspace"]
+    assert serialized["expected_output_packet"]["packet_type"] == "devos_build_packet"
+    assert serialized["acceptance_criteria"] == [sample_brief["acceptance criteria"]]
+    assert sample_brief["stop conditions"] in serialized["stop_conditions"]
+    assert sample_brief["approval boundaries"] in serialized["approval_boundaries"]
+    assert serialized["allowed_files_or_scope"] == sample_brief["scope"]
+    assert serialized["repo_or_workspace"] == sample_brief["target repo or workspace"]
+    json.dumps(serialized)
+
+
+def test_build_profile_task_envelope_rejects_multi_outcome_and_deferred_states(conn, sample_brief):
+    ready_for_dev = create_ready_for_dev_order(conn, sample_brief)
+
+    with pytest.raises(DispatchManifestError, match="does not yet support envelope generation"):
+        build_profile_task_envelope(
+            conn,
+            create_dev_complete_order(conn, sample_brief).production_order_id,
+        )
+
+    with pytest.raises(DispatchManifestError, match="does not yet support envelope generation"):
+        build_profile_task_envelope(
+            conn,
+            create_default_final_review_order(conn, sample_brief).production_order_id,
+        )
+
+    with pytest.raises(DispatchManifestError, match="SPEC_REWORK"):
+        dispatch_manifest_for_order(
+            replace(
+                ready_for_dev,
+                current_state="SPEC_REWORK",
+                current_owner_profile="architect_os",
+            )
+        )
+
+
+def test_build_profile_task_envelope_is_read_only(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    before_total_changes = conn.total_changes
+    before_tasks = conn.execute(
+        "SELECT id, current_state, status, body FROM tasks WHERE production_order_id = ? ORDER BY id",
+        (po.production_order_id,),
+    ).fetchall()
+    before_events = conn.execute(
+        "SELECT COUNT(*) AS n FROM production_order_events WHERE production_order_id = ?",
+        (po.production_order_id,),
+    ).fetchone()["n"]
+
+    envelope = build_profile_task_envelope(conn, po.production_order_id)
+
+    after_total_changes = conn.total_changes
+    after_tasks = conn.execute(
+        "SELECT id, current_state, status, body FROM tasks WHERE production_order_id = ? ORDER BY id",
+        (po.production_order_id,),
+    ).fetchall()
+    after_events = conn.execute(
+        "SELECT COUNT(*) AS n FROM production_order_events WHERE production_order_id = ?",
+        (po.production_order_id,),
+    ).fetchone()["n"]
+
+    assert after_total_changes == before_total_changes
+    assert after_tasks == before_tasks
+    assert after_events == before_events
+    assert envelope.production_order_id == po.production_order_id
+
+
+def test_build_profile_task_envelope_fails_loudly_for_missing_parent_child_and_graph_errors(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+
+    with pytest.raises(DispatchManifestError, match="missing its parent Kanban card"):
+        profile_task_envelope_for_order(
+            replace(po, parent_kanban_card_id=""),
+            dispatch_manifest_for_order(po),
+        )
+
+    with pytest.raises(DispatchManifestError, match="exactly 6 child cards"):
+        profile_task_envelope_for_order(
+            replace(po, child_kanban_card_ids=po.child_kanban_card_ids[:5]),
+            dispatch_manifest_for_order(po),
+        )
+
+    with pytest.raises(DispatchManifestError, match="duplicate child card IDs"):
+        profile_task_envelope_for_order(
+            replace(
+                po,
+                child_kanban_card_ids=[po.child_kanban_card_ids[0]] * 6,
+            ),
+            dispatch_manifest_for_order(po),
+        )
+
+    missing_child_id = po.child_kanban_card_ids[-1]
+    conn.execute("DELETE FROM task_links WHERE child_id = ?", (missing_child_id,))
+    conn.execute("DELETE FROM tasks WHERE id = ?", (missing_child_id,))
+    conn.commit()
+
+    with pytest.raises(DispatchManifestError, match="references missing child card"):
+        build_profile_task_envelope(conn, po.production_order_id)
 
 
 @pytest.mark.parametrize(

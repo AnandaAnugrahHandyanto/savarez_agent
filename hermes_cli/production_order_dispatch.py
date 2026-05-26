@@ -12,10 +12,18 @@ import sqlite3
 from typing import Any, Iterable
 
 from .production_order_db import (
+    CHILD_CARD_DEFS,
     ProductionOrder,
+    REQUIRED_ARCHITECT_RECONCILE_PACKET_FIELDS,
+    REQUIRED_ARCHITECT_SPEC_PACKET_FIELDS,
+    REQUIRED_AUDITOS_REVIEW_PACKET_FIELDS,
+    REQUIRED_DEFAULT_FINAL_REVIEW_PACKET_FIELDS,
+    REQUIRED_DEVOS_BUILD_PACKET_FIELDS,
     STATE_OWNERS,
     StageEntry,
     WORKFLOW_SPEC_SOURCE,
+    _parse_source_brief,
+    get_brief_value,
     list_production_orders,
 )
 
@@ -45,6 +53,56 @@ class DispatchManifest:
         return data
 
 
+@dataclass(frozen=True)
+class ProfileTaskEnvelope:
+    production_order_id: str
+    parent_kanban_card_id: str
+    child_kanban_card_id: str
+    target_profile: str
+    source_state: str
+    expected_next_state: str
+    objective: str
+    source_truth: tuple[str, ...]
+    frozen_brief: str
+    input_packet: dict[str, Any]
+    expected_output_packet: dict[str, Any]
+    acceptance_criteria: tuple[str, ...]
+    stop_conditions: tuple[str, ...]
+    approval_boundaries: tuple[str, ...]
+    allowed_files_or_scope: str | None = None
+    repo_or_workspace: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a serializable copy of the envelope."""
+        data = asdict(self)
+        data["source_truth"] = list(self.source_truth)
+        data["acceptance_criteria"] = list(self.acceptance_criteria)
+        data["stop_conditions"] = list(self.stop_conditions)
+        data["approval_boundaries"] = list(self.approval_boundaries)
+        return data
+
+
+_ENVELOPE_RESULT_FIELD_MAP: dict[str, tuple[str, ...]] = {
+    "architect_handoff_packet": (),
+    "architect_spec_packet": tuple(sorted(REQUIRED_ARCHITECT_SPEC_PACKET_FIELDS)),
+    "devos_build_packet": tuple(sorted(REQUIRED_DEVOS_BUILD_PACKET_FIELDS)),
+    "auditos_review_packet": tuple(sorted(REQUIRED_AUDITOS_REVIEW_PACKET_FIELDS)),
+    "architect_reconcile_packet": tuple(sorted(REQUIRED_ARCHITECT_RECONCILE_PACKET_FIELDS)),
+    "default_final_review_packet": tuple(sorted(REQUIRED_DEFAULT_FINAL_REVIEW_PACKET_FIELDS)),
+}
+
+
+_SUPPORTED_ENVELOPE_ROUTES: dict[tuple[str, str], str] = {
+    ("PRODUCTION_ORDER_CREATED", "orchestrator_triage"): "ORCHESTRATOR_TRIAGE",
+    ("ORCHESTRATOR_TRIAGE", "orchestrator_triage"): "ARCHITECT_SPEC",
+    ("ARCHITECT_SPEC", "architect_spec"): "ARCHITECT_READY_FOR_DEV",
+    ("ARCHITECT_READY_FOR_DEV", "dev_build"): "DEV_COMPLETE",
+    ("DEV_IMPLEMENTING", "dev_build"): "DEV_COMPLETE",
+    ("AUDIT_PASSED", "architect_reconcile"): "ARCHITECT_ACCEPTED",
+    ("ARCHITECT_RECONCILE", "architect_reconcile"): "ARCHITECT_ACCEPTED",
+}
+
+
 def build_dispatch_manifest(
     conn: sqlite3.Connection,
     production_order_id: str,
@@ -53,6 +111,103 @@ def build_dispatch_manifest(
     po = _load_production_order(conn, production_order_id)
     _validate_child_graph(conn, po)
     return dispatch_manifest_for_order(po)
+
+
+def build_profile_task_envelope(
+    conn: sqlite3.Connection,
+    production_order_id: str,
+) -> ProfileTaskEnvelope:
+    """Load a production order from SQLite and build a task envelope."""
+    po = _load_production_order(conn, production_order_id)
+    _validate_child_graph(conn, po)
+    manifest = dispatch_manifest_for_order(po)
+    return profile_task_envelope_for_order(po, manifest)
+
+
+def profile_task_envelope_for_order(
+    po: ProductionOrder,
+    manifest: DispatchManifest,
+) -> ProfileTaskEnvelope:
+    """Build a deterministic profile task envelope from a production order."""
+    _validate_reconstructed_order(po)
+    if manifest.production_order_id != po.production_order_id:
+        raise DispatchManifestError(
+            "Dispatch manifest production_order_id does not match the reconstructed production order"
+        )
+    if manifest.current_state != po.current_state:
+        raise DispatchManifestError(
+            "Dispatch manifest current_state does not match the reconstructed production order"
+        )
+
+    expected_next_state = _expected_next_state_for_manifest(manifest)
+    brief = _parse_source_brief(po.source_brief)
+    objective = str(get_brief_value(brief, "objective", po.title)).strip()
+    acceptance_criteria = _normalize_text_list(
+        get_brief_value(brief, "acceptance criteria", ()),
+        fallback=("Acceptance criteria are frozen in the production-order brief.",),
+    )
+    stop_conditions = _merge_text_lists(
+        _normalize_text_list(get_brief_value(brief, "stop conditions", ())),
+        manifest.stop_conditions,
+    )
+    approval_boundaries = _normalize_text_list(
+        po.approval_boundaries or get_brief_value(brief, "approval boundaries", ()),
+        fallback=(
+            "Pause before publishing, spending, destructive changes, permission widening, or scope expansion.",
+        ),
+    )
+    repo_or_workspace = str(
+        po.repo_or_workspace or get_brief_value(brief, "target repo or workspace", "")
+    ).strip() or None
+    allowed_files_or_scope = str(get_brief_value(brief, "scope", "")).strip() or None
+    child_card_meta = _child_card_metadata(po, manifest.target_child_card_id)
+
+    envelope = ProfileTaskEnvelope(
+        production_order_id=po.production_order_id,
+        parent_kanban_card_id=po.parent_kanban_card_id,
+        child_kanban_card_id=manifest.target_child_card_id,
+        target_profile=manifest.target_profile,
+        source_state=po.current_state,
+        expected_next_state=expected_next_state,
+        objective=objective,
+        source_truth=(WORKFLOW_SPEC_SOURCE,),
+        frozen_brief=po.source_brief,
+        input_packet={
+            "packet_type": manifest.required_input_packet,
+            "production_order_id": po.production_order_id,
+            "source_state": po.current_state,
+            "target_profile": manifest.target_profile,
+            "parent_kanban_card_id": po.parent_kanban_card_id,
+            "child_kanban_card_id": manifest.target_child_card_id,
+            "child_card_title": child_card_meta["title"],
+            "repo_or_workspace": repo_or_workspace,
+            "brief_context": {
+                "objective": objective,
+                "scope": allowed_files_or_scope,
+                "out_of_scope": _brief_text_or_none(brief, "out of scope"),
+                "constraints": _brief_text_or_none(brief, "constraints"),
+                "expected_output": _brief_text_or_none(brief, "expected output"),
+            },
+        },
+        expected_output_packet={
+            "packet_type": manifest.expected_result_packet,
+            "production_order_id": po.production_order_id,
+            "owner_profile": manifest.target_profile,
+            "source_state": po.current_state,
+            "expected_next_state": expected_next_state,
+            "bridge_function": manifest.bridge_function,
+            "required_fields": list(
+                _ENVELOPE_RESULT_FIELD_MAP.get(manifest.expected_result_packet, ())
+            ),
+        },
+        acceptance_criteria=acceptance_criteria,
+        stop_conditions=stop_conditions,
+        approval_boundaries=approval_boundaries,
+        allowed_files_or_scope=allowed_files_or_scope,
+        repo_or_workspace=repo_or_workspace,
+    )
+    _validate_profile_task_envelope(envelope)
+    return envelope
 
 
 def dispatch_manifest_for_order(po: ProductionOrder) -> DispatchManifest:
@@ -403,6 +558,110 @@ def _default_rejection_triage_manifest(po: ProductionOrder) -> DispatchManifest:
             "Do not invoke a profile in Slice 1; return the deterministic manifest only.",
         ),
     )
+
+
+def _expected_next_state_for_manifest(manifest: DispatchManifest) -> str:
+    expected_next_state = _SUPPORTED_ENVELOPE_ROUTES.get(
+        (manifest.current_state, manifest.task_type)
+    )
+    if expected_next_state is None:
+        raise DispatchManifestError(
+            f"State {manifest.current_state!r} with task type {manifest.task_type!r} "
+            "does not yet support envelope generation"
+        )
+    return expected_next_state
+
+
+def _normalize_text_list(
+    value: Any,
+    *,
+    fallback: tuple[str, ...] = (),
+) -> tuple[str, ...]:
+    if value is None:
+        return fallback
+    if isinstance(value, str):
+        text = value.strip()
+        return (text,) if text else fallback
+    if isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray, dict)):
+        normalized: list[str] = []
+        for item in value:
+            text = str(item).strip()
+            if text:
+                normalized.append(text)
+        return tuple(normalized) if normalized else fallback
+    text = str(value).strip()
+    return (text,) if text else fallback
+
+
+def _merge_text_lists(*groups: Iterable[str]) -> tuple[str, ...]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for item in group:
+            text = str(item).strip()
+            if text and text not in seen:
+                seen.add(text)
+                merged.append(text)
+    return tuple(merged)
+
+
+def _brief_text_or_none(brief: dict[str, Any], canonical_key: str) -> str | None:
+    value = get_brief_value(brief, canonical_key, "")
+    text = str(value).strip()
+    return text or None
+
+
+def _child_card_metadata(po: ProductionOrder, child_card_id: str) -> dict[str, Any]:
+    for index, (order, title, owner_profile, default_status) in enumerate(CHILD_CARD_DEFS):
+        if po.child_kanban_card_ids[index] == child_card_id:
+            return {
+                "order": order,
+                "title": title,
+                "owner_profile": owner_profile,
+                "default_status": default_status,
+            }
+    raise DispatchManifestError(
+        f"Production order {po.production_order_id!r} target child card {child_card_id!r} "
+        "is not part of the reconstructed six-card graph"
+    )
+
+
+def _validate_profile_task_envelope(envelope: ProfileTaskEnvelope) -> None:
+    required_text_fields = {
+        "production_order_id": envelope.production_order_id,
+        "parent_kanban_card_id": envelope.parent_kanban_card_id,
+        "child_kanban_card_id": envelope.child_kanban_card_id,
+        "target_profile": envelope.target_profile,
+        "source_state": envelope.source_state,
+        "expected_next_state": envelope.expected_next_state,
+        "objective": envelope.objective,
+        "frozen_brief": envelope.frozen_brief,
+    }
+    for field_name, value in required_text_fields.items():
+        if not str(value).strip():
+            raise DispatchManifestError(f"Profile task envelope field {field_name!r} is required")
+    if not envelope.source_truth:
+        raise DispatchManifestError("Profile task envelope field 'source_truth' is required")
+    if WORKFLOW_SPEC_SOURCE not in envelope.source_truth:
+        raise DispatchManifestError(
+            "Profile task envelope must include the workflow spec in source_truth"
+        )
+    if envelope.input_packet.get("packet_type") is None:
+        raise DispatchManifestError("Profile task envelope input_packet must include packet_type")
+    if envelope.expected_output_packet.get("packet_type") is None:
+        raise DispatchManifestError(
+            "Profile task envelope expected_output_packet must include packet_type"
+        )
+    if not envelope.acceptance_criteria:
+        raise DispatchManifestError(
+            "Profile task envelope field 'acceptance_criteria' is required"
+        )
+    if not envelope.stop_conditions:
+        raise DispatchManifestError("Profile task envelope field 'stop_conditions' is required")
+    if not envelope.approval_boundaries:
+        raise DispatchManifestError(
+            "Profile task envelope field 'approval_boundaries' is required"
+        )
 
 
 def _supported_dispatch_states_text() -> str:
