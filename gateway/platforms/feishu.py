@@ -452,7 +452,46 @@ def _sender_identity(sender: Any) -> frozenset:
 
 
 def _escape_markdown_text(text: str) -> str:
-    return _MARKDOWN_SPECIAL_CHARS_RE.sub(r"\\\1", text)
+    """Escape markdown special chars, but preserve pipe symbols in markdown tables.
+    
+    Tables are detected as lines containing | that look like table rows.
+    Skip escaping | in table context to avoid breaking table rendering.
+    """
+    # Fast path: if no pipe chars, use original fast path
+    if '|' not in text:
+        return _MARKDOWN_SPECIAL_CHARS_RE.sub(r"\\\1", text)
+    
+    lines = text.split('\n')
+    escaped_lines = []
+    
+    for line in lines:
+        # Check if this line looks like a markdown table row
+        # Table rows: contains | and has proper table structure
+        is_table_row = False
+        
+        # Count pipe characters in the line
+        pipe_count = line.count('|')
+        
+        # Table rows typically have multiple pipes (at least 2 for: col | col | col)
+        # and are not code fences
+        if pipe_count >= 2 and '```' not in line:
+            # Additional check: table rows usually have content around pipes
+            # (not just stray pipes in regular text)
+            # Pattern: | content | or | content|
+            if re.search(r'\|[^|]+?\|', line):
+                is_table_row = True
+        
+        if is_table_row:
+            # For table rows, DON'T escape content inside cells
+            # Only ensure pipe characters are preserved (they already are since we split on them)
+            # Markdown syntax inside table cells should work: **bold**, `code`, etc.
+            escaped_lines.append(line)
+        else:
+            # Normal line: escape everything including pipes
+            escaped_line = _MARKDOWN_SPECIAL_CHARS_RE.sub(r"\\\1", line)
+            escaped_lines.append(escaped_line)
+    
+    return '\n'.join(escaped_lines)
 
 
 def _to_boolean(value: Any) -> bool:
