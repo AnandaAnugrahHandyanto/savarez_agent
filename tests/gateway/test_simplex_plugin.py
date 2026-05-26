@@ -15,7 +15,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.calls.native.ports import NativeMediaOffer
+from gateway.calls.native.ports import (
+    NativeCallInvitation,
+    NativeCallResult,
+    NativeMediaOffer,
+)
 from gateway.platforms.base import MessageType
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
@@ -859,6 +863,117 @@ async def test_handle_new_chat_item_rejects_simplex_native_call_with_fallback():
     adapter.send.assert_awaited_once()
     assert "cannot answer native SimpleX calls yet" in adapter.send.await_args.args[1]
     adapter._mark_chat_items_read.assert_awaited_once_with("4", [13])
+
+
+@pytest.mark.asyncio
+async def test_handle_new_chat_item_routes_native_call_to_enabled_handler():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={
+            "ws_url": "ws://localhost:5225",
+            "native_calls": {"enabled": True},
+        },
+    )
+    adapter = SimplexAdapter(cfg)
+    adapter.handle_message = AsyncMock()  # type: ignore[method-assign]
+    adapter.reject_native_call = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    adapter.send = AsyncMock()  # type: ignore[method-assign]
+    adapter._mark_chat_items_read = AsyncMock()  # type: ignore[method-assign]
+    adapter.gateway_runner = MagicMock()
+    adapter.gateway_runner._is_user_authorized.return_value = True
+    adapter.native_call_handler = AsyncMock(
+        return_value=NativeCallResult(ok=True, code="accepted", message="")
+    )
+
+    raw_content = {
+        "type": "rcvCall",
+        "status": "pending",
+        "duration": 0,
+        "callType": {
+            "media": "video",
+            "capabilities": {"encryption": True},
+        },
+        "sharedKey": "shared-secret",
+    }
+    await adapter._handle_new_chat_item(
+        {
+            "chatInfo": {
+                "type": "direct",
+                "contact": {"contactId": 4, "localDisplayName": "Bryan"},
+            },
+            "chatItem": {
+                "chatDir": {"type": "directRcv"},
+                "meta": {"itemId": 13, "itemStatus": {"type": "rcvNew"}},
+                "content": raw_content,
+            },
+        }
+    )
+
+    adapter.handle_message.assert_not_awaited()
+    adapter.native_call_handler.assert_awaited_once()
+    source, invitation = adapter.native_call_handler.await_args.args
+    assert source.chat_id == "4"
+    assert isinstance(invitation, NativeCallInvitation)
+    assert invitation.contact_id == "4"
+    assert invitation.media == "video"
+    assert invitation.encrypted is True
+    assert invitation.shared_key == "shared-secret"
+    assert invitation.raw is raw_content
+    adapter.reject_native_call.assert_not_awaited()
+    adapter.send.assert_not_awaited()
+    adapter._mark_chat_items_read.assert_awaited_once_with("4", [13])
+
+
+@pytest.mark.asyncio
+async def test_handle_new_chat_item_handler_failure_rejects_native_call_with_loud_message():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={
+            "ws_url": "ws://localhost:5225",
+            "native_calls": {"enabled": True},
+        },
+    )
+    adapter = SimplexAdapter(cfg)
+    adapter.handle_message = AsyncMock()  # type: ignore[method-assign]
+    adapter.reject_native_call = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    adapter.send = AsyncMock()  # type: ignore[method-assign]
+    adapter._mark_chat_items_read = AsyncMock()  # type: ignore[method-assign]
+    adapter.gateway_runner = MagicMock()
+    adapter.gateway_runner._is_user_authorized.return_value = True
+    adapter.native_call_handler = AsyncMock(
+        return_value=NativeCallResult(
+            ok=False,
+            code="sidecar_failure",
+            message="sidecar failure: bridge unavailable",
+        )
+    )
+
+    await adapter._handle_new_chat_item(
+        {
+            "chatInfo": {
+                "type": "direct",
+                "contact": {"contactId": 4, "localDisplayName": "Bryan"},
+            },
+            "chatItem": {
+                "chatDir": {"type": "directRcv"},
+                "meta": {"itemId": 15, "itemStatus": {"type": "rcvNew"}},
+                "content": {
+                    "type": "rcvCall",
+                    "status": "pending",
+                    "duration": 0,
+                    "callType": {"media": "audio"},
+                },
+            },
+        }
+    )
+
+    adapter.handle_message.assert_not_awaited()
+    adapter.reject_native_call.assert_awaited_once_with("4", "sidecar_failure")
+    adapter.send.assert_awaited_once()
+    assert "sidecar failure" in adapter.send.await_args.args[1]
+    adapter._mark_chat_items_read.assert_awaited_once_with("4", [15])
 
 
 @pytest.mark.asyncio

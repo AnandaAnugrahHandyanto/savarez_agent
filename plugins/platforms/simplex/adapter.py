@@ -56,6 +56,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
 )
+from gateway.calls.native.ports import NativeCallInvitation
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +175,27 @@ def _native_call_offer_command(
     }
     encoded = json.dumps(payload, separators=(",", ":"))
     return f"/_call offer {_chat_ref_for_chat_id(chat_id)} {encoded}"
+
+
+def _native_call_invitation_from_item(
+    chat_id: str,
+    item_content: dict,
+) -> NativeCallInvitation:
+    call_type = item_content.get("callType")
+    if not isinstance(call_type, dict):
+        call_type = {}
+    capabilities = call_type.get("capabilities")
+    if not isinstance(capabilities, dict):
+        capabilities = {}
+    shared_key = item_content.get("sharedKey") or item_content.get("aesKey")
+    media = call_type.get("media") or item_content.get("media") or "audio"
+    return NativeCallInvitation(
+        contact_id=str(chat_id),
+        media=str(media),
+        encrypted=bool(capabilities.get("encryption")) or shared_key is not None,
+        shared_key=str(shared_key) if shared_key is not None else None,
+        raw=item_content,
+    )
 
 
 def _extract_chat_item_id(resp: dict) -> Optional[str]:
@@ -310,6 +332,11 @@ class SimplexAdapter(BasePlatformAdapter):
             or os.getenv("SIMPLEX_FILES_FOLDER", "").strip()
         )
         self.command_timeout = float(extra.get("command_timeout", 10.0) or 10.0)
+        native_calls = extra.get("native_calls")
+        if not isinstance(native_calls, dict):
+            native_calls = {}
+        self.native_calls_enabled = bool(native_calls.get("enabled", False))
+        self.native_call_handler = None
 
         # Running state
         self._ws = None  # websockets connection
@@ -635,7 +662,12 @@ class SimplexAdapter(BasePlatformAdapter):
         await self._handle_native_call_item(
             source,
             contact_id,
-            {"type": "rcvCall", "status": "pending", "duration": 0},
+            {
+                **invitation,
+                "type": "rcvCall",
+                "status": invitation.get("status", "pending"),
+                "duration": invitation.get("duration", 0),
+            },
             {},
         )
 
@@ -816,6 +848,43 @@ class SimplexAdapter(BasePlatformAdapter):
                 chat_id,
             )
             await self._reject_native_call(chat_id)
+            if item_id is not None:
+                await self._mark_chat_items_read(chat_id, [item_id])
+            return
+
+        if self.native_calls_enabled and callable(self.native_call_handler):
+            invitation = _native_call_invitation_from_item(chat_id, item_content)
+            result = None
+            try:
+                result = await self.native_call_handler(source, invitation)
+            except Exception:
+                logger.exception(
+                    "SimpleX: native call handler failed for chat_id=%s",
+                    chat_id,
+                )
+            if result is not None and getattr(result, "ok", False):
+                if item_id is not None:
+                    await self._mark_chat_items_read(chat_id, [item_id])
+                return
+
+            code = (
+                getattr(result, "code", None)
+                or "call_simplex_native_media_failed"
+            )
+            await self.reject_native_call(chat_id, code)
+            note = getattr(result, "message", "") if result is not None else ""
+            if not note:
+                note = (
+                    "SimpleX native call sidecar failed. "
+                    "Use /call for the private browser fallback."
+                )
+            send_result = await self.send(chat_id, note)
+            if isinstance(send_result, SendResult) and not send_result.success:
+                logger.error(
+                    "SimpleX: failed to send native-call handler failure to chat_id=%s: %s",
+                    chat_id,
+                    send_result.error,
+                )
             if item_id is not None:
                 await self._mark_chat_items_read(chat_id, [item_id])
             return
