@@ -16,6 +16,7 @@ import { fmtK } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
 import type { Msg, Usage } from '../types.js'
+import { useI18n } from '../i18n/index.js'
 
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
@@ -77,6 +78,7 @@ const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender =
 
 function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | number }) {
   const ui = useStore($uiState)
+  const { t } = useI18n()
   const style = ui.indicatorStyle
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
   const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
@@ -106,7 +108,8 @@ function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | nu
   }, [intervalMs, showVerb])
 
   const { frame } = renderIndicator(style, tick)
-  const verb = VERBS[verbTick % VERBS.length] ?? ''
+  const verbKey = VERBS[verbTick % VERBS.length] ?? ''
+  const verb = verbKey ? t(`spinner.${verbKey}`) : ''
   const verbSegment = showVerb ? ` ${padVerb(verb)}` : ''
   // Leading space keeps a gap between the frame and the duration when the
   // verb segment is hidden (e.g. `unicode` spinner style).  When the verb

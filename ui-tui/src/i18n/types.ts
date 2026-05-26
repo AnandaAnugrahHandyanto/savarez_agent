@@ -107,5 +107,25 @@ export interface TUITranslations {
     error: string;
     cancelled: string;
     interrupted: string;
+  }
+
+  // Spinner verbs — the rotating verbs shown in the status bar while the agent
+  // is busy (e.g. "pondering", "contemplating", "musing", …).
+  spinner: {
+    pondering: string;
+    contemplating: string;
+    musing: string;
+    cogitating: string;
+    ruminating: string;
+    deliberating: string;
+    mulling: string;
+    reflecting: string;
+    processing: string;
+    reasoning: string;
+    analyzing: string;
+    computing: string;
+    synthesizing: string;
+    formulating: string;
+    brainstorming: string;
   };
 }
