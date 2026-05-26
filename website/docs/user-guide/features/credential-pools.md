@@ -40,7 +40,7 @@ hermes auth add openrouter --api-key sk-or-v1-your-second-key
 # Add a second Anthropic key
 hermes auth add anthropic --type api-key --api-key sk-ant-api03-your-second-key
 
-# Add an Anthropic OAuth credential (Claude Code subscription)
+# Add an Anthropic OAuth credential (requires Claude Max plan + extra usage credits)
 hermes auth add anthropic --type oauth
 # Opens browser for OAuth login
 ```
@@ -179,6 +179,18 @@ Hermes automatically discovers credentials from multiple sources and seeds the p
 
 Auto-seeded entries are updated on each pool load — if you remove an env var, its pool entry is automatically pruned. Manual entries (added via `hermes auth add`) are never auto-pruned.
 
+Borrowed runtime secrets (for example env vars, Bitwarden/Vault/keyring/systemd references, and custom config values) are reference-only at the `auth.json` boundary. Hermes can use the resolved value in memory for the current run, but it persists only metadata such as the source ref, label, status, request counters, and a non-reversible fingerprint. Manual entries and Hermes-owned OAuth/device-code state keep the durable tokens they need to refresh.
+
+## Delegation & Subagent Sharing
+
+When the agent spawns subagents via `delegate_task`, the parent's credential pool is automatically shared with children:
+
+- **Same provider** — the child receives the parent's full pool, enabling key rotation on rate limits
+- **Different provider** — the child loads that provider's own pool (if configured)
+- **No pool configured** — the child falls back to the inherited single API key
+
+This means subagents benefit from the same rate-limit resilience as the parent, with no extra configuration needed. Per-task credential leasing ensures children don't conflict with each other when rotating keys concurrently.
+
 ## Thread Safety
 
 The credential pool uses a threading lock for all state mutations (`select()`, `mark_exhausted_and_rotate()`, `try_refresh_current()`, `mark_used()`). This ensures safe concurrent access when the gateway handles multiple chat sessions simultaneously.
@@ -209,17 +221,27 @@ Pool state is stored in `~/.hermes/auth.json` under the `credential_pool` key:
         "auth_type": "api_key",
         "priority": 0,
         "source": "env:OPENROUTER_API_KEY",
-        "access_token": "sk-or-v1-...",
+        "secret_source": "bitwarden",
+        "secret_fingerprint": "sha256:12ab34cd56ef7890",
         "last_status": "ok",
         "request_count": 142
       }
+    ],
+    "anthropic": [
+      {
+        "id": "manual1",
+        "label": "personal-api-key",
+        "auth_type": "api_key",
+        "priority": 0,
+        "source": "manual",
+        "access_token": "sk-ant-api03-..."
+      }
     ]
-  },
-  "credential_pool_strategies": {
-    "openrouter": "round_robin"
   }
 }
 ```
+
+The OpenRouter entry above was borrowed from an external source, so the raw key is not stored in `auth.json`. The manual Anthropic entry was intentionally added to Hermes' credential store, so its token remains persistable.
 
 Strategies are stored in `config.yaml` (not `auth.json`):
 

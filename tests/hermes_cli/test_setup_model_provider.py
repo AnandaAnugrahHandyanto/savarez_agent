@@ -63,6 +63,38 @@ def _write_model_config(provider, base_url="", model_name="test-model"):
     save_config(cfg)
 
 
+def _write_aux_config(task="compression", provider="gemini", model_name="gemini-2.5-flash"):
+    """Simulate the aux picker writing a task override to disk."""
+    cfg = load_config()
+    aux = cfg.setdefault("auxiliary", {})
+    entry = aux.setdefault(task, {})
+    entry["provider"] = provider
+    entry["model"] = model_name
+    save_config(cfg)
+
+
+def test_setup_model_provider_preserves_auxiliary_choices_written_by_picker(tmp_path, monkeypatch):
+    """Aux choices made inside hermes setup must survive the wizard's final save."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+
+    config = load_config()
+    assert config["auxiliary"]["compression"]["provider"] == "auto"
+
+    def fake_select():
+        _write_aux_config("compression", "gemini", "gemini-2.5-flash")
+
+    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
+
+    setup_model_provider(config, quick=True)
+    save_config(config)  # mirrors run_setup_wizard(section="model") final save
+
+    reloaded = load_config()
+    compression = reloaded["auxiliary"]["compression"]
+    assert compression["provider"] == "gemini"
+    assert compression["model"] == "gemini-2.5-flash"
+
+
 def test_setup_keep_current_custom_from_config_does_not_fall_through(tmp_path, monkeypatch):
     """Keep-current custom should not fall through to the generic model menu."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -230,6 +262,39 @@ def test_setup_same_provider_fallback_can_add_another_credential(tmp_path, monke
     assert config.get("credential_pool_strategies", {}).get("openrouter") == "fill_first"
 
 
+def test_setup_same_provider_single_credential_keeps_existing_rotation_strategy(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    save_env_value("OPENROUTER_API_KEY", "or-key")
+
+    _write_model_config("openrouter", "", "anthropic/claude-opus-4.6")
+
+    config = load_config()
+    config["credential_pool_strategies"] = {"openrouter": "round_robin"}
+    save_config(config)
+
+    class _Entry:
+        def __init__(self, label):
+            self.label = label
+
+    class _Pool:
+        def entries(self):
+            return [_Entry("primary")]
+
+    def fake_select():
+        pass
+
+    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
+    _stub_tts(monkeypatch)
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: _Pool())
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+
+    setup_model_provider(config)
+
+    assert config.get("credential_pool_strategies", {}).get("openrouter") == "round_robin"
+
+
 def test_setup_pool_step_shows_manual_vs_auto_detected_counts(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _clear_provider_env(monkeypatch)
@@ -305,7 +370,6 @@ def test_setup_copilot_acp_skips_same_provider_pool_step(tmp_path, monkeypatch):
     monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", fake_prompt_yes_no)
     monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
     monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
-    monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
     monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
 
     setup_model_provider(config)
