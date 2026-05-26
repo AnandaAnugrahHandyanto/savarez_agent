@@ -14,7 +14,7 @@
   function ActionButton(props) {
     const disabled = props && props.disabled;
     const extraClass = props && props.className ? ' ' + props.className : '';
-    const className = 'inline-flex items-center justify-center rounded border border-current/20 bg-midground px-3 py-2 text-sm font-semibold leading-none tracking-normal normal-case whitespace-nowrap hover:bg-midground/90 disabled:opacity-50 disabled:cursor-not-allowed' + extraClass;
+    const className = 'visibility-os-action-button inline-flex items-center justify-center rounded border border-current/20 bg-midground px-2 py-1 text-xs font-semibold leading-none tracking-normal normal-case whitespace-nowrap hover:bg-midground/90 disabled:opacity-50 disabled:cursor-not-allowed' + extraClass;
     const style = Object.assign({ color: '#061512', letterSpacing: 'normal', textTransform: 'none', fontFamily: 'Arial, Helvetica, sans-serif', fontWeight: 700, lineHeight: 1.1 }, props && props.style ? props.style : {});
     return h('button', Object.assign({}, props || {}, { type: (props && props.type) || 'button', disabled: disabled, className: className, style: style }), props && props.children);
   }
@@ -330,12 +330,22 @@
     function boardItemCard(item) {
       const title = item.title || item.opportunity_title || item.summary || item.id;
       const description = item.kind === 'opportunity' ? item.description : item.summary;
-      return h('div', { key: item.kind + ':' + item.id, className: 'rounded border border-current/10 bg-black/20 p-3 text-xs space-y-2' },
-        h('div', { className: 'flex items-start justify-between gap-2' },
-          h('div', { className: 'font-semibold text-sm leading-snug' }, title),
+      return h('div', {
+        key: item.kind + ':' + item.id,
+        className: 'hermes-kanban-card visibility-os-card',
+        'data-visibility-kind': item.kind,
+        draggable: true,
+        onDragStart: function (e) {
+          e.dataTransfer.setData('application/vnd.visibility-os-card', JSON.stringify({ kind: item.kind, id: item.id }));
+          e.dataTransfer.effectAllowed = 'move';
+        }
+      },
+        h('div', { className: 'hermes-kanban-card-content' },
+        h('div', { className: 'hermes-kanban-card-row visibility-os-card-head' },
+          h('div', { className: 'hermes-kanban-card-title' }, title),
           h(Badge, null, item.kind === 'opportunity' ? 'Opportunity' : 'Action')
         ),
-        h('div', { className: 'flex gap-1 flex-wrap' },
+        h('div', { className: 'hermes-kanban-card-row hermes-kanban-card-meta' },
           item.repo && h(Badge, null, item.repo),
           item.source_repo && h(Badge, null, item.source_repo),
           item.category && h(Badge, null, item.category),
@@ -343,30 +353,55 @@
           item.priority_score && h(Badge, null, 'P' + item.priority_score),
           item.board_state_actor && h(Badge, null, 'manual')
         ),
-        description && h('p', { className: 'text-text-secondary line-clamp-3' }, description),
-        item.current_step && h('div', { className: 'text-text-secondary' }, item.current_step),
+        description && h('p', { className: 'visibility-os-card-description' }, description),
+        item.current_step && h('div', { className: 'visibility-os-card-step' }, item.current_step),
         item.workstream_id && workstreamBadge(item),
         item.action_type === 'github_push_branch' && proposedPRView(item),
         findingsView(item),
         sectionActions(item)
+        )
       );
     }
     function kanbanColumn(key, title, emptyText) {
       const items = allItems.filter(function (i) { return (i.board_state || 'todo') === key; });
-      return h('div', { className: 'rounded border border-current/10 bg-black/10 min-h-[18rem]' },
-        h('div', { className: 'sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-current/10 bg-background/95 px-3 py-3' },
-          h('div', { className: 'font-bold text-midground' }, title),
-          h(Badge, null, items.length)
+      const help = {
+        todo: 'Unstarted opportunities and queued work.',
+        in_progress: 'Agent or human work currently moving.',
+        in_review: 'Proposed PRs and decisions waiting on review.',
+        done: 'Completed, resolved, rejected, or failed work.',
+        archived: 'Hidden history kept for auditability.'
+      }[key] || '';
+      function handleDrop(e) {
+        e.preventDefault();
+        let raw = e.dataTransfer.getData('application/vnd.visibility-os-card');
+        if (!raw) return;
+        try {
+          const payload = JSON.parse(raw);
+          const item = allItems.find(function (i) { return i.kind === payload.kind && i.id === payload.id; });
+          if (item && item.board_state !== key) moveBoardState(item, key);
+        } catch (_) {}
+      }
+      return h('div', {
+        className: 'hermes-kanban-column visibility-os-column',
+        'data-kanban-column': key,
+        onDragOver: function (e) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; },
+        onDrop: handleDrop
+      },
+        h('div', { className: 'hermes-kanban-column-header', title: help },
+          h('span', { className: 'hermes-kanban-dot visibility-os-dot visibility-os-dot-' + key }),
+          h('span', { className: 'hermes-kanban-column-label' }, title),
+          h('span', { className: 'hermes-kanban-column-count' }, items.length)
         ),
-        h('div', { className: 'p-3 space-y-3' },
-          !items.length && h('div', { className: 'rounded border border-dashed border-current/20 p-4 text-xs text-text-secondary' }, emptyText),
+        h('div', { className: 'hermes-kanban-column-sub' }, help),
+        h('div', { className: 'hermes-kanban-column-body' },
+          !items.length && h('div', { className: 'hermes-kanban-empty' }, emptyText),
           items.map(boardItemCard)
         )
       );
     }
     const allItems = feed.items || [];
     const boardCounts = (feed.counts && feed.counts.board) || {};
-    return h('div', { className: 'h-full min-h-0 overflow-auto p-6 space-y-4' },
+    return h('div', { className: 'hermes-kanban visibility-os-kanban h-full min-h-0 overflow-auto p-6 space-y-4' },
       h('div', { className: 'flex items-center justify-between gap-4' },
         h('div', null,
           h('h1', { className: 'text-2xl font-bold text-midground' }, 'Hermes Visibility OS'),
@@ -406,14 +441,14 @@
           )
         )
       ),
-      h('div', { className: 'grid grid-cols-2 md:grid-cols-5 gap-3' },
+      h('div', { className: 'visibility-os-metrics' },
         h(Card, null, h(CardContent, { className: 'p-4' }, h('div', { className: 'text-2xl font-bold' }, boardCounts.todo || 0), h('div', { className: 'text-xs text-text-secondary' }, 'Todo'))),
         h(Card, null, h(CardContent, { className: 'p-4' }, h('div', { className: 'text-2xl font-bold' }, boardCounts.in_progress || 0), h('div', { className: 'text-xs text-text-secondary' }, 'In progress'))),
         h(Card, null, h(CardContent, { className: 'p-4' }, h('div', { className: 'text-2xl font-bold' }, boardCounts.in_review || 0), h('div', { className: 'text-xs text-text-secondary' }, 'In review'))),
         h(Card, null, h(CardContent, { className: 'p-4' }, h('div', { className: 'text-2xl font-bold' }, boardCounts.done || 0), h('div', { className: 'text-xs text-text-secondary' }, 'Done'))),
         h(Card, null, h(CardContent, { className: 'p-4' }, h('div', { className: 'text-2xl font-bold' }, boardCounts.archived || 0), h('div', { className: 'text-xs text-text-secondary' }, 'Archived')))
       ),
-      h('div', { className: 'flex items-center justify-between gap-2 flex-wrap rounded border border-current/10 bg-black/10 p-3' },
+      h('div', { className: 'visibility-os-board-toolbar' },
         h('div', null,
           h('div', { className: 'text-sm font-bold text-midground' }, 'Kanban board'),
           h('div', { className: 'text-xs text-text-secondary' }, 'Move cards through Todo, In progress, In review, Done, then archive them out of the active board.')
@@ -423,13 +458,13 @@
           'Show archived'
         )
       ),
-      h('div', { className: 'grid grid-cols-1 xl:grid-cols-4 gap-3 items-start' },
+      h('div', { className: 'hermes-kanban-columns visibility-os-kanban-columns' },
         kanbanColumn('todo', 'Todo', 'No unstarted opportunities.'),
         kanbanColumn('in_progress', 'In progress', 'No agent or human work in progress.'),
         kanbanColumn('in_review', 'In review', 'No proposed PRs or decisions waiting.'),
-        kanbanColumn('done', 'Done', 'No completed work yet.')
-      ),
-      showArchived && h('div', { className: 'grid grid-cols-1 gap-3' }, kanbanColumn('archived', 'Archived', 'Nothing archived yet.'))
+        kanbanColumn('done', 'Done', 'No completed work yet.'),
+        showArchived ? kanbanColumn('archived', 'Archived', 'Nothing archived yet.') : null
+      )
     );
   }
   plugins.register('visibility-os', VisibilityOS);
