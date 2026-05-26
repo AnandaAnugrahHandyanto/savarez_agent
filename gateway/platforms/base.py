@@ -2428,9 +2428,25 @@ class BasePlatformAdapter(ABC):
         cleaned = cleaned.replace("[[as_document]]", "")
         
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
-        # and quoted/backticked paths for LLM-formatted outputs.
+        # and quoted/backticked paths for LLM-formatted outputs. Keep this in
+        # sync with platform document support instead of growing a stale manual
+        # regex every time agents start emitting another text/data artifact.
+        media_exts = {
+            ext.lstrip(".")
+            for ext in (
+                set(SUPPORTED_DOCUMENT_TYPES)
+                | set(SUPPORTED_IMAGE_DOCUMENT_TYPES)
+                | {
+                    ".mp4", ".mov", ".avi", ".mkv", ".webm",
+                    ".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac",
+                    ".epub", ".rar", ".7z", ".apk", ".ipa",
+                }
+            )
+        }
+        ext_pattern = "|".join(re.escape(ext) for ext in sorted(media_exts, key=lambda e: (-len(e), e)))
         media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|md|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$))[`"']?'''
+            rf'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:{ext_pattern})(?=[\s`"',;:)\]}}]|$))[`"']?''',
+            re.IGNORECASE,
         )
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
