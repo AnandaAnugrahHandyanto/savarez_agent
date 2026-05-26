@@ -35,9 +35,9 @@ def test_model_headers_are_passed_to_openai_sdk_default_headers(mock_openai):
         "model": {
             "provider": "custom",
             "default": "GLM-5-Turbo",
-            "base_url": "http://127.0.0.1:18707/v1",
+            "base_url": "https://llm-proxy.example.test/v1",
             "headers": {
-                "comate_custom_header": '{"username":"chengbo05","source":"openclaw"}',
+                "x_test_custom_header": '{"username":"test-user","source":"unit-test"}',
             },
         }
     }
@@ -46,7 +46,7 @@ def test_model_headers_are_passed_to_openai_sdk_default_headers(mock_openai):
          patch("hermes_logging.setup_logging"):
         AIAgent(
             api_key="test-key",
-            base_url="http://127.0.0.1:18707/v1",
+            base_url="https://llm-proxy.example.test/v1",
             provider="custom",
             model="GLM-5-Turbo",
             quiet_mode=True,
@@ -55,7 +55,7 @@ def test_model_headers_are_passed_to_openai_sdk_default_headers(mock_openai):
         )
 
     headers = mock_openai.call_args[1]["default_headers"]
-    assert headers["comate_custom_header"] == '{"username":"chengbo05","source":"openclaw"}'
+    assert headers["x_test_custom_header"] == '{"username":"test-user","source":"unit-test"}'
 
 
 @patch("run_agent.OpenAI")
@@ -64,7 +64,7 @@ def test_apply_client_headers_for_base_url_merges_configured_headers(mock_openai
     with patch("hermes_logging.setup_logging"):
         agent = AIAgent(
             api_key="test-key",
-            base_url="http://127.0.0.1:18707/v1",
+            base_url="https://llm-proxy.example.test/v1",
             provider="custom",
             model="GLM-5-Turbo",
             quiet_mode=True,
@@ -75,16 +75,16 @@ def test_apply_client_headers_for_base_url_merges_configured_headers(mock_openai
         "custom_providers": [
             {
                 "name": "bdllm",
-                "base_url": "http://127.0.0.1:18707/v1",
-                "headers": {"comate_custom_header": "value"},
+                "base_url": "https://llm-proxy.example.test/v1",
+                "headers": {"x_test_custom_header": "value"},
             }
         ]
     }
 
     with patch("agent.request_headers._load_config", return_value=config):
-        agent._apply_client_headers_for_base_url("http://127.0.0.1:18707/v1")
+        agent._apply_client_headers_for_base_url("https://llm-proxy.example.test/v1")
 
-    assert agent._client_kwargs["default_headers"]["comate_custom_header"] == "value"
+    assert agent._client_kwargs["default_headers"]["x_test_custom_header"] == "value"
 
 
 @patch("run_agent.OpenAI")

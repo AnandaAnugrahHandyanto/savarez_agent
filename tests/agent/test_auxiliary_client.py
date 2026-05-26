@@ -101,8 +101,8 @@ class TestAuxiliaryConfiguredHeaders:
             "custom_providers": [
                 {
                     "name": "bdllm",
-                    "base_url": "http://127.0.0.1:18707/v1",
-                    "headers": {"comate_custom_header": "value"},
+                    "base_url": "https://llm-proxy.example.test/v1",
+                    "headers": {"x_test_custom_header": "value"},
                 }
             ]
         }
@@ -110,31 +110,31 @@ class TestAuxiliaryConfiguredHeaders:
              patch("agent.request_headers._load_config", return_value=config):
             mock_openai.return_value = MagicMock(
                 api_key="test-key",
-                base_url="http://127.0.0.1:18707/v1",
+                base_url="https://llm-proxy.example.test/v1",
             )
 
             resolve_provider_client(
                 "custom",
                 model="GLM-5-Turbo",
-                explicit_base_url="http://127.0.0.1:18707/v1",
+                explicit_base_url="https://llm-proxy.example.test/v1",
                 explicit_api_key="test-key",
             )
 
         headers = mock_openai.call_args[1]["default_headers"]
-        assert headers["comate_custom_header"] == "value"
+        assert headers["x_test_custom_header"] == "value"
 
     def test_to_async_client_preserves_sync_custom_headers(self):
         sync_client = SimpleNamespace(
             api_key="test-key",
             base_url="https://api.example.com/v1",
-            _custom_headers={"comate_custom_header": "value"},
+            _custom_headers={"x_test_custom_header": "value"},
         )
 
         with patch("openai.AsyncOpenAI") as mock_async_openai:
             _to_async_client(sync_client, "test-model")
 
         headers = mock_async_openai.call_args[1]["default_headers"]
-        assert headers["comate_custom_header"] == "value"
+        assert headers["x_test_custom_header"] == "value"
 
 
 class TestReadCodexAccessToken:

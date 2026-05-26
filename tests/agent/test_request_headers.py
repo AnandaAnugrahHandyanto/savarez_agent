@@ -9,7 +9,7 @@ from agent.request_headers import (
 def test_normalize_config_headers_skips_reserved_and_invalid_headers():
     headers = normalize_config_headers(
         {
-            "comate_custom_header": '{"username":"chengbo05","source":"openclaw"}',
+            "x_test_custom_header": '{"username":"test-user","source":"unit-test"}',
             "Authorization": "Bearer leaked",
             "Bad\nName": "x",
             "X-Number": 42,
@@ -18,7 +18,7 @@ def test_normalize_config_headers_skips_reserved_and_invalid_headers():
     )
 
     assert headers == {
-        "comate_custom_header": '{"username":"chengbo05","source":"openclaw"}',
+        "x_test_custom_header": '{"username":"test-user","source":"unit-test"}',
         "X-Number": "42",
     }
 
@@ -28,20 +28,20 @@ def test_configured_headers_merge_custom_provider_then_model_headers():
         "model": {
             "provider": "custom",
             "default": "GLM-5-Turbo",
-            "base_url": "http://127.0.0.1:18707/v1",
+            "base_url": "https://llm-proxy.example.test/v1",
             "headers": {
-                "comate_custom_header": "from-model",
+                "x_test_custom_header": "from-model",
                 "Authorization": "reserved",
             },
         },
         "custom_providers": [
             {
                 "name": "bdllm",
-                "base_url": "http://127.0.0.1:18707/v1",
+                "base_url": "https://llm-proxy.example.test/v1",
                 "model": "GLM-5-Turbo",
                 "headers": {
                     "X-Provider": "yes",
-                    "comate_custom_header": "from-provider",
+                    "x_test_custom_header": "from-provider",
                 },
             },
         ],
@@ -50,14 +50,14 @@ def test_configured_headers_merge_custom_provider_then_model_headers():
     headers = apply_configured_default_headers(
         {"User-Agent": "HermesAgent/test"},
         provider="custom",
-        base_url="http://127.0.0.1:18707/v1",
+        base_url="https://llm-proxy.example.test/v1",
         model="GLM-5-Turbo",
         config=config,
     )
 
     assert headers["User-Agent"] == "HermesAgent/test"
     assert headers["X-Provider"] == "yes"
-    assert headers["comate_custom_header"] == "from-model"
+    assert headers["x_test_custom_header"] == "from-model"
     assert "Authorization" not in headers
 
 
@@ -66,12 +66,12 @@ def test_custom_provider_normalizer_preserves_headers_from_providers_dict():
         {
             "providers": {
                 "bdllm": {
-                    "base_url": "http://127.0.0.1:18707/v1",
+                    "base_url": "https://llm-proxy.example.test/v1",
                     "api_key": "test-key",
-                    "headers": {"comate_custom_header": "value"},
+                    "headers": {"x_test_custom_header": "value"},
                 }
             }
         }
     )
 
-    assert providers[0]["headers"] == {"comate_custom_header": "value"}
+    assert providers[0]["headers"] == {"x_test_custom_header": "value"}

@@ -118,10 +118,10 @@ class TestBuildAnthropicClient:
             build_anthropic_client(
                 "sk-ant-api03-x",
                 base_url="https://custom.api.com",
-                default_headers={"comate_custom_header": "value"},
+                default_headers={"x_test_custom_header": "value"},
             )
             kwargs = mock_sdk.Anthropic.call_args[1]
-            assert kwargs["default_headers"]["comate_custom_header"] == "value"
+            assert kwargs["default_headers"]["x_test_custom_header"] == "value"
             assert "interleaved-thinking-2025-05-14" in kwargs["default_headers"]["anthropic-beta"]
 
     def test_azure_anthropic_endpoint_keeps_context_1m_beta(self):
