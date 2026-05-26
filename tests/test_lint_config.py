@@ -172,3 +172,25 @@ class TestScriptsProfileTui:
             f"scripts/profile-tui.py has SIM105 violation(s):\n"
             f"{result.stdout}\n{result.stderr}\n"
         )
+
+class TestScriptsRunTestsParallel:
+    """scripts/run_tests_parallel.py must have zero SIM105 violations."""
+
+    TARGET = REPO_ROOT / "scripts" / "run_tests_parallel.py"
+
+    def test_run_tests_parallel_has_zero_sim105(self):
+        """scripts/run_tests_parallel.py must have zero SIM105 (try-except-pass -> contextlib.suppress) violations."""
+        import subprocess as _subprocess
+        import sys as _sys
+
+        result = _subprocess.run(
+            [_sys.executable, "-m", "ruff", "check", "--select=SIM105",
+             "--output-format=concise", str(self.TARGET)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            f"scripts/run_tests_parallel.py has SIM105 violation(s):\n"
+            f"{result.stdout}\n{result.stderr}\n"
+        )
+

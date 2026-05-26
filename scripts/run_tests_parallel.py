@@ -44,6 +44,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import suppress
 from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -219,16 +220,13 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
         return
 
     if sys.platform == "win32":
-        try:
-            
+        with suppress(subprocess.TimeoutExpired, FileNotFoundError, OSError):
             subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=10,
             )  # windows-footgun: ok
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            pass
     else:
         # POSIX: kill the captured pgid. Local-import signal so the
         # SIGKILL attribute is never referenced on Windows.
@@ -240,10 +238,8 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
                 pass
 
     # Belt-and-suspenders: ensure subprocess.communicate() sees the exit.
-    try:
+    with suppress(ProcessLookupError, OSError):
         proc.kill()
-    except (ProcessLookupError, OSError):
-        pass
 
 
 def _run_one_file(
