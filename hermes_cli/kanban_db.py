@@ -100,6 +100,27 @@ VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", 
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
+
+# Execution policy values for tasks.
+#
+# * ``auto``            — default; dispatcher spawns normally via the
+#                          assigned Hermes profile.
+# * ``fallback_local``  — if the assigned profile is not locally available
+#                          (non-spawnable lane), fall back to the profile
+#                          named in ``kanban.fallback_local_profile`` config
+#                          before giving up with ``skipped_nonspawnable``.
+# * ``operator_needed`` — human gate; the dispatcher NEVER auto-spawns
+#                          this task.  A ``human_gate`` event is emitted
+#                          once per hour so the board surfaces the gate
+#                          explicitly.  Workers create tasks with this
+#                          policy when they hit a decision that requires
+#                          human judgment before proceeding.
+VALID_EXEC_POLICIES = {"auto", "fallback_local", "operator_needed"}
+DEFAULT_EXEC_POLICY = "auto"
+
+# Minimum seconds between repeated ``human_gate`` events for the same task,
+# so the dispatcher doesn't flood the event log on every tick.
+_HUMAN_GATE_EVENT_MIN_INTERVAL = 3600
 _IS_WINDOWS = sys.platform == "win32"
 
 # A running task's claim is valid for 15 minutes by default; after that the
@@ -595,6 +616,179 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
         return {"slug": normed, "action": "deleted", "new_path": ""}
 
 
+def resolve_board_db_info(board: Optional[str] = None) -> dict:
+    """Return a structured description of the board/DB resolution chain.
+
+    Mirrors the resolution logic of :func:`get_current_board` and
+    :func:`kanban_db_path` step by step, so operators can answer
+    "which database is the CLI actually reading from?" without
+    manually inspecting environment variables and the filesystem.
+
+    Returned keys:
+
+    ``hermes_home``
+        Absolute path to the kanban root (output of :func:`kanban_home`).
+    ``board``
+        The resolved board slug.
+    ``db_path``
+        Absolute path to the ``kanban.db`` the connection would open.
+    ``db_exists``
+        Whether ``db_path`` exists on disk right now.
+    ``db_path_source``
+        Which resolution step determined ``db_path``:
+        ``"env_HERMES_KANBAN_DB"`` | ``"board_default"`` | ``"board_named"``.
+    ``resolution_chain``
+        Ordered list of steps, each a dict with ``source``, ``value``
+        (what that source held, or ``None``), and ``selected`` (True for
+        the winning step). Steps after the winner are omitted.
+    ``env_overrides``
+        Kanban-related env vars that are currently set (empty values excluded).
+    """
+    home = kanban_home()
+
+    env_overrides: dict[str, str] = {}
+    for var in (
+        "HERMES_KANBAN_DB",
+        "HERMES_KANBAN_BOARD",
+        "HERMES_KANBAN_HOME",
+        "HERMES_KANBAN_WORKSPACES_ROOT",
+        "HERMES_HOME",
+    ):
+        val = os.environ.get(var, "").strip()
+        if val:
+            env_overrides[var] = val
+
+    chain: list[dict] = []
+    resolved_board: str
+
+    if board is not None:
+        # Explicit board= argument — highest precedence.
+        try:
+            normed = _normalize_board_slug(board)
+        except ValueError as exc:
+            chain.append({
+                "source": "board_arg",
+                "value": board,
+                "selected": False,
+                "error": str(exc),
+            })
+            normed = None
+        else:
+            chain.append({
+                "source": "board_arg",
+                "value": normed,
+                "selected": True,
+            })
+        resolved_board = normed or DEFAULT_BOARD
+    else:
+        chain.append({"source": "board_arg", "value": None, "selected": False})
+
+        # HERMES_KANBAN_BOARD env var.
+        env_board = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
+        env_board_won = False
+        if env_board:
+            try:
+                normed_env = _normalize_board_slug(env_board)
+                if normed_env and board_exists(normed_env):
+                    chain.append({
+                        "source": "env_HERMES_KANBAN_BOARD",
+                        "value": normed_env,
+                        "selected": True,
+                    })
+                    resolved_board = normed_env
+                    env_board_won = True
+                else:
+                    chain.append({
+                        "source": "env_HERMES_KANBAN_BOARD",
+                        "value": env_board,
+                        "selected": False,
+                        "note": "board does not exist on disk",
+                    })
+            except ValueError as exc:
+                chain.append({
+                    "source": "env_HERMES_KANBAN_BOARD",
+                    "value": env_board,
+                    "selected": False,
+                    "error": str(exc),
+                })
+        else:
+            chain.append({
+                "source": "env_HERMES_KANBAN_BOARD",
+                "value": None,
+                "selected": False,
+            })
+
+        if not env_board_won:
+            # <root>/kanban/current file.
+            current_file = current_board_path()
+            current_val: Optional[str] = None
+            current_won = False
+            try:
+                if current_file.exists():
+                    raw = current_file.read_text(encoding="utf-8").strip()
+                    if raw:
+                        try:
+                            normed_cur = _normalize_board_slug(raw)
+                            if normed_cur and board_exists(normed_cur):
+                                current_val = normed_cur
+                                current_won = True
+                            else:
+                                current_val = raw
+                        except ValueError:
+                            current_val = raw
+            except OSError:
+                pass
+
+            if current_won:
+                chain.append({
+                    "source": "current_file",
+                    "value": current_val,
+                    "file": str(current_file),
+                    "selected": True,
+                })
+                resolved_board = current_val  # type: ignore[assignment]
+            else:
+                chain.append({
+                    "source": "current_file",
+                    "value": current_val,
+                    "file": str(current_file),
+                    "selected": False,
+                    "note": (
+                        "file absent or board no longer exists"
+                        if current_val else "file absent"
+                    ),
+                })
+                # Default board — final fallback.
+                chain.append({
+                    "source": "default",
+                    "value": DEFAULT_BOARD,
+                    "selected": True,
+                })
+                resolved_board = DEFAULT_BOARD
+
+    # Resolve DB path — same logic as kanban_db_path().
+    db_env = os.environ.get("HERMES_KANBAN_DB", "").strip()
+    if db_env:
+        db_path = Path(db_env).expanduser()
+        db_path_source = "env_HERMES_KANBAN_DB"
+    elif resolved_board == DEFAULT_BOARD:
+        db_path = home / "kanban.db"
+        db_path_source = "board_default"
+    else:
+        db_path = board_dir(resolved_board) / "kanban.db"
+        db_path_source = "board_named"
+
+    return {
+        "hermes_home": str(home),
+        "board": resolved_board,
+        "db_path": str(db_path),
+        "db_exists": db_path.is_file(),
+        "db_path_source": db_path_source,
+        "resolution_chain": chain,
+        "env_overrides": env_overrides,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
@@ -658,6 +852,10 @@ class Task:
     # set the env var. Lets clients render a per-session board without
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
+    # Execution policy controlling how the dispatcher handles this task.
+    # See ``VALID_EXEC_POLICIES`` for the three values; defaults to "auto"
+    # (standard dispatcher-managed spawn).
+    exec_policy: str = DEFAULT_EXEC_POLICY
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -726,6 +924,10 @@ class Task:
             ),
             session_id=(
                 row["session_id"] if "session_id" in keys else None
+            ),
+            exec_policy=(
+                (row["exec_policy"] if "exec_policy" in keys and row["exec_policy"] else None)
+                or DEFAULT_EXEC_POLICY
             ),
         )
 
@@ -1354,6 +1556,15 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "session_id", "session_id TEXT"
         )
 
+    if "exec_policy" not in cols:
+        # Execution policy — controls whether the dispatcher auto-spawns,
+        # falls back to a local profile, or gates on human action. Existing
+        # rows get the default "auto" so they keep working unchanged.
+        _add_column_if_missing(
+            conn, "tasks", "exec_policy",
+            "exec_policy TEXT NOT NULL DEFAULT 'auto'"
+        )
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -1544,6 +1755,7 @@ def create_task(
     max_retries: Optional[int] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
+    exec_policy: str = DEFAULT_EXEC_POLICY,
     board: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
@@ -1576,6 +1788,11 @@ def create_task(
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(
             f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}"
+        )
+    if exec_policy not in VALID_EXEC_POLICIES:
+        raise ValueError(
+            f"exec_policy must be one of {sorted(VALID_EXEC_POLICIES)}, "
+            f"got {exec_policy!r}"
         )
     if workspace_kind not in VALID_WORKSPACE_KINDS:
         raise ValueError(
@@ -1709,8 +1926,8 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, tenant, idempotency_key, max_runtime_seconds,
-                        skills, max_retries, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, session_id, exec_policy
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -1730,6 +1947,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
                         session_id,
+                        exec_policy,
                     ),
                 )
                 for pid in parents:
@@ -1748,6 +1966,7 @@ def create_task(
                         "tenant": tenant,
                         "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,
+                        "exec_policy": exec_policy,
                     },
                 )
             return task_id
@@ -2533,6 +2752,11 @@ def release_stale_claims(
     Returns the number of stale claims actually reclaimed (live-pid
     extensions don't count). Safe to call often.
     """
+    # Clear side-channels from previous tick so stale data doesn't bleed
+    # into the current DispatchResult.
+    release_stale_claims._last_extended = []  # type: ignore[attr-defined]
+    release_stale_claims._last_stuck_pid = []  # type: ignore[attr-defined]
+
     now = int(time.time())
     reclaimed = 0
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -2581,11 +2805,56 @@ def release_stale_claims(
                     },
                     run_id=run_id,
                 )
+            release_stale_claims._last_extended.append(row["id"])  # type: ignore[attr-defined]
             continue
 
         termination = _terminate_reclaimed_worker(
             row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
         )
+        # Guard: if SIGTERM+SIGKILL both failed and the PID is still alive
+        # (uninterruptible D-state or kernel anomaly), do NOT set the task to
+        # ``ready`` — a fresh spawn would create a second worker racing the
+        # unkillable one.  Instead, extend the claim one more TTL window and
+        # emit a ``stuck_pid_liveness`` event so the operator and diagnostics
+        # layer can surface the situation.
+        if (
+            termination.get("host_local")
+            and not termination.get("terminated")
+            and row["worker_pid"]
+            and _pid_alive(row["worker_pid"])
+        ):
+            new_expires = now + _resolve_claim_ttl_seconds()
+            with write_txn(conn):
+                cur = conn.execute(
+                    "UPDATE tasks SET claim_expires = ? "
+                    "WHERE id = ? AND status = 'running' AND claim_lock IS ?",
+                    (new_expires, row["id"], row["claim_lock"]),
+                )
+                if cur.rowcount == 1:
+                    run_id_stuck = _current_run_id(conn, row["id"])
+                    if run_id_stuck is not None:
+                        conn.execute(
+                            "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+                            (new_expires, run_id_stuck),
+                        )
+                    _append_event(
+                        conn, row["id"], "stuck_pid_liveness",
+                        {
+                            "reason": "termination_failed_pid_alive",
+                            "worker_pid": int(row["worker_pid"]),
+                            "claim_lock": row["claim_lock"],
+                            "claim_expires_was": int(row["claim_expires"]),
+                            "claim_expires_now": new_expires,
+                            "sigterm_attempted": termination.get(
+                                "termination_attempted", False
+                            ),
+                            "sigkill_attempted": termination.get("sigkill", False),
+                        },
+                        run_id=run_id_stuck,
+                    )
+            release_stale_claims._last_stuck_pid.append(row["id"])  # type: ignore[attr-defined]
+            continue
+
         with write_txn(conn):
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
@@ -4027,14 +4296,8 @@ DEFAULT_FAILURE_LIMIT = 2
 # Legacy alias — callers / tests still reference the old name.
 DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
 
-# Max bytes to keep in a single worker log file. The dispatcher truncates
-# and rotates on spawn if the file is larger than this at spawn time.
-DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
-DEFAULT_LOG_BACKUP_COUNT = 1
-
-# Keep a little wall-clock budget for the worker to observe a terminal timeout
-# and call kanban_block/kanban_complete before max_runtime_seconds kills it.
-KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS = 30
+# Worker log rotation and timeout constants live in kanban_launcher (re-exported below).
+# These names remain in the module namespace via the re-export at the end of the file.
 
 # ---------------------------------------------------------------------------
 # Respawn guard constants
@@ -4096,6 +4359,38 @@ class DispatchResult:
     Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
     ``"recent_success"`` (completed run within guard window),
     ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    claim_extended: list[str] = field(default_factory=list)
+    """Task ids whose expired TTL was extended rather than reclaimed because
+    the host-local worker PID was still alive.
+
+    These would have been falsely reclaimed on hosts without the live-PID
+    guard (#23025).  The ``claim_extended`` event in the task's event log
+    carries ``reason="pid_alive"`` with the old/new expiry timestamps so
+    operators can see the drift between the TTL and actual liveness."""
+    live_pid_reclaim_skipped: list[str] = field(default_factory=list)
+    """Task ids where a TTL-expired reclaim was skipped because the
+    host-local worker PID survived both SIGTERM and SIGKILL.
+
+    The task stays ``running``; the claim TTL is extended one more window
+    with a ``stuck_pid_liveness`` event to preserve the audit trail.
+    This condition requires human intervention — the process is stuck in
+    an uninterruptible kernel wait (D-state) or otherwise unkillable."""
+    reconciled: list[str] = field(default_factory=list)
+    """Task ids auto-reconciled from ``running`` to ``done`` after a
+    clean-exit (rc=0) with a recent heartbeat.
+
+    The worker completed its run but the ``kanban_complete`` DB write was
+    interrupted just before the status flip; the dispatcher infers
+    completion from the liveness signal and closes the task automatically.
+    The completed run carries ``metadata.auto_reconcile=True`` for
+    auditability."""
+    operator_needed: list[str] = field(default_factory=list)
+    """Ready tasks with ``exec_policy='operator_needed'`` that were NOT
+    dispatched because they require human action.  A ``human_gate`` event
+    is emitted (rate-limited) so the board surfaces the gate explicitly."""
+    fallback_spawned: list[tuple[str, str, str]] = field(default_factory=list)
+    """Tasks spawned via local fallback (exec_policy='fallback_local').
+    Same triple as ``spawned``: ``(task_id, fallback_assignee, workspace_path)``."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -4459,6 +4754,15 @@ def enforce_max_runtime(
 # to match the original spec (">4h started + no commits in 1h").
 _STALE_HEARTBEAT_GAP_SECONDS = 3600
 
+# When a worker exits cleanly (rc=0) but the task is still ``running``,
+# the dispatcher checks whether the last heartbeat was recent enough to
+# infer that the worker completed successfully but the ``kanban_complete``
+# DB write was interrupted just before the status flip.  If the heartbeat
+# is within this window the task is auto-reconciled to ``done``; otherwise
+# the missing terminal-transition is treated as a protocol violation and
+# the task is auto-blocked on the first occurrence.
+_CLEAN_EXIT_RECONCILE_WINDOW = 120  # seconds
+
 
 def detect_stale_running(
     conn: sqlite3.Connection,
@@ -4633,9 +4937,13 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # immediately instead of incrementing by 1.
     crash_details: list[tuple[str, int, str, bool, str]] = []
     # (task_id, pid, claimer, protocol_violation, error_text)
+    # Tasks whose clean exit happened close to a recent heartbeat —
+    # handled outside the main txn via auto-reconcile to 'done'.
+    reconcile_candidates: list[str] = []
+    now_ts = int(time.time())
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock FROM tasks "
+            "SELECT id, worker_pid, claim_lock, last_heartbeat_at FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -4651,9 +4959,40 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             kind, code = _classify_worker_exit(pid)
             if kind == "clean_exit":
                 # Worker subprocess returned 0 but its task is still
-                # ``running`` in the DB — it exited without calling
-                # ``kanban_complete`` / ``kanban_block``. Retrying won't
-                # help.
+                # ``running`` in the DB.  Two scenarios:
+                #
+                # (a) Worker completed successfully but the
+                #     ``kanban_complete`` DB write was interrupted between
+                #     the worker's last heartbeat and process exit.  When
+                #     the heartbeat is recent (< _CLEAN_EXIT_RECONCILE_WINDOW
+                #     seconds) we auto-reconcile to ``done`` instead of
+                #     auto-blocking — retrying is unnecessary and the
+                #     protocol violation is spurious.
+                #
+                # (b) Worker exited without ever calling a terminal tool.
+                #     No recent heartbeat → deterministic loop if retried →
+                #     trip the breaker immediately (existing behavior).
+                last_hb = row["last_heartbeat_at"]
+                if (
+                    last_hb is not None
+                    and (now_ts - int(last_hb)) < _CLEAN_EXIT_RECONCILE_WINDOW
+                ):
+                    # Recent heartbeat → infer successful completion.
+                    # Don't reclaim to ready here; complete_task handles
+                    # the running→done transition outside this write_txn.
+                    _append_event(
+                        conn, row["id"], "clean_exit_pending_reconcile",
+                        {
+                            "pid": pid,
+                            "claimer": row["claim_lock"],
+                            "exit_code": code,
+                            "last_heartbeat_at": int(last_hb),
+                            "heartbeat_age_seconds": int(now_ts - int(last_hb)),
+                        },
+                    )
+                    reconcile_candidates.append(row["id"])
+                    continue
+
                 protocol_violation = True
                 error_text = (
                     "worker exited cleanly (rc=0) without calling "
@@ -4741,6 +5080,32 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # and tests that destructure the result; ``dispatch_once`` reads this
     # side-channel attribute to populate ``DispatchResult.auto_blocked``.
     detect_crashed_workers._last_auto_blocked = auto_blocked  # type: ignore[attr-defined]
+
+    # Auto-reconcile clean exits with recent heartbeats (outside the main
+    # write_txn so complete_task can open its own transaction).  Best-effort:
+    # if complete_task fails (e.g. another dispatcher tick already transitioned
+    # the task), we skip silently — the ``clean_exit_pending_reconcile`` event
+    # already landed and the next tick will see a non-running task.
+    reconciled_tasks: list[str] = []
+    for tid in reconcile_candidates:
+        try:
+            ok = complete_task(
+                conn, tid,
+                summary=(
+                    "auto-reconciled: worker exited cleanly (rc=0) "
+                    "with recent heartbeat — dispatcher inferred completion"
+                ),
+                metadata={
+                    "auto_reconcile": True,
+                    "trigger": "clean_exit_recent_heartbeat",
+                },
+            )
+            if ok:
+                reconciled_tasks.append(tid)
+        except Exception:
+            pass  # Leave for next tick; pending_reconcile event is the audit trail
+    detect_crashed_workers._last_reconciled = reconciled_tasks  # type: ignore[attr-defined]
+
     return crashed
 
 
@@ -5085,6 +5450,72 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     return False
 
 
+def _get_task_exec_policy(conn: sqlite3.Connection, task_id: str) -> str:
+    """Return the effective exec_policy for a task.
+
+    Reads ``tasks.exec_policy`` directly. Falls back to ``DEFAULT_EXEC_POLICY``
+    for legacy rows and malformed values so the caller never has to branch on
+    None or unknown strings.
+    """
+    row = conn.execute(
+        "SELECT exec_policy FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None:
+        return DEFAULT_EXEC_POLICY
+    raw = row["exec_policy"] if "exec_policy" in row.keys() else None
+    if raw and raw in VALID_EXEC_POLICIES:
+        return raw
+    return DEFAULT_EXEC_POLICY
+
+
+def _maybe_emit_human_gate_event(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> bool:
+    """Emit a ``human_gate`` event for ``task_id`` at most once per hour.
+
+    Returns True if an event was written; False when throttled (one
+    already appeared within ``_HUMAN_GATE_EVENT_MIN_INTERVAL`` seconds).
+
+    Rate-limiting prevents the dispatcher from flooding the event log
+    with a new ``human_gate`` entry on every 60-second tick for tasks
+    that sit in ``ready`` with ``exec_policy='operator_needed'`` for
+    hours or days.
+    """
+    now = int(time.time())
+    cutoff = now - _HUMAN_GATE_EVENT_MIN_INTERVAL
+    existing = conn.execute(
+        "SELECT id FROM task_events "
+        "WHERE task_id = ? AND kind = 'human_gate' AND created_at >= ? "
+        "LIMIT 1",
+        (task_id, cutoff),
+    ).fetchone()
+    if existing:
+        return False
+    with write_txn(conn):
+        _append_event(conn, task_id, "human_gate", {"policy": "operator_needed"})
+    return True
+
+
+def _get_fallback_local_profile() -> Optional[str]:
+    """Return the configured ``kanban.fallback_local_profile`` value, or None.
+
+    Used by dispatch_once when a task with ``exec_policy='fallback_local'``
+    has an assignee whose profile is not locally available. The fallback
+    profile name is read from the kanban config section each time so live
+    config reloads take effect without restarting the dispatcher.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        profile = (cfg.get("kanban") or {}).get("fallback_local_profile")
+        if profile and str(profile).strip():
+            return str(profile).strip()
+    except Exception:
+        pass
+    return None
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -5160,6 +5591,14 @@ def dispatch_once(
 
     result = DispatchResult()
     result.reclaimed = release_stale_claims(conn)
+    # release_stale_claims stashes liveness side-channels on itself; pull
+    # them into DispatchResult so callers and telemetry can see the detail.
+    _extended = getattr(release_stale_claims, "_last_extended", [])
+    if _extended:
+        result.claim_extended.extend(_extended)
+    _stuck = getattr(release_stale_claims, "_last_stuck_pid", [])
+    if _stuck:
+        result.live_pid_reclaim_skipped.extend(_stuck)
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
     )
@@ -5172,6 +5611,9 @@ def dispatch_once(
     )
     if _crash_auto_blocked:
         result.auto_blocked.extend(_crash_auto_blocked)
+    _reconciled = getattr(detect_crashed_workers, "_last_reconciled", [])
+    if _reconciled:
+        result.reconciled.extend(_reconciled)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn)
 
@@ -5216,6 +5658,19 @@ def dispatch_once(
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
+
+        # Read execution policy early — it overrides the normal dispatch path.
+        task_exec_policy = _get_task_exec_policy(conn, row["id"])
+
+        # operator_needed: human gate — never auto-spawn regardless of
+        # whether the assignee profile exists. Emit a rate-limited event
+        # so the board surface can highlight the gate explicitly.
+        if task_exec_policy == "operator_needed":
+            result.operator_needed.append(row["id"])
+            if not dry_run:
+                _maybe_emit_human_gate_event(conn, row["id"])
+            continue
+
         # Skip ready tasks whose assignee is not a real Hermes profile.
         # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
         # with "Profile 'X' does not exist" when the assignee names a
@@ -5231,14 +5686,30 @@ def dispatch_once(
         except Exception:
             profile_exists = None  # type: ignore[assignment]
         if profile_exists is not None and not profile_exists(row["assignee"]):
-            # Bucket separately from skipped_unassigned: the operator
-            # cannot fix this by assigning a profile (the assignee IS the
-            # intended owner — a terminal lane). Health telemetry uses
-            # this distinction to suppress spurious "stuck" warnings on
-            # multi-lane setups where the ready queue is steadily full
-            # of human-pulled work.
-            result.skipped_nonspawnable.append(row["id"])
-            continue
+            if task_exec_policy == "fallback_local":
+                # fallback_local: the primary assignee isn't a spawnable
+                # Hermes profile. Attempt to dispatch with the configured
+                # fallback profile so the task can still run locally
+                # instead of silently piling up in skipped_nonspawnable.
+                fallback_profile = _get_fallback_local_profile()
+                if fallback_profile and profile_exists(fallback_profile):
+                    # Proceed — spawn_assignee is overridden below.
+                    _fallback_assignee: Optional[str] = fallback_profile
+                else:
+                    # No usable fallback configured: treat like auto.
+                    result.skipped_nonspawnable.append(row["id"])
+                    continue
+            else:
+                # Bucket separately from skipped_unassigned: the operator
+                # cannot fix this by assigning a profile (the assignee IS the
+                # intended owner — a terminal lane). Health telemetry uses
+                # this distinction to suppress spurious "stuck" warnings on
+                # multi-lane setups where the ready queue is steadily full
+                # of human-pulled work.
+                result.skipped_nonspawnable.append(row["id"])
+                continue
+        else:
+            _fallback_assignee = None
         # Respawn guard: refuse to re-spawn when useful work is already
         # in-flight/recent, or when the last failure is a deterministic
         # blocker (quota / auth). The guard defers the spawn this tick so
@@ -5266,6 +5737,13 @@ def dispatch_once(
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
+        # For fallback_local: spawn with the fallback profile instead of
+        # the task's original assignee. We use dataclasses.replace to keep
+        # all other task fields intact (workspace_kind, skills, etc.) while
+        # substituting the spawned profile name.
+        if _fallback_assignee is not None:
+            import dataclasses
+            claimed = dataclasses.replace(claimed, assignee=_fallback_assignee)
         try:
             workspace = resolve_workspace(claimed, board=board)
         except Exception as exc:
@@ -5302,7 +5780,12 @@ def dispatch_once(
             # that keeps timing out after spawn loop forever. The
             # counter is cleared only on successful completion (see
             # complete_task).
-            result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
+            if _fallback_assignee is not None:
+                result.fallback_spawned.append(
+                    (claimed.id, _fallback_assignee, str(workspace))
+                )
+            else:
+                result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
         except Exception as exc:
             auto = _record_spawn_failure(
@@ -5389,434 +5872,35 @@ def dispatch_once(
     return result
 
 
-def _positive_int(value: Any, default: int, *, minimum: int = 1) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    return parsed if parsed >= minimum else default
+# ---------------------------------------------------------------------------
+# Worker launcher — extracted to hermes_cli/kanban_launcher.py (PR2)
+# Re-exported here so existing callers and tests that reference kb.* keep
+# working without changes.
+# ---------------------------------------------------------------------------
 
-
-def worker_log_rotation_config(kanban_cfg: Optional[dict] = None) -> tuple[int, int]:
-    """Return ``(rotate_bytes, backup_count)`` for worker log rotation.
-
-    Defaults preserve the historical behavior: rotate at 2 MiB and keep one
-    backup generation (``.log.1``). Operators with long-running workers can
-    raise either value from ``config.yaml`` without changing dispatcher code.
-    """
-    if kanban_cfg is None:
-        try:
-            from hermes_cli.config import load_config
-
-            kanban_cfg = (load_config().get("kanban") or {})
-        except Exception:
-            kanban_cfg = {}
-    max_bytes = _positive_int(
-        (kanban_cfg or {}).get("worker_log_rotate_bytes"),
-        DEFAULT_LOG_ROTATE_BYTES,
-        minimum=1,
-    )
-    backup_count = _positive_int(
-        (kanban_cfg or {}).get("worker_log_backup_count"),
-        DEFAULT_LOG_BACKUP_COUNT,
-        minimum=0,
-    )
-    return max_bytes, backup_count
-
-
-def _rotated_log_path(log_path: Path, generation: int) -> Path:
-    return log_path.with_suffix(log_path.suffix + f".{generation}")
-
-
-def _rotate_worker_log(
-    log_path: Path,
-    max_bytes: int,
-    backup_count: int = DEFAULT_LOG_BACKUP_COUNT,
-) -> None:
-    """Rotate ``<log>`` when it exceeds ``max_bytes``.
-
-    ``backup_count=1`` preserves the legacy single-generation behavior:
-    ``<log>`` moves to ``<log>.1`` and any previous ``.1`` is replaced.
-    Higher values shift older generations up to ``backup_count``.
-    """
-    try:
-        if not log_path.exists():
-            return
-        if log_path.stat().st_size <= max_bytes:
-            return
-        backup_count = _positive_int(
-            backup_count,
-            DEFAULT_LOG_BACKUP_COUNT,
-            minimum=0,
-        )
-        if backup_count == 0:
-            log_path.unlink()
-            return
-        oldest = _rotated_log_path(log_path, backup_count)
-        try:
-            if oldest.exists():
-                oldest.unlink()
-        except OSError:
-            pass
-        for generation in range(backup_count - 1, 0, -1):
-            src = _rotated_log_path(log_path, generation)
-            if not src.exists():
-                continue
-            try:
-                src.rename(_rotated_log_path(log_path, generation + 1))
-            except OSError:
-                pass
-        log_path.rename(_rotated_log_path(log_path, 1))
-    except OSError:
-        pass
-
-
-def _module_hermes_argv() -> list[str]:
-    """Return the interpreter-bound Hermes CLI invocation."""
-    # ``hermes_cli.main`` is the console-script target declared in
-    # pyproject.toml, NOT a top-level ``hermes`` package — there is no
-    # ``hermes`` package to import.
-    return [sys.executable, "-m", "hermes_cli.main"]
-
-
-def _absolute_hermes_path(path: str) -> str:
-    """Return an absolute filesystem path for a resolved Hermes shim."""
-    expanded = os.path.expanduser(path)
-    return expanded if os.path.isabs(expanded) else os.path.abspath(expanded)
-
-
-def _looks_like_path(value: str) -> bool:
-    """Return true when a command override is an explicit path, not a name."""
-    expanded = os.path.expanduser(value)
-    return (
-        expanded.startswith("~")
-        or os.path.isabs(expanded)
-        or bool(os.path.dirname(expanded))
-        or "\\" in expanded
-        or bool(re.match(r"^[A-Za-z]:", expanded))
-    )
-
-
-def _is_windows_batch_shim(path: str) -> bool:
-    """Return true for Windows shell/batch shims that should not be argv[0]."""
-    return path.lower().endswith((".cmd", ".bat"))
-
-
-def _path_search_names(command: str) -> list[str]:
-    """Return executable names to try for an unqualified command."""
-    if not _IS_WINDOWS or os.path.splitext(command)[1]:
-        return [command]
-    raw = os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD"
-    exts = [ext for ext in raw.split(";") if ext]
-    return [command + ext for ext in exts]
-
-
-def _safe_which_no_cwd(command: str) -> Optional[str]:
-    """Resolve a bare command from PATH without implicit current-dir search.
-
-    ``shutil.which`` follows platform search behavior. On Windows that can
-    include the current directory before PATH for bare names, which is not a
-    safe dispatcher primitive. This resolver only considers explicit PATH
-    entries and skips empty / ``.`` entries.
-    """
-    path_env = os.environ.get("PATH", "")
-    for raw_dir in path_env.split(os.pathsep):
-        if not raw_dir or raw_dir == ".":
-            continue
-        directory = os.path.expanduser(raw_dir)
-        for name in _path_search_names(command):
-            candidate = os.path.join(directory, name)
-            if not os.path.isfile(candidate):
-                continue
-            if _IS_WINDOWS or os.access(candidate, os.X_OK):
-                return candidate
-    return None
-
-
-def _hermes_path_argv(path: str) -> list[str]:
-    """Return argv for a resolved Hermes executable path.
-
-    Windows batch shims (`.cmd` / `.bat`) are not safe as argv[0] for
-    worker launches because the argument vector includes task-derived
-    values. Prefer the interpreter-bound module form whenever the resolved
-    executable is only a shell shim.
-    """
-    if _IS_WINDOWS and _is_windows_batch_shim(path):
-        return _module_hermes_argv()
-    return [_absolute_hermes_path(path)]
-
-
-def _resolve_hermes_argv() -> list[str]:
-    """Resolve the ``hermes`` invocation as argv parts for ``Popen``.
-
-    Tries in order:
-
-    1. ``$HERMES_BIN`` — explicit operator override. Path-like values are
-       normalized to absolute paths; bare command names keep normal PATH
-       semantics and never prefer a same-directory file before ``PATH``.
-    2. ``shutil.which("hermes")`` — the console-script shim, normalized to
-       an absolute path. On Windows, ``which`` can return a relative
-       ``.\\hermes.CMD`` when the current directory is on ``PATH``; directly
-       launching batch shims is also unsafe with task-derived argv. The
-       dispatcher therefore falls back to the interpreter-bound module form
-       for implicit ``.cmd`` / ``.bat`` shims.
-    3. ``sys.executable -m hermes_cli.main`` — fallback for setups where
-       Hermes is launched from a venv and the ``hermes`` shim is not on
-       the dispatcher's ``$PATH`` (cron, systemd ``User=`` services,
-       launchd jobs, detached processes, etc.). Goes through the running
-       interpreter so the result is independent of ``$PATH``.
-
-    Mirrors ``gateway.run._resolve_hermes_bin`` for the same reason. Kept
-    local (not imported from gateway) because ``hermes_cli`` sits below
-    ``gateway`` in the dependency order.
-    """
-    import shutil
-
-    env_bin = os.environ.get("HERMES_BIN", "").strip()
-    if env_bin:
-        if _looks_like_path(env_bin):
-            return _hermes_path_argv(env_bin)
-        resolved_env_bin = _safe_which_no_cwd(env_bin)
-        if resolved_env_bin:
-            return _hermes_path_argv(resolved_env_bin)
-        return _module_hermes_argv()
-
-    hermes_bin = _safe_which_no_cwd("hermes") if _IS_WINDOWS else shutil.which("hermes")
-    if hermes_bin:
-        return _hermes_path_argv(hermes_bin)
-    return _module_hermes_argv()
-
-
-def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
-    """True if the bundled ``kanban-worker`` skill resolves for the home the
-    spawned worker will run under.
-
-    The dispatcher injects ``--skills kanban-worker`` into every worker. When
-    the worker activates a profile (``hermes -p <name>``), its ``SKILLS_DIR``
-    becomes ``<profile_home>/skills`` — which on many profiles does NOT contain
-    the bundled skill (it ships in the *default* root home, not every
-    profile-scoped skills dir). Preloading a missing skill is fatal at CLI
-    startup (``ValueError: Unknown skill(s): kanban-worker``), aborting the
-    worker before the agent loop runs. Gate the flag on actual resolvability;
-    the kanban lifecycle contract is still injected via ``KANBAN_GUIDANCE``, so
-    omitting the flag only drops the supplementary pattern library.
-    """
-    from pathlib import Path as _Path
-
-    # An unset HERMES_HOME means the worker falls back to the default root
-    # home (``~/.hermes``), which ships the bundled skill.
-    base = _Path(hermes_home) if hermes_home else (_Path.home() / ".hermes")
-    skills_root = base / "skills"
-    if not skills_root.is_dir():
-        return False
-    # Canonical bundled location first (cheap), then a bounded scan for
-    # profiles that have it nested elsewhere.
-    if (skills_root / "devops" / "kanban-worker" / "SKILL.md").is_file():
-        return True
-    try:
-        for skill_md in skills_root.rglob("kanban-worker/SKILL.md"):
-            if skill_md.is_file():
-                return True
-    except OSError:
-        pass
-    return False
-
-
-def _worker_terminal_timeout_env(
-    max_runtime_seconds: Optional[int],
-    current_timeout: Optional[str],
-) -> Optional[str]:
-    """Return a worker-scoped TERMINAL_TIMEOUT override, if needed.
-
-    Kanban's ``max_runtime_seconds`` bounds the whole worker attempt. The
-    terminal tool has its own default timeout via ``TERMINAL_TIMEOUT``; when
-    the worker runtime is longer, raise only the child process default so a
-    long command is not killed by the generic terminal default first.
-    """
-    if max_runtime_seconds is None:
-        return None
-    try:
-        runtime = int(max_runtime_seconds)
-    except (TypeError, ValueError):
-        return None
-    if runtime <= 0:
-        return None
-
-    desired = max(1, runtime - KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS)
-    try:
-        existing = int(str(current_timeout).strip()) if current_timeout else 0
-    except (TypeError, ValueError):
-        existing = 0
-    if existing >= desired:
-        return None
-    return str(desired)
-
-
-def _default_spawn(
-    task: Task,
-    workspace: str,
-    *,
-    board: Optional[str] = None,
-) -> Optional[int]:
-    """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
-
-    Returns the spawned child's PID so the dispatcher can detect crashes
-    before the claim TTL expires. The child's completion is still observed
-    via the ``complete`` / ``block`` transitions the worker writes itself;
-    the PID check is a safety net for crashes, OOM kills, and Ctrl+C.
-
-    ``board`` pins the child's kanban context to that board: the child's
-    ``HERMES_KANBAN_DB`` / ``HERMES_KANBAN_BOARD`` / workspaces_root env
-    vars all resolve to the same board the dispatcher claimed the task
-    from. Workers cannot accidentally see other boards.
-    """
-    import subprocess
-    if not task.assignee:
-        raise ValueError(f"task {task.id} has no assignee")
-
-    from hermes_cli.profiles import normalize_profile_name
-
-    profile_arg = normalize_profile_name(task.assignee)
-
-    prompt = f"work kanban task {task.id}"
-    env = dict(os.environ)
-
-    # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
-    # (fallback_providers, toolsets, agent settings, etc.) instead of the root
-    # config.  Without this, `env = dict(os.environ)` copies only the parent's
-    # env, and when the child process starts `hermes -p <name>` the
-    # _apply_profile_override() runs *before* hermes_constants is imported.
-    # If HERMES_HOME is absent from the child's env, get_hermes_home() falls
-    # back to Path.home() / ".hermes" (the DEFAULT profile root), ignoring the
-    # profile-specific config entirely.  Fixes profile-scoped fallback_providers
-    # being invisible to kanban workers.
-    from hermes_cli.profiles import resolve_profile_env
-    try:
-        env["HERMES_HOME"] = resolve_profile_env(profile_arg)
-    except FileNotFoundError:
-        # Profile dir doesn't exist — defer resolution to the CLI's
-        # _apply_profile_override() via HERMES_PROFILE (set below).
-        # This only happens in test fixtures where the isolated
-        # HERMES_HOME never had profiles created.
-        pass
-    if task.tenant:
-        env["HERMES_TENANT"] = task.tenant
-    env["HERMES_KANBAN_TASK"] = task.id
-    env["HERMES_KANBAN_WORKSPACE"] = workspace
-    if task.branch_name:
-        env["HERMES_KANBAN_BRANCH"] = task.branch_name
-    if task.current_run_id is not None:
-        env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
-    if task.claim_lock:
-        env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
-    terminal_timeout = _worker_terminal_timeout_env(
-        task.max_runtime_seconds,
-        env.get("TERMINAL_TIMEOUT"),
-    )
-    if terminal_timeout is not None:
-        env["TERMINAL_TIMEOUT"] = terminal_timeout
-    foreground_timeout = _worker_terminal_timeout_env(
-        task.max_runtime_seconds,
-        env.get("TERMINAL_MAX_FOREGROUND_TIMEOUT"),
-    )
-    if foreground_timeout is not None:
-        env["TERMINAL_MAX_FOREGROUND_TIMEOUT"] = foreground_timeout
-    # Pin the shared board + workspaces root the dispatcher resolved, so
-    # that even when the worker activates a profile (`hermes -p <name>`
-    # rewrites HERMES_HOME), its kanban paths still match the
-    # dispatcher's. Belt-and-braces with the `get_default_hermes_root()`
-    # resolution in `kanban_home()` — symmetric resolution is the norm,
-    # but unusual symlink / Docker layouts are caught here too.
-    env["HERMES_KANBAN_DB"] = str(kanban_db_path(board=board))
-    env["HERMES_KANBAN_WORKSPACES_ROOT"] = str(workspaces_root(board=board))
-    # Board slug — the final defense-in-depth pin. If the worker ever
-    # resolves kanban paths without the DB / workspaces env vars, the
-    # board slug still forces it to the right directory.
-    resolved_board = _normalize_board_slug(board) or get_current_board()
-    env["HERMES_KANBAN_BOARD"] = resolved_board
-    # HERMES_PROFILE is the author the kanban_comment tool defaults to.
-    # `hermes -p <assignee>` activates the profile, but the env var is
-    # what the tool reads — set it explicitly here so comments are
-    # attributed correctly regardless of how the child loads config.
-    env["HERMES_PROFILE"] = profile_arg
-
-    cmd = [
-        *_resolve_hermes_argv(),
-        "-p", profile_arg,
-        # Worker subprocesses switch to a profile-scoped HERMES_HOME above,
-        # so they see that profile's shell-hook allowlist instead of the
-        # dispatcher's root allowlist. Pass --accept-hooks explicitly so
-        # profile-local worker sessions still register configured hooks.
-        "--accept-hooks",
-    ]
-    # Auto-load the kanban-worker skill so every dispatched worker
-    # has the pattern library (good summary/metadata shapes, retry
-    # diagnostics, block-reason examples) in its context, even if
-    # the profile hasn't wired it into skills config. The MANDATORY
-    # lifecycle is already in the system prompt via KANBAN_GUIDANCE;
-    # this skill is the deeper reference. Users can point a profile
-    # at a different/additional skill via config if they want —
-    # --skills is additive to the profile's default skill set.
-    #
-    # Only add the flag when the skill actually resolves for the home
-    # the worker runs under: the bundled skill is absent from many
-    # profile-scoped skills dirs, and preloading a missing skill is
-    # fatal at CLI startup. Omitting it is safe — the lifecycle
-    # contract still ships via KANBAN_GUIDANCE.
-    if _kanban_worker_skill_available(env.get("HERMES_HOME")):
-        cmd.extend(["--skills", "kanban-worker"])
-    # Per-task force-loaded skills. Each name goes in its own
-    # `--skills X` pair rather than a single comma-joined arg: the CLI
-    # accepts both forms (action='append' + comma-split), but
-    # per-name pairs are easier to read in `ps` output and avoid any
-    # quoting ambiguity if a skill name ever contains unusual chars.
-    # Dedupe against the built-in so we don't double-load kanban-worker
-    # if a task author asks for it explicitly.
-    if task.skills:
-        for sk in task.skills:
-            if sk and sk != "kanban-worker":
-                cmd.extend(["--skills", sk])
-    if task.model_override:
-        cmd.extend(["-m", task.model_override])
-    cmd.extend([
-        "chat",
-        "-q", prompt,
-    ])
-    # Redirect output to a per-task log under <board-root>/logs/.
-    # Anchored at the board root (not the shared kanban root), so
-    # `hermes kanban log` on a specific board reads its own file and
-    # logs don't collide across boards that happen to share task ids.
-    log_dir = worker_logs_dir(board=board)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / f"{task.id}.log"
-    rotate_bytes, backup_count = worker_log_rotation_config()
-    _rotate_worker_log(log_path, rotate_bytes, backup_count)
-
-    # Use 'a' so a re-run on unblock appends rather than overwrites.
-    log_f = open(log_path, "ab")
-    try:
-        proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
-            cmd,
-            cwd=workspace if os.path.isdir(workspace) else None,
-            stdin=subprocess.DEVNULL,
-            stdout=log_f,
-            stderr=subprocess.STDOUT,
-            env=env,
-            start_new_session=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
-        )
-    except FileNotFoundError:
-        log_f.close()
-        raise RuntimeError(
-            "`hermes` executable not found on PATH. "
-            "Install Hermes Agent or activate its venv before running the kanban dispatcher."
-        )
-    # NOTE: we intentionally do NOT close log_f here — we want Popen's
-    # child process to keep writing after this function returns.  The
-    # handle is kept alive by the child's inheritance.  The parent's
-    # reference goes out of scope and is GC'd, but the OS-level FD stays
-    # open in the child until the child exits.
-    return proc.pid
+from hermes_cli.kanban_launcher import (  # noqa: E402
+    DEFAULT_LOG_BACKUP_COUNT,
+    DEFAULT_LOG_ROTATE_BYTES,
+    KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS,
+    LaunchContext,
+    SpawnValidationError,
+    _default_spawn,
+    _is_windows_batch_shim,
+    _kanban_worker_skill_available,
+    _looks_like_path,
+    _module_hermes_argv,
+    _positive_int,
+    _resolve_hermes_argv,
+    _rotate_worker_log,
+    _rotated_log_path,
+    _worker_terminal_timeout_env,
+    build_worker_cmd,
+    build_worker_env,
+    execute_launch,
+    prepare_launch,
+    validate_spawn_env,
+    worker_log_rotation_config,
+)
 
 
 # ---------------------------------------------------------------------------

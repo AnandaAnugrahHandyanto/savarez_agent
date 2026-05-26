@@ -286,6 +286,7 @@ def _handle_show(args: dict, **kw) -> str:
                     "result": t.result,
                     "current_run_id": t.current_run_id,
                     "model_override": t.model_override,
+                    "exec_policy": getattr(t, "exec_policy", "auto"),
                 }
 
             def _run_dict(r):
@@ -578,7 +579,7 @@ def _handle_heartbeat(args: dict, **kw) -> str:
             # default _claimer_id() covers locally-driven workers that
             # never went through the dispatcher path.
             claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
-            kb.heartbeat_claim(conn, tid, claimer=claim_lock)
+            claim_still_live = kb.heartbeat_claim(conn, tid, claimer=claim_lock)
 
             ok = kb.heartbeat_worker(
                 conn,
@@ -587,6 +588,20 @@ def _handle_heartbeat(args: dict, **kw) -> str:
                 expected_run_id=_worker_run_id(tid),
             )
             if not ok:
+                if not claim_still_live:
+                    # Claim expired before heartbeat arrived — the dispatcher
+                    # may have already reclaimed or auto-reconciled this task.
+                    # Surface a specific error so the worker can decide whether
+                    # to kanban_block with its current status rather than
+                    # continuing to work on a task it no longer owns.
+                    return tool_error(
+                        f"claim for task {tid} has already expired — the "
+                        f"dispatcher may have reclaimed or transitioned this "
+                        f"task while the worker was between tool calls. "
+                        f"Check the task status with kanban_show. If the task "
+                        f"is still running, call kanban_block with your "
+                        f"current status to release the claim cleanly."
+                    )
                 return tool_error(
                     f"could not heartbeat {tid} (unknown id or not running)"
                 )
@@ -667,6 +682,7 @@ def _handle_create(args: dict, **kw) -> str:
     idempotency_key = args.get("idempotency_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"
+    exec_policy = args.get("exec_policy") or "auto"
     skills = args.get("skills")
     if isinstance(skills, str):
         # Accept a single skill name as a string for convenience.
@@ -705,6 +721,7 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
+                exec_policy=str(exec_policy),
             )
             new_task = kb.get_task(conn, new_tid)
             return _ok(
@@ -1151,6 +1168,24 @@ KANBAN_CREATE_SCHEMA = {
                     "require immediate human ops (R3 gate) to skip the "
                     "brief running-to-blocked transition. Defaults to "
                     "'running', which preserves the usual dispatch path."
+                ),
+            },
+            "exec_policy": {
+                "type": "string",
+                "enum": ["auto", "fallback_local", "operator_needed"],
+                "description": (
+                    "Execution policy that controls how the dispatcher "
+                    "handles this task:\n"
+                    "• 'auto' (default) — dispatcher spawns the assigned "
+                    "profile normally.\n"
+                    "• 'fallback_local' — if the assigned profile is not "
+                    "locally available, fall back to the profile configured "
+                    "in kanban.fallback_local_profile before giving up.\n"
+                    "• 'operator_needed' — human gate: the dispatcher never "
+                    "auto-spawns this task. A human_gate event surfaces on "
+                    "the board so the operator knows action is required. Use "
+                    "this for decisions that require human judgment before "
+                    "any automation proceeds."
                 ),
             },
             "skills": {
