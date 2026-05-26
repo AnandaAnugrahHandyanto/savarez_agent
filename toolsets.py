@@ -70,6 +70,10 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # TrueNAS Scale (gated on TRUENAS_API_KEY via check_fn)
+    "truenas_query",
+    # UnRAID (gated on UNRAID_API_KEY via check_fn)
+    "unraid_query",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
@@ -246,6 +250,18 @@ TOOLSETS = {
     "homeassistant": {
         "description": "Home Assistant smart home control and monitoring",
         "tools": ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"],
+        "includes": []
+    },
+
+    "truenas": {
+        "description": "TrueNAS Scale system monitoring — query pools, disks, shares, services, and alerts via REST API",
+        "tools": ["truenas_query"],
+        "includes": []
+    },
+
+    "unraid": {
+        "description": "UnRAID server system monitoring — query info, disks, Docker containers, and alerts via GraphQL API",
+        "tools": ["unraid_query"],
         "includes": []
     },
 
