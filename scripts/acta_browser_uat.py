@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -26,6 +27,43 @@ DEV_JOB_RE = re.compile(
     r"startup sprint|sprint ceo|self-healing sentinel|user[- ]testing sweep|qa pipeline|qa canary|operator sprint|security scan|app security|vesta import|vesta startup|acta startup|minerva startup|praetor startup",
     re.I,
 )
+CONFIDENCE_CHIP_RE = re.compile(r"\bCONF\s+(?:HIGH|MED|LOW[-/]GAP)\b", re.I)
+
+
+class _ClassTextExtractor(HTMLParser):
+    """Extract browser-DOM-ish text from elements carrying a CSS class."""
+
+    def __init__(self, class_name: str):
+        super().__init__(convert_charrefs=True)
+        self.class_name = class_name
+        self.depth = 0
+        self.current: list[str] = []
+        self.matches: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        classes = ""
+        for key, value in attrs:
+            if key.lower() == "class" and value:
+                classes = value
+                break
+        if self.depth == 0 and self.class_name in classes.split():
+            self.depth = 1
+            self.current = []
+        elif self.depth:
+            self.depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if not self.depth:
+            return
+        self.depth -= 1
+        if self.depth == 0:
+            text = " ".join(" ".join(self.current).split())
+            self.matches.append(text)
+            self.current = []
+
+    def handle_data(self, data: str) -> None:
+        if self.depth and data.strip():
+            self.current.append(data.strip())
 
 
 @dataclass
@@ -40,6 +78,13 @@ class BrowserResult:
     viewport_height: int = 844
     layout_metrics: dict[str, object] | None = None
     horizontal_overflow: bool = False
+
+
+def _extract_text_by_class(dom: str, class_name: str) -> list[str]:
+    parser = _ClassTextExtractor(class_name)
+    parser.feed(dom)
+    parser.close()
+    return parser.matches
 
 
 def _agent_browser_command() -> list[str]:
@@ -228,13 +273,13 @@ def _console_has_meaningful_error(output: str) -> bool:
     return _output_has_messages(output) and bool(re.search(r"\b(error|exception)\b", output, re.I))
 
 
-def _validate_feed_contract(
+def _common_browser_failures(
     dom: str,
     *,
     horizontal_overflow: bool = False,
     console_output: str = "",
     errors_output: str = "",
-) -> list[str]:
+) -> tuple[list[str], bool]:
     failures: list[str] = []
     if horizontal_overflow:
         failures.append("Horizontal overflow detected at mobile viewport")
@@ -244,6 +289,24 @@ def _validate_feed_contract(
         failures.append("Browser page errors were reported")
     if "Sign in to Acta" in dom or "Acta access token" in dom:
         failures.append("Acta sign-in wall rendered; pass a local --html artifact or validate with authenticated browser storage")
+        return failures, True
+    return failures, False
+
+
+def _validate_feed_contract(
+    dom: str,
+    *,
+    horizontal_overflow: bool = False,
+    console_output: str = "",
+    errors_output: str = "",
+) -> list[str]:
+    failures, auth_wall = _common_browser_failures(
+        dom,
+        horizontal_overflow=horizontal_overflow,
+        console_output=console_output,
+        errors_output=errors_output,
+    )
+    if auth_wall:
         return failures
     output_streams = _section_index(dom, "Output Streams")
     daily = _section_index(dom, "Daily life feed")
@@ -273,12 +336,64 @@ def _validate_feed_contract(
     return failures
 
 
+def _validate_jobs_contract(
+    dom: str,
+    *,
+    horizontal_overflow: bool = False,
+    console_output: str = "",
+    errors_output: str = "",
+) -> list[str]:
+    failures, auth_wall = _common_browser_failures(
+        dom,
+        horizontal_overflow=horizontal_overflow,
+        console_output=console_output,
+        errors_output=errors_output,
+    )
+    if auth_wall:
+        return failures
+
+    if not re.search(r"\bJobs\b|Source\s+Runs", dom, re.I):
+        failures.append("Jobs/source-runs identity is missing")
+
+    job_rows = _extract_text_by_class(dom, "job-row")
+    if not job_rows:
+        failures.append("No browser-rendered job rows found")
+        return failures
+
+    for index, row_text in enumerate(job_rows, start=1):
+        if not CONFIDENCE_CHIP_RE.search(row_text):
+            failures.append(f"Job row {index} is missing visible confidence chips (CONF HIGH/MED/LOW-GAP)")
+        if not re.search(r"\bLAST\s+RUN\b", row_text, re.I):
+            failures.append(f"Job row {index} is missing LAST RUN freshness copy")
+        if not re.search(r"\bSCHEDULE\b", row_text, re.I):
+            failures.append(f"Job row {index} is missing SCHEDULE copy")
+        if not re.search(r"\b(?:OPEN|SIGNED|NO\s+PAGE)\b", row_text, re.I):
+            failures.append(f"Job row {index} is missing action/status copy (OPEN/SIGNED or NO PAGE)")
+        if not re.search(r"\bSOURCE\b|\bjob_id\b", row_text, re.I):
+            failures.append(f"Job row {index} is missing source/provenance copy (SOURCE/job_id)")
+    return failures
+
+
+def _scenario_metadata(scenario: str) -> dict[str, str]:
+    if scenario == "jobs":
+        return {
+            "persona": "mobile Acta operator inspecting Jobs/source-runs freshness and confidence",
+            "scenario": "Validate Acta Jobs/source-runs rows in a narrow mobile browser viewport",
+        }
+    return {
+        "persona": "mobile Acta operator checking dashboard feed lanes",
+        "scenario": "Validate Acta dashboard feed lanes in a narrow mobile browser viewport",
+    }
+
+
 def run(args: argparse.Namespace) -> int:
     artifact_dir = Path(args.artifact_dir).expanduser().resolve()
     url = _target_url(args)
+    scenario = getattr(args, "scenario", "feed")
     try:
         result = _run_chrome(url, artifact_dir, args.timeout, args.viewport_width, args.viewport_height)
-        failures = _validate_feed_contract(
+        validate = _validate_jobs_contract if scenario == "jobs" else _validate_feed_contract
+        failures = validate(
             result.dom,
             horizontal_overflow=result.horizontal_overflow,
             console_output=result.console_output,
@@ -290,8 +405,8 @@ def run(args: argparse.Namespace) -> int:
         return 1
 
     report = {
-        "persona": "mobile Acta operator checking dashboard feed lanes",
-        "scenario": "Validate Acta dashboard feed lanes in a narrow mobile browser viewport",
+        **_scenario_metadata(scenario),
+        "scenario_key": scenario,
         "url": _report_url(result.url),
         "browser": str(result.browser_path),
         "screenshot": str(result.screenshot),
@@ -300,10 +415,13 @@ def run(args: argparse.Namespace) -> int:
         "errors_output": result.errors_output,
         "layout_metrics": result.layout_metrics or {},
         "horizontal_overflow": result.horizontal_overflow,
-        "daily_rows": len(DAILY_ROW_RE.findall(result.dom)),
-        "dev_rows": len(DEV_ROW_RE.findall(result.dom)),
         "failures": failures,
     }
+    if scenario == "jobs":
+        report["job_rows"] = len(_extract_text_by_class(result.dom, "job-row"))
+    else:
+        report["daily_rows"] = len(DAILY_ROW_RE.findall(result.dom))
+        report["dev_rows"] = len(DEV_ROW_RE.findall(result.dom))
     report_path = artifact_dir / "acta-uat-report.json"
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -316,15 +434,18 @@ def run(args: argparse.Namespace) -> int:
         return 1
 
     print("PASS Acta browser UAT")
-    print(f"Daily rows: {report['daily_rows']}")
-    print(f"Development rows: {report['dev_rows']}")
+    if scenario == "jobs":
+        print(f"Job rows: {report['job_rows']}")
+    else:
+        print(f"Daily rows: {report['daily_rows']}")
+        print(f"Development rows: {report['dev_rows']}")
     print(f"Screenshot: {result.screenshot}")
     print(f"Report: {report_path}")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Real-browser UAT harness for Acta dashboard feed separation")
+    parser = argparse.ArgumentParser(description="Real-browser UAT harness for Acta browser scenarios")
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--html", help="Path to a generated Acta dashboard HTML file")
     target.add_argument("--url", help="Published Acta URL to validate")
@@ -332,6 +453,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=int, default=30, help="Chrome render timeout in seconds")
     parser.add_argument("--viewport-width", type=int, default=390, help="Browser viewport width for mobile UAT")
     parser.add_argument("--viewport-height", type=int, default=844, help="Browser viewport height for mobile UAT")
+    parser.add_argument("--scenario", choices=("feed", "jobs"), default="feed", help="Acta UAT scenario to validate")
     return run(parser.parse_args(argv))
 
 

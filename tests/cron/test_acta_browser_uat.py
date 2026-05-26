@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from cron.acta_dashboard import collect_situation_items, render_dashboard
+from cron.acta_dashboard import collect_situation_items, render_dashboard, render_jobs_page
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -33,6 +33,33 @@ def _valid_feed_dom() -> str:
       <section class="brief-row" data-feed-lane="daily"><span class="lane-chip">Daily</span>Morning newsletter</section>
       <h2>Development sprint cycles</h2>
       <section class="brief-row" data-feed-lane="dev"><span class="lane-chip">Dev</span>Operator sprint review</section>
+    </body></html>
+    """
+
+
+def _valid_jobs_dom() -> str:
+    return """
+    <html><body>
+      <main>
+        <h1>Acta Jobs</h1>
+        <p>Source Runs show latest freshness, confidence, and operator actions.</p>
+        <article class="job-row">
+          <h2>Morning newsletter digest</h2>
+          <span class="confidence-chip">CONF HIGH</span>
+          <span>LAST RUN 2026-05-25 09:00 UTC</span>
+          <span>SCHEDULE daily</span>
+          <a>OPEN</a>
+          <small>SOURCE cron/output/daily job_id=daily</small>
+        </article>
+        <article class="job-row">
+          <h2>Vesta Startup Sprint CEO loop</h2>
+          <span class="confidence-chip">CONF LOW-GAP</span>
+          <span>LAST RUN 2026-05-25 08:30 UTC</span>
+          <span>SCHEDULE every 120m</span>
+          <span>NO PAGE</span>
+          <small>SOURCE cron/output/dev job_id=dev</small>
+        </article>
+      </main>
     </body></html>
     """
 
@@ -129,6 +156,90 @@ def test_validate_feed_contract_counts_lane_tagged_lead_as_daily_row():
     assert acta_browser_uat._validate_feed_contract(dom) == []
 
 
+def test_validate_jobs_contract_accepts_operator_useful_source_runs_dom():
+    assert acta_browser_uat._validate_jobs_contract(_valid_jobs_dom()) == []
+
+
+def test_validate_jobs_contract_accepts_real_render_jobs_page_dom(tmp_path: Path):
+    (tmp_path / "cron" / "output" / "daily").mkdir(parents=True)
+    (tmp_path / "cron" / "jobs.json").write_text(
+        json.dumps(
+            [
+                {"id": "daily", "name": "Morning newsletter digest", "schedule": "daily", "deliver": "telegram"},
+                {"id": "gap", "name": "Missing source run", "schedule": "daily", "deliver": "local"},
+            ]
+        )
+    )
+    (tmp_path / "cron" / "output" / "daily" / "2026-05-25_09-00-00.md").write_text(
+        "## Response\n\nUseful operator brief"
+    )
+
+    dom = render_jobs_page(collect_situation_items(tmp_path))
+
+    assert acta_browser_uat._validate_jobs_contract(dom) == []
+
+
+def test_validate_jobs_contract_fails_when_confidence_and_action_markers_missing():
+    dom = """
+    <html><body>
+      <h1>Jobs</h1>
+      <p>Source Runs</p>
+      <article class="job-row">
+        <h2>Morning newsletter digest</h2>
+        <span>LAST RUN 2026-05-25 09:00 UTC</span>
+        <span>SCHEDULE daily</span>
+        <small>SOURCE cron/output/daily job_id=daily</small>
+      </article>
+    </body></html>
+    """
+
+    failures = acta_browser_uat._validate_jobs_contract(dom)
+
+    assert "Job row 1 is missing visible confidence chips (CONF HIGH/MED/LOW-GAP)" in failures
+    assert "Job row 1 is missing action/status copy (OPEN/SIGNED or NO PAGE)" in failures
+
+
+def test_validate_jobs_contract_fails_when_markers_exist_outside_job_rows():
+    dom = """
+    <html><body>
+      <h1>Acta Jobs</h1>
+      <p>Source Runs <span class="confidence-chip">CONF HIGH</span> LAST RUN SCHEDULE OPEN SOURCE job_id=daily</p>
+      <article class="job-row">
+        <h2>Morning newsletter digest</h2>
+      </article>
+    </body></html>
+    """
+
+    failures = acta_browser_uat._validate_jobs_contract(dom)
+
+    assert "Job row 1 is missing visible confidence chips (CONF HIGH/MED/LOW-GAP)" in failures
+    assert "Job row 1 is missing LAST RUN freshness copy" in failures
+    assert "Job row 1 is missing SCHEDULE copy" in failures
+    assert "Job row 1 is missing action/status copy (OPEN/SIGNED or NO PAGE)" in failures
+    assert "Job row 1 is missing source/provenance copy (SOURCE/job_id)" in failures
+
+
+def test_validate_jobs_contract_reuses_common_browser_failure_checks():
+    failures = acta_browser_uat._validate_jobs_contract(
+        _valid_jobs_dom(),
+        horizontal_overflow=True,
+        console_output="Uncaught Error: boom",
+        errors_output="TypeError: failed during render",
+    )
+
+    assert "Horizontal overflow detected at mobile viewport" in failures
+    assert "Browser console contains error/exception output" in failures
+    assert "Browser page errors were reported" in failures
+
+
+def test_validate_jobs_contract_fails_on_acta_sign_in_wall():
+    failures = acta_browser_uat._validate_jobs_contract("<html><body><h1>Sign in to Acta</h1><p>Acta access token</p></body></html>")
+
+    assert failures == [
+        "Acta sign-in wall rendered; pass a local --html artifact or validate with authenticated browser storage"
+    ]
+
+
 def test_url_target_rejects_userinfo():
     args = type("Args", (), {"html": None, "url": "https://user:secret@example.com/acta"})()
 
@@ -173,6 +284,66 @@ def test_run_writes_sanitized_report_url_for_http_url(tmp_path: Path, monkeypatc
     assert "mobile" in report["scenario"].lower()
     assert report["viewport"] == {"width": 390, "height": 844}
     assert report["layout_metrics"]["innerWidth"] == 390
+
+
+def test_run_writes_jobs_report_metadata_for_jobs_scenario(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
+    screenshot = tmp_path / "uat" / "acta-uat.png"
+
+    def fake_run_chrome(url: str, artifact_dir: Path, timeout: int, viewport_width: int, viewport_height: int):
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        screenshot.write_bytes(b"png")
+        return acta_browser_uat.BrowserResult(
+            url=url,
+            dom=_valid_jobs_dom(),
+            screenshot=screenshot,
+            browser_path=Path("fake-browser"),
+            viewport_width=viewport_width,
+            viewport_height=viewport_height,
+            layout_metrics={"innerWidth": viewport_width, "innerHeight": viewport_height, "scrollWidth": viewport_width},
+        )
+
+    monkeypatch.setattr(acta_browser_uat, "_run_chrome", fake_run_chrome)
+    args = type(
+        "Args",
+        (),
+        {
+            "html": None,
+            "url": "https://example.com/acta/jobs?token=secret#frag",
+            "artifact_dir": str(tmp_path / "uat"),
+            "timeout": 1,
+            "viewport_width": 390,
+            "viewport_height": 844,
+            "scenario": "jobs",
+        },
+    )()
+
+    assert acta_browser_uat.run(args) == 0
+    output = capsys.readouterr().out
+    report = json.loads((tmp_path / "uat" / "acta-uat-report.json").read_text(encoding="utf-8"))
+    assert "Job rows: 2" in output
+    assert report["url"] == "https://example.com/acta/jobs"
+    assert report["scenario_key"] == "jobs"
+    assert report["persona"] == "mobile Acta operator inspecting Jobs/source-runs freshness and confidence"
+    assert "Jobs/source-runs" in report["scenario"]
+    assert report["job_rows"] == 2
+    assert "daily_rows" not in report
+    assert "dev_rows" not in report
+
+
+def test_main_defaults_to_feed_scenario(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    captured = {}
+
+    def fake_run(args):
+        captured["scenario"] = args.scenario
+        captured["html"] = args.html
+        return 0
+
+    html_path = tmp_path / "acta.html"
+    html_path.write_text(_valid_feed_dom(), encoding="utf-8")
+    monkeypatch.setattr(acta_browser_uat, "run", fake_run)
+
+    assert acta_browser_uat.main(["--html", str(html_path)]) == 0
+    assert captured == {"scenario": "feed", "html": str(html_path)}
 
 
 def test_run_chrome_sets_mobile_viewport_clears_and_collects_console_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
