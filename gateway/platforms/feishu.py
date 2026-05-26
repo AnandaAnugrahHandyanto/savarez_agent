@@ -3118,6 +3118,7 @@ class FeishuAdapter(BasePlatformAdapter):
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            shared_group_chat_ids=self.config.extra.get("shared_group_chat_ids", []),
         )
         return f"{session_key}:media:{event.message_type.value}"
 
@@ -3405,6 +3406,7 @@ class FeishuAdapter(BasePlatformAdapter):
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            shared_group_chat_ids=self.config.extra.get("shared_group_chat_ids", []),
         )
 
     @staticmethod
