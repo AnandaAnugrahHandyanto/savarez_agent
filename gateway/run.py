@@ -1759,6 +1759,11 @@ class GatewayRunner:
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
         self._teams_pipeline_runtime = None
         self._teams_pipeline_runtime_error: Optional[str] = None
+        # Per-board sqlite3 connections that hold a BEGIN read transaction for
+        # the gateway lifetime. They block SQLite's "last connection closing"
+        # path so wal/shm sidecars are never unlinked under our feet. See
+        # _init_wal_pinners() for the correctness rationale.
+        self._wal_pinners: dict[str, sqlite3.Connection] = {}
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
@@ -1860,6 +1865,49 @@ class GatewayRunner:
 
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
+
+        self._init_wal_pinners()
+
+
+    def _init_wal_pinners(self) -> None:
+        """Hold a BEGIN read transaction per board to block WAL sidecar unlinks.
+
+        BEGIN holds the shared lock for the connection lifetime — SELECT alone
+        releases it immediately. Without this, the last connection closing
+        triggers wal/shm unlinks that corrupt in-process FD state.
+        """
+        try:
+            from hermes_cli import kanban_db as _kb
+        except Exception:
+            return
+        try:
+            boards = _kb.list_boards(include_archived=False)
+            slugs = [b.get("slug") or _kb.DEFAULT_BOARD for b in boards]
+        except Exception:
+            slugs = [_kb.DEFAULT_BOARD]
+        for slug in slugs:
+            conn = None
+            try:
+                db_path = _kb.kanban_db_path(slug)
+                conn = sqlite3.connect(str(db_path), isolation_level=None, timeout=30)
+                # DO NOT execute COMMIT or ROLLBACK on this connection — the
+                # open transaction is what holds the shared lock.
+                conn.execute("PRAGMA query_only=ON")
+                conn.execute("BEGIN")
+                # A bare BEGIN does not acquire the shared lock until the first
+                # WAL read — SELECT 1 is a pure expression and does not touch
+                # the WAL. Reading sqlite_master establishes the read-mark that
+                # prevents SQLite from entering the "last connection closing"
+                # code path and unlinking wal/shm sidecars.
+                conn.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
+                self._wal_pinners[slug] = conn
+            except Exception as exc:
+                logger.warning("wal_pinner: could not pin board %s: %s", slug, exc)
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
 
 
     def _wire_teams_pipeline_runtime(self) -> None:
@@ -6092,6 +6140,15 @@ class GatewayRunner:
                 shutdown_cached_clients()
             except Exception as _e:
                 logger.debug("shutdown_cached_clients error: %s", _e)
+
+            # Release WAL pinner connections — SQLite rolls back the open read
+            # transaction on close, which is safe and intentional here.
+            for _slug, _pconn in list(getattr(self, "_wal_pinners", {}).items()):
+                try:
+                    _pconn.close()
+                except Exception as _e:
+                    logger.debug("wal_pinner close error for board %s: %s", _slug, _e)
+            self._wal_pinners.clear()
 
             # Close SQLite session DBs so the WAL write lock is released.
             # Without this, --replace and similar restart flows leave the
