@@ -824,10 +824,11 @@ IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
     "description": (
         "Generate high-quality images from text prompts. The underlying "
-        "backend (FAL, OpenAI, etc.) and model are user-configured and not "
-        "selectable by the agent. Returns either a URL or an absolute file "
-        "path in the `image` field; display it with markdown "
-        "![description](url-or-path) and the gateway will deliver it."
+        "backend (FAL, OpenAI, router, etc.) is user-configured. When the "
+        "active backend supports routing, the agent may request a configured "
+        "model alias. Returns either a URL or an absolute file path in the "
+        "`image` field; display it with markdown ![description](url-or-path) "
+        "and the gateway will deliver it."
     ),
     "parameters": {
         "type": "object",
@@ -841,6 +842,27 @@ IMAGE_GENERATE_SCHEMA = {
                 "enum": list(VALID_ASPECT_RATIOS),
                 "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
                 "default": DEFAULT_ASPECT_RATIO,
+            },
+            "model": {
+                "type": "string",
+                "description": "Optional configured image model alias to use when the active image_gen backend supports per-call model routing.",
+            },
+            "intent": {
+                "type": "string",
+                "description": "Optional routing hint describing the task type, such as poster, infographic, product, draft, or photorealistic.",
+            },
+            "quality": {
+                "type": "string",
+                "enum": ["low", "medium", "high"],
+                "description": "Optional routing hint for desired quality/cost tradeoff.",
+            },
+            "style": {
+                "type": "string",
+                "description": "Optional routing hint describing the visual style requested by the user.",
+            },
+            "text_heavy": {
+                "type": "boolean",
+                "description": "Set true when the image needs substantial readable text, labels, UI text, or Chinese typography.",
             },
         },
         "required": ["prompt"],
@@ -887,7 +909,7 @@ def _read_configured_image_provider():
     return None
 
 
-def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
+def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str, **routing_kwargs: Any):
     """Route the call to a plugin-registered provider when one is selected.
 
     Returns a JSON string on dispatch, or ``None`` to fall through to the
@@ -942,8 +964,17 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
 
     try:
         kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio}
-        if configured_model:
+        tool_model = routing_kwargs.get("model")
+        if isinstance(tool_model, str) and tool_model.strip():
+            kwargs["model"] = tool_model.strip()
+        elif configured_model and configured != "router":
+            # Router providers own their default-model resolution under
+            # image_gen.router; avoid forwarding stale top-level image_gen.model
+            # values left over from a different backend.
             kwargs["model"] = configured_model
+        for key in ("intent", "quality", "style", "text_heavy"):
+            if key in routing_kwargs and routing_kwargs[key] is not None:
+                kwargs[key] = routing_kwargs[key]
         result = provider.generate(**kwargs)
     except Exception as exc:
         logger.warning(
@@ -974,7 +1005,12 @@ def _handle_image_generate(args, **kw):
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
-    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
+    routing_kwargs = {
+        key: args[key]
+        for key in ("model", "intent", "quality", "style", "text_heavy")
+        if key in args and args[key] is not None
+    }
+    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio, **routing_kwargs)
     if dispatched is not None:
         return dispatched
 

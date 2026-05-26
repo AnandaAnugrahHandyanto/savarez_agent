@@ -70,7 +70,7 @@ The `fal-ai/gpt-image-1.5` and `fal-ai/gpt-image-2` request quality is pinned to
 
 ## Usage
 
-The agent-facing schema is intentionally minimal — the model picks up whatever you've configured:
+For the built-in FAL/OpenAI/xAI backends, the model normally comes from your user configuration:
 
 ```
 Generate an image of a serene mountain landscape with cherry blossoms
@@ -83,6 +83,73 @@ Create a square portrait of a wise old owl — use the typography model
 ```
 Make me a futuristic cityscape, landscape orientation
 ```
+
+When the active backend supports routing, the agent can also pass optional hints such as `model`, `intent`, `quality`, `style`, and `text_heavy` to pick a configured model alias for that call.
+
+## Router Backend for Custom Gateways
+
+Use the bundled `image_gen/router` backend when you have an OpenAI-compatible image gateway and want several image models available under one image generation provider.
+
+```bash
+hermes plugins enable image_gen/router
+hermes config set image_gen.provider router
+```
+
+Configure aliases in `config.yaml`:
+
+```yaml
+image_gen:
+  provider: router
+  router:
+    default_model: nano-banana-pro
+    defaults:
+      provider: openai-compatible
+      base_url_env: IMAGE_GATEWAY_BASE_URL
+      api_key_env: IMAGE_GATEWAY_API_KEY
+    models:
+      nano-banana-pro:
+        model: gemini-3-pro-image-preview
+        display: Nano Banana Pro
+        strengths: [text_rendering, chinese_text, poster, infographic]
+        default_params:
+          quality: high
+      gpt-image-2:
+        model: gpt-image-2
+        display: GPT Image 2
+        strengths: [photorealism, product_mockup, text_rendering]
+      flux-fast:
+        model: flux-kontext-lite
+        display: Flux Fast
+        strengths: [fast_draft, style_exploration]
+```
+
+Put credentials in `.env`:
+
+```env
+IMAGE_GATEWAY_BASE_URL=https://your-gateway.example/v1
+IMAGE_GATEWAY_API_KEY=<your-api-key>
+```
+
+Then ask naturally:
+
+```
+Generate a Chinese product poster with readable title text using nano-banana-pro
+```
+
+or call the tool with explicit routing hints:
+
+```json
+{
+  "prompt": "Chinese launch poster for a new AI image gateway",
+  "aspect_ratio": "portrait",
+  "model": "nano-banana-pro",
+  "intent": "poster",
+  "quality": "high",
+  "text_heavy": true
+}
+```
+
+The router currently supports OpenAI-compatible `POST /v1/images/generations` gateways. It accepts responses with `data[0].b64_json`, `data[0].url`, or `data[0].image_url`.
 
 ## Aspect Ratios
 
