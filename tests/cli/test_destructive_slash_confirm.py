@@ -329,3 +329,50 @@ def test_confirm_destructive_slash_no_skip_token_still_prompts():
 
     # Prompt was reached and returned cancel → None.
     assert result is None
+
+
+def test_confirm_destructive_slash_prints_tmux_escape_hatch_hint(capsys, monkeypatch):
+    """In tmux, destructive slash confirms fail closed and expose --yes."""
+    from cli import HermesCLI
+
+    def _explode(**_kw):
+        raise AssertionError("tmux path must not enter the queue modal")
+
+    self_ = SimpleNamespace(
+        _app=object(),
+        _prompt_text_input_modal=_explode,
+    )
+    self_._normalize_slash_confirm_choice = _bound(
+        HermesCLI._normalize_slash_confirm_choice, self_,
+    )
+    self_._split_destructive_skip = HermesCLI._split_destructive_skip
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,123,0")
+
+    with patch(
+        "cli.load_cli_config",
+        return_value={"approvals": {"destructive_slash_confirm": True}},
+    ):
+        result = _bound(HermesCLI._confirm_destructive_slash, self_)(
+            "new", "detail", cmd_original="/new My Session",
+        )
+
+    assert result is None
+    out = capsys.readouterr().out
+    assert "/new requires confirmation" in out
+    assert "can stall in tmux/screen" in out
+    assert "Action cancelled" in out
+    assert "/new --yes" in out
+
+
+def test_cancelled_destructive_slash_commands_continue_cli():
+    """Cancel paths must return True from process_command, not exit the CLI."""
+    from cli import HermesCLI
+
+    self_ = SimpleNamespace(
+        _confirm_destructive_slash=lambda *_args, **_kwargs: None,
+        _split_destructive_skip=HermesCLI._split_destructive_skip,
+    )
+
+    assert _bound(HermesCLI.process_command, self_)("/clear") is True
+    assert _bound(HermesCLI.process_command, self_)("/new") is True
+    assert _bound(HermesCLI.process_command, self_)("/undo") is True
