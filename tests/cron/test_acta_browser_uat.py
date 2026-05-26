@@ -64,6 +64,33 @@ def _valid_jobs_dom() -> str:
     """
 
 
+def _valid_outputs_dom() -> str:
+    return """
+    <html><body>
+      <main>
+        <h1>Outputs</h1>
+        <p>Signed source objects in the Persistent catalog.</p>
+        <article class="output-row">
+          <h2>Morning operator brief</h2>
+          <span>CONF HIGH</span>
+          <span>SOURCE morning_digest JOB daily ID 2026-05-25_09-00-00</span>
+          <span>SCHEDULE daily brief OUTPUT 2h ago</span>
+          <a>OPEN</a>
+          <span>UNREAD</span>
+          <button>Mark read</button>
+        </article>
+        <article class="output-row">
+          <h2>Catalog-only artifact</h2>
+          <span>CATALOG</span>
+          <span>SOURCE system ID catalog-17</span>
+          <span>PINNED catalog age 1 day ago</span>
+          <span>No public link</span>
+        </article>
+      </main>
+    </body></html>
+    """
+
+
 def test_acta_browser_uat_harness_validates_feed_lane_contract(tmp_path: Path):
     if not _browser_cli_available():
         pytest.skip("agent-browser/npx unavailable; pure validation tests still cover feed contract")
@@ -240,6 +267,99 @@ def test_validate_jobs_contract_fails_on_acta_sign_in_wall():
     ]
 
 
+def test_validate_outputs_contract_accepts_operator_useful_outputs_dom():
+    assert acta_browser_uat._validate_outputs_contract(_valid_outputs_dom()) == []
+
+
+def test_validate_outputs_contract_fails_when_signed_open_row_lacks_read_state_and_toggle():
+    dom = """
+    <html><body>
+      <h1>Outputs</h1>
+      <article class="output-row">
+        <h2>Latest artifact</h2>
+        <span>CONF MED</span>
+        <span>SOURCE digest JOB daily ID 2026-05-25_09-00-00</span>
+        <span>SCHEDULE daily brief OUTPUT 10m ago</span>
+        <a>SIGNED</a>
+      </article>
+    </body></html>
+    """
+
+    failures = acta_browser_uat._validate_outputs_contract(dom)
+
+    assert "Output row 1 is missing read/unread state" in failures
+    assert "Output row 1 is missing Mark read/Mark unread toggle" in failures
+
+
+def test_validate_outputs_contract_does_not_count_mark_read_as_read_state():
+    dom = """
+    <html><body>
+      <h1>Outputs</h1>
+      <article class="output-row">
+        <h2>Latest artifact</h2>
+        <span>CONF MED</span>
+        <span>SOURCE digest JOB daily ID 2026-05-25_09-00-00</span>
+        <span>SCHEDULE daily brief OUTPUT 10m ago</span>
+        <a>OPEN</a>
+        <button>Mark read</button>
+      </article>
+    </body></html>
+    """
+
+    failures = acta_browser_uat._validate_outputs_contract(dom)
+
+    assert "Output row 1 is missing read/unread state" in failures
+    assert "Output row 1 is missing Mark read/Mark unread toggle" not in failures
+
+
+def test_validate_outputs_contract_requires_source_or_job_plus_id_provenance():
+    dom = """
+    <html><body>
+      <h1>Outputs</h1>
+      <article class="output-row">
+        <h2>Latest artifact</h2>
+        <span>CONF MED</span>
+        <span>JOB daily</span>
+        <span>SCHEDULE daily brief OUTPUT 10m ago</span>
+        <a>No signed link</a>
+      </article>
+    </body></html>
+    """
+
+    assert "Output row 1 is missing source/provenance copy (SOURCE or JOB/ID)" in acta_browser_uat._validate_outputs_contract(dom)
+
+
+def test_validate_outputs_contract_fails_on_raw_log_leakage_but_not_operator_empty_copy():
+    assert acta_browser_uat._validate_outputs_contract(_valid_outputs_dom().replace("</main>", "<p>FOLLOW-UP: No visible response</p></main>")) == []
+
+    failures = acta_browser_uat._validate_outputs_contract(
+        _valid_outputs_dom().replace("</main>", "<pre>## Prompt\ntool output\n/Users/mozzie/.hermes\napi_key=secret</pre></main>")
+    )
+
+    assert "Outputs DOM contains raw prompt/tool/path leakage" in failures
+
+
+def test_validate_outputs_contract_reuses_common_browser_failure_checks():
+    failures = acta_browser_uat._validate_outputs_contract(
+        _valid_outputs_dom(),
+        horizontal_overflow=True,
+        console_output="Uncaught Error: boom",
+        errors_output="TypeError: failed during render",
+    )
+
+    assert "Horizontal overflow detected at mobile viewport" in failures
+    assert "Browser console contains error/exception output" in failures
+    assert "Browser page errors were reported" in failures
+
+
+def test_validate_outputs_contract_fails_on_acta_sign_in_wall_only():
+    failures = acta_browser_uat._validate_outputs_contract("<html><body><h1>Sign in to Acta</h1><p>Acta access token</p></body></html>")
+
+    assert failures == [
+        "Acta sign-in wall rendered; pass a local --html artifact or validate with authenticated browser storage"
+    ]
+
+
 def test_url_target_rejects_userinfo():
     args = type("Args", (), {"html": None, "url": "https://user:secret@example.com/acta"})()
 
@@ -330,6 +450,51 @@ def test_run_writes_jobs_report_metadata_for_jobs_scenario(tmp_path: Path, monke
     assert "dev_rows" not in report
 
 
+def test_run_writes_outputs_report_metadata_for_outputs_scenario(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
+    screenshot = tmp_path / "uat" / "acta-uat.png"
+
+    def fake_run_chrome(url: str, artifact_dir: Path, timeout: int, viewport_width: int, viewport_height: int):
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        screenshot.write_bytes(b"png")
+        return acta_browser_uat.BrowserResult(
+            url=url,
+            dom=_valid_outputs_dom(),
+            screenshot=screenshot,
+            browser_path=Path("fake-browser"),
+            viewport_width=viewport_width,
+            viewport_height=viewport_height,
+            layout_metrics={"innerWidth": viewport_width, "innerHeight": viewport_height, "scrollWidth": viewport_width},
+        )
+
+    monkeypatch.setattr(acta_browser_uat, "_run_chrome", fake_run_chrome)
+    args = type(
+        "Args",
+        (),
+        {
+            "html": None,
+            "url": "https://example.com/acta/outputs?token=secret#frag",
+            "artifact_dir": str(tmp_path / "uat"),
+            "timeout": 1,
+            "viewport_width": 390,
+            "viewport_height": 844,
+            "scenario": "outputs",
+        },
+    )()
+
+    assert acta_browser_uat.run(args) == 0
+    output = capsys.readouterr().out
+    report = json.loads((tmp_path / "uat" / "acta-uat-report.json").read_text(encoding="utf-8"))
+    assert "Output rows: 2" in output
+    assert report["url"] == "https://example.com/acta/outputs"
+    assert report["scenario_key"] == "outputs"
+    assert report["persona"] == "mobile Acta operator inspecting Outputs shelf artifacts"
+    assert "Outputs shelf" in report["scenario"]
+    assert report["output_rows"] == 2
+    assert "job_rows" not in report
+    assert "daily_rows" not in report
+    assert "dev_rows" not in report
+
+
 def test_main_defaults_to_feed_scenario(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     captured = {}
 
@@ -344,6 +509,22 @@ def test_main_defaults_to_feed_scenario(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
     assert acta_browser_uat.main(["--html", str(html_path)]) == 0
     assert captured == {"scenario": "feed", "html": str(html_path)}
+
+
+def test_main_accepts_outputs_scenario(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    captured = {}
+
+    def fake_run(args):
+        captured["scenario"] = args.scenario
+        captured["html"] = args.html
+        return 0
+
+    html_path = tmp_path / "acta.html"
+    html_path.write_text(_valid_outputs_dom(), encoding="utf-8")
+    monkeypatch.setattr(acta_browser_uat, "run", fake_run)
+
+    assert acta_browser_uat.main(["--html", str(html_path), "--scenario", "outputs"]) == 0
+    assert captured == {"scenario": "outputs", "html": str(html_path)}
 
 
 def test_run_chrome_sets_mobile_viewport_clears_and_collects_console_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

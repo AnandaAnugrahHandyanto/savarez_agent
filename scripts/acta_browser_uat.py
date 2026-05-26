@@ -28,6 +28,11 @@ DEV_JOB_RE = re.compile(
     re.I,
 )
 CONFIDENCE_CHIP_RE = re.compile(r"\bCONF\s+(?:HIGH|MED|LOW[-/]GAP)\b", re.I)
+OUTPUT_CONFIDENCE_RE = re.compile(r"\b(?:CONF\s+(?:HIGH|MED|LOW[-/]GAP)|CATALOG)\b", re.I)
+OUTPUT_LEAK_RE = re.compile(
+    r"##\s*(?:Prompt|Tool)\b|tool\s+output|Traceback|/Users/|C:\\Users\\|HERMES_HOME|api_key=",
+    re.I,
+)
 
 
 class _ClassTextExtractor(HTMLParser):
@@ -374,7 +379,67 @@ def _validate_jobs_contract(
     return failures
 
 
+def _validate_outputs_contract(
+    dom: str,
+    *,
+    horizontal_overflow: bool = False,
+    console_output: str = "",
+    errors_output: str = "",
+) -> list[str]:
+    failures, auth_wall = _common_browser_failures(
+        dom,
+        horizontal_overflow=horizontal_overflow,
+        console_output=console_output,
+        errors_output=errors_output,
+    )
+    if auth_wall:
+        return failures
+
+    if OUTPUT_LEAK_RE.search(dom):
+        failures.append("Outputs DOM contains raw prompt/tool/path leakage")
+
+    if not re.search(r"\bOutputs\b|Signed\s+source\s+objects|Persistent\s+catalog", dom, re.I):
+        failures.append("Outputs shelf identity is missing")
+
+    output_rows = _extract_text_by_class(dom, "output-row")
+    if not output_rows:
+        failures.append("No browser-rendered output rows found")
+        return failures
+
+    for index, row_text in enumerate(output_rows, start=1):
+        if not OUTPUT_CONFIDENCE_RE.search(row_text):
+            failures.append(f"Output row {index} is missing visible confidence/status copy (CONF HIGH/MED/LOW-GAP or CATALOG)")
+        has_source = bool(re.search(r"\bSOURCE\b", row_text, re.I))
+        has_job_id = bool(re.search(r"\bJOB\b", row_text, re.I) and re.search(r"\bID\b", row_text, re.I))
+        if not (has_source or has_job_id):
+            failures.append(f"Output row {index} is missing source/provenance copy (SOURCE or JOB/ID)")
+        if not re.search(
+            r"\bSCHEDULE\b|\bbrief\b|\bsystem\b|\bOUTPUT\b|\bPINNED\b|\b\d+\s*(?:m|min|h|hr|d|day)s?\s+ago\b|\bjust\s+now\b|\bage\b|\bcatalog\b",
+            row_text,
+            re.I,
+        ):
+            failures.append(f"Output row {index} is missing freshness/category metadata")
+        if not re.search(r"\b(?:SIGNED|OPEN|No\s+signed\s+link|No\s+public\s+link)\b", row_text, re.I):
+            failures.append(f"Output row {index} is missing action/status copy (SIGNED/OPEN or no-link status)")
+
+        actionable = re.search(r"\b(?:SIGNED|OPEN)\b", row_text, re.I) and not re.search(
+            r"\bNo\s+(?:signed|public)\s+link\b", row_text, re.I
+        )
+        if actionable:
+            row_without_toggle_copy = re.sub(r"\bMark\s+(?:read|unread)\b", " ", row_text, flags=re.I)
+            if not re.search(r"\b(?:READ|UNREAD)\b", row_without_toggle_copy, re.I):
+                failures.append(f"Output row {index} is missing read/unread state")
+            if not re.search(r"\bMark\s+(?:read|unread)\b", row_text, re.I):
+                failures.append(f"Output row {index} is missing Mark read/Mark unread toggle")
+    return failures
+
+
 def _scenario_metadata(scenario: str) -> dict[str, str]:
+    if scenario == "outputs":
+        return {
+            "persona": "mobile Acta operator inspecting Outputs shelf artifacts",
+            "scenario": "Validate Acta Outputs shelf artifact rows in a narrow mobile browser viewport",
+        }
     if scenario == "jobs":
         return {
             "persona": "mobile Acta operator inspecting Jobs/source-runs freshness and confidence",
@@ -392,7 +457,12 @@ def run(args: argparse.Namespace) -> int:
     scenario = getattr(args, "scenario", "feed")
     try:
         result = _run_chrome(url, artifact_dir, args.timeout, args.viewport_width, args.viewport_height)
-        validate = _validate_jobs_contract if scenario == "jobs" else _validate_feed_contract
+        if scenario == "outputs":
+            validate = _validate_outputs_contract
+        elif scenario == "jobs":
+            validate = _validate_jobs_contract
+        else:
+            validate = _validate_feed_contract
         failures = validate(
             result.dom,
             horizontal_overflow=result.horizontal_overflow,
@@ -417,7 +487,9 @@ def run(args: argparse.Namespace) -> int:
         "horizontal_overflow": result.horizontal_overflow,
         "failures": failures,
     }
-    if scenario == "jobs":
+    if scenario == "outputs":
+        report["output_rows"] = len(_extract_text_by_class(result.dom, "output-row"))
+    elif scenario == "jobs":
         report["job_rows"] = len(_extract_text_by_class(result.dom, "job-row"))
     else:
         report["daily_rows"] = len(DAILY_ROW_RE.findall(result.dom))
@@ -434,7 +506,9 @@ def run(args: argparse.Namespace) -> int:
         return 1
 
     print("PASS Acta browser UAT")
-    if scenario == "jobs":
+    if scenario == "outputs":
+        print(f"Output rows: {report['output_rows']}")
+    elif scenario == "jobs":
         print(f"Job rows: {report['job_rows']}")
     else:
         print(f"Daily rows: {report['daily_rows']}")
@@ -453,7 +527,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=int, default=30, help="Chrome render timeout in seconds")
     parser.add_argument("--viewport-width", type=int, default=390, help="Browser viewport width for mobile UAT")
     parser.add_argument("--viewport-height", type=int, default=844, help="Browser viewport height for mobile UAT")
-    parser.add_argument("--scenario", choices=("feed", "jobs"), default="feed", help="Acta UAT scenario to validate")
+    parser.add_argument("--scenario", choices=("feed", "jobs", "outputs"), default="feed", help="Acta UAT scenario to validate")
     return run(parser.parse_args(argv))
 
 
