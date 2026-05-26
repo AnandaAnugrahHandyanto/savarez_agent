@@ -6116,6 +6116,11 @@ def board_stats(conn: sqlite3.Connection) -> dict:
         if oldest_row and oldest_row["ts"] is not None else None
     )
 
+    archived_row = conn.execute(
+        "SELECT COUNT(*) AS n FROM tasks WHERE status = 'archived'"
+    ).fetchone()
+    archived_total = int(archived_row["n"]) if archived_row else 0
+
     total = sum(by_status.values())
     done_total = by_status.get("done", 0)
 
@@ -6127,6 +6132,7 @@ def board_stats(conn: sqlite3.Connection) -> dict:
         "total": total,
         "open_total": total - done_total,
         "done_total": done_total,
+        "archived_total": archived_total,
     }
 
 

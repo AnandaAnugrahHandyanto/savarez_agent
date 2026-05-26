@@ -232,6 +232,7 @@ def test_board_stats_includes_total_counts(kanban_home):
     assert stats["total"] == 4
     assert stats["open_total"] == 3
     assert stats["done_total"] == 1
+    assert stats["archived_total"] == 1
     assert stats["by_status"] == {"ready": 2, "todo": 1, "done": 1}
     assert stats["by_assignee"]["alice"]["ready"] == 1
     assert stats["by_assignee"]["bob"]["ready"] == 1
