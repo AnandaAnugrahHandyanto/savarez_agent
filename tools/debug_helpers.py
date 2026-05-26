@@ -50,6 +50,10 @@ class DebugSession:
 
         if self.enabled:
             self.log_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(self.log_dir, 0o700)
+            except OSError:
+                pass
             logger.debug("%s debug mode enabled - Session ID: %s",
                          tool_name, self.session_id)
 
@@ -84,6 +88,10 @@ class DebugSession:
             }
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=2, ensure_ascii=False)
+            try:
+                os.chmod(filepath, 0o600)
+            except OSError:
+                pass
             logger.debug("%s debug log saved: %s", self.tool_name, filepath)
         except Exception as e:
             logger.error("Error saving %s debug log: %s", self.tool_name, e)
