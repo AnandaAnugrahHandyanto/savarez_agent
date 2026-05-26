@@ -1379,6 +1379,104 @@ def is_persistent_env(task_id: str) -> bool:
 
 
 
+def reconcile_orphan_sandboxes() -> Dict[str, int]:
+    """Reap sandboxes left running by a previous gateway process.
+
+    The idle reaper (``_cleanup_inactive_envs``) only walks the in-process
+    ``_active_environments`` dict, so any ``hermes-*`` container or Daytona
+    sandbox that survived the previous gateway exit is invisible to it and
+    leaks indefinitely (issue #28807).  This sweeps the configured backends'
+    own listings and removes anything that isn't tracked in this process.
+
+    Returns a dict of ``{backend: reaped_count}`` for logging.  Failures in
+    one backend never raise; they're logged and the next backend is tried.
+    """
+    reaped: Dict[str, int] = {}
+
+    # ---- Docker backend ----
+    try:
+        from tools.environments.docker import find_docker
+        docker_exe = find_docker()
+        if docker_exe:
+            # Match the naming scheme used by DockerEnvironment: "hermes-<hex>"
+            result = subprocess.run(
+                [docker_exe, "ps", "-a", "--filter", "name=^hermes-",
+                 "--format", "{{.Names}}"],
+                capture_output=True, text=True, timeout=15, check=False,
+            )
+            names = [n.strip() for n in (result.stdout or "").splitlines() if n.strip()]
+            # In-process containers are tracked by task_id, not container name —
+            # gather the live container ids/names so we don't kill our own.
+            live_names: set = set()
+            with _env_lock:
+                for env in _active_environments.values():
+                    cid = getattr(env, "_container_id", None)
+                    if cid:
+                        live_names.add(cid)
+                        live_names.add(cid[:12])
+                    # DockerEnvironment doesn't store the name field, so a
+                    # name-collision check happens via container id below.
+            count = 0
+            for name in names:
+                if name in live_names:
+                    continue
+                try:
+                    subprocess.run(
+                        [docker_exe, "rm", "-f", name],
+                        capture_output=True, text=True, timeout=30, check=False,
+                    )
+                    logger.info("Reconciled orphan docker sandbox: %s", name)
+                    count += 1
+                except Exception as e:
+                    logger.warning("Failed to reap docker sandbox %s: %s", name, e)
+            if count:
+                reaped["docker"] = count
+    except Exception as e:
+        logger.debug("Docker orphan sweep skipped: %s", e)
+
+    # ---- Daytona backend ----
+    # Only attempt if the SDK is importable AND Daytona creds are configured;
+    # otherwise the SDK raises at construction and we just skip silently.
+    try:
+        if os.environ.get("DAYTONA_API_KEY"):
+            from daytona import Daytona  # type: ignore
+            client = Daytona()
+            in_process_ids: set = set()
+            with _env_lock:
+                for env in _active_environments.values():
+                    sb = getattr(env, "_sandbox", None)
+                    sid = getattr(sb, "id", None)
+                    if sid:
+                        in_process_ids.add(sid)
+            count = 0
+            # The 0.108+ SDK returns an iterator; tolerate either shape.
+            try:
+                results = client.list(labels={"hermes_task_id": ""}, limit=1000)
+            except TypeError:
+                results = client.list()
+            for sb in results or []:
+                name = getattr(sb, "name", "") or ""
+                sid = getattr(sb, "id", None)
+                if not name.startswith("hermes-"):
+                    continue
+                if sid in in_process_ids:
+                    continue
+                try:
+                    client.delete(sb)
+                    logger.info("Reconciled orphan daytona sandbox: %s (%s)", name, sid)
+                    count += 1
+                except Exception as e:
+                    logger.warning("Failed to reap daytona sandbox %s: %s", name, e)
+            if count:
+                reaped["daytona"] = count
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.debug("Daytona orphan sweep skipped: %s", e)
+
+    return reaped
+
+
 def cleanup_all_environments():
     """Clean up ALL active environments. Use with caution."""
     task_ids = list(_active_environments.keys())

@@ -4065,6 +4065,18 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("Process checkpoint recovery: %s", e)
 
+        # Reap sandboxes orphaned by a previous gateway process (#28807).
+        # The idle reaper only walks the in-process tracking dict, so any
+        # hermes-* container / Daytona sandbox left running by the prior
+        # process would leak forever.  Sweep configured backends here.
+        try:
+            from tools.terminal_tool import reconcile_orphan_sandboxes
+            reaped = reconcile_orphan_sandboxes()
+            if reaped:
+                logger.info("Reconciled orphan sandboxes from previous run: %s", reaped)
+        except Exception as e:
+            logger.warning("Orphan sandbox reconciliation failed: %s", e)
+
         # Suspend sessions that were active when the gateway last exited.
         # This prevents stuck sessions from being blindly resumed on restart,
         # which can create an unrecoverable loop (#7536).  Suspended sessions
