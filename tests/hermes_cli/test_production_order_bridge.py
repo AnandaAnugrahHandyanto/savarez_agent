@@ -85,10 +85,12 @@ from hermes_cli.production_order_dispatch import (
     build_profile_task_envelope,
     dispatch_event_to_dict,
     dispatch_manifest_for_order,
+    ingest_profile_result_packet,
     list_dispatch_events,
     log_dispatch_event,
     manual_fallback_handoff_for_envelope,
     profile_task_envelope_for_order,
+    validate_profile_result_packet,
 )
 from hermes_cli.kanban import _cmd_production_order
 
@@ -158,8 +160,10 @@ def architect_spec_packet(production_order_id: str) -> dict:
     """Minimal ArchitectOS result/spec packet for Slice 6 tests."""
     return {
         "production_order_id": production_order_id,
+        "packet_type": "architect_spec_packet",
         "stage": "architect_spec",
         "owner_profile": "architect_os",
+        "source_state": "ARCHITECT_SPEC",
         "objective": "Specify the bounded Slice 6 handoff bridge.",
         "source_truth": [WORKFLOW_SPEC_SOURCE],
         "scope": ["Attach a DevOS handoff packet and advance the PO state."],
@@ -188,6 +192,7 @@ def devos_build_packet(production_order_id: str) -> dict:
     """Minimal DevOS build/result packet for Slice 7 tests."""
     return {
         "production_order_id": production_order_id,
+        "packet_type": "devos_build_packet",
         "owner_profile": "dev_os",
         "source_state": "ARCHITECT_READY_FOR_DEV",
         "result_type": "build_complete",
@@ -304,6 +309,7 @@ def architect_reconcile_packet(
     """Minimal ArchitectOS reconciliation packet for happy-path tests."""
     return {
         "production_order_id": production_order_id,
+        "packet_type": "architect_reconcile_packet",
         "owner_profile": "architect_os",
         "source_state": source_state,
         "reconcile_result": "accepted",
@@ -2086,6 +2092,186 @@ def test_build_manual_fallback_handoff_is_read_only(conn, sample_brief):
     assert after_tasks == before_tasks
     assert after_events == before_events
     assert handoff.production_order_id == po.production_order_id
+
+
+@pytest.mark.parametrize(
+    ("factory", "packet_factory", "expected_bridge", "expected_profile", "card_index"),
+    [
+        (
+            create_architect_spec_order,
+            architect_spec_packet,
+            "run_architect_spec_bridge",
+            "architect_os",
+            1,
+        ),
+        (
+            create_ready_for_dev_order,
+            devos_build_packet,
+            "run_devos_complete_bridge",
+            "dev_os",
+            2,
+        ),
+        (
+            create_audit_passed_order,
+            architect_reconcile_packet,
+            "run_architect_reconcile_bridge",
+            "architect_os",
+            4,
+        ),
+    ],
+)
+def test_ingest_profile_result_packet_accepts_freezes_and_logs_dispatch_event(
+    conn,
+    sample_brief,
+    factory,
+    packet_factory,
+    expected_bridge,
+    expected_profile,
+    card_index,
+):
+    po = factory(conn, sample_brief)
+    before = [order for order in list_production_orders(conn) if order.production_order_id == po.production_order_id][0]
+    before_event_rows = conn.execute(
+        "SELECT event_type, from_state, to_state, owner_profile FROM production_order_events WHERE production_order_id = ? ORDER BY id",
+        (po.production_order_id,),
+    ).fetchall()
+    before_task_rows = conn.execute(
+        "SELECT id, status, current_state FROM tasks WHERE production_order_id = ? ORDER BY id",
+        (po.production_order_id,),
+    ).fetchall()
+
+    packet = packet_factory(po.production_order_id)
+    packet["packet_id"] = f"pkt-{card_index}"
+    result = ingest_profile_result_packet(conn, po.production_order_id, packet)
+
+    after = [order for order in list_production_orders(conn) if order.production_order_id == po.production_order_id][0]
+    target_card = kb.get_task(conn, po.child_kanban_card_ids[card_index])
+    assert target_card is not None
+    assert target_card.body is not None
+    assert "--- RESULT PACKET ---" in target_card.body
+    assert f'"packet_id": "{packet["packet_id"]}"' in target_card.body
+
+    assert result == json.loads(json.dumps(result))
+    assert result["accepted"] is True
+    assert result["production_order_id"] == po.production_order_id
+    assert result["source_state"] == before.current_state
+    assert result["owner_profile"] == expected_profile
+    assert result["target_profile"] == expected_profile
+    assert result["child_kanban_card_id"] == po.child_kanban_card_ids[card_index]
+    assert result["packet_id"] == packet["packet_id"]
+    assert result["bridge_function"] == expected_bridge
+    assert result["runtime_action"].startswith(f"{expected_bridge}(")
+    assert result["next_action"] == result["runtime_action"]
+    assert result["error"] is None
+
+    dispatch_events = list_dispatch_events(conn, production_order_id=po.production_order_id)
+    assert dispatch_events[-1]["event_type"] == "packet_validated"
+    assert dispatch_events[-1]["result"] == "accepted"
+    assert dispatch_events[-1]["packet_id"] == packet["packet_id"]
+    assert dispatch_events[-1]["next_action"] == result["runtime_action"]
+
+    after_event_rows = conn.execute(
+        "SELECT event_type, from_state, to_state, owner_profile FROM production_order_events WHERE production_order_id = ? ORDER BY id",
+        (po.production_order_id,),
+    ).fetchall()
+    assert len(after_event_rows) == len(before_event_rows) + 1
+    assert after_event_rows[-1]["event_type"] == "packet_validated"
+    assert after.current_state == before.current_state
+    assert after.current_owner_profile == before.current_owner_profile
+    assert after.stage_history == before.stage_history
+
+    task_rows = conn.execute(
+        "SELECT id, status, current_state FROM tasks WHERE production_order_id = ? ORDER BY id",
+        (po.production_order_id,),
+    ).fetchall()
+    assert [(row["id"], row["status"], row["current_state"]) for row in task_rows] == [
+        (row["id"], row["status"], row["current_state"]) for row in before_task_rows
+    ]
+
+
+def test_ingest_profile_result_packet_rejects_free_text_and_logs_without_freezing(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    target_card = kb.get_task(conn, po.child_kanban_card_ids[2])
+    assert target_card is not None
+    before_body = target_card.body or ""
+
+    result = ingest_profile_result_packet(
+        conn,
+        po.production_order_id,
+        "looks good ship it",
+    )
+
+    refreshed_card = kb.get_task(conn, po.child_kanban_card_ids[2])
+    assert refreshed_card is not None
+    assert refreshed_card.body == before_body
+    assert result["accepted"] is False
+    assert result["error"] == "result packet must be a JSON object"
+    assert result["bridge_function"] == "run_devos_complete_bridge"
+    assert result["runtime_action"].startswith("run_devos_complete_bridge(")
+    assert result["next_action"] == "manual_review_rejected_packet"
+
+    dispatch_events = list_dispatch_events(conn, production_order_id=po.production_order_id)
+    assert dispatch_events[-1]["event_type"] == "packet_rejected"
+    assert dispatch_events[-1]["result"] == "rejected"
+    assert dispatch_events[-1]["error"] == "result packet must be a JSON object"
+
+
+def test_ingest_profile_result_packet_rejects_mismatched_or_unsafe_packet_without_state_transition(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    envelope = build_profile_task_envelope(conn, po.production_order_id)
+    packet = devos_build_packet(po.production_order_id)
+    packet["packet_id"] = "pkt-reject"
+    packet["current_owner_profile"] = "audit_os"
+
+    with pytest.raises(ValueError, match="mutate workflow state directly"):
+        validate_profile_result_packet(envelope, packet)
+
+    packet.pop("current_owner_profile")
+    packet["production_order_id"] = "PO-wrong"
+    before = [order for order in list_production_orders(conn) if order.production_order_id == po.production_order_id][0]
+    result = ingest_profile_result_packet(conn, po.production_order_id, packet)
+    after = [order for order in list_production_orders(conn) if order.production_order_id == po.production_order_id][0]
+
+    assert result["accepted"] is False
+    assert "does not match the active production order" in result["error"]
+    assert after.current_state == before.current_state
+    assert after.current_owner_profile == before.current_owner_profile
+    assert after.stage_history == before.stage_history
+
+    target_card = kb.get_task(conn, po.child_kanban_card_ids[2])
+    assert target_card is not None
+    assert "pkt-reject" not in (target_card.body or "")
+
+
+def test_ingest_profile_result_packet_does_not_call_bridge_function_or_pollute_stage_history(conn, sample_brief):
+    po = create_architect_spec_order(conn, sample_brief)
+    before = [order for order in list_production_orders(conn) if order.production_order_id == po.production_order_id][0]
+    before_event_types = [entry["event_type"] for entry in conn.execute(
+        "SELECT event_type FROM production_order_events WHERE production_order_id = ? ORDER BY id",
+        (po.production_order_id,),
+    ).fetchall()]
+
+    result = ingest_profile_result_packet(
+        conn,
+        po.production_order_id,
+        architect_spec_packet(po.production_order_id),
+    )
+    after = [order for order in list_production_orders(conn) if order.production_order_id == po.production_order_id][0]
+    after_event_types = [entry["event_type"] for entry in conn.execute(
+        "SELECT event_type FROM production_order_events WHERE production_order_id = ? ORDER BY id",
+        (po.production_order_id,),
+    ).fetchall()]
+
+    assert result["accepted"] is True
+    assert after.current_state == before.current_state == "ARCHITECT_SPEC"
+    assert after.current_owner_profile == before.current_owner_profile == "architect_os"
+    assert after.stage_history == before.stage_history
+    assert after_event_types[-1] == "packet_validated"
+    assert "architect_spec_completed" not in after_event_types[len(before_event_types):]
+
+    devos_card = kb.get_task(conn, po.child_kanban_card_ids[2])
+    assert devos_card is not None
+    assert "--- HANDOFF PACKET ---" not in (devos_card.body or "")
 
 
 def test_manual_fallback_dispatch_events_can_be_logged_without_mutating_cards(conn, sample_brief):

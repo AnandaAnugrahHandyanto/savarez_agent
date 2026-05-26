@@ -25,9 +25,13 @@ from .production_order_db import (
     StageEntry,
     WORKFLOW_SPEC_SOURCE,
     _parse_source_brief,
+    freeze_result_on_card,
     get_brief_value,
     list_production_orders,
     log_workflow_event,
+    validate_architect_reconcile_packet,
+    validate_architect_spec_packet,
+    validate_devos_build_packet,
 )
 
 
@@ -133,6 +137,24 @@ class ManualFallbackHandoff:
         return data
 
 
+@dataclass(frozen=True)
+class ResultPacketIngestion:
+    accepted: bool
+    production_order_id: str
+    source_state: str
+    owner_profile: str
+    target_profile: str
+    child_kanban_card_id: str
+    packet_id: str | None
+    bridge_function: str
+    runtime_action: str
+    error: str | None
+    next_action: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 _ENVELOPE_RESULT_FIELD_MAP: dict[str, tuple[str, ...]] = {
     "architect_handoff_packet": tuple(
         sorted({"production_order_id", *ARCHITECT_HANDOFF_TEMPLATE.keys()})
@@ -194,6 +216,248 @@ def build_manual_fallback_handoff(
     """Load a production order from SQLite and build its manual fallback handoff."""
     envelope = build_profile_task_envelope(conn, production_order_id)
     return manual_fallback_handoff_for_envelope(envelope)
+
+
+def ingest_profile_result_packet(
+    conn: sqlite3.Connection,
+    production_order_id: str,
+    result_packet: Any,
+) -> dict[str, Any]:
+    """Validate and freeze a returned profile result packet without advancing state."""
+    envelope = build_profile_task_envelope(conn, production_order_id)
+    bridge_function, runtime_action = _resolve_ingestion_runtime_action(envelope)
+    packet_id = _packet_id(result_packet)
+
+    try:
+        validated_packet = validate_profile_result_packet(envelope, result_packet)
+    except ValueError as exc:
+        error = str(exc)
+        log_dispatch_event(
+            conn,
+            production_order_id=production_order_id,
+            event_type="packet_rejected",
+            from_state=envelope.source_state,
+            to_state=envelope.expected_next_state,
+            owner_profile=envelope.target_profile,
+            target_profile=envelope.target_profile,
+            kanban_card_id=envelope.child_kanban_card_id,
+            packet_id=packet_id,
+            result="rejected",
+            error=error,
+            next_action="manual_review_rejected_packet",
+        )
+        return ResultPacketIngestion(
+            accepted=False,
+            production_order_id=production_order_id,
+            source_state=envelope.source_state,
+            owner_profile=envelope.target_profile,
+            target_profile=envelope.target_profile,
+            child_kanban_card_id=envelope.child_kanban_card_id,
+            packet_id=packet_id,
+            bridge_function=bridge_function,
+            runtime_action=runtime_action,
+            error=error,
+            next_action="manual_review_rejected_packet",
+        ).to_dict()
+
+    freeze_result_on_card(conn, envelope.child_kanban_card_id, validated_packet)
+    packet_id = _packet_id(validated_packet)
+    log_dispatch_event(
+        conn,
+        production_order_id=production_order_id,
+        event_type="packet_validated",
+        from_state=envelope.source_state,
+        to_state=envelope.expected_next_state,
+        owner_profile=envelope.target_profile,
+        target_profile=envelope.target_profile,
+        kanban_card_id=envelope.child_kanban_card_id,
+        packet_id=packet_id,
+        result="accepted",
+        next_action=runtime_action,
+    )
+    return ResultPacketIngestion(
+        accepted=True,
+        production_order_id=production_order_id,
+        source_state=envelope.source_state,
+        owner_profile=envelope.target_profile,
+        target_profile=envelope.target_profile,
+        child_kanban_card_id=envelope.child_kanban_card_id,
+        packet_id=packet_id,
+        bridge_function=bridge_function,
+        runtime_action=runtime_action,
+        error=None,
+        next_action=runtime_action,
+    ).to_dict()
+
+
+def validate_profile_result_packet(
+    envelope: ProfileTaskEnvelope,
+    result_packet: Any,
+) -> dict[str, Any]:
+    """Validate a returned result packet against the active profile envelope."""
+    bridge_function, _ = _resolve_ingestion_runtime_action(envelope)
+    expected_packet = envelope.expected_output_packet
+    expected_packet_type = str(expected_packet.get("packet_type", "")).strip()
+    required_fields = tuple(expected_packet.get("required_fields") or ())
+
+    if not isinstance(result_packet, dict):
+        raise ValueError("result packet must be a JSON object")
+    if not result_packet.get("production_order_id"):
+        raise ValueError("result packet missing required field: production_order_id")
+    if result_packet["production_order_id"] != envelope.production_order_id:
+        raise ValueError("result packet production_order_id does not match the active production order")
+    if result_packet.get("owner_profile") != envelope.target_profile:
+        raise ValueError("result packet owner_profile does not match the active envelope target_profile")
+    if result_packet.get("source_state") != envelope.source_state:
+        raise ValueError("result packet source_state does not match the active envelope source_state")
+
+    missing = sorted(
+        field for field in required_fields
+        if field not in result_packet or result_packet[field] in (None, "", [], {})
+    )
+    if missing:
+        raise ValueError(
+            "result packet missing required field(s): " + ", ".join(missing)
+        )
+
+    _validate_expected_result_packet_type(expected_packet_type, result_packet)
+    _validate_approval_boundaries(result_packet)
+    _validate_no_direct_workflow_mutation(result_packet)
+
+    if bridge_function == "run_architect_spec_bridge":
+        validate_architect_spec_packet(
+            result_packet,
+            expected_production_order_id=envelope.production_order_id,
+        )
+        if result_packet.get("next_state") != envelope.expected_next_state:
+            raise ValueError("result packet next_state is incompatible with the active envelope expected_next_state")
+    elif bridge_function == "run_devos_complete_bridge":
+        validate_devos_build_packet(
+            result_packet,
+            expected_production_order_id=envelope.production_order_id,
+            expected_source_state=envelope.source_state,
+            expected_next_handoff_target="audit_os",
+        )
+    elif bridge_function == "run_architect_reconcile_bridge":
+        validate_architect_reconcile_packet(
+            result_packet,
+            expected_production_order_id=envelope.production_order_id,
+            expected_source_state=envelope.source_state,
+        )
+    else:  # pragma: no cover - guarded by _resolve_ingestion_runtime_action
+        raise DispatchManifestError(
+            f"No result packet validator is implemented for bridge function {bridge_function!r}"
+        )
+
+    return dict(result_packet)
+
+
+def _resolve_ingestion_runtime_action(
+    envelope: ProfileTaskEnvelope,
+) -> tuple[str, str]:
+    bridge_function = str(envelope.expected_output_packet.get("bridge_function", "")).strip()
+    if not bridge_function:
+        raise DispatchManifestError("Profile task envelope is missing expected_output_packet.bridge_function")
+    try:
+        arg_name, expected_packet_type = _MANUAL_FALLBACK_RESULT_ACTIONS[bridge_function]
+    except KeyError as exc:
+        raise DispatchManifestError(
+            f"Result packet ingestion is not safely implemented for bridge function {bridge_function!r}"
+        ) from exc
+
+    envelope_packet_type = str(envelope.expected_output_packet.get("packet_type", "")).strip()
+    if envelope_packet_type != expected_packet_type:
+        raise DispatchManifestError(
+            f"Envelope expected_result_packet {envelope_packet_type!r} cannot be mapped to bridge function {bridge_function!r}"
+        )
+
+    runtime_action = (
+        f"{bridge_function}(conn, production_order_id={envelope.production_order_id!r}, "
+        f"{arg_name}=<validated_result_packet>)"
+    )
+    return bridge_function, runtime_action
+
+
+def _validate_expected_result_packet_type(
+    expected_packet_type: str,
+    result_packet: dict[str, Any],
+) -> None:
+    packet_type = str(result_packet.get("packet_type", "")).strip()
+    if packet_type:
+        if packet_type != expected_packet_type:
+            raise ValueError(
+                f"result packet packet_type must be {expected_packet_type!r}"
+            )
+        return
+
+    result_type = str(result_packet.get("result_type", "")).strip().lower()
+    stage = str(result_packet.get("stage", "")).strip().lower()
+    compatibility = {
+        "architect_spec_packet": {"packet_type": "architect_spec_packet", "stage": "architect_spec"},
+        "devos_build_packet": {"packet_type": "devos_build_packet", "result_type": "build_complete"},
+        "architect_reconcile_packet": {"packet_type": "architect_reconcile_packet", "result_type": "accepted", "reconcile_result": "accepted"},
+    }
+    expected = compatibility.get(expected_packet_type)
+    if expected is None:
+        raise DispatchManifestError(
+            f"Expected result packet type {expected_packet_type!r} is too vague to validate safely"
+        )
+    if expected_packet_type == "architect_spec_packet" and stage != expected["stage"]:
+        raise ValueError("result packet stage is not compatible with expected architect_spec_packet")
+    if expected_packet_type == "devos_build_packet" and "build" not in result_type:
+        raise ValueError("result packet result_type is not compatible with expected devos_build_packet")
+    if expected_packet_type == "architect_reconcile_packet":
+        reconcile_result = str(result_packet.get("reconcile_result", "")).strip().lower()
+        if reconcile_result not in {"accept", "accepted", "aligned", "passed", "pass"}:
+            raise ValueError(
+                "result packet reconcile_result is not compatible with expected architect_reconcile_packet"
+            )
+
+
+def _validate_approval_boundaries(result_packet: dict[str, Any]) -> None:
+    text = json.dumps(result_packet, sort_keys=True, default=str).lower()
+    approval_required_tokens = (
+        "publish",
+        "sending",
+        "send to",
+        "spent $",
+        "delete database",
+        "drop table",
+        "permission widen",
+        "request credential",
+        "request secret",
+        "external api key",
+        "destructive change",
+    )
+    if any(token in text for token in approval_required_tokens):
+        raise ValueError("result packet implies external or destructive action without approval")
+
+
+def _validate_no_direct_workflow_mutation(result_packet: dict[str, Any]) -> None:
+    forbidden_keys = {
+        "current_owner_profile",
+        "workflow_state",
+        "transition_state",
+        "transition_to_state",
+        "mutate_workflow_state",
+        "set_task_status",
+        "set_current_state",
+    }
+    found = sorted(key for key in forbidden_keys if key in result_packet)
+    if found:
+        raise ValueError(
+            "result packet attempts to mutate workflow state directly via field(s): "
+            + ", ".join(found)
+        )
+
+
+def _packet_id(result_packet: Any) -> str | None:
+    if not isinstance(result_packet, dict):
+        return None
+    value = result_packet.get("packet_id")
+    if value in (None, ""):
+        return None
+    return str(value)
 
 
 def log_dispatch_event(
