@@ -21,6 +21,10 @@ from hermes_cli.production_order_dispatch import (
     execute_profile_dispatch,
     ingest_profile_result_packet,
 )
+from hermes_cli.production_order_autonomous import (
+    collect_profile_result_packet,
+    invoke_profile_task,
+)
 
 
 @pytest.fixture
@@ -182,3 +186,104 @@ def test_downstream_result_action_requires_ingestion_before_application(conn, sa
     assert applied["applied"] is True
     assert applied["bridge_function"] == "run_devos_complete_bridge"
     assert applied["to_state"] == "DEV_COMPLETE"
+
+
+def test_invoke_profile_task_accepts_fake_runner_and_collects_single_packet(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    envelope = build_profile_task_envelope(conn, po.production_order_id)
+
+    def fake_runner(payload: dict) -> dict:
+        assert payload["production_order_id"] == po.production_order_id
+        assert payload["target_profile"] == "dev_os"
+        return {
+            "stdout": "",
+            "stderr": "",
+            "exit_code": 0,
+            "duration_ms": 17,
+            "result_channel": devos_build_packet(po.production_order_id),
+        }
+
+    invocation = invoke_profile_task(envelope, runner=fake_runner, timeout_seconds=30)
+    packet = collect_profile_result_packet(invocation, envelope)
+
+    assert invocation.exit_code == 0
+    assert invocation.duration_ms == 17
+    assert invocation.log_ref.startswith("profile-invocation:")
+    assert packet["production_order_id"] == po.production_order_id
+    assert packet["owner_profile"] == "dev_os"
+    assert packet["source_state"] == envelope.source_state
+
+
+@pytest.mark.parametrize(
+    ("runner_payload", "error_match"),
+    [
+        ({"stdout": "done", "stderr": "", "exit_code": 0, "duration_ms": 5}, "free-text-only output"),
+        ({"stdout": "{not-json}", "stderr": "", "exit_code": 0, "duration_ms": 5}, "malformed JSON"),
+        (
+            {
+                "stdout": "",
+                "stderr": "",
+                "exit_code": 0,
+                "duration_ms": 5,
+                "result_channel": [
+                    {"packet_type": "devos_build_packet"},
+                    {"packet_type": "devos_build_packet"},
+                ],
+            },
+            "multiple competing packets",
+        ),
+    ],
+)
+def test_collect_profile_result_packet_rejects_ambiguous_or_non_structured_output(
+    conn,
+    sample_brief,
+    runner_payload,
+    error_match,
+):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    envelope = build_profile_task_envelope(conn, po.production_order_id)
+
+    invocation = invoke_profile_task(
+        envelope,
+        runner=lambda payload: runner_payload,
+        timeout_seconds=30,
+    )
+
+    with pytest.raises(ValueError, match=error_match):
+        collect_profile_result_packet(invocation, envelope)
+
+
+@pytest.mark.parametrize(
+    ("mutator", "error_match"),
+    [
+        (lambda packet: packet.__setitem__("production_order_id", "PO-wrong"), "production_order_id"),
+        (lambda packet: packet.__setitem__("owner_profile", "architect_os"), "owner_profile"),
+        (lambda packet: packet.__setitem__("source_state", "ARCHITECT_SPEC"), "source_state"),
+        (lambda packet: packet.__setitem__("current_owner_profile", "audit_os"), "mutate workflow state directly"),
+    ],
+)
+def test_collect_profile_result_packet_rejects_invalid_packet_contract_fields(
+    conn,
+    sample_brief,
+    mutator,
+    error_match,
+):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    envelope = build_profile_task_envelope(conn, po.production_order_id)
+    packet = devos_build_packet(po.production_order_id)
+    mutator(packet)
+
+    invocation = invoke_profile_task(
+        envelope,
+        runner=lambda payload: {
+            "stdout": "",
+            "stderr": "",
+            "exit_code": 0,
+            "duration_ms": 9,
+            "result_channel": packet,
+        },
+        timeout_seconds=30,
+    )
+
+    with pytest.raises(ValueError, match=error_match):
+        collect_profile_result_packet(invocation, envelope)
