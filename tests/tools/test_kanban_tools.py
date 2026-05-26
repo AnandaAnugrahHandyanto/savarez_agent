@@ -1182,6 +1182,10 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
     assert "kanban_complete" in prompt
     assert "kanban_block" in prompt
     assert "kanban_create" in prompt
+    # Initiative floor before blocking on missing credentials/capabilities.
+    assert "first inspect available repo, parent-task, session, and local" in prompt
+    assert "use `kanban_comment(...)` to leave a completion-ready" in prompt
+    assert "instead of blocking on the first missing capability" in prompt
     # Anti-shell guidance
     assert "Do not shell out" in prompt or "tools — they work" in prompt
 

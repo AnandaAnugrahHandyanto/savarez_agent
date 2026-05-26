@@ -38,6 +38,40 @@ def test_next_afk_followup_selects_first_unfired_threshold():
     assert decision is not None
     assert decision.threshold_minutes == 15
     assert decision.idle_label == "15m"
+    assert decision.due_minutes == 15
+
+
+def test_next_afk_followup_recurs_on_later_idle_cycles_without_catchup_spam():
+    from gateway.afk_followup import next_afk_followup
+
+    entry, now = _entry(minutes_idle=61)
+    fired = {15, 60}
+
+    assert next_afk_followup(
+        entry,
+        now=now,
+        thresholds_minutes=(15, 60),
+        fired_thresholds=fired,
+        running_session_keys=set(),
+        queued_session_keys=set(),
+    ) is None
+    assert fired == {15, 60}
+
+    entry, now = _entry(minutes_idle=75)
+    decision = next_afk_followup(
+        entry,
+        now=now,
+        thresholds_minutes=(15, 60),
+        fired_thresholds=fired,
+        running_session_keys=set(),
+        queued_session_keys=set(),
+    )
+
+    assert decision is not None
+    assert decision.threshold_minutes == 15
+    assert decision.idle_label == "15m"
+    assert decision.due_minutes == 75
+    assert fired == {60}
 
 
 def test_next_afk_followup_skips_running_or_queued_sessions():
@@ -127,6 +161,35 @@ async def test_afk_followup_tick_injects_internal_virtual_turn_once(monkeypatch)
     assert event.source.platform == Platform.TELEGRAM
     assert event.source.chat_id == "123"
     assert runner._afk_fired_thresholds[entry.session_key] == {5}
+
+
+@pytest.mark.asyncio
+async def test_afk_followup_tick_recurs_once_per_idle_cycle(monkeypatch):
+    from gateway.afk_followup import AfkFollowupConfig
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._afk_followup_config = AfkFollowupConfig(enabled=True, thresholds_minutes=(15, 60), interval_seconds=1)
+    runner._running_agents = {}
+    runner._queued_events = {}
+
+    entry, now = _entry(minutes_idle=75)
+    runner._afk_fired_thresholds = {entry.session_key: {15, 60}}
+    runner.session_store = SimpleNamespace(
+        _ensure_loaded=lambda: None,
+        _entries={entry.session_key: entry},
+    )
+    adapter = SimpleNamespace(_pending_messages={}, handle_message=AsyncMock())
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    monkeypatch.setattr("gateway.run.datetime", SimpleNamespace(now=lambda tz=None: now))
+
+    await runner._afk_followup_tick()
+    await runner._afk_followup_tick()
+
+    assert adapter.handle_message.call_count == 1
+    event = adapter.handle_message.call_args.args[0]
+    assert "AFK for 15m" in event.text
+    assert runner._afk_fired_thresholds[entry.session_key] == {60, 75}
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,4 @@
-"""Regression tests: safe slash commands dispatch mid-agent-run.
+"""Regression tests: /yolo and /verbose dispatch mid-agent-run.
 
 When an agent is running, the gateway's running-agent guard must not execute
 unsafe slash commands mid-turn. Safe control-plane commands dispatch directly;
@@ -7,8 +7,6 @@ queue/interrupt/steer controls instead of a dead-end warning.
 
 A small allowlist bypasses that and actually dispatches:
 
-  * /model — shows the picker or stores a session model override for the next
-    model call/turn without stopping the active request.
   * /yolo — toggles the session yolo flag; useful to pre-approve a
     pending approval prompt without waiting for the agent to finish.
   * /verbose — cycles the per-platform tool-progress display mode;
@@ -126,20 +124,6 @@ def _make_runner():
     runner._running_agents[sk] = agent_mock
     runner._running_agents_ts[sk] = time.time()
     return runner
-
-
-@pytest.mark.asyncio
-async def test_model_dispatches_mid_run(monkeypatch):
-    """/model mid-run must show the picker/list, not tell user to /stop."""
-    runner = _make_runner()
-    runner._handle_model_command = AsyncMock(return_value="model picker")
-
-    result = await runner._handle_message(_make_event("/model"))
-
-    runner._handle_model_command.assert_awaited_once()
-    assert result == "model picker"
-    assert "wait or /stop first" not in (result or "")
-    assert "can't run mid-turn" not in (result or "")
 
 
 @pytest.mark.asyncio

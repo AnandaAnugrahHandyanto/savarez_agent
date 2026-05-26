@@ -27,6 +27,7 @@ class AfkFollowupDecision:
     threshold_minutes: int
     idle_seconds: float
     idle_label: str
+    due_minutes: int
 
 
 def _as_aware_utc(value: datetime) -> datetime:
@@ -111,18 +112,33 @@ def next_afk_followup(
     updated_utc = _as_aware_utc(updated_at)
     idle_seconds = max(0.0, (now_utc - updated_utc).total_seconds())
     idle_minutes = idle_seconds / 60.0
-    fired = fired_thresholds or set()
-
-    for threshold in normalize_thresholds(thresholds_minutes):
-        if threshold in fired:
+    fired = fired_thresholds if fired_thresholds is not None else set()
+    thresholds = normalize_thresholds(thresholds_minutes)
+    cycle_minutes = max(thresholds)
+    due_candidates: list[tuple[int, int]] = []
+    for threshold in thresholds:
+        if idle_minutes < threshold:
             continue
-        if idle_minutes >= threshold:
-            return AfkFollowupDecision(
-                session_key=session_key,
-                threshold_minutes=threshold,
-                idle_seconds=idle_seconds,
-                idle_label=format_idle_label(threshold),
-            )
+        cycle_index = int((idle_minutes - threshold) // cycle_minutes)
+        due_candidates.append((threshold + (cycle_index * cycle_minutes), threshold))
+
+    if fired_thresholds is not None:
+        # Keep only the current idle-cycle due marks. This lets thresholds recur
+        # in later cycles without replaying every missed historical cycle, and
+        # also resets stale marks after real user activity moves updated_at
+        # forward and the computed idle age drops.
+        fired.intersection_update(due for due, _threshold in due_candidates)
+
+    for due_minutes, threshold in sorted(due_candidates):
+        if due_minutes in fired:
+            continue
+        return AfkFollowupDecision(
+            session_key=session_key,
+            threshold_minutes=threshold,
+            idle_seconds=idle_seconds,
+            idle_label=format_idle_label(threshold),
+            due_minutes=due_minutes,
+        )
     return None
 
 
@@ -136,7 +152,7 @@ def build_afk_followup_prompt(
     if recent_instruction:
         instruction_line = (
             f"\nRecent user instruction about autonomous follow-ups: {recent_instruction}.\n"
-            "If the user asked you not to work while they are away, ignore this prompt and stay quiet.\n"
+            "If there has been little recent conversation or the user asked you not to work while they are away, ignore this prompt and stay quiet.\n"
         )
 
     ordinals = {1: "first", 2: "second", 3: "third"}
@@ -144,8 +160,8 @@ def build_afk_followup_prompt(
 
     if cycle_index <= 1:
         body = (
-            "Identify the top 3 loose ends or safe follow-up task ideas from the recent conversation "
-            "or your durable task board, in priority order. Work on the first one now and complete it."
+            "Identify the top 3 loose ends or safe follow-up tasks from the recent conversation "
+            "or your durable task board, in priority order. Tasks include: github issues, pending PRs (must result in approval/merge or a rejection and new dev task), dev task, content written, emails triaged, email replies drafted (leave in drafts not sent), or design a work loop and print it for user to the conversation. Internal memos, notes, or docs are NOT valid tasks for AFK work. Now, work on the first one now and complete it."
         )
     else:
         body = (

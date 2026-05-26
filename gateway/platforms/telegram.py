@@ -2779,17 +2779,6 @@ class TelegramAdapter(BasePlatformAdapter):
             text = f"❓ {_html.escape(question)}"
             thread_id = self._metadata_thread_id(metadata)
 
-            if choices:
-                # Render full option text in the message body so mobile
-                # users can read long choices that would be truncated in
-                # inline button labels.  Buttons keep short numeric labels
-                # (1, 2, …, Other) to avoid Telegram truncation.
-                option_lines = "\n".join(
-                    f"{i + 1}. {_html.escape(str(c))}"
-                    for i, c in enumerate(choices)
-                )
-                text += f"\n\n{option_lines}"
-
             kwargs: Dict[str, Any] = {
                 "chat_id": int(chat_id),
                 "text": text,
@@ -2797,14 +2786,20 @@ class TelegramAdapter(BasePlatformAdapter):
                 **self._link_preview_kwargs(),
             }
 
+            rows = []
             if choices:
-                # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>"
-                # short.
-                rows = []
-                for idx in range(len(choices)):
+                def _choice_label(idx: int, choice: object, limit: int = 64) -> str:
+                    label = f"{idx + 1}. {str(choice).strip()}"
+                    if len(label) <= limit:
+                        return label
+                    return label[: limit - 1].rstrip() + "…"
+
+                # Telegram caps callback_data at 64 bytes, but button text can
+                # carry the visible choice. Keep callback_data compact.
+                for idx, choice in enumerate(choices):
                     rows.append([
                         InlineKeyboardButton(
-                            str(idx + 1),
+                            _choice_label(idx, choice),
                             callback_data=f"cl:{clarify_id}:{idx}",
                         )
                     ])
@@ -2814,6 +2809,11 @@ class TelegramAdapter(BasePlatformAdapter):
                         callback_data=f"cl:{clarify_id}:other",
                     )
                 ])
+
+            busy_row = self._busy_session_button_row(session_key)
+            if busy_row:
+                rows.append(busy_row)
+            if rows:
                 kwargs["reply_markup"] = InlineKeyboardMarkup(rows)
 
             reply_to_id = self._reply_to_message_id_for_send(None, metadata)
@@ -5938,14 +5938,8 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         return raw.strip().lower() not in ("0", "false", "no", "off")
 
-    def _build_busy_session_keyboard(self, session_key: str) -> Optional[Any]:
-        """Build the InlineKeyboardMarkup for the busy-session control row.
-
-        Registers any hashed handle in ``self._busy_session_handles`` so
-        the callback handler can resolve it back to ``session_key`` even
-        when the literal key would have overflowed Telegram's 64-byte
-        callback_data cap.
-        """
+    def _busy_session_button_row(self, session_key: str) -> Optional[list]:
+        """Build the busy-session control row for an inline keyboard."""
         if InlineKeyboardMarkup is None or InlineKeyboardButton is None:
             return None
         if InlineKeyboardMarkup is Any:  # python-telegram-bot not installed
@@ -5954,10 +5948,22 @@ class TelegramAdapter(BasePlatformAdapter):
         spec = build_buttons_with_handles(session_key)
         if spec.handle_map:
             self._busy_session_handles.update(spec.handle_map)
-        row = [
+        return [
             InlineKeyboardButton(text=b.label, callback_data=b.callback_data)
             for b in spec.buttons
         ]
+
+    def _build_busy_session_keyboard(self, session_key: str) -> Optional[Any]:
+        """Build the InlineKeyboardMarkup for the busy-session control row.
+
+        Registers any hashed handle in ``self._busy_session_handles`` so
+        the callback handler can resolve it back to ``session_key`` even
+        when the literal key would have overflowed Telegram's 64-byte
+        callback_data cap.
+        """
+        row = self._busy_session_button_row(session_key)
+        if row is None:
+            return None
         return InlineKeyboardMarkup([row])
 
     async def attach_busy_session_buttons(

@@ -1030,6 +1030,16 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
 )
+from gateway.session_handoff import (
+    build_session_handoff_note,
+    generate_compaction_handoff_summary,
+)
+from gateway.afk_followup import (
+    AfkFollowupConfig,
+    build_afk_followup_prompt,
+    next_afk_followup,
+    parse_afk_followup_config,
+)
 from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -1596,7 +1606,13 @@ def _normalize_empty_agent_response(
     if api_calls > 0 and not agent_result.get("interrupted"):
         if agent_result.get("partial"):
             err = agent_result.get("error", "processing incomplete")
-            return f"⚠️ Processing stopped: {str(err)[:200]}. Try again."
+            err_text = str(err)
+            if "truncat" in err_text.lower() and "length" in err_text.lower():
+                return (
+                    "⚠️ The response hit the model output limit before it finished. "
+                    "Send `continue` to resume, or ask for a shorter answer/attached file."
+                )
+            return f"⚠️ Processing stopped: {err_text[:200]}. Try again."
         return (
             "⚠️ Processing completed but no response was generated. "
             "This may be a transient error — try sending your message again."
@@ -3118,26 +3134,17 @@ class GatewayRunner:
         merge_pending_message_event(adapter._pending_messages, session_key, event)
 
     async def _handle_busy_slash_command_followup(self, event: MessageEvent, session_key: str) -> None:
-        """Treat a blocked mid-run slash command as an intentional follow-up.
-
-        The active-session fast path dispatches recognized slash commands
-        directly to the runner so commands like /approve and /stop can break
-        deadlocks.  For commands that are unsafe to execute mid-turn (/undo,
-        /retry, /model, /reasoning, ...), a hard "can't run mid-turn" response
-        is not what the user meant.  They are trying to steer the busy session.
-
-        Reuse the normal busy-session follow-up machinery so the user gets the
-        same queue/interrupt/steer semantics and inline controls as ordinary
-        text.  Force the runner-side handler instead of adapter text debounce;
-        this path is already past the adapter fallback, so returning False would
-        otherwise drop the command after the bypass dispatch.
-        """
+        """Treat a blocked mid-run slash command as an intentional follow-up."""
         state = getattr(self, "__dict__", {})
         had_busy_text_mode = "_busy_text_mode" in state
         previous_busy_text_mode = str(state.get("_busy_text_mode", "interrupt"))
         self._busy_text_mode = "interrupt"
         try:
-            handled = await self._handle_active_session_busy_message(event, session_key)
+            handled = await self._handle_active_session_busy_message(
+                event,
+                session_key,
+                force_busy_ack=True,
+            )
         finally:
             if had_busy_text_mode:
                 self._busy_text_mode = previous_busy_text_mode
@@ -3149,7 +3156,13 @@ class GatewayRunner:
         if not handled:
             self._queue_or_replace_pending_event(session_key, event)
 
-    async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
+    async def _handle_active_session_busy_message(
+        self,
+        event: MessageEvent,
+        session_key: str,
+        *,
+        force_busy_ack: bool = False,
+    ) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
         # creating a session.  The busy path must enforce the same check;
@@ -3220,6 +3233,7 @@ class GatewayRunner:
             event.message_type == MessageType.TEXT
             and busy_text_mode == "queue"
             and effective_mode != "steer"
+            and not force_busy_ack
         ):
             return False
 
@@ -5203,6 +5217,124 @@ class GatewayRunner:
         if not getattr(result, "success", True):
             err = getattr(result, "error", "send returned success=False")
             raise RuntimeError(f"adapter.send failed: {err}")
+
+    async def _afk_followup_watcher(self) -> None:
+        """Inject bounded synthetic follow-up turns for idle gateway sessions."""
+        config = getattr(self, "_afk_followup_config", AfkFollowupConfig())
+        # Let adapters finish connecting and avoid surprising users with an
+        # immediate AFK burst during gateway startup/replacement.
+        await asyncio.sleep(min(max(config.interval_seconds, 1.0), 60.0))
+        while self._running:
+            try:
+                await self._afk_followup_tick()
+            except Exception as exc:
+                logger.debug("AFK follow-up watcher tick failed: %s", exc)
+            sleep_for = max(float(getattr(config, "interval_seconds", 60.0) or 60.0), 1.0)
+            elapsed = 0.0
+            while self._running and elapsed < sleep_for:
+                step = min(1.0, sleep_for - elapsed)
+                await asyncio.sleep(step)
+                elapsed += step
+
+    async def _afk_followup_tick(self) -> None:
+        """Run one AFK scheduling pass.
+
+        Exposed as a small method for tests and for future manual diagnostics.
+        """
+        config = getattr(self, "_afk_followup_config", AfkFollowupConfig())
+        if not config.enabled:
+            return
+
+        session_store = getattr(self, "session_store", None)
+        if session_store is None:
+            return
+        try:
+            session_store._ensure_loaded()
+        except Exception as exc:
+            logger.debug("AFK follow-up: session store unavailable: %s", exc)
+            return
+
+        entries = list(getattr(session_store, "_entries", {}).items())
+        running_session_keys = set(getattr(self, "_running_agents", {}) or {})
+        queued_session_keys = set(getattr(self, "_queued_events", {}) or {})
+        adapters = getattr(self, "adapters", {}) or {}
+        for adapter in adapters.values():
+            pending = getattr(adapter, "_pending_messages", None)
+            if isinstance(pending, dict):
+                queued_session_keys.update(pending.keys())
+        now = datetime.now()
+
+        for session_key, entry in entries:
+            fired_map = getattr(self, "_afk_fired_thresholds", None)
+            if fired_map is None:
+                fired_map = {}
+                self._afk_fired_thresholds = fired_map
+            fired = fired_map.setdefault(session_key, set())
+            decision = next_afk_followup(
+                entry,
+                now=now,
+                thresholds_minutes=config.thresholds_minutes,
+                fired_thresholds=fired,
+                running_session_keys=running_session_keys,
+                queued_session_keys=queued_session_keys,
+            )
+            if decision is None:
+                continue
+
+            origin = getattr(entry, "origin", None)
+            source = self._source_from_afk_origin(origin)
+            if source is None:
+                logger.debug("AFK follow-up: no routable source for %s", session_key)
+                continue
+            adapter = adapters.get(source.platform)
+            if adapter is None:
+                logger.debug("AFK follow-up: no adapter for %s (%s)", session_key, source.platform)
+                continue
+
+            cycle_index = sorted(config.thresholds_minutes).index(decision.threshold_minutes) + 1
+            prompt = build_afk_followup_prompt(decision.idle_label, cycle_index=cycle_index)
+            event = MessageEvent(
+                text=prompt,
+                message_type=MessageType.TEXT,
+                source=source,
+                message_id=f"afk:{decision.threshold_minutes}:{int(time.time())}",
+                internal=True,
+            )
+            logger.info(
+                "AFK follow-up: injecting %s virtual turn for %s",
+                decision.idle_label,
+                session_key,
+            )
+            await adapter.handle_message(event)
+            fired.add(decision.due_minutes)
+
+    @staticmethod
+    def _source_from_afk_origin(origin) -> Optional[SessionSource]:
+        if isinstance(origin, SessionSource):
+            return origin
+        if origin is None:
+            return None
+        platform = getattr(origin, "platform", None)
+        if platform is None:
+            return None
+        if not isinstance(platform, Platform):
+            try:
+                platform = Platform(str(platform))
+            except ValueError:
+                return None
+        chat_id = getattr(origin, "chat_id", None)
+        if not chat_id:
+            return None
+        return SessionSource(
+            platform=platform,
+            chat_id=str(chat_id),
+            chat_name=getattr(origin, "chat_name", None),
+            chat_type=getattr(origin, "chat_type", "dm") or "dm",
+            user_id=getattr(origin, "user_id", None),
+            user_name=getattr(origin, "user_name", None),
+            thread_id=getattr(origin, "thread_id", None),
+            chat_topic=getattr(origin, "chat_topic", None),
+        )
 
     async def _session_expiry_watcher(self, interval: int = 300):
         """Background task that finalizes expired sessions.
@@ -7466,26 +7598,28 @@ class GatewayRunner:
                     )
                 _update_prompts.pop(_quick_key, None)
 
-        # Intercept messages that are responses to a pending clarify
-        # request that is awaiting free-form text (either an open-ended
-        # clarify with no choices, or one where the user picked the
-        # "Other" button).  The first non-empty user message in the
-        # session resolves the clarify and unblocks the agent thread —
-        # we do NOT route it to the agent as a new turn.
+        # Intercept messages that are responses to a pending clarify.
+        # Open-ended prompts and "Other" responses are captured as free text;
+        # direct replies to multi-choice prompts are accepted too ("2" maps
+        # to the second option, arbitrary text becomes a custom answer). Slash
+        # commands still bypass this path so /stop and friends keep working.
+        _clarify_mod = None
         try:
             from tools import clarify_gateway as _clarify_mod
-            _pending_clarify = _clarify_mod.get_pending_for_session(_quick_key)
+            _pending_clarify = _clarify_mod.get_pending_for_session(
+                _quick_key, include_choice_prompts=True,
+            )
         except Exception:
             _pending_clarify = None
-        if _pending_clarify is not None:
+        if _pending_clarify is not None and _clarify_mod is not None:
             _raw_clarify_reply = (event.text or "").strip()
             # Skip slash commands — the user clearly wanted to issue a
             # command, not answer the clarify.  Leave the clarify pending
             # so the user can retry; if it times out, the agent unblocks
             # with an empty response.
             if _raw_clarify_reply and not _raw_clarify_reply.startswith("/"):
-                _resolved = _clarify_mod.resolve_gateway_clarify(
-                    _pending_clarify.clarify_id, _raw_clarify_reply,
+                _resolved = _clarify_mod.resolve_text_response_for_session(
+                    _quick_key, _raw_clarify_reply,
                 )
                 if _resolved:
                     logger.info(
@@ -7793,11 +7927,13 @@ class GatewayRunner:
             # /fast and /reasoning are config-only and take effect next
             # message, so they fall through to the catch-all busy response
             # below — users should wait and set them between turns.
-            if _cmd_def_inner and _cmd_def_inner.name in {"yolo", "verbose"}:
+            if _cmd_def_inner and _cmd_def_inner.name in {"yolo", "verbose", "attachments"}:
                 if _cmd_def_inner.name == "yolo":
                     return await self._handle_yolo_command(event)
                 if _cmd_def_inner.name == "verbose":
                     return await self._handle_verbose_command(event)
+                if _cmd_def_inner.name == "attachments":
+                    return await self._handle_attachments_command(event)
                 if _cmd_def_inner.name == "footer":
                     return await self._handle_footer_command(event)
 
@@ -7814,10 +7950,11 @@ class GatewayRunner:
                     return await self._handle_update_command(event)
 
             # Catch-all: any other recognized slash command reached the
-            # running-agent guard. It cannot safely execute mid-turn, but the
-            # user intent is still a follow-up to the busy session. Route it
-            # through normal busy controls so the user can choose queue,
-            # interrupt, or steer instead of hitting a dead-end warning.
+            # running-agent guard. Treat it as a busy follow-up, not a hard
+            # block: a user typing /undo, /retry, /model, etc. mid-run is
+            # expressing intent for the session. Queue/interrupt/stop buttons
+            # give them the same choice ordinary text receives while keeping
+            # the command text queued for execution at the selected boundary.
             if _cmd_def_inner:
                 await self._handle_busy_slash_command_followup(event, _quick_key)
                 return None
@@ -8086,6 +8223,9 @@ class GatewayRunner:
 
         if canonical == "footer":
             return await self._handle_footer_command(event)
+
+        if canonical == "attachments":
+            return await self._handle_attachments_command(event)
 
         if canonical == "yolo":
             return await self._handle_yolo_command(event)
@@ -8807,7 +8947,51 @@ class GatewayRunner:
                 context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
             else:
                 context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
-            context_prompt = context_note + "\n\n" + context_prompt
+
+            handoff_note = None
+            try:
+                handoff_cfg = getattr(self.session_store.config, "session_handoff", None)
+                handoff_mode = getattr(handoff_cfg, "mode", "none")
+                parent_session_id = getattr(session_entry, "parent_session_id", None)
+                if handoff_mode != "none" and parent_session_id:
+                    parent_messages = self.session_store.load_transcript(parent_session_id)
+                    summary_text = None
+                    if handoff_mode == "summary":
+                        try:
+                            _handoff_user_config = _load_gateway_config()
+                            _handoff_model, _handoff_runtime = self._resolve_session_agent_runtime(
+                                source=source,
+                                user_config=_handoff_user_config,
+                            )
+                            summary_text = generate_compaction_handoff_summary(
+                                parent_messages,
+                                model=_handoff_model,
+                                runtime_kwargs=_handoff_runtime,
+                            )
+                        except Exception as e:
+                            logger.debug(
+                                "Session compaction handoff summary failed; using fallback: %s",
+                                e,
+                            )
+                    handoff_note = build_session_handoff_note(
+                        mode=handoff_mode,
+                        parent_session_id=parent_session_id,
+                        reset_reason=reset_reason,
+                        parent_messages=parent_messages,
+                        previous_updated_at=getattr(session_entry, "parent_updated_at", None),
+                        now=datetime.now(),
+                        max_chars=getattr(handoff_cfg, "max_chars", 2400),
+                        last_messages=getattr(handoff_cfg, "last_messages", 8),
+                        summary_text=summary_text,
+                    )
+            except Exception as e:
+                logger.debug("Session handoff generation failed (non-fatal): %s", e)
+                handoff_note = None
+
+            if handoff_note:
+                context_prompt = handoff_note + "\n\n" + context_prompt
+            else:
+                context_prompt = context_note + "\n\n" + context_prompt
 
             # Send a user-facing notification explaining the reset, unless:
             # - notifications are disabled in config
@@ -12058,8 +12242,10 @@ class GatewayRunner:
             media_files, _ = adapter.extract_media(response)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
             _, cleaned = adapter.extract_images(response)
-            local_files, _ = adapter.extract_local_files(cleaned)
-            local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
+            local_files = []
+            if BasePlatformAdapter.auto_attach_local_paths_enabled():
+                local_files, _ = adapter.extract_local_files(cleaned)
+                local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
 
             _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
 
@@ -12746,6 +12932,65 @@ class GatewayRunner:
             if preview:
                 example = t("gateway.footer.example_line", preview=preview)
         return t("gateway.footer.saved", state=state, example=example)
+
+    async def _handle_attachments_command(self, event: MessageEvent) -> str:
+        """Handle /attachments command — toggle bare local path auto-attachments."""
+        config_path = _hermes_home / "config.yaml"
+        profile_name = os.getenv("HERMES_PROFILE") or "default"
+
+        arg = ""
+        try:
+            text = (getattr(event, "message", None) or getattr(event, "text", None) or "").strip()
+            if text.startswith("/"):
+                parts = text.split(None, 1)
+                if len(parts) > 1:
+                    arg = parts[1].strip().lower()
+        except Exception:
+            arg = ""
+
+        try:
+            user_config: dict = _load_gateway_config()
+        except Exception as e:
+            return t("gateway.config_read_failed", error=e)
+
+        gateway_cfg = user_config.get("gateway") if isinstance(user_config, dict) else {}
+        if not isinstance(gateway_cfg, dict):
+            gateway_cfg = {}
+        current = bool(gateway_cfg.get("auto_attach_local_paths", True))
+
+        if arg in {"status", "?"}:
+            state = "on" if current else "off"
+            return (
+                f"Local path auto-attachments are {state} for this bot/profile "
+                f"(`{profile_name}`).\n"
+                "Use `/attachments on` or `/attachments off`."
+            )
+
+        if arg in {"on", "enable", "true", "1"}:
+            new_state = True
+        elif arg in {"off", "disable", "false", "0"}:
+            new_state = False
+        elif arg == "":
+            new_state = not current
+        else:
+            return "Usage: `/attachments [on|off|status]`"
+
+        try:
+            if not isinstance(user_config.get("gateway"), dict):
+                user_config["gateway"] = {}
+            user_config["gateway"]["auto_attach_local_paths"] = new_state
+            atomic_yaml_write(config_path, user_config)
+            os.environ["HERMES_AUTO_ATTACH_LOCAL_PATHS"] = "1" if new_state else "0"
+        except Exception as e:
+            logger.warning("Failed to save gateway.auto_attach_local_paths: %s", e)
+            return t("gateway.config_save_failed", error=e)
+
+        state = "enabled" if new_state else "disabled"
+        if new_state:
+            detail = "Bare local paths in replies can be sent as native files."
+        else:
+            detail = "Only explicit `MEDIA:/path` attachments will be sent as files."
+        return f"Local path auto-attachments {state} for this bot/profile (`{profile_name}`).\n{detail}"
 
     async def _handle_compress_command(self, event: MessageEvent) -> str:
         """Handle /compress command -- manually compress conversation context.
@@ -15412,9 +15657,10 @@ class GatewayRunner:
         logger.debug("Process watcher started: %s (every %ss, notify=%s, agent_notify=%s)",
                       session_id, interval, notify_mode, agent_notify)
 
-        if notify_mode == "off" and not agent_notify:
-            # Still wait for the process to exit so we can log it, but don't
-            # push any messages to the user.
+        if notify_mode == "off":
+            # User-visible gateway notifications are absolutely disabled, even
+            # when a tool run requested notify_on_complete. Still wait for exit
+            # so the watcher can retire quietly.
             while True:
                 await asyncio.sleep(interval)
                 session = process_registry.get(session_id)

@@ -69,6 +69,19 @@ def _clear_clarify_state():
         cm._notify_cbs.clear()
 
 
+def _patch_keyboard(monkeypatch):
+    import gateway.platforms.telegram as telegram_mod
+
+    def button(text=None, callback_data=None, **kwargs):
+        return SimpleNamespace(text=text, callback_data=callback_data, kwargs=kwargs)
+
+    def markup(rows):
+        return SimpleNamespace(inline_keyboard=rows)
+
+    monkeypatch.setattr(telegram_mod, "InlineKeyboardButton", button)
+    monkeypatch.setattr(telegram_mod, "InlineKeyboardMarkup", markup)
+
+
 # ===========================================================================
 # send_clarify — render
 # ===========================================================================
@@ -80,7 +93,9 @@ class TestTelegramSendClarify:
         _clear_clarify_state()
 
     @pytest.mark.asyncio
-    async def test_multi_choice_renders_buttons_and_other(self):
+    async def test_multi_choice_renders_choice_text_in_buttons_not_body(self, monkeypatch):
+        """Choices belong in Telegram button labels, not duplicated in prompt text."""
+        _patch_keyboard(monkeypatch)
         adapter = _make_adapter()
         mock_msg = MagicMock()
         mock_msg.message_id = 100
@@ -100,21 +115,49 @@ class TestTelegramSendClarify:
         kwargs = adapter._bot.send_message.call_args[1]
         assert kwargs["chat_id"] == 12345
         assert "Which option?" in kwargs["text"]
-        # Full option text rendered in the message body (not just buttons)
-        assert "1. alpha" in kwargs["text"]
-        assert "2. beta" in kwargs["text"]
-        assert "3. gamma" in kwargs["text"]
-        # InlineKeyboardMarkup with N+1 buttons (3 choices + Other)
+        assert "1. alpha" not in kwargs["text"]
+        assert "2. beta" not in kwargs["text"]
+        assert "3. gamma" not in kwargs["text"]
         markup = kwargs["reply_markup"]
-        assert markup is not None
-        # Mocked InlineKeyboardMarkup — just verify it was constructed
-        # with rows.  We check state instead of poking the mock structure.
+        labels = [row[0].text for row in markup.inline_keyboard]
+        assert labels[:4] == [
+            "1. alpha",
+            "2. beta",
+            "3. gamma",
+            "✏️ Other (type answer)",
+        ]
         assert "cid1" in adapter._clarify_state
         assert adapter._clarify_state["cid1"] == "sk1"
 
     @pytest.mark.asyncio
-    async def test_open_ended_no_keyboard(self):
-        adapter = _make_adapter()
+    async def test_multi_choice_includes_busy_session_controls(self, monkeypatch):
+        """Clarify prompts must keep the fork's Steer/Interrupt/Stop controls."""
+        _patch_keyboard(monkeypatch)
+        adapter = _make_adapter({"busy_buttons": True})
+        mock_msg = MagicMock()
+        mock_msg.message_id = 100
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        result = await adapter.send_clarify(
+            chat_id="12345",
+            question="Which option?",
+            choices=["alpha", "beta"],
+            clarify_id="cid-busy",
+            session_key="telegram:12345:dm",
+        )
+
+        assert result.success is True
+        rows = adapter._bot.send_message.call_args[1]["reply_markup"].inline_keyboard
+        labels = [[button.text for button in row] for row in rows]
+        assert labels[-1] == ["/steer", "/interrupt", "/stop"]
+        callbacks = [button.callback_data for button in rows[-1]]
+        assert all(callback.startswith("bs:") for callback in callbacks)
+
+    @pytest.mark.asyncio
+    async def test_open_ended_includes_busy_session_controls(self, monkeypatch):
+        """Open-ended clarify prompts still need an interruptable control row."""
+        _patch_keyboard(monkeypatch)
+        adapter = _make_adapter({"busy_buttons": True})
         mock_msg = MagicMock()
         mock_msg.message_id = 101
         adapter._bot.send_message = AsyncMock(return_value=mock_msg)
@@ -124,15 +167,15 @@ class TestTelegramSendClarify:
             question="What is your name?",
             choices=None,
             clarify_id="cid2",
-            session_key="sk2",
+            session_key="telegram:12345:dm",
         )
 
         assert result.success is True
         kwargs = adapter._bot.send_message.call_args[1]
-        # No reply_markup means no buttons — open-ended path
-        assert "reply_markup" not in kwargs
         assert "What is your name?" in kwargs["text"]
-        assert adapter._clarify_state["cid2"] == "sk2"
+        rows = kwargs["reply_markup"].inline_keyboard
+        assert [[button.text for button in row] for row in rows] == [["/steer", "/interrupt", "/stop"]]
+        assert adapter._clarify_state["cid2"] == "telegram:12345:dm"
 
     @pytest.mark.asyncio
     async def test_not_connected(self):
@@ -148,9 +191,9 @@ class TestTelegramSendClarify:
         assert result.success is False
 
     @pytest.mark.asyncio
-    async def test_long_choice_rendered_in_body_not_truncated(self):
-        """Long choice text appears in full in the message body;
-        button labels stay short numeric (1, 2, …)."""
+    async def test_long_choice_truncated_in_button_label(self, monkeypatch):
+        """Long choices still live in buttons, with labels shortened for mobile."""
+        _patch_keyboard(monkeypatch)
         adapter = _make_adapter()
         mock_msg = MagicMock()
         mock_msg.message_id = 102
@@ -166,11 +209,11 @@ class TestTelegramSendClarify:
         )
         assert result.success is True
         kwargs = adapter._bot.send_message.call_args[1]
-        # The full long choice text appears in the message body
-        assert long_choice in kwargs["text"]
-        # The button label should be short ("1"), not the long choice
-        # (we can't inspect mock button labels directly, but the send
-        # succeeded — old truncation code could raise on edge cases)
+        assert long_choice not in kwargs["text"]
+        label = kwargs["reply_markup"].inline_keyboard[0][0].text
+        assert label.startswith("1. ")
+        assert label.endswith("…")
+        assert len(label) <= 64
 
     @pytest.mark.asyncio
     async def test_html_escapes_question(self):

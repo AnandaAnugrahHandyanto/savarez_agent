@@ -11,6 +11,7 @@ from gateway.platforms.base import (
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
     MessageType,
+    SUPPORTED_DOCUMENT_TYPES,
     safe_url_for_log,
     utf16_len,
     _prefix_within_utf16_limit,
@@ -361,6 +362,18 @@ class TestExtractMedia:
         assert "[[audio_as_voice]]" not in cleaned
         assert "[[as_document]]" not in cleaned
 
+    @pytest.mark.parametrize("ext", [".md", ".json", ".yaml", ".toml", ".py", ".log"])
+    def test_media_tag_derives_document_extensions_from_supported_types(self, ext):
+        assert ext in SUPPORTED_DOCUMENT_TYPES
+        media, cleaned = BasePlatformAdapter.extract_media(f"See attached\nMEDIA:/tmp/report{ext}")
+        assert media == [(f"/tmp/report{ext}", False)]
+        assert "MEDIA:" not in cleaned
+
+    def test_media_tag_is_case_insensitive_for_supported_extensions(self):
+        media, cleaned = BasePlatformAdapter.extract_media("MEDIA:/tmp/REPORT.MD")
+        assert media == [("/tmp/REPORT.MD", False)]
+        assert cleaned == ""
+
 
 class TestMediaDeliveryPathValidation:
     def _patch_roots(self, monkeypatch, *roots):
@@ -534,6 +547,21 @@ class TestMediaDeliveryPathValidation:
 
         out = BasePlatformAdapter.filter_local_delivery_paths([str(fresh)])
         assert out == [str(fresh.resolve())]
+
+    def test_auto_attach_local_paths_enabled_by_default(self, monkeypatch):
+        monkeypatch.delenv("HERMES_AUTO_ATTACH_LOCAL_PATHS", raising=False)
+        assert BasePlatformAdapter.auto_attach_local_paths_enabled() is True
+
+    def test_auto_attach_local_paths_can_be_disabled(self, monkeypatch):
+        monkeypatch.setenv("HERMES_AUTO_ATTACH_LOCAL_PATHS", "0")
+        assert BasePlatformAdapter.auto_attach_local_paths_enabled() is False
+
+    def test_auto_attach_local_paths_accepts_boolean_strings(self, monkeypatch):
+        for disabled in ("false", "no", "off", ""):
+            monkeypatch.setenv("HERMES_AUTO_ATTACH_LOCAL_PATHS", disabled)
+            assert BasePlatformAdapter.auto_attach_local_paths_enabled() is False
+        monkeypatch.setenv("HERMES_AUTO_ATTACH_LOCAL_PATHS", "true")
+        assert BasePlatformAdapter.auto_attach_local_paths_enabled() is True
 
 
 # ---------------------------------------------------------------------------
