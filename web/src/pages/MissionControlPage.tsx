@@ -281,6 +281,13 @@ const DAILY_DRIVERS = [
   "Record durable state",
 ];
 
+const OPS_BOUNDARY_STEPS = [
+  { label: "Prepare", detail: "Draft command or proposal packet" },
+  { label: "Review", detail: "Travis approval stays visible" },
+  { label: "Probe", detail: "Read-only status only; config disabled" },
+  { label: "Stop", detail: "Restarts/sends/deletes/cron/payment gated" },
+];
+
 const readablePanel = "min-w-0 rounded-xl border border-[#284848] bg-[#061f1f]/85 p-4 shadow-sm shadow-black/20";
 const cockpitCard = "border-[#264545] bg-[#071717]/90 shadow-[0_0_0_1px_rgba(47,214,161,0.04),0_18px_60px_rgba(0,0,0,0.28)]";
 const cockpitPanel = "rounded-xl border border-[#284848] bg-black/30 p-3";
@@ -400,8 +407,8 @@ function CommandDeck({ status, activeJobs, approvalSummary }: { status: StatusRe
             <div className="space-y-2">
               <div className="rounded-xl border border-emerald-400/30 bg-emerald-500/10 p-3">
                 <div className="text-xs uppercase tracking-[0.1em] text-emerald-100/80">Current focus</div>
-                <div className="mt-2 text-lg font-semibold leading-6 text-text-primary">Make Ops Center a real Jenny dashboard</div>
-                <div className="mt-2 text-sm leading-6 text-text-secondary">Design upgrade only: no gateway restart, no cron creation, no execution hooks.</div>
+                <div className="mt-2 text-lg font-semibold leading-6 text-text-primary">Make Ops Center a practical operator dashboard</div>
+                <div className="mt-2 text-sm leading-6 text-text-secondary">Dashboard can review approvals and show gated fixed actions; live execution remains disabled unless Travis approves exact config scope.</div>
               </div>
               <Link to="/approvals" className="block rounded-xl border border-amber-400/25 bg-amber-500/10 p-3 transition hover:border-amber-300/50">
                 <div className="flex items-center gap-2 text-amber-100">
@@ -570,7 +577,7 @@ function TodayView({ status, activeJobs, jobs, approvalSummary }: { status: Stat
             </div>
             <div className={readablePanel}>
               <div className={readableSectionHeading}>Phase 1 boundary</div>
-              <div className="mt-1 text-base leading-6 text-text-primary">Read-only dashboard wiring only — no cron changes, no service restart, no public side effects.</div>
+              <div className="mt-1 text-base leading-6 text-text-primary">Approval-first dashboard wiring — no cron changes, no service restart, no public side effects. The only execute route is the disabled read-only status probe.</div>
             </div>
           </div>
         </CardContent>
@@ -755,6 +762,20 @@ export default function MissionControlPage() {
                 <span className="font-semibold text-text-primary">{activeJobs.length}</span>
               </div>
             </div>
+          </div>
+
+          <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+            {OPS_BOUNDARY_STEPS.map((step, idx) => (
+              <div key={step.label} className="rounded-xl border border-[#284848] bg-black/25 p-3">
+                <div className="flex items-center gap-2 text-sm font-semibold text-text-primary">
+                  <span className="flex h-6 w-6 items-center justify-center rounded-full border border-emerald-400/30 bg-emerald-500/10 text-xs text-emerald-200">
+                    {idx + 1}
+                  </span>
+                  {step.label}
+                </div>
+                <div className="mt-1 text-xs leading-5 text-text-secondary">{step.detail}</div>
+              </div>
+            ))}
           </div>
         </section>
 
