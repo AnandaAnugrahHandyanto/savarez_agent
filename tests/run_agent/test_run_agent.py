@@ -3877,6 +3877,41 @@ class TestNousCredentialRefresh:
 
 
 class TestCredentialPoolRecovery:
+    def test_select_credential_for_lm_invocation_swaps_to_selected_pool_entry(self, agent):
+        first = SimpleNamespace(
+            id="cred-1",
+            label="first",
+            runtime_api_key="first-key",
+            runtime_base_url="https://first.example/v1",
+        )
+        second = SimpleNamespace(
+            id="cred-2",
+            label="second",
+            runtime_api_key="second-key",
+            runtime_base_url="https://second.example/v1",
+        )
+
+        class _Pool:
+            def __init__(self):
+                self.calls = 0
+
+            def select(self):
+                self.calls += 1
+                return first if self.calls == 1 else second
+
+        pool = _Pool()
+        agent._credential_pool = pool
+        agent._swap_credential = MagicMock()
+
+        assert agent._select_credential_for_lm_invocation() is True
+        assert agent._select_credential_for_lm_invocation() is True
+
+        assert pool.calls == 2
+        assert agent._swap_credential.call_args_list == [
+            ((first,),),
+            ((second,),),
+        ]
+
     def test_recover_with_pool_rotates_on_402(self, agent):
         current = SimpleNamespace(label="primary")
         next_entry = SimpleNamespace(label="secondary")

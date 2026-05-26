@@ -144,6 +144,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
     the main retry loop can try again with backoff / credential rotation /
     provider fallback.
     """
+    agent._select_credential_for_lm_invocation()
     result = {"response": None, "error": None}
     request_client_holder = {"client": None, "owner_tid": None}
     request_client_lock = threading.Lock()
@@ -1400,6 +1401,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             return agent._interruptible_api_call(api_kwargs)
         finally:
             agent._codex_on_first_delta = None
+
+    agent._select_credential_for_lm_invocation()
 
     # Bedrock Converse uses boto3's converse_stream() with real-time delta
     # callbacks — same UX as Anthropic and chat_completions streaming.

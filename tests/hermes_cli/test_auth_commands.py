@@ -308,6 +308,134 @@ def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert entry["source"] == "manual:device_code"
     assert entry["refresh_token"] == "refresh-token"
     assert entry["base_url"] == "https://chatgpt.com/backend-api/codex"
+    assert "openai-codex" not in payload.get("providers", {})
+
+
+def test_auth_add_codex_oauth_honors_custom_label_and_runtime(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    token = _jwt_with_email("codex@example.com")
+    monkeypatch.setattr(
+        "hermes_cli.auth._codex_device_code_login",
+        lambda: {
+            "tokens": {
+                "access_token": token,
+                "refresh_token": "refresh-token",
+            },
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "last_refresh": "2026-03-23T10:00:00Z",
+        },
+    )
+
+    from hermes_cli.auth import resolve_codex_runtime_credentials
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "openai-codex"
+        auth_type = "oauth"
+        api_key = None
+        label = "work-codex"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["openai-codex"]
+    entry = next(item for item in entries if item["source"] == "manual:device_code")
+    assert entry["label"] == "work-codex"
+    assert "openai-codex" not in payload.get("providers", {})
+    assert resolve_codex_runtime_credentials()["api_key"] == token
+
+
+def test_auth_add_codex_oauth_keeps_distinct_pool_accounts(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    first_token = _jwt_with_email("first-codex@example.com")
+    second_token = _jwt_with_email("second-codex@example.com")
+    logins = iter(
+        [
+            {
+                "tokens": {
+                    "access_token": first_token,
+                    "refresh_token": "first-refresh-token",
+                },
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "last_refresh": "2026-03-23T10:00:00Z",
+            },
+            {
+                "tokens": {
+                    "access_token": second_token,
+                    "refresh_token": "second-refresh-token",
+                },
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "last_refresh": "2026-03-23T10:05:00Z",
+            },
+        ]
+    )
+    monkeypatch.setattr("hermes_cli.auth._codex_device_code_login", lambda: next(logins))
+
+    from hermes_cli.auth_commands import auth_add_command
+    from agent.credential_pool import load_pool
+
+    class _Args:
+        provider = "openai-codex"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+
+    auth_add_command(_Args())
+    auth_add_command(_Args())
+
+    pool = load_pool("openai-codex")
+    entries = pool.entries()
+
+    assert [entry.source for entry in entries] == [
+        "manual:device_code",
+        "manual:device_code",
+    ]
+    assert [entry.label for entry in entries] == [
+        "first-codex@example.com",
+        "second-codex@example.com",
+    ]
+    assert [entry.access_token for entry in entries] == [first_token, second_token]
+    assert [entry.refresh_token for entry in entries] == [
+        "first-refresh-token",
+        "second-refresh-token",
+    ]
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert "openai-codex" not in payload.get("providers", {})
+
+
+def test_codex_runtime_reads_legacy_titled_pool_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    token = _jwt_with_email("codex@example.com")
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {},
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "work-codex",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": token,
+                        "refresh_token": "refresh-token",
+                        "last_refresh": "2026-03-23T10:00:00Z",
+                    }
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth import resolve_codex_runtime_credentials
+
+    creds = resolve_codex_runtime_credentials()
+    assert creds["api_key"] == token
+    assert creds["last_refresh"] == "2026-03-23T10:00:00Z"
 
 
 def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):
@@ -1171,7 +1299,7 @@ def test_auth_add_codex_clears_suppression_marker(tmp_path, monkeypatch):
     assert "openai-codex" not in payload.get("suppressed_sources", {})
     # New pool entry must be present
     entries = payload["credential_pool"]["openai-codex"]
-    assert any(e["source"] == "manual:device_code" for e in entries)
+    assert any(e["source"] == "device_code" for e in entries)
 
 
 def test_seed_from_singletons_respects_codex_suppression(tmp_path, monkeypatch):
