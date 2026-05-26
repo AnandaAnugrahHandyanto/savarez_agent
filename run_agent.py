@@ -1937,6 +1937,19 @@ class AIAgent:
                 _cfg = _load_config() or {}
             except Exception:
                 _cfg = {}
+            # Per-platform suppression: this footer is appended to the assistant
+            # reply (not a separate send), so it bypasses the adapter notice
+            # chokepoint.  On platforms that drop gateway notices
+            # (<platform>.suppress_notifications, e.g. WhatsApp shared with human
+            # contacts) skip the developer-facing verifier footer too.  CLI/TUI
+            # and other platforms keep it.
+            try:
+                _plat = (getattr(self, "platform", None) or "").lower().strip()
+                _plat_cfg = _cfg.get(_plat) if (_plat and isinstance(_cfg, dict)) else None
+                if isinstance(_plat_cfg, dict) and _plat_cfg.get("suppress_notifications"):
+                    return False
+            except Exception:
+                pass
             _display = _cfg.get("display") if isinstance(_cfg, dict) else None
             if isinstance(_display, dict) and "file_mutation_verifier" in _display:
                 return bool(_display.get("file_mutation_verifier"))
