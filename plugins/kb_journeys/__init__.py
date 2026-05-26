@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as _dt
+import hashlib
 import inspect
 import json
 import logging
@@ -27,6 +28,7 @@ KB_REASONING_LEVELS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 QUEUE_REPLY_DECISIONS = {"approve", "reject", "archive", "skip", "complete", "keep", "demote", "detail"}
 QUEUE_REPLY_TOOL_DECISIONS = {"approve", "reject", "archive", "skip", "complete", "keep", "demote"}
 QUEUE_REPLY_STATE_TTL_SECONDS = 15 * 60
+MEETING_HANDOFF_STATE_TTL_SECONDS = 15 * 60
 
 
 def _sanitize_component(value: str) -> str:
@@ -47,6 +49,12 @@ def _queue_reply_state_path():
     return get_hermes_home() / "state" / "kb_queue_reply_state.json"
 
 
+def _meeting_handoff_state_path():
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "state" / "kb_meeting_handoff_state.json"
+
+
 def _load_queue_reply_states() -> dict[str, Any]:
     path = _queue_reply_state_path()
     try:
@@ -63,6 +71,33 @@ def _save_queue_reply_states(states: dict[str, Any]) -> None:
         path.write_text(json.dumps(states, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     except OSError:
         logger.debug("kb_journeys: failed to persist iterative queue state", exc_info=True)
+
+
+def _load_meeting_handoff_states() -> dict[str, Any]:
+    path = _meeting_handoff_state_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_meeting_handoff_states(states: dict[str, Any]) -> None:
+    path = _meeting_handoff_state_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(states, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    except OSError:
+        logger.debug("kb_journeys: failed to persist meeting handoff state", exc_info=True)
+
+
+def _clear_meeting_handoff_state(session_id: str) -> None:
+    if not session_id:
+        return
+    states = _load_meeting_handoff_states()
+    if session_id in states:
+        states.pop(session_id, None)
+        _save_meeting_handoff_states(states)
 
 
 def _clear_iterative_queue_reply_state(session_id: str) -> None:
@@ -1148,6 +1183,58 @@ def _session_id_for_queue_reply_state(session_store: Any, source: Any) -> str:
         return ""
 
 
+def _conversation_state_id(session_store: Any, source: Any) -> str:
+    session_id = _session_id_for_queue_reply_state(session_store, source)
+    if session_id:
+        return session_id
+    parts = [
+        _platform_name(getattr(source, "platform", None)),
+        _short(getattr(source, "chat_id", ""), ""),
+        _short(getattr(source, "thread_id", ""), ""),
+        _short(getattr(source, "user_id", ""), ""),
+    ]
+    return ":".join(part for part in parts if part) or "telegram"
+
+
+def _get_meeting_handoff_state(session_id: str) -> dict[str, Any] | None:
+    if not session_id:
+        return None
+    states = _load_meeting_handoff_states()
+    state = states.get(session_id)
+    if not isinstance(state, dict):
+        return None
+    recorded_at = float(state.get("recorded_at") or 0.0)
+    if recorded_at and time.time() - recorded_at > MEETING_HANDOFF_STATE_TTL_SECONDS:
+        states.pop(session_id, None)
+        _save_meeting_handoff_states(states)
+        return None
+    plan = state.get("plan")
+    if not isinstance(plan, dict):
+        return None
+    return state
+
+
+def _store_meeting_handoff_state(
+    session_id: str,
+    *,
+    plan: dict[str, Any],
+    meeting_file: str,
+    notes_text: str,
+) -> None:
+    if not session_id:
+        return
+    states = _load_meeting_handoff_states()
+    states[session_id] = {
+        "schema_version": 1,
+        "recorded_at": time.time(),
+        "meeting_file": _short(meeting_file, ""),
+        "notes_sha256": "sha256:" + hashlib.sha256(str(notes_text or "").encode("utf-8")).hexdigest(),
+        "notes_chars": len(str(notes_text or "")),
+        "plan": plan,
+    }
+    _save_meeting_handoff_states(states)
+
+
 def _queue_count(data: Any) -> int | None:
     if not isinstance(data, dict):
         return None
@@ -1778,6 +1865,119 @@ def _workflow_start_text(ctx: Any, target: str, plan: dict[str, Any]) -> str:
     return text
 
 
+def _meeting_handoff_args(args: str) -> dict[str, Any]:
+    text = str(args or "").strip()
+    if text.lower() in {"confirm", "confirmed", "start", "apply"}:
+        return {"confirm_pending": True}
+    if not text:
+        return {"error": "meeting_file and notes are required"}
+    if text.lower().startswith("process "):
+        text = text.split(maxsplit=1)[1].strip()
+    if " -- " in text:
+        meeting_file, notes_text = text.split(" -- ", 1)
+    elif "\n" in text:
+        first, notes_text = text.split("\n", 1)
+        meeting_file = first
+    else:
+        return {"error": "separate the meeting file from notes with --"}
+    meeting_file = _strip_wrapping_quotes(meeting_file.strip())
+    notes_text = notes_text.strip()
+    if not meeting_file:
+        return {"error": "meeting_file is required"}
+    if not notes_text:
+        return {"error": "notes are required"}
+    return {
+        "confirm_pending": False,
+        "meeting_file": meeting_file,
+        "notes_text": notes_text,
+    }
+
+
+def _strip_wrapping_quotes(value: str) -> str:
+    text = str(value or "").strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        return text[1:-1].strip()
+    return text
+
+
+def _telegram_actor(source: Any) -> str:
+    name = _short(getattr(source, "user_name", ""), "")
+    user_id = _short(getattr(source, "user_id", ""), "")
+    return f"telegram:{name or user_id or 'operator'}"
+
+
+def _render_meeting_handoff_command(
+    ctx: Any,
+    target: str,
+    args: str,
+    *,
+    source: Any = None,
+    session_store: Any = None,
+    adapter: Any = None,
+) -> dict[str, Any]:
+    parsed = _meeting_handoff_args(args)
+    session_id = _conversation_state_id(session_store, source)
+    if parsed.get("confirm_pending"):
+        state = _get_meeting_handoff_state(session_id)
+        if not state:
+            return {
+                "title": "Meeting Notes",
+                "text": "Meeting Notes\nNo pending meeting handoff found for this chat.",
+                "actions": [],
+            }
+        plan = state.get("plan") if isinstance(state.get("plan"), dict) else {}
+        text = _workflow_start_text(ctx, target, plan)
+        _clear_meeting_handoff_state(session_id)
+        return {"title": "Meeting Notes", "text": text, "actions": []}
+    if parsed.get("error"):
+        return {"title": "Meeting Notes", "text": f"Meeting Notes\n{parsed['error']}", "actions": []}
+
+    meeting_file = str(parsed.get("meeting_file") or "")
+    notes_text = str(parsed.get("notes_text") or "")
+    plan_args = {
+        "meeting_file": meeting_file,
+        "source_kind": "telegram",
+        "source_notes_source": "telegram",
+        "source_notes_text": notes_text,
+        "harness_id": "telegram-hermes",
+        "harness_session_id": session_id,
+    }
+    _, data, errors = _dispatch_first(
+        ctx,
+        target,
+        [
+            (
+                "workflow.plan_request",
+                {
+                    "workflow_id": "meeting_process",
+                    "args": plan_args,
+                    "actor": _telegram_actor(source),
+                    "source": "Hermes Telegram",
+                    "session_id": session_id or f"telegram-meeting-{int(time.time())}",
+                },
+            )
+        ],
+    )
+    if data is None:
+        return _render_error("Meeting Notes", target, errors)
+    if isinstance(data, dict) and data.get("status") == "confirmation_required":
+        _store_meeting_handoff_state(
+            session_id,
+            plan=data,
+            meeting_file=meeting_file,
+            notes_text=notes_text,
+        )
+    card = _render_workflow_plan(
+        data,
+        ctx=ctx,
+        target=target,
+        adapter=adapter,
+        start_hint="/kb meeting confirm",
+    )
+    card["title"] = "Meeting Notes"
+    return card
+
+
 def _workflow_initial_progress_text(
     ctx: Any,
     target: str,
@@ -1969,6 +2169,8 @@ def _kb_root_command(args: str) -> tuple[str, str]:
         return "kbpublish", rest
     if key in {"run", "workflow"}:
         return "kbrun", rest
+    if key in {"meeting", "meetings", "notes"}:
+        return "kbmeeting", rest
     if key == "sync":
         return "kbrun", f"sync {rest}".strip()
     return "kbhelp", text
@@ -1991,6 +2193,7 @@ def _kb_command_help() -> dict[str, Any]:
                 "/kb reasoning xhigh - set KB engine reasoning and reload MCP",
                 "/kb runs - active and recent workflow runs",
                 "/kb run sync - preview a KB sync",
+                "/kb meeting <meeting-file> -- <notes> - preview Telegram notes handoff",
             ]
         ),
         "actions": [],
@@ -2046,6 +2249,7 @@ def _card_for_command(
     adapter: Any = None,
     gateway: Any = None,
     source: Any = None,
+    session_store: Any = None,
 ) -> dict[str, Any]:
     target = _mcp_target()
     cockpit_args = {
@@ -2066,6 +2270,7 @@ def _card_for_command(
                 adapter=adapter,
                 gateway=gateway,
                 source=source,
+                session_store=session_store,
             )
         _, data, errors = _dispatch_first(
             ctx,
@@ -2122,6 +2327,15 @@ def _card_for_command(
         return _render_queue(data, ctx=ctx, target=target)
     if command == "kbpublish":
         return _render_publish_command(ctx, target, args)
+    if command == "kbmeeting":
+        return _render_meeting_handoff_command(
+            ctx,
+            target,
+            args,
+            source=source,
+            session_store=session_store,
+            adapter=adapter,
+        )
     if command == "kbrun":
         workflow_id, intent, confirm = _workflow_args_from_text(args)
         if not workflow_id:
@@ -2273,7 +2487,15 @@ def build_pre_gateway_dispatch_hook(ctx: Any) -> Callable[..., dict[str, str] | 
             )
         else:
             args = _command_args_from_text(text)
-            card = _card_for_command(ctx, command, args=args, adapter=adapter, gateway=gateway, source=source)
+            card = _card_for_command(
+                ctx,
+                command,
+                args=args,
+                adapter=adapter,
+                gateway=gateway,
+                source=source,
+                session_store=session_store,
+            )
         reload_mcp = bool(card.pop("_reload_mcp", False))
         _run_delivery(_send_card(adapter, event, card))
         if reload_mcp:
