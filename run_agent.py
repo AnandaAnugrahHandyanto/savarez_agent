@@ -81,7 +81,12 @@ from agent.process_bootstrap import (
     _get_proxy_from_env,
     _get_proxy_for_base_url,
 )
-from agent.iteration_budget import IterationBudget
+from agent.iteration_budget import (
+    DEFAULT_MAX_TOOL_CALLS_PER_TURN,
+    DEFAULT_REPEAT_TOOL_THRESHOLD,
+    DEFAULT_USAGE_EVENTS_PATH,
+    IterationBudget,
+)
 
 
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -412,6 +417,10 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        max_tool_calls_per_turn: int | None = DEFAULT_MAX_TOOL_CALLS_PER_TURN,
+        repeat_tool_threshold: int = DEFAULT_REPEAT_TOOL_THRESHOLD,
+        cost_limit_per_turn: float | None = None,
+        usage_events_path: str | None = DEFAULT_USAGE_EVENTS_PATH,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         from agent.agent_init import init_agent
@@ -481,6 +490,10 @@ class AIAgent:
             checkpoint_max_total_size_mb=checkpoint_max_total_size_mb,
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
+            max_tool_calls_per_turn=max_tool_calls_per_turn,
+            repeat_tool_threshold=repeat_tool_threshold,
+            cost_limit_per_turn=cost_limit_per_turn,
+            usage_events_path=usage_events_path,
         )
 
     def _get_session_db_for_recall(self):
@@ -3148,10 +3161,14 @@ class AIAgent:
         from agent.chat_completion_helpers import interruptible_streaming_api_call
         return interruptible_streaming_api_call(self, api_kwargs, on_first_delta=on_first_delta)
 
-    def _try_activate_fallback(self, reason: "FailoverReason | None" = None) -> bool:
+    def _try_activate_fallback(
+        self,
+        reason: "FailoverReason | None" = None,
+        reason_detail: str | None = None,
+    ) -> bool:
         """Forwarder — see ``agent.chat_completion_helpers.try_activate_fallback``."""
         from agent.chat_completion_helpers import try_activate_fallback
-        return try_activate_fallback(self, reason)
+        return try_activate_fallback(self, reason, reason_detail=reason_detail)
 
     # ── Per-turn primary restoration ─────────────────────────────────────
 
@@ -3961,6 +3978,68 @@ class AIAgent:
         self._set_tool_guardrail_halt(decision)
         return toolguard_synthetic_result(decision)
 
+    @staticmethod
+    def _tool_call_signature(tool_call) -> tuple[str, str]:
+        function = getattr(tool_call, "function", None)
+        return (
+            getattr(function, "name", "") or "",
+            getattr(function, "arguments", "") or "",
+        )
+
+    def _reserve_tool_calls_for_turn(self, tool_calls: list) -> tuple[list, list, list[str]]:
+        """Apply per-turn tool-call budget and detect repeated identical calls."""
+        max_calls = getattr(self, "max_tool_calls_per_turn", DEFAULT_MAX_TOOL_CALLS_PER_TURN)
+        recent = getattr(self, "_turn_recent_tool_call_signatures", None)
+        if recent is None:
+            recent = []
+            self._turn_recent_tool_call_signatures = recent
+        warnings: list[str] = []
+        allowed = []
+        skipped = []
+
+        for tc in tool_calls:
+            current_count = int(getattr(self, "_turn_tool_call_count", 0) or 0) + 1
+            self._turn_tool_call_count = current_count
+
+            signature = self._tool_call_signature(tc)
+            recent.append(signature)
+            threshold = max(1, int(getattr(self, "repeat_tool_threshold", DEFAULT_REPEAT_TOOL_THRESHOLD) or DEFAULT_REPEAT_TOOL_THRESHOLD))
+            if (
+                len(recent) >= threshold
+                and all(item == signature for item in recent[-threshold:])
+            ):
+                if not getattr(self, "_turn_repeat_tool_warning_active", False):
+                    self._turn_repeat_tool_warning_active = True
+                    self._turn_repeat_tool_warnings = int(getattr(self, "_turn_repeat_tool_warnings", 0) or 0) + 1
+                    tool_name = signature[0] or "unknown"
+                    msg = (
+                        f"[LOOP WARNING] You called '{tool_name}' {threshold}+ times "
+                        "consecutively with identical arguments. Confirm this is intentional "
+                        "or switch approach before calling it again."
+                    )
+                    warnings.append(msg)
+                    logger.warning("Loop warning: repeated identical tool call %s", tool_name)
+            elif len(recent) >= 2 and recent[-1] != recent[-2]:
+                self._turn_repeat_tool_warning_active = False
+
+            if max_calls is not None and current_count > int(max_calls):
+                skipped.append(tc)
+                self._turn_budget_hit = True
+                continue
+            allowed.append(tc)
+
+        if skipped:
+            logger.warning(
+                "max_tool_calls_per_turn=%s reached; skipped %d tool call(s)",
+                max_calls,
+                len(skipped),
+            )
+        return allowed, skipped, warnings
+
+    def _append_turn_budget_warnings(self, messages: list, warnings: list[str]) -> None:
+        for warning in warnings:
+            messages.append({"role": "user", "content": warning})
+
     def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute tool calls from the assistant message and append results to messages.
 
@@ -3969,19 +4048,37 @@ class AIAgent:
         file reads/writes may do so only when their target paths do not overlap.
         """
         tool_calls = assistant_message.tool_calls
+        allowed_calls, skipped_calls, warnings = self._reserve_tool_calls_for_turn(tool_calls)
+        assistant_message.tool_calls = allowed_calls
 
         # Allow _vprint during tool execution even with stream consumers
         self._executing_tools = True
         try:
-            if not _should_parallelize_tool_batch(tool_calls):
-                return self._execute_tool_calls_sequential(
-                    assistant_message, messages, effective_task_id, api_call_count
-                )
-
-            return self._execute_tool_calls_concurrent(
-                assistant_message, messages, effective_task_id, api_call_count
-            )
+            if allowed_calls:
+                if not _should_parallelize_tool_batch(allowed_calls):
+                    self._execute_tool_calls_sequential(
+                        assistant_message, messages, effective_task_id, api_call_count
+                    )
+                else:
+                    self._execute_tool_calls_concurrent(
+                        assistant_message, messages, effective_task_id, api_call_count
+                    )
+            if skipped_calls:
+                from agent.tool_dispatch_helpers import make_tool_result_message
+                max_calls = getattr(self, "max_tool_calls_per_turn", DEFAULT_MAX_TOOL_CALLS_PER_TURN)
+                for tc in skipped_calls:
+                    name = getattr(getattr(tc, "function", None), "name", "") or "unknown"
+                    messages.append(make_tool_result_message(
+                        name,
+                        f"[BUDGET] Tool call limit ({max_calls}) reached for this turn. "
+                        "This tool call was skipped; stop calling tools and give a final answer.",
+                        tc.id,
+                    ))
+                self._budget_grace_call = True
+            if warnings:
+                self._append_turn_budget_warnings(messages, warnings)
         finally:
+            assistant_message.tool_calls = tool_calls
             self._executing_tools = False
 
     def _dispatch_delegate_task(self, function_args: dict) -> str:

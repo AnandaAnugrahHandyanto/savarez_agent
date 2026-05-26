@@ -896,6 +896,8 @@ import sys
 # Tool description for LLM
 TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Filesystem usually persists between calls.
 
+Trigger phrases: "run this command", "execute X", "check if process Y is running", "install package", "start/stop service", "git status/commit/push", "build the project", "run tests", "what's the disk space", "check port 8080".
+
 Do NOT use cat/head/tail to read files — use read_file instead.
 Do NOT use grep/rg/find to search — use search_files instead.
 Do NOT use ls to list directories — use search_files(target='files') instead.

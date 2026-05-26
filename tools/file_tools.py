@@ -1033,7 +1033,7 @@ def _check_file_reqs():
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are rejected; use offset and limit to read specific sections of large files. NOTE: Cannot read images or binary files — use vision_analyze for images.",
+    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Use when: \"show me the file\", \"what's in X.py\", \"open config.yaml\", \"display the contents of\", \"read log file\", \"что в файле\", \"покажи содержимое\". Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are rejected; use offset and limit to read specific sections of large files. NOTE: Cannot read images or binary files — use vision_analyze for images.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1047,7 +1047,7 @@ READ_FILE_SCHEMA = {
 
 WRITE_FILE_SCHEMA = {
     "name": "write_file",
-    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out).",
+    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Use when: \"create a new file\", \"save this content to\", \"write to file X\", \"create script Y\". NOTE: OVERWRITES entire file — use patch() for targeted edits to existing files. Creates parent directories automatically. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out).",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1062,6 +1062,9 @@ PATCH_SCHEMA = {
     "name": "patch",
     "description": (
         "Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. "
+        "Use when: \"change line X in file Y\", \"replace function Z\", "
+        "\"update this config value\", \"fix this bug in\", "
+        "\"edit only this part of the file\". Safer than write_file for existing files. "
         "Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. "
         "Returns a unified diff. Auto-runs syntax checks after editing.\n\n"
         "REPLACE MODE (mode='replace', default): find a unique string and replace it. "
@@ -1106,7 +1109,7 @@ PATCH_SCHEMA = {
 
 SEARCH_FILES_SCHEMA = {
     "name": "search_files",
-    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents.\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls — results sorted by modification time.",
+    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Use when: \"find where X is defined\", \"search for all .py files\", \"grep for pattern Y\", \"list files in directory\", \"where is function Z called\", \"найди все файлы с X\". Ripgrep-backed, faster than shell equivalents.\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls — results sorted by modification time.",
     "parameters": {
         "type": "object",
         "properties": {

@@ -39,6 +39,10 @@ from typing import Any, Dict
 DEFAULT_MAX_BYTES = 50_000       # terminal_tool.MAX_OUTPUT_CHARS
 DEFAULT_MAX_LINES = 2000         # file_operations.MAX_LINES
 DEFAULT_MAX_LINE_LENGTH = 2000   # file_operations.MAX_LINE_LENGTH
+DEFAULT_TERMINAL_SUMMARY_THRESHOLD = 5_000
+DEFAULT_TERMINAL_SUMMARY_HEAD_LINES = 50
+DEFAULT_TERMINAL_SUMMARY_TAIL_LINES = 50
+DEFAULT_TERMINAL_SUMMARY_MAX_ERROR_LINES = 50
 
 
 def _coerce_positive_int(value: Any, default: int) -> int:
@@ -74,6 +78,22 @@ def get_tool_output_limits() -> Dict[str, int]:
         "max_line_length": _coerce_positive_int(
             section.get("max_line_length"), DEFAULT_MAX_LINE_LENGTH
         ),
+        "terminal_summary_threshold": _coerce_positive_int(
+            section.get("terminal_summary_threshold"),
+            DEFAULT_TERMINAL_SUMMARY_THRESHOLD,
+        ),
+        "terminal_summary_head_lines": _coerce_positive_int(
+            section.get("terminal_summary_head_lines"),
+            DEFAULT_TERMINAL_SUMMARY_HEAD_LINES,
+        ),
+        "terminal_summary_tail_lines": _coerce_positive_int(
+            section.get("terminal_summary_tail_lines"),
+            DEFAULT_TERMINAL_SUMMARY_TAIL_LINES,
+        ),
+        "terminal_summary_max_error_lines": _coerce_positive_int(
+            section.get("terminal_summary_max_error_lines"),
+            DEFAULT_TERMINAL_SUMMARY_MAX_ERROR_LINES,
+        ),
     }
 
 
@@ -90,3 +110,14 @@ def get_max_lines() -> int:
 def get_max_line_length() -> int:
     """Shortcut for file-ops callers that only need the per-line cap."""
     return get_tool_output_limits()["max_line_length"]
+
+
+def get_terminal_summary_config() -> Dict[str, int]:
+    """Return smart-summary settings for large terminal output."""
+    limits = get_tool_output_limits()
+    return {
+        "threshold": limits["terminal_summary_threshold"],
+        "head_lines": limits["terminal_summary_head_lines"],
+        "tail_lines": limits["terminal_summary_tail_lines"],
+        "max_error_lines": limits["terminal_summary_max_error_lines"],
+    }

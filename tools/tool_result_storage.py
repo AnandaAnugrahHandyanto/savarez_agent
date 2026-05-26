@@ -24,6 +24,7 @@ Defense against context-window overflow operates at three levels:
 
 import logging
 import os
+import re
 import shlex
 import uuid
 
@@ -39,6 +40,11 @@ PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
 STORAGE_DIR = "/tmp/hermes-results"
 HEREDOC_MARKER = "HERMES_PERSIST_EOF"
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
+TERMINAL_TOOL_NAME = "terminal"
+TERMINAL_ERROR_PATTERN = re.compile(
+    r"\b(ERROR|WARN|WARNING|FATAL|Exception|Traceback|error:|failed|FAILED|AssertionError)\b",
+    re.IGNORECASE,
+)
 
 
 def _resolve_storage_dir(env) -> str:
@@ -57,8 +63,88 @@ def _resolve_storage_dir(env) -> str:
     return STORAGE_DIR
 
 
-def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) -> tuple[str, bool]:
+def _smart_terminal_summary(
+    content: str,
+    *,
+    file_path: str | None = None,
+    head_lines: int = 50,
+    tail_lines: int = 50,
+    max_error_lines: int = 50,
+) -> str:
+    """Build head/tail/error summary for large terminal output."""
+    lines = content.splitlines(keepends=True)
+    total_lines = len(lines)
+    total_chars = len(content)
+    head = lines[:head_lines]
+    tail = lines[-tail_lines:] if total_lines > head_lines else []
+
+    seen = set()
+    error_lines = []
+    for line in lines:
+        if not TERMINAL_ERROR_PATTERN.search(line):
+            continue
+        key = line.strip()
+        if key in seen:
+            continue
+        seen.add(key)
+        error_lines.append(line)
+        if len(error_lines) >= max_error_lines:
+            break
+
+    location = f" — full output saved to {file_path}" if file_path else ""
+    parts = [
+        f"[TERMINAL OUTPUT SUMMARY — {total_lines} lines, {total_chars} chars{location}]\n\n"
+    ]
+    if head:
+        parts.append(f"=== HEAD ({min(head_lines, total_lines)} lines) ===\n")
+        parts.extend(head)
+        parts.append("\n")
+    if total_lines > head_lines + tail_lines:
+        parts.append(f"... [{total_lines - head_lines - tail_lines} lines omitted — see full file] ...\n\n")
+    if tail and total_lines > head_lines:
+        parts.append(f"=== TAIL ({min(tail_lines, total_lines)} lines) ===\n")
+        parts.extend(tail)
+        parts.append("\n")
+    if error_lines:
+        parts.append(f"=== ERRORS/WARNINGS ({len(error_lines)} unique matches) ===\n")
+        parts.extend(error_lines)
+        parts.append("\n")
+    elif total_lines > head_lines:
+        parts.append("=== ERRORS/WARNINGS: none found ===\n")
+    if file_path:
+        parts.append(f"Full output: {file_path}\n")
+    return "".join(parts)
+
+
+def generate_preview(
+    content: str,
+    max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS,
+    tool_name: str | None = None,
+    file_path: str | None = None,
+) -> tuple[str, bool]:
     """Truncate at last newline within max_chars. Returns (preview, has_more)."""
+    if tool_name == TERMINAL_TOOL_NAME:
+        try:
+            from tools.tool_output_limits import get_terminal_summary_config
+            summary_cfg = get_terminal_summary_config()
+        except Exception:
+            summary_cfg = {
+                "threshold": 5_000,
+                "head_lines": 50,
+                "tail_lines": 50,
+                "max_error_lines": 50,
+            }
+        if len(content) > summary_cfg["threshold"]:
+            return (
+                _smart_terminal_summary(
+                    content,
+                    file_path=file_path,
+                    head_lines=summary_cfg["head_lines"],
+                    tail_lines=summary_cfg["tail_lines"],
+                    max_error_lines=summary_cfg["max_error_lines"],
+                ),
+                True,
+            )
     if len(content) <= max_chars:
         return content, False
     truncated = content[:max_chars]
@@ -111,7 +197,10 @@ def _build_persisted_message(
     msg += f"This tool result was too large ({original_size:,} characters, {size_str}).\n"
     msg += f"Full output saved to: {file_path}\n"
     msg += "Use the read_file tool with offset and limit to access specific sections of this output.\n\n"
-    msg += f"Preview (first {len(preview)} chars):\n"
+    if preview.startswith("[TERMINAL OUTPUT SUMMARY"):
+        msg += "Preview:\n"
+    else:
+        msg += f"Preview (first {len(preview)} chars):\n"
     msg += preview
     if has_more:
         msg += "\n..."
@@ -146,6 +235,14 @@ def maybe_persist_tool_result(
     """
     effective_threshold = threshold if threshold is not None else config.resolve_threshold(tool_name)
 
+    if tool_name == TERMINAL_TOOL_NAME and effective_threshold != float("inf"):
+        try:
+            from tools.tool_output_limits import get_terminal_summary_config
+            terminal_threshold = get_terminal_summary_config()["threshold"]
+        except Exception:
+            terminal_threshold = 5_000
+        effective_threshold = min(int(effective_threshold), terminal_threshold)
+
     if effective_threshold == float("inf"):
         return content
 
@@ -154,7 +251,12 @@ def maybe_persist_tool_result(
 
     storage_dir = _resolve_storage_dir(env)
     remote_path = f"{storage_dir}/{tool_use_id}.txt"
-    preview, has_more = generate_preview(content, max_chars=config.preview_size)
+    preview, has_more = generate_preview(
+        content,
+        max_chars=config.preview_size,
+        tool_name=tool_name,
+        file_path=remote_path,
+    )
 
     if env is not None:
         try:

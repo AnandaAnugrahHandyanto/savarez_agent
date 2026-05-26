@@ -64,6 +64,39 @@ class TestGeneratePreview:
         assert preview == text
         assert has_more is False
 
+    def test_terminal_large_output_gets_head_tail_error_summary(self):
+        text = "\n".join(
+            [f"head {i}" for i in range(400)]
+            + ["ERROR build failed"]
+            + [f"tail {i}" for i in range(400)]
+        )
+        preview, has_more = generate_preview(
+            text,
+            tool_name="terminal",
+            file_path="/tmp/hermes-results/tc_123.txt",
+        )
+
+        assert has_more is True
+        assert "[TERMINAL OUTPUT SUMMARY" in preview
+        assert "=== HEAD" in preview
+        assert "=== TAIL" in preview
+        assert "=== ERRORS/WARNINGS" in preview
+        assert "ERROR build failed" in preview
+        assert "Full output: /tmp/hermes-results/tc_123.txt" in preview
+
+    def test_non_terminal_large_output_keeps_legacy_preview(self):
+        text = "x" * 6000
+        preview, has_more = generate_preview(
+            text,
+            max_chars=2000,
+            tool_name="read_file",
+            file_path="/tmp/hermes-results/tc_123.txt",
+        )
+
+        assert has_more is True
+        assert preview == "x" * 2000
+        assert "TERMINAL OUTPUT SUMMARY" not in preview
+
 
 # ── _heredoc_marker ───────────────────────────────────────────────────
 
@@ -219,6 +252,24 @@ class TestMaybePersistToolResult:
         )
         assert result == content
 
+    def test_terminal_output_over_summary_threshold_is_persisted(self):
+        env = MagicMock()
+        env.get_temp_dir.return_value = "/tmp"
+        env.execute.return_value = {"output": "", "returncode": 0}
+        content = "\n".join([f"line {i}" for i in range(800)] + ["ERROR bad"])
+
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="terminal",
+            tool_use_id="tc_terminal",
+            env=env,
+        )
+
+        assert PERSISTED_OUTPUT_TAG in result
+        assert "TERMINAL OUTPUT SUMMARY" in result
+        assert "Full output saved to: /tmp/hermes-results/tc_terminal.txt" in result
+        assert "ERROR bad" in result
+
     def test_above_threshold_with_env_persists(self):
         env = MagicMock()
         env.execute.return_value = {"output": "", "returncode": 0}
@@ -232,7 +283,8 @@ class TestMaybePersistToolResult:
         )
         assert PERSISTED_OUTPUT_TAG in result
         assert "tc_456.txt" in result
-        assert len(result) < len(content)
+        assert "TERMINAL OUTPUT SUMMARY" in result
+        assert "/hermes-results/" in result
         env.execute.assert_called_once()
 
     def test_persists_full_content_as_is(self):
@@ -265,7 +317,7 @@ class TestMaybePersistToolResult:
         )
         assert PERSISTED_OUTPUT_TAG not in result
         assert "Truncated" in result
-        assert len(result) < len(content)
+        assert "TERMINAL OUTPUT SUMMARY" in result
 
     def test_env_write_failure_falls_back_to_truncation(self):
         env = MagicMock()

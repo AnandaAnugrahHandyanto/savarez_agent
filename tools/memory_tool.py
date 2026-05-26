@@ -622,6 +622,10 @@ MEMORY_SCHEMA = {
         "Save durable information to persistent memory that survives across sessions. "
         "Memory is injected into future turns, so keep it compact and focused on facts "
         "that will still matter later.\n\n"
+        "Use when: \"remember that\", \"don't forget\", \"my preference is\", "
+        "\"save this for later\", \"I always use X\", \"запомни\", \"сохрани это\". "
+        "Proactively trigger when user corrects you, shares preference, or says "
+        "\"next time do X\".\n\n"
         "WHEN TO SAVE (do this proactively, don't wait to be asked):\n"
         "- User corrects you or says 'remember this' / 'don't do that again'\n"
         "- User shares a preference, habit, or personal detail (name, role, timezone, coding style)\n"
@@ -684,7 +688,6 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
 
 
 

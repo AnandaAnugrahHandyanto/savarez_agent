@@ -32,7 +32,7 @@ from agent.auxiliary_client import set_runtime_main
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
-from agent.iteration_budget import IterationBudget
+from agent.iteration_budget import IterationBudget, append_usage_event
 from agent.memory_manager import build_memory_context_block
 from agent.message_sanitization import (
     _repair_tool_call_arguments,
@@ -587,6 +587,13 @@ def run_conversation(
     # present are surfaced in an advisory footer so the model cannot
     # over-claim success while the file is actually unchanged on disk.
     agent._turn_failed_file_mutations: Dict[str, Dict[str, Any]] = {}
+    agent._turn_tool_call_count = 0
+    agent._turn_repeat_tool_warnings = 0
+    agent._turn_budget_hit = False
+    agent._turn_estimated_cost_usd = 0.0
+    agent._turn_cost_limit_exceeded = False
+    agent._turn_recent_tool_call_signatures = []
+    agent._turn_repeat_tool_warning_active = False
     
     # Record the execution thread so interrupt()/clear_interrupt() can
     # scope the tool-level interrupt signal to THIS agent's thread only.
@@ -1023,7 +1030,10 @@ def run_conversation(
                             force=True,
                         )
                         agent._emit_status(f"⏳ {_nous_msg}")
-                        if agent._try_activate_fallback():
+                        if agent._try_activate_fallback(
+                            reason=FailoverReason.rate_limit,
+                            reason_detail=_nous_msg,
+                        ):
                             retry_count = 0
                             compression_attempts = 0
                             primary_recovery_attempted = False
@@ -1259,7 +1269,10 @@ def run_conversation(
                     # rather than retrying with extended backoff.
                     if agent._fallback_index < len(agent._fallback_chain):
                         agent._emit_status("⚠️ Empty/malformed response — switching to fallback...")
-                    if agent._try_activate_fallback():
+                    if agent._try_activate_fallback(
+                        reason=FailoverReason.format_error,
+                        reason_detail="empty/malformed response before provider error payload",
+                    ):
                         retry_count = 0
                         compression_attempts = 0
                         primary_recovery_attempted = False
@@ -1329,7 +1342,10 @@ def run_conversation(
                     if retry_count >= max_retries:
                         # Try fallback before giving up
                         agent._emit_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
-                        if agent._try_activate_fallback():
+                        if agent._try_activate_fallback(
+                            reason=FailoverReason.format_error,
+                            reason_detail=", ".join(error_details)[:500],
+                        ):
                             retry_count = 0
                             compression_attempts = 0
                             primary_recovery_attempted = False
@@ -1650,7 +1666,21 @@ def run_conversation(
                         api_key=getattr(agent, "api_key", ""),
                     )
                     if cost_result.amount_usd is not None:
-                        agent.session_estimated_cost_usd += float(cost_result.amount_usd)
+                        _call_cost = float(cost_result.amount_usd)
+                        agent.session_estimated_cost_usd += _call_cost
+                        agent._turn_estimated_cost_usd += _call_cost
+                        if (
+                            agent.cost_limit_per_turn is not None
+                            and agent._turn_estimated_cost_usd > agent.cost_limit_per_turn
+                        ):
+                            agent._turn_cost_limit_exceeded = True
+                            agent._turn_budget_hit = True
+                            agent._budget_grace_call = True
+                            logger.warning(
+                                "cost_limit_per_turn=%.4f exceeded (%.4f)",
+                                agent.cost_limit_per_turn,
+                                agent._turn_estimated_cost_usd,
+                            )
                     agent.session_cost_status = cost_result.status
                     agent.session_cost_source = cost_result.source
 
@@ -2791,7 +2821,10 @@ def run_conversation(
                     # Try fallback before aborting — a different provider
                     # may not have the same issue (rate limit, auth, etc.)
                     agent._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
-                    if agent._try_activate_fallback():
+                    if agent._try_activate_fallback(
+                        reason=classified.reason,
+                        reason_detail=classified.message or agent._summarize_api_error(api_error),
+                    ):
                         retry_count = 0
                         compression_attempts = 0
                         primary_recovery_attempted = False
@@ -2862,7 +2895,10 @@ def run_conversation(
                         continue
                     # Try fallback before giving up entirely
                     agent._emit_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
-                    if agent._try_activate_fallback():
+                    if agent._try_activate_fallback(
+                        reason=classified.reason,
+                        reason_detail=classified.message or agent._summarize_api_error(api_error),
+                    ):
                         retry_count = 0
                         compression_attempts = 0
                         primary_recovery_attempted = False
@@ -3412,6 +3448,30 @@ def run_conversation(
                 messages.append(assistant_msg)
                 agent._emit_interim_assistant_message(assistant_msg)
 
+                if getattr(agent, "_turn_cost_limit_exceeded", False):
+                    from agent.tool_dispatch_helpers import make_tool_result_message
+
+                    limit = getattr(agent, "cost_limit_per_turn", None)
+                    spent = getattr(agent, "_turn_estimated_cost_usd", 0.0)
+                    for tc in assistant_message.tool_calls:
+                        messages.append(make_tool_result_message(
+                            tc.function.name,
+                            "[BUDGET] cost_limit_per_turn exceeded "
+                            f"({spent:.4f} USD"
+                            + (f" > {limit:.4f} USD" if limit is not None else "")
+                            + "). Tool execution skipped; give a final answer.",
+                            tc.id,
+                        ))
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "[BUDGET] The per-turn cost limit has been exceeded. "
+                            "Stop calling tools and provide the best final answer from existing context."
+                        ),
+                    })
+                    _turn_exit_reason = "cost_limit_per_turn"
+                    continue
+
                 # Close any open streaming display (response box, reasoning
                 # box) before tool execution begins.  Intermediate turns may
                 # have streamed early content that opened the response box;
@@ -3715,7 +3775,10 @@ def run_conversation(
                             "⚠️ Model returning empty responses — "
                             "switching to fallback provider..."
                         )
-                        if agent._try_activate_fallback():
+                        if agent._try_activate_fallback(
+                            reason=FailoverReason.format_error,
+                            reason_detail="model returned repeated empty responses",
+                        ):
                             agent._empty_content_retries = 0
                             agent._emit_status(
                                 f"↻ Switched to fallback: {agent.model} "
@@ -4116,6 +4179,30 @@ def run_conversation(
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
+
+    append_usage_event(
+        {
+            "session_id": agent.session_id,
+            "platform": agent.platform,
+            "user_id": getattr(agent, "_user_id", None),
+            "chat_id": getattr(agent, "_chat_id", None),
+            "thread_id": getattr(agent, "_thread_id", None),
+            "turn_tool_calls": getattr(agent, "_turn_tool_call_count", 0),
+            "max_tool_calls_per_turn": getattr(agent, "max_tool_calls_per_turn", None),
+            "repeat_tool_warnings": getattr(agent, "_turn_repeat_tool_warnings", 0),
+            "input_tokens": agent.session_input_tokens,
+            "output_tokens": agent.session_output_tokens,
+            "prompt_tokens": agent.session_prompt_tokens,
+            "completion_tokens": agent.session_completion_tokens,
+            "estimated_cost_usd": getattr(agent, "_turn_estimated_cost_usd", 0.0),
+            "session_estimated_cost_usd": agent.session_estimated_cost_usd,
+            "model": agent.model,
+            "provider": agent.provider,
+            "budget_hit": getattr(agent, "_turn_budget_hit", False),
+            "turn_exit_reason": _turn_exit_reason,
+        },
+        path=getattr(agent, "usage_events_path", None),
+    )
     # If a /steer landed after the final assistant turn (no more tool
     # batches to drain into), hand it back to the caller so it can be
     # delivered as the next user turn instead of being silently lost.

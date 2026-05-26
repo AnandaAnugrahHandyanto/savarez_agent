@@ -119,6 +119,9 @@ SEND_MESSAGE_SCHEMA = {
     "name": "send_message",
     "description": (
         "Send a message to a connected messaging platform, or list available targets.\n\n"
+        "Use when: \"message/notify/tell [someone/channel]\", \"post to telegram\", "
+        "\"send this to topic X\", \"отправь в топик\", \"уведоми Михаила\", "
+        "\"post a summary to\".\n\n"
         "IMPORTANT: When the user asks to send to a specific channel or person "
         "(not just a bare platform name), call send_message(action='list') FIRST to see "
         "available targets, then send to the correct one.\n"

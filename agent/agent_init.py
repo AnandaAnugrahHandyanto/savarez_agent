@@ -32,7 +32,14 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse, parse_qs, urlunparse
 
 from agent.context_compressor import ContextCompressor
-from agent.iteration_budget import IterationBudget
+from agent.iteration_budget import (
+    DEFAULT_MAX_TOOL_CALLS_PER_TURN,
+    DEFAULT_REPEAT_TOOL_THRESHOLD,
+    DEFAULT_USAGE_EVENTS_PATH,
+    IterationBudget,
+    coerce_optional_positive_float,
+    coerce_optional_positive_int,
+)
 from agent.memory_manager import StreamingContextScrubber
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
@@ -202,6 +209,10 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    max_tool_calls_per_turn: int | None = DEFAULT_MAX_TOOL_CALLS_PER_TURN,
+    repeat_tool_threshold: int = DEFAULT_REPEAT_TOOL_THRESHOLD,
+    cost_limit_per_turn: float | None = None,
+    usage_events_path: str | None = DEFAULT_USAGE_EVENTS_PATH,
 ):
     """
     Initialize the AI Agent.
@@ -255,6 +266,19 @@ def init_agent(
 
     agent.model = model
     agent.max_iterations = max_iterations
+    agent.max_tool_calls_per_turn = coerce_optional_positive_int(
+        max_tool_calls_per_turn,
+        DEFAULT_MAX_TOOL_CALLS_PER_TURN,
+    )
+    agent.repeat_tool_threshold = coerce_optional_positive_int(
+        repeat_tool_threshold,
+        DEFAULT_REPEAT_TOOL_THRESHOLD,
+    ) or DEFAULT_REPEAT_TOOL_THRESHOLD
+    agent.cost_limit_per_turn = coerce_optional_positive_float(
+        cost_limit_per_turn,
+        None,
+    )
+    agent.usage_events_path = usage_events_path or DEFAULT_USAGE_EVENTS_PATH
     # Shared iteration budget — parent creates, children inherit.
     # Consumed by every LLM turn across parent + all subagents.
     agent.iteration_budget = iteration_budget or IterationBudget(max_iterations)
@@ -339,6 +363,24 @@ def init_agent(
             agent.model = normalize_model_for_provider(agent.model, agent.provider)
     except Exception:
         pass
+
+    try:
+        from agent.model_policy import enforce_allowed_model, enforce_allowed_provider
+
+        agent.provider = enforce_allowed_provider(
+            agent.provider,
+            usage="main provider",
+        )
+        agent.model = enforce_allowed_model(
+            agent.model,
+            usage=f"main provider {agent.provider or 'unknown'}",
+        )
+    except Exception as exc:
+        from agent.model_policy import ForbiddenModelError
+
+        if isinstance(exc, ForbiddenModelError):
+            raise
+        logging.debug("Model policy check skipped during init: %s", exc)
 
     # GPT-5.x models usually require the Responses API path, but some
     # providers have exceptions (for example Copilot's gpt-5-mini still
@@ -806,7 +848,19 @@ def init_agent(
                         )
                         if _fb_client is not None:
                             agent.provider = _fb["provider"]
-                            agent.model = _fb_model or _fb["model"]
+                            from agent.model_policy import (
+                                enforce_allowed_model,
+                                enforce_allowed_provider,
+                            )
+
+                            agent.provider = enforce_allowed_provider(
+                                _fb["provider"],
+                                usage="fallback provider",
+                            )
+                            agent.model = enforce_allowed_model(
+                                _fb_model or _fb["model"],
+                                usage=f"fallback provider {_fb['provider']}",
+                            )
                             agent._fallback_activated = True
                             client_kwargs = {
                                 "api_key": _fb_client.api_key,
@@ -894,6 +948,12 @@ def init_agent(
         agent._fallback_chain = []
     agent._fallback_index = 0
     agent._fallback_activated = getattr(agent, "_fallback_activated", False)
+    agent._runtime_monitor_primary_healthy = not agent._fallback_activated
+    agent._runtime_monitor_last_failure_reason = ""
+    agent._runtime_monitor_last_probe_error = ""
+    agent._runtime_monitor_next_probe_at = 0.0
+    agent._runtime_monitor_notify_sent_at = {}
+    agent._runtime_monitor_probe_thread = None
     # Legacy attribute kept for backward compat (tests, external callers)
     agent._fallback_model = agent._fallback_chain[0] if agent._fallback_chain else None
     if agent._fallback_chain and not agent.quiet_mode:

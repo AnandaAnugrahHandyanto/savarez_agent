@@ -53,6 +53,13 @@ from typing import Dict, Optional, Any, List, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
+from agent.iteration_budget import (
+    DEFAULT_MAX_TOOL_CALLS_PER_TURN,
+    DEFAULT_REPEAT_TOOL_THRESHOLD,
+    DEFAULT_USAGE_EVENTS_PATH,
+    coerce_optional_positive_float,
+    coerce_optional_positive_int,
+)
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -98,6 +105,29 @@ _GATEWAY_PROVIDER_ERROR_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+
+
+def _resolve_loop_protection_config(user_config: dict | None) -> dict:
+    """Resolve gateway.loop_protection with backward-compatible defaults."""
+    gateway_cfg = (user_config or {}).get("gateway") if isinstance(user_config, dict) else None
+    loop_cfg = gateway_cfg.get("loop_protection") if isinstance(gateway_cfg, dict) else None
+    if not isinstance(loop_cfg, dict):
+        loop_cfg = {}
+    return {
+        "max_tool_calls_per_turn": coerce_optional_positive_int(
+            loop_cfg.get("max_tool_calls_per_turn"),
+            DEFAULT_MAX_TOOL_CALLS_PER_TURN,
+        ),
+        "repeat_tool_threshold": coerce_optional_positive_int(
+            loop_cfg.get("repeat_tool_threshold"),
+            DEFAULT_REPEAT_TOOL_THRESHOLD,
+        ) or DEFAULT_REPEAT_TOOL_THRESHOLD,
+        "cost_limit_per_turn": coerce_optional_positive_float(
+            loop_cfg.get("cost_limit_per_turn"),
+            None,
+        ),
+        "usage_events_path": loop_cfg.get("usage_events_path") or DEFAULT_USAGE_EVENTS_PATH,
+    }
 
 _GATEWAY_PROVIDER_POLICY_RE = re.compile(
     r"("  # raw provider policy/safety bodies are noisy and may be sensitive
@@ -11476,6 +11506,7 @@ class GatewayRunner:
             enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
+            loop_protection = _resolve_loop_protection_config(user_config)
 
             pr = self._provider_routing
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
@@ -11529,6 +11560,7 @@ class GatewayRunner:
                     thread_id=source.thread_id,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    **loop_protection,
                 )
                 try:
                     return agent.run_conversation(
@@ -16333,6 +16365,7 @@ class GatewayRunner:
                 )
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            loop_protection = _resolve_loop_protection_config(user_config)
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -16394,6 +16427,7 @@ class GatewayRunner:
                     gateway_session_key=session_key,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    **loop_protection,
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
@@ -16411,6 +16445,10 @@ class GatewayRunner:
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
+            agent.max_tool_calls_per_turn = loop_protection["max_tool_calls_per_turn"]
+            agent.repeat_tool_threshold = loop_protection["repeat_tool_threshold"]
+            agent.cost_limit_per_turn = loop_protection["cost_limit_per_turn"]
+            agent.usage_events_path = loop_protection["usage_events_path"]
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []
