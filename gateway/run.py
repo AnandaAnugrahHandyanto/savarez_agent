@@ -3515,6 +3515,22 @@ class GatewayRunner:
                 pass
             self._cleanup_agent_resources(agent)
 
+        # Clear session-level state so gateway restart starts fresh:
+        # model/reasoning overrides, pending approvals, and YOLO state
+        # must not survive a shutdown boundary.
+        self._session_model_overrides.clear()
+        if hasattr(self, "_session_reasoning_overrides"):
+            self._session_reasoning_overrides.clear()
+        if hasattr(self, "_pending_approvals"):
+            self._pending_approvals.clear()
+        if hasattr(self, "_pending_model_notes"):
+            self._pending_model_notes.clear()
+        try:
+            from tools.approval import clear_all_sessions
+            clear_all_sessions()
+        except Exception:
+            pass
+
     def _cleanup_agent_resources(self, agent: Any) -> None:
         """Best-effort cleanup for temporary or cached agent instances."""
         if agent is None:
