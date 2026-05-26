@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -54,7 +55,7 @@ from utils import env_var_enabled
 try:
     from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
 except ImportError:
@@ -66,7 +67,7 @@ except ImportError:
         _lazy_ensure("tool.dashboard", prompt=False)
         from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
         from fastapi.middleware.cors import CORSMiddleware
-        from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+        from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
         from fastapi.staticfiles import StaticFiles
         from pydantic import BaseModel
     except Exception:
@@ -639,6 +640,148 @@ async def get_status():
         "gateway_updated_at": gateway_updated_at,
         "active_sessions": active_sessions,
     }
+
+
+# ---------------------------------------------------------------------------
+# Cockpit bridge: dashboard-local proxy to the gateway API Server / AG-UI.
+# ---------------------------------------------------------------------------
+
+
+def _cockpit_env_value(name: str, default: str = "") -> str:
+    try:
+        env = load_env()
+    except Exception:
+        env = {}
+    value = os.getenv(name) or env.get(name) or default
+    return str(value) if value is not None else default
+
+
+def _cockpit_key_preview(key: str) -> str:
+    if not key:
+        return ""
+    if len(key) <= 6:
+        return "set"
+    return f"{key[:3]}…{key[-3:]}"
+
+
+def _cockpit_api_server_settings() -> Dict[str, Any]:
+    cfg = load_config()
+    platform_cfg: Dict[str, Any] = {}
+    for root_key in ("gateway", ""):
+        root = cfg.get(root_key, cfg) if root_key else cfg
+        if isinstance(root, dict):
+            platforms = root.get("platforms")
+            if isinstance(platforms, dict) and isinstance(platforms.get("api_server"), dict):
+                platform_cfg = platforms["api_server"]
+                break
+
+    raw_extra = platform_cfg.get("extra")
+    extra: Dict[str, Any] = raw_extra if isinstance(raw_extra, dict) else {}
+    enabled_raw = platform_cfg.get("enabled")
+    enabled = (
+        bool(enabled_raw)
+        if enabled_raw is not None
+        else _cockpit_env_value("API_SERVER_ENABLED").lower() in {"1", "true", "yes"}
+    )
+    host = str(
+        extra.get("host")
+        or _cockpit_env_value("API_SERVER_HOST", "127.0.0.1")
+        or "127.0.0.1"
+    )
+    port_raw = extra.get("port") or _cockpit_env_value("API_SERVER_PORT", "8765") or "8765"
+    try:
+        port = int(port_raw)
+    except (TypeError, ValueError):
+        port = 8765
+    key = str(extra.get("key") or _cockpit_env_value("API_SERVER_KEY", "") or "")
+    connect_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+    base_url = f"http://{connect_host}:{port}"
+    configured = enabled or bool(key) or bool(platform_cfg)
+    return {
+        "configured": configured,
+        "enabled": enabled,
+        "host": host,
+        "port": port,
+        "base_url": base_url,
+        "auth_configured": bool(key),
+        "key": key,
+        "key_preview": _cockpit_key_preview(key),
+    }
+
+
+def _cockpit_api_request(base_url: str, key: str, path: str, *, method: str = "GET", body: bytes | None = None, timeout: float = 5.0):
+    headers: Dict[str, str] = {"Accept": "application/json"}
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    req = urllib.request.Request(f"{base_url.rstrip('/')}{path}", data=body, headers=headers, method=method)
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def _cockpit_probe_capabilities(base_url: str, key: str) -> Tuple[bool, Dict[str, Any]]:
+    try:
+        with _cockpit_api_request(base_url, key, "/v1/capabilities", timeout=2.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return True, data if isinstance(data, dict) else {}
+    except Exception:
+        return False, {}
+
+
+def _cockpit_stream_agui_run(path: str, payload: Dict[str, Any]):
+    settings = _cockpit_api_server_settings()
+    body = json.dumps(payload).encode("utf-8")
+    try:
+        with _cockpit_api_request(
+            settings["base_url"],
+            settings.get("key", ""),
+            path,
+            method="POST",
+            body=body,
+            timeout=300.0,
+        ) as resp:
+            while True:
+                chunk = resp.readline()
+                if not chunk:
+                    break
+                yield chunk
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        yield f"event: error\ndata: {json.dumps({'error': detail or str(exc), 'status': exc.code})}\n\n".encode("utf-8")
+    except Exception as exc:
+        yield f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n".encode("utf-8")
+
+
+@app.get("/api/cockpit/status")
+async def get_cockpit_status():
+    settings = _cockpit_api_server_settings()
+    reachable = False
+    capabilities: Dict[str, Any] = {}
+    if settings.get("configured"):
+        reachable, capabilities = _cockpit_probe_capabilities(
+            settings["base_url"], settings.get("key", "")
+        )
+    public_settings = {k: v for k, v in settings.items() if k != "key"}
+    public_settings["reachable"] = reachable
+    return {"api_server": public_settings, "capabilities": capabilities}
+
+
+@app.post("/api/cockpit/agui/runs")
+async def post_cockpit_agui_run(request: Request):
+    settings = _cockpit_api_server_settings()
+    if not settings.get("configured"):
+        raise HTTPException(
+            status_code=409,
+            detail="API Server is not configured. Set API_SERVER_ENABLED=true and restart the gateway.",
+        )
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Expected JSON object")
+    return StreamingResponse(
+        _cockpit_stream_agui_run("/v1/agui/runs", payload),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ---------------------------------------------------------------------------

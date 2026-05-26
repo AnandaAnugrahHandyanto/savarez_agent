@@ -11,6 +11,9 @@ Exposes an HTTP server with endpoints:
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}           — retrieve current run status
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
+- GET  /v1/runs/{run_id}/events/replay — JSON replay/audit log of lifecycle events
+- GET  /v1/runs/{run_id}/agui-events — AG-UI protocol SSE stream for cockpit UIs
+- POST /v1/agui/runs               — AG-UI-style run request with immediate SSE stream
 - POST /v1/runs/{run_id}/approval — resolve a pending run approval
 - POST /v1/runs/{run_id}/stop       — interrupt a running agent
 - GET  /health                     — health check
@@ -62,6 +65,185 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+
+
+_AGUI_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9_.:-]+")
+
+
+def _agui_safe_id(value: Any, fallback: str) -> str:
+    """Return an AG-UI-friendly ID component without leaking arbitrary text."""
+    raw = str(value or fallback).strip() or fallback
+    cleaned = _AGUI_ID_SAFE_RE.sub("_", raw)
+    return cleaned[:128] or fallback
+
+
+def _agui_message_id(run_id: str) -> str:
+    return f"{_agui_safe_id(run_id, 'run')}_message"
+
+
+def _agui_tool_call_id(run_id: str, tool_name: Any) -> str:
+    return f"{_agui_safe_id(run_id, 'run')}_{_agui_safe_id(tool_name, 'tool')}"
+
+
+def _agui_events_from_run_event(event: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Map Hermes /v1/runs lifecycle events to AG-UI protocol events.
+
+    AG-UI is event-based.  Hermes already has a run event stream, so this
+    adapter keeps Hermes' native run API as the source of truth and exposes a
+    protocol-shaped view for CopilotKit/AG-UI clients.
+    """
+    event_name = str(event.get("event") or "")
+    run_id = str(event.get("run_id") or event.get("runId") or "run")
+    message_id = _agui_message_id(run_id)
+
+    if event_name == "message.delta":
+        return [{
+            "type": "TEXT_MESSAGE_CONTENT",
+            "runId": run_id,
+            "messageId": message_id,
+            "delta": str(event.get("delta") or ""),
+        }]
+
+    if event_name == "tool.started":
+        tool_name = event.get("tool") or "tool"
+        return [{
+            "type": "TOOL_CALL_START",
+            "runId": run_id,
+            "toolCallId": _agui_tool_call_id(run_id, tool_name),
+            "toolCallName": str(tool_name),
+            "parentMessageId": message_id,
+            "args": {"preview": event.get("preview") or ""},
+        }]
+
+    if event_name == "tool.completed":
+        tool_name = event.get("tool") or "tool"
+        agui_event: Dict[str, Any] = {
+            "type": "TOOL_CALL_END",
+            "runId": run_id,
+            "toolCallId": _agui_tool_call_id(run_id, tool_name),
+            "toolCallName": str(tool_name),
+            "parentMessageId": message_id,
+            "duration": event.get("duration"),
+            "error": bool(event.get("error", False)),
+        }
+        return [agui_event]
+
+    if event_name == "approval.request":
+        return [{
+            "type": "TOOL_CALL_REQUIRES_ACTION",
+            "runId": run_id,
+            "toolCallId": _agui_tool_call_id(run_id, event.get("tool") or "approval"),
+            "parentMessageId": message_id,
+            "action": {
+                "kind": "approval",
+                "choices": event.get("choices") or ["once", "session", "always", "deny"],
+                "payload": event,
+            },
+        }]
+
+    if event_name == "approval.responded":
+        return [{
+            "type": "TOOL_CALL_RESULT",
+            "runId": run_id,
+            "toolCallId": _agui_tool_call_id(run_id, "approval"),
+            "parentMessageId": message_id,
+            "result": {
+                "choice": event.get("choice"),
+                "resolved": event.get("resolved"),
+            },
+        }]
+
+    if event_name == "reasoning.available":
+        return [{
+            "type": "CUSTOM",
+            "runId": run_id,
+            "name": "hermes.reasoning.available",
+            "value": {"text": event.get("text") or ""},
+        }]
+
+    if event_name == "run.completed":
+        return [
+            {
+                "type": "TEXT_MESSAGE_END",
+                "runId": run_id,
+                "messageId": message_id,
+            },
+            {
+                "type": "RUN_FINISHED",
+                "runId": run_id,
+                "result": event.get("output") or "",
+                "usage": event.get("usage") or {},
+            },
+        ]
+
+    if event_name in {"run.failed", "run.cancelled"}:
+        return [{
+            "type": "RUN_ERROR" if event_name == "run.failed" else "RUN_CANCELLED",
+            "runId": run_id,
+            "message": event.get("error") or event_name,
+        }]
+
+    return [{
+        "type": "CUSTOM",
+        "runId": run_id,
+        "name": f"hermes.{event_name or 'event'}",
+        "value": event,
+    }]
+
+
+def _normalize_agui_message_content(content: Any) -> str:
+    """Flatten AG-UI message content into the text shape Hermes runs accept."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for part in content[:MAX_CONTENT_LIST_SIZE]:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                text = part.get("text") or part.get("content") or ""
+                if text:
+                    parts.append(str(text))
+        return " ".join(parts)[:MAX_NORMALIZED_TEXT_LENGTH]
+    return str(content)[:MAX_NORMALIZED_TEXT_LENGTH]
+
+
+def _runs_body_from_agui_input(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Translate a minimal AG-UI RunAgentInput body to Hermes /v1/runs input."""
+    messages = body.get("messages")
+    if messages is None:
+        messages = body.get("input")
+    if not isinstance(messages, list) or not messages:
+        raise ValueError("AG-UI request requires a non-empty 'messages' array")
+
+    normalized_messages: List[Dict[str, str]] = []
+    for i, message in enumerate(messages):
+        if not isinstance(message, dict):
+            raise ValueError(f"messages[{i}] must be an object")
+        role = str(message.get("role") or "user")
+        content = _normalize_agui_message_content(message.get("content"))
+        if not content:
+            continue
+        normalized_messages.append({"role": role, "content": content})
+
+    if not normalized_messages:
+        raise ValueError("AG-UI request contains no text content")
+
+    run_body: Dict[str, Any] = {
+        "input": normalized_messages,
+        "model": body.get("model"),
+    }
+    if body.get("instructions"):
+        run_body["instructions"] = str(body["instructions"])
+    if body.get("threadId"):
+        run_body["session_id"] = str(body["threadId"])
+    if body.get("runId"):
+        run_body["agui_run_id"] = str(body["runId"])
+    if body.get("previous_response_id"):
+        run_body["previous_response_id"] = str(body["previous_response_id"])
+    return {key: value for key, value in run_body.items() if value is not None}
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -692,6 +874,11 @@ class APIServerAdapter(BasePlatformAdapter):
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
         # Pollable run status for dashboards and external control-plane UIs.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
+        # Replayable per-run event audit logs. These are in-memory, bounded,
+        # and retained alongside terminal run status so dashboards/operators can
+        # reconnect after completion and reconstruct what happened.
+        self._run_event_logs: Dict[str, List[Dict[str, Any]]] = {}
+        self._run_event_seq: Dict[str, int] = {}
         # Active approval session key for each run_id.  The approval core
         # resolves requests by session key, while API clients address the
         # in-flight run by run_id.
@@ -1082,6 +1269,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_submission": True,
                 "run_status": True,
                 "run_events_sse": True,
+                "run_event_replay": True,
+                "run_events_agui_sse": True,
+                "agui_run_streaming": True,
                 "run_stop": True,
                 "run_approval_response": True,
                 "tool_progress_events": True,
@@ -1099,6 +1289,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 "runs": {"method": "POST", "path": "/v1/runs"},
                 "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
                 "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
+                "run_event_replay": {"method": "GET", "path": "/v1/runs/{run_id}/events/replay"},
+                "run_agui_events": {"method": "GET", "path": "/v1/runs/{run_id}/agui-events"},
+                "agui_runs": {"method": "POST", "path": "/v1/agui/runs"},
                 "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
             },
@@ -1497,7 +1690,8 @@ class APIServerAdapter(BasePlatformAdapter):
             loop = asyncio.get_running_loop()
             while True:
                 try:
-                    delta = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
+                    poll_timeout = min(0.5, max(0.01, CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS))
+                    delta = await loop.run_in_executor(None, lambda: stream_q.get(timeout=poll_timeout))
                 except _q.Empty:
                     if agent_task.done():
                         # Drain any remaining items
@@ -2887,6 +3081,7 @@ class APIServerAdapter(BasePlatformAdapter):
     _MAX_CONCURRENT_RUNS = 10  # Prevent unbounded resource allocation
     _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
     _RUN_STATUS_TTL = 3600  # seconds to retain terminal run status for polling
+    _RUN_EVENT_LOG_MAX = 1000  # bounded in-memory replay/audit events per run
 
     def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, Any]:
         """Update pollable run status without exposing private agent objects."""
@@ -2903,21 +3098,59 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_statuses[run_id] = current
         return current
 
+    def _record_run_event(self, run_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
+        """Append a bounded, sequence-numbered event to the run replay log."""
+        recorded = dict(event)
+        recorded.setdefault("run_id", run_id)
+        recorded.setdefault("timestamp", time.time())
+        next_seq = self._run_event_seq.get(run_id, 0) + 1
+        self._run_event_seq[run_id] = next_seq
+        recorded["seq"] = next_seq
+
+        log = self._run_event_logs.setdefault(run_id, [])
+        log.append(recorded)
+        if len(log) > self._RUN_EVENT_LOG_MAX:
+            del log[: len(log) - self._RUN_EVENT_LOG_MAX]
+        return recorded
+
+    def _publish_run_event(
+        self,
+        run_id: str,
+        event: Dict[str, Any],
+        loop: Optional["asyncio.AbstractEventLoop"] = None,
+    ) -> Dict[str, Any]:
+        """Record a run event, update status metadata, and fan it out to SSE."""
+        recorded = self._record_run_event(run_id, event)
+        self._set_run_status(
+            run_id,
+            self._run_statuses.get(run_id, {}).get("status", "running"),
+            last_event=recorded.get("event"),
+        )
+        q = self._run_streams.get(run_id)
+        if q is not None:
+            try:
+                if loop is not None:
+                    loop.call_soon_threadsafe(q.put_nowait, recorded)
+                else:
+                    q.put_nowait(recorded)
+            except Exception:
+                pass
+        return recorded
+
+    def _close_run_event_stream(self, run_id: str) -> None:
+        """Signal an active SSE stream to close without adding a replay event."""
+        q = self._run_streams.get(run_id)
+        if q is None:
+            return
+        try:
+            q.put_nowait(None)
+        except Exception:
+            pass
+
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
         def _push(event: Dict[str, Any]) -> None:
-            self._set_run_status(
-                run_id,
-                self._run_statuses.get(run_id, {}).get("status", "running"),
-                last_event=event.get("event"),
-            )
-            q = self._run_streams.get(run_id)
-            if q is None:
-                return
-            try:
-                loop.call_soon_threadsafe(q.put_nowait, event)
-            except Exception:
-                pass
+            self._publish_run_event(run_id, event, loop=loop)
 
         def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
             ts = time.time()
@@ -3027,7 +3260,16 @@ class APIServerAdapter(BasePlatformAdapter):
                         )
                     conversation_history.append({"role": msg["role"], "content": str(content)})
 
-        run_id = f"run_{uuid.uuid4().hex}"
+        requested_run_id = body.get("run_id") or body.get("agui_run_id")
+        if requested_run_id:
+            run_id = _agui_safe_id(requested_run_id, f"run_{uuid.uuid4().hex}")
+            if run_id in self._run_streams or run_id in self._run_statuses:
+                return web.json_response(
+                    _openai_error(f"Run already exists: {run_id}", code="run_already_exists"),
+                    status=409,
+                )
+        else:
+            run_id = f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id
         approval_session_key = gateway_session_key or session_id or run_id
         ephemeral_system_prompt = instructions
@@ -3044,15 +3286,16 @@ class APIServerAdapter(BasePlatformAdapter):
         def _text_cb(delta: Optional[str]) -> None:
             if delta is None:
                 return
-            try:
-                loop.call_soon_threadsafe(q.put_nowait, {
+            self._publish_run_event(
+                run_id,
+                {
                     "event": "message.delta",
                     "run_id": run_id,
                     "timestamp": time.time(),
                     "delta": delta,
-                })
-            except Exception:
-                pass
+                },
+                loop=loop,
+            )
 
         self._set_run_status(
             run_id,
@@ -3087,10 +3330,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         "waiting_for_approval",
                         last_event="approval.request",
                     )
-                    try:
-                        loop.call_soon_threadsafe(q.put_nowait, event)
-                    except Exception:
-                        pass
+                    self._publish_run_event(run_id, event, loop=loop)
 
                 def _run_sync():
                     from gateway.session_context import clear_session_vars, set_session_vars
@@ -3146,7 +3386,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 # block below never fires — issue #15561).
                 if isinstance(result, dict) and result.get("failed"):
                     error_msg = result.get("error") or "agent run failed"
-                    q.put_nowait({
+                    self._publish_run_event(run_id, {
                         "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -3160,7 +3400,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
-                    q.put_nowait({
+                    self._publish_run_event(run_id, {
                         "event": "run.completed",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -3181,7 +3421,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     last_event="run.cancelled",
                 )
                 try:
-                    q.put_nowait({
+                    self._publish_run_event(run_id, {
                         "event": "run.cancelled",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -3198,7 +3438,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     last_event="run.failed",
                 )
                 try:
-                    q.put_nowait({
+                    self._publish_run_event(run_id, {
                         "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -3219,10 +3459,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 except Exception:
                     pass
                 # Sentinel: signal SSE stream to close
-                try:
-                    q.put_nowait(None)
-                except Exception:
-                    pass
+                self._close_run_event_stream(run_id)
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
@@ -3259,6 +3496,57 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=404,
             )
         return web.json_response(status)
+
+    async def _handle_run_event_replay(self, request: Any) -> Any:
+        """GET /v1/runs/{run_id}/events/replay — return recorded lifecycle events."""
+        web_mod = web
+        if web_mod is None:
+            raise RuntimeError("aiohttp is required for API server")
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        run_id = request.match_info["run_id"]
+        status = self._run_statuses.get(run_id)
+        events = list(self._run_event_logs.get(run_id, []))
+        if status is None and not events:
+            return web_mod.json_response(
+                _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+                status=404,
+            )
+
+        try:
+            after = int(request.query.get("after", "0") or 0)
+        except (TypeError, ValueError):
+            return web_mod.json_response(
+                _openai_error("Invalid 'after' cursor; expected integer sequence", code="invalid_cursor"),
+                status=400,
+            )
+        if after < 0:
+            return web_mod.json_response(
+                _openai_error("Invalid 'after' cursor; expected non-negative integer", code="invalid_cursor"),
+                status=400,
+            )
+
+        try:
+            limit = int(request.query.get("limit", str(self._RUN_EVENT_LOG_MAX)) or self._RUN_EVENT_LOG_MAX)
+        except (TypeError, ValueError):
+            return web_mod.json_response(
+                _openai_error("Invalid 'limit'; expected integer", code="invalid_limit"),
+                status=400,
+            )
+        limit = max(1, min(limit, self._RUN_EVENT_LOG_MAX))
+        filtered = [event for event in events if int(event.get("seq", 0) or 0) > after][:limit]
+        next_after = filtered[-1]["seq"] if filtered else after
+
+        return web_mod.json_response({
+            "object": "hermes.run.events",
+            "run_id": run_id,
+            "status": status.get("status") if status else None,
+            "events": filtered,
+            "next_after": next_after,
+            "has_more": len([event for event in events if int(event.get("seq", 0) or 0) > next_after]) > 0,
+        })
 
     async def _handle_run_events(self, request: "web.Request") -> "web.StreamResponse":
         """GET /v1/runs/{run_id}/events — SSE stream of structured agent lifecycle events."""
@@ -3309,6 +3597,120 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return response
 
+    async def _stream_agui_events_for_run(self, request: Any, run_id: str) -> Any:
+        """Stream AG-UI events for an already-created Hermes run."""
+        web_mod = web
+        if web_mod is None:
+            raise RuntimeError("aiohttp is required for API server")
+
+        # Match the native event endpoint's small registration race window.
+        for _ in range(20):
+            if run_id in self._run_streams:
+                break
+            await asyncio.sleep(0.05)
+        else:
+            return web_mod.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
+
+        q = self._run_streams[run_id]
+        message_id = _agui_message_id(run_id)
+        status = self._run_statuses.get(run_id, {})
+
+        response = web_mod.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+        await response.prepare(request)
+
+        async def _write_agui_event(agui_event: Dict[str, Any]) -> None:
+            payload = f"event: {agui_event.get('type', 'CUSTOM')}\n"
+            payload += f"data: {json.dumps(agui_event)}\n\n"
+            await response.write(payload.encode())
+
+        try:
+            await _write_agui_event({
+                "type": "RUN_STARTED",
+                "runId": run_id,
+                "threadId": status.get("session_id") or run_id,
+            })
+            await _write_agui_event({
+                "type": "TEXT_MESSAGE_START",
+                "runId": run_id,
+                "messageId": message_id,
+                "role": "assistant",
+            })
+
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    await response.write(b": keepalive\n\n")
+                    continue
+                if event is None:
+                    await response.write(b": stream closed\n\n")
+                    break
+                for agui_event in _agui_events_from_run_event(event):
+                    await _write_agui_event(agui_event)
+        except Exception as exc:
+            logger.debug("[api_server] AG-UI SSE stream error for run %s: %s", run_id, exc)
+        finally:
+            self._run_streams.pop(run_id, None)
+            self._run_streams_created.pop(run_id, None)
+
+        return response
+
+    async def _handle_run_agui_events(self, request: Any) -> Any:
+        """GET /v1/runs/{run_id}/agui-events — AG-UI shaped SSE stream."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        return await self._stream_agui_events_for_run(request, request.match_info["run_id"])
+
+    async def _handle_agui_runs(self, request: Any) -> Any:
+        """POST /v1/agui/runs — AG-UI RunAgentInput in, AG-UI SSE stream out."""
+        web_mod = web
+        if web_mod is None:
+            raise RuntimeError("aiohttp is required for API server")
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            agui_body = await request.json()
+            if not isinstance(agui_body, dict):
+                raise ValueError("request body must be a JSON object")
+            run_body = _runs_body_from_agui_input(agui_body)
+        except ValueError as exc:
+            return web_mod.json_response(_openai_error(str(exc)), status=400)
+        except Exception:
+            return web_mod.json_response(_openai_error("Invalid JSON"), status=400)
+
+        class _JSONRequestShim:
+            def __init__(self, source: Any, payload: Dict[str, Any]):
+                self.headers = source.headers
+                self.method = source.method
+                self.path_qs = source.path_qs
+                self.remote = getattr(source, "remote", None)
+                self.transport = getattr(source, "transport", None)
+                self.match_info = {}
+                self._payload = payload
+
+            async def json(self) -> Dict[str, Any]:
+                return self._payload
+
+        create_response = await self._handle_runs(_JSONRequestShim(request, run_body))
+        if getattr(create_response, "status", 500) != 202:
+            return create_response
+        try:
+            created = json.loads(create_response.text or "{}")
+            run_id = str(created["run_id"])
+        except Exception:
+            return web_mod.json_response(_openai_error("Failed to create AG-UI run"), status=500)
+
+        return await self._stream_agui_events_for_run(request, run_id)
 
     async def _handle_run_approval(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs/{run_id}/approval — resolve a pending run approval."""
@@ -3381,7 +3783,7 @@ class APIServerAdapter(BasePlatformAdapter):
         q = self._run_streams.get(run_id)
         if q is not None:
             try:
-                q.put_nowait({
+                self._publish_run_event(run_id, {
                     "event": "approval.responded",
                     "run_id": run_id,
                     "timestamp": time.time(),
@@ -3472,6 +3874,8 @@ class APIServerAdapter(BasePlatformAdapter):
             ]
             for run_id in stale_statuses:
                 self._run_statuses.pop(run_id, None)
+                self._run_event_logs.pop(run_id, None)
+                self._run_event_seq.pop(run_id, None)
 
     # ------------------------------------------------------------------
     # BasePlatformAdapter interface
@@ -3507,8 +3911,11 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
+            self._app.router.add_post("/v1/agui/runs", self._handle_agui_runs)
             self._app.router.add_get("/v1/runs/{run_id}", self._handle_get_run)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
+            self._app.router.add_get("/v1/runs/{run_id}/events/replay", self._handle_run_event_replay)
+            self._app.router.add_get("/v1/runs/{run_id}/agui-events", self._handle_run_agui_events)
             self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
             # Start background sweep to clean up orphaned (unconsumed) run streams

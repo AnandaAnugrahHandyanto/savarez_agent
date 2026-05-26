@@ -86,8 +86,11 @@ Endpoints:
 POST /v1/chat/completions        OpenAI Chat Completions (streaming via SSE)
 POST /v1/responses               OpenAI Responses API (stateful)
 POST /v1/runs                    Start a run, returns run_id (202)
+POST /v1/agui/runs               AG-UI RunAgentInput, returns AG-UI SSE stream
 GET  /v1/runs/{id}               Run status
 GET  /v1/runs/{id}/events        SSE stream of lifecycle events
+GET  /v1/runs/{id}/events/replay JSON replay/audit log with seq pagination
+GET  /v1/runs/{id}/agui-events   AG-UI SSE stream for cockpit UIs
 POST /v1/runs/{id}/approval      Resolve a pending approval
 POST /v1/runs/{id}/stop          Interrupt the run
 GET  /v1/capabilities            Machine-readable feature flags
@@ -96,6 +99,17 @@ GET  /health, /health/detailed
 ```
 
 Setup, headers (`X-Hermes-Session-Id`, `X-Hermes-Session-Key`), and frontend wiring: [API Server](../user-guide/features/api-server).
+
+### Dashboard Cockpit proxy
+
+The built-in dashboard does **not** call `/v1/agui/runs` directly from the browser. It uses two same-origin endpoints in `hermes_cli/web_server.py`:
+
+```text
+GET  /api/cockpit/status       Probe API-server config and /v1/capabilities
+POST /api/cockpit/agui/runs    Proxy RunAgentInput to /v1/agui/runs and stream SSE
+```
+
+This keeps `API_SERVER_KEY` server-side, avoids CORS setup for the dashboard, and gives the React page a stable same-origin API. The frontend parser lives in `web/src/lib/agui.ts`; the page lives in `web/src/pages/CockpitPage.tsx`.
 
 ---
 

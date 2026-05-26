@@ -655,8 +655,14 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["chat_completions"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
+            assert data["features"]["run_event_replay"] is True
+            assert data["features"]["run_events_agui_sse"] is True
+            assert data["features"]["agui_run_streaming"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
+            assert data["endpoints"]["run_event_replay"]["path"] == "/v1/runs/{run_id}/events/replay"
+            assert data["endpoints"]["run_agui_events"]["path"] == "/v1/runs/{run_id}/agui-events"
+            assert data["endpoints"]["agui_runs"]["path"] == "/v1/agui/runs"
 
     @pytest.mark.asyncio
     async def test_capabilities_requires_auth_when_key_configured(self, auth_adapter):

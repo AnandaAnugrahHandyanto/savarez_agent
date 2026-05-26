@@ -53,6 +53,19 @@ curl http://localhost:8642/v1/chat/completions \
 
 Or connect Open WebUI, LobeChat, or any other frontend — see the [Open WebUI integration guide](/user-guide/messaging/open-webui) for step-by-step instructions.
 
+## Dashboard Cockpit
+
+Hermes Dashboard includes a built-in **Cockpit** tab for the AG-UI bridge. It is a local control surface for starting a run and watching live structured events: run lifecycle, streamed assistant text, tool starts/completions, and approval-required events.
+
+To use it:
+
+1. Enable and start the API server as shown above.
+2. Start the dashboard with `hermes dashboard`.
+3. Open **Cockpit** in the sidebar.
+4. Send a prompt. The page calls the dashboard-local proxy at `/api/cockpit/agui/runs`, which forwards to `/v1/agui/runs` with the configured bearer key.
+
+The browser never receives `API_SERVER_KEY`; the dashboard backend reads the local config/env, probes `/v1/capabilities`, and proxies the AG-UI SSE stream. The status pill shows whether the API server is configured and reachable.
+
 ## Endpoints
 
 ### POST /v1/chat/completions
@@ -214,6 +227,9 @@ Returns a machine-readable description of the API server's stable surface for ex
     "run_submission": true,
     "run_status": true,
     "run_events_sse": true,
+    "run_event_replay": true,
+    "run_events_agui_sse": true,
+    "agui_run_streaming": true,
     "run_stop": true
   }
 }
@@ -267,6 +283,56 @@ Statuses are retained briefly after terminal states (`completed`, `failed`, or `
 ### GET /v1/runs/\{run_id\}/events
 
 Server-Sent Events stream of the run's tool-call progress, token deltas, and lifecycle events. Designed for dashboards and thick clients that want to attach/detach without losing state.
+
+### GET /v1/runs/\{run_id\}/events/replay
+
+JSON replay/audit log of recorded lifecycle events for a run. This is useful when an operator dashboard reconnects after a network drop, when a run has already completed, or when a client wants deterministic pagination instead of holding an SSE stream open.
+
+```bash
+curl "http://127.0.0.1:8642/v1/runs/run_abc123/events/replay?after=0&limit=100"
+```
+
+Response:
+
+```json
+{
+  "object": "hermes.run.events",
+  "run_id": "run_abc123",
+  "status": "completed",
+  "events": [
+    {"seq": 1, "event": "message.delta", "delta": "Working..."},
+    {"seq": 2, "event": "tool.started", "tool": "terminal"},
+    {"seq": 3, "event": "run.completed", "output": "Done."}
+  ],
+  "next_after": 3,
+  "has_more": false
+}
+```
+
+Events are sequence-numbered per run. Pass the previous `next_after` value as `after` to fetch only newer events. Logs are bounded in memory and retained with the run's terminal status, so they are an operator reconciliation aid rather than permanent storage.
+
+### GET /v1/runs/\{run_id\}/agui-events
+
+Server-Sent Events stream of the same run lifecycle mapped to [AG-UI](https://docs.ag-ui.com/) event names. Use this when a cockpit UI or CopilotKit-style client has already created a Hermes run with `POST /v1/runs` and wants protocol-shaped events such as `RUN_STARTED`, `TEXT_MESSAGE_CONTENT`, `TOOL_CALL_START`, `TOOL_CALL_END`, `TOOL_CALL_REQUIRES_ACTION`, and `RUN_FINISHED`.
+
+This endpoint consumes the same live run queue as `/events`; attach either the native stream or the AG-UI stream for a given run, not both.
+
+### POST /v1/agui/runs
+
+AG-UI-style single-call run endpoint. The request accepts a minimal `RunAgentInput` shape and immediately returns an AG-UI SSE stream:
+
+```bash
+curl -N http://127.0.0.1:8642/v1/agui/runs \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{
+    "threadId": "cockpit-thread-1",
+    "runId": "cockpit-run-1",
+    "messages": [{"role": "user", "content": "Check the repo status"}]
+  }'
+```
+
+Hermes maps `threadId` to its API-server `session_id` so dashboard threads line up with run status and long-running work. `runId` is optional; if supplied, Hermes uses a sanitized version as the run ID and rejects duplicates with `409`.
 
 ### POST /v1/runs/\{run_id\}/stop
 
