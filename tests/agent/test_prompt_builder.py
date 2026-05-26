@@ -498,7 +498,8 @@ class TestBuildContextFilesPrompt:
         fake_home.mkdir()
         with patch("pathlib.Path.home", return_value=fake_home):
             result = build_context_files_prompt(cwd=str(tmp_path))
-        assert "Project Context" in result
+        assert "Base Identity" in result
+        assert "Project Context" not in result
         assert "Hermes Agent" in result
 
     def test_loads_agents_md(self, tmp_path):
@@ -519,18 +520,32 @@ class TestBuildContextFilesPrompt:
         (hermes_home / "SOUL.md").write_text("Be concise and friendly.", encoding="utf-8")
         (tmp_path / "SOUL.md").write_text("cwd soul should be ignored", encoding="utf-8")
         result = build_context_files_prompt(cwd=str(tmp_path))
+        assert "# Base Identity" in result
         assert "Be concise and friendly." in result
         assert "cwd soul should be ignored" not in result
 
-    def test_soul_md_has_no_wrapper_text(self, tmp_path, monkeypatch):
+    def test_soul_md_is_labeled_base_identity_not_project_context(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
         hermes_home = tmp_path / "hermes_home"
         hermes_home.mkdir()
         (hermes_home / "SOUL.md").write_text("Be concise and friendly.", encoding="utf-8")
         result = build_context_files_prompt(cwd=str(tmp_path))
+        assert result.startswith("# Base Identity")
+        assert "# Project Context" not in result
         assert "Be concise and friendly." in result
         assert "If SOUL.md is present" not in result
         assert "## SOUL.md" not in result
+
+    def test_project_context_and_base_identity_are_separate_sections(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "SOUL.md").write_text("Base identity text.", encoding="utf-8")
+        (tmp_path / "AGENTS.md").write_text("Project context text.", encoding="utf-8")
+        result = build_context_files_prompt(cwd=str(tmp_path))
+        assert result.index("# Base Identity") < result.index("# Project Context")
+        assert "Base identity text." in result
+        assert "Project context text." in result
 
     def test_empty_soul_md_adds_nothing(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))

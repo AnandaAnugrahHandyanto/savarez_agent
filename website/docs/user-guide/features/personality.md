@@ -6,10 +6,10 @@ description: "Customize Hermes Agent's personality with a global SOUL.md, built-
 
 # Personality & SOUL.md
 
-Hermes Agent's personality is fully customizable. `SOUL.md` is the **primary identity** — it's the first thing in the system prompt and defines who the agent is.
+Hermes Agent's personality is fully customizable. `SOUL.md` is the **Base identity** — it's the first thing in the system prompt and defines who the agent is.
 
-- `SOUL.md` — a durable persona file that lives in `HERMES_HOME` and serves as the agent's identity (slot #1 in the system prompt)
-- built-in or custom `/personality` presets — session-level system-prompt overlays
+- `SOUL.md` — a durable persona file that lives in `HERMES_HOME` and serves as Base identity (slot #1 in the system prompt)
+- built-in or custom `/personality` presets — session-level persisted overlays
 
 If you want to change who Hermes is — or replace it with an entirely different agent persona — edit `SOUL.md`.
 
@@ -29,14 +29,14 @@ $HERMES_HOME/SOUL.md
 
 ### Important behavior
 
-- **SOUL.md is the agent's primary identity.** It occupies slot #1 in the system prompt, replacing the hardcoded default identity.
+- **SOUL.md is the agent's Base identity.** It occupies slot #1 in the system prompt, replacing the hardcoded Built-in fallback identity.
 - Hermes creates a starter `SOUL.md` automatically if one does not exist yet
 - Existing user `SOUL.md` files are never overwritten
 - Hermes loads `SOUL.md` only from `HERMES_HOME`
 - Hermes does not look in the current working directory for `SOUL.md`
-- If `SOUL.md` exists but is empty, or cannot be loaded, Hermes falls back to a built-in default identity
+- If `SOUL.md` exists but is empty, or cannot be loaded, Hermes falls back to the Built-in fallback identity
 - If `SOUL.md` has content, that content is injected verbatim after security scanning and truncation
-- SOUL.md is **not** duplicated in the context files section — it appears only once, as the identity
+- SOUL.md is **not** duplicated in the Project context section — it appears only once, as Base identity
 
 That makes `SOUL.md` a true per-user or per-instance identity, not just an additive layer.
 
@@ -124,7 +124,7 @@ The content goes through:
 - prompt-injection scanning
 - truncation if it is too large
 
-If the file is empty, whitespace-only, or cannot be read, Hermes falls back to a built-in default identity ("You are Hermes Agent, an intelligent AI assistant created by Nous Research..."). This fallback also applies when `skip_context_files` is set (e.g., in subagent/delegation contexts).
+If the file is empty, whitespace-only, or cannot be read, Hermes falls back to the Built-in fallback identity ("You are Hermes Agent, an intelligent AI assistant created by Nous Research..."). This fallback also applies when `skip_context_files` is set unless the caller explicitly forces `load_soul_identity=True` (e.g., cron does this while keeping project-context loading separately controlled).
 
 ## Security scanning
 
@@ -340,7 +340,7 @@ Before activation, confirm that the candidate:
 
 This plan is for a later, separately approved implementation pass. It names likely files and tests, but does not authorize code changes or runtime activation.
 
-1. **Lock in prompt-source terminology in docs.** Update `website/docs/developer-guide/prompt-assembly.md`, `website/docs/user-guide/features/personality.md`, and the SOUL guide so they consistently distinguish stable identity (`SOUL.md`), project context files, cached system prompt layers, and API-call-time ephemeral overlays.
+1. **Lock in prompt-source terminology in docs.** Update `website/docs/developer-guide/prompt-assembly.md`, `website/docs/user-guide/features/personality.md`, and the SOUL guide so they consistently distinguish Base identity (`SOUL.md`), Project context files, Built-in fallback, persisted overlays, cached system prompt layers, and API-call-time ephemeral overlays.
 2. **Add source-level comments near load boundaries.** In a future code pass, add short comments around `agent.prompt_builder.load_soul_md()`, `agent.system_prompt.build_system_prompt_parts()`, and `agent.chat_completion_helpers` where ephemeral prompts are appended. Comments should clarify cache boundary and overlay precedence without changing behavior.
 3. **Normalize CLI/gateway/TUI personality clearing language.** Audit `/personality none` behavior in `cli.py`, `gateway/run.py`, and `tui_gateway/server.py`; make user-facing messages describe whether they clear `agent.system_prompt`, `display.personality`, in-memory `ephemeral_system_prompt`, or only the current runner overlay.
 4. **Document profile/distribution ownership risk.** Extend profile docs around clone/distribution behavior so `SOUL.md` ownership, reapplication, and rollback responsibilities are explicit when a distribution owns `SOUL.md`.

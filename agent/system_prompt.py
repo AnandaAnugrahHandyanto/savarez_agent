@@ -7,16 +7,19 @@ upstream prefix cache warm.  See ``hermes-agent-dev``'s
 ``references/self-improvement-loop.md`` for how the background-review
 fork inherits the cached prompt verbatim.
 
-Three tiers are joined with ``\\n\\n``:
+Three tiers are joined with ``\n\n``:
 
-* ``stable``   — identity (SOUL.md or DEFAULT_AGENT_IDENTITY), tool
+* ``stable``   — Base identity (HERMES_HOME/SOUL.md) or Built-in fallback
+  (DEFAULT_AGENT_IDENTITY), tool
   guidance, computer-use guidance, nous subscription block, tool-use
   enforcement guidance + per-model operational guidance, skills prompt,
   alibaba model-name workaround, environment hints, platform hints.
 * ``context``  — caller-supplied ``system_message`` plus context files
-  (AGENTS.md / .cursorrules / etc.) discovered under ``TERMINAL_CWD``.
-* ``volatile`` — memory snapshot, USER.md profile, external memory
-  provider block, timestamp/session/model/provider line.
+  (AGENTS.md / .cursorrules / etc.) discovered under ``TERMINAL_CWD`` as
+  Project context.
+* ``volatile`` — Persisted overlays (memory snapshot, USER.md profile,
+  external memory provider block) plus Ephemeral overlays such as the
+  timestamp/session/model/provider line.
 
 Pure helpers that read the agent's state.  AIAgent keeps thin forwarders.
 """
@@ -61,13 +64,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     """Assemble the system prompt as three ordered parts.
 
     Returns a dict with three keys:
-      * ``stable``   — identity, tool guidance, skills prompt,
+      * ``stable``   — Base identity or Built-in fallback, tool guidance, skills prompt,
         environment hints, platform hints, model-family operational
         guidance.
-      * ``context``  — context files (AGENTS.md, .cursorrules, etc.)
+      * ``context``  — Project context files (AGENTS.md, .cursorrules, etc.)
         and caller-supplied system_message.
-      * ``volatile`` — memory snapshot, user profile, external
-        memory provider block, timestamp line.
+      * ``volatile`` — Persisted overlays (memory snapshot, user profile,
+        external memory provider block) and Ephemeral overlays (timestamp line).
 
     Joined into a single string by :func:`build_system_prompt` and
     cached on ``agent._cached_system_prompt`` for the lifetime of the
@@ -83,9 +86,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts: List[str] = []
 
-    # Try SOUL.md as primary identity unless the caller explicitly skipped it.
+    # Try SOUL.md as Base identity unless the caller explicitly skipped it.
     # Some execution modes (cron) still want HERMES_HOME persona while keeping
-    # cwd project instructions disabled.
+    # cwd Project context disabled.
     _soul_loaded = False
     if agent.load_soul_identity or not agent.skip_context_files:
         _soul_content = _r.load_soul_md()
@@ -94,7 +97,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             _soul_loaded = True
 
     if not _soul_loaded:
-        # Fallback to hardcoded identity
+        # Built-in fallback identity.
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
@@ -227,7 +230,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         context_parts.append(system_message)
 
     if not agent.skip_context_files:
-        # Use TERMINAL_CWD for context file discovery when set (gateway
+        # Use TERMINAL_CWD for Project context discovery when set (gateway
         # mode).  The gateway process runs from the hermes-agent install
         # dir, so os.getcwd() would pick up the repo's AGENTS.md and
         # other dev files — inflating token usage by ~10k for no benefit.

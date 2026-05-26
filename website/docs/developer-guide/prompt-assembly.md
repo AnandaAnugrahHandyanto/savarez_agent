@@ -28,25 +28,25 @@ Primary files:
 
 The cached system prompt is assembled in roughly this order:
 
-1. agent identity — `SOUL.md` from `HERMES_HOME` when available, otherwise falls back to `DEFAULT_AGENT_IDENTITY` in `prompt_builder.py`
+1. Base identity — `SOUL.md` from `HERMES_HOME` when available, otherwise the Built-in fallback `DEFAULT_AGENT_IDENTITY` in `prompt_builder.py`
 2. tool-aware behavior guidance
 3. Honcho static block (when active)
 4. optional system message
 5. frozen MEMORY snapshot
 6. frozen USER profile snapshot
 7. skills index
-8. context files (`AGENTS.md`, `.cursorrules`, `.cursor/rules/*.mdc`) — SOUL.md is **not** included here when it was already loaded as the identity in step 1
+8. Project context files (`.hermes.md` / `HERMES.md`, `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.cursor/rules/*.mdc`) — `SOUL.md` is **not** duplicated here when it was already loaded as Base identity in step 1
 9. timestamp / optional session ID
 10. platform hint
 
-When `skip_context_files` is set (e.g., subagent delegation), SOUL.md is not loaded and the hardcoded `DEFAULT_AGENT_IDENTITY` is used instead.
+When `skip_context_files` is set (e.g., subagent delegation), Project context is skipped. Base identity is also skipped unless the caller explicitly sets `load_soul_identity=True`; otherwise the Built-in fallback `DEFAULT_AGENT_IDENTITY` is used.
 
 ### Concrete example: assembled system prompt
 
 Here is a simplified view of what the final system prompt looks like when all layers are present (comments show the source of each section):
 
 ```
-# Layer 1: Agent Identity (from ~/.hermes/SOUL.md)
+# Layer 1: Base Identity (from ~/.hermes/SOUL.md)
 You are Hermes, an AI assistant created by Nous Research.
 You are an expert software engineer and researcher.
 You value correctness, clarity, and efficiency.
@@ -98,7 +98,7 @@ your task, load it with skill_view(name) and follow its instructions.
     - arxiv: Search and summarize arXiv papers
 </available_skills>
 
-# Layer 8: Context files (from project directory)
+# Layer 8: Project context files (from project directory)
 # Project Context
 The following project context files have been loaded and should be followed:
 
@@ -118,7 +118,7 @@ renderable inside a terminal.
 
 ## How SOUL.md appears in the prompt
 
-`SOUL.md` lives at `~/.hermes/SOUL.md` and serves as the agent's identity — the very first section of the system prompt. The loading logic in `prompt_builder.py` works as follows:
+`SOUL.md` lives at `~/.hermes/SOUL.md` and serves as Base identity — the very first section of the system prompt. The loading logic in `prompt_builder.py` works as follows:
 
 ```python
 # From agent/prompt_builder.py (simplified)
@@ -132,7 +132,7 @@ def load_soul_md() -> Optional[str]:
     return content
 ```
 
-When `load_soul_md()` returns content, it replaces the hardcoded `DEFAULT_AGENT_IDENTITY`. The `build_context_files_prompt()` function is then called with `skip_soul=True` to prevent SOUL.md from appearing twice (once as identity, once as a context file).
+When `load_soul_md()` returns content, it replaces the hardcoded Built-in fallback `DEFAULT_AGENT_IDENTITY`. The `build_context_files_prompt()` function is then called with `skip_soul=True` to prevent `SOUL.md` from appearing twice (once as Base identity, once as a context helper output).
 
 If `SOUL.md` doesn't exist, the system falls back to:
 
@@ -163,25 +163,20 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
         or _load_cursorrules(cwd_path)  # 4. .cursorrules / .cursor/rules/*.mdc
     )
 
-    sections = []
+    identity_sections = []
+    context_sections = []
     if project_context:
-        sections.append(project_context)
+        context_sections.append(project_context)
 
-    # SOUL.md from HERMES_HOME (independent of project context)
+    # Base identity from HERMES_HOME (independent of Project context)
     if not skip_soul:
         soul_content = load_soul_md()
         if soul_content:
-            sections.append(soul_content)
+            identity_sections.append(soul_content)
 
-    if not sections:
-        return ""
-
-    return (
-        "# Project Context\n\n"
-        "The following project context files have been loaded "
-        "and should be followed:\n\n"
-        + "\n".join(sections)
-    )
+    # Returned sections are labeled separately so Base identity is not
+    # described as Project context when this helper is called directly.
+    ...
 ```
 
 ### Context file discovery details
@@ -222,7 +217,7 @@ Local memory and user profile data are injected as frozen snapshots at session s
 3. `CLAUDE.md` (CWD only)
 4. `.cursorrules` / `.cursor/rules/*.mdc` (CWD only)
 
-`SOUL.md` is loaded separately via `load_soul_md()` for the identity slot. When it loads successfully, `build_context_files_prompt(skip_soul=True)` prevents it from appearing twice.
+`SOUL.md` is loaded separately via `load_soul_md()` for the Base identity slot. When it loads successfully, `build_context_files_prompt(skip_soul=True)` prevents it from appearing twice.
 
 Long files are truncated before injection.
 
@@ -236,7 +231,7 @@ Most users should treat `agent/prompt_builder.py` as implementation code, not a 
 
 ### Use these surfaces first
 
-- `~/.hermes/SOUL.md` — replace the built-in default identity block with your own agent persona and standing behavior.
+- `~/.hermes/SOUL.md` — replace the Built-in fallback identity block with your own Base identity and standing behavior.
 - `~/.hermes/MEMORY.md` and `~/.hermes/USER.md` — provide durable cross-session facts and user profile data that should be snapshotted into new sessions.
 - Project context files such as `.hermes.md`, `HERMES.md`, `AGENTS.md`, `CLAUDE.md`, or `.cursorrules` — inject repo-specific working rules.
 - Skills — package reusable workflows and references without editing core prompt code.
@@ -290,6 +285,35 @@ Before a code-change batch, prepare an implementation spec that names exact edit
 - `tools/delegate_tool.py`: delegated child `skip_context_files=True`, `skip_memory=True`, and child-specific prompt behavior.
 - `hermes_cli/profiles.py` and `hermes_cli/profile_distribution.py`: clone/copy/reapply behavior for `SOUL.md` and distribution-owned paths.
 
+#### R9a scoped follow-up: Discord channel/thread toolset limits
+
+Scope this separately from identity/runtime cleanup. The goal is to reduce gateway token overhead by allowing Discord channels or threads to expose only the tool schemas needed for that surface, without changing global platform defaults for every Discord session.
+
+Proposed config surface:
+
+```yaml
+discord:
+  channel_toolsets:
+    "1508848229419323563": ["x_search", "web", "discord", "clarify"]
+    "coding-channel-id": ["terminal", "file", "code_execution", "web", "discord"]
+```
+
+Resolution contract:
+
+1. Prefer an exact current Discord channel/thread ID match.
+2. If the message is inside a thread and no exact entry exists, fall back to the parent channel/forum ID.
+3. If no channel-scoped entry matches, use existing `platform_toolsets.discord` behavior unchanged.
+4. Do not mutate global config, persisted transcript history, memory, or provider/model settings.
+5. Treat values as toolset names, not individual tool names; invalid entries should be warned about and ignored, with safe fallback if no valid scoped toolsets remain.
+
+Implementation spec should name edits and tests for:
+
+- `gateway/platforms/base.py`: add `MessageEvent.channel_toolsets` and a `resolve_channel_toolsets(config_extra, channel_id, parent_id)` helper parallel to `resolve_channel_prompt()` / `resolve_channel_skills()`.
+- `gateway/platforms/discord.py`: resolve scoped toolsets for messages, interactions, and threads using exact ID then parent fallback.
+- `gateway/run.py`: pass `event.channel_toolsets` into `AIAgent(enabled_toolsets=...)` only when present; otherwise keep platform-wide Discord tool resolution.
+- `hermes_cli/tools_config.py` / `toolsets.py`: verify names resolve consistently and preserve existing default-off / MCP passthrough semantics.
+- `website/docs/user-guide/messaging/discord.md`: document `discord.channel_toolsets`, examples, fallback rules, and restart/fresh-session caveats.
+
 Candidate tests for a future approved code pass:
 
 - `load_soul_identity=True` still loads base identity when `skip_context_files=True` while keeping project context disabled.
@@ -299,8 +323,12 @@ Candidate tests for a future approved code pass:
 - Cron loads `SOUL.md` from the scheduler/profile `HERMES_HOME` and only injects project context when `workdir` is configured.
 - Delegated children remain isolated from parent project context and memory unless a future approved design changes that.
 - Distribution-owned `SOUL.md` reapplication is tested for install/update and rollback documentation.
+- `resolve_channel_toolsets()` exact-ID match wins over parent fallback; parent fallback works for Discord threads/forums; malformed config returns `None`.
+- Discord events carry scoped `channel_toolsets` when configured and omit them when not configured.
+- Gateway agent creation passes scoped `enabled_toolsets` only when the event supplies them; existing platform-wide `platform_toolsets.discord` remains unchanged otherwise.
+- Existing `channel_prompts` and `channel_skill_bindings` behavior remains unchanged.
 
-Stop and request review if the proposed code change would alter provider/model/tool settings, read secrets or session bodies, change memory/Honcho behavior, weaken prompt-cache stability, merge base identity with ephemeral overlays, or make rollback depend on hidden chat state.
+Stop and request review if the proposed code change would alter provider/model/tool settings outside the scoped Discord channel, read secrets or session bodies, change memory/Honcho behavior, weaken prompt-cache stability, merge base identity with ephemeral overlays, or make rollback depend on hidden chat state.
 
 ## Related docs
 

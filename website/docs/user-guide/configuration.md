@@ -1686,8 +1686,8 @@ Hermes uses two different context scopes:
 | `.cursorrules` | Cursor IDE rules (also detected) | Working directory only |
 | `.cursor/rules/*.mdc` | Cursor rule files (also detected) | Working directory only |
 
-- **SOUL.md** is the agent's primary identity. It occupies slot #1 in the system prompt, completely replacing the built-in default identity. Edit it to fully customize who the agent is.
-- If SOUL.md is missing, empty, or cannot be loaded, Hermes falls back to a built-in default identity.
+- **SOUL.md** is the agent's Base identity. It occupies slot #1 in the system prompt, completely replacing the Built-in fallback identity. Edit it to fully customize who the agent is.
+- If SOUL.md is missing, empty, or cannot be loaded, Hermes falls back to the Built-in fallback identity.
 - **Project context files use a priority system** — only ONE type is loaded (first match wins): `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. SOUL.md is always loaded independently.
 - **AGENTS.md** is loaded from the working directory at startup; Hermes may surface additional subdirectory hints progressively during a session, but this is separate from the first-match project-context load.
 - Hermes automatically seeds a default `SOUL.md` if one does not already exist.

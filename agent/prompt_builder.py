@@ -29,8 +29,9 @@ from utils import atomic_json_write
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Context file scanning — detect prompt injection in AGENTS.md, .cursorrules,
-# SOUL.md before they get injected into the system prompt.
+# Prompt-surface scanning — detect prompt injection before Base identity
+# (SOUL.md) or Project context (AGENTS.md, .cursorrules, etc.) text gets
+# injected into the system prompt.
 # ---------------------------------------------------------------------------
 
 _CONTEXT_THREAT_PATTERNS = [
@@ -1295,7 +1296,7 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
 
 
 # =========================================================================
-# Context files (SOUL.md, AGENTS.md, .cursorrules)
+# Prompt surfaces (Base identity SOUL.md + Project context files)
 # =========================================================================
 
 def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE_MAX_CHARS) -> str:
@@ -1311,11 +1312,11 @@ def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE
 
 
 def load_soul_md() -> Optional[str]:
-    """Load SOUL.md from HERMES_HOME and return its content, or None.
+    """Load Base identity from ``HERMES_HOME/SOUL.md``.
 
-    Used as the agent identity (slot #1 in the system prompt).  When this
+    Used as the agent identity (slot #1 in the system prompt). When this
     returns content, ``build_context_files_prompt`` should be called with
-    ``skip_soul=True`` so SOUL.md isn't injected twice.
+    ``skip_soul=True`` so the Base identity isn't injected twice.
     """
     try:
         from hermes_cli.config import ensure_hermes_home
@@ -1424,25 +1425,26 @@ def _load_cursorrules(cwd_path: Path) -> str:
 
 
 def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
-    """Discover and load context files for the system prompt.
+    """Discover and load Base identity and Project context prompt surfaces.
 
-    Priority (first found wins — only ONE project context type is loaded):
+    Project context priority (first found wins — only ONE project context type is loaded):
       1. .hermes.md / HERMES.md  (walk to git root)
       2. AGENTS.md / agents.md   (cwd only)
       3. CLAUDE.md / claude.md   (cwd only)
       4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
 
-    SOUL.md from HERMES_HOME is independent and always included when present.
+    Base identity is independent: SOUL.md is loaded only from HERMES_HOME.
     Each context source is capped at 20,000 chars.
 
-    When *skip_soul* is True, SOUL.md is not included here (it was already
-    loaded via ``load_soul_md()`` for the identity slot).
+    When *skip_soul* is True, Base identity is not included here because it
+    was already loaded via ``load_soul_md()`` for the stable identity tier.
     """
     if cwd is None:
         cwd = os.getcwd()
 
     cwd_path = Path(cwd).resolve()
-    sections = []
+    identity_sections = []
+    context_sections = []
 
     # Priority-based project context: first match wins
     project_context = (
@@ -1452,14 +1454,29 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
         or _load_cursorrules(cwd_path)
     )
     if project_context:
-        sections.append(project_context)
+        context_sections.append(project_context)
 
-    # SOUL.md from HERMES_HOME only — skip when already loaded as identity
+    # Base identity from HERMES_HOME only — skip when already loaded in the
+    # stable identity tier by agent.system_prompt.build_system_prompt_parts().
     if not skip_soul:
         soul_content = load_soul_md()
         if soul_content:
-            sections.append(soul_content)
+            identity_sections.append(soul_content)
+
+    sections = []
+    if identity_sections:
+        sections.append(
+            "# Base Identity\n\n"
+            "The following HERMES_HOME/SOUL.md Base identity has been loaded:\n\n"
+            + "\n".join(identity_sections)
+        )
+    if context_sections:
+        sections.append(
+            "# Project Context\n\n"
+            "The following project context files have been loaded and should be followed:\n\n"
+            + "\n".join(context_sections)
+        )
 
     if not sections:
         return ""
-    return "# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n" + "\n".join(sections)
+    return "\n\n".join(sections)

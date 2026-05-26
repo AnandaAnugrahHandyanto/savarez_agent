@@ -6,7 +6,7 @@ description: "How to use SOUL.md to shape Hermes Agent's default voice, what bel
 
 # Use SOUL.md with Hermes
 
-`SOUL.md` is the **primary identity** for your Hermes instance. It's the first thing in the system prompt — it defines who the agent is, how it speaks, and what it avoids.
+`SOUL.md` is the **Base identity** for your Hermes instance. It's the first thing in the system prompt — it defines who the agent is, how it speaks, and what it avoids.
 
 If you want Hermes to feel like the same assistant every time you talk to it — or if you want to replace the Hermes persona entirely with your own — this is the file to use.
 
@@ -65,9 +65,9 @@ Important:
 
 ## How Hermes uses it
 
-When Hermes starts a session, it reads `SOUL.md` from `HERMES_HOME`, scans it for prompt-injection patterns, truncates it if needed, and uses it as the **agent identity** — slot #1 in the system prompt. This means SOUL.md completely replaces the built-in default identity text.
+When Hermes starts a session, it reads `SOUL.md` from `HERMES_HOME`, scans it for prompt-injection patterns, truncates it if needed, and uses it as the **Base identity** — slot #1 in the system prompt. This means SOUL.md completely replaces the Built-in fallback identity text.
 
-If SOUL.md is missing, empty, or cannot be loaded, Hermes falls back to a built-in default identity.
+If SOUL.md is missing, empty, or cannot be loaded, Hermes falls back to the Built-in fallback identity.
 
 No wrapper language is added around the file. The content itself matters — write the way you want your agent to think and speak.
 
