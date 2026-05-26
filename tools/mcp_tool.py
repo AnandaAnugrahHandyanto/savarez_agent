@@ -3119,6 +3119,9 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             check_fn=_make_check_fn(name),
             is_async=False,
             description=schema["description"],
+            # N28 fix: MCP server tools run in the agent process without
+            # OS-level sandboxing. Mark them so every dispatch is audit-logged.
+            is_sandboxed=True,
         )
         _track_mcp_tool_server(tool_name_prefixed, name)
         registered_names.append(tool_name_prefixed)
@@ -3156,6 +3159,8 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             check_fn=check_fn,
             is_async=False,
             description=schema["description"],
+            # N28 fix: same sandboxing flag as MCP tools above.
+            is_sandboxed=True,
         )
         _track_mcp_tool_server(util_name, name)
         registered_names.append(util_name)

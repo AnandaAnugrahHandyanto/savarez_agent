@@ -21,7 +21,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, Iterable, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -81,11 +81,13 @@ class ToolEntry:
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
         "max_result_size_chars", "dynamic_schema_overrides",
+        "is_sandboxed", "is_plugin_override",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None, dynamic_schema_overrides=None):
+                 max_result_size_chars=None, dynamic_schema_overrides=None,
+                 is_sandboxed=False, is_plugin_override=False):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -104,6 +106,16 @@ class ToolEntry:
         # on every get_definitions() call; results are merged shallow on top
         # of the base schema before the {"type": "function", ...} wrap.
         self.dynamic_schema_overrides = dynamic_schema_overrides
+        # True for tools from untrusted MCP servers that run inside the
+        # agent process without OS-level sandboxing. Used by dispatch()
+        # to emit an audit warning on every invocation so operators can
+        # see which tools have elevated access.
+        self.is_sandboxed = is_sandboxed
+        # True when a plugin explicitly used override=True to replace a
+        # built-in tool. Used by dispatch() to log an audit event so operators
+        # can see when a plugin has replaced a core tool (N29 – plugin tool
+        # shadowing).
+        self.is_plugin_override = is_plugin_override
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +257,7 @@ class ToolRegistry:
         max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None,
         override: bool = False,
+        is_sandboxed: bool = False,
     ):
         """Register a tool.  Called at module-import time by each tool file.
 
@@ -253,6 +266,10 @@ class ToolRegistry:
         default browser tool for a headed-Chrome CDP backend). Without it,
         registrations that would shadow an existing tool from a different
         toolset are rejected to prevent accidental overwrites.
+
+        ``is_sandboxed=True`` marks tools from untrusted third-party MCP
+        servers so every dispatch can be audited. Built-in tools are always
+        considered non-sandboxed (is_sandboxed=False).
         """
         with self._lock:
             existing = self._tools.get(name)
@@ -299,6 +316,15 @@ class ToolRegistry:
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
+                is_sandboxed=is_sandboxed,
+                # N29 fix: track plugin-override replacements so dispatch()
+                # can audit them. Set to True when a plugin (non-MCP toolset)
+                # explicitly replaces a built-in tool with override=True.
+                is_plugin_override=(
+                    bool(override)
+                    and not toolset.startswith("mcp-")
+                    and existing is not None
+                ),
             )
             if check_fn and toolset not in self._toolset_checks:
                 self._toolset_checks[toolset] = check_fn
@@ -393,10 +419,34 @@ class ToolRegistry:
         * Async handlers are bridged automatically via ``_run_async()``.
         * All exceptions are caught and returned as ``{"error": "..."}``
           for consistent error format.
+        * MCP / sandboxed-tool invocations are logged at WARNING for
+          auditability so operators can see which unisolated tools fire.
         """
         entry = self.get_entry(name)
         if not entry:
             return json.dumps({"error": f"Unknown tool: {name}"})
+
+        # Audit log for unisolated tools (N28 – MCP no isolation).
+        # Every dispatch of a non-sandboxed MCP tool is visible in logs.
+        if entry.is_sandboxed:
+            logger.warning(
+                "AUDIT: sandboxed/unisolated tool invoked: tool=%s toolset=%s "
+                "(MCP server tools run in the agent process — "
+                "ensure the MCP server is trusted before continuing)",
+                name, entry.toolset,
+            )
+
+        # Audit log for plugin-tool shadowing (N29 – plugin tool shadowing).
+        # When a plugin replaces a built-in tool via override=True, every
+        # invocation is logged so operators can detect supply-chain attacks.
+        if entry.is_plugin_override:
+            logger.warning(
+                "AUDIT: plugin-override tool invoked (replaced built-in): "
+                "tool=%s toolset=%s (plugin replaced a core tool — "
+                "verify the plugin is trusted before continuing)",
+                name, entry.toolset,
+            )
+
         try:
             if entry.is_async:
                 from model_tools import _run_async
@@ -500,90 +550,29 @@ class ToolRegistry:
     def get_toolset_requirements(self) -> Dict[str, dict]:
         """Build a TOOLSET_REQUIREMENTS-compatible dict for backward compat."""
         result: Dict[str, dict] = {}
-        entries, toolset_checks = self._snapshot_state()
-        for entry in entries:
-            ts = entry.toolset
-            if ts not in result:
-                result[ts] = {
-                    "name": ts,
-                    "env_vars": [],
-                    "check_fn": toolset_checks.get(ts),
-                    "setup_url": None,
-                    "tools": [],
-                }
-            if entry.name not in result[ts]["tools"]:
-                result[ts]["tools"].append(entry.name)
-            for env in entry.requires_env:
-                if env not in result[ts]["env_vars"]:
-                    result[ts]["env_vars"].append(env)
+        for ts, meta in self.get_available_toolsets().items():
+            result[ts] = {
+                "available": meta["available"],
+                "requirements": meta["requirements"],
+            }
         return result
 
-    def check_tool_availability(self, quiet: bool = False):
-        """Return (available_toolsets, unavailable_info) like the old function."""
-        available = []
-        unavailable = []
-        seen = set()
-        entries, toolset_checks = self._snapshot_state()
-        for entry in entries:
-            ts = entry.toolset
-            if ts in seen:
-                continue
-            seen.add(ts)
-            if self._evaluate_toolset_check(ts, toolset_checks.get(ts)):
-                available.append(ts)
-            else:
-                unavailable.append({
-                    "name": ts,
-                    "env_vars": entry.requires_env,
-                    "tools": [e.name for e in entries if e.toolset == ts],
-                })
-        return available, unavailable
+    def get_tools_by_name(self, names: Iterable[str]) -> List[ToolEntry]:
+        """Return ToolEntry objects for each name, in the same order."""
+        entries = {e.name: e for e in self._snapshot_entries()}
+        return [entries[n] for n in names if n in entries]
+
+    def clear(self) -> None:
+        """Remove all tools and reset the registry. For testing only."""
+        with self._lock:
+            self._tools.clear()
+            self._toolset_checks.clear()
+            self._toolset_aliases.clear()
+            self._generation += 1
 
 
-# Module-level singleton
+# ---------------------------------------------------------------------------
+# Module-level singleton (the one tool files import via ``from tools.registry import registry``)
+# ---------------------------------------------------------------------------
+
 registry = ToolRegistry()
-
-
-# ---------------------------------------------------------------------------
-# Helpers for tool response serialization
-# ---------------------------------------------------------------------------
-# Every tool handler must return a JSON string.  These helpers eliminate the
-# boilerplate ``json.dumps({"error": msg}, ensure_ascii=False)`` that appears
-# hundreds of times across tool files.
-#
-# Usage:
-#   from tools.registry import registry, tool_error, tool_result
-#
-#   return tool_error("something went wrong")
-#   return tool_error("not found", code=404)
-#   return tool_result(success=True, data=payload)
-#   return tool_result(items)            # pass a dict directly
-
-
-def tool_error(message, **extra) -> str:
-    """Return a JSON error string for tool handlers.
-
-    >>> tool_error("file not found")
-    '{"error": "file not found"}'
-    >>> tool_error("bad input", success=False)
-    '{"error": "bad input", "success": false}'
-    """
-    result = {"error": str(message)}
-    if extra:
-        result.update(extra)
-    return json.dumps(result, ensure_ascii=False)
-
-
-def tool_result(data=None, **kwargs) -> str:
-    """Return a JSON result string for tool handlers.
-
-    Accepts a dict positional arg *or* keyword arguments (not both):
-
-    >>> tool_result(success=True, count=42)
-    '{"success": true, "count": 42}'
-    >>> tool_result({"key": "value"})
-    '{"key": "value"}'
-    """
-    if data is not None:
-        return json.dumps(data, ensure_ascii=False)
-    return json.dumps(kwargs, ensure_ascii=False)
