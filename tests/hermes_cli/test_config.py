@@ -486,6 +486,15 @@ class TestOptionalEnvVarsRegistry:
             all_vars.extend(vars_list)
         assert "TAVILY_API_KEY" in all_vars
 
+    def test_notifications_telegram_token_registered(self):
+        """Dedicated notification Telegram bot token is registered as a secret."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+
+        entry = OPTIONAL_ENV_VARS["NOTIFICATIONS_TELEGRAM_BOT_TOKEN"]
+        assert entry["category"] == "messaging"
+        assert entry["password"] is True
+        assert entry["advanced"] is True
+
 
 class TestConfigMigrationSecretPrompts:
     def test_required_secret_env_prompt_uses_masked_prompt(self, tmp_path, monkeypatch):
