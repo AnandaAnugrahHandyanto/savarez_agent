@@ -329,3 +329,25 @@ def test_confirm_destructive_slash_no_skip_token_still_prompts():
 
     # Prompt was reached and returned cancel → None.
     assert result is None
+
+
+def test_confirm_destructive_slash_prints_tmux_escape_hatch_hint(capsys, monkeypatch):
+    """In tmux, destructive slash confirms should expose the --yes escape hatch."""
+    from cli import HermesCLI
+
+    self_ = _make_self(prompt_response="3")  # cancel after showing the hint
+    self_._split_destructive_skip = HermesCLI._split_destructive_skip
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,123,0")
+
+    with patch(
+        "cli.load_cli_config",
+        return_value={"approvals": {"destructive_slash_confirm": True}},
+    ):
+        result = _bound(HermesCLI._confirm_destructive_slash, self_)(
+            "new", "detail", cmd_original="/new My Session",
+        )
+
+    assert result is None
+    out = capsys.readouterr().out
+    assert "/new requires confirmation" in out
+    assert "/new --yes" in out

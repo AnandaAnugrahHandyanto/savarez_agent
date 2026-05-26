@@ -10213,7 +10213,14 @@ class HermesCLI:
 
         # Render a prompt_toolkit-native confirmation panel.  This keeps option
         # labels visible above the composer and avoids raw input()/EOF races with
-        # the running TUI.
+        # the running TUI.  In terminal multiplexers/background-style sessions
+        # the modal can be visually easy to miss, so print a plain-text hint
+        # before opening it; the inline-skip remains the reliable escape hatch.
+        if os.environ.get("TMUX") or os.environ.get("STY"):
+            print(
+                f"⚠️  /{command} requires confirmation. "
+                f"Choose an option in the prompt, or rerun as /{command} --yes to proceed immediately."
+            )
         choices = [
             ("once", "Approve Once", "proceed this time only"),
             ("always", "Always Approve", "proceed and silence this prompt permanently"),
