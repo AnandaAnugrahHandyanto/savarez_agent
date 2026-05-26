@@ -1065,6 +1065,102 @@ def test_run_command_previews_and_starts_with_confirmed_envelope(monkeypatch):
     assert envelope["user_confirmation"]["surface"] == "telegram"
 
 
+def test_meeting_command_hands_live_notes_to_kb_workflow_without_echo(monkeypatch, tmp_path):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
+    meeting_file = "accounts/allen-institute/meetings/2026-05-05 - Allen.md"
+    notes = "Private Telegram live notes: follow up on NeuroBase."
+    plan_args = {
+        "meeting_file": meeting_file,
+        "source_kind": "telegram",
+        "source_notes_source": "telegram",
+        "source_notes_text": notes,
+        "harness_id": "telegram-hermes",
+        "harness_session_id": "telegram-session-1",
+    }
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_workflow_plan_request": {
+                "result": {
+                    "status": "confirmation_required",
+                    "schema_version": 1,
+                    "tool": "workflow.start_confirmed",
+                    "workflow": {"workflow_id": "meeting_process", "risk": "write_scoped"},
+                    "request": {"args": plan_args, "queue_gate_limit": 0, "force": False},
+                    "request_id": "wfreq_meeting_1",
+                    "idempotency_key": "workflow:meeting_process:telegram-session-1",
+                    "preconditions": [],
+                    "provenance": {
+                        "actor": "telegram:tester",
+                        "source": "Hermes Telegram",
+                        "session_id": "telegram-session-1",
+                    },
+                    "effect_plan": {"effects": [{"id": "workflow.meeting_process"}]},
+                    "meeting_artifact_journey": {
+                        "artifact_packets": [
+                            {
+                                "result_contract": "meeting_artifact_packet",
+                                "source_kind": "telegram_live_notes",
+                                "payload": {"notes_chars": len(notes)},
+                            }
+                        ]
+                    },
+                }
+            },
+            "mcp_kb_engine_prod_workflow_start_confirmed": {
+                "result": {
+                    "status": "started",
+                    "started": True,
+                    "run": {"run_id": "gen-meeting-1", "workflow_id": "meeting_process"},
+                }
+            },
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+    session_store = FakeSessionStore("telegram-session-1")
+
+    preview = hook(
+        event=_event(f"/kb meeting {meeting_file} -- {notes}"),
+        gateway=_authorized_gateway(adapter),
+        session_store=session_store,
+    )
+    _drain_scheduled_tasks()
+
+    assert preview == {"action": "skip", "reason": "kb_journeys"}
+    assert ctx.calls[0] == (
+        "mcp_kb_engine_prod_workflow_plan_request",
+        {
+            "workflow_id": "meeting_process",
+            "args": plan_args,
+            "actor": "telegram:tester",
+            "source": "Hermes Telegram",
+            "session_id": "telegram-session-1",
+        },
+    )
+    assert "Workflow Preview" in adapter.sent[0]["text"]
+    assert "To start: /kb meeting confirm" in adapter.sent[0]["text"]
+    assert notes not in adapter.sent[0]["text"]
+
+    started = hook(
+        event=_event("/kb meeting confirm"),
+        gateway=_authorized_gateway(adapter),
+        session_store=session_store,
+    )
+    _drain_scheduled_tasks()
+
+    assert started == {"action": "skip", "reason": "kb_journeys"}
+    assert ctx.calls[-2][0] == "mcp_kb_engine_prod_workflow_start_confirmed"
+    envelope = ctx.calls[-2][1]["envelope"]
+    assert envelope["plan"]["workflow_id"] == "meeting_process"
+    assert envelope["plan"]["args"]["source_notes_text"] == notes
+    assert envelope["plan"]["args"]["source_notes_source"] == "telegram"
+    assert envelope["user_confirmation"]["surface"] == "telegram"
+    assert notes not in adapter.sent[1]["text"]
+
+
 def test_runs_command_surfaces_stalled_progress(monkeypatch):
     from plugins.kb_journeys import build_pre_gateway_dispatch_hook
 
