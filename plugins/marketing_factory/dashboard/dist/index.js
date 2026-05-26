@@ -64,8 +64,6 @@
         onLoad: () => setState("loaded"),
         onError: () => {
           if (retryNum < 2) {
-            // First/second flake — bump retry count, which changes the key and
-            // re-creates the img element with a fresh src.
             setTimeout(() => {
               setState("loading");
               setRetryNum((n) => n + 1);
@@ -74,7 +72,11 @@
             setState("error");
           }
         },
-        style: { width: "100%", height: "100%", objectFit: "cover", display: state === "error" ? "none" : "block" },
+        // objectFit: contain — show the WHOLE image, letterbox if needed.
+        // The pet's face / full body is the entire point; cropping it (cover)
+        // is unacceptable. Background fills the empty space subtly so the
+        // letterbox isn't visually jarring.
+        style: { width: "100%", height: "100%", objectFit: "contain", display: state === "error" ? "none" : "block", background: "rgba(0,0,0,0.25)" },
       })
     );
   }
