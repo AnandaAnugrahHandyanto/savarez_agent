@@ -1038,3 +1038,6 @@ setup:
   complete_gateway: 'Запустите шлюз: hermes gateway run'
   complete_docs: 'Прочитайте документацию: hermes help'
   run_agent.compending_context: 🗜️ Сжатие контекста — подведение итогов предыдущих разговоров для продолжения...
+
+stream:
+  waiting_for_response: Ожидание ответа потока ({secs}с, нет блоков данных)

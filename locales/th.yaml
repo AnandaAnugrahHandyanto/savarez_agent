@@ -1101,3 +1101,6 @@ setup:
   complete_docs: 'อ่านเอกสาร: hermes help'
   run_agent:
     compending_context: 🗜️ Compacting context — summarizing earlier conversation to continue...
+
+stream:
+  waiting_for_response: รอการตอบสนองจากสตรีม ({secs}วินาที, ไม่มีบล็อกข้อมูล)

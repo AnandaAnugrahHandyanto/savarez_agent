@@ -1083,3 +1083,6 @@ setup:
   complete_gateway: 运行网关：hermes gateway run
   complete_docs: 查看文档：hermes help
   run_agent.compending_context: 🗜️ 正在压缩上下文——总结之前的对话以便继续...
+
+stream:
+  waiting_for_response: 等待流式响应（已等{secs}秒，无数据块）

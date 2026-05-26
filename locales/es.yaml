@@ -1134,3 +1134,6 @@ setup:
   tools_tts: '¿Activar texto a voz? (s/n):'
   tools_web_search: '¿Activar búsqueda web? (s/n):'
   run_agent.compending_context: 🗜️ Compactando contexto — resumiendo conversaciones anteriores para continuar...
+
+stream:
+  waiting_for_response: Esperando respuesta del stream ({secs}s, sin bloques de datos)

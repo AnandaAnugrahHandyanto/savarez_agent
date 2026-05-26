@@ -1107,3 +1107,6 @@ setup:
   tools_web_search: 'Enable web search? (y/n):'
   run_agent:
     compending_context: 🗜️ Compacting context — summarizing earlier conversation to continue...
+
+stream:
+  waiting_for_response: 等待串流回應（已等{secs}秒，無資料區塊）

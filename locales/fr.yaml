@@ -883,3 +883,6 @@ setup:
   complete_gateway: 'Lancez le gateway : hermes gateway run'
   complete_docs: 'Consultez la documentation : hermes help'
   run_agent.compending_context: 🗜️ Compression du contexte — résumé des conversations précédentes pour continuer...
+
+stream:
+  waiting_for_response: En attente de la réponse du stream ({secs}s, aucun bloc de données)

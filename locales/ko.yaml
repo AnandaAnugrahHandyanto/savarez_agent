@@ -1044,3 +1044,6 @@ setup:
   complete_gateway: '게이트웨이 실행: hermes gateway run'
   complete_docs: '문서 읽기: hermes help'
   run_agent.compending_context: 🗜️ 컨텍스트 압축 중 — 이전 대화를 요약하여 계속합니다...
+
+stream:
+  waiting_for_response: 스트림 응답 대기 ({secs}초 경과, 청크 없음)

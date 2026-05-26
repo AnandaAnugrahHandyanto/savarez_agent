@@ -1118,3 +1118,6 @@ setup:
   complete_docs: 'Przeczytaj dokumentację: hermes help'
   run_agent:
     compending_context: 🗜️ Compacting context — summarizing earlier conversation to continue...
+
+stream:
+  waiting_for_response: Oczekiwanie na odpowiedź strumienia ({secs}s, brak bloków danych)

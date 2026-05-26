@@ -1126,3 +1126,6 @@ setup:
   tools_tts: 'Attivare la sintesi vocale? (s/n):'
   tools_web_search: 'Attivare la ricerca web? (s/n):'
   run_agent.compending_context: 🗜️ Compressione del contesto — riepilogo delle conversazioni precedenti per continuare...
+
+stream:
+  waiting_for_response: In attesa della risposta dello stream ({secs}s, nessun blocco dati)

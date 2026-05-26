@@ -1124,3 +1124,6 @@ setup:
   tools_web_search: 'Enable web search? (y/n):'
   run_agent:
     compending_context: 🗜️ Compacting context — summarizing earlier conversation to continue...
+
+stream:
+  waiting_for_response: Wag vir stroomreaksie ({secs}s, geen datablokke nie)

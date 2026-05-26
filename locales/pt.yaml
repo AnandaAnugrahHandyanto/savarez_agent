@@ -1039,3 +1039,6 @@ setup:
   complete_gateway: 'Execute o gateway: hermes gateway run'
   complete_docs: 'Leia a documentação: hermes help'
   run_agent.compending_context: 🗜️ Compactando contexto — resumindo conversas anteriores para continuar...
+
+stream:
+  waiting_for_response: Aguardando resposta do stream ({secs}s, sem blocos de dados)

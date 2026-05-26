@@ -1072,3 +1072,6 @@ setup:
   complete_docs: 'दस्तावेज़ पढ़ें: hermes help'
   run_agent:
     compending_context: 🗜️ Compacting context — summarizing earlier conversation to continue...
+
+stream:
+  waiting_for_response: स्ट्रीम प्रतिक्रिया की प्रतीक्षा ({secs}s, कोई डेटा ब्लॉक नहीं)

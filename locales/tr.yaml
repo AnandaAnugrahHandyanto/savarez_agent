@@ -1054,3 +1054,6 @@ setup:
   complete_gateway: 'Gateway''ı çalıştırın: hermes gateway run'
   complete_docs: 'Dokümantasyonu okuyun: hermes help'
   run_agent.compending_context: 🗜️ Bağlam sıkıştırılıyor — devam etmek için önceki konuşmaları özetliyorum...
+
+stream:
+  waiting_for_response: Stream yanıtı bekleniyor ({secs}s, veri bloğu yok)

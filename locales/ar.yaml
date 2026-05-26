@@ -1074,3 +1074,6 @@ setup:
   complete_gateway: 'شغّل البوابة: hermes gateway run'
   complete_docs: 'اقرأ التوثيق: hermes help'
   run_agent.compending_context: 🗜️ جاري ضغط السياق — تلخيص المحادثات السابقة للمتابعة...
+
+stream:
+  waiting_for_response: في انتظار استجابة البث ({secs}ث، لا توجد كتل بيانات)

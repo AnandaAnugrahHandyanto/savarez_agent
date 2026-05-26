@@ -1028,3 +1028,6 @@ setup:
   tools_tts: 'テキスト読み上げを有効にしますか？ (y/n):'
   tools_web_search: 'Web検索を有効にしますか？ (y/n):'
   run_agent.compending_context: 🗜️ コンテキストを圧縮中 — 以前の要約をまとめて続行します...
+
+stream:
+  waiting_for_response: ストリームレスポンス待ち（{secs}秒経過、チャンクなし）
