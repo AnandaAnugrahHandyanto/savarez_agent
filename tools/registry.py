@@ -149,6 +149,15 @@ def invalidate_check_fn_cache() -> None:
         _check_fn_cache.clear()
 
 
+# Toolsets we've already warned about being unavailable. ``check_tool_availability``
+# can be called many times per process (banner refresh on MCP reload, ``hermes
+# tools`` invocations, doctor runs); emit the warning once per (process,
+# toolset) pair so a stable misconfiguration doesn't spam logs. Mirrors the
+# ``_WARNED_KEYS`` pattern in ``hermes_cli/env_loader.py``.
+_WARNED_FILTERED_TOOLSETS: set[str] = set()
+_WARNED_FILTERED_TOOLSETS_LOCK = threading.Lock()
+
+
 class ToolRegistry:
     """Singleton registry that collects tool schemas + handlers from tool files."""
 
@@ -540,12 +549,17 @@ class ToolRegistry:
                         if env not in env_vars:
                             env_vars.append(env)
                 missing_env_vars = [env for env in env_vars if not os.getenv(env)]
-                logger.warning(
-                    "Toolset %s unavailable; missing env vars: %s. "
-                    "Check ~/.hermes/.env or export in your shell.",
-                    ts,
-                    ", ".join(missing_env_vars or env_vars) or "none",
-                )
+                with _WARNED_FILTERED_TOOLSETS_LOCK:
+                    should_warn = ts not in _WARNED_FILTERED_TOOLSETS
+                    if should_warn:
+                        _WARNED_FILTERED_TOOLSETS.add(ts)
+                if should_warn:
+                    logger.warning(
+                        "Toolset %s unavailable; missing env vars: %s. "
+                        "Check ~/.hermes/.env or export in your shell.",
+                        ts,
+                        ", ".join(missing_env_vars or env_vars) or "none",
+                    )
                 unavailable.append({
                     "name": ts,
                     "env_vars": env_vars,

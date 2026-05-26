@@ -64,9 +64,11 @@ class TestCheckRequirements:
         assert check_discord_tool_requirements() is True
 
     def test_check_tool_availability_warns_when_token_missing(self, monkeypatch, caplog):
-        from tools.registry import ToolRegistry
+        from tools.registry import ToolRegistry, _WARNED_FILTERED_TOOLSETS
 
         monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+        _WARNED_FILTERED_TOOLSETS.clear()  # isolate from other tests
+
         reg = ToolRegistry()
         reg.register(
             name="discord",
@@ -93,9 +95,20 @@ class TestCheckRequirements:
         assert any(
             "Toolset discord unavailable" in record.message
             and "DISCORD_BOT_TOKEN" in record.message
-            and "Check ~/.hermes/.env or export in your shell" in record.message
             for record in caplog.records
-        )
+        ), "expected WARNING listing missing DISCORD_BOT_TOKEN"
+
+        # Second call within the same process must not re-emit the warning.
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="tools.registry"):
+            reg.check_tool_availability()
+
+        assert not any(
+            "Toolset discord unavailable" in record.message
+            for record in caplog.records
+        ), "warning should be deduplicated per (process, toolset)"
+
+        _WARNED_FILTERED_TOOLSETS.clear()  # leave clean for downstream tests
 
     def test_get_bot_token(self, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "  my-token  ")
