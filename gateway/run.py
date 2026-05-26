@@ -5204,7 +5204,7 @@ class GatewayRunner:
                 session_key,
             )
             await adapter.handle_message(event)
-            fired.add(decision.threshold_minutes)
+            fired.add(decision.due_minutes)
 
     @staticmethod
     def _source_from_afk_origin(origin) -> Optional[SessionSource]:
