@@ -11686,8 +11686,8 @@ class GatewayRunner:
 
             platform_key = _platform_config_key(source.platform)
 
-            from hermes_cli.tools_config import _get_platform_tools
-            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            from gateway.topic_toolsets import resolve_gateway_toolsets
+            enabled_toolsets = sorted(resolve_gateway_toolsets(user_config, platform_key, source))
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
@@ -15775,8 +15775,8 @@ class GatewayRunner:
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
 
-        from hermes_cli.tools_config import _get_platform_tools
-        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        from gateway.topic_toolsets import resolve_gateway_toolsets
+        enabled_toolsets = sorted(resolve_gateway_toolsets(user_config, platform_key, source))
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 
