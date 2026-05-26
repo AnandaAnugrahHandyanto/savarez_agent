@@ -1,0 +1,67 @@
+version: '3.8'
+
+services:
+  # Vector Database
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: openmemory-qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+    networks:
+      - openmemory-net
+
+  # OpenMemory API
+  openmemory-api:
+    image: mem0/openmemory-mcp:latest
+    build:
+      context: https://github.com/mem0ai/mem0.git#main:openmemory/api
+    container_name: openmemory-api
+    ports:
+      - "8765:8765"
+    environment:
+      # LLM Configuration (OpenRouter with free model)
+      - OPENAI_API_BASE=https://openrouter.ai/api/v1
+      - OPENAI_API_KEY=${OPEN...KEY}
+      - LLM_MODEL=meta-llama/llama-3.1-8b-instruct:free
+      
+      # Qdrant Connection
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      
+      # Auth (optional)
+      - USER=hermes
+      - API_KEY=${OPENMEMORY_API_KEY:-}
+    depends_on:
+      - qdrant
+    restart: unless-stopped
+    networks:
+      - openmemory-net
+    command: uvicorn main:app --host 0.0.0.0 --port 8765 --workers 2
+
+  # Web UI Dashboard (optional - comment out if not needed)
+  openmemory-ui:
+    image: mem0/openmemory-ui:latest
+    build:
+      context: https://github.com/mem0ai/mem0.git#main:openmemory/ui
+    container_name: openmemory-ui
+    ports:
+      - "3001:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8765
+      - NEXT_PUBLIC_USER_ID=hermes-user
+    depends_on:
+      - openmemory-api
+    restart: unless-stopped
+    networks:
+      - openmemory-net
+
+volumes:
+  qdrant_data:
+    driver: local
+
+networks:
+  openmemory-net:
+    driver: bridge

@@ -1,0 +1,76 @@
+version: '3.8'
+
+# OpenMemory for NAS (Synology, QNAP, TrueNAS, etc.)
+# 
+# Key differences from standard deployment:
+# - Explicit volume paths (e.g., /volume1/docker/openmemory)
+# - Port 3001 for UI (3000 often taken on NAS)
+# - Commented LLM config (add your own API key)
+
+services:
+  # Vector Database
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: openmemory-qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      # ⚠️ Adjust /volume1/ to match your NAS volume name
+      - /volume1/docker/openmemory/qdrant:/qdrant/storage
+    restart: unless-stopped
+    networks:
+      - openmemory-net
+
+  # OpenMemory API
+  openmemory-api:
+    image: mem0/openmemory-mcp:latest
+    build:
+      context: https://github.com/mem0ai/mem0.git#main:openmemory/api
+    container_name: openmemory-api
+    ports:
+      - "8765:8765"
+    environment:
+      # LLM Configuration - REQUIRED
+      # Option 1: OpenRouter (recommended for cost)
+      - OPENAI_API_BASE=https://openrouter.ai/api/v1
+      - OPENAI_API_KEY=***      - LLM_MODEL=meta-llama/llama-3.1-8b-instruct:free
+      
+      # Option 2: OpenAI (comment out OpenRouter above)
+      # - OPENAI_API_KEY=***      # - LLM_MODEL=gpt-4o-mini
+      
+      # Qdrant Connection
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      
+      # Auth (optional)
+      - USER=hermes
+      - API_KEY=changeme
+    depends_on:
+      - qdrant
+    restart: unless-stopped
+    networks:
+      - openmemory-net
+    command: uvicorn main:app --host 0.0.0.0 --port 8765 --workers 2
+
+  # Web UI Dashboard (optional - comment out if not needed)
+  openmemory-ui:
+    image: mem0/openmemory-ui:latest
+    build:
+      context: https://github.com/mem0ai/mem0.git#main:openmemory/ui
+    container_name: openmemory-ui
+    ports:
+      # Port 3001 instead of 3000 (often taken on NAS)
+      - "3001:3000"
+    environment:
+      # ⚠️ Replace with your NAS hostname or IP
+      - NEXT_PUBLIC_API_URL=http://diskstation:8765
+      - NEXT_PUBLIC_USER_ID=hermes-user
+    depends_on:
+      - openmemory-api
+    restart: unless-stopped
+    networks:
+      - openmemory-net
+
+networks:
+  openmemory-net:
+    driver: bridge
