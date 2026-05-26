@@ -74,6 +74,8 @@ _HERMES_CORE_TOOLS = [
     "truenas_query",
     # UnRAID (gated on UNRAID_API_KEY via check_fn)
     "unraid_query",
+    # pfSense (gated on PFSENSE_API_KEY via check_fn)
+    "pfsense_query",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
@@ -262,6 +264,12 @@ TOOLSETS = {
     "unraid": {
         "description": "UnRAID server system monitoring — query info, disks, Docker containers, and alerts via GraphQL API",
         "tools": ["unraid_query"],
+        "includes": []
+    },
+
+    "pfsense": {
+        "description": "pfSense firewall/gateway monitoring — query interfaces, gateways, services, firewall rules, DHCP, ARP, DNS, VPNs, routes, and CARP status via REST API",
+        "tools": ["pfsense_query"],
         "includes": []
     },
 
