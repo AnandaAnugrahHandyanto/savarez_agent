@@ -7,7 +7,10 @@ write files, schedule jobs, change privacy, upload, delete, or mutate tokens.
 
 from __future__ import annotations
 
+import argparse
 import json
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -133,3 +136,78 @@ def read_social_platform_status(path: Optional[Path] = None) -> Dict[str, Any]:
     base["source"] = data.get("source") if isinstance(data, dict) else None
     base["platforms"] = _merge_defaults([item for item in platforms if isinstance(item, dict)])
     return base
+
+
+def _storage_platform(raw: Dict[str, Any], default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return a safe storage shape for the local manual snapshot."""
+
+    normalized = _normalize_platform(raw, default)
+    return {
+        "platform": normalized["platform"],
+        "published": normalized["published"],
+        "scheduled": normalized["scheduled"],
+        "issues_private": normalized["issues_private"],
+        "readiness": normalized["readiness"],
+        "source": normalized["source"],
+        "status": normalized["status"],
+        "last_checked_at": normalized.get("last_checked_at"),
+    }
+
+
+def write_manual_social_platform_status(payload: Dict[str, Any], path: Optional[Path] = None) -> Dict[str, Any]:
+    """Write a local manual social-platform status snapshot.
+
+    This is intentionally local-only. It writes JSON under ``$HERMES_HOME/state``
+    and never calls platform APIs, touches tokens, schedules jobs, uploads,
+    deletes, or changes privacy/public state.
+    """
+
+    if not isinstance(payload, dict):
+        raise ValueError("Payload must be a JSON object.")
+    raw_platforms = payload.get("platforms")
+    if not isinstance(raw_platforms, list):
+        raise ValueError("Payload must include a list-valued platforms field.")
+    if len(raw_platforms) > 20:
+        raise ValueError("Too many platform rows; maximum is 20.")
+
+    platforms = [item for item in raw_platforms if isinstance(item, dict)]
+    if len(platforms) != len(raw_platforms):
+        raise ValueError("Each platform row must be an object.")
+
+    now = datetime.now(timezone.utc).isoformat()
+    snapshot = {
+        "updated_at": str(payload.get("updated_at") or now),
+        "source": str(payload.get("source") or "manual-dashboard-snapshot").strip() or "manual-dashboard-snapshot",
+        "mode": "manual_local_only",
+        "platforms": [_storage_platform(item) for item in _merge_defaults(platforms)],
+    }
+
+    status_file = path or social_status_path()
+    status_file.parent.mkdir(parents=True, exist_ok=True)
+    tmp = status_file.with_suffix(status_file.suffix + ".tmp")
+    tmp.write_text(json.dumps(snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(status_file)
+    return read_social_platform_status(status_file)
+
+
+def cli_main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description="Manage local-only Jenny Ops social platform status snapshots.")
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("read", help="Print normalized local social platform status JSON")
+    write_parser = sub.add_parser("write", help="Write a manual local-only snapshot from a JSON file")
+    write_parser.add_argument("--json-file", required=True, help="Path to a JSON payload with a platforms list")
+    args = parser.parse_args(argv)
+
+    if args.command == "read":
+        print(json.dumps(read_social_platform_status(), indent=2, sort_keys=True))
+        return 0
+    if args.command == "write":
+        payload = json.loads(Path(args.json_file).read_text(encoding="utf-8"))
+        print(json.dumps(write_manual_social_platform_status(payload), indent=2, sort_keys=True))
+        return 0
+    parser.error("unknown command")
+    return 2
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(cli_main(sys.argv[1:]))

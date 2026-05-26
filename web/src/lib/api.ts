@@ -169,6 +169,12 @@ export const api = {
   getOpsApprovalSummary: () => fetchJSON<OpsApprovalSummary>("/api/ops/approvals/summary"),
   getOpsActionRegistryStatus: () => fetchJSON<OpsActionRegistryStatus>("/api/ops/actions"),
   getOpsSocialPlatformStatus: () => fetchJSON<OpsSocialPlatformStatus>("/api/ops/social-platform-status"),
+  updateOpsSocialPlatformStatus: (payload: OpsSocialPlatformStatusUpdate) =>
+    fetchJSON<OpsSocialPlatformStatus>("/api/ops/social-platform-status", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
   dryRunOpsApprovalAction: (id: string, actionName: string) =>
     fetchJSON<OpsActionDryRun>(`/api/ops/approvals/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionName)}/dry-run`, {
       method: "POST",
@@ -719,6 +725,12 @@ export interface OpsSocialPlatformStatus {
   warning?: string | null;
   source?: string | null;
   platforms: OpsSocialPlatformStatusItem[];
+}
+
+export interface OpsSocialPlatformStatusUpdate {
+  source?: string;
+  updated_at?: string;
+  platforms: Array<Partial<OpsSocialPlatformStatusItem> & { platform: string }>;
 }
 
 export interface OpsActionExecute {

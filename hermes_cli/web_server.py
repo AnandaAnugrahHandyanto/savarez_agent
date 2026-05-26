@@ -2681,6 +2681,16 @@ async def get_ops_social_platform_status():
         raise _approval_error(exc) from exc
 
 
+@app.post("/api/ops/social-platform-status")
+async def update_ops_social_platform_status(payload: Dict[str, Any]):
+    try:
+        from hermes_cli.ops_social_status import write_manual_social_platform_status
+
+        return write_manual_social_platform_status(payload)
+    except Exception as exc:
+        raise _approval_error(exc) from exc
+
+
 @app.post("/api/ops/approvals/{approval_id}/actions/{action_name}/dry-run")
 async def dry_run_ops_approval_action(approval_id: str, action_name: str):
     try:

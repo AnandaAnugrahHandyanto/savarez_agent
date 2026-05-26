@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from hermes_cli.ops_social_status import read_social_platform_status
+import pytest
+
+from hermes_cli.ops_social_status import read_social_platform_status, write_manual_social_platform_status
 
 
 def test_social_platform_status_defaults_when_missing(tmp_path):
@@ -64,3 +66,39 @@ def test_social_platform_status_invalid_json_fails_closed(tmp_path):
     assert result["ok"] is True
     assert result["warning"]
     assert {item["platform"] for item in result["platforms"]} >= {"YouTube", "Facebook", "Instagram", "TikTok"}
+
+
+def test_write_manual_social_platform_status_writes_local_snapshot(tmp_path):
+    path = tmp_path / "state" / "ops-center" / "social-platform-status.json"
+    result = write_manual_social_platform_status(
+        {
+            "source": "manual-test",
+            "platforms": [
+                {
+                    "platform": "YouTube",
+                    "published": "12",
+                    "scheduled": "3",
+                    "issues_private": "1 private review item",
+                    "readiness": "Manual count only.",
+                    "source": "Manual dashboard entry",
+                    "status": "ok",
+                    "last_checked_at": "2026-05-26T19:00:00+08:00",
+                }
+            ],
+        },
+        path,
+    )
+
+    assert path.exists()
+    assert result["ok"] is True
+    assert result["source"] == "manual-test"
+    platforms = {item["platform"]: item for item in result["platforms"]}
+    assert platforms["YouTube"]["published"] == "12"
+    assert platforms["YouTube"]["scheduled"] == "3"
+    assert platforms["YouTube"]["last_checked_at"] == "2026-05-26T19:00:00+08:00"
+    assert platforms["Facebook"]["published"] == "Needs sync"
+
+
+def test_write_manual_social_platform_status_rejects_invalid_payload(tmp_path):
+    with pytest.raises(ValueError, match="platforms"):
+        write_manual_social_platform_status({"source": "bad"}, tmp_path / "out.json")

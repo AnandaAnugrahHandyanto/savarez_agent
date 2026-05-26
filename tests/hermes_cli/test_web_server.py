@@ -201,6 +201,40 @@ class TestWebServerEndpoints:
         assert platforms["YouTube"]["published"] == "Needs sync"
         assert platforms["TikTok"]["status"] == "blocked"
 
+    def test_post_ops_social_platform_status_writes_manual_snapshot(self):
+        resp = self.client.post(
+            "/api/ops/social-platform-status",
+            json={
+                "source": "dashboard-test",
+                "platforms": [
+                    {
+                        "platform": "YouTube",
+                        "published": "8",
+                        "scheduled": "2",
+                        "issues_private": "manual check",
+                        "readiness": "Manual local snapshot only.",
+                        "source": "Test entry",
+                        "status": "ok",
+                    }
+                ],
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["mode"] == "local_read_only"
+        assert data["source"] == "dashboard-test"
+        platforms = {item["platform"]: item for item in data["platforms"]}
+        assert platforms["YouTube"]["published"] == "8"
+        assert platforms["YouTube"]["scheduled"] == "2"
+        assert platforms["Facebook"]["published"] == "Needs sync"
+
+    def test_post_ops_social_platform_status_rejects_bad_payload(self):
+        resp = self.client.post("/api/ops/social-platform-status", json={"source": "bad"})
+
+        assert resp.status_code == 400
+        assert "platforms" in resp.json()["detail"]
+
     def test_get_config_schema(self):
         resp = self.client.get("/api/config/schema")
         assert resp.status_code == 200
@@ -617,12 +651,32 @@ class TestNewEndpoints:
         assert data["message"] == "Dry run only — no action executed"
         assert data["action"]["name"] == "read_only_status_probe"
 
-    def test_ops_action_execute_route_does_not_exist(self):
-        from hermes_cli.web_server import app
+    def test_ops_action_execute_route_is_config_gated(self):
+        proposal = {
+            "title": "QA read-only status probe",
+            "project": "Hermes Ops",
+            "profile": "default",
+            "risk_label": "Read-only",
+            "proposed_action": "read_only_status_probe",
+            "target": "read_only_status_probe",
+            "preview": "Execute fixed action only when explicitly enabled by config.",
+            "reason": "Verify the route exists but remains gated in default test config.",
+            "rollback_or_verification": "Response rejects execution while config is disabled.",
+            "created_by": "pytest",
+        }
+        created = self.client.post("/api/ops/approvals", json=proposal)
+        assert created.status_code == 200
+        approval_id = created.json()["id"]
+        approved = self.client.post(
+            f"/api/ops/approvals/{approval_id}/approve",
+            json={"decided_by": "pytest", "decision_note": "execute gate test"},
+        )
+        assert approved.status_code == 200
 
-        route_paths = {getattr(route, "path", "") for route in app.routes}
+        execute = self.client.post(f"/api/ops/approvals/{approval_id}/actions/read_only_status_probe/execute")
 
-        assert "/api/ops/approvals/{approval_id}/actions/{action_name}/execute" not in route_paths
+        assert execute.status_code == 400
+        assert "action execution disabled by config" in execute.json()["detail"]
 
     def test_get_logs_default(self):
         resp = self.client.get("/api/logs")

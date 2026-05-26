@@ -32,7 +32,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { H2, Typography } from "@/components/NouiTypography";
 import { Card, CardContent } from "@/components/ui/card";
 import { api } from "@/lib/api";
-import type { CronJob, OpsApprovalSummary, OpsSocialPlatformStatus, OpsSocialPlatformStatusItem, SessionInfo, StatusResponse } from "@/lib/api";
+import type { CronJob, OpsApprovalSummary, OpsSocialPlatformStatus, OpsSocialPlatformStatusItem, OpsSocialPlatformStatusUpdate, SessionInfo, StatusResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { usePageHeader } from "@/contexts/usePageHeader";
 
@@ -842,6 +842,99 @@ function AutomationPosturePanel({ jobs }: { jobs: CronJob[] }) {
   );
 }
 
+function ManualSocialSnapshotForm({ platforms, onSaved }: { platforms: OpsSocialPlatformStatusItem[]; onSaved: (status: OpsSocialPlatformStatus) => void }) {
+  const [rows, setRows] = useState<OpsSocialPlatformStatusItem[]>(() => platforms.map((item) => ({ ...item })));
+  const [source, setSource] = useState("manual-dashboard-snapshot");
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
+  const [message, setMessage] = useState<string | null>(null);
+
+  const updateRow = (idx: number, key: keyof OpsSocialPlatformStatusItem, value: string) => {
+    setRows((current) => current.map((item, itemIdx) => (itemIdx === idx ? { ...item, [key]: value } : item)));
+    setSaveState("idle");
+    setMessage(null);
+  };
+
+  const saveSnapshot = async () => {
+    setSaveState("saving");
+    setMessage(null);
+    const payload: OpsSocialPlatformStatusUpdate = {
+      source: source.trim() || "manual-dashboard-snapshot",
+      platforms: rows.map((row) => ({
+        platform: row.platform,
+        published: row.published,
+        scheduled: row.scheduled,
+        issues_private: row.issues_private,
+        readiness: row.readiness,
+        source: row.source || "Manual dashboard entry",
+        status: row.status || "needs_sync",
+        last_checked_at: new Date().toISOString(),
+      })),
+    };
+    try {
+      const saved = await api.updateOpsSocialPlatformStatus(payload);
+      onSaved(saved);
+      setSaveState("saved");
+      setMessage("Saved local snapshot. No platform APIs, tokens, cron, upload, schedule, delete, or privacy action ran.");
+    } catch (error) {
+      setSaveState("failed");
+      setMessage(error instanceof Error ? error.message : "Save failed");
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className={cockpitPanel}>
+        <div className="font-semibold text-text-primary">Manual local snapshot writer</div>
+        <div className="mt-1 text-sm leading-6 text-text-secondary">
+          Writes only `$HERMES_HOME/state/ops-center/social-platform-status.json`. It does not call YouTube, Meta, TikTok, or any platform API.
+        </div>
+      </div>
+      <label className="block space-y-2">
+        <span className="text-sm font-medium text-text-secondary">Snapshot source</span>
+        <input
+          value={source}
+          onChange={(event) => setSource(event.target.value)}
+          className="w-full rounded-xl border border-[#284848] bg-black/45 p-3 text-sm text-text-primary outline-none focus:border-emerald-400/60"
+        />
+      </label>
+      <div className="space-y-3">
+        {rows.map((row, idx) => (
+          <div key={row.platform} className="rounded-xl border border-[#284848] bg-black/25 p-3">
+            <div className="text-base font-semibold text-text-primary">{row.platform}</div>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <label className="space-y-1 text-sm text-text-secondary">
+                <span>Published</span>
+                <input value={row.published} onChange={(event) => updateRow(idx, "published", event.target.value)} className="w-full rounded-lg border border-[#284848] bg-black/45 p-2 text-text-primary outline-none focus:border-emerald-400/60" />
+              </label>
+              <label className="space-y-1 text-sm text-text-secondary">
+                <span>Scheduled</span>
+                <input value={row.scheduled} onChange={(event) => updateRow(idx, "scheduled", event.target.value)} className="w-full rounded-lg border border-[#284848] bg-black/45 p-2 text-text-primary outline-none focus:border-emerald-400/60" />
+              </label>
+              <label className="space-y-1 text-sm text-text-secondary sm:col-span-2">
+                <span>Issues / private</span>
+                <input value={row.issues_private} onChange={(event) => updateRow(idx, "issues_private", event.target.value)} className="w-full rounded-lg border border-[#284848] bg-black/45 p-2 text-text-primary outline-none focus:border-emerald-400/60" />
+              </label>
+              <label className="space-y-1 text-sm text-text-secondary sm:col-span-2">
+                <span>Readiness note</span>
+                <textarea value={row.readiness} onChange={(event) => updateRow(idx, "readiness", event.target.value)} className="min-h-20 w-full rounded-lg border border-[#284848] bg-black/45 p-2 text-text-primary outline-none focus:border-emerald-400/60" />
+              </label>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button onClick={saveSnapshot} disabled={saveState === "saving"} className="gap-2">
+          <Database className="h-4 w-4" />
+          {saveState === "saving" ? "Saving" : saveState === "saved" ? "Saved local snapshot" : "Save local snapshot"}
+        </Button>
+        {message && (
+          <div className={cn("text-sm leading-6", saveState === "failed" ? "text-red-200" : "text-emerald-200")}>{message}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function GoalLauncher() {
   const [selected, setSelected] = useState(GOAL_TEMPLATES[0]);
   const [customGoal, setCustomGoal] = useState(GOAL_TEMPLATES[0].prompt);
@@ -1191,15 +1284,12 @@ export default function MissionControlPage() {
             <CardContent className="space-y-4 p-5">
               <div className="flex items-center gap-2 text-midground">
                 <FileText className="h-5 w-5" />
-                <H2 className="text-xl">Status board recommendation</H2>
+                <H2 className="text-xl">Manual status snapshot</H2>
               </div>
-              <div className="space-y-3 text-sm leading-6 text-text-secondary">
-                <div className={cockpitPanel}>
-                  <div className="font-semibold text-text-primary">Do this next</div>
-                  Add a local read-only sync file/API that counts platform states and feeds this board. It should never upload, delete, schedule, or change privacy.
-                </div>
-                <div className={cockpitPanel}>
-                  <div className="font-semibold text-text-primary">Gate line</div>
+              <ManualSocialSnapshotForm key={socialStatus?.updated_at || "default-social-status"} platforms={socialPlatforms} onSaved={setSocialStatus} />
+              <div className={cockpitPanel}>
+                <div className="font-semibold text-text-primary">Gate line</div>
+                <div className="mt-1 text-sm leading-6 text-text-secondary">
                   Live API counting for YouTube/Meta/TikTok may use existing tokens, but new token work, posting, scheduling, deletion, privacy changes, or recurring sync jobs need explicit approval.
                 </div>
               </div>
