@@ -2171,9 +2171,14 @@ def apply_closeout_transition(
             "closeout_transition",
             {
                 "review_phase": review_phase,
+                "target_phase": review_phase,
                 "blockers": closeout_evidence.get("verification", {}).get("blockers", []),
                 "allowed": closeout_evidence.get("verification", {}).get("allowed"),
                 "linear_done_mutated": False,
+                "pr": closeout_evidence.get("pr") if isinstance(closeout_evidence.get("pr"), dict) else None,
+                "verifier_verdict": closeout_evidence.get("verifier_verdict")
+                if isinstance(closeout_evidence.get("verifier_verdict"), dict)
+                else None,
             },
             run_id=run_id,
         )

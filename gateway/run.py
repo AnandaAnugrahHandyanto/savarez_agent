@@ -4250,7 +4250,15 @@ class GatewayRunner:
             logger.warning("kanban notifier: kanban_db not importable; notifier disabled")
             return
 
-        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out")
+        TERMINAL_KINDS = (
+            "completed",
+            "blocked",
+            "gave_up",
+            "crashed",
+            "timed_out",
+            "verifier_result",
+            "closeout_transition",
+        )
         # Subscriptions are removed only when the task reaches a truly final
         # status (done / archived). We used to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
@@ -4462,6 +4470,37 @@ class GatewayRunner:
                                 f"⏱ {tag}Kanban {sub['task_id']} timed out "
                                 f"(max_runtime={limit}s); will retry"
                             )
+                        elif kind == "verifier_result":
+                            payload = ev.payload or {}
+                            verdict = str(payload.get("verdict") or payload.get("status") or "UNKNOWN").upper()
+                            retry = payload.get("retry_decision") or payload.get("next_state") or payload.get("action") or ""
+                            reason_codes = payload.get("reason_codes") or payload.get("blockers") or []
+                            if isinstance(reason_codes, str):
+                                reason_codes = [reason_codes]
+                            reason = ", ".join(str(code) for code in list(reason_codes)[:3])
+                            suffix = f": {reason[:160]}" if reason else ""
+                            if retry:
+                                suffix += f" — {str(retry)[:80]}"
+                            msg = f"🔎 {tag}Kanban {sub['task_id']} verifier {verdict}{suffix}"
+                        elif kind == "closeout_transition":
+                            payload = ev.payload or {}
+                            phase = str(payload.get("review_phase") or payload.get("target_phase") or "closeout")
+                            allowed = payload.get("allowed")
+                            pr = payload.get("pr") if isinstance(payload.get("pr"), dict) else {}
+                            pr_url = pr.get("url") if isinstance(pr, dict) else None
+                            verifier = payload.get("verifier_verdict") if isinstance(payload.get("verifier_verdict"), dict) else {}
+                            verdict = None
+                            if isinstance(verifier, dict):
+                                verdict = verifier.get("verdict") or verifier.get("status")
+                            bits = []
+                            if allowed is not None:
+                                bits.append("allowed" if allowed else "blocked")
+                            if verdict:
+                                bits.append(str(verdict).upper())
+                            if pr_url:
+                                bits.append(f"PR {str(pr_url)[:120]}")
+                            detail = (" — " + "; ".join(bits)) if bits else ""
+                            msg = f"📦 {tag}Kanban {sub['task_id']} {phase}{detail}"
                         else:
                             continue
                         metadata: dict[str, Any] = {}

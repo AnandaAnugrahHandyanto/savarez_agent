@@ -106,6 +106,77 @@ def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatc
     assert adapter2.sent == []
 
 
+def test_kanban_notifier_delivers_verifier_result_events(tmp_path, monkeypatch):
+    """Verifier PASS/FAIL should be visible through native Kanban subscriptions."""
+    db_path = tmp_path / "verifier-result.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="verify me", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb._append_event(
+            conn,
+            tid,
+            kind="verifier_result",
+            payload={
+                "verdict": "FAIL",
+                "reason_codes": ["missing_criterion_dc_01"],
+                "retry_decision": "retry_worker",
+                "criterion_results": [
+                    {"criterion_id": "dc-01", "status": "FAIL", "evidence": "missing"}
+                ],
+            },
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    text = adapter.sent[0]["text"]
+    assert "verifier" in text.lower()
+    assert "FAIL" in text
+    assert "missing_criterion_dc_01" in text
+    assert "retry_worker" in text
+
+
+def test_kanban_notifier_delivers_review_ready_closeout_transition(tmp_path, monkeypatch):
+    """Review-ready closeout transitions should surface as review package pings."""
+    db_path = tmp_path / "review-ready-transition.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="review package", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb._append_event(
+            conn,
+            tid,
+            kind="closeout_transition",
+            payload={
+                "review_phase": "review_ready",
+                "allowed": True,
+                "pr": {"url": "https://github.com/chriskim12/hermes-agent/pull/123"},
+                "verifier_verdict": {"verdict": "PASS"},
+            },
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    text = adapter.sent[0]["text"]
+    assert "review_ready" in text
+    assert "PR" in text
+    assert "PASS" in text
+
+
 def test_kanban_notifier_rewinds_claim_if_adapter_disconnects(tmp_path, monkeypatch):
     db_path = tmp_path / "adapter-disconnect.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
