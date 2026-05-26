@@ -1013,12 +1013,14 @@ def _try_resolve_fallback_provider() -> dict | None:
     """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
     from hermes_cli.runtime_provider import resolve_runtime_provider
     try:
+        from hermes_cli.config import _expand_env_vars
         import yaml as _y
         cfg_path = _hermes_home / "config.yaml"
         if not cfg_path.exists():
             return None
         with open(cfg_path, encoding="utf-8") as _f:
             cfg = _y.safe_load(_f) or {}
+        cfg = _expand_env_vars(cfg)
         fb_list = get_fallback_chain(cfg)
         if not fb_list:
             return None
@@ -2903,11 +2905,13 @@ class GatewayRunner:
         when both keys are present.
         """
         try:
+            from hermes_cli.config import _expand_env_vars
             import yaml as _y
             cfg_path = _hermes_home / "config.yaml"
             if cfg_path.exists():
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
+                cfg = _expand_env_vars(cfg)
                 fb = get_fallback_chain(cfg)
                 if fb:
                     return fb
@@ -8139,7 +8143,7 @@ class GatewayRunner:
         if history:
             _orch_trim = _orch.trim_context(
                 current_usage_tokens=sum(
-                    len(m.get("content", "")) for m in history
+                    len(m.get("content", "") or "") for m in history if m
                 ) // 4,
                 target_model=_resolve_gateway_model(),
             )

@@ -337,6 +337,36 @@ def _block_priority(block: dict) -> int:
     return pri if isinstance(pri, int) else 6
 
 
+def _response_base(**overrides) -> dict:
+    """Build a response dict with sensible defaults, merged with call-site overrides.
+
+    Returns the full 16-field response schema.  Each caller only needs to
+    pass the fields that differ from defaults — the rest are filled in
+    automatically.  This eliminates duplication across the four return paths
+    in trim_context().
+    """
+    base = {
+        "status": "ok",
+        "action": "none",
+        "reason": "",
+        "tokens_before": 0,
+        "tokens_after": 0,
+        "tokens_saved": 0,
+        "blocks_deleted": 0,
+        "blocks_compressed": 0,
+        "blocks_remaining": 0,
+        "remaining_blocks": [],
+        "compression_ratio": 0.0,
+        "overage_resolved": True,
+        "remaining_overage_tokens": 0,
+        "dry_run": DRY_RUN,
+        "paused": _is_trimming_paused(),
+        "protected_blocks": sorted(_get_protected_blocks()),
+    }
+    base.update(overrides)
+    return base
+
+
 # ─── Core trim logic ─────────────────────────────────────────────────────────
 
 def trim_context(
@@ -366,47 +396,23 @@ def trim_context(
         Dict with trim statistics and updated blocks list.
     """
     if not context_blocks:
-        return {
-            "status": "ok",
-            "action": "none",
-            "reason": "empty context",
-            "tokens_before": 0,
-            "tokens_after": 0,
-            "tokens_saved": 0,
-            "blocks_deleted": 0,
-            "blocks_compressed": 0,
-            "blocks_remaining": 0,
-            "remaining_blocks": [],
-            "compression_ratio": 0.0,
-            "overage_resolved": True,
-            "remaining_overage_tokens": 0,
-            "dry_run": DRY_RUN,
-            "paused": _is_trimming_paused(),
-            "protected_blocks": sorted(_get_protected_blocks()),
-        }
+        return _response_base(reason="empty context")
 
     # ── Check pause signal ────────────────────────────────────────
     auto_resume_if_expired()
     if _is_trimming_paused():
         log.info("Trimming is paused — skipping")
-        return {
-            "status": "paused",
-            "action": "none",
-            "reason": "trimming is paused (see bridge/signals/pause-trim)",
-            "tokens_before": sum(count_tokens(b.get("content", "")) for b in context_blocks),
-            "tokens_after": sum(count_tokens(b.get("content", "")) for b in context_blocks),
-            "tokens_saved": 0,
-            "blocks_deleted": 0,
-            "blocks_compressed": 0,
-            "blocks_remaining": len(context_blocks),
-            "remaining_blocks": context_blocks,
-            "compression_ratio": 1.0,
-            "overage_resolved": True,
-            "remaining_overage_tokens": 0,
-            "dry_run": DRY_RUN,
-            "paused": True,
-            "protected_blocks": sorted(_get_protected_blocks()),
-        }
+        tokens_now = sum(count_tokens(b.get("content", "")) for b in context_blocks)
+        return _response_base(
+            status="paused",
+            reason="trimming is paused (see bridge/signals/pause-trim)",
+            tokens_before=tokens_now,
+            tokens_after=tokens_now,
+            blocks_remaining=len(context_blocks),
+            remaining_blocks=context_blocks,
+            compression_ratio=1.0,
+            paused=True,
+        )
 
     # Load protected block IDs from signal file
     protected_ids = _get_protected_blocks()
@@ -414,7 +420,7 @@ def trim_context(
     # Validate schema of each block
     for i, block in enumerate(context_blocks):
         if "content" not in block:
-            log.warning("Block index %d missing 'content' key, skipping", i)
+            log.warning("Block index %d missing 'content' key — treating as 0 tokens", i)
         if "id" not in block:
             block["id"] = f"block_{i}"
         if "priority" not in block:
@@ -426,24 +432,14 @@ def trim_context(
 
     # Check if trimming is needed at all
     if total_tokens <= threshold:
-        return {
-            "status": "ok",
-            "action": "none",
-            "reason": f"total ({total_tokens}) below threshold ({threshold})",
-            "tokens_before": total_tokens,
-            "tokens_after": total_tokens,
-            "tokens_saved": 0,
-            "blocks_deleted": 0,
-            "blocks_compressed": 0,
-            "blocks_remaining": len(context_blocks),
-            "remaining_blocks": context_blocks,
-            "compression_ratio": 1.0,
-            "overage_resolved": True,
-            "remaining_overage_tokens": 0,
-            "dry_run": DRY_RUN,
-            "paused": _is_trimming_paused(),
-            "protected_blocks": sorted(_get_protected_blocks()),
-        }
+        return _response_base(
+            reason=f"total ({total_tokens}) below threshold ({threshold})",
+            tokens_before=total_tokens,
+            tokens_after=total_tokens,
+            blocks_remaining=len(context_blocks),
+            remaining_blocks=context_blocks,
+            compression_ratio=1.0,
+        )
 
     overage = total_tokens - budget
     deleted = 0
@@ -533,6 +529,10 @@ def trim_context(
 
     tokens_after = total_tokens - saved
     resolved = overage <= 0
+    reason_text = (
+        "within budget" if resolved
+        else f"overage of {overage} tokens remains after trimming"
+    )
 
     if not resolved:
         log.warning(
@@ -541,23 +541,22 @@ def trim_context(
             overage, deleted, compressed, saved,
         )
 
-    return {
-        "status": "ok" if resolved else "partial",
-        "action": "trimmed" if (deleted + compressed) > 0 else "none",
-        "tokens_before": total_tokens,
-        "tokens_after": tokens_after,
-        "tokens_saved": saved,
-        "blocks_deleted": deleted,
-        "blocks_compressed": compressed,
-        "blocks_remaining": actual_kept,
-        "remaining_blocks": remaining,
-        "compression_ratio": round(tokens_after / max(total_tokens, 1), 3),
-        "overage_resolved": resolved,
-        "remaining_overage_tokens": max(0, overage),
-        "dry_run": DRY_RUN,
-        "paused": _is_trimming_paused(),
-        "protected_blocks": sorted(protected_ids),
-    }
+    return _response_base(
+        status="ok" if resolved else "partial",
+        action="trimmed" if (deleted + compressed) > 0 else "none",
+        reason=reason_text,
+        tokens_before=total_tokens,
+        tokens_after=tokens_after,
+        tokens_saved=saved,
+        blocks_deleted=deleted,
+        blocks_compressed=compressed,
+        blocks_remaining=actual_kept,
+        remaining_blocks=remaining,
+        compression_ratio=round(tokens_after / max(total_tokens, 1), 3),
+        overage_resolved=resolved,
+        remaining_overage_tokens=max(0, overage),
+        protected_blocks=sorted(protected_ids),
+    )
 
 
 # ─── IPC signal handling ─────────────────────────────────────────────────────
@@ -745,10 +744,7 @@ def handle_cli_pause_resume() -> bool:
 # ─── Main entry point ────────────────────────────────────────────────────────
 
 def main() -> int:
-    """
-    Main entry point. Returns 0 on success, 1 on failure.
-    """
-    global DRY_RUN
+    """Main entry point. Returns 0 on success, 1 on failure."""
 
     # Handle pause/resume/protect CLI flags first
     if handle_cli_pause_resume():
@@ -786,9 +782,6 @@ def main() -> int:
 
         return 0 if ok else 1
 
-    if "--dry-run" in sys.argv:
-        DRY_RUN = True
-
     log.info("Starting context trimmer — dry_run=%s", DRY_RUN)
 
     # Parse trigger signal
@@ -812,7 +805,7 @@ def main() -> int:
     )
 
     # Run trim (pause/expiry handled inside trim_context)
-    result = trim_context(blocks, budget=target, threshold=target)
+    result = trim_context(blocks, budget=target, threshold=TRIM_THRESHOLD_TOKENS)
 
     # Determine response path
     responses_dir = SIGNALS_DIR / "responses"

@@ -3229,8 +3229,24 @@ class BasePlatformAdapter(ABC):
                 # cancelling, let this message-processing task unwind now.
                 pass
         
+        # Context orchestrator: import at function level for gateway
+        from context_orchestrator import gateway_message_start, gateway_trim_check, gateway_register_turn, gateway_message_end  # type: ignore
+
+        response = None
         try:
             await self._run_processing_hook("on_processing_start", event)
+
+            # Context orchestrator: session start
+            _orch_start = gateway_message_start(
+                user_input=event.text or "",
+                gateway_session_id=session_key,
+            )
+
+            # Context orchestrator: trim check before model call
+            _orch_trim = gateway_trim_check(
+                current_tokens=_orch_start.get("est_tokens", 0),
+                gateway_session_id=session_key,
+            )
 
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
@@ -3243,6 +3259,10 @@ class BasePlatformAdapter(ABC):
             # string, and remember the TTL + platform capability so the
             # post-send block can schedule the deletion.
             response, _ephemeral_ttl = self._unwrap_ephemeral(response)
+
+            # Context orchestrator: register assistant turn
+            if response:
+                gateway_register_turn("assistant", response, gateway_session_id=session_key)
 
             # Send response if any.  A None/empty response is normal when
             # streaming already delivered the text (already_sent=True) or
@@ -3564,6 +3584,14 @@ class BasePlatformAdapter(ABC):
             except Exception:
                 pass  # Last resort — don't let error reporting crash the handler
         finally:
+            # Context orchestrator: session end
+            try:
+                _orch_summary = response if response else None
+                gateway_message_end(summary=_orch_summary, gateway_session_id=session_key)
+            except Exception:
+                import traceback as tb
+                logger.debug("[%s] gateway_message_end failed: %s", self.name, tb.format_exc())
+
             # Fire any one-shot post-delivery callback registered for this
             # session (e.g. deferred background-review notifications).
             #

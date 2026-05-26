@@ -123,6 +123,16 @@ class TestTrimContextBelowThreshold(unittest.TestCase):
 class TestPhase1Eviction(unittest.TestCase):
     """Test Phase 1: deletion of T5/T6 blocks when over budget."""
 
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self._old_archive = at.ARCHIVE_DIR
+        at.ARCHIVE_DIR = Path(self.tmpdir.name) / "archive"
+        at.ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        at.ARCHIVE_DIR = self._old_archive
+        self.tmpdir.cleanup()
+
     def test_eviction_deletes_low_priority(self):
         # Each block is "x"*500: 500//4=125 char_est, 1 word → count=125
         # Total: 625 tokens. Threshold 100 → overage 525.
