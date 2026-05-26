@@ -1644,6 +1644,18 @@ DEFAULT_CONFIG = {
         "retries": 2,
     },
 
+    # MCP lazy-loading plugin configuration (mcp_lazy Phase 1 + Phase 2).
+    # The master toggle is opt-in; all Phase 2 keys default to safe values
+    # so existing Phase 1 configs continue to work unchanged.
+    "mcp": {
+        "lazy_loading": False,
+        "lazy_stub_max_desc": 200,
+        # Phase 2 keys — safe defaults preserve Phase 1 behaviour on upgrade.
+        "discovery_mode": "tool",          # "tool" | "server" | "both"
+        "server_stub_max_desc": 150,
+        "server_eager_token_threshold": 1500,  # promote to full if total tok <= threshold
+    },
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 23,
 }
@@ -3164,6 +3176,8 @@ _KNOWN_ROOT_KEYS = {
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
     "sessions",
+    # mcp_lazy plugin configuration blocks
+    "mcp", "mcp_servers",
 }
 
 # Valid fields inside a custom_providers list entry
@@ -3328,6 +3342,37 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                 f"Root-level key '{key}' looks misplaced — should it be under 'model:' or inside a 'custom_providers' entry?",
                 f"Move '{key}' under the appropriate section",
             ))
+
+    # ── mcp lazy-loading config validation (mcp_lazy Phase 1 + Phase 2) ─
+    mcp_cfg = config.get("mcp")
+    if isinstance(mcp_cfg, dict):
+        dm = mcp_cfg.get("discovery_mode")
+        if dm is not None and dm not in {"tool", "server", "both"}:
+            issues.append(ConfigIssue(
+                "error",
+                f"mcp.discovery_mode must be 'tool', 'server', or 'both' — got {dm!r}",
+                "Change to one of: discovery_mode: tool  # or server, both",
+            ))
+        for int_key in ("lazy_stub_max_desc", "server_stub_max_desc", "server_eager_token_threshold"):
+            val = mcp_cfg.get(int_key)
+            if val is not None and (not isinstance(val, int) or val < 0):
+                issues.append(ConfigIssue(
+                    "error",
+                    f"mcp.{int_key} must be a non-negative integer — got {val!r}",
+                    f"Change to e.g.: {int_key}: 200",
+                ))
+
+    mcp_servers_cfg = config.get("mcp_servers")
+    if isinstance(mcp_servers_cfg, dict):
+        for srv_name, srv_spec in mcp_servers_cfg.items():
+            if isinstance(srv_spec, dict):
+                desc = srv_spec.get("description")
+                if desc is not None and not isinstance(desc, str):
+                    issues.append(ConfigIssue(
+                        "error",
+                        f"mcp_servers.{srv_name}.description must be a string — got {type(desc).__name__}",
+                        f"Change to e.g.: description: 'Trip planning tools'",
+                    ))
 
     return issues
 

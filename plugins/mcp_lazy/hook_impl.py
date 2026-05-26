@@ -11,9 +11,13 @@ import logging
 from typing import Any, Dict, List, Optional, Set
 
 from .pool import _current_agent_var, evict, get_pool
-from .stubs import mix_full_and_stubs
+from .stubs import mix_full_and_stubs, is_stub_schema
+from .server_stubs import is_server_stub_schema
 
 logger = logging.getLogger(__name__)
+
+# Track previous discovery_mode per session to detect mid-session flips (Q11).
+_prev_mode: Dict[str, str] = {}
 
 
 def _load_config() -> Dict[str, Any]:
@@ -44,10 +48,31 @@ def _eligible_servers() -> Optional[Set[str]]:
     eligible: Set[str] = set()
     for name, spec in mcp_servers.items():
         if isinstance(spec, dict) and spec.get("lazy") is False:
-            # Per-server explicit opt-out.
+            # Per-server explicit opt-out — log if description is set (M4).
+            if isinstance(spec, dict) and spec.get("description"):
+                logger.info(
+                    "mcp_lazy: server '%s' has lazy=false; description config will be ignored",
+                    name,
+                )
             continue
         eligible.add(name)
     return eligible
+
+
+def _server_descriptions() -> Dict[str, str]:
+    """Return configured per-server descriptions (may be empty dict)."""
+    try:
+        from hermes_cli.config import load_config  # noqa: PLC0415
+        mcp_servers = load_config().get("mcp_servers", {}) or {}
+    except Exception:
+        return {}
+    result: Dict[str, str] = {}
+    for name, spec in mcp_servers.items():
+        if isinstance(spec, dict):
+            desc = spec.get("description")
+            if isinstance(desc, str) and desc.strip():
+                result[name] = desc.strip()
+    return result
 
 
 def transform_tools(
@@ -63,11 +88,19 @@ def transform_tools(
     """
     try:
         cfg = _load_config()
+        logger.info(
+            "mcp_lazy: transform_tools called — lazy_loading=%r session_id=%r tool_count=%d",
+            cfg.get("lazy_loading"),
+            getattr(agent, "session_id", None) if agent is not None else None,
+            len(tools),
+        )
         if not cfg.get("lazy_loading"):
+            logger.info("mcp_lazy: skipping — lazy_loading is off")
             return None  # master toggle off
 
         session_id = getattr(agent, "session_id", None) if agent is not None else None
         if not session_id:
+            logger.info("mcp_lazy: skipping — no session_id on agent")
             return None
 
         pool = get_pool(session_id)
@@ -88,14 +121,130 @@ def transform_tools(
         except Exception:
             pass
 
-        return mix_full_and_stubs(
+        eligible = _eligible_servers()
+        discovery_mode = str(cfg.get("discovery_mode", "tool") or "tool")
+        if discovery_mode not in {"tool", "server", "both"}:
+            logger.warning(
+                "mcp_lazy: invalid discovery_mode=%r; falling back to 'tool'",
+                discovery_mode,
+            )
+            discovery_mode = "tool"
+
+        # Q11: detect mid-session mode flip and log WARNING.
+        prev = _prev_mode.get(session_id)
+        if prev is not None and prev != discovery_mode:
+            logger.warning(
+                "mcp_lazy: discovery_mode changed mid-session %s: %r -> %r "
+                "(promoted_servers state preserved in pool)",
+                session_id, prev, discovery_mode,
+            )
+        _prev_mode[session_id] = discovery_mode
+
+        mcp_count = sum(1 for t in tools if t.get("function", {}).get("name", "").startswith("mcp_"))
+        sample = next((t for t in tools if t.get("function", {}).get("name", "").startswith("mcp_")), None)
+        if sample is None:
+            sample = tools[0] if tools else None
+        logger.info(
+            "mcp_lazy: eligible_servers=%r discovery_mode=%r mcp_tools_detected=%d sample_keys=%r",
+            eligible,
+            discovery_mode,
+            mcp_count,
+            list(sample.keys()) if sample else None,
+        )
+
+        server_descs = _server_descriptions() if discovery_mode != "tool" else {}
+
+        result = mix_full_and_stubs(
             tools,
             promoted_names=pool.snapshot(),
-            lazy_servers=_eligible_servers(),
+            lazy_servers=eligible,
             max_desc=int(cfg.get("lazy_stub_max_desc", 200) or 200),
+            discovery_mode=discovery_mode,
+            promoted_servers=pool.promoted_servers_snapshot(),
+            server_descriptions=server_descs,
+            server_stub_max_desc=int(cfg.get("server_stub_max_desc", 150) or 150),
         )
+        stub_count = sum(1 for t in result if is_stub_schema(t))
+        server_stub_count = sum(1 for t in result if is_server_stub_schema(t))
+        full_mcp = sum(
+            1 for t in result
+            if t.get("function", {}).get("name", "").startswith("mcp_")
+            and not is_stub_schema(t)
+            and not is_server_stub_schema(t)
+        )
+        logger.info(
+            "mcp_lazy: stubbed tool list — in=%d out=%d tool_stubs=%d server_stubs=%d full_mcp=%d",
+            len(tools), len(result), stub_count, server_stub_count, full_mcp,
+        )
+        return result
     except Exception:
-        logger.debug("mcp_lazy: transform_tools failed; returning None", exc_info=True)
+        logger.info("mcp_lazy: transform_tools EXCEPTION — returning None", exc_info=True)
+        return None
+
+
+def pre_tool_call(
+    tool_name: str = "",
+    args: Optional[Dict[str, Any]] = None,
+    session_id: str = "",
+    **_kwargs: Any,
+) -> Optional[Dict[str, Any]]:
+    """Auto-promote a single tool if it's a stub and the agent is in lazy mode.
+
+    Implements CRITICAL #1: when the model calls an MCP tool directly without
+    loading its full schema first, promote the single tool and return a block
+    directive so the model sees a "schema promoted; retry next turn" message
+    instead of dispatching a stub-call that would error on schema validation.
+
+    Returns ``{"action": "block", "message": "..."}`` to abort dispatch with
+    the message surfaced as the tool's result.  Returns None to proceed with
+    normal dispatch.
+
+    Only fires when ``mcp.lazy_loading: true`` and the named tool is currently
+    a stub (i.e. not yet promoted).  Does NOT auto-promote whole servers — per
+    Q7, server promotion is explicit via ``load_mcp_server``.
+
+    Reads agent from ``_current_agent_var`` ContextVar (set by
+    ``transform_tools``); the pre_tool_call hook contract does not pass an
+    agent kwarg.
+    """
+    try:
+        cfg = _load_config()
+        if not cfg.get("lazy_loading"):
+            return None
+        if not tool_name or not tool_name.startswith("mcp_"):
+            return None
+        if not session_id:
+            return None
+
+        pool = get_pool(session_id)
+        if pool.is_promoted(tool_name):
+            return None  # already full schema — normal dispatch
+
+        agent = _current_agent_var.get(None)
+        if agent is None:
+            return None  # no agent context — skip auto-promote
+
+        # Check if this is a real MCP tool (not a hallucination).
+        valid = getattr(agent, "valid_tool_names", None) or set()
+        if valid and tool_name not in valid:
+            return None  # unknown tool — let normal dispatch surface the error
+
+        # Auto-promote the single tool (Q7: single tool, NOT whole server).
+        from .promote import promote_tools  # noqa: PLC0415
+        promote_tools(agent, [tool_name])
+        logger.info(
+            "mcp_lazy: pre_tool_call auto-promoted '%s'; blocking with next-turn retry (Q8)",
+            tool_name,
+        )
+        return {
+            "action": "block",
+            "message": (
+                f"[mcp_lazy] Tool `{tool_name}` was a stub — full schema promoted. "
+                "Reissue the call on the next turn with proper parameters."
+            ),
+        }
+    except Exception:
+        logger.debug("mcp_lazy: pre_tool_call error", exc_info=True)
         return None
 
 

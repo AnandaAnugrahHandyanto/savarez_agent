@@ -15,7 +15,7 @@ registered — not on what the model sent back.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Set
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 LAZY_SENTINEL = "__lazy_stub__"
 LAZY_DESC_PREFIX = "[LAZY] "
@@ -87,6 +87,10 @@ def mix_full_and_stubs(
     promoted_names: "Iterable[str] | Set[str] | frozenset",
     lazy_servers: "Set[str] | None" = None,
     max_desc: int = 200,
+    discovery_mode: str = "tool",
+    promoted_servers: "Optional[frozenset]" = None,
+    server_descriptions: "Optional[Dict[str, str]]" = None,
+    server_stub_max_desc: int = 150,
 ) -> List[Dict[str, Any]]:
     """Return a new tool list: builtins full, MCP either stubbed or full.
 
@@ -97,23 +101,111 @@ def mix_full_and_stubs(
       server name is in the set. MCP tool names have the shape
       ``mcp_{server}_{tool}``; we extract the server segment for the
       per-server toggle.
+
+    When ``discovery_mode`` is ``"server"`` or ``"both"``, one stub per
+    MCP server is emitted instead of (or alongside) per-tool stubs.
+
+    ``discovery_mode`` values:
+    - ``"tool"`` (default): Phase 1 behaviour — per-tool stubs.
+    - ``"server"``: one server stub per eligible server; individual tool
+      entries omitted entirely.
+    - ``"both"``: server stubs always present; tool stubs emitted for
+      servers in ``promoted_servers``; unpromoted servers omit tools.
     """
+    from .server_stubs import (  # noqa: PLC0415
+        derive_servers_from_tools,
+        is_server_stub_schema,
+        make_server_stub_schema,
+        synth_server_description,
+    )
+
     promoted = set(promoted_names) if not isinstance(promoted_names, (set, frozenset)) else promoted_names
-    result: List[Dict[str, Any]] = []
-    for tool in all_tools:
-        if not is_mcp_tool(tool):
-            result.append(tool)
-            continue
+    p_servers: frozenset = promoted_servers if promoted_servers is not None else frozenset()
+    descs: Dict[str, str] = server_descriptions or {}
+
+    if discovery_mode == "tool":
+        # Phase 1 path — unchanged behaviour.
+        result: List[Dict[str, Any]] = []
+        for tool in all_tools:
+            if not is_mcp_tool(tool):
+                result.append(tool)
+                continue
+            name = tool.get("function", {}).get("name", "")
+            if name in promoted:
+                result.append(tool)
+                continue
+            if lazy_servers is not None and not _server_in_set(name, lazy_servers):
+                result.append(tool)
+                continue
+            result.append(make_stub_schema(tool, max_desc=max_desc))
+        return result
+
+    # "server" or "both" mode — group MCP tools by server.
+    mcp_tools = [t for t in all_tools if is_mcp_tool(t)]
+    non_mcp = [t for t in all_tools if not is_mcp_tool(t)]
+
+    # Build server → [tools] mapping from the actual tool list.
+    server_tool_map: Dict[str, List[Dict[str, Any]]] = {}
+    for tool in mcp_tools:
         name = tool.get("function", {}).get("name", "")
-        if name in promoted:
-            result.append(tool)
+        server = _extract_server(name, lazy_servers)
+        if server is None:
+            # Tool's server not in eligible set → pass through full.
             continue
-        if lazy_servers is not None and not _server_in_set(name, lazy_servers):
-            # Per-server toggle says this server stays eager.
-            result.append(tool)
-            continue
-        result.append(make_stub_schema(tool, max_desc=max_desc))
+        server_tool_map.setdefault(server, []).append(tool)
+
+    # Tools whose server wasn't found in eligible set pass through unchanged.
+    ineligible = [
+        t for t in mcp_tools
+        if _extract_server(t.get("function", {}).get("name", ""), lazy_servers) is None
+    ]
+
+    result = list(non_mcp) + list(ineligible)
+
+    # Emit server stubs for each eligible server.
+    for server, srv_tools in sorted(server_tool_map.items()):
+        tool_names = [t.get("function", {}).get("name", "") for t in srv_tools]
+        desc = descs.get(server) or synth_server_description(tool_names, max_chars=server_stub_max_desc)
+        stub = make_server_stub_schema(
+            server_name=server,
+            description=desc,
+            tool_count=len(srv_tools),
+            max_desc=server_stub_max_desc,
+        )
+        result.append(stub)
+
+        if discovery_mode == "both" and server in p_servers:
+            # Server promoted → emit tool stubs (or full if promoted).
+            for tool in srv_tools:
+                name = tool.get("function", {}).get("name", "")
+                if name in promoted:
+                    result.append(tool)
+                else:
+                    result.append(make_stub_schema(tool, max_desc=max_desc))
+        # In "server" mode OR unpromoted "both": tool entries omitted.
+
     return result
+
+
+def _extract_server(tool_name: str, lazy_servers: "Optional[Set[str]]") -> "Optional[str]":
+    """Return the matched server name for a tool, or None if ineligible.
+
+    When ``lazy_servers`` is None, every MCP tool is eligible and we
+    use the first segment after ``mcp_`` as the server name.
+    """
+    if not tool_name.startswith(MCP_PREFIX):
+        return None
+    rest = tool_name[len(MCP_PREFIX):]
+    if lazy_servers is None:
+        # All MCP tools eligible; server = first underscore-segment.
+        return rest.split("_", 1)[0] if "_" in rest else rest
+    # Match against eligible servers (longest match wins — EDGE #2 fix).
+    candidates = sorted(lazy_servers, key=lambda s: len(s.replace("-", "_").replace(".", "_")), reverse=True)
+    for server in candidates:
+        sanitised = server.replace("-", "_").replace(".", "_")
+        if rest == sanitised or rest.startswith(sanitised + "_"):
+            return server
+    return None
 
 
 def _server_in_set(tool_name: str, server_set: "Set[str] | frozenset") -> bool:
@@ -122,11 +214,16 @@ def _server_in_set(tool_name: str, server_set: "Set[str] | frozenset") -> bool:
     ``mcp_{server}_{rest}``; server may itself contain underscores after
     sanitization. We match by prefix: any registered server in the set
     whose canonical form is a prefix of the trailing tool name segment.
+
+    Servers are checked in descending sanitised-name-length order so that
+    ``my_tool_v2`` matches before ``my_tool`` on a tool like
+    ``mcp_my_tool_v2_create`` (EDGE #2 collision fix).
     """
     if not tool_name.startswith(MCP_PREFIX):
         return False
     rest = tool_name[len(MCP_PREFIX):]
-    for server in server_set:
+    candidates = sorted(server_set, key=lambda s: len(s.replace("-", "_").replace(".", "_")), reverse=True)
+    for server in candidates:
         sanitised = server.replace("-", "_").replace(".", "_")
         if rest == sanitised or rest.startswith(sanitised + "_"):
             return True

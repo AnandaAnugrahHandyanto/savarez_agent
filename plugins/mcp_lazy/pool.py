@@ -44,11 +44,12 @@ class DeferredToolPool:
     """
 
     # ``__weakref__`` is required so WeakValueDictionary can hold us.
-    __slots__ = ("session_id", "_promoted", "_lock", "__weakref__")
+    __slots__ = ("session_id", "_promoted", "_promoted_servers", "_lock", "__weakref__")
 
     def __init__(self, session_id: str) -> None:
         self.session_id = session_id
         self._promoted: Set[str] = set()
+        self._promoted_servers: Set[str] = set()
         self._lock = threading.RLock()
 
     def promote(self, names) -> None:
@@ -79,10 +80,44 @@ class DeferredToolPool:
         with self._lock:
             return name in self._promoted
 
+    def promote_server(self, name: str, eager: bool = False) -> None:
+        """Mark a server as promoted in this session.
+
+        Idempotent; last-writer-wins for the ``eager`` flag.  If two
+        concurrent callers disagree on ``eager``, the second call wins
+        and a WARNING is emitted so the conflict is visible in logs.
+        """
+        name = name.strip()
+        if not name:
+            return
+        with self._lock:
+            if name in self._promoted_servers:
+                # Already promoted — last-writer-wins.
+                logger.warning(
+                    "mcp_lazy: promote_server('%s') called again (eager=%r); last-writer-wins",
+                    name, eager,
+                )
+            self._promoted_servers.add(name)
+
+    def is_server_promoted(self, name: str) -> bool:
+        with self._lock:
+            return name.strip() in self._promoted_servers
+
+    def promoted_servers_snapshot(self) -> frozenset:
+        """Immutable view of currently-promoted server names."""
+        with self._lock:
+            return frozenset(self._promoted_servers)
+
+    def clear_servers(self) -> None:
+        """Drop all promoted servers — called on mode flip or session reset."""
+        with self._lock:
+            self._promoted_servers.clear()
+
     def clear(self) -> None:
-        """Drop all promoted tools — used by explicit session reset."""
+        """Drop all promoted tools and servers — used by explicit session reset."""
         with self._lock:
             self._promoted.clear()
+            self._promoted_servers.clear()
 
 
 # Module-level registry. WeakValueDictionary so dropped sessions GC
@@ -130,7 +165,7 @@ def evict(session_id: str) -> None:
     """
     pool = _pools.pop(session_id, None)
     if pool is not None:
-        pool.clear()
+        pool.clear()  # clears both _promoted and _promoted_servers
         with _strong_recent_lock:
             try:
                 _strong_recent.remove(pool)

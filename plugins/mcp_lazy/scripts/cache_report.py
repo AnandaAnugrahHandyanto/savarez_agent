@@ -56,6 +56,14 @@ def _strategy(rate: float) -> str:
     return "deferred (conservative default — rate in middle band)"
 
 
+def _tok_saved_estimate(promotions: int, avg_stub_tok: int = 80, avg_full_tok: int = 500) -> int:
+    """Rough tokens saved = promotions * (full - stub) schema size.
+
+    Defaults: stub ~80 tok, full ~500 tok (empirical from Phase 0 data).
+    """
+    return promotions * (avg_full_tok - avg_stub_tok)
+
+
 def summarise(path: Path) -> int:
     if not path.exists():
         print(f"no log at {path} — has the plugin been enabled and the gateway run?")
@@ -81,6 +89,34 @@ def summarise(path: Path) -> int:
     print(f"cache_create total: {total_creation:,}")
     print(f"input_tokens total: {total_input:,}")
     print(f"strategy:           {_strategy(pooled_rate)}")
+
+    # Phase 2: per-server promotion counts + estimated tokens saved.
+    server_promotions: dict = {}
+    tool_promotions: dict = {}
+    for r in rows:
+        for srv in r.get("promoted_servers", []) or []:
+            server_promotions[srv] = server_promotions.get(srv, 0) + 1
+        for tool in r.get("promoted_tools", []) or []:
+            tool_promotions[tool] = tool_promotions.get(tool, 0) + 1
+
+    if server_promotions:
+        print()
+        print("server promotions (Phase 2):")
+        for srv, cnt in sorted(server_promotions.items(), key=lambda x: -x[1]):
+            saved = _tok_saved_estimate(cnt)
+            print(f"  {srv:<30} {cnt:>5} promotions  ~{saved:,} tok saved")
+        total_srv_saved = sum(_tok_saved_estimate(c) for c in server_promotions.values())
+        print(f"  total estimated tokens saved (server): ~{total_srv_saved:,}")
+
+    if tool_promotions:
+        print()
+        print("tool promotions (Phase 1 / Phase 2 single-tool):")
+        for tool, cnt in sorted(tool_promotions.items(), key=lambda x: -x[1])[:20]:
+            saved = _tok_saved_estimate(cnt)
+            print(f"  {tool:<50} {cnt:>5}  ~{saved:,} tok")
+        total_tool_saved = sum(_tok_saved_estimate(c) for c in tool_promotions.values())
+        print(f"  total estimated tokens saved (tools):  ~{total_tool_saved:,}")
+
     return 0
 
 
