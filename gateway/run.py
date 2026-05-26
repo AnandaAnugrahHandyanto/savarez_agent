@@ -3925,6 +3925,45 @@ class GatewayRunner:
                 logger.info("Active profile: %s", _profile)
         except Exception:
             pass
+
+        # Active-provider disclosure (#32524). Resolve credentials once
+        # here, name the provider+model+source in gateway.log, and (if
+        # the credential was picked up implicitly from a process env
+        # var for a paid cloud API) raise a WARNING-level block so the
+        # operator can't miss that real money is now on the line.
+        # Best-effort — credential resolution may legitimately fail at
+        # this point (e.g. operator boots the gateway before adding any
+        # keys, expecting to hot-add via the dashboard); we never block
+        # startup on it.
+        try:
+            from gateway.credential_disclosure import (
+                build_disclosure_lines,
+                classify_runtime_credential,
+                should_emit_disclosure,
+            )
+            from hermes_cli.config import load_config as _disclosure_load_config
+
+            _disclosure_cfg = _disclosure_load_config() or {}
+            if should_emit_disclosure(_disclosure_cfg):
+                _disclosure_model = ""
+                _model_cfg = _disclosure_cfg.get("model")
+                if isinstance(_model_cfg, dict):
+                    _disclosure_model = str(
+                        _model_cfg.get("default") or _model_cfg.get("name") or ""
+                    ).strip()
+                _disclosure_runtime = _resolve_runtime_agent_kwargs()
+                _disclosure = classify_runtime_credential(
+                    _disclosure_runtime,
+                    model=_disclosure_model,
+                    user_config=_disclosure_cfg,
+                )
+                for _lvl, _line in build_disclosure_lines(_disclosure):
+                    logger.log(_lvl, "%s", _line)
+        except Exception:
+            logger.debug(
+                "credential disclosure banner failed", exc_info=True
+            )
+
         try:
             from gateway.status import write_runtime_status
             write_runtime_status(gateway_state="starting", exit_reason=None)
