@@ -1130,6 +1130,17 @@ class TestTelegramGuestMentionGating:
 
         assert event.source.guest_query_id == "guest-query-raw"
 
+    def test_build_message_event_preserves_guest_query_id_from_message_to_dict(self):
+        """Some SDK paths expose unknown Guest Bot fields only via Message.to_dict()."""
+        adapter = _guest_test_adapter()
+        message = _guest_group_message("summoned as guest @hermes_bot")
+        delattr(message, "guest_query_id")
+        message.to_dict = lambda: {"guest_query_id": "guest-query-dict"}
+
+        event = adapter._build_message_event(message, msg_type=MessageType.TEXT, update_id=999)
+
+        assert event.source.guest_query_id == "guest-query-dict"
+
     @pytest.mark.asyncio
     async def test_send_guest_query_uses_answer_guest_query_not_send_message(self):
         """Guest Bot responses follow Telegram's answerGuestQuery method."""

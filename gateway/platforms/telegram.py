@@ -606,6 +606,15 @@ class TelegramAdapter(BasePlatformAdapter):
             api_kwargs = getattr(message, "api_kwargs", None) or {}
             if isinstance(api_kwargs, dict):
                 guest_query_id = api_kwargs.get("guest_query_id")
+        if guest_query_id is None:
+            to_dict = getattr(message, "to_dict", None)
+            if callable(to_dict):
+                try:
+                    message_dict = to_dict()
+                except Exception:
+                    message_dict = None
+                if isinstance(message_dict, dict):
+                    guest_query_id = message_dict.get("guest_query_id")
         return str(guest_query_id) if guest_query_id is not None else None
 
     @classmethod
@@ -5898,6 +5907,16 @@ class TelegramAdapter(BasePlatformAdapter):
         guest_query_id = self._message_guest_query_id(message)
         if guest_query_id:
             source.guest_query_id = guest_query_id
+        elif getattr(self, "_guest_mode", False):
+            api_kwargs = getattr(message, "api_kwargs", None)
+            logger.info(
+                "[%s] Guest-mode message has no guest_query_id: chat_id=%s message_id=%s api_kwargs_keys=%s message_dict_has_guest=%s",
+                self.name,
+                getattr(chat, "id", None),
+                getattr(message, "message_id", None),
+                sorted(api_kwargs.keys()) if isinstance(api_kwargs, dict) else None,
+                "guest_query_id" in (message.to_dict() if callable(getattr(message, "to_dict", None)) else {}),
+            )
         
         # Extract reply context if this message is a reply.
         # Prefer Telegram's native partial quote (message.quote, TextQuote)
