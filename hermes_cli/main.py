@@ -8740,6 +8740,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     # Pre-update backup — runs before any git/file mutation so users can
     # always roll back to the exact state they had before this update.
+    # Defer if a cron job is mid-run so the gateway restart this update
+    # triggers cannot kill an in-flight scheduled agent (unless --force).
+    try:
+        from cron.scheduler import is_tick_active
+        if is_tick_active() and not getattr(args, "force", False):
+            print("Cron job currently running - deferring update to avoid "
+                  "interrupting it.")
+            print("Retry after it finishes, or re-run with --force to override.")
+            sys.exit(0)
+    except SystemExit:
+        raise
+    except Exception:
+        pass
+
     _run_pre_update_backup(args)
 
     # Try git-based update first, fall back to ZIP download on Windows

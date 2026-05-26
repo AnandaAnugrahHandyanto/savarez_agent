@@ -13915,6 +13915,16 @@ class GatewayRunner:
         if not hermes_cmd:
             return t("gateway.update.hermes_cmd_not_found")
 
+        # Defer if a cron job is mid-run so the gateway restart this update
+        # triggers (SIGTERM) cannot kill an in-flight scheduled agent.
+        try:
+            from cron.scheduler import is_tick_active
+            if is_tick_active():
+                return ("Cron job running - update deferred so it is not "
+                        "interrupted. Retry after it finishes.")
+        except Exception:
+            pass
+
         pending_path = _hermes_home / ".update_pending.json"
         output_path = _hermes_home / ".update_output.txt"
         exit_code_path = _hermes_home / ".update_exit_code"

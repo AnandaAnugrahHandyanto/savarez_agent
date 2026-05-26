@@ -170,6 +170,34 @@ def _get_lock_paths() -> tuple[Path, Path]:
     return lock_dir, lock_dir / ".tick.lock"
 
 
+def is_tick_active() -> bool:
+    """True if a cron tick currently holds ``.tick.lock`` (a job is mid-run).
+
+    Used by the ``hermes update`` paths (Telegram ``/update`` and CLI) to defer
+    restarting the gateway while a cron job runs, so an update-triggered SIGTERM
+    cannot kill an in-flight scheduled agent. Non-blocking. Fails OPEN (returns
+    False) on any detection error so a detection bug can never permanently block
+    updates.
+    """
+    if fcntl is None:
+        return False
+    try:
+        _, lock_file = _get_lock_paths()
+        if not lock_file.exists():
+            return False
+        fd = open(lock_file, "a", encoding="utf-8")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            return False
+        except OSError:
+            return True
+        finally:
+            fd.close()
+    except Exception:
+        return False
+
+
 @contextmanager
 def _job_profile_context(job_id: str, profile: Optional[str]):
     """Temporarily run a job under a specific Hermes profile.
