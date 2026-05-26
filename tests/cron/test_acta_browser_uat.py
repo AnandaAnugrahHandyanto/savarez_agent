@@ -1289,6 +1289,40 @@ def test_first_output_artifact_url_prefers_real_artifact_affordance_over_followu
     assert acta_browser_uat._first_output_artifact_url(dom, "file:///tmp/acta/outputs.html") == "file:///tmp/acta/brief.html?sig=abc&token=secret"
 
 
+def test_first_output_artifact_url_prefers_latest_artifact_callout_over_first_output_row():
+    dom = """
+    <html><body>
+      <section class="latest-artifact">
+        <div><strong>Latest signed output</strong></div>
+        <a href="latest.html?sig=latest&token=secret">Open latest artifact</a>
+      </section>
+      <article class="output-row">
+        <h2>Older signed output</h2>
+        <a class="output-open-overlay" href="older.html?sig=older&token=secret">OPEN</a>
+      </article>
+    </body></html>
+    """
+
+    assert acta_browser_uat._first_output_artifact_url(dom, "file:///tmp/acta/outputs.html") == "file:///tmp/acta/latest.html?sig=latest&token=secret"
+
+
+def test_first_output_artifact_url_ignores_unsafe_latest_artifact_callout_and_falls_back_to_output_row():
+    dom = """
+    <html><body>
+      <section class="latest-artifact">
+        <div><strong>Unsafe latest signed output</strong></div>
+        <a href="https://evil.example/latest.html?sig=latest&token=secret">Open latest artifact</a>
+      </section>
+      <article class="output-row">
+        <h2>Safe signed output</h2>
+        <a class="output-open-overlay" href="safe.html?sig=safe&token=secret">OPEN</a>
+      </article>
+    </body></html>
+    """
+
+    assert acta_browser_uat._first_output_artifact_url(dom, "file:///tmp/acta/outputs.html") == "file:///tmp/acta/safe.html?sig=safe&token=secret"
+
+
 @pytest.mark.parametrize(
     "target",
     [

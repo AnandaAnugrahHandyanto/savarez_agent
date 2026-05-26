@@ -331,6 +331,7 @@ class _FirstOutputArtifactTargetParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.target: str | None = None
         self._seen_root = False
+        self._allow_plain_anchor = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if self.target is not None:
@@ -339,6 +340,8 @@ class _FirstOutputArtifactTargetParser(HTMLParser):
         attr_map = {key.lower(): value for key, value in attrs}
         if not self._seen_root:
             self._seen_root = True
+            root_classes = set((attr_map.get("class") or "").lower().split())
+            self._allow_plain_anchor = "latest-artifact" in root_classes
             data_open_url = attr_map.get("data-open-url")
             if _is_usable_open_url(data_open_url):
                 self.target = data_open_url.strip() if data_open_url is not None else None
@@ -346,7 +349,9 @@ class _FirstOutputArtifactTargetParser(HTMLParser):
         if tag != "a" or not _is_usable_open_url(attr_map.get("href")):
             return
         classes = set((attr_map.get("class") or "").lower().split())
-        if classes & _ARTIFACT_OPEN_ANCHOR_CLASSES and not classes & _ARTIFACT_OPEN_EXCLUDED_ANCHOR_CLASSES:
+        if not classes & _ARTIFACT_OPEN_EXCLUDED_ANCHOR_CLASSES and (
+            classes & _ARTIFACT_OPEN_ANCHOR_CLASSES or self._allow_plain_anchor
+        ):
             href = attr_map.get("href")
             self.target = href.strip() if href is not None else None
 
@@ -396,6 +401,13 @@ def _safe_output_artifact_url(target: str | None, base_url: str) -> str | None:
 
 
 def _first_output_artifact_url(dom: str, base_url: str) -> str | None:
+    for callout_html in _extract_html_by_class(dom, "latest-artifact"):
+        parser = _FirstOutputArtifactTargetParser()
+        parser.feed(callout_html)
+        parser.close()
+        safe_url = _safe_output_artifact_url(parser.target, base_url)
+        if safe_url:
+            return safe_url
     for row_html in _extract_html_by_class(dom, "output-row"):
         parser = _FirstOutputArtifactTargetParser()
         parser.feed(row_html)
