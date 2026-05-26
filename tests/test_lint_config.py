@@ -232,3 +232,25 @@ class TestScriptsCheckWindowsFootguns:
             f"{result.stdout}\n{result.stderr}\n"
         )
 
+class TestToolsSendMessage:
+    """tools/send_message_tool.py must have zero F811 violations."""
+
+    TARGET = REPO_ROOT / "tools" / "send_message_tool.py"
+
+    def test_send_message_tool_has_zero_f811(self):
+        """tools/send_message_tool.py must have zero F811 (redefined-while-unused) violations."""
+        import subprocess as _subprocess
+        import sys as _sys
+
+        result = _subprocess.run(
+            [_sys.executable, "-m", "ruff", "check", "--select=F811",
+             "--output-format=concise", str(self.TARGET)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            f"tools/send_message_tool.py has F811 violation(s):\n"
+            f"{result.stdout}\n{result.stderr}\n"
+        )
+
+
