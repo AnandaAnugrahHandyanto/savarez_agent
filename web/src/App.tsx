@@ -30,6 +30,8 @@ import {
   Heart,
   KeyRound,
   Menu,
+  ChevronLeft,
+  ChevronRight,
   MessageSquare,
   Package,
   Puzzle,
@@ -339,6 +341,7 @@ export default function App() {
   const { manifests, loading: pluginsLoading } = usePlugins();
   const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
@@ -423,6 +426,7 @@ export default function App() {
     () => partitionSidebarNav(builtinNav, manifests),
     [builtinNav, manifests],
   );
+  const sidebarDisplayCollapsed = sidebarCollapsed && !mobileOpen;
   const routes = useMemo(
     () => buildRoutes(builtinRoutes, manifests),
     [builtinRoutes, manifests],
@@ -525,11 +529,12 @@ export default function App() {
             id="app-sidebar"
             aria-label={t.app.navigation}
             className={cn(
-              "fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col",
+              "fixed top-0 left-0 z-50 flex h-dvh max-h-dvh min-h-0 flex-col",
               "border-r border-current/20",
               "bg-background-base/95 backdrop-blur-sm",
-              "transition-transform duration-200 ease-out",
-              mobileOpen ? "translate-x-0" : "-translate-x-full",
+              "transition-[width,transform] duration-200 ease-out",
+              mobileOpen ? "translate-x-0 w-64" : "-translate-x-full w-64",
+              sidebarDisplayCollapsed ? "lg:w-16" : "lg:w-64",
               "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0",
             )}
             style={{
@@ -544,18 +549,32 @@ export default function App() {
                 "border-b border-current/20",
               )}
             >
-              <div className="flex items-center gap-2">
+              <div className="flex min-w-0 items-center gap-2">
                 <PluginSlot name="header-left" />
 
-                <Typography
-                  className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground uppercase"
-                  style={{ mixBlendMode: "plus-lighter" }}
-                >
-                  Hermes
-                  <br />
-                  Agent
-                </Typography>
+                {!sidebarDisplayCollapsed && (
+                  <Typography
+                    className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground uppercase"
+                    style={{ mixBlendMode: "plus-lighter" }}
+                  >
+                    Hermes
+                    <br />
+                    Agent
+                  </Typography>
+                )}
               </div>
+
+              <Button
+                ghost
+                size="icon"
+                onClick={() => setSidebarCollapsed((value) => !value)}
+                aria-label={sidebarDisplayCollapsed ? "Expand navigation" : "Collapse navigation"}
+                aria-expanded={!sidebarDisplayCollapsed}
+                className="hidden text-text-secondary hover:text-midground lg:inline-flex"
+                title={sidebarDisplayCollapsed ? "Expand navigation" : "Collapse navigation"}
+              >
+                {sidebarDisplayCollapsed ? <ChevronRight /> : <ChevronLeft />}
+              </Button>
 
               <Button
                 ghost
@@ -579,6 +598,7 @@ export default function App() {
                     item={item}
                     key={item.path}
                     pendingApprovalCount={pendingApprovalCount}
+                    collapsed={sidebarDisplayCollapsed}
                     t={t}
                   />
                 ))}
@@ -590,15 +610,17 @@ export default function App() {
                   className="flex flex-col border-t border-current/10 pb-2"
                   role="group"
                 >
-                  <span
-                    className={cn(
-                      "px-5 pt-1.5 pb-0.5",
-                      "font-mondwest text-display text-[0.72rem] tracking-[0.1em] text-text-tertiary",
-                    )}
-                    id="hermes-sidebar-plugin-nav-heading"
-                  >
-                    {t.app.pluginNavSection}
-                  </span>
+                  {!sidebarDisplayCollapsed && (
+                    <span
+                      className={cn(
+                        "px-5 pt-1.5 pb-0.5",
+                        "font-mondwest text-display text-[0.72rem] tracking-[0.1em] text-text-tertiary",
+                      )}
+                      id="hermes-sidebar-plugin-nav-heading"
+                    >
+                      {t.app.pluginNavSection}
+                    </span>
+                  )}
 
                   <ul className="flex flex-col">
                     {sidebarNav.pluginItems.map((item) => (
@@ -607,6 +629,7 @@ export default function App() {
                         item={item}
                         key={item.path}
                         pendingApprovalCount={pendingApprovalCount}
+                        collapsed={sidebarDisplayCollapsed}
                         t={t}
                       />
                     ))}
@@ -615,23 +638,27 @@ export default function App() {
               )}
             </nav>
 
-            <SidebarSystemActions onNavigate={closeMobile} />
+            <SidebarSystemActions onNavigate={closeMobile} collapsed={sidebarDisplayCollapsed} />
 
             <div
               className={cn(
                 "flex shrink-0 items-center justify-between gap-2",
-                "px-3 py-1.5",
+                sidebarDisplayCollapsed ? "justify-center px-2 py-1.5" : "px-3 py-1.5",
                 "border-t border-current/20",
               )}
             >
               <div className="flex min-w-0 items-center gap-2">
                 <PluginSlot name="header-right" />
-                <ThemeSwitcher dropUp />
-                <LanguageSwitcher dropUp />
+                {!sidebarDisplayCollapsed && (
+                  <>
+                    <ThemeSwitcher dropUp />
+                    <LanguageSwitcher dropUp />
+                  </>
+                )}
               </div>
             </div>
 
-            <SidebarFooter />
+            {!sidebarDisplayCollapsed && <SidebarFooter />}
           </aside>
 
           <PageHeaderProvider pluginTabs={pluginTabMeta}>
@@ -706,7 +733,7 @@ export default function App() {
   );
 }
 
-function SidebarNavLink({ closeMobile, item, pendingApprovalCount, t }: SidebarNavLinkProps) {
+function SidebarNavLink({ closeMobile, item, pendingApprovalCount, collapsed, t }: SidebarNavLinkProps) {
   const { path, label, labelKey, icon: Icon } = item;
   const showApprovalBadge = path === "/approvals" && pendingApprovalCount > 0;
 
@@ -722,8 +749,8 @@ function SidebarNavLink({ closeMobile, item, pendingApprovalCount, t }: SidebarN
         onClick={closeMobile}
         className={({ isActive }) =>
           cn(
-            "group relative flex items-center gap-3",
-            "px-5 py-[0.32rem]",
+            "group relative flex items-center",
+            collapsed ? "justify-center gap-0 px-0 py-2" : "gap-3 px-5 py-[0.32rem]",
             "font-mondwest text-display uppercase text-[0.78rem] tracking-[0.09em]",
             "whitespace-nowrap transition-colors cursor-pointer",
             "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
@@ -732,15 +759,16 @@ function SidebarNavLink({ closeMobile, item, pendingApprovalCount, t }: SidebarN
               : "text-text-secondary hover:text-midground",
           )
         }
+        title={collapsed ? navLabel : undefined}
         style={{
           clipPath: "var(--component-tab-clip-path)",
         }}
       >
         {({ isActive }) => (
           <>
-            <Icon className="h-3.5 w-3.5 shrink-0" />
-            <span className="truncate">{navLabel}</span>
-            {showApprovalBadge && (
+            <Icon className={cn("shrink-0", collapsed ? "h-5 w-5" : "h-3.5 w-3.5")} />
+            {!collapsed && <span className="truncate">{navLabel}</span>}
+            {showApprovalBadge && !collapsed && (
               <span
                 aria-label={`${pendingApprovalCount} pending approvals`}
                 className="ml-auto rounded-full border border-amber-300/50 bg-amber-400/20 px-1.5 py-0.5 text-[0.65rem] leading-none text-amber-100"
@@ -769,7 +797,7 @@ function SidebarNavLink({ closeMobile, item, pendingApprovalCount, t }: SidebarN
   );
 }
 
-function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
+function SidebarSystemActions({ onNavigate, collapsed }: { onNavigate: () => void; collapsed: boolean }) {
   const { t } = useI18n();
   const navigate = useNavigate();
   const { activeAction, isBusy, isRunning, pendingAction, runAction } =
@@ -807,16 +835,20 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
         "py-1",
       )}
     >
-      <span
-        className={cn(
-          "px-5 pt-0.5 pb-0",
-          "font-mondwest text-display text-[0.72rem] tracking-[0.1em] text-text-tertiary",
-        )}
-      >
-        {t.app.system}
-      </span>
+      {!collapsed && (
+        <>
+          <span
+            className={cn(
+              "px-5 pt-0.5 pb-0",
+              "font-mondwest text-display text-[0.72rem] tracking-[0.1em] text-text-tertiary",
+            )}
+          >
+            {t.app.system}
+          </span>
 
-      <SidebarStatusStrip />
+          <SidebarStatusStrip />
+        </>
+      )}
 
       <ul className="flex flex-col">
         {items.map(({ action, icon: Icon, label, runningLabel, spin }) => {
@@ -831,11 +863,12 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
             <li key={action}>
               <ListItem
                 onClick={() => handleClick(action)}
+                title={collapsed ? displayLabel : undefined}
                 disabled={disabled}
                 aria-busy={busy}
                 active={busy}
                 className={cn(
-                  "gap-3 px-5 py-[0.32rem] whitespace-nowrap",
+                  collapsed ? "justify-center gap-0 px-0 py-2" : "gap-3 px-5 py-[0.32rem] whitespace-nowrap",
                   "font-mondwest text-display text-[0.72rem] tracking-[0.08em]",
                   "transition-colors",
                   busy
@@ -851,13 +884,14 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
                 ) : (
                   <Icon
                     className={cn(
-                      "h-3.5 w-3.5 shrink-0",
+                      collapsed ? "h-5 w-5" : "h-3.5 w-3.5",
+                      "shrink-0",
                       isActionRunning && !spin && "animate-pulse",
                     )}
                   />
                 )}
 
-                <span className="truncate">{displayLabel}</span>
+                {!collapsed && <span className="truncate">{displayLabel}</span>}
 
                 <span
                   aria-hidden
@@ -891,6 +925,7 @@ interface SidebarNavLinkProps {
   closeMobile: () => void;
   item: NavItem;
   pendingApprovalCount: number;
+  collapsed: boolean;
   t: Translations;
 }
 

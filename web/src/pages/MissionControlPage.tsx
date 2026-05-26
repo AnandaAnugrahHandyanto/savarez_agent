@@ -856,44 +856,44 @@ export default function MissionControlPage() {
           </Card>
         </section>
 
-        <section>
-          <div className="mb-3 flex items-center gap-2 text-midground">
-            <FolderKanban className="h-5 w-5" />
-            <H2 className="text-xl">Project buttons</H2>
+        <section className="font-readable-ui">
+          <div className="mb-4 flex items-center gap-2 text-midground">
+            <FolderKanban className="h-6 w-6" />
+            <H2 className="text-2xl">Project buttons</H2>
           </div>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {PROJECTS.map((project) => (
               <Card key={project.name} className={cn(cockpitCard, "overflow-hidden")}>
-                <CardContent className={cn("space-y-4 bg-gradient-to-br p-4", project.tone)}>
+                <CardContent className={cn("space-y-5 bg-gradient-to-br p-5", project.tone)}>
                   <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div className="min-w-0">
-                      <div className="text-lg font-semibold text-text-primary">{project.name}</div>
-                      <div className="text-sm text-text-secondary">{project.short}</div>
+                      <div className="text-2xl font-semibold leading-8 text-text-primary">{project.name}</div>
+                      <div className="mt-1 text-base leading-6 text-text-secondary">{project.short}</div>
                     </div>
                     <Badge tone="outline" className={cn(readableBadge, "border-white/20 text-text-secondary")}>
                       {project.profile}
                     </Badge>
                   </div>
 
-                  <div className="grid gap-2 text-xs text-text-secondary">
+                  <div className="grid gap-3 text-base leading-7 text-text-secondary">
                     <div className={cockpitPanel}>
-                      <div className="mb-1 flex min-w-0 flex-col gap-2 font-semibold text-text-primary sm:flex-row sm:items-start sm:justify-between">
+                      <div className="mb-2 flex min-w-0 flex-col gap-2 text-base font-semibold leading-6 text-text-primary sm:flex-row sm:items-start sm:justify-between">
                         <span className="flex min-w-0 items-center gap-1"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> Project health</span>
                         <Badge tone="outline" className={cn(readableBadge, projectHealthTone(project.health))}>{project.health}</Badge>
                       </div>
                       <div>{project.phase}</div>
                     </div>
                     <div className={cockpitPanel}>
-                      <div className="mb-1 font-semibold text-text-primary">Next safe posture</div>
+                      <div className="mb-2 text-base font-semibold leading-6 text-text-primary">Next safe posture</div>
                       {project.next}
                     </div>
                     <div className={cockpitPanel}>
-                      <div className="mb-1 font-semibold text-text-primary">Waiting / gate</div>
+                      <div className="mb-2 text-base font-semibold leading-6 text-text-primary">Waiting / gate</div>
                       {project.waitingOn}
                     </div>
                   </div>
 
-                  <div className="space-y-2 text-xs">
+                  <div className="space-y-2 text-sm leading-6">
                     <div className="flex items-start gap-2 rounded-lg bg-black/20 p-2">
                       <LinkIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-secondary" />
                       <span className="break-all text-text-secondary">{project.statusPath}</span>
