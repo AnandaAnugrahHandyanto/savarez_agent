@@ -156,10 +156,13 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     """
     stored_prompt = None
     stored_state = "missing"
+    pre_model_route_switched = (
+        getattr(agent, "_pre_model_route_switched_this_turn", False) is True
+    )
     if (
         conversation_history
         and agent._session_db
-        and not getattr(agent, "_pre_model_route_switched_this_turn", False)
+        and not pre_model_route_switched
     ):
         try:
             session_row = agent._session_db.get_session(agent.session_id)
