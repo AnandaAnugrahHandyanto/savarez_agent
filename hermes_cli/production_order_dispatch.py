@@ -27,11 +27,34 @@ from .production_order_db import (
     _parse_source_brief,
     get_brief_value,
     list_production_orders,
+    log_workflow_event,
 )
 
 
 class DispatchManifestError(ValueError):
     """Raised when a production order cannot be mapped to a dispatch manifest."""
+
+
+ALLOWED_DISPATCH_EVENT_TYPES: tuple[str, ...] = (
+    "dispatch_planned",
+    "dispatch_started",
+    "dispatch_handoff_created",
+    "dispatch_completed",
+    "dispatch_failed",
+    "dispatch_blocked",
+    "packet_validated",
+    "packet_rejected",
+)
+
+
+def _validate_dispatch_event_type(event_type: str) -> str:
+    normalized = str(event_type).strip()
+    if normalized not in ALLOWED_DISPATCH_EVENT_TYPES:
+        raise DispatchManifestError(
+            f"Unsupported dispatch event type {event_type!r}. Allowed types: "
+            f"{', '.join(ALLOWED_DISPATCH_EVENT_TYPES)}"
+        )
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -171,6 +194,77 @@ def build_manual_fallback_handoff(
     """Load a production order from SQLite and build its manual fallback handoff."""
     envelope = build_profile_task_envelope(conn, production_order_id)
     return manual_fallback_handoff_for_envelope(envelope)
+
+
+def log_dispatch_event(
+    conn: sqlite3.Connection,
+    *,
+    production_order_id: str,
+    event_type: str,
+    from_state: str | None,
+    owner_profile: str,
+    target_profile: str,
+    kanban_card_id: str,
+    to_state: str | None = None,
+    packet_id: str | None = None,
+    result: str | None = None,
+    error: str | None = None,
+    next_action: str | None = None,
+) -> int:
+    """Write a dispatch-only lifecycle event to the shared event ledger."""
+    event_type = _validate_dispatch_event_type(event_type)
+    return log_workflow_event(
+        conn,
+        production_order_id,
+        event_type,
+        from_state=from_state,
+        to_state=to_state,
+        owner_profile=owner_profile,
+        target_profile=target_profile,
+        kanban_card_id=kanban_card_id,
+        packet_id=packet_id,
+        result=result,
+        error=error,
+        next_action=next_action,
+    )
+
+
+def list_dispatch_events(
+    conn: sqlite3.Connection,
+    production_order_id: str,
+) -> list[dict[str, Any]]:
+    """Return dispatch-only events for a production order in insertion order."""
+    rows = conn.execute(
+        """
+        SELECT id, timestamp, production_order_id, event_type, from_state, to_state,
+               owner_profile, target_profile, kanban_card_id, packet_id,
+               result, error, next_action
+        FROM production_order_events
+        WHERE production_order_id = ? AND event_type IN ({placeholders})
+        ORDER BY id
+        """.format(placeholders=",".join("?" for _ in ALLOWED_DISPATCH_EVENT_TYPES)),
+        (production_order_id, *ALLOWED_DISPATCH_EVENT_TYPES),
+    ).fetchall()
+    return [dispatch_event_to_dict(row) for row in rows]
+
+
+def dispatch_event_to_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    """Normalize a dispatch-event row into the public ledger shape."""
+    return {
+        "id": row["id"],
+        "timestamp": row["timestamp"],
+        "production_order_id": row["production_order_id"],
+        "event_type": row["event_type"],
+        "from_state": row["from_state"],
+        "to_state": row["to_state"],
+        "owner_profile": row["owner_profile"],
+        "target_profile": row["target_profile"],
+        "kanban_card_id": row["kanban_card_id"],
+        "packet_id": row["packet_id"],
+        "result": row["result"],
+        "error": row["error"],
+        "next_action": row["next_action"],
+    }
 
 
 def manual_fallback_handoff_for_envelope(

@@ -78,11 +78,15 @@ from hermes_cli.production_order_db import (
     validate_state_transition,
 )
 from hermes_cli.production_order_dispatch import (
+    ALLOWED_DISPATCH_EVENT_TYPES,
     DispatchManifestError,
     build_dispatch_manifest,
     build_manual_fallback_handoff,
     build_profile_task_envelope,
+    dispatch_event_to_dict,
     dispatch_manifest_for_order,
+    list_dispatch_events,
+    log_dispatch_event,
     manual_fallback_handoff_for_envelope,
     profile_task_envelope_for_order,
 )
@@ -1013,6 +1017,175 @@ def test_production_order_events_table_exists(conn):
     assert "production_order_events" in tables
 
 
+def test_dispatch_event_logging_and_ordering(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    target_card_id = po.child_kanban_card_ids[2]
+
+    first_id = log_dispatch_event(
+        conn,
+        production_order_id=po.production_order_id,
+        event_type="dispatch_planned",
+        from_state=po.current_state,
+        to_state="DEV_COMPLETE",
+        owner_profile=po.current_owner_profile,
+        target_profile="dev_os",
+        kanban_card_id=target_card_id,
+        result="envelope_created",
+        next_action="await_manual_dispatch",
+    )
+    second_id = log_dispatch_event(
+        conn,
+        production_order_id=po.production_order_id,
+        event_type="dispatch_started",
+        from_state=po.current_state,
+        owner_profile=po.current_owner_profile,
+        target_profile="dev_os",
+        kanban_card_id=target_card_id,
+        packet_id="pkt-dev-1",
+        result="manual_handoff_started",
+        next_action="await_profile_result",
+    )
+
+    events = list_dispatch_events(conn, po.production_order_id)
+
+    assert [event["event_type"] for event in events[-2:]] == [
+        "dispatch_planned",
+        "dispatch_started",
+    ]
+    assert events[-2]["id"] == first_id
+    assert events[-1]["id"] == second_id
+    assert events[-1]["packet_id"] == "pkt-dev-1"
+    assert events[-1]["target_profile"] == "dev_os"
+
+
+def test_dispatch_event_payload_includes_required_fields(conn, sample_brief):
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+    target_card_id = po.child_kanban_card_ids[0]
+
+    event_id = log_dispatch_event(
+        conn,
+        production_order_id=po.production_order_id,
+        event_type="dispatch_handoff_created",
+        from_state=po.current_state,
+        to_state="ARCHITECT_SPEC",
+        owner_profile=po.current_owner_profile,
+        target_profile="orchestrator_os",
+        kanban_card_id=target_card_id,
+        packet_id="handoff-123",
+        result="manual_fallback_created",
+        error=None,
+        next_action="copy_prompt_to_profile",
+    )
+    row = conn.execute(
+        "SELECT * FROM production_order_events WHERE id = ?",
+        (event_id,),
+    ).fetchone()
+
+    payload = dispatch_event_to_dict(row)
+    assert set(payload) == {
+        "id",
+        "timestamp",
+        "production_order_id",
+        "event_type",
+        "from_state",
+        "to_state",
+        "owner_profile",
+        "target_profile",
+        "kanban_card_id",
+        "packet_id",
+        "result",
+        "error",
+        "next_action",
+    }
+    assert payload["production_order_id"] == po.production_order_id
+    assert payload["from_state"] == po.current_state
+    assert payload["to_state"] == "ARCHITECT_SPEC"
+    assert payload["owner_profile"] == "orchestrator_os"
+    assert payload["target_profile"] == "orchestrator_os"
+    assert payload["kanban_card_id"] == target_card_id
+    assert payload["packet_id"] == "handoff-123"
+    assert payload["result"] == "manual_fallback_created"
+    assert payload["error"] is None
+    assert payload["next_action"] == "copy_prompt_to_profile"
+    assert isinstance(payload["timestamp"], int)
+
+
+def test_invalid_dispatch_event_type_is_rejected(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+
+    with pytest.raises(DispatchManifestError, match="Unsupported dispatch event type"):
+        log_dispatch_event(
+            conn,
+            production_order_id=po.production_order_id,
+            event_type="handoff_created",
+            from_state=po.current_state,
+            owner_profile=po.current_owner_profile,
+            target_profile="dev_os",
+            kanban_card_id=po.child_kanban_card_ids[2],
+        )
+
+
+def test_dispatch_event_logging_is_observability_only(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    before_reconstructed = [
+        order for order in list_production_orders(conn)
+        if order.production_order_id == po.production_order_id
+    ][0]
+    before_state = before_reconstructed.current_state
+    before_owner = before_reconstructed.current_owner_profile
+    before_history = list(before_reconstructed.stage_history)
+    before_task_rows = conn.execute(
+        "SELECT id, body, current_state, status FROM tasks WHERE production_order_id = ? ORDER BY id",
+        (po.production_order_id,),
+    ).fetchall()
+    before_event_types = _po_event_types(conn, po.production_order_id)
+
+    log_dispatch_event(
+        conn,
+        production_order_id=po.production_order_id,
+        event_type="dispatch_blocked",
+        from_state=po.current_state,
+        owner_profile=po.current_owner_profile,
+        target_profile="dev_os",
+        kanban_card_id=po.child_kanban_card_ids[2],
+        error="waiting_for_manual_profile_execution",
+        next_action="jarren_or_runtime_resume_dispatch",
+    )
+
+    refreshed = [
+        order for order in list_production_orders(conn)
+        if order.production_order_id == po.production_order_id
+    ][0]
+    after_task_rows = conn.execute(
+        "SELECT id, body, current_state, status FROM tasks WHERE production_order_id = ? ORDER BY id",
+        (po.production_order_id,),
+    ).fetchall()
+    after_event_types = _po_event_types(conn, po.production_order_id)
+
+    assert refreshed.current_state == before_state
+    assert refreshed.current_owner_profile == before_owner
+    assert refreshed.stage_history == before_history
+    assert after_task_rows == before_task_rows
+    assert after_event_types[:-1] == before_event_types
+    assert after_event_types[-1] == "dispatch_blocked"
+    assert "state_transitioned" in before_event_types
+    assert "handoff_created" in before_event_types
+
+
+def test_production_order_events_table_supports_dispatch_columns(conn):
+    cols = {
+        row["name"] for row in conn.execute("PRAGMA table_info(production_order_events)").fetchall()
+    }
+    assert "target_profile" in cols
+    assert "packet_id" in cols
+
+
 # ---------------------------------------------------------------------------
 # Handoff Packet
 # ---------------------------------------------------------------------------
@@ -1913,6 +2086,56 @@ def test_build_manual_fallback_handoff_is_read_only(conn, sample_brief):
     assert after_tasks == before_tasks
     assert after_events == before_events
     assert handoff.production_order_id == po.production_order_id
+
+
+def test_manual_fallback_dispatch_events_can_be_logged_without_mutating_cards(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    manifest = build_dispatch_manifest(conn, po.production_order_id)
+    envelope = build_profile_task_envelope(conn, po.production_order_id)
+    handoff = build_manual_fallback_handoff(conn, po.production_order_id)
+    before_card = kb.get_task(conn, manifest.target_child_card_id)
+    assert before_card is not None
+
+    log_dispatch_event(
+        conn,
+        production_order_id=po.production_order_id,
+        event_type="dispatch_planned",
+        from_state=po.current_state,
+        to_state=envelope.expected_next_state,
+        owner_profile=po.current_owner_profile,
+        target_profile=manifest.target_profile,
+        kanban_card_id=manifest.target_child_card_id,
+        result="manifest_envelope_manual_fallback_created",
+        next_action="manual_dispatch_ready",
+    )
+    log_dispatch_event(
+        conn,
+        production_order_id=po.production_order_id,
+        event_type="dispatch_handoff_created",
+        from_state=po.current_state,
+        to_state=envelope.expected_next_state,
+        owner_profile=po.current_owner_profile,
+        target_profile=handoff.target_profile,
+        kanban_card_id=handoff.target_child_card_id,
+        packet_id=f"manual-fallback:{po.production_order_id}",
+        result="manual_fallback_handoff_created",
+        next_action="copy_paste_prompt_to_target_profile",
+    )
+
+    events = list_dispatch_events(conn, po.production_order_id)
+    after_card = kb.get_task(conn, manifest.target_child_card_id)
+    assert after_card is not None
+
+    assert {event["event_type"] for event in events} <= set(ALLOWED_DISPATCH_EVENT_TYPES)
+    assert events[-2]["event_type"] == "dispatch_planned"
+    assert events[-2]["to_state"] == envelope.expected_next_state
+    assert events[-1]["event_type"] == "dispatch_handoff_created"
+    assert events[-1]["target_profile"] == handoff.target_profile
+    assert events[-1]["kanban_card_id"] == handoff.target_child_card_id
+    assert events[-1]["packet_id"] == f"manual-fallback:{po.production_order_id}"
+    assert after_card.body == before_card.body
+    assert after_card.status == before_card.status
+    assert after_card.current_state == before_card.current_state
 
 
 

@@ -524,6 +524,11 @@ def _reconstruct_stage_history(
         "SELECT timestamp, from_state, to_state, owner_profile "
         "FROM production_order_events "
         "WHERE production_order_id = ? "
+        "AND event_type NOT IN ("
+        "'dispatch_planned','dispatch_started','dispatch_handoff_created',"
+        "'dispatch_completed','dispatch_failed','dispatch_blocked',"
+        "'packet_validated','packet_rejected'"
+        ") "
         "AND (to_state IS NOT NULL OR from_state IS NOT NULL) "
         "ORDER BY id",
         (production_order_id,),
@@ -658,14 +663,16 @@ def log_workflow_event(
     from_state: Optional[str] = None,
     to_state: Optional[str] = None,
     owner_profile: Optional[str] = None,
+    target_profile: Optional[str] = None,
     kanban_card_id: Optional[str] = None,
+    packet_id: Optional[str] = None,
     result: Optional[str] = None,
     error: Optional[str] = None,
     next_action: Optional[str] = None,
 ) -> int:
     """Write an event to the ``production_order_events`` table.
 
-    Returns the new event row id.  Raises :class:`ValueError` if
+    Returns the new event row id. Raises :class:`ValueError` if
     ``production_order_id`` or ``event_type`` is empty.
     """
     if not production_order_id:
@@ -678,9 +685,9 @@ def log_workflow_event(
         """\
 INSERT INTO production_order_events (
     production_order_id, timestamp, event_type,
-    from_state, to_state, owner_profile,
-    kanban_card_id, result, error, next_action
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+    from_state, to_state, owner_profile, target_profile,
+    kanban_card_id, packet_id, result, error, next_action
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             production_order_id,
             now,
@@ -688,7 +695,9 @@ INSERT INTO production_order_events (
             from_state,
             to_state,
             owner_profile,
+            target_profile,
             kanban_card_id,
+            packet_id,
             result,
             error,
             next_action,

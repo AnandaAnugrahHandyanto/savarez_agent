@@ -1491,11 +1491,12 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_production_order_tables(conn: sqlite3.Connection) -> None:
-    """Create the ``production_order_events`` table if missing.
+    """Create or extend the ``production_order_events`` table.
 
     Called by :func:`connect` after the standard schema init so the table
-    is available on every DB open. Idempotent: uses ``IF NOT EXISTS``.
-    This is a **separate** table from ``task_events`` to avoid schema
+    is available on every DB open. Idempotent: uses ``IF NOT EXISTS`` plus
+    additive column migration for later observability fields.
+    Keep this separate from ``events`` to avoid semantic/name collision and
     mismatch (the field sets differ).
     """
     conn.execute("""\
@@ -1512,6 +1513,21 @@ CREATE TABLE IF NOT EXISTS production_order_events (
     error               TEXT,
     next_action         TEXT
 );""")
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(production_order_events)")}
+    if "target_profile" not in cols:
+        _add_column_if_missing(
+            conn,
+            "production_order_events",
+            "target_profile",
+            "target_profile TEXT",
+        )
+    if "packet_id" not in cols:
+        _add_column_if_missing(
+            conn,
+            "production_order_events",
+            "packet_id",
+            "packet_id TEXT",
+        )
 
 
 @contextlib.contextmanager
