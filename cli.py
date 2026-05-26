@@ -6504,6 +6504,14 @@ class HermesCLI:
                 print(f"(^_^)v New session started: {title}")
             else:
                 print("(^_^)v New session started!")
+            # Force prompt_toolkit UI refresh after session reset (#16263 / macOS).
+            # Without this the input area can appear frozen after /reset or /new.
+            try:
+                _app = getattr(self, "_app", None)
+                if _app is not None:
+                    _app.invalidate()
+            except Exception:
+                pass
 
     def _handle_handoff_command(self, cmd_original: str) -> bool:
         """Handle ``/handoff <platform>`` — transfer this CLI session to a gateway platform.
