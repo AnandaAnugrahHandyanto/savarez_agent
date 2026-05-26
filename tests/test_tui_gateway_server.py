@@ -4722,6 +4722,7 @@ class _FakeAgentForBackground:
     service_tier = None
     request_overrides = {}
     _fallback_model = None
+    _credential_pool = object()
 
 
 def test_background_agent_kwargs_reads_nested_max_turns(monkeypatch):
@@ -4754,6 +4755,14 @@ def test_background_agent_kwargs_handles_null_agent_config(monkeypatch):
     kwargs = server._background_agent_kwargs(_FakeAgentForBackground(), "task_1")
 
     assert kwargs["max_iterations"] == 40
+
+
+def test_background_agent_kwargs_preserves_credential_pool(monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+
+    kwargs = server._background_agent_kwargs(_FakeAgentForBackground(), "task_1")
+
+    assert kwargs["credential_pool"] is _FakeAgentForBackground._credential_pool
 
 
 def test_config_show_displays_nested_max_turns(monkeypatch):

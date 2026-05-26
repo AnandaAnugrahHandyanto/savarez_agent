@@ -3013,6 +3013,16 @@ class AIAgent:
         self._apply_client_headers_for_base_url(self.base_url)
         self._replace_primary_openai_client(reason="credential_rotation")
 
+    def _select_credential_for_lm_invocation(self) -> bool:
+        pool = self._credential_pool
+        if pool is None:
+            return False
+        entry = pool.select()
+        if entry is None:
+            return False
+        self._swap_credential(entry)
+        return True
+
     def _recover_with_credential_pool(
         self,
         *,
