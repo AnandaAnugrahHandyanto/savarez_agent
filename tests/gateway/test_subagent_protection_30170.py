@@ -261,7 +261,7 @@ class TestBusyHandlerDemotesInterruptForSubagents:
         runner = _make_runner()
         runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()
-        event = _make_event(text="please stop")
+        event = _make_event(text="please reprioritize this")
         sk = build_session_key(event.source)
         parent = _make_parent_no_subagents()
         runner._running_agents[sk] = parent
@@ -270,7 +270,7 @@ class TestBusyHandlerDemotesInterruptForSubagents:
         with patch("gateway.run.merge_pending_message_event"):
             await runner._handle_active_session_busy_message(event, sk)
 
-        parent.interrupt.assert_called_once_with("please stop")
+        parent.interrupt.assert_called_once_with("please reprioritize this")
         content = adapter._send_with_retry.call_args.kwargs.get("content", "")
         assert "Interrupting" in content
         assert "Subagent" not in content
