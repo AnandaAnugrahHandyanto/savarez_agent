@@ -86,6 +86,10 @@ def _build_provider_env_blocklist() -> frozenset:
             blocked.update(pconfig.api_key_env_vars)
             if pconfig.base_url_env_var:
                 blocked.add(pconfig.base_url_env_var)
+            # Providers whose credentials don't flow through api_key_env_vars
+            # (notably aws_sdk auth_type) declare extra strip targets here.
+            # See #32314.
+            blocked.update(getattr(pconfig, "subprocess_env_blocklist", ()))
     except ImportError:
         pass
 

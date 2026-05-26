@@ -179,6 +179,13 @@ class ProviderConfig:
     api_key_env_vars: tuple = ()
     # Optional env var for base URL override
     base_url_env_var: str = ""
+    # Extra credential-bearing env vars to strip from subprocess environments
+    # for this provider. Used when credentials don't live in api_key_env_vars
+    # (e.g. aws_sdk auth_type, where boto3 resolves credentials from a chain
+    # of vars not used as direct API keys). Separate from api_key_env_vars so
+    # that hint strings (agent_init.py) and credential probes (credential_pool)
+    # are not polluted with non-api-key entries. See #32314.
+    subprocess_env_blocklist: tuple = ()
 
 
 PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
@@ -454,6 +461,19 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
         api_key_env_vars=(),
         base_url_env_var="BEDROCK_BASE_URL",
+        # AWS credentials are resolved via the boto3 credential chain; declare
+        # the full set so _HERMES_PROVIDER_ENV_BLOCKLIST strips them from
+        # subprocess env. Covers bearer token + static keys + session token +
+        # named profile + container/web-identity sources. See #32314.
+        subprocess_env_blocklist=(
+            "AWS_BEARER_TOKEN_BEDROCK",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "AWS_PROFILE",
+            "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+            "AWS_WEB_IDENTITY_TOKEN_FILE",
+        ),
     ),
     "azure-foundry": ProviderConfig(
         id="azure-foundry",

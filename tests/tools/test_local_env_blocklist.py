@@ -93,6 +93,29 @@ class TestProviderEnvBlocklist:
         for var in registry_vars:
             assert var not in result_env, f"{var} leaked into subprocess env"
 
+    def test_aws_sdk_provider_vars_are_stripped(self):
+        """AWS Bedrock (auth_type=aws_sdk) credentials must be stripped even
+        though api_key_env_vars=(); they're declared via subprocess_env_blocklist.
+
+        Regression test for #32314 — before the fix, AWS_BEARER_TOKEN_BEDROCK
+        and friends leaked into terminal / execute_code subprocesses because
+        bedrock's api_key_env_vars is empty and the blocklist builder only
+        consulted that field.
+        """
+        aws_credential_vars = {
+            "AWS_BEARER_TOKEN_BEDROCK": "fake-bearer",
+            "AWS_ACCESS_KEY_ID": "AKIAFAKE",
+            "AWS_SECRET_ACCESS_KEY": "fake-secret",
+            "AWS_SESSION_TOKEN": "fake-session-token",
+            "AWS_PROFILE": "fake-profile",
+            "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI": "/fake/uri",
+            "AWS_WEB_IDENTITY_TOKEN_FILE": "/fake/token",
+        }
+        result_env = _run_with_env(extra_os_env=aws_credential_vars)
+
+        for var in aws_credential_vars:
+            assert var not in result_env, f"{var} leaked into subprocess env (see #32314)"
+
     def test_non_registry_provider_vars_are_stripped(self):
         """Extra provider vars not in PROVIDER_REGISTRY must also be blocked."""
         extra_provider_vars = {
