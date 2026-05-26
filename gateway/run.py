@@ -62,6 +62,15 @@ _scripts_path = str(_hermes_root / "scripts")
 if _scripts_path not in sys.path:
     sys.path.insert(0, _scripts_path)
 from context_orchestrator import get_orchestrator, drop_orchestrator  # noqa: E402
+from gateway_integration import (  # noqa: E402
+    gateway_message_end,
+    gateway_message_start,
+    gateway_quality_gate,
+    gateway_register_tool,
+    gateway_register_turn,
+    gateway_trim_check,
+    gateway_set_block_protected,
+)
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -8011,9 +8020,19 @@ class GatewayRunner:
         # Build session context
         context = build_session_context(source, self.config, session_entry)
 
-        # Initialize context orchestrator for this session
-        _orch = get_orchestrator(session_key)
-        _orch_result = _orch.start_session(task="gateway", phase="message")
+        # Initialize context orchestrator for this session via gateway integration
+        _orch_start = gateway_message_start(
+            user_input=getattr(event, "text", "") or "",
+            task_category="gateway",
+            gateway_session_id=session_key,
+            orchestrator_session_key=session_key,
+        )
+        _orch_result = {
+            "session_id": _orch_start["session_id"],
+            "context": _orch_start["context_header"],
+            "total_est_tokens": _orch_start["est_tokens"],
+            "headroom": _orch_start["headroom"],
+        }
 
         # Set session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
@@ -8141,11 +8160,13 @@ class GatewayRunner:
         # drops/compresses low-priority blocks BEFORE the expensive
         # _hyg_agent compression runs.
         if history:
-            _orch_trim = _orch.trim_context(
-                current_usage_tokens=sum(
+            _orch_trim = gateway_trim_check(
+                current_tokens=sum(
                     len(m.get("content", "") or "") for m in history if m
                 ) // 4,
                 target_model=_resolve_gateway_model(),
+                gateway_session_id=session_key,
+                orchestrator_session_key=session_key,
             )
             if _orch_trim.get("trimmed_blocks"):
                 logger.info(
@@ -8666,6 +8687,22 @@ class GatewayRunner:
                         display_reasoning = last_reasoning.strip()
                     response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
 
+            # Consult/Merge quality gate — verify response before delivery
+            _qg = gateway_quality_gate(
+                content=response or "",
+                task_type="general",
+                gateway_session_id=session_key,
+                orchestrator_session_key=session_key,
+            )
+            if _qg.get("action") == "quality_gate":
+                _qg_score = _qg.get("route_detail", {}).get("score")
+                _qg_flags = _qg.get("route_detail", {}).get("flags", [])
+                if _qg_score and _qg_score < 5:
+                    logger.warning(
+                        "Quality gate low score (%s/10) for session %s — flags: %s",
+                        _qg_score, session_key, _qg_flags,
+                    )
+
             # Runtime-metadata footer — only on the FINAL message of the turn.
             # Off by default (display.runtime_footer.enabled=false).  When
             # streaming already delivered the body, we can't mutate the sent
@@ -8892,11 +8929,19 @@ class GatewayRunner:
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
 
-            # Register conversation turns with the orchestrator
+            # Register conversation turns with the orchestrator via gateway integration
             if "prompt" in agent_result:
-                _orch.register_conversation_turn("user", agent_result.get("prompt", ""))
+                gateway_register_turn(
+                    "user", agent_result.get("prompt", ""),
+                    gateway_session_id=session_key,
+                    orchestrator_session_key=session_key,
+                )
             if response:
-                _orch.register_conversation_turn("assistant", response)
+                gateway_register_turn(
+                    "assistant", response,
+                    gateway_session_id=session_key,
+                    orchestrator_session_key=session_key,
+                )
 
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
