@@ -46,6 +46,50 @@ interface ModelOptionsResponse {
   providers?: ModelOptionProvider[];
 }
 
+/**
+ * Coerce one element of a provider's `models` payload into a plain id
+ * string. The backend already normalises every config shape down to
+ * strings (see `_model_entry_id` in hermes_cli/model_switch.py for the
+ * full table), but a hand-edited config can still trigger schema
+ * variants this dashboard hasn't seen yet — issue #32334 was a YAML
+ * `models: [{id, name}, ...]` list-of-dicts shape that crashed the
+ * picker the moment the user selected the affected provider, because
+ * the column filter calls `.toLowerCase()` on every entry and React
+ * refuses to render plain objects as children.
+ *
+ * Accept the same shapes the backend does (string, dict with
+ * `id`/`model`/`name`) and drop anything that doesn't reduce to a
+ * non-empty string. Defence-in-depth — the picker should *degrade*
+ * (skip the bad row) rather than black-screen the entire Models page.
+ */
+function normalizeModelEntry(entry: unknown): string | null {
+  if (typeof entry === "string") {
+    const trimmed = entry.trim();
+    return trimmed || null;
+  }
+  if (entry && typeof entry === "object") {
+    const rec = entry as Record<string, unknown>;
+    for (const key of ["id", "model", "name"] as const) {
+      const val = rec[key];
+      if (typeof val === "string" && val.trim()) return val.trim();
+    }
+  }
+  return null;
+}
+
+function normalizeProviderModels(
+  provider: ModelOptionProvider,
+): ModelOptionProvider {
+  const raw = provider.models;
+  if (!Array.isArray(raw)) return { ...provider, models: [] };
+  const cleaned: string[] = [];
+  for (const entry of raw) {
+    const id = normalizeModelEntry(entry);
+    if (id && !cleaned.includes(id)) cleaned.push(id);
+  }
+  return { ...provider, models: cleaned };
+}
+
 interface Props {
   /** Chat-mode: when present, picker emits a slash command via onSubmit. */
   gw?: GatewayClient;
@@ -105,7 +149,11 @@ export function ModelPickerDialog(props: Props) {
     promise
       .then((r) => {
         if (closedRef.current) return;
-        const next = r?.providers ?? [];
+        // Defence-in-depth: normalise every row's `models` to plain
+        // strings before they reach the column filter / renderer.
+        // Without this a single malformed entry (#32334) crashes the
+        // picker mid-render and blanks the surrounding Models page.
+        const next = (r?.providers ?? []).map(normalizeProviderModels);
         setProviders(next);
         setCurrentModel(String(r?.model ?? ""));
         setCurrentProviderSlug(String(r?.provider ?? ""));
