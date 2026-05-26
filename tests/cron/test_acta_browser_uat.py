@@ -91,6 +91,22 @@ def _valid_outputs_dom() -> str:
     """
 
 
+def _valid_archive_dom() -> str:
+    return """
+    <html><body>
+      <main>
+        <h1>Previous days.</h1>
+        <a class="archive-card" href="/archive/2026-05-24">
+          <span>Source-backed day</span><strong>2026-05-24</strong>
+          <small>Visible 3 · Silent 1 · Missing 0</small>
+          <em>Latest: Morning operator brief</em>
+          <small>Daily 2 · Dev 1 · System 1</small>
+        </a>
+      </main>
+    </body></html>
+    """
+
+
 def test_acta_browser_uat_harness_validates_feed_lane_contract(tmp_path: Path):
     if not _browser_cli_available():
         pytest.skip("agent-browser/npx unavailable; pure validation tests still cover feed contract")
@@ -469,6 +485,102 @@ def test_validate_outputs_contract_fails_on_acta_sign_in_wall_only():
 
     assert failures == [
         "Acta sign-in wall rendered; pass a local --html artifact or validate with authenticated browser storage"
+    ]
+
+
+def test_validate_archive_contract_accepts_source_signal_cards():
+    assert acta_browser_uat._validate_archive_contract(_valid_archive_dom()) == []
+
+
+def test_validate_archive_contract_rejects_broken_archive_cards():
+    dom = """
+    <html><body>
+      <main>
+        <h1>Archive</h1>
+        <a class="archive-card" href="#"><strong>2026-05-24</strong><span>Acta Day</span></a>
+      </main>
+    </body></html>
+    """
+
+    failures = acta_browser_uat._validate_archive_contract(
+        dom,
+        horizontal_overflow=True,
+        console_output="Uncaught Error: boom",
+        errors_output="TypeError: failed during render",
+    )
+
+    assert "Archive card 1 has unsafe href: #" in failures
+    assert "Archive card 1 is missing safe archive href" in failures
+    assert "No archive card includes both safe archive href and numeric Visible/Silent/Missing counts" in failures
+    assert "Horizontal overflow detected at mobile viewport" in failures
+    assert "Browser console contains error/exception output" in failures
+    assert "Browser page errors were reported" in failures
+
+
+@pytest.mark.parametrize(
+    "href",
+    [
+        "",
+        "#",
+        "javascript:alert(1)",
+        "file:///tmp/acta.html",
+        "data:text/html,boom",
+        "https://example.com/archive/2026-05-24",
+        "//example.com/archive/2026-05-24",
+        "/archive/not-a-date",
+        "/archive/2026-13-40",
+        " /archive/2026-05-24",
+    ],
+)
+def test_validate_archive_contract_rejects_unsafe_archive_hrefs(href: str):
+    dom = f"""
+    <html><body>
+      <main>
+        <h1>Archive</h1>
+        <a class="archive-card" href="{href}">
+          <strong>2026-05-24</strong><small>Visible 1 · Silent 0 · Missing 0</small>
+        </a>
+      </main>
+    </body></html>
+    """
+
+    failures = acta_browser_uat._validate_archive_contract(dom)
+
+    display_href = href if href else "<empty>"
+    assert f"Archive card 1 has unsafe href: {display_href}" in failures
+    assert "Archive card 1 is missing safe archive href" in failures
+
+
+def test_validate_archive_contract_allows_safe_legacy_card_when_source_signal_card_exists():
+    dom = """
+    <html><body>
+      <main>
+        <h1>Archive</h1>
+        <a class="archive-card" href="/archive/2026-05-24"><strong>2026-05-24</strong><span>Acta Day</span></a>
+        <a class="archive-card" href="/archive/2026-05-25">
+          <strong>2026-05-25</strong><small>Visible 3 · Silent 1 · Missing 0</small>
+        </a>
+      </main>
+    </body></html>
+    """
+
+    assert acta_browser_uat._validate_archive_contract(dom) == []
+
+
+def test_validate_archive_contract_requires_numeric_visible_silent_missing_counts():
+    dom = """
+    <html><body>
+      <main>
+        <h1>Archive</h1>
+        <a class="archive-card" href="/archive/2026-05-24">
+          <strong>2026-05-24</strong><small>source counts available</small>
+        </a>
+      </main>
+    </body></html>
+    """
+
+    assert acta_browser_uat._validate_archive_contract(dom) == [
+        "No archive card includes both safe archive href and numeric Visible/Silent/Missing counts"
     ]
 
 

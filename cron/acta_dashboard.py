@@ -390,6 +390,16 @@ class ActaRunItem:
     html_path: Path | None = None
 
 
+@dataclass(frozen=True)
+class ArchiveDaySummary:
+    day: date
+    visible: int
+    silent: int
+    missing: int
+    latest_title: str
+    lane_counts: Mapping[str, int]
+
+
 def _safe_text(value: object) -> str:
     return html.escape(str(value or ""))
 
@@ -1538,7 +1548,9 @@ h1 { margin:6px 0 8px; color:var(--text); font:720 clamp(22px,3.6vw,34px)/1.02 v
 .archive-card:before { content:""; position:absolute; inset:0 auto 0 0; width:2px; background:linear-gradient(180deg,var(--acta),var(--acta2)); opacity:.82; }
 .archive-card:hover { border-color:rgba(35,167,255,.55); box-shadow:0 0 24px rgba(35,167,255,.10); }
 .archive-card span { display:block; color:var(--muted); font:800 10px/1 var(--mono); text-transform:uppercase; letter-spacing:.12em; margin-bottom:8px; }
-.archive-card strong { color:var(--text); font:720 20px/1.08 var(--ui); letter-spacing:-.02em; }
+.archive-card strong { display:block; color:var(--text); font:720 20px/1.08 var(--ui); letter-spacing:-.02em; margin-bottom:8px; }
+.archive-card small, .archive-card em { display:block; color:var(--body); font:700 11px/1.35 var(--mono); letter-spacing:.02em; margin-top:5px; font-style:normal; }
+.archive-card em { color:var(--muted); font-family:var(--ui); font-weight:650; letter-spacing:0; }
 .actions { margin-left:auto; display:flex; gap:8px; align-items:center; min-width:0; }
 .followup { color:#fff; text-decoration:none; border:1px solid rgba(35,167,255,.38); background:rgba(117,108,255,.34); border-radius:999px; padding:7px 9px; font:800 10px var(--mono); text-transform:uppercase; letter-spacing:.08em; white-space:nowrap; }
 .report-shell { padding:14px; overflow:hidden; }
@@ -1946,12 +1958,60 @@ def render_runs_page(runs: Sequence[ActaRunItem], generated_at: datetime | None 
 """
 
 
-def render_archive_index(archive_dates: Sequence[date], generated_at: datetime | None = None) -> str:
+def archive_day_summary(day: date, items: Sequence[CronSituationItem]) -> ArchiveDaySummary:
+    visible = sum(1 for item in items if item.status not in {"silent", "missing"})
+    silent = sum(1 for item in items if item.status == "silent")
+    missing = sum(1 for item in items if item.status == "missing")
+    timed_items = [item for item in items if item.latest_time is not None]
+    latest_item = (
+        max(timed_items, key=lambda item: item.latest_time.timestamp() if item.latest_time is not None else float("-inf"))
+        if timed_items
+        else (items[0] if items else None)
+    )
+    lane_counts = {lane: sum(1 for item in items if _feed_lane(item) == lane) for lane in ("daily", "dev", "system")}
+    return ArchiveDaySummary(
+        day=day,
+        visible=visible,
+        silent=silent,
+        missing=missing,
+        latest_title=latest_item.name if latest_item else "No source outputs",
+        lane_counts=lane_counts,
+    )
+
+
+def _archive_lane_mix(summary: ArchiveDaySummary) -> str:
+    parts = []
+    for lane, label in (("daily", "Daily"), ("dev", "Dev"), ("system", "System")):
+        count = int(summary.lane_counts.get(lane, 0))
+        if count:
+            parts.append(f"{label} {count}")
+    return " · ".join(parts) or "No lane signals"
+
+
+def render_archive_index(
+    archive_dates: Sequence[date],
+    generated_at: datetime | None = None,
+    summaries: Mapping[date, ArchiveDaySummary] | None = None,
+) -> str:
     now = generated_at or datetime.now(timezone.utc)
-    cards = "".join(
-        f'<a class="archive-card" href="/archive/{d.isoformat()}"><span>Acta Day</span><strong>{d.isoformat()}</strong></a>'
-        for d in archive_dates
-    ) or '<p class="lede">No archived cron outputs yet.</p>'
+    card_rows: list[str] = []
+    for d in archive_dates:
+        summary = (summaries or {}).get(d)
+        if summary is None:
+            card_rows.append(
+                f'<a class="archive-card" href="/archive/{d.isoformat()}"><span>Acta Day</span><strong>{d.isoformat()}</strong></a>'
+            )
+            continue
+        card_rows.append(
+            f"""<a class="archive-card" href="/archive/{d.isoformat()}">
+  <span>Source-backed day</span>
+  <strong>{d.isoformat()}</strong>
+  <small>Visible {summary.visible} · Silent {summary.silent} · Missing {summary.missing}</small>
+  <em>Latest: {_safe_text(summary.latest_title)}</em>
+  <small>{_safe_text(_archive_lane_mix(summary))}</small>
+</a>"""
+        )
+    cards = "".join(card_rows) or '<p class="lede">No archived cron outputs yet.</p>'
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -2353,7 +2413,13 @@ def build_dashboard(
             {**publish_settings, "object_key": "public/index.html"},
         )
         archive_index_path = output_dir / "archive.html"
-        archive_index_path.write_text(render_archive_index(dates, generated_at=generated_at), encoding="utf-8")
+        archive_items_by_date: dict[date, list[CronSituationItem]] = {
+            run_day: collect_situation_items(home, run_date=run_day) for run_day in dates
+        }
+        archive_summaries = {run_day: archive_day_summary(run_day, day_items) for run_day, day_items in archive_items_by_date.items()}
+        archive_index_path.write_text(
+            render_archive_index(dates, generated_at=generated_at, summaries=archive_summaries), encoding="utf-8"
+        )
         publish_html_artifact(
             archive_index_path,
             {"id": "acta-situation-room"},
@@ -2402,7 +2468,7 @@ def build_dashboard(
             {**publish_settings, "object_key": "public/runs/index.html"},
         )
         for run_day in dates:
-            day_items = collect_situation_items(home, run_date=run_day)
+            day_items = archive_items_by_date.get(run_day) or collect_situation_items(home, run_date=run_day)
             day_items = attach_artifact_urls(day_items, publish_settings, output_dir / "details")
             day_path = output_dir / "archive" / f"{run_day.isoformat()}.html"
             day_path.parent.mkdir(parents=True, exist_ok=True)

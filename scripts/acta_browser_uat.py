@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import date
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlparse
@@ -214,6 +215,46 @@ def _has_clickable_open_affordance(row_html: str) -> bool:
     parser.feed(row_html)
     parser.close()
     return parser.has_affordance
+
+
+class _ArchiveHrefParser(HTMLParser):
+    """Extract anchor hrefs from an archive-card fragment."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.hrefs: list[str | None] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() != "a":
+            return
+        for key, value in attrs:
+            if key.lower() == "href":
+                self.hrefs.append(value)
+                return
+
+
+def _archive_card_hrefs(card_html: str) -> list[str | None]:
+    parser = _ArchiveHrefParser()
+    parser.feed(card_html)
+    parser.close()
+    return parser.hrefs
+
+
+def _is_safe_archive_href(value: str | None) -> bool:
+    if value is None or value != value.strip():
+        return False
+    match = re.fullmatch(r"/archive/(\d{4}-\d{2}-\d{2})", value)
+    if not match:
+        return False
+    try:
+        date.fromisoformat(match.group(1))
+    except ValueError:
+        return False
+    return True
+
+
+def _has_numeric_source_signal_counts(card_text: str) -> bool:
+    return bool(re.search(r"\bVisible\s+\d+\b.*\bSilent\s+\d+\b.*\bMissing\s+\d+\b", card_text, re.I | re.S))
 
 
 def _agent_browser_command() -> list[str]:
@@ -562,7 +603,56 @@ def _validate_outputs_contract(
     return failures
 
 
+def _validate_archive_contract(
+    dom: str,
+    *,
+    horizontal_overflow: bool = False,
+    console_output: str = "",
+    errors_output: str = "",
+) -> list[str]:
+    failures, auth_wall = _common_browser_failures(
+        dom,
+        horizontal_overflow=horizontal_overflow,
+        console_output=console_output,
+        errors_output=errors_output,
+    )
+    if auth_wall:
+        return failures
+
+    if not re.search(r"\bArchive\b|Previous\s+days", dom, re.I):
+        failures.append("Archive identity is missing")
+
+    archive_cards = _extract_text_by_class(dom, "archive-card")
+    archive_card_html = _extract_html_by_class(dom, "archive-card")
+    if not archive_cards:
+        failures.append("No browser-rendered archive cards found")
+        return failures
+
+    has_source_signal_card = False
+    for index, card_text in enumerate(archive_cards, start=1):
+        card_html = archive_card_html[index - 1] if index <= len(archive_card_html) else ""
+        hrefs = _archive_card_hrefs(card_html)
+        safe_href = any(_is_safe_archive_href(href) for href in hrefs)
+        for href in hrefs:
+            if not _is_safe_archive_href(href):
+                display_href = "<missing>" if href is None else (href if href else "<empty>")
+                failures.append(f"Archive card {index} has unsafe href: {display_href}")
+        if not safe_href:
+            failures.append(f"Archive card {index} is missing safe archive href")
+        has_counts = _has_numeric_source_signal_counts(card_text)
+        if safe_href and has_counts:
+            has_source_signal_card = True
+    if not has_source_signal_card:
+        failures.append("No archive card includes both safe archive href and numeric Visible/Silent/Missing counts")
+    return failures
+
+
 def _scenario_metadata(scenario: str) -> dict[str, str]:
+    if scenario == "archive":
+        return {
+            "persona": "mobile Acta operator reviewing previous days",
+            "scenario": "Validate Acta Archive cards at mobile width before tapping into prior-day snapshots",
+        }
     if scenario == "outputs":
         return {
             "persona": "mobile Acta operator inspecting Outputs shelf artifacts",
@@ -585,7 +675,9 @@ def run(args: argparse.Namespace) -> int:
     scenario = getattr(args, "scenario", "feed")
     try:
         result = _run_chrome(url, artifact_dir, args.timeout, args.viewport_width, args.viewport_height)
-        if scenario == "outputs":
+        if scenario == "archive":
+            validate = _validate_archive_contract
+        elif scenario == "outputs":
             validate = _validate_outputs_contract
         elif scenario == "jobs":
             validate = _validate_jobs_contract
@@ -615,7 +707,9 @@ def run(args: argparse.Namespace) -> int:
         "horizontal_overflow": result.horizontal_overflow,
         "failures": failures,
     }
-    if scenario == "outputs":
+    if scenario == "archive":
+        report["archive_cards"] = len(_extract_text_by_class(result.dom, "archive-card"))
+    elif scenario == "outputs":
         report["output_rows"] = len(_extract_text_by_class(result.dom, "output-row"))
     elif scenario == "jobs":
         report["job_rows"] = len(_extract_text_by_class(result.dom, "job-row"))
@@ -634,7 +728,9 @@ def run(args: argparse.Namespace) -> int:
         return 1
 
     print("PASS Acta browser UAT")
-    if scenario == "outputs":
+    if scenario == "archive":
+        print(f"Archive cards: {report['archive_cards']}")
+    elif scenario == "outputs":
         print(f"Output rows: {report['output_rows']}")
     elif scenario == "jobs":
         print(f"Job rows: {report['job_rows']}")
@@ -655,7 +751,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=int, default=30, help="Chrome render timeout in seconds")
     parser.add_argument("--viewport-width", type=int, default=390, help="Browser viewport width for mobile UAT")
     parser.add_argument("--viewport-height", type=int, default=844, help="Browser viewport height for mobile UAT")
-    parser.add_argument("--scenario", choices=("feed", "jobs", "outputs"), default="feed", help="Acta UAT scenario to validate")
+    parser.add_argument("--scenario", choices=("feed", "jobs", "outputs", "archive"), default="feed", help="Acta UAT scenario to validate")
     return run(parser.parse_args(argv))
 
 

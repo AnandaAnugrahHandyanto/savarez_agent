@@ -1529,6 +1529,100 @@ def test_archive_index_includes_sticky_navigation_bar():
     assert "position:sticky" in html
 
 
+def test_archive_index_cards_show_source_signal_summaries_without_fake_tokens():
+    summary_cls = collect_situation_items.__globals__["ArchiveDaySummary"]
+    day = date(2026, 5, 20)
+    summary = summary_cls(
+        day=day,
+        visible=2,
+        silent=1,
+        missing=1,
+        latest_title="Morning Operator Brief <latest>",
+        lane_counts={"daily": 1, "dev": 2, "system": 1},
+    )
+
+    html = render_archive_index(
+        [day],
+        generated_at=datetime(2026, 5, 20, tzinfo=timezone.utc),
+        summaries={day: summary},
+    )
+
+    assert 'class="archive-card" href="/archive/2026-05-20"' in html
+    assert "Visible 2 · Silent 1 · Missing 1" in html
+    assert "Latest: Morning Operator Brief &lt;latest&gt;" in html
+    assert "Daily 1 · Dev 2 · System 1" in html
+    assert "P1" not in html
+    assert "P2" not in html
+    assert "Acta Day" not in html
+    assert "score" not in html.lower()
+
+
+def test_archive_day_summary_uses_latest_timestamp_title_not_first_item():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    archive_day_summary = collect_situation_items.__globals__["archive_day_summary"]
+    older = item_cls(
+        job_id="older",
+        name="Older Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/older.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 20, 8, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Older signal",
+    )
+    newer = item_cls(
+        job_id="newer",
+        name="Newer Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/newer.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 20, 10, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Newer signal",
+    )
+
+    summary = archive_day_summary(date(2026, 5, 20), [older, newer])
+
+    assert summary.latest_title == "Newer Brief"
+
+
+def test_archive_day_summary_falls_back_to_first_item_when_no_timestamps():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    archive_day_summary = collect_situation_items.__globals__["archive_day_summary"]
+    first = item_cls(
+        job_id="first",
+        name="First Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/first.md"),
+        latest_html=None,
+        latest_time=None,
+        status="fresh",
+        excerpt="First signal",
+    )
+    second = item_cls(
+        job_id="second",
+        name="Second Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/second.md"),
+        latest_html=None,
+        latest_time=None,
+        status="fresh",
+        excerpt="Second signal",
+    )
+
+    summary = archive_day_summary(date(2026, 5, 20), [first, second])
+
+    assert summary.latest_title == "First Brief"
+
+
 def test_all_acta_modules_share_compact_v9_shell():
     item_cls = collect_situation_items.__globals__["CronSituationItem"]
     item = item_cls(
