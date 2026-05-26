@@ -22,6 +22,7 @@ from cron.acta_dashboard import (
     collect_catalog_outputs,
     collect_run_history,
     collect_situation_items,
+    load_release_log,
     publish_catalog_output_artifacts,
     render_acta_detail_report,
     render_archive_index,
@@ -1338,6 +1339,119 @@ def test_mobile_bottom_nav_appears_only_after_top_nav_scrolls_out(tmp_path: Path
     assert "document.querySelector('.date-nav')" in html
     assert 'background:rgba(2,2,2,.96)' not in html
     assert 'background:linear-gradient(180deg, rgba(7,16,24,.96), rgba(3,6,11,.94)), radial-gradient(circle at 18% 0%, rgba(117,108,255,.28), transparent 42%), radial-gradient(circle at 86% 20%, rgba(35,167,255,.18), transparent 48%)' in html
+
+
+def test_archive_day_dashboard_has_read_and_action_parity_with_today():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    archive_item = item_cls(
+        job_id="daily",
+        name="Archived Morning Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_09-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 9, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Archived source-backed briefing.",
+        artifact_url="https://acta.imperatr.com/r/daily/detail.html?exp=1&sig=daily",
+        telegram_url="https://t.me/imperatr/123",
+    )
+
+    html = render_dashboard(
+        [archive_item],
+        generated_at=datetime(2026, 5, 20, 12, tzinfo=timezone.utc),
+        selected_date=date(2026, 5, 19),
+        archive_dates=[date(2026, 5, 20), date(2026, 5, 19)],
+        archive_day=True,
+    )
+
+    assert "ACTA</em> / ARCHIVE DAY" in html
+    assert "Day Brief" in html
+    assert '<a class="nav-link primary" href="/archive/2026-05-19">Archive day</a>' in html
+    assert 'data-read-key="daily:2026-05-19T09:00:00+00:00"' in html
+    assert '<span class="read-state">UNREAD</span>' in html
+    assert '<button class="read-toggle" type="button" aria-label="Mark briefing read: Archived Morning Brief">Mark read</button>' in html
+    assert 'class="row-open-overlay" href="https://acta.imperatr.com/r/daily/detail.html?exp=1&amp;sig=daily"' in html
+    assert 'class="ask-label" href="https://t.me/imperatr/123"' in html
+    assert '<a class="active" href="/archive">ARCHIVE' in html
+
+
+def test_dashboard_surfaces_production_release_tldr_and_input_needed():
+    release_cls = collect_situation_items.__globals__["ActaReleaseNote"]
+    release = release_cls(
+        date="2026-05-26",
+        title="Acta operator feed cleanup",
+        shipped=["Split daily feed from dev sprint cycles", "Added real browser UAT publish gate"],
+        needs_input=["Confirm whether ASK should become a larger primary action"],
+    )
+
+    html = render_dashboard([], generated_at=datetime(2026, 5, 26, tzinfo=timezone.utc), release_notes=[release])
+
+    assert "Release TLDR" in html
+    assert "Acta operator feed cleanup" in html
+    assert "Split daily feed from dev sprint cycles" in html
+    assert "Added real browser UAT publish gate" in html
+    assert "Needs your input" in html
+    assert "Confirm whether ASK should become a larger primary action" in html
+
+
+def test_release_log_loader_sanitizes_and_limits_operator_notes(tmp_path: Path):
+    path = tmp_path / "acta-release-log.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "date": "2026-05-25",
+                    "title": "Older Acta release",
+                    "shipped": ["Old note should sort behind latest"],
+                    "needs_input": [],
+                },
+                {
+                    "date": "2026-05-26",
+                    "title": "<Acta release>",
+                    "shipped": [
+                        "One",
+                        "Published https://acta.imperatr.com/r/daily/detail.html?exp=1&sig=secret",
+                        "AWS https://s3.amazonaws.com/bucket/key?X-Amz-Signature=secret&X-Amz-Credential=cred&X-Amz-Security-Token=tok",
+                        "Local file /tmp/private/secret.md and ~/.hermes/private.md with OPENAI_API_KEY=openaisecretvalue AWS_SECRET_ACCESS_KEY=awssecretvalue",
+                        "## Prompt leak should be dropped",
+                        "Prompt: another trace should be dropped",
+                        "Five",
+                    ],
+                    "needs_input": ["Pick primary action", "terminal command: cat secrets", "Third", "Fourth"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    releases = load_release_log(path)
+
+    assert len(releases) == 2
+    assert releases[0].date == "2026-05-26"
+    assert releases[0].title == "<Acta release>"
+    assert releases[0].shipped == [
+        "One",
+        "Published [redacted link]",
+        "AWS [redacted link]",
+        "Local file [local path removed] and [local path removed] with OPENAI_API_KEY=[redacted] AWS_SECRET_ACCESS_KEY=[redacted]",
+    ]
+    assert releases[0].needs_input == ["Pick primary action", "Third", "Fourth"]
+
+    html = render_dashboard([], generated_at=datetime(2026, 5, 26, tzinfo=timezone.utc), release_notes=releases)
+    assert "&lt;Acta release&gt;" in html
+    assert "https://acta.imperatr.com/r/daily/detail.html" not in html
+    assert "/Users/mozzie" not in html
+    assert "supersecretvalue" not in html
+    assert "supersecrettokenvalue" not in html
+    assert "openaisecretvalue" not in html
+    assert "awssecretvalue" not in html
+    assert "Prompt leak" not in html
+    assert "another trace" not in html
+    assert "terminal command" not in html
+    assert "[redacted link]" in html
+    assert "[local path removed]" in html
 
 
 def test_detail_report_uses_acta_situation_room_ui():

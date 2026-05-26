@@ -356,6 +356,14 @@ class CronSituationItem:
 
 
 @dataclass(frozen=True)
+class ActaReleaseNote:
+    date: str
+    title: str
+    shipped: list[str]
+    needs_input: list[str]
+
+
+@dataclass(frozen=True)
 class ActaOutputItem:
     id: str
     title: str
@@ -407,6 +415,76 @@ def _safe_text(value: object) -> str:
 def _read_key(item: CronSituationItem) -> str:
     latest = item.latest_time.isoformat() if item.latest_time else "never"
     return f"{item.job_id}:{latest}"
+
+
+_RELEASE_TRACE_RE = re.compile(
+    r"##\s*(?:prompt|tool)\b|\b(?:prompt|tool)\s*:|\btool\s+output\b|\btool_call\b|\bfunction_call\b|\bterminal\s+command\b|traceback",
+    re.I,
+)
+_RELEASE_SENSITIVE_URL_RE = re.compile(r"https?://[^\s<>'\"]*\?[^\s<>'\"]*", re.I)
+_RELEASE_LOCAL_PATH_RE = re.compile(
+    r"(?:~|(?:/Users|/home|/tmp|/private|/var)(?:/|$)|[A-Za-z]:[\\/]+Users[\\/]+)[^<>'\"]*?(?=\s+(?:and|with|plus|from|to|for)\b|[.,;)]?\s*$|[<>'\"])",
+    re.I,
+)
+_RELEASE_SECRET_ASSIGNMENT_RE = re.compile(
+    r"\b([A-Z0-9_ -]*(?:api\s*key|api[_-]?key|secret|password|passwd|token|auth)[A-Z0-9_ -]*)\s*[:=]\s*['\"]?[^\s,'\"]{6,}",
+    re.I,
+)
+_RELEASE_BEARER_SECRET_RE = re.compile(r"\b(?:bearer|token)\s+[A-Za-z0-9._~+/=-]{12,}", re.I)
+_RELEASE_KEYLIKE_SECRET_RE = re.compile(r"\b(?:sk|pk|ghp|gho|xoxb|xoxp)-[A-Za-z0-9_\-]{10,}", re.I)
+
+
+def _sanitize_release_text(value: object, *, limit: int) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text or _RELEASE_TRACE_RE.search(text):
+        return ""
+    text = _RELEASE_SENSITIVE_URL_RE.sub("[redacted link]", text)
+    text = _RELEASE_LOCAL_PATH_RE.sub("[local path removed]", text)
+    text = re.sub(r"\bHERMES_HOME\b", "[local path removed]", text, flags=re.I)
+    text = _RELEASE_SECRET_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}=[redacted]", text)
+    text = _RELEASE_BEARER_SECRET_RE.sub("Bearer [redacted]", text)
+    text = _RELEASE_KEYLIKE_SECRET_RE.sub("[redacted key]", text)
+    return text[:limit].strip()
+
+
+def _clean_release_lines(value: object, *, limit: int) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    lines: list[str] = []
+    for item in value:
+        text = _sanitize_release_text(item, limit=220)
+        if text:
+            lines.append(text)
+        if len(lines) >= limit:
+            break
+    return lines
+
+
+def load_release_log(path: Path) -> list[ActaReleaseNote]:
+    """Load durable human-facing Acta production release notes."""
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    entries = data.get("releases", data) if isinstance(data, Mapping) else data
+    if not isinstance(entries, list):
+        return []
+    releases: list[ActaReleaseNote] = []
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            continue
+        title = _sanitize_release_text(entry.get("title") or "Acta production release", limit=160)
+        if not title:
+            title = "Acta production release"
+        day = re.sub(r"[^0-9-]+", "", str(entry.get("date") or ""))[:10]
+        shipped = _clean_release_lines(entry.get("shipped"), limit=4)
+        needs_input = _clean_release_lines(entry.get("needs_input") or entry.get("needsInput"), limit=3)
+        if title and (shipped or needs_input):
+            releases.append(ActaReleaseNote(date=day, title=title, shipped=shipped, needs_input=needs_input))
+    releases.sort(key=lambda release: release.date or "", reverse=True)
+    return releases[:8]
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -1016,6 +1094,8 @@ def render_dashboard(
     selected_date: date | None = None,
     archive_dates: Sequence[date] = (),
     feed_preferences: Mapping[str, Any] | None = None,
+    archive_day: bool = False,
+    release_notes: Sequence[ActaReleaseNote] = (),
 ) -> str:
     now = generated_at or datetime.now(timezone.utc)
     day_label = selected_date.isoformat() if selected_date else "latest"
@@ -1224,6 +1304,26 @@ def render_dashboard(
         f"Review: {action_count} {action_review_label}",
     ]
     digest_html = ''.join(f"<li>{html.escape(line)}</li>" for line in digest_lines)
+    latest_release = release_notes[0] if release_notes else None
+    release_html = ""
+    if latest_release:
+        shipped_html = "".join(f"<li>{html.escape(line)}</li>" for line in latest_release.shipped[:4])
+        input_html = "".join(f"<li>{html.escape(line)}</li>" for line in latest_release.needs_input[:3])
+        release_html = f"""
+        <section class="release-digest">
+          <div><h2>Release TLDR</h2><span>{html.escape(latest_release.date or 'latest')}</span></div>
+          <b>{html.escape(latest_release.title)}</b>
+          <ul>{shipped_html}</ul>
+        </section>
+        {f'<section class="release-digest input-digest"><div><h2>Needs your input</h2><span>{html.escape(latest_release.date or "latest")}</span></div><ul>{input_html}</ul></section>' if input_html else ''}"""
+    page_label = "ARCHIVE DAY" if archive_day else "TODAY"
+    brief_heading = "Day Brief" if archive_day else "Today’s Brief"
+    primary_href = f"/archive/{selected_date.isoformat()}" if archive_day and selected_date else "/"
+    primary_label = "Archive day" if archive_day else "Today"
+    side_today_class = "" if archive_day else "active"
+    side_archive_class = "active" if archive_day else ""
+    mobile_today = ""
+    mobile_archive = " class=\"active\"" if archive_day else ""
     dashboard_script = _dashboard_inline_script()
     dashboard_csp_placeholder = "__ACTA_DASHBOARD_CSP__"
 
@@ -1275,9 +1375,14 @@ a {{ color:inherit; }}
 #view-trace:checked ~ .content span.trace-only, #view-trace:checked ~ .content .row-kicker .trace-only, #view-trace:checked ~ .content .meta .trace-only {{ display:inline-flex !important; }}
 #view-trace:checked ~ .content .source-line.trace-only {{ display:block !important; }}
 #view-trace:checked ~ .content .feed-section-title.trace-only {{ display:flex !important; }}
-.today-brief {{ border:1px solid var(--line); border-radius:16px; padding:11px 12px; margin:0 0 10px; background:rgba(117,108,255,.075); box-shadow:0 12px 34px rgba(0,0,0,.20); }}
-.today-brief h2 {{ margin:0 0 6px; font:760 14px/1.1 var(--ui); color:#fff; letter-spacing:-.01em; }}
-.today-brief ul {{ margin:0; padding-left:18px; color:var(--body); font:12px/1.38 var(--ui); }}
+.today-brief, .release-digest {{ border:1px solid var(--line); border-radius:16px; padding:11px 12px; margin:0 0 10px; background:rgba(117,108,255,.075); box-shadow:0 12px 34px rgba(0,0,0,.20); }}
+.today-brief h2, .release-digest h2 {{ margin:0 0 6px; font:760 14px/1.1 var(--ui); color:#fff; letter-spacing:-.01em; }}
+.today-brief ul, .release-digest ul {{ margin:0; padding-left:18px; color:var(--body); font:12px/1.38 var(--ui); }}
+.release-digest {{ background:rgba(35,167,255,.055); }}
+.release-digest div {{ display:flex; align-items:center; justify-content:space-between; gap:10px; }}
+.release-digest div span {{ color:var(--faint); font:800 10px var(--mono); text-transform:uppercase; }}
+.release-digest > b {{ display:block; color:#fff; font:760 13px/1.2 var(--ui); margin:0 0 6px; }}
+.release-digest h3 {{ margin:8px 0 4px; color:var(--acta2); font:800 10px var(--mono); text-transform:uppercase; letter-spacing:.09em; }}
 .panel-title {{ display:flex; align-items:center; justify-content:space-between; gap:10px; margin:4px 0 10px; color:#fff; font:800 11px var(--mono); letter-spacing:.12em; text-transform:uppercase; }}
 .panel-title span {{ color:var(--faint); font-weight:600; letter-spacing:.08em; }}
 .lead {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px 12px; border:1px solid var(--line); border-radius:16px; padding:12px 13px; margin-bottom:10px; text-decoration:none; color:inherit; cursor:pointer; position:relative; overflow:hidden; background:rgba(255,255,255,.035); box-shadow:0 10px 32px rgba(0,0,0,.26); }}
@@ -1405,11 +1510,11 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
     <div class="brand"><div class="logo">A</div><div><b>Acta</b><small>IMPERATR SITUATION ROOM</small></div></div>
     <nav class="nav-side">
       <h4>Today</h4>
-      <a class="active" href="/">Today <span>{total}</span></a>
+      <a class="{side_today_class}" href="/">Today <span>{total}</span></a>
       <a href="/outputs">Outputs <span>{total}</span></a>
       <a href="/runs">Runs <span>{active}</span></a>
       <a href="/jobs">Jobs <span>{len(jobs_rows)}</span></a>
-      <a href="/archive">Archive <span>{len(archive_dates)}</span></a>
+      <a class="{side_archive_class}" href="/archive">Archive <span>{len(archive_dates)}</span></a>
       <h4>Trace</h4>
       <a href="/runs">Source Runs <span>{active}</span></a>
       <a href="/archive">Audit Trail <span>{len(archive_dates)}</span></a>
@@ -1418,17 +1523,18 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
   </aside>
   <main class="main">
     <header class="top">
-      <div class="ticker"><em>ACTA</em> / TODAY</div>
+      <div class="ticker"><em>ACTA</em> / {page_label}</div>
       <div class="search">Search briefings, sources, jobs, archive…</div>
       <div class="topstats"><div>UNREAD <b data-unread-count="{initial_unread_count}">{initial_unread_count}</b></div><div>VISIBLE <b>{visible}</b></div><div>SILENT <b>{silent}</b></div><div>MISSING <b>{missing}</b></div></div>
     </header>
-    <nav class="date-nav"><a class="nav-link primary" href="/">Today</a><a class="nav-link" href="/outputs">Outputs</a><a class="nav-link" href="/runs">Runs</a><a class="nav-link" href="/jobs">Jobs</a><a class="nav-link" href="/archive">Archive</a></nav>
+    <nav class="date-nav"><a class="nav-link primary" href="{primary_href}">{primary_label}</a><a class="nav-link" href="/outputs">Outputs</a><a class="nav-link" href="/runs">Runs</a><a class="nav-link" href="/jobs">Jobs</a><a class="nav-link" href="/archive">Archive</a></nav>
     <input class="view-mode-input" id="view-digest" name="acta-view-mode" type="radio" checked>
     <input class="view-mode-input" id="view-trace" name="acta-view-mode" type="radio">
     <div class="mode-switch" role="radiogroup" aria-label="Acta view mode"><label for="view-digest">Digest</label><label for="view-trace">Trace</label></div>
     <section class="content">
       <div>
-        <section class="today-brief"><h2>Today’s Brief</h2><ul>{digest_html}</ul></section>
+        <section class="today-brief"><h2>{brief_heading}</h2><ul>{digest_html}</ul></section>
+        {release_html}
         <article class="{lead_class}" data-feed-lane="{_safe_text(lead_lane)}"{lead_read_attr}{lead_href_attr}>
           {lead_open_overlay}
           <div class="label"><span class="attention-chip">{_safe_text(lead_attention)}</span><span class="lane-chip" title="{_safe_text(lead_lane_label)}">{_safe_text(_feed_lane_chip(lead_lane))}</span>{lead_label_read_state}<span class="trace-only" title="{_safe_text(lead_confidence)}">{_safe_text(_confidence_short(lead_confidence))}</span>{f'<span>{lead_open_hint}</span>' if lead_open_hint else ''}</div>
@@ -1451,7 +1557,7 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
     <footer>Generated {html.escape(now.isoformat())}. Signed Acta links expire automatically.</footer>
   </main>
 </div>
-<nav class="mobilebar"><a href="/">TODAY <span class="nav-count" data-unread-count="{initial_unread_count}">{initial_unread_count}</span></a><a href="/outputs">OUTPUTS</a><a href="/runs">RUNS</a><a href="/jobs">JOBS</a><a href="/archive">ARCHIVE</a></nav>
+<nav class="mobilebar"><a{mobile_today} href="/">TODAY <span class="nav-count" data-unread-count="{initial_unread_count}">{initial_unread_count}</span></a><a href="/outputs">OUTPUTS</a><a href="/runs">RUNS</a><a href="/jobs">JOBS</a><a{mobile_archive} href="/archive">ARCHIVE</a></nav>
 <script>{dashboard_script}</script>
 </body>
 </html>
@@ -2373,6 +2479,7 @@ def build_dashboard(
     publish_settings = dict(html_cfg.get("publish") or {})
     publish_settings["enabled"] = bool(publish_settings.get("enabled", False))
     output_dir = home / "cron" / "output" / "acta-situation-room"
+    release_notes = load_release_log(output_dir / "acta-release-log.json")
     dates = available_run_dates(home)
     selected_date = dates[0] if dates else None
     items = collect_situation_items(home, run_date=selected_date)
@@ -2385,6 +2492,7 @@ def build_dashboard(
         selected_date=selected_date,
         archive_dates=dates,
         feed_preferences=acta_dashboard_config(config),
+        release_notes=release_notes,
     )
     dashboard_path = output_dir / f"{generated_at.strftime('%Y-%m-%d_%H-%M-%S')}.html"
     dashboard_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2402,6 +2510,7 @@ def build_dashboard(
             selected_date=selected_date,
             archive_dates=dates,
             feed_preferences=acta_dashboard_config(config),
+            release_notes=release_notes,
         )
         dashboard_path.write_text(dashboard_html, encoding="utf-8")
     dashboard_url: str | None = None
@@ -2479,6 +2588,8 @@ def build_dashboard(
                     selected_date=run_day,
                     archive_dates=dates,
                     feed_preferences=acta_dashboard_config(config),
+                    archive_day=True,
+                    release_notes=release_notes,
                 ),
                 encoding="utf-8",
             )
