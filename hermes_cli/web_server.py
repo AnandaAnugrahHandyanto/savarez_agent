@@ -159,6 +159,22 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
+def _extra_allowed_hosts() -> frozenset:
+    """Hostnames explicitly allowed via HERMES_DASHBOARD_ALLOWED_HOSTS.
+
+    Comma-separated list, lowercased, port-stripped. Intended for reverse-proxy
+    / tunnel setups (e.g. Cloudflare Tunnel, nginx, Traefik) where the dashboard
+    binds to loopback but the public Host header is the proxy hostname. The
+    DNS-rebinding defence still applies for anything NOT on this list.
+    """
+    raw = os.environ.get("HERMES_DASHBOARD_ALLOWED_HOSTS", "")
+    if not raw:
+        return frozenset()
+    return frozenset(
+        h.strip().lower() for h in raw.split(",") if h.strip()
+    )
+
+
 def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     """True if the Host header targets the interface we bound to.
 
@@ -194,13 +210,17 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     if bound_host in {"0.0.0.0", "::"}:
         return True
 
-    # Loopback bind: accept the loopback names
+    # Loopback bind: accept the loopback names + any host explicitly
+    # allowlisted via HERMES_DASHBOARD_ALLOWED_HOSTS (for reverse-proxy
+    # / tunnel deployments).
     bound_lc = bound_host.lower()
     if bound_lc in _LOOPBACK_HOST_VALUES:
-        return host_only in _LOOPBACK_HOST_VALUES
+        if host_only in _LOOPBACK_HOST_VALUES:
+            return True
+        return host_only in _extra_allowed_hosts()
 
-    # Explicit non-loopback bind: require exact host match
-    return host_only == bound_lc
+    # Explicit non-loopback bind: require exact host match OR allowlist hit
+    return host_only == bound_lc or host_only in _extra_allowed_hosts()
 
 
 @app.middleware("http")

@@ -146,3 +146,47 @@ class TestHostHeaderMiddleware:
         resp = client.get("/api/status")
         # Should get through to the status endpoint, not a 400
         assert resp.status_code != 400
+
+    def test_allowlisted_host_accepted_on_loopback_bind(self, monkeypatch):
+        """HERMES_DASHBOARD_ALLOWED_HOSTS lets reverse-proxy / tunnel
+        deployments accept the public hostname while still binding to
+        loopback. Other hosts must still be rejected (DNS-rebinding defence)."""
+        from fastapi.testclient import TestClient
+        from hermes_cli.web_server import app
+
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_ALLOWED_HOSTS",
+            "hermes.example.com, dashboard.internal",
+        )
+        app.state.bound_host = "127.0.0.1"
+        try:
+            client = TestClient(app)
+
+            # Allowlisted host → pass middleware
+            resp = client.get(
+                "/api/status",
+                headers={"Host": "hermes.example.com"},
+            )
+            assert resp.status_code != 400 or (
+                "Invalid Host header" not in resp.json().get("detail", "")
+            )
+
+            # Case-insensitive match
+            resp = client.get(
+                "/api/status",
+                headers={"Host": "DASHBOARD.INTERNAL:443"},
+            )
+            assert resp.status_code != 400 or (
+                "Invalid Host header" not in resp.json().get("detail", "")
+            )
+
+            # Non-allowlisted host still rejected
+            resp = client.get(
+                "/api/status",
+                headers={"Host": "evil.example"},
+            )
+            assert resp.status_code == 400
+            assert "Invalid Host header" in resp.json()["detail"]
+        finally:
+            if hasattr(app.state, "bound_host"):
+                del app.state.bound_host
