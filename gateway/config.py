@@ -1261,6 +1261,9 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.DISCORD] = PlatformConfig()
         config.platforms[Platform.DISCORD].enabled = True
         config.platforms[Platform.DISCORD].token = discord_token
+    elif Platform.DISCORD in config.platforms:
+        # No token configured — disable Discord so it doesn't spam warnings
+        config.platforms[Platform.DISCORD].enabled = False
     
     discord_home = os.getenv("DISCORD_HOME_CHANNEL")
     if discord_home and Platform.DISCORD in config.platforms:
@@ -1854,3 +1857,12 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                         )
     except Exception as e:
         logger.debug("Plugin platform enable pass failed: %s", e)
+
+    # ── Post-plugin guard: re-disable platforms that lack credentials ────
+    # The plugin registry loop above unconditionally sets enabled=True for
+    # any plugin whose check_fn() passes.  If no credential is actually
+    # present the adapter will just log errors and retry forever.  Catch
+    # that here so the gateway stays quiet.
+    if Platform.DISCORD in config.platforms:
+        if not config.platforms[Platform.DISCORD].token:
+            config.platforms[Platform.DISCORD].enabled = False

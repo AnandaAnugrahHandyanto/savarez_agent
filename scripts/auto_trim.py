@@ -291,7 +291,9 @@ def compress_block(text: str, model: str) -> Optional[dict]:
 
     # Truncate input to 4000 chars to avoid overwhelming the model
     truncated = text[:4000]
-    prompt = COMPRESSION_PROMPT.format(text=truncated)
+    # Use .replace() instead of .format() to avoid crashes if
+    # content contains literal curly braces (e.g. JSX, dicts)
+    prompt = COMPRESSION_PROMPT.replace("{text}", truncated)
     result = query_ollama(model, prompt)
 
     if result is None:
@@ -334,7 +336,11 @@ def _archive_block(block: dict) -> Optional[Path]:
 def _block_priority(block: dict) -> int:
     """Extract priority from block (0=highest, 6=lowest)."""
     pri = block.get("priority", 6)
-    return pri if isinstance(pri, int) else 6
+    if isinstance(pri, int):
+        return pri
+    if isinstance(pri, float):
+        return int(pri)
+    return 6
 
 
 def _response_base(**overrides) -> dict:
@@ -417,8 +423,9 @@ def trim_context(
     # Load protected block IDs from signal file
     protected_ids = _get_protected_blocks()
 
-    # Validate schema of each block
-    for i, block in enumerate(context_blocks):
+    # Validate schema of each block (work on copies to avoid mutating caller's dicts)
+    blocks = [dict(b) for b in context_blocks]
+    for i, block in enumerate(blocks):
         if "content" not in block:
             log.warning("Block index %d missing 'content' key — treating as 0 tokens", i)
         if "id" not in block:
@@ -427,7 +434,7 @@ def trim_context(
             block["priority"] = 6  # default: low priority
 
     total_tokens = sum(
-        count_tokens(b.get("content", "")) for b in context_blocks
+        count_tokens(b.get("content", "")) for b in blocks
     )
 
     # Check if trimming is needed at all
@@ -480,6 +487,7 @@ def trim_context(
                     "[DRY RUN] Would evict block %s (pri=%d, %d tokens)",
                     block_id, priority, block_tokens,
                 )
+                remaining.append(block)  # keep in output for dry-run
             else:
                 archive_path = _archive_block(block)
                 if archive_path:
@@ -487,10 +495,9 @@ def trim_context(
                         "Evicted block %s (pri=%d, %d tokens) → %s",
                         block_id, priority, block_tokens, archive_path,
                     )
-
-            deleted += 1
-            saved += block_tokens
-            overage -= block_tokens
+                deleted += 1
+                saved += block_tokens
+                overage -= block_tokens
             continue
 
         remaining.append(block)
@@ -505,7 +512,7 @@ def trim_context(
             if block_id in protected_ids:
                 continue
 
-            if priority in (3, 4) and overage > 0:
+            if priority in (3, 4) and overage > 0 and not block.get("_was_compressed"):
                 result = compress_block(block["content"], TARGET_MODEL)
                 if result and result.get("status") == "ok":
                     compressed += 1
