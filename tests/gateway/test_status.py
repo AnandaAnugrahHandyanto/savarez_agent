@@ -551,6 +551,57 @@ class TestScopedLocks:
         assert payload["pid"] == os.getpid()
         assert payload["metadata"]["platform"] == "telegram"
 
+    def test_acquire_scoped_lock_treats_zombie_as_stale(self, tmp_path, monkeypatch):
+        """Zombie processes (State: Z) hold no resources but still pass _pid_exists.
+
+        Without this guard, an un-reaped child of a dead gateway parent (e.g.
+        when running under a supervisor that crashed) keeps the scoped lock
+        forever, blocking restarts with "token already in use (PID <zombie>)".
+        """
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({
+            "pid": 99999,
+            "start_time": 123,
+            "kind": "hermes-gateway",
+        }))
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+
+        class _FakeProcStatus:
+            def exists(self_inner):
+                return True
+
+            def read_text(self_inner, encoding="utf-8"):
+                return (
+                    "Name:\tdefunct\n"
+                    "Umask:\t0022\n"
+                    "State:\tZ (zombie)\n"
+                    "Tgid:\t99999\n"
+                    "Pid:\t99999\n"
+                )
+
+        real_path = status.Path
+
+        def fake_path(p):
+            text = str(p)
+            if text == f"/proc/{99999}/status":
+                return _FakeProcStatus()
+            return real_path(p)
+
+        monkeypatch.setattr(status, "Path", fake_path)
+
+        acquired, existing = status.acquire_scoped_lock(
+            "telegram-bot-token", "secret", metadata={"platform": "telegram"}
+        )
+
+        assert acquired is True
+        payload = json.loads(lock_path.read_text())
+        assert payload["pid"] == os.getpid()
+        assert payload["metadata"]["platform"] == "telegram"
+
     def test_acquire_scoped_lock_recovers_empty_lock_file(self, tmp_path, monkeypatch):
         """Empty lock file (0 bytes) left by a crashed process should be treated as stale."""
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
