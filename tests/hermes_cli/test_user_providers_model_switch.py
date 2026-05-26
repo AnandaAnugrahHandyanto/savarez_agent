@@ -212,6 +212,132 @@ def test_list_authenticated_providers_dict_models_without_default_model(monkeypa
     assert set(user_prov["models"]) == {"alpha", "beta"}
 
 
+def test_list_authenticated_providers_list_of_dict_models_normalises_ids(monkeypatch):
+    """Hand-edited / imported configs commonly use ``models: [{id, name}]``.
+
+    Regression for #32334: the Dashboard picker freezes/blanks the entire
+    Models page the moment a user selects a custom provider whose
+    ``models:`` is a list of dicts, because the column filter calls
+    ``.toLowerCase()`` on every entry and React refuses to render plain
+    objects as children. The fix collapses every list-of-dict element
+    down to its ``id`` (or ``model`` / ``name``) string here at the
+    payload-builder layer so the picker UI never has to defend against
+    it.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    # Exact shape from the issue reporter's config.yaml.
+    user_providers = {
+        "qwen36mtp8081": {
+            "type": "openai",
+            "base_url": "http://127.0.0.1:8081/v1",
+            "api_key": "",
+            "models": [
+                {"id": "qwen36-mtp", "name": "Qwen3.6 MTP"},
+            ],
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="qwen36mtp8081",
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+
+    user_prov = next(
+        (p for p in providers if p.get("slug") == "qwen36mtp8081"),
+        None,
+    )
+
+    assert user_prov is not None
+    assert user_prov["models"] == ["qwen36-mtp"], (
+        "models list MUST be plain strings — the dashboard picker calls "
+        ".toLowerCase() on every entry while filtering and React refuses "
+        "to render objects as children. See #32334."
+    )
+    # Every element must be a string — a single non-string slips past
+    # the picker filter and blanks the Models page.
+    for m in user_prov["models"]:
+        assert isinstance(m, str), f"non-string model entry leaked through: {m!r}"
+
+
+def test_list_authenticated_providers_list_of_mixed_string_and_dict_models(monkeypatch):
+    """List entries can be a mix of strings and dicts — picker must
+    surface every recognisable id and skip unrecognisable entries
+    rather than crashing the whole payload."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    user_providers = {
+        "mixed": {
+            "base_url": "http://example.com/v1",
+            "models": [
+                "plain-string-model",
+                {"id": "dict-with-id", "name": "Dict-with-id Display"},
+                {"model": "dict-with-model-field"},  # fallback path
+                {"context_length": 8192},  # unrecognisable → skipped
+                "",  # blank → skipped
+            ],
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="",
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+
+    user_prov = next((p for p in providers if p.get("slug") == "mixed"), None)
+    assert user_prov is not None
+    assert user_prov["models"] == [
+        "plain-string-model",
+        "dict-with-id",
+        "dict-with-model-field",
+    ]
+    assert user_prov["total_models"] == 3
+
+
+def test_list_authenticated_providers_custom_providers_list_of_dict_models(monkeypatch):
+    """Same #32334 regression on the legacy ``custom_providers:`` list
+    path (section 4 of list_authenticated_providers).
+
+    ``custom_providers`` is a list whose entries each have their own
+    ``models`` field — the same list-of-dict shape that crashes the
+    picker via the keyed ``providers:`` path must be normalised here
+    too, or users on the legacy schema still hit the black screen.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    custom_providers = [
+        {
+            "name": "My Local vLLM",
+            "base_url": "http://127.0.0.1:9000/v1",
+            "api_key": "",
+            "models": [
+                {"id": "qwen3.5-coder", "name": "Qwen3.5 Coder"},
+                {"id": "glm-4.6", "name": "GLM 4.6"},
+            ],
+        }
+    ]
+
+    providers = list_authenticated_providers(
+        current_provider="",
+        user_providers={},
+        custom_providers=custom_providers,
+        max_models=50,
+    )
+
+    row = next((p for p in providers if "vllm" in p["name"].lower()), None)
+    assert row is not None
+    assert row["models"] == ["qwen3.5-coder", "glm-4.6"]
+    for m in row["models"]:
+        assert isinstance(m, str)
+
+
 def test_list_authenticated_providers_dict_models_dedupe_with_default(monkeypatch):
     """When ``default_model`` is also a key in the ``models:`` dict, it must
     appear exactly once (list already had this for list-format models)."""
