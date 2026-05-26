@@ -6116,11 +6116,17 @@ def board_stats(conn: sqlite3.Connection) -> dict:
         if oldest_row and oldest_row["ts"] is not None else None
     )
 
+    total = sum(by_status.values())
+    done_total = by_status.get("done", 0)
+
     return {
         "by_status": by_status,
         "by_assignee": by_assignee,
         "oldest_ready_age_seconds": oldest_ready_age,
         "now": now,
+        "total": total,
+        "open_total": total - done_total,
+        "done_total": done_total,
     }
 
 
