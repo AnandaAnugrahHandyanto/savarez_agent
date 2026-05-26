@@ -9,6 +9,7 @@ from hermes_cli.tools_config import (
     _apply_toolset_change,
     _configure_provider,
     _apply_telegram_mcp_posture_filter,
+    _telegram_message_requests_commitment_mcp,
     _reconfigure_provider,
     _get_platform_tools,
     _platform_toolset_summary,
@@ -357,6 +358,52 @@ def test_telegram_explicit_commitment_mcp_posture_leaves_server_toolset_enabled(
         _deregister_posture_mcp_tools(tools)
 
     assert filtered == ["web", "kb_test_posture"]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "write a draft email in outlook with this china summary",
+        "Write a draft email with this data in my outlook inbox",
+        "create an Outlook draft from this summary",
+        "draft an email with this",
+        "put this in my Outlook inbox as a draft",
+        "email me the China summary",
+    ],
+)
+def test_telegram_email_draft_requests_count_as_commitment_mcp(message):
+    tools = _register_posture_mcp_tools()
+    try:
+        filtered = _apply_telegram_mcp_posture_filter(
+            ["web", "kb_test_posture"],
+            message=message,
+            platform="telegram",
+        )
+    finally:
+        _deregister_posture_mcp_tools(tools)
+
+    assert filtered == ["web", "kb_test_posture"]
+    assert _telegram_message_requests_commitment_mcp(message)
+
+
+def test_telegram_creative_write_request_stays_read_context_only():
+    tools = _register_posture_mcp_tools()
+    try:
+        filtered = _apply_telegram_mcp_posture_filter(
+            ["web", "kb_test_posture"],
+            message="write me a poem about distributed systems",
+            platform="telegram",
+        )
+    finally:
+        _deregister_posture_mcp_tools(tools)
+
+    assert "web" in filtered
+    assert "kb_test_posture" not in filtered
+    assert "tool:mcp_kb_test_posture_dashboard_live" in filtered
+    assert "tool:mcp_kb_test_posture_workflow_start_confirmed" not in filtered
+    assert not _telegram_message_requests_commitment_mcp(
+        "write me a poem about distributed systems"
+    )
 
 
 def test_telegram_pending_action_mcp_posture_exposes_only_scoped_confirmed_tools():
