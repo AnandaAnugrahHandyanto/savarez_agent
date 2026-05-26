@@ -646,3 +646,21 @@ def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env
 
     assert "EXA_API_KEY" in _web_requires_env()
+
+
+def test_web_backend_secret_status_hides_values_and_reports_bitwarden(monkeypatch):
+    from tools import web_tools
+    import hermes_cli.env_loader as env_loader
+
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-secret-value-that-must-not-leak")
+    monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"extract_backend": "firecrawl"})
+    monkeypatch.setitem(env_loader._SECRET_SOURCES, "FIRECRAWL_API_KEY", "bitwarden")
+
+    status = web_tools.get_web_backend_secret_status()
+
+    assert status["extract_backend"] == "firecrawl"
+    assert status["secrets"]["FIRECRAWL_API_KEY"] == {
+        "present": True,
+        "source": "bitwarden",
+    }
+    assert "fc-secret-value-that-must-not-leak" not in repr(status)

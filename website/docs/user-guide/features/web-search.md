@@ -91,9 +91,11 @@ hermes tools
 
 Full-featured search, extract, and crawl. Recommended for most users.
 
+Prefer storing the cloud API key in Bitwarden Secrets Manager with the exact secret name `FIRECRAWL_API_KEY`. Do not paste the key into chat, Kanban comments, docs, logs, or shell history. If Bitwarden is not in use, set the same environment variable in `~/.hermes/.env` with a non-secret placeholder in examples only:
+
 ```bash
 # ~/.hermes/.env
-FIRECRAWL_API_KEY=fc-your-key-here
+FIRECRAWL_API_KEY=<store-in-bitwarden-secrets-manager>
 ```
 
 Get a key at [firecrawl.dev](https://firecrawl.dev). The free tier includes 500 credits/month.
@@ -239,9 +241,11 @@ With this config, Hermes uses SearXNG for all search queries and Firecrawl for U
 
 AI-optimised search, extract, and crawl with a generous free tier.
 
+Prefer storing the API key in Bitwarden Secrets Manager with the exact secret name `TAVILY_API_KEY`. The `.env` form below is only the environment variable name Hermes expects; do not commit or paste the real key.
+
 ```bash
 # ~/.hermes/.env
-TAVILY_API_KEY=tvly-your-key-here
+TAVILY_API_KEY=<store-in-bitwarden-secrets-manager>
 ```
 
 Get a key at [app.tavily.com](https://app.tavily.com/home). The free tier includes 1 000 searches/month.
@@ -252,9 +256,11 @@ Get a key at [app.tavily.com](https://app.tavily.com/home). The free tier includ
 
 Neural search with semantic understanding. Good for research and finding conceptually related content.
 
+Prefer storing the API key in Bitwarden Secrets Manager with the exact secret name `EXA_API_KEY`. The `.env` form below is only the environment variable name Hermes expects; do not commit or paste the real key.
+
 ```bash
 # ~/.hermes/.env
-EXA_API_KEY=your-exa-key-here
+EXA_API_KEY=<store-in-bitwarden-secrets-manager>
 ```
 
 Get a key at [exa.ai](https://exa.ai). The free tier includes 1 000 searches/month.
@@ -265,9 +271,11 @@ Get a key at [exa.ai](https://exa.ai). The free tier includes 1 000 searches/mon
 
 AI-native search and extraction with deep research capabilities.
 
+Prefer storing the API key in Bitwarden Secrets Manager with the exact secret name `PARALLEL_API_KEY`. The `.env` form below is only the environment variable name Hermes expects; do not commit or paste the real key.
+
 ```bash
 # ~/.hermes/.env
-PARALLEL_API_KEY=your-parallel-key-here
+PARALLEL_API_KEY=<store-in-bitwarden-secrets-manager>
 ```
 
 Get access at [parallel.ai](https://parallel.ai).
@@ -282,7 +290,7 @@ Works with either credential path — no new env vars, no new setup wizard:
 
 ```bash
 # ~/.hermes/.env (env-var path)
-XAI_API_KEY=sk-xai-your-key-here
+XAI_API_KEY=sk-xai...here
 ```
 
 or for SuperGrok subscribers:
@@ -318,6 +326,35 @@ web:
 :::caution Trust model
 Unlike index-backed providers (Brave, Tavily, Exa) which return verbatim search-engine results, xAI is an LLM choosing which URLs to surface and writing the titles and descriptions itself. The *content* of the query influences the output, so a maliciously crafted query (e.g. injected via untrusted upstream input the agent picked up) can in principle steer Grok into emitting attacker-chosen URLs. Treat returned URLs the same way you'd treat any model-generated link — validate before fetching, especially if the query came from untrusted input.
 :::
+
+
+### Bitwarden-backed provider secrets
+
+For hosted extraction providers, the non-secret configuration path is:
+
+1. Store exactly one provider API key in Bitwarden Secrets Manager using the environment-variable name Hermes already expects: `FIRECRAWL_API_KEY`, `TAVILY_API_KEY`, `EXA_API_KEY`, or `PARALLEL_API_KEY`.
+2. Keep only the backend choice in `~/.hermes/config.yaml`, for example:
+
+```yaml
+web:
+  search_backend: "searxng"
+  extract_backend: "firecrawl"
+```
+
+3. Ensure the Hermes profile loads Bitwarden Secrets Manager secrets (`hermes secrets bitwarden status` and `hermes secrets bitwarden sync`).
+4. Restart or reload Hermes after adding or rotating a provider key so the new environment is available to the `web` tools.
+
+To verify presence without printing the secret, use key-name/status checks and a harmless extraction probe:
+
+```bash
+hermes secrets bitwarden sync        # reports secret names that would apply, not values
+python - <<'PY'
+import os
+print("FIRECRAWL_API_KEY present:", bool(os.getenv("FIRECRAWL_API_KEY")))
+PY
+```
+
+Then run `web_extract` against a public test URL or `python -m tools.web_tools` from the Hermes environment. Do not use `echo $FIRECRAWL_API_KEY`, `env`, shell tracing (`set -x`), debug dumps, or Kanban comments that include key values.
 
 ---
 

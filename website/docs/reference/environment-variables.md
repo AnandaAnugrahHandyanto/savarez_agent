@@ -123,13 +123,13 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 
 | Variable | Description |
 |----------|-------------|
-| `PARALLEL_API_KEY` | AI-native web search ([parallel.ai](https://parallel.ai/)) |
-| `FIRECRAWL_API_KEY` | Web scraping and cloud browser ([firecrawl.dev](https://firecrawl.dev/)) |
-| `FIRECRAWL_API_URL` | Custom Firecrawl API endpoint for self-hosted instances (optional) |
-| `TAVILY_API_KEY` | Tavily API key for AI-native web search, extract, and crawl ([app.tavily.com](https://app.tavily.com/home)) |
+| `PARALLEL_API_KEY` | AI-native web search/extraction ([parallel.ai](https://parallel.ai/)); preferably loaded from Bitwarden Secrets Manager using the same secret name. |
+| `FIRECRAWL_API_KEY` | Web scraping and cloud browser ([firecrawl.dev](https://firecrawl.dev/)); preferably loaded from Bitwarden Secrets Manager using the same secret name. |
+| `FIRECRAWL_API_URL` | Custom Firecrawl API endpoint for self-hosted instances (optional). This is not a secret unless your deployment embeds credentials in the URL; prefer a plain host URL plus API-key auth when auth is enabled. |
+| `TAVILY_API_KEY` | Tavily API key for AI-native web search, extract, and crawl ([app.tavily.com](https://app.tavily.com/home)); preferably loaded from Bitwarden Secrets Manager using the same secret name. |
 | `SEARXNG_URL` | SearXNG instance URL for free self-hosted web search — no API key required ([searxng.github.io](https://searxng.github.io/searxng/)) |
 | `TAVILY_BASE_URL` | Override the Tavily API endpoint. Useful for corporate proxies and self-hosted Tavily-compatible search backends. Same pattern as `GROQ_BASE_URL`. |
-| `EXA_API_KEY` | Exa API key for AI-native web search and contents ([exa.ai](https://exa.ai/)) |
+| `EXA_API_KEY` | Exa API key for AI-native web search and contents ([exa.ai](https://exa.ai/)); preferably loaded from Bitwarden Secrets Manager using the same secret name. |
 | `SERPAPI_API_KEY` | SerpApi API key, preferably loaded from Bitwarden Secrets Manager using the same secret name. Used by the `serpapi_read_only_probe` tool and search-only SerpApi wrappers such as `serpapi_google_flights_search` and `serpapi_google_hotels_search` without exposing the key. |
 | `GOOGLE_MAPS_API_KEY` | Optional Google Maps Platform API key, preferably loaded from Bitwarden Secrets Manager using the same secret name. Used only by Google-backed travel POI/routing features when implemented/enabled; existing OSM-based maps behavior remains the no-key fallback. Never log, display, or return the key. |
 | `TODOIST_API_TOKEN` | Todoist API token, preferably loaded from Bitwarden Secrets Manager using the same secret name. Used by read-only Todoist Sync API tools such as `todoist_read_only_probe` and `todoist_list_tasks`. |

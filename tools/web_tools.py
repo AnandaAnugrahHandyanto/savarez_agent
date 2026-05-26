@@ -1375,6 +1375,40 @@ def check_web_api_key() -> bool:
     )
 
 
+def get_web_backend_secret_status() -> dict[str, Any]:
+    """Return non-secret web backend credential status for diagnostics.
+
+    This intentionally reports only backend names, environment variable names,
+    boolean presence, and the env loader's source label (for example
+    ``bitwarden``). It must never expose provider secret values.
+    """
+    try:
+        from hermes_cli.env_loader import get_secret_source
+    except Exception:
+        get_secret_source = lambda _name: None  # type: ignore[assignment]
+
+    secret_env_by_backend = {
+        "firecrawl": ["FIRECRAWL_API_KEY", "FIRECRAWL_API_URL"],
+        "tavily": ["TAVILY_API_KEY"],
+        "exa": ["EXA_API_KEY"],
+        "parallel": ["PARALLEL_API_KEY"],
+        "searxng": ["SEARXNG_URL"],
+    }
+    return {
+        "configured_backend": (_load_web_config().get("backend") or "").lower().strip() or None,
+        "search_backend": _get_search_backend(),
+        "extract_backend": _get_extract_backend(),
+        "secrets": {
+            name: {
+                "present": _has_env(name),
+                "source": get_secret_source(name),
+            }
+            for backend in ("firecrawl", "tavily", "exa", "parallel", "searxng")
+            for name in secret_env_by_backend[backend]
+        },
+    }
+
+
 def check_auxiliary_model() -> bool:
     """Check if an auxiliary text model is available for LLM content processing."""
     client, _, _ = _resolve_web_extract_auxiliary()
@@ -1390,6 +1424,13 @@ if __name__ == "__main__":
     print("🌐 Standalone Web Tools Module")
     print("=" * 40)
     
+    secret_status = get_web_backend_secret_status()
+    print("🔐 Web backend secret status (values hidden):")
+    for name, info in secret_status["secrets"].items():
+        if info["present"]:
+            source = f" via {info['source']}" if info.get("source") else ""
+            print(f"   {name}: present{source}")
+
     # Check if API keys are available
     web_available = check_web_api_key()
     tool_gateway_available = _is_tool_gateway_ready()
