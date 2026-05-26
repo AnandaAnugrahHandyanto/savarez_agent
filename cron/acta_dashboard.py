@@ -1057,7 +1057,7 @@ def render_dashboard(
         row_signal = _row_signal(item)
         artifact_url = item.artifact_url if item.enabled and _is_safe_signed_acta_artifact_url(item.artifact_url) else None
         href = html.escape(artifact_url, quote=True) if artifact_url else ""
-        open_label = "OPEN" if href else "NO PAGE"
+        open_label = "OPEN" if href else ""
         telegram_url = item.telegram_url if _is_safe_telegram_url(item.telegram_url) else None
         ask_link = (
             f'<a class="ask-label" href="{html.escape(telegram_url, quote=True)}" target="_blank" rel="noopener">ASK</a>'
@@ -1089,14 +1089,14 @@ def render_dashboard(
   {open_overlay}
   {swipe_action}
   <div class="swipe-content">
-    <div class="row-signal">{row_read_dot}<span>{_safe_text(row_signal)}</span></div>
+    <div class="row-signal">{row_read_dot}<span class="trace-only">{_safe_text(row_signal)}</span></div>
     <div class="brief-copy">
       <h2>{_safe_text(item.name)}</h2>
       <p>{_safe_text(item.excerpt)}</p>
       <div class="row-kicker"><span class="attention-chip">{_safe_text(attention)}</span><span class="lane-chip" title="{_safe_text(_feed_lane_label(lane))}">{_safe_text(topic)}</span>{read_state}<span class="trace-only confidence-chip">{_safe_text(confidence)}</span><span>{_safe_text(age)}</span><span class="trace-only">{_safe_text(status_label)}</span><span class="trace-only">{_safe_text(item.schedule or "manual")}</span></div>
       <div class="source-line trace-only">{_safe_text(item.job_id)} · {_safe_text(item.deliver or "local")} · {_safe_text(latest)}</div>
     </div>
-    <span class="card-actions">{read_toggle}<span class="open-label">{open_label}</span>{ask_link}</span>
+    <span class="card-actions">{read_toggle}{f'<span class="open-label">{open_label}</span>' if open_label else ''}{ask_link}</span>
   </div>
 </section>"""
         )
@@ -1175,7 +1175,7 @@ def render_dashboard(
     )
     lead_telegram_url = lead_item.telegram_url if lead_item and _is_safe_telegram_url(lead_item.telegram_url) else None
     lead_ask_link = (
-        f'<a class="ask-label" href="{html.escape(lead_telegram_url, quote=True)}" target="_blank" rel="noopener">ASK TELEGRAM</a>'
+        f'<a class="ask-label" href="{html.escape(lead_telegram_url, quote=True)}" target="_blank" rel="noopener">ASK</a>'
         if lead_telegram_url
         else ""
     )
@@ -1189,8 +1189,8 @@ def render_dashboard(
         if lead_href
         else ""
     )
-    lead_open_hint = "open" if lead_href else "no page"
-    lead_row_meta = "signed" if lead_href else "no signed page"
+    lead_open_hint = "open" if lead_href else ""
+    lead_row_meta = "signed" if lead_href else ""
     initial_unread_count = readable_feed_count + (1 if lead_href else 0)
     lead_confidence = _confidence_label(lead_item, now) if lead_item else "CONF LOW/GAP"
     lead_lane = _feed_lane(lead_item) if lead_item else "system"
@@ -1206,17 +1206,12 @@ def render_dashboard(
         for item in ordered_items
         if _attention_label(item, _feed_lane(item), now) in {"Needs decision", "Needs review"}
     ]
-    lead_digest = lead_item.name if lead_item else "No briefing output yet"
-    daily_digest_item = lead_item if lead_item and lead_lane == "daily" else (daily_items[0] if daily_items else None)
-    dev_digest_item = dev_items[0] if dev_items else None
-    action_digest_item = action_items[0] if action_items else None
     action_count = len(action_items)
     action_review_label = "item needs review" if action_count == 1 else "items need review"
     digest_lines = [
-        f"Lead: {lead_digest}",
-        f"Daily: {len(daily_items)} outputs" + (f" · top {daily_digest_item.name}" if daily_digest_item else "") + (f" · {', '.join(daily_topics[:3])}" if daily_topics else ""),
-        f"Dev: {len(dev_items)} sprint updates" + (f" · top {dev_digest_item.name}" if dev_digest_item else " · background clear"),
-        f"Action: {action_count} {action_review_label}" + (f" · {action_digest_item.name}" if action_digest_item else ""),
+        f"Daily: {len(daily_items)} outputs" + (f" · {', '.join(daily_topics[:3])}" if daily_topics else ""),
+        f"Dev: {len(dev_items)} sprint updates" + (" · background" if dev_items else " · clear"),
+        f"Review: {action_count} {action_review_label}",
     ]
     digest_html = ''.join(f"<li>{html.escape(line)}</li>" for line in digest_lines)
     dashboard_script = _dashboard_inline_script()
@@ -1278,10 +1273,13 @@ a {{ color:inherit; }}
 .lead {{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px 12px; border:1px solid var(--line); border-radius:16px; padding:12px 13px; margin-bottom:10px; text-decoration:none; color:inherit; cursor:pointer; position:relative; overflow:hidden; background:rgba(255,255,255,.035); box-shadow:0 10px 32px rgba(0,0,0,.26); }}
 .lead:before {{ content:""; position:absolute; inset:0 auto 0 0; width:3px; background:linear-gradient(180deg,var(--acta2),var(--acta)); box-shadow:0 0 14px rgba(117,108,255,.32); pointer-events:none; }}
 .lead > * {{ position:relative; }}
+.lead.readable {{ cursor:pointer; }}
 .lead[aria-disabled='true'] {{ cursor:default; }}
 .lead:hover h1 {{ color:#fff; }}
 .row-open-overlay {{ position:absolute; inset:0; z-index:1; border:0; text-decoration:none; }}
 .lead .ask-label, .brief-row .ask-label, .card-actions, .lead > :not(.row-open-overlay), .brief-row > .swipe-content {{ position:relative; z-index:2; }}
+.lead > :not(.row-open-overlay), .brief-row > .swipe-content {{ pointer-events:none; }}
+.lead .ask-label, .brief-row .ask-label, .card-actions, .read-toggle {{ pointer-events:auto; }}
 .row-open-overlay:focus-visible {{ outline:2px solid var(--acta2); outline-offset:2px; box-shadow:0 0 0 4px rgba(35,167,255,.14),0 10px 32px rgba(0,0,0,.26); border-radius:inherit; }}
 .label {{ grid-column:1/-1; display:flex; align-items:center; flex-wrap:wrap; gap:6px; font:750 10px var(--mono); letter-spacing:.09em; color:var(--muted); text-transform:uppercase; }}
 h1 {{ grid-column:1; font:720 clamp(18px,2.3vw,24px)/1.08 var(--ui); letter-spacing:-.025em; margin:0; color:#fff; max-width:980px; }}
@@ -1410,7 +1408,7 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
   </aside>
   <main class="main">
     <header class="top">
-      <div class="ticker"><em>ACTA</em> / OUTPUTS</div>
+      <div class="ticker"><em>ACTA</em> / TODAY</div>
       <div class="search">Search briefings, sources, jobs, archive…</div>
       <div class="topstats"><div>UNREAD <b data-unread-count="{initial_unread_count}">{initial_unread_count}</b></div><div>VISIBLE <b>{visible}</b></div><div>SILENT <b>{silent}</b></div><div>MISSING <b>{missing}</b></div></div>
     </header>
@@ -1423,11 +1421,11 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
         <section class="today-brief"><h2>Today’s Brief</h2><ul>{digest_html}</ul></section>
         <article class="{lead_class}" data-feed-lane="{_safe_text(lead_lane)}"{lead_read_attr}{lead_href_attr}>
           {lead_open_overlay}
-          <div class="label"><span class="attention-chip">{_safe_text(lead_attention)}</span><span class="lane-chip" title="{_safe_text(lead_lane_label)}">{_safe_text(_feed_lane_chip(lead_lane))}</span>{lead_label_read_state}<span class="trace-only" title="{_safe_text(lead_confidence)}">{_safe_text(_confidence_short(lead_confidence))}</span><span>{lead_open_hint}</span></div>
+          <div class="label"><span class="attention-chip">{_safe_text(lead_attention)}</span><span class="lane-chip" title="{_safe_text(lead_lane_label)}">{_safe_text(_feed_lane_chip(lead_lane))}</span>{lead_label_read_state}<span class="trace-only" title="{_safe_text(lead_confidence)}">{_safe_text(_confidence_short(lead_confidence))}</span>{f'<span>{lead_open_hint}</span>' if lead_open_hint else ''}</div>
           <h1>{_safe_text(lead_title)}</h1>
           <p>{_safe_text(lead_excerpt)}</p>
           <div class="output-summary"><b>{visible}/{active}</b><span>visible</span><span class="trace-only">{missing} gaps</span></div>
-          <div class="meta"><span>{html.escape(day_label)}</span><span>{lead_row_meta}</span><span class="trace-only">{_safe_text(lead_confidence)}</span>{lead_read_toggle}{lead_ask_link}</div>
+          <div class="meta"><span>{html.escape(day_label)}</span>{f'<span>{lead_row_meta}</span>' if lead_row_meta else ''}<span class="trace-only">{_safe_text(lead_confidence)}</span>{lead_read_toggle}{lead_ask_link}</div>
         </article>
         <div class="panel-title"><b>Output Streams</b><span>Daily / Dev split</span></div>
         {daily_section}

@@ -130,8 +130,8 @@ def test_dashboard_uses_acta_imperatr_suite_board_palette(tmp_path: Path):
     assert "#756cff" in html
     assert "#23a7ff" in html
     assert "Acta Imperatr situation room" in html
-    assert "ACTA</em> / OUTPUTS" in html
-    assert "no page" in html
+    assert "ACTA</em> / TODAY" in html
+    assert "Today’s Brief" in html
     assert "output-summary" in html
     assert "metricrow" not in html
     assert "P2" not in html
@@ -169,9 +169,8 @@ def test_dashboard_separates_daily_life_and_development_sprint_feeds(tmp_path: P
     assert '<details class="feed-section lane-section-dev dev-inbox">' in html
     assert "background by default" in html
     assert "Today’s Brief" in html
-    assert "Lead: Morning Newsletter" in html
-    assert "Daily: 1 outputs · top Morning Newsletter · News" in html
-    assert "Dev: 2 sprint updates · top Weekly app user-testing sweep" in html
+    assert "Daily: 1 outputs · News" in html
+    assert "Dev: 2 sprint updates · background" in html
     assert '<input class="view-mode-input" id="view-digest" name="acta-view-mode" type="radio" checked>' in html
     assert '<input class="view-mode-input" id="view-trace" name="acta-view-mode" type="radio">' in html
     assert '<div class="mode-switch" role="radiogroup" aria-label="Acta view mode"><label for="view-digest">Digest</label><label for="view-trace">Trace</label></div>' in html
@@ -234,10 +233,9 @@ def test_dashboard_digest_uses_real_item_titles_and_escapes_them():
 
     html = render_dashboard([lead, review], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
 
-    assert "Lead: News &amp; Weather &lt;Lead&gt;" in html
-    assert "Daily: 1 outputs · top News &amp; Weather &lt;Lead&gt;" in html
-    assert "Action: 1 item needs review · QA Smoke Review &amp; Fixes" in html
-    assert "Lead: News & Weather <Lead>" not in html
+    assert "Daily: 1 outputs" in html
+    assert "Review: 1 item needs review" in html
+    assert "News & Weather <Lead>" not in html
 
 
 def test_dashboard_digest_pluralizes_multiple_review_actions():
@@ -281,7 +279,7 @@ def test_dashboard_digest_pluralizes_multiple_review_actions():
 
     html = render_dashboard([lead, top_review, second_review], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
 
-    assert "Action: 2 items need review · QA Smoke Review &amp; Fixes" in html
+    assert "Review: 2 items need review" in html
 
 
 def test_dashboard_system_only_lead_keeps_system_lane_visible():
@@ -407,7 +405,7 @@ def test_collects_telegram_thread_links_from_delivery_targets(tmp_path: Path):
     assert 'href="https://t.me/c/3566991387/86"' in jobs_html
     assert "THREAD" in jobs_html
     dashboard_html = render_dashboard([item])
-    assert "ASK TELEGRAM" in dashboard_html
+    assert ">ASK</a>" in dashboard_html
     assert 'href="https://t.me/c/3566991387/86"' in dashboard_html
 
 
@@ -889,6 +887,8 @@ def test_lead_brief_is_clickable_and_read_state_enabled(tmp_path: Path):
     assert ".row-open-overlay:focus-visible" in html
     assert ".brief-row > .swipe-content" in html
     assert ".brief-row > :not(.row-open-overlay)" not in html
+    assert ".lead > :not(.row-open-overlay), .brief-row > .swipe-content { pointer-events:none; }" in html
+    assert ".lead .ask-label, .brief-row .ask-label, .card-actions, .read-toggle { pointer-events:auto; }" in html
     assert "el.querySelectorAll('.row-open-overlay')" in html
     assert "script-src 'sha256-" in html
     assert "style-src 'sha256-" in html
@@ -1125,7 +1125,7 @@ def test_today_dashboard_gates_lead_read_state_to_signed_detail_links():
     assert "read-dot" not in lead_article.group(0)
     assert "read-state" not in lead_article.group(0)
     assert "read-toggle" not in lead_article.group(0)
-    assert "no page" in lead_article.group(0)
+    assert "no page" not in lead_article.group(0).lower()
     assert "https://acta.imperatr.com/r/lead/detail.html?exp=1" not in html
 
 
