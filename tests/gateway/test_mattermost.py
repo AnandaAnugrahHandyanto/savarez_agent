@@ -2,8 +2,11 @@
 import json
 import os
 import time
+from pathlib import Path
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
+
+import yaml
 
 from gateway.config import Platform, PlatformConfig
 
@@ -63,6 +66,26 @@ class TestMattermostConfigLoading:
 
         assert Platform.MATTERMOST in config.platforms
         assert config.platforms[Platform.MATTERMOST].extra.get("url") == ""
+
+    def test_plugin_manifest_declares_proxy_optional_env(self):
+        """Setup/plugin inspection should surface the supported proxy env var."""
+        manifest_path = (
+            Path(__file__).resolve().parents[2]
+            / "plugins"
+            / "platforms"
+            / "mattermost"
+            / "plugin.yaml"
+        )
+        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+
+        optional_env = {
+            entry["name"]: entry for entry in manifest.get("optional_env", [])
+        }
+        proxy_env = optional_env["MATTERMOST_PROXY"]
+
+        assert "proxy" in proxy_env["description"].lower()
+        assert proxy_env["prompt"] == "Mattermost proxy URL"
+        assert proxy_env["password"] is False
 
 
 # ---------------------------------------------------------------------------

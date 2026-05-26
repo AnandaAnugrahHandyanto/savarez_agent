@@ -47,3 +47,7 @@ optional_env:
     description: "If set, the bot only responds in these channels (whitelist)."
     prompt: "Allowed channel IDs (comma-separated)"
     password: false
+  - name: MATTERMOST_PROXY
+    description: "HTTP(S) proxy URL for outbound Mattermost API calls (cron / standalone delivery)."
+    prompt: "Mattermost proxy URL"
+    password: false
