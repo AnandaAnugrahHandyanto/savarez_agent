@@ -2069,24 +2069,20 @@ def test_build_manual_fallback_handoff_fields_prompt_and_json(
     json.dumps(serialized)
 
 
-@pytest.mark.parametrize(
-    "factory",
-    [run_full_bridge],
-)
-def test_build_manual_fallback_handoff_rejects_unsupported_or_deferred_states(conn, sample_brief, factory):
-    if factory is run_full_bridge:
-        po = factory(
-            conn,
-            title=sample_brief["title"],
-            source_brief=json.dumps(sample_brief),
-            priority_lane="Relay",
-            repo_or_workspace=sample_brief["target repo or workspace"],
-        )
-    else:
-        po = factory(conn, sample_brief)
+def test_build_manual_fallback_handoff_supports_orchestrator_triage(conn, sample_brief):
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
 
-    with pytest.raises(DispatchManifestError):
-        build_manual_fallback_handoff(conn, po.production_order_id)
+    handoff = build_manual_fallback_handoff(conn, po.production_order_id)
+
+    assert handoff.target_profile == "orchestrator_os"
+    assert handoff.bridge_function == "run_orchestrator_triage_bridge"
+    assert handoff.expected_next_state == "ARCHITECT_SPEC"
 
 
 
@@ -3454,6 +3450,105 @@ def test_dispatch_executor_refuses_unknown_identity(conn, sample_brief):
             po.production_order_id,
             target_profile="unknown_profile",
         )
+
+
+def test_dispatch_executor_accepts_correct_task_type(conn, sample_brief):
+    po = create_architect_spec_order(conn, sample_brief)
+    envelope = build_profile_task_envelope(conn, po.production_order_id)
+
+    result = execute_profile_dispatch(
+        conn,
+        po.production_order_id,
+        task_type="architect_spec",
+    )
+
+    assert result["task_type"] == "architect_spec"
+    assert envelope.idempotency_key.split(":")[5] == "architect_spec"
+
+
+def test_dispatch_executor_rejects_child_card_id_as_task_type(conn, sample_brief):
+    po = create_architect_spec_order(conn, sample_brief)
+
+    with pytest.raises(DispatchManifestError, match="task_type"):
+        execute_profile_dispatch(
+            conn,
+            po.production_order_id,
+            task_type=po.child_kanban_card_ids[1],
+        )
+
+
+def test_dispatch_executor_orchestrator_triage_returns_manual_fallback(conn, sample_brief):
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+
+    result = execute_profile_dispatch(
+        conn,
+        po.production_order_id,
+        task_type="orchestrator_triage",
+    )
+
+    assert result["fallback_required"] is True
+    assert result["target_profile"] == "orchestrator_os"
+    assert result["manual_fallback"]["bridge_function"] == "run_orchestrator_triage_bridge"
+    assert result["manual_fallback"]["expected_result_packet"]["packet_type"] == "architect_handoff_packet"
+
+
+def test_dispatch_executor_orchestrator_default_rejection_classification_returns_manual_fallback(
+    conn,
+    sample_brief,
+):
+    rejected = _default_rejected_order(conn, sample_brief)
+    triaged = run_orchestrator_default_rejection_triage_bridge(
+        conn,
+        production_order_id=rejected.production_order_id,
+        rejection_packet=default_rejection_packet(
+            rejected.production_order_id,
+            source_state="DEFAULT_REJECTED",
+        ),
+    )
+
+    result = execute_profile_dispatch(
+        conn,
+        triaged.production_order_id,
+        task_type="orchestrator_default_rejection_classification",
+    )
+
+    assert result["fallback_required"] is True
+    assert result["target_profile"] == "orchestrator_os"
+    assert result["manual_fallback"]["bridge_function"] == "run_orchestrator_classification_bridge"
+    assert result["manual_fallback"]["expected_result_packet"]["packet_type"] == "orchestrator_classification_packet"
+
+
+def test_dispatch_executor_orchestrator_repeat_is_idempotent(conn, sample_brief):
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+
+    first = execute_profile_dispatch(
+        conn,
+        po.production_order_id,
+        task_type="orchestrator_triage",
+    )
+    second = execute_profile_dispatch(
+        conn,
+        po.production_order_id,
+        task_type="orchestrator_triage",
+    )
+
+    assert second["idempotency_key"] == first["idempotency_key"]
+    assert second["manual_fallback"] == first["manual_fallback"]
+    events = list_dispatch_events(conn, po.production_order_id)
+    assert [e["event_type"] for e in events].count("dispatch_started") == 1
+    assert [e["event_type"] for e in events].count("dispatch_handoff_created") == 1
 
 
 def _ingest_and_apply(conn, production_order_id, packet):

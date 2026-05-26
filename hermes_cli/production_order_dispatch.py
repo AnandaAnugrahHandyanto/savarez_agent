@@ -17,6 +17,8 @@ from typing import Any, Iterable
 from .production_order_db import (
     ARCHITECT_HANDOFF_TEMPLATE,
     CHILD_CARD_DEFS,
+    DEFAULT_REJECTION_HANDOFF_TEMPLATE,
+    ORCHESTRATOR_CLASSIFICATION_HANDOFF_TEMPLATE,
     ProductionOrder,
     create_auditos_handoff,
     create_architect_reconcile_handoff,
@@ -28,6 +30,7 @@ from .production_order_db import (
     REQUIRED_ARCHITECT_SPEC_PACKET_FIELDS,
     REQUIRED_AUDITOS_REVIEW_PACKET_FIELDS,
     REQUIRED_DEFAULT_FINAL_REVIEW_PACKET_FIELDS,
+    REQUIRED_ORCHESTRATOR_CLASSIFICATION_PACKET_FIELDS,
     REQUIRED_DEVOS_BUILD_PACKET_FIELDS,
     STATE_OWNERS,
     StageEntry,
@@ -215,17 +218,78 @@ class ReworkRouteDecision:
 
 _ENVELOPE_RESULT_FIELD_MAP: dict[str, tuple[str, ...]] = {
     "architect_handoff_packet": tuple(
-        sorted({"production_order_id", *ARCHITECT_HANDOFF_TEMPLATE.keys()})
+        sorted(
+            {
+                "production_order_id",
+                "context",
+                "scope",
+                "out_of_scope",
+                "inputs",
+                *ARCHITECT_HANDOFF_TEMPLATE.keys(),
+            }
+        )
+    ),
+    "default_rejection_handoff_packet": tuple(
+        sorted(
+            {
+                "production_order_id",
+                "objective",
+                "scope",
+                "out_of_scope",
+                "inputs",
+                "acceptance_criteria",
+                "stop_conditions",
+                *DEFAULT_REJECTION_HANDOFF_TEMPLATE.keys(),
+            }
+        )
+    ),
+    "devos_rework_handoff_packet": tuple(
+        sorted(
+            {
+                "production_order_id",
+                "objective",
+                "scope",
+                "out_of_scope",
+                "inputs",
+                "acceptance_criteria",
+                "stop_conditions",
+                "approval_boundaries",
+                "artifact_references",
+                "default_rejection_reason",
+                "correction_request",
+                "classification",
+                "route_target",
+                "route_reason",
+                "next_handoff_target",
+                *ARCHITECT_HANDOFF_TEMPLATE.keys(),
+            }
+        )
     ),
     "architect_spec_packet": tuple(sorted(REQUIRED_ARCHITECT_SPEC_PACKET_FIELDS)),
     "devos_build_packet": tuple(sorted(REQUIRED_DEVOS_BUILD_PACKET_FIELDS)),
     "auditos_review_packet": tuple(sorted(REQUIRED_AUDITOS_REVIEW_PACKET_FIELDS)),
+    "orchestrator_classification_packet": tuple(
+        sorted(REQUIRED_ORCHESTRATOR_CLASSIFICATION_PACKET_FIELDS)
+    ),
     "architect_reconcile_packet": tuple(sorted(REQUIRED_ARCHITECT_RECONCILE_PACKET_FIELDS)),
     "default_final_review_packet": tuple(sorted(REQUIRED_DEFAULT_FINAL_REVIEW_PACKET_FIELDS)),
 }
 
 
 _MANUAL_FALLBACK_RESULT_ACTIONS: dict[str, tuple[str, str]] = {
+    "run_orchestrator_triage_bridge": ("handoff_packet", "architect_handoff_packet"),
+    "run_orchestrator_classification_bridge": (
+        "classification_packet",
+        "orchestrator_classification_packet",
+    ),
+    "run_orchestrator_rework_bridge": (
+        "rejection_packet",
+        "devos_rework_handoff_packet",
+    ),
+    "run_orchestrator_default_rejection_triage_bridge": (
+        "rejection_packet",
+        "default_rejection_handoff_packet",
+    ),
     "run_architect_spec_bridge": ("architect_packet", "architect_spec_packet"),
     "run_devos_complete_bridge": ("devos_packet", "devos_build_packet"),
     "run_auditos_review_complete_bridge": ("review_packet", "auditos_review_packet"),
@@ -240,6 +304,10 @@ _MANUAL_FALLBACK_RESULT_ACTIONS: dict[str, tuple[str, str]] = {
 _SUPPORTED_ENVELOPE_ROUTES: dict[tuple[str, str], str] = {
     ("PRODUCTION_ORDER_CREATED", "orchestrator_triage"): "ORCHESTRATOR_TRIAGE",
     ("ORCHESTRATOR_TRIAGE", "orchestrator_triage"): "ARCHITECT_SPEC",
+    (
+        "ORCHESTRATOR_TRIAGE",
+        "orchestrator_default_rejection_classification",
+    ): "ORCHESTRATOR_TRIAGE",
     ("ARCHITECT_SPEC", "architect_spec"): "ARCHITECT_READY_FOR_DEV",
     ("ARCHITECT_READY_FOR_DEV", "dev_build"): "DEV_COMPLETE",
     ("DEV_IMPLEMENTING", "dev_build"): "DEV_COMPLETE",
@@ -1139,7 +1207,7 @@ def _packet_id(result_packet: Any) -> str | None:
 
 def _task_type_from_idempotency_key(idempotency_key: str) -> str:
     parts = idempotency_key.split(":")
-    return parts[4] if len(parts) >= 6 else ""
+    return parts[5] if len(parts) >= 7 else ""
 
 
 def _assert_executor_identity(
@@ -1543,7 +1611,7 @@ def _classify_rework_route(
     *,
     reason_category: str | None,
 ) -> tuple[str, str]:
-    text_fields = [
+    structured_fields = [
         reason_category,
         packet.get("classification"),
         packet.get("rework_owner"),
@@ -1551,13 +1619,16 @@ def _classify_rework_route(
         packet.get("failure_type"),
         packet.get("recommended_route"),
         packet.get("route_target"),
+    ]
+    fallback_text_fields = [
         packet.get("summary"),
         packet.get("rejection_reason"),
         packet.get("original_brief_mismatch"),
         packet.get("correction_request"),
         packet.get("risks_or_notes"),
     ]
-    text = json.dumps(text_fields, sort_keys=True, default=str).lower()
+    structured_text = json.dumps(structured_fields, sort_keys=True, default=str).lower()
+    fallback_text = json.dumps(fallback_text_fields, sort_keys=True, default=str).lower()
     approval_tokens = (
         "approval",
         "needs_approval",
@@ -1591,16 +1662,23 @@ def _classify_rework_route(
         "output mismatch",
         "final output mismatch",
         "implemented behavior",
-        "dev",
     )
     audit_tokens = ("audit miss", "audit_miss", "audit gap")
-    if any(token in text for token in approval_tokens):
+    if any(token in structured_text for token in approval_tokens) or any(
+        token in fallback_text for token in approval_tokens
+    ):
         return "BLOCKED_NEEDS_JARREN", "Rejection crosses an approval boundary or requires Jarren input."
-    if any(token in text for token in spec_tokens):
+    if any(token in structured_text for token in spec_tokens):
         return "SPEC_REWORK", "Rejection is classified as a spec/design mismatch for ArchitectOS."
-    if any(token in text for token in dev_tokens):
+    if any(token in structured_text for token in dev_tokens):
         return "DEV_REWORK", "Rejection is classified as an implementation/test mismatch for DevOS."
-    if source_state == "DEFAULT_REJECTED" and any(token in text for token in audit_tokens):
+    if source_state == "DEFAULT_REJECTED" and any(token in structured_text for token in audit_tokens):
+        return "BLOCKED_NEEDS_JARREN", "Default rejection points at an audit gap, but this slice does not add an AuditOS re-route."
+    if any(token in fallback_text for token in spec_tokens):
+        return "SPEC_REWORK", "Rejection narrative indicates a spec/design mismatch for ArchitectOS."
+    if any(token in fallback_text for token in dev_tokens):
+        return "DEV_REWORK", "Rejection narrative indicates an implementation/test mismatch for DevOS."
+    if source_state == "DEFAULT_REJECTED" and any(token in fallback_text for token in audit_tokens):
         return "BLOCKED_NEEDS_JARREN", "Default rejection points at an audit gap, but this slice does not add an AuditOS re-route."
     return "BLOCKED_NEEDS_JARREN", "Rework route is ambiguous and must not be guessed."
 
