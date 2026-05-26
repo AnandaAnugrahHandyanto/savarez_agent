@@ -108,7 +108,7 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    aliases: ['exit', 'q'],
+    aliases: ['exit'],
     help: 'exit hermes',
     name: 'quit',
     run: (_arg, ctx) => ctx.session.die()
@@ -543,6 +543,7 @@ ctx.transcript.page(lines.join('\n\n'), translate(ctx.ui.locale, 'section.histor
   },
 
   {
+    aliases: ['q'],
     help: 'inspect or enqueue a message',
     name: 'queue',
     run: (arg, ctx) => {

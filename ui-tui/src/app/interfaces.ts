@@ -107,6 +107,8 @@ export interface UiState {
   inlineDiffs: boolean
   locale: Locale
   mouseTracking: MouseTrackingMode
+  pasteCollapseLines: number
+
   sections: SectionVisibility
   showCost: boolean
   showReasoning: boolean
