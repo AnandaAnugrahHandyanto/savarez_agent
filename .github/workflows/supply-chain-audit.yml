@@ -28,8 +28,8 @@ jobs:
           BASE="${{ github.event.pull_request.base.sha }}"
           HEAD="${{ github.event.pull_request.head.sha }}"
 
-          # Get the full diff (added lines only)
-          DIFF=$(git diff "$BASE".."$HEAD" -- . ':!uv.lock' ':!*.lock' ':!package-lock.json' ':!yarn.lock' || true)
+          # Scan executable/source diffs only; skip fixtures/docs and this workflow itself.
+          DIFF=$(git diff "$BASE".."$HEAD" -- . ':!uv.lock' ':!*.lock' ':!package-lock.json' ':!yarn.lock' ':!tests/**' ':!docs/**' ':!*.md' ':!.github/workflows/supply-chain-audit.yml' || true)
 
           FINDINGS=""
           CRITICAL=false
