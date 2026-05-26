@@ -934,6 +934,27 @@ if _config_path.exists():
             _redact = _security_cfg.get("redact_secrets")
             if _redact is not None:
                 os.environ["HERMES_REDACT_SECRETS"] = str(_redact).lower()
+        # Gateway settings (media delivery allowlist + recency trust)
+        _gateway_cfg = _cfg.get("gateway", {})
+        if isinstance(_gateway_cfg, dict):
+            _allow_dirs = _gateway_cfg.get("media_delivery_allow_dirs")
+            if _allow_dirs:
+                if isinstance(_allow_dirs, str):
+                    _allow_dirs_str = _allow_dirs
+                elif isinstance(_allow_dirs, (list, tuple)):
+                    _allow_dirs_str = os.pathsep.join(str(p) for p in _allow_dirs if p)
+                else:
+                    _allow_dirs_str = ""
+                if _allow_dirs_str:
+                    os.environ["HERMES_MEDIA_ALLOW_DIRS"] = _allow_dirs_str
+            _trust_recent = _gateway_cfg.get("trust_recent_files")
+            if _trust_recent is not None:
+                os.environ["HERMES_MEDIA_TRUST_RECENT_FILES"] = (
+                    "1" if _trust_recent else "0"
+                )
+            _trust_recent_seconds = _gateway_cfg.get("trust_recent_files_seconds")
+            if _trust_recent_seconds is not None:
+                os.environ["HERMES_MEDIA_TRUST_RECENT_SECONDS"] = str(_trust_recent_seconds)
     except Exception as _bridge_err:
         # Previously this was silent (`except Exception: pass`), which
         # hid partial bridge failures and let .env defaults shadow
@@ -1008,12 +1029,6 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
     is_shared_multi_user_session,
-)
-from gateway.afk_followup import (
-    AfkFollowupConfig,
-    build_afk_followup_prompt,
-    next_afk_followup,
-    parse_afk_followup_config,
 )
 from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import (
@@ -1654,7 +1669,7 @@ class GatewayRunner:
     # blow up on attribute access.
     _running_agents_ts: Dict[str, float] = {}
     _busy_input_mode: str = "queue"
-    _busy_text_mode: str = "interrupt"
+    _busy_text_mode: str = "queue"
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     _exit_code: Optional[int] = None
     _draining: bool = False
@@ -1682,8 +1697,6 @@ class GatewayRunner:
         self._show_reasoning = self._load_show_reasoning()
         self._busy_input_mode = self._load_busy_input_mode()
         self._busy_text_mode = self._load_busy_text_mode()
-        self._afk_followup_config = self._load_afk_followup_config()
-        self._afk_fired_thresholds: Dict[str, set[int]] = {}
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
@@ -2956,26 +2969,9 @@ class GatewayRunner:
             mode = str(cfg_get(cfg, "display", "busy_input_mode", default="") or "").strip().lower()
         if mode == "interrupt":
             return "interrupt"
-        if mode == "queue":
-            return "queue"
         if mode == "steer":
             return "steer"
         return "queue"
-
-    @staticmethod
-    def _load_afk_followup_config() -> AfkFollowupConfig:
-        """Load opt-in gateway AFK follow-up settings from config.yaml."""
-        try:
-            import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                raw = cfg_get(cfg, "gateway", "afk_followup", default={})
-                return parse_afk_followup_config(raw)
-        except Exception as exc:
-            logger.warning("Invalid gateway.afk_followup config; AFK follow-up disabled: %s", exc)
-        return AfkFollowupConfig(enabled=False)
 
     @staticmethod
     def _load_busy_text_mode() -> str:
@@ -3077,11 +3073,81 @@ class GatewayRunner:
             if agent is not _AGENT_PENDING_SENTINEL
         }
 
+    @staticmethod
+    def _agent_has_active_subagents(running_agent: Any) -> bool:
+        """Return True when *running_agent* is currently driving subagents
+        via the ``delegate_task`` tool.
+
+        Background (#30170): ``AIAgent.interrupt()`` cascades through the
+        parent's ``_active_children`` list and calls ``interrupt()`` on
+        every child synchronously, which aborts in-flight subagent work
+        and produces a fallback cascade with no actionable signal.
+        Demoting ``busy_input_mode='interrupt'`` to ``queue`` semantics
+        whenever this helper returns True protects subagent work from
+        conversational follow-ups while leaving the explicit ``/stop``
+        path (which goes through ``_interrupt_and_clear_session``)
+        untouched. Safe-by-default: returns False on any attribute or
+        lock error so a missing/broken parent never blocks the existing
+        interrupt path.
+        """
+        if running_agent is None or running_agent is _AGENT_PENDING_SENTINEL:
+            return False
+        children = getattr(running_agent, "_active_children", None)
+        # AIAgent always initialises this as a concrete list (see
+        # agent/agent_init.py). Reject anything that isn't a real
+        # collection — this guards against ``MagicMock()._active_children``
+        # auto-creating a truthy stub in tests and triggering the demotion
+        # against an agent that doesn't actually have subagents.
+        if not isinstance(children, (list, tuple, set)):
+            return False
+        if not children:
+            return False
+        lock = getattr(running_agent, "_active_children_lock", None)
+        try:
+            if lock is not None:
+                with lock:
+                    return bool(children)
+            return bool(children)
+        except Exception:
+            return False
+
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
         adapter = self.adapters.get(event.source.platform)
         if not adapter:
             return
         merge_pending_message_event(adapter._pending_messages, session_key, event)
+
+    async def _handle_busy_slash_command_followup(self, event: MessageEvent, session_key: str) -> None:
+        """Treat a blocked mid-run slash command as an intentional follow-up.
+
+        The active-session fast path dispatches recognized slash commands
+        directly to the runner so commands like /approve and /stop can break
+        deadlocks.  For commands that are unsafe to execute mid-turn (/undo,
+        /retry, /model, /reasoning, ...), a hard "can't run mid-turn" response
+        is not what the user meant.  They are trying to steer the busy session.
+
+        Reuse the normal busy-session follow-up machinery so the user gets the
+        same queue/interrupt/steer semantics and inline controls as ordinary
+        text.  Force the runner-side handler instead of adapter text debounce;
+        this path is already past the adapter fallback, so returning False would
+        otherwise drop the command after the bypass dispatch.
+        """
+        state = getattr(self, "__dict__", {})
+        had_busy_text_mode = "_busy_text_mode" in state
+        previous_busy_text_mode = str(state.get("_busy_text_mode", "interrupt"))
+        self._busy_text_mode = "interrupt"
+        try:
+            handled = await self._handle_active_session_busy_message(event, session_key)
+        finally:
+            if had_busy_text_mode:
+                self._busy_text_mode = previous_busy_text_mode
+            else:
+                try:
+                    delattr(self, "_busy_text_mode")
+                except AttributeError:
+                    pass
+        if not handled:
+            self._queue_or_replace_pending_event(session_key, event)
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
@@ -3149,7 +3215,7 @@ class GatewayRunner:
         running_agent = self._running_agents.get(session_key)
 
         effective_mode = self._busy_input_mode
-        busy_text_mode = getattr(self, "_busy_text_mode", "queue")
+        busy_text_mode = getattr(self, "__dict__", {}).get("_busy_text_mode", "interrupt")
         if (
             event.message_type == MessageType.TEXT
             and busy_text_mode == "queue"
@@ -3161,6 +3227,25 @@ class GatewayRunner:
         # queueing + interrupting.  If the agent isn't running yet
         # (sentinel) or lacks steer(), or the payload is empty, fall back
         # to queue semantics so nothing is lost.
+        # #30170 — Subagent protection. ``AIAgent.interrupt()`` cascades
+        # to every entry in the parent's ``_active_children`` list and
+        # aborts in-flight ``delegate_task`` work. Demote ``interrupt``
+        # to ``queue`` when the parent is currently driving subagents so
+        # a conversational follow-up doesn't destroy minutes of subagent
+        # work. Explicit ``/stop`` and ``/new`` slash commands go through
+        # ``_interrupt_and_clear_session`` and are unaffected — the
+        # operator still has a way to force-cancel everything.
+        demoted_for_subagents = (
+            effective_mode == "interrupt"
+            and self._agent_has_active_subagents(running_agent)
+        )
+        if demoted_for_subagents:
+            logger.info(
+                "Demoting busy_input_mode 'interrupt' to 'queue' for session %s "
+                "because the running agent has active subagents (#30170)",
+                session_key,
+            )
+            effective_mode = "queue"
         steered = False
         if effective_mode == "steer":
             steer_text = (event.text or "").strip()
@@ -3259,6 +3344,14 @@ class GatewayRunner:
             message = (
                 f"⏩ Steered into current run{status_detail}. "
                 f"Your message arrives after the next tool call."
+            )
+        elif is_queue_mode and demoted_for_subagents:
+            # #30170 — explain the demotion so the user knows their
+            # follow-up didn't accidentally kill the subagent and
+            # discovers `/stop` as the explicit escape hatch.
+            message = (
+                f"⏳ Subagent working{status_detail} — your message is queued for "
+                f"when it finishes (use /stop to cancel everything)."
             )
         elif is_queue_mode:
             message = (
@@ -4863,11 +4956,6 @@ class GatewayRunner:
         # Start background session expiry watcher to finalize expired sessions
         asyncio.create_task(self._session_expiry_watcher())
 
-        # Start optional AFK follow-up watcher. It injects synthetic internal
-        # turns into idle sessions only when explicitly enabled in config.
-        if getattr(self, "_afk_followup_config", AfkFollowupConfig()).enabled:
-            asyncio.create_task(self._afk_followup_watcher())
-
         # Start background kanban notifier — delivers `completed`, `blocked`,
         # `spawn_auto_blocked`, and `crashed` events to gateway subscribers
         # so human-in-the-loop workflows hear back without polling.
@@ -5116,124 +5204,6 @@ class GatewayRunner:
             err = getattr(result, "error", "send returned success=False")
             raise RuntimeError(f"adapter.send failed: {err}")
 
-    async def _afk_followup_watcher(self) -> None:
-        """Inject bounded synthetic follow-up turns for idle gateway sessions."""
-        config = getattr(self, "_afk_followup_config", AfkFollowupConfig())
-        # Let adapters finish connecting and avoid surprising users with an
-        # immediate AFK burst during gateway startup/replacement.
-        await asyncio.sleep(min(max(config.interval_seconds, 1.0), 60.0))
-        while self._running:
-            try:
-                await self._afk_followup_tick()
-            except Exception as exc:
-                logger.debug("AFK follow-up watcher tick failed: %s", exc)
-            sleep_for = max(float(getattr(config, "interval_seconds", 60.0) or 60.0), 1.0)
-            elapsed = 0.0
-            while self._running and elapsed < sleep_for:
-                step = min(1.0, sleep_for - elapsed)
-                await asyncio.sleep(step)
-                elapsed += step
-
-    async def _afk_followup_tick(self) -> None:
-        """Run one AFK scheduling pass.
-
-        Exposed as a small method for tests and for future manual diagnostics.
-        """
-        config = getattr(self, "_afk_followup_config", AfkFollowupConfig())
-        if not config.enabled:
-            return
-
-        session_store = getattr(self, "session_store", None)
-        if session_store is None:
-            return
-        try:
-            session_store._ensure_loaded()
-        except Exception as exc:
-            logger.debug("AFK follow-up: session store unavailable: %s", exc)
-            return
-
-        entries = list(getattr(session_store, "_entries", {}).items())
-        running_session_keys = set(getattr(self, "_running_agents", {}) or {})
-        queued_session_keys = set(getattr(self, "_queued_events", {}) or {})
-        adapters = getattr(self, "adapters", {}) or {}
-        for adapter in adapters.values():
-            pending = getattr(adapter, "_pending_messages", None)
-            if isinstance(pending, dict):
-                queued_session_keys.update(pending.keys())
-        now = datetime.now()
-
-        for session_key, entry in entries:
-            fired_map = getattr(self, "_afk_fired_thresholds", None)
-            if fired_map is None:
-                fired_map = {}
-                self._afk_fired_thresholds = fired_map
-            fired = fired_map.setdefault(session_key, set())
-            decision = next_afk_followup(
-                entry,
-                now=now,
-                thresholds_minutes=config.thresholds_minutes,
-                fired_thresholds=fired,
-                running_session_keys=running_session_keys,
-                queued_session_keys=queued_session_keys,
-            )
-            if decision is None:
-                continue
-
-            origin = getattr(entry, "origin", None)
-            source = self._source_from_afk_origin(origin)
-            if source is None:
-                logger.debug("AFK follow-up: no routable source for %s", session_key)
-                continue
-            adapter = adapters.get(source.platform)
-            if adapter is None:
-                logger.debug("AFK follow-up: no adapter for %s (%s)", session_key, source.platform)
-                continue
-
-            cycle_index = sorted(config.thresholds_minutes).index(decision.threshold_minutes) + 1
-            prompt = build_afk_followup_prompt(decision.idle_label, cycle_index=cycle_index)
-            event = MessageEvent(
-                text=prompt,
-                message_type=MessageType.TEXT,
-                source=source,
-                message_id=f"afk:{decision.threshold_minutes}:{int(time.time())}",
-                internal=True,
-            )
-            logger.info(
-                "AFK follow-up: injecting %s virtual turn for %s",
-                decision.idle_label,
-                session_key,
-            )
-            await adapter.handle_message(event)
-            fired.add(decision.threshold_minutes)
-
-    @staticmethod
-    def _source_from_afk_origin(origin) -> Optional[SessionSource]:
-        if isinstance(origin, SessionSource):
-            return origin
-        if origin is None:
-            return None
-        platform = getattr(origin, "platform", None)
-        if platform is None:
-            return None
-        if not isinstance(platform, Platform):
-            try:
-                platform = Platform(str(platform))
-            except ValueError:
-                return None
-        chat_id = getattr(origin, "chat_id", None)
-        if not chat_id:
-            return None
-        return SessionSource(
-            platform=platform,
-            chat_id=str(chat_id),
-            chat_name=getattr(origin, "chat_name", None),
-            chat_type=getattr(origin, "chat_type", "dm") or "dm",
-            user_id=getattr(origin, "user_id", None),
-            user_name=getattr(origin, "user_name", None),
-            thread_id=getattr(origin, "thread_id", None),
-            chat_topic=getattr(origin, "chat_topic", None),
-        )
-
     async def _session_expiry_watcher(self, interval: int = 300):
         """Background task that finalizes expired sessions.
 
@@ -5396,84 +5366,6 @@ class GatewayRunner:
                     break
                 await asyncio.sleep(1)
 
-    @staticmethod
-    def _kanban_profile_default_board(kanban_cfg: dict) -> str:
-        """Return the default kanban board for this gateway profile.
-
-        Explicit config wins.  Otherwise infer the obvious profile→board
-        mapping so a profile gateway does not inherit the shared
-        ``kanban/current`` file as ambient global state.
-        """
-        explicit = str(
-            kanban_cfg.get("default_board")
-            or os.environ.get("HERMES_KANBAN_DEFAULT_BOARD")
-            or ""
-        ).strip()
-        if explicit:
-            return explicit
-        try:
-            from hermes_cli.profiles import get_active_profile_name
-            profile = (get_active_profile_name() or "default").strip().lower()
-        except Exception:
-            profile = os.environ.get("HERMES_PROFILE", "default").strip().lower()
-        aliases = {
-            "default": "hermes",
-            "nagatha": "hermes",
-            "hermes": "hermes",
-            "klasificados": "klasificados",
-            "nagaklas": "klasificados",
-            "nagovernor": "governor",
-            "governor": "governor",
-            "skippy": "skippy",
-        }
-        return aliases.get(profile, profile or "default")
-
-    @classmethod
-    def _kanban_scoped_board_slugs(cls, kanban_cfg: dict, key: str, kb_module: Any) -> list[str]:
-        """Resolve dispatcher/notifier board scope from config.
-
-        ``kanban.dispatch_boards`` / ``kanban.notify_boards`` may be a
-        list or comma-separated string.  ``["*"]`` preserves the old
-        all-boards behavior deliberately.  When unset, use the profile's
-        default board only.
-        """
-        env_key = f"HERMES_KANBAN_{key.upper()}"
-        raw = os.environ.get(env_key)
-        if raw is None:
-            raw = kanban_cfg.get(key)
-        if raw is None:
-            try:
-                raw = [kb_module.get_profile_default_board()]
-            except Exception:
-                raw = [cls._kanban_profile_default_board(kanban_cfg)]
-        if isinstance(raw, str):
-            parts = [p.strip() for p in raw.split(",") if p.strip()]
-        elif isinstance(raw, (list, tuple, set)):
-            parts = [str(p).strip() for p in raw if str(p).strip()]
-        else:
-            parts = []
-        if not parts:
-            try:
-                parts = [kb_module.get_profile_default_board()]
-            except Exception:
-                parts = [cls._kanban_profile_default_board(kanban_cfg)]
-        if "*" in parts:
-            try:
-                boards = kb_module.list_boards(include_archived=False)
-            except Exception:
-                boards = [kb_module.read_board_metadata(kb_module.DEFAULT_BOARD)]
-            return [b.get("slug") or kb_module.DEFAULT_BOARD for b in boards]
-        out: list[str] = []
-        for slug in parts:
-            try:
-                normed = kb_module._normalize_board_slug(slug) or kb_module.DEFAULT_BOARD
-            except Exception:
-                logger.warning("kanban: ignoring invalid board slug %r in %s", slug, key)
-                continue
-            if normed not in out:
-                out.append(normed)
-        return out or [kb_module.DEFAULT_BOARD]
-
     def _active_profile_name(self) -> str:
         """Return the profile name this gateway represents."""
         try:
@@ -5481,7 +5373,6 @@ class GatewayRunner:
             return get_active_profile_name() or "default"
         except Exception:
             return "default"
-
 
     async def _kanban_notifier_watcher(self, interval: float = 5.0) -> None:
         """Poll ``kanban_notify_subs`` and deliver terminal events to users.
@@ -5508,14 +5399,6 @@ class GatewayRunner:
         except Exception:
             logger.warning("kanban notifier: kanban_db not importable; notifier disabled")
             return
-        try:
-            from hermes_cli.config import load_config as _load_config
-            cfg = _load_config()
-        except Exception:
-            cfg = {}
-        kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-        notify_boards = self._kanban_scoped_board_slugs(kanban_cfg, "notify_boards", _kb)
-        logger.info("kanban notifier: scoped to boards=%s", ",".join(notify_boards))
 
         TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out")
         # Subscriptions are removed only when the task reaches a truly final
@@ -5559,13 +5442,21 @@ class GatewayRunner:
                         logger.debug("kanban notifier: no connected adapters; skipping tick")
                         return deliveries
 
-                    # Poll only the boards this gateway profile owns (or
-                    # the explicit kanban.notify_boards list).  Use
-                    # notify_boards: ["*"] to preserve old all-board fan-out.
+                    # Enumerate every board on disk, but poll each resolved DB
+                    # path once. Multiple slugs can point at the same DB when
+                    # HERMES_KANBAN_DB pins the board path; without this guard
+                    # one gateway could collect the same subscription/event
+                    # more than once before advancing the cursor.
+                    try:
+                        boards = _kb.list_boards(include_archived=False)
+                    except Exception:
+                        boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
                     seen_db_paths: set[str] = set()
-                    for slug in notify_boards:
+                    for board_meta in boards:
+                        slug = board_meta.get("slug") or _kb.DEFAULT_BOARD
+                        db_path = board_meta.get("db_path")
                         try:
-                            resolved_db_path = str(_kb.kanban_db_path(slug).resolve())
+                            resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path else str(_kb.kanban_db_path(slug).resolve())
                         except Exception:
                             resolved_db_path = f"slug:{slug}"
                         if resolved_db_path in seen_db_paths:
@@ -6088,8 +5979,6 @@ class GatewayRunner:
             )
             failure_limit = _kb.DEFAULT_FAILURE_LIMIT
 
-        dispatch_boards = self._kanban_scoped_board_slugs(kanban_cfg, "dispatch_boards", _kb)
-
         # Read stale_timeout_seconds — 0 disables stale detection.
         raw_stale = kanban_cfg.get("dispatch_stale_timeout_seconds", 0)
         try:
@@ -6198,9 +6087,19 @@ class GatewayRunner:
                         pass
 
         def _tick_once() -> "list[tuple[str, Optional[object]]]":
-            """Run one dispatch_once per configured/owned board."""
+            """Run one dispatch_once per board. Returns (slug, result) pairs.
+
+            Enumerating boards on every tick keeps the dispatcher honest
+            when users create a new board mid-run: no restart required,
+            the next tick picks it up automatically.
+            """
+            try:
+                boards = _kb.list_boards(include_archived=False)
+            except Exception:
+                boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
             out: list[tuple[str, "Optional[object]"]] = []
-            for slug in dispatch_boards:
+            for b in boards:
+                slug = b.get("slug") or _kb.DEFAULT_BOARD
                 out.append((slug, _tick_once_for_board(slug)))
             return out
 
@@ -6216,7 +6115,12 @@ class GatewayRunner:
             here keeps the stuck-warn fire only on real failures (broken
             PATH, missing venv, credential loss for a real Hermes profile).
             """
-            for slug in dispatch_boards:
+            try:
+                boards = _kb.list_boards(include_archived=False)
+            except Exception:
+                boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+            for b in boards:
+                slug = b.get("slug") or _kb.DEFAULT_BOARD
                 conn = None
                 try:
                     conn = _kb.connect(board=slug)
@@ -6328,9 +6232,7 @@ class GatewayRunner:
             return successes
 
         logger.info(
-            "kanban dispatcher: embedded in gateway (interval=%.1fs, boards=%s)",
-            interval,
-            ",".join(dispatch_boards),
+            "kanban dispatcher: embedded in gateway (interval=%.1fs)", interval
         )
         while self._running:
             try:
@@ -6991,7 +6893,7 @@ class GatewayRunner:
                 check_wecom_callback_requirements,
             )
             if not check_wecom_callback_requirements():
-                logger.warning("WeComCallback: aiohttp/httpx not installed")
+                logger.warning("WeComCallback: aiohttp/httpx/defusedxml not installed")
                 return None
             return WecomCallbackAdapter(config)
 
@@ -7828,18 +7730,14 @@ class GatewayRunner:
                     adapter._pending_messages[_quick_key] = queued_event
                 return "No active agent — /steer queued for the next turn."
 
-            # /model is a control-plane command. Showing the picker or setting
-            # a session override must not be blocked by an active turn; the
-            # running agent keeps its current request, and the override applies
-            # to the next model call/turn.
-            if _cmd_def_inner and _cmd_def_inner.name == "model":
-                return await self._handle_model_command(event)
-
-            # /codex-runtime must not be used while the agent is running.
-            # Switching mid-turn would split a turn across two transports.
-            if _cmd_def_inner and _cmd_def_inner.name == "codex-runtime":
-                return ("Agent is running — wait or /stop first, then "
-                        "change runtime.")
+            # /model and /codex-runtime must not execute while the agent is
+            # running: switching mid-turn would split one turn across two model
+            # transports. Treat the slash command as a busy follow-up instead,
+            # so the user can choose queue/interrupt/steer via the normal busy
+            # controls rather than hitting a dead-end warning.
+            if _cmd_def_inner and _cmd_def_inner.name in {"model", "codex-runtime"}:
+                await self._handle_busy_slash_command_followup(event, _quick_key)
+                return None
 
             # /approve and /deny must bypass the running-agent interrupt path.
             # The agent thread is blocked on a threading.Event inside
@@ -7878,7 +7776,8 @@ class GatewayRunner:
                 _goal_arg = (event.get_command_args() or "").strip().lower()
                 if not _goal_arg or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done"}:
                     return await self._handle_goal_command(event)
-                return "Agent is running — use /goal status / pause / clear mid-run, or /stop before setting a new goal."
+                await self._handle_busy_slash_command_followup(event, _quick_key)
+                return None
 
             # /subgoal is safe mid-run — it only modifies the goal's
             # subgoals list, which the judge reads at the next turn
@@ -7915,19 +7814,13 @@ class GatewayRunner:
                     return await self._handle_update_command(event)
 
             # Catch-all: any other recognized slash command reached the
-            # running-agent guard. Reject gracefully rather than falling
-            # through to interrupt + discard. Without this, commands
-            # like /model, /reasoning, /voice, /insights, /title,
-            # /resume, /retry, /undo, /compress, /usage,
-            # /reload-mcp, /sethome, /reset (all registered as Discord
-            # slash commands) would interrupt the agent AND get
-            # silently discarded by the slash-command safety net,
-            # producing a zero-char response. See #5057, #6252, #10370.
+            # running-agent guard. It cannot safely execute mid-turn, but the
+            # user intent is still a follow-up to the busy session. Route it
+            # through normal busy controls so the user can choose queue,
+            # interrupt, or steer instead of hitting a dead-end warning.
             if _cmd_def_inner:
-                return (
-                    f"⏳ Agent is running — `/{_cmd_def_inner.name}` can't run "
-                    f"mid-turn. Wait for the current response or `/stop` first."
-                )
+                await self._handle_busy_slash_command_followup(event, _quick_key)
+                return None
 
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
@@ -8009,6 +7902,22 @@ class GatewayRunner:
                     logger.debug("PRIORITY steer for session %s", _quick_key)
                     return None
                 logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
+                self._queue_or_replace_pending_event(_quick_key, event)
+                return None
+            # #30170 — Subagent protection (PRIORITY path). Same rationale
+            # as ``_handle_active_session_busy_message``: an interrupt
+            # cascades through ``_active_children`` and aborts in-flight
+            # delegate_task work. Demote to queue semantics when the
+            # parent is currently driving subagents so a conversational
+            # follow-up doesn't destroy minutes of subagent progress.
+            # /stop reaches its dedicated handler above, so the operator
+            # still has a clean escape hatch.
+            if self._agent_has_active_subagents(running_agent):
+                logger.info(
+                    "PRIORITY interrupt demoted to queue for session %s "
+                    "because the running agent has active subagents (#30170)",
+                    _quick_key,
+                )
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None
             logger.debug("PRIORITY interrupt for session %s", _quick_key)
@@ -9478,6 +9387,7 @@ class GatewayRunner:
             # session_entry so transcript writes below go to the right session.
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
                 session_entry.session_id = agent_result["session_id"]
+                self.session_store._save()
 
             # Prepend reasoning/thinking if display is enabled (per-platform)
             try:
@@ -11119,7 +11029,21 @@ class GatewayRunner:
                         cfg = yaml.safe_load(f) or {}
                 else:
                     cfg = {}
-                model_cfg = cfg.setdefault("model", {})
+                # Coerce scalar/None ``model:`` into a dict before mutation —
+                # otherwise ``cfg.setdefault("model", {})`` returns the existing
+                # scalar and the next assignment raises
+                # ``TypeError: 'str' object does not support item assignment``.
+                # Reproduces when ``config.yaml`` has ``model: <name>`` (flat
+                # string) instead of the proper nested ``model: {default: ...}``.
+                raw_model = cfg.get("model")
+                if isinstance(raw_model, dict):
+                    model_cfg = raw_model
+                elif isinstance(raw_model, str) and raw_model.strip():
+                    model_cfg = {"default": raw_model.strip()}
+                    cfg["model"] = model_cfg
+                else:
+                    model_cfg = {}
+                    cfg["model"] = model_cfg
                 model_cfg["default"] = result.new_model
                 model_cfg["provider"] = result.target_provider
                 if result.base_url:
@@ -13529,6 +13453,16 @@ class GatewayRunner:
         session_key = self._session_key_for_source(source)
         name = event.get_command_args().strip()
 
+        # Strip common outer brackets/quotes users may type literally from the
+        # usage hint (e.g. ``/resume <abc123>``). Mirrors the CLI behavior.
+        if len(name) >= 2 and (
+            (name[0] == "<" and name[-1] == ">")
+            or (name[0] == "[" and name[-1] == "]")
+            or (name[0] == '"' and name[-1] == '"')
+            or (name[0] == "'" and name[-1] == "'")
+        ):
+            name = name[1:-1].strip()
+
         def _list_titled_sessions() -> list[dict]:
             user_source = source.platform.value if source.platform else None
             sessions = self._session_db.list_sessions_rich(source=user_source, limit=10)
@@ -13566,7 +13500,13 @@ class GatewayRunner:
             target_id = target.get("id")
             name = target.get("title") or name
         else:
-            target_id = self._session_db.resolve_session_by_title(name)
+            # Try direct session ID lookup first (so `/resume <session_id>`
+            # works in the gateway, not just `/resume <title>`).
+            session = self._session_db.get_session(name)
+            if session:
+                target_id = session["id"]
+            else:
+                target_id = self._session_db.resolve_session_by_title(name)
         if not target_id:
             return t("gateway.resume.not_found", name=name)
         # Compression creates child continuations that hold the live transcript.

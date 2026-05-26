@@ -240,7 +240,7 @@ def _render_table_block_for_telegram(table_block: list[str]) -> str:
     first_data_row = _split_markdown_table_row(table_block[2]) if len(table_block) > 2 else []
     has_row_label_col = len(first_data_row) == len(headers) + 1
 
-    rendered_rows: list[str] = []
+    rendered_groups: list[str] = []
     for index, row in enumerate(table_block[2:], start=1):
         cells = _split_markdown_table_row(row)
         if has_row_label_col:
@@ -258,12 +258,24 @@ def _render_table_block_for_telegram(table_block: list[str]) -> str:
         elif len(data_cells) > len(headers):
             data_cells = data_cells[: len(headers)]
 
-        rendered_rows.append(f"**{heading}**")
-        rendered_rows.extend(
-            f"• {header}: {value}" for header, value in zip(headers, data_cells)
-        )
+        # Build the bulleted lines for this row.  Skip any bullet whose value
+        # duplicates the heading text -- when has_row_label_col is False the
+        # heading IS the first data cell, and emitting it twice (once as the
+        # bold heading, once as the first bullet) is visual noise.
+        bullets: list[str] = []
+        for header, value in zip(headers, data_cells):
+            if not has_row_label_col and value == heading:
+                continue
+            bullets.append(f"• {header}: {value}")
 
-    return "\n\n".join(rendered_rows)
+        # Within a row-group: single newline between heading and its bullets,
+        # and between successive bullets.  This keeps the row visually tight
+        # on Telegram instead of stretching each bullet into its own paragraph.
+        group_lines = [f"**{heading}**", *bullets]
+        rendered_groups.append("\n".join(group_lines))
+
+    # Between row-groups: blank line so each group reads as a distinct block.
+    return "\n\n".join(rendered_groups)
 
 
 def _wrap_markdown_tables(text: str) -> str:
@@ -463,21 +475,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
-        # Busy-session button state: session_key → message_id of the bubble
-        # currently carrying the [/steer][/interrupt][/stop] keyboard.  Used
-        # by edit_message() to re-attach the keyboard on every progress
-        # edit (a plain edit_message_text would otherwise strip it).
-        self._busy_session_button_map: Dict[str, str] = {}
-        # Long-session-key callback handle table (#hash → session_key).
-        # Telegram callback_data is capped at 64 bytes; long group/forum
-        # session keys overflow, so we substitute a hashed handle and
-        # resolve it back here on tap.  Populated from
-        # build_buttons_with_handles().handle_map at attach time.
-        self._busy_session_handles: Dict[str, str] = {}
-        # Standalone busy-session control-bubble state: session_key → msg_id.
-        # Tracked separately from the tool-progress bubble so the runner can
-        # delete the control bubble at turn end without touching the tool log.
-        self._busy_control_bubble_ids: Dict[str, str] = {}        # Clarify button state: clarify_id → session_key (for the clarify tool's
+        # Clarify button state: clarify_id → session_key (for the clarify tool's
         # multiple-choice prompts; see GatewayRunner clarify_callback wiring).
         self._clarify_state: Dict[str, str] = {}
         # Notification mode for message sends.
@@ -508,6 +506,22 @@ class TelegramAdapter(BasePlatformAdapter):
         if (metadata or {}).get("notify"):
             return {}
         return {"disable_notification": True}
+        # Busy-session button state: session_key → message_id of the bubble
+        # currently carrying the [/steer][/interrupt][/stop] keyboard.  Used
+        # by edit_message() to re-attach the keyboard on every progress
+        # edit (a plain edit_message_text would otherwise strip it).
+        self._busy_session_button_map: Dict[str, str] = {}
+        # Long-session-key callback handle table (#hash → session_key).
+        # Telegram callback_data is capped at 64 bytes; long group/forum
+        # session keys overflow, so we substitute a hashed handle and
+        # resolve it back here on tap.  Populated from
+        # build_buttons_with_handles().handle_map at attach time.
+        self._busy_session_handles: Dict[str, str] = {}
+        # Standalone busy-session control-bubble state: session_key → msg_id.
+        # Tracked separately from the tool-progress bubble so the runner can
+        # delete the control bubble at turn end without touching the tool log.
+        self._busy_control_bubble_ids: Dict[str, str] = {}
+
     def _is_callback_user_authorized(
         self,
         user_id: str,
@@ -578,28 +592,42 @@ class TelegramAdapter(BasePlatformAdapter):
         topic_id = metadata.get("direct_messages_topic_id") or metadata.get("telegram_direct_messages_topic_id")
         return str(topic_id) if topic_id is not None else None
 
-    @staticmethod
-    def _telegram_message_id(value: object) -> Optional[int]:
-        """Return a Telegram message id, ignoring synthetic internal ids.
-
-        Gateway-internal events such as AFK follow-ups can carry labels like
-        ``afk:15:<timestamp>`` in ``reply_to``. Telegram only accepts integer
-        message ids; synthetic labels must be treated as no reply anchor rather
-        than crashing delivery with ``ValueError``.
-        """
-        if value is None:
-            return None
-        try:
-            return int(str(value))
-        except (TypeError, ValueError):
-            return None
-
     @classmethod
     def _metadata_reply_to_message_id(cls, metadata: Optional[Dict[str, Any]]) -> Optional[int]:
         if not metadata:
             return None
         reply_to = metadata.get("telegram_reply_to_message_id")
-        return cls._telegram_message_id(reply_to)
+        return int(reply_to) if reply_to is not None else None
+
+    @staticmethod
+    def _looks_like_private_chat_id(chat_id: str) -> bool:
+        try:
+            return int(chat_id) > 0
+        except (TypeError, ValueError):
+            return False
+
+    @classmethod
+    def _is_private_dm_topic_send(
+        cls,
+        chat_id: str,
+        thread_id: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> bool:
+        if cls._metadata_direct_messages_topic_id(metadata) is not None:
+            return False
+        if metadata and metadata.get("telegram_dm_topic_created_for_send"):
+            return False
+        return bool(
+            thread_id
+            and (
+                metadata and metadata.get("telegram_dm_topic_reply_fallback")
+                or cls._looks_like_private_chat_id(chat_id)
+            )
+        )
+
+    @staticmethod
+    def _dm_topic_missing_anchor_error() -> str:
+        return "Telegram DM topic delivery requires a reply anchor; refusing to send outside the requested topic"
 
     @classmethod
     def _reply_to_message_id_for_send(
@@ -608,9 +636,8 @@ class TelegramAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         reply_to_mode: Optional[str] = None,
     ) -> Optional[int]:
-        reply_to_message_id = cls._telegram_message_id(reply_to)
-        if reply_to_message_id is not None:
-            return reply_to_message_id
+        if reply_to:
+            return int(reply_to)
         if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
             if reply_to_mode == "off":
                 return None
@@ -1196,6 +1223,59 @@ class TelegramAdapter(BasePlatformAdapter):
         thread_id = await self._create_dm_topic(chat_id_int, name=name)
         return str(thread_id) if thread_id else None
 
+    async def ensure_dm_topic(self, chat_id: str, topic_name: str, force_create: bool = False) -> Optional[str]:
+        """Return a private DM topic thread id, creating and persisting it if needed."""
+        name = str(topic_name or "").strip()
+        if not name:
+            return None
+        try:
+            chat_id_int = int(chat_id)
+        except (TypeError, ValueError):
+            return None
+
+        cache_key = f"{chat_id_int}:{name}"
+        cached = self._dm_topics.get(cache_key)
+        if cached and not force_create:
+            return str(cached)
+
+        topic_conf: Optional[Dict[str, Any]] = None
+        chat_entry: Optional[Dict[str, Any]] = None
+        for entry in self._dm_topics_config:
+            if str(entry.get("chat_id")) != str(chat_id_int):
+                continue
+            chat_entry = entry
+            for candidate in entry.get("topics", []):
+                if candidate.get("name") == name:
+                    topic_conf = candidate
+                    break
+            break
+
+        if topic_conf and topic_conf.get("thread_id") and not force_create:
+            thread_id = int(topic_conf["thread_id"])
+            self._dm_topics[cache_key] = thread_id
+            return str(thread_id)
+
+        if chat_entry is None:
+            chat_entry = {"chat_id": chat_id_int, "topics": []}
+            self._dm_topics_config.append(chat_entry)
+        if topic_conf is None:
+            topic_conf = {"name": name}
+            chat_entry.setdefault("topics", []).append(topic_conf)
+
+        thread_id = await self._create_dm_topic(
+            chat_id_int,
+            name=name,
+            icon_color=topic_conf.get("icon_color"),
+            icon_custom_emoji_id=topic_conf.get("icon_custom_emoji_id"),
+        )
+        if not thread_id:
+            return None
+
+        topic_conf["thread_id"] = thread_id
+        self._dm_topics[cache_key] = int(thread_id)
+        self._persist_dm_topic_thread_id(chat_id_int, name, int(thread_id), replace_existing=force_create)
+        return str(thread_id)
+
     async def rename_dm_topic(
         self,
         chat_id: int,
@@ -1219,7 +1299,13 @@ class TelegramAdapter(BasePlatformAdapter):
             self.name, chat_id, thread_id, name,
         )
 
-    def _persist_dm_topic_thread_id(self, chat_id: int, topic_name: str, thread_id: int) -> None:
+    def _persist_dm_topic_thread_id(
+        self,
+        chat_id: int,
+        topic_name: str,
+        thread_id: int,
+        replace_existing: bool = False,
+    ) -> None:
         """Save a newly created thread_id back into config.yaml so it persists across restarts."""
         try:
             from hermes_constants import get_hermes_home
@@ -1232,25 +1318,44 @@ class TelegramAdapter(BasePlatformAdapter):
             with open(config_path, "r", encoding="utf-8") as f:
                 config = _yaml.safe_load(f) or {}
 
-            # Navigate to platforms.telegram.extra.dm_topics
-            dm_topics = (
-                config.get("platforms", {})
-                .get("telegram", {})
-                .get("extra", {})
-                .get("dm_topics", [])
-            )
-            if not dm_topics:
-                return
+            # Navigate to platforms.telegram.extra.dm_topics, creating the path
+            # when a named delivery target asks us to create a topic that was
+            # not predeclared in config.yaml.
+            platforms = config.setdefault("platforms", {})
+            telegram_config = platforms.setdefault("telegram", {})
+            extra = telegram_config.setdefault("extra", {})
+            dm_topics = extra.setdefault("dm_topics", [])
 
             changed = False
+            matching_chat_entry = None
             for chat_entry in dm_topics:
-                if int(chat_entry.get("chat_id", 0)) != int(chat_id):
+                try:
+                    chat_matches = int(chat_entry.get("chat_id", 0)) == int(chat_id)
+                except (TypeError, ValueError):
+                    chat_matches = False
+                if not chat_matches:
                     continue
-                for t in chat_entry.get("topics", []):
-                    if t.get("name") == topic_name and not t.get("thread_id"):
-                        t["thread_id"] = thread_id
-                        changed = True
+                matching_chat_entry = chat_entry
+                for t in chat_entry.setdefault("topics", []):
+                    if t.get("name") == topic_name:
+                        if replace_existing or not t.get("thread_id"):
+                            if t.get("thread_id") != thread_id:
+                                t["thread_id"] = thread_id
+                                changed = True
                         break
+                else:
+                    chat_entry.setdefault("topics", []).append(
+                        {"name": topic_name, "thread_id": thread_id}
+                    )
+                    changed = True
+                break
+
+            if matching_chat_entry is None:
+                dm_topics.append({
+                    "chat_id": chat_id,
+                    "topics": [{"name": topic_name, "thread_id": thread_id}],
+                })
+                changed = True
 
             if changed:
                 fd, tmp_path = tempfile.mkstemp(
@@ -1773,13 +1878,34 @@ class TelegramAdapter(BasePlatformAdapter):
             for i, chunk in enumerate(chunks):
                 retried_thread_not_found = False
                 metadata_reply_to = self._metadata_reply_to_message_id(metadata)
-                explicit_reply_to = self._telegram_message_id(reply_to)
-                if metadata and metadata.get("telegram_dm_topic_reply_fallback"):
-                    reply_to_id = explicit_reply_to if explicit_reply_to is not None else metadata_reply_to
-                elif self._should_thread_reply(str(explicit_reply_to) if explicit_reply_to is not None else None, i):
-                    reply_to_id = explicit_reply_to
+                private_dm_topic_send = self._is_private_dm_topic_send(chat_id, thread_id, metadata)
+                # reply_to_mode="off" on the existing telegram_dm_topic_reply_fallback path
+                # is an explicit user opt-in to "message_thread_id alone is enough" (PR #23994
+                # / commit 21a15b671). Honor it — don't fail loud just because the anchor was
+                # suppressed by config. The new fail-loud contract only applies when the caller
+                # didn't ask for the anchor to be dropped.
+                dm_topic_reply_to_off = (
+                    private_dm_topic_send
+                    and self._reply_to_mode == "off"
+                    and bool(metadata and metadata.get("telegram_dm_topic_reply_fallback"))
+                )
+                reply_to_source = reply_to or (
+                    str(metadata_reply_to) if private_dm_topic_send and metadata_reply_to is not None else None
+                )
+                if private_dm_topic_send:
+                    should_thread = (
+                        reply_to_source is not None
+                        and self._reply_to_mode != "off"
+                    )
                 else:
-                    reply_to_id = None
+                    should_thread = self._should_thread_reply(reply_to_source, i)
+                reply_to_id = int(reply_to_source) if should_thread and reply_to_source else None
+                if private_dm_topic_send and reply_to_id is None and not dm_topic_reply_to_off:
+                    return SendResult(
+                        success=False,
+                        error=self._dm_topic_missing_anchor_error(),
+                        retryable=False,
+                    )
                 thread_kwargs = self._thread_kwargs_for_send(
                     chat_id,
                     thread_id,
@@ -1830,6 +1956,12 @@ class TelegramAdapter(BasePlatformAdapter):
                         # specific cases instead of blindly retrying.
                         if _BadReq and isinstance(send_err, _BadReq):
                             if self._is_thread_not_found_error(send_err) and effective_thread_id is not None:
+                                if private_dm_topic_send or (metadata and metadata.get("telegram_dm_topic_created_for_send")):
+                                    return SendResult(
+                                        success=False,
+                                        error=str(send_err),
+                                        retryable=False,
+                                    )
                                 # Telegram has been observed to return a
                                 # one-off "thread not found" that recovers on
                                 # an immediate retry (transient flake — see
@@ -1856,6 +1988,12 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                             err_lower = str(send_err).lower()
                             if "message to be replied not found" in err_lower and reply_to_id is not None:
+                                if private_dm_topic_send:
+                                    return SendResult(
+                                        success=False,
+                                        error=str(send_err),
+                                        retryable=False,
+                                    )
                                 # Original message was deleted before we
                                 # could reply. For private-topic fallback
                                 # sends, message_thread_id is only valid with
@@ -2000,9 +2138,18 @@ class TelegramAdapter(BasePlatformAdapter):
         """Edit a previously sent Telegram message.
 
         Telegram caps single-message text at 4096 UTF-16 codeunits.  Streaming
-        replies that grow past this limit split-and-deliver instead of
-        truncating.  If ``message_id`` anchors a busy-session keyboard, edits
-        re-attach that keyboard so Telegram does not strip the controls.
+        replies that grow past this limit must NOT be silently truncated and
+        must NOT return failure (the consumer would re-send and create a
+        duplicate).  Instead this method split-and-delivers: edit the
+        existing message with the first chunk and send the rest as
+        continuation messages, returning the final chunk's id so subsequent
+        edits target the most recent visible message.
+
+        If ``message_id`` is currently anchoring a busy-session keyboard,
+        we re-attach that keyboard on the edit — Telegram's
+        ``edit_message_text`` strips ``reply_markup`` unless explicitly
+        included, which would otherwise wipe the [/steer][/interrupt]
+        [/stop] row on every tool-progress update.
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
@@ -2031,7 +2178,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 busy_keyboard = self._build_busy_session_keyboard(anchored_session)
         except Exception:
             busy_keyboard = None
-
         try:
             if not finalize:
                 edit_kwargs: Dict[str, Any] = dict(
@@ -2099,11 +2245,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     return SendResult(success=False, error=f"flood_control:{wait}")
                 await asyncio.sleep(wait)
                 try:
-                    await self._bot.edit_message_text(
+                    retry_kwargs: Dict[str, Any] = dict(
                         chat_id=int(chat_id),
                         message_id=int(message_id),
                         text=content,
                     )
+                    if busy_keyboard is not None:
+                        retry_kwargs["reply_markup"] = busy_keyboard
+                    await self._bot.edit_message_text(**retry_kwargs)
                     return SendResult(success=True, message_id=message_id)
                 except Exception as retry_err:
                     logger.error(
@@ -3202,18 +3351,6 @@ class TelegramAdapter(BasePlatformAdapter):
                     logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
             return
 
-        # --- Busy-session button callbacks (bs:primitive:session_key) ---
-        if data.startswith("bs:"):
-            await self._handle_busy_session_callback(
-                query,
-                data,
-                chat_id=query_chat_id,
-                chat_type=query_chat_type,
-                thread_id=query_thread_id,
-                user_name=query_user_name,
-            )
-            return
-
         # --- Clarify callbacks (cl:clarify_id:idx | cl:clarify_id:other) ---
         if data.startswith("cl:"):
             parts = data.split(":", 2)
@@ -3317,7 +3454,16 @@ class TelegramAdapter(BasePlatformAdapter):
                         "Telegram clarify button: resolve_gateway_clarify returned False (id=%s)",
                         clarify_id,
                     )
-
+        # --- Busy-session button callbacks (bs:primitive:session_key) ---
+        if data.startswith("bs:"):
+            await self._handle_busy_session_callback(
+                query,
+                data,
+                chat_id=query_chat_id,
+                chat_type=query_chat_type,
+                thread_id=query_thread_id,
+                user_name=query_user_name,
+            )
             return
 
         # --- Update prompt callbacks ---
@@ -5569,18 +5715,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # Determine chat type.  Normalize through ``str`` so tests/mocks and
         # python-telegram-bot enum values both work (``ChatType.CHANNEL`` is
         # string-like, but mocks often provide plain strings).
-        raw_type = getattr(chat, "type", "")
-        telegram_chat_type = str(getattr(raw_type, "value", raw_type)).split(".")[-1].lower()
+        telegram_chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
         chat_type = "dm"
         if telegram_chat_type in {"group", "supergroup"}:
             chat_type = "group"
         elif telegram_chat_type == "channel":
             chat_type = "channel"
-        elif str(getattr(chat, "id", "")).startswith("-"):
-            # PTB ChatType can be monkeypatched/partially missing in tests and
-            # older runtimes. Telegram group/supergroup ids are negative;
-            # preserve group routing instead of silently falling back to DM.
-            chat_type = "group"
 
         # Resolve Telegram topic name and skill binding.
         # Only preserve message_thread_id when Telegram marks the message as
