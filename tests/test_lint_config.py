@@ -113,3 +113,24 @@ class TestLintWorkflow:
             pytest.fail(f"lint.yml is not valid YAML: {exc}")
         assert isinstance(parsed, dict)
         assert "jobs" in parsed
+
+
+class TestF401UnusedImports:
+    """hermes_cli/_subprocess_compat.py must have zero F401 violations."""
+
+    TARGET = REPO_ROOT / "hermes_cli" / "_subprocess_compat.py"
+
+    def test_subprocess_compat_has_zero_f401(self):
+        import subprocess as _subprocess
+        import sys as _sys
+
+        result = _subprocess.run(
+            [_sys.executable, "-m", "ruff", "check", "--select=F401",
+             "--output-format=concise", str(self.TARGET)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            f"hermes_cli/_subprocess_compat.py has F401 violation(s):\n"
+            f"{result.stdout}\n{result.stderr}\n"
+        )
