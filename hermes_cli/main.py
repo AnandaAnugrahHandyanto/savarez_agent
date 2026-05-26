@@ -477,7 +477,7 @@ def _relative_time(ts) -> str:
     """Format a timestamp as relative time (e.g., '2h ago', 'yesterday')."""
     if not ts:
         return "?"
-    delta = _time.time() - ts
+    delta = _time.monotonic() - ts
     if delta < 60:
         return "just now"
     if delta < 3600:

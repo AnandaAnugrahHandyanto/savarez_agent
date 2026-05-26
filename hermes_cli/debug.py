@@ -123,7 +123,7 @@ def _record_pending(urls: list[str], delay_seconds: int = _AUTO_DELETE_SECONDS) 
     entries = _load_pending()
     # Dedupe by URL: keep the later expire_at if same URL appears twice
     by_url: dict[str, float] = {e["url"]: float(e["expire_at"]) for e in entries}
-    expire_at = time.time() + delay_seconds
+    expire_at = time.monotonic() + delay_seconds
     for u in paste_rs_urls:
         by_url[u] = max(expire_at, by_url.get(u, 0.0))
     merged = [{"url": u, "expire_at": ts} for u, ts in by_url.items()]
@@ -142,7 +142,7 @@ def _sweep_expired_pastes(now: Optional[float] = None) -> tuple[int, int]:
     if not entries:
         return (0, 0)
 
-    current = time.time() if now is None else now
+    current = time.monotonic() if now is None else now
     deleted = 0
     remaining: list[dict] = []
 

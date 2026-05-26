@@ -1983,7 +1983,7 @@ class AIAgent:
 
     def _touch_activity(self, desc: str) -> None:
         """Update the last-activity timestamp and description (thread-safe)."""
-        self._last_activity_ts = time.time()
+        self._last_activity_ts = time.monotonic()
         self._last_activity_desc = desc
 
     def _capture_rate_limits(self, http_response: Any) -> None:
@@ -2037,7 +2037,7 @@ class AIAgent:
         Called by the gateway timeout handler to report what the agent was doing
         when it was killed, and by the periodic "still working" notifications.
         """
-        elapsed = time.time() - self._last_activity_ts
+        elapsed = time.monotonic() - self._last_activity_ts
         return {
             "last_activity_ts": self._last_activity_ts,
             "last_activity_desc": self._last_activity_desc,

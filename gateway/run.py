@@ -6958,7 +6958,7 @@ class GatewayRunner:
         _raw_stale_timeout = _float_env("HERMES_AGENT_TIMEOUT", 1800)
         _stale_ts = self._running_agents_ts.get(_quick_key, 0)
         if _quick_key in self._running_agents and _stale_ts:
-            _stale_age = time.time() - _stale_ts
+            _stale_age = time.monotonic() - _stale_ts
             _stale_agent = self._running_agents.get(_quick_key)
             # Never evict the pending sentinel — it was just placed moments
             # ago during the async setup phase before the real agent is
@@ -7245,11 +7245,11 @@ class GatewayRunner:
                 and event.message_type == MessageType.TEXT
                 and _telegram_followup_grace > 0
                 and _started_at
-                and (time.time() - _started_at) <= _telegram_followup_grace
+                and (time.monotonic() - _started_at) <= _telegram_followup_grace
             ):
                 logger.debug(
                     "Telegram follow-up arrived %.2fs after run start for %s — queueing without interrupt",
-                    time.time() - _started_at,
+                    time.monotonic() - _started_at,
                     _quick_key,
                 )
                 adapter = self.adapters.get(source.platform)
@@ -8106,7 +8106,7 @@ class GatewayRunner:
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
-        _msg_start_time = time.time()
+        _msg_start_time = time.monotonic()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         _msg_preview = (event.text or "")[:80].replace("\n", " ")
         logger.info(
@@ -8756,7 +8756,7 @@ class GatewayRunner:
                     "rephrase your question."
                 )
             agent_messages = agent_result.get("messages", [])
-            _response_time = time.time() - _msg_start_time
+            _response_time = time.monotonic() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
             _resp_len = len(response)
             logger.info(
@@ -15690,7 +15690,7 @@ class GatewayRunner:
                 except (asyncio.TimeoutError, asyncio.CancelledError):
                     stream_task.cancel()
 
-        _elapsed = time.time() - _start
+        _elapsed = time.monotonic() - _start
         if not _run_still_current():
             logger.info(
                 "Discarding stale proxy result for %s — generation %d is no longer current",
@@ -17378,7 +17378,7 @@ class GatewayRunner:
                 return
             while True:
                 await asyncio.sleep(_NOTIFY_INTERVAL)
-                _elapsed_mins = int((time.time() - _notify_start) // 60)
+                _elapsed_mins = int((time.monotonic() - _notify_start) // 60)
                 # Include agent activity context if available.
                 _agent_ref = agent_holder[0]
                 _status_detail = ""
