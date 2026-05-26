@@ -41,6 +41,14 @@ TASK_MODE_ENV = "HERMES_LINEAR_AIG_TASK_MODE"
 MODEL_ENV = "HERMES_LINEAR_AIG_MODEL"
 PROVIDER_ENV = "HERMES_LINEAR_AIG_PROVIDER"
 TOOLSETS_ENV = "HERMES_LINEAR_AIG_TOOLSETS"
+APP_ENV = "HERMES_LINEAR_AIG_APP"
+
+APP_PROFILE_DEFAULTS: dict[str, dict[str, str]] = {
+    "hermes": {},
+    "kilocode": {"provider": "kilocode"},
+    "minimax": {"provider": "minimax-oauth"},
+    "windsurf": {},
+}
 
 TASK_MODE_BRIDGE = "bridge"
 TASK_MODE_ONESHOT = "oneshot"
@@ -65,6 +73,7 @@ class AgentSessionEvent:
 class LinearAIGRuntimeConfig:
     access_token: str
     webhook_secret: str
+    app: str = "hermes"
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
     graphql_url: str = LINEAR_GRAPHQL_URL
@@ -206,6 +215,18 @@ def _env(env: Mapping[str, str], name: str) -> str:
     return str(env.get(name) or "").strip()
 
 
+def _app_env_name(app: str, env_name: str) -> str:
+    suffix = env_name.removeprefix("HERMES_LINEAR_AIG_")
+    app_key = app.upper().replace("-", "_")
+    return f"HERMES_LINEAR_AIG_{app_key}_{suffix}"
+
+
+def _env_for_app(env: Mapping[str, str], app: str, env_name: str) -> str:
+    if app == "hermes":
+        return _env(env, env_name)
+    return _env(env, _app_env_name(app, env_name)) or _env(env, env_name)
+
+
 def _parse_port(value: str | int | None, *, default: int) -> int:
     if value in (None, ""):
         return default
@@ -219,28 +240,43 @@ def _parse_port(value: str | int | None, *, default: int) -> int:
 
 
 def load_runtime_config(args: Any, env: Mapping[str, str]) -> LinearAIGRuntimeConfig:
+    app = (
+        str(getattr(args, "app", "") or "").strip()
+        or _env(env, APP_ENV)
+        or "hermes"
+    ).lower()
+    if app not in APP_PROFILE_DEFAULTS:
+        raise ValueError(
+            "Linear AIG app must be one of: "
+            + ", ".join(sorted(APP_PROFILE_DEFAULTS))
+        )
+    profile_defaults = APP_PROFILE_DEFAULTS[app]
     access_token = (
         str(getattr(args, "access_token", "") or "").strip()
-        or _env(env, ACCESS_TOKEN_ENV)
+        or _env_for_app(env, app, ACCESS_TOKEN_ENV)
     )
     webhook_secret = (
         str(getattr(args, "webhook_secret", "") or "").strip()
-        or _env(env, WEBHOOK_SECRET_ENV)
+        or _env_for_app(env, app, WEBHOOK_SECRET_ENV)
     )
-    host = str(getattr(args, "host", "") or "").strip() or _env(env, HOST_ENV) or DEFAULT_HOST
+    host = (
+        str(getattr(args, "host", "") or "").strip()
+        or _env_for_app(env, app, HOST_ENV)
+        or DEFAULT_HOST
+    )
     port = _parse_port(
-        getattr(args, "port", None) or _env(env, PORT_ENV),
+        getattr(args, "port", None) or _env_for_app(env, app, PORT_ENV),
         default=DEFAULT_PORT,
     )
     graphql_url = (
         str(getattr(args, "graphql_url", "") or "").strip()
-        or _env(env, GRAPHQL_URL_ENV)
+        or _env_for_app(env, app, GRAPHQL_URL_ENV)
         or LINEAR_GRAPHQL_URL
     )
     ack_only = bool(getattr(args, "ack_only", False))
     task_mode = (
         str(getattr(args, "task_mode", "") or "").strip()
-        or _env(env, TASK_MODE_ENV)
+        or _env_for_app(env, app, TASK_MODE_ENV)
         or TASK_MODE_BRIDGE
     ).lower()
     if task_mode not in TASK_MODES:
@@ -248,23 +284,29 @@ def load_runtime_config(args: Any, env: Mapping[str, str]) -> LinearAIGRuntimeCo
             "Linear AIG task mode must be one of: "
             + ", ".join(sorted(TASK_MODES))
         )
-    model = str(getattr(args, "model", "") or "").strip() or _env(env, MODEL_ENV) or None
+    model = (
+        str(getattr(args, "model", "") or "").strip()
+        or _env_for_app(env, app, MODEL_ENV)
+        or profile_defaults.get("model")
+        or None
+    )
     provider = (
         str(getattr(args, "provider", "") or "").strip()
-        or _env(env, PROVIDER_ENV)
+        or _env_for_app(env, app, PROVIDER_ENV)
+        or profile_defaults.get("provider")
         or None
     )
     toolsets = (
         str(getattr(args, "toolsets", "") or "").strip()
-        or _env(env, TOOLSETS_ENV)
+        or _env_for_app(env, app, TOOLSETS_ENV)
         or None
     )
 
     missing = []
     if not access_token:
-        missing.append(ACCESS_TOKEN_ENV)
+        missing.append(_app_env_name(app, ACCESS_TOKEN_ENV) if app != "hermes" else ACCESS_TOKEN_ENV)
     if not webhook_secret:
-        missing.append(WEBHOOK_SECRET_ENV)
+        missing.append(_app_env_name(app, WEBHOOK_SECRET_ENV) if app != "hermes" else WEBHOOK_SECRET_ENV)
     if missing:
         raise ValueError(
             "Linear AIG is missing required environment variables: "
@@ -274,6 +316,7 @@ def load_runtime_config(args: Any, env: Mapping[str, str]) -> LinearAIGRuntimeCo
     return LinearAIGRuntimeConfig(
         access_token=access_token,
         webhook_secret=webhook_secret,
+        app=app,
         host=host,
         port=port,
         graphql_url=graphql_url,
@@ -289,6 +332,7 @@ def describe_runtime_config(config: LinearAIGRuntimeConfig) -> str:
     return "\n".join(
         [
             "Linear AIG runtime config:",
+            f"  app: {config.app}",
             f"  {ACCESS_TOKEN_ENV}: {_redact(config.access_token)}",
             f"  {WEBHOOK_SECRET_ENV}: {_redact(config.webhook_secret)}",
             f"  host: {config.host}",

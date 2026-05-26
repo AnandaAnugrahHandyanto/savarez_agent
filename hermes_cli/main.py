@@ -12013,6 +12013,16 @@ def main():
     )
     for _linear_aig_sub in (linear_aig_check, linear_aig_serve):
         _linear_aig_sub.add_argument(
+            "--app",
+            choices=["hermes", "kilocode", "minimax", "windsurf"],
+            default="",
+            help=(
+                "Linear AIG app profile. Defaults to HERMES_LINEAR_AIG_APP or "
+                "hermes. App profiles can use app-specific env vars such as "
+                "HERMES_LINEAR_AIG_KILOCODE_ACCESS_TOKEN."
+            ),
+        )
+        _linear_aig_sub.add_argument(
             "--access-token",
             default="",
             help=(

@@ -123,6 +123,41 @@ export HERMES_LINEAR_AIG_PROVIDER="..."    # optional
 export HERMES_LINEAR_AIG_TOOLSETS="..."    # optional comma-separated list
 ```
 
+Kilo Code, MiniMax, and Windsurf can run through the same Linear AIG receiver
+using app profiles. Profiles set provider defaults where Hermes has a matching
+provider and allow separate Linear app credentials without changing code:
+
+```bash
+export HERMES_LINEAR_AIG_APP="kilocode"
+export HERMES_LINEAR_AIG_KILOCODE_ACCESS_TOKEN="..."
+export HERMES_LINEAR_AIG_KILOCODE_WEBHOOK_SECRET="..."
+export HERMES_LINEAR_AIG_KILOCODE_TASK_MODE="oneshot"
+```
+
+```bash
+export HERMES_LINEAR_AIG_APP="minimax"
+export HERMES_LINEAR_AIG_MINIMAX_ACCESS_TOKEN="..."
+export HERMES_LINEAR_AIG_MINIMAX_WEBHOOK_SECRET="..."
+export HERMES_LINEAR_AIG_MINIMAX_TASK_MODE="oneshot"
+```
+
+The MiniMax app profile uses the `minimax-oauth` provider by default. Windsurf
+has separate app credentials but no built-in provider default yet; set
+`HERMES_LINEAR_AIG_WINDSURF_PROVIDER` if you route it through a configured
+provider.
+
+```bash
+export HERMES_LINEAR_AIG_APP="windsurf"
+export HERMES_LINEAR_AIG_WINDSURF_ACCESS_TOKEN="..."
+export HERMES_LINEAR_AIG_WINDSURF_WEBHOOK_SECRET="..."
+export HERMES_LINEAR_AIG_WINDSURF_TASK_MODE="oneshot"
+export HERMES_LINEAR_AIG_WINDSURF_PROVIDER="..." # optional configured provider
+```
+
+Supported app profiles are `hermes`, `kilocode`, `minimax`, and `windsurf`.
+Generic `HERMES_LINEAR_AIG_*` values still work; app-specific values take
+precedence when `HERMES_LINEAR_AIG_APP` or `--app` is set.
+
 ---
 
 ## Skip the API-key collection — Nous Portal

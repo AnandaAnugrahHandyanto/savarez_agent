@@ -40,6 +40,7 @@ def _payload(**overrides):
 def _args(**overrides):
     defaults = {
         "linear_aig_action": "check-config",
+        "app": "",
         "access_token": "",
         "webhook_secret": "",
         "host": "",
@@ -127,6 +128,79 @@ def test_load_runtime_config_cli_args_override_environment():
     assert config.model == "arg-model"
     assert config.provider == "arg-provider"
     assert config.toolsets == "arg-tools"
+
+
+def test_load_runtime_config_uses_app_specific_credentials_and_provider_default():
+    config = linear_aig.load_runtime_config(
+        _args(app="kilocode"),
+        {
+            "HERMES_LINEAR_AIG_KILOCODE_ACCESS_TOKEN": "kilo_token",
+            "HERMES_LINEAR_AIG_KILOCODE_WEBHOOK_SECRET": "kilo_secret",
+            "HERMES_LINEAR_AIG_KILOCODE_PORT": "8668",
+        },
+    )
+
+    assert config.app == "kilocode"
+    assert config.access_token == "kilo_token"
+    assert config.webhook_secret == "kilo_secret"
+    assert config.port == 8668
+    assert config.provider == "kilocode"
+
+
+def test_load_runtime_config_app_specific_values_override_generic_env():
+    config = linear_aig.load_runtime_config(
+        _args(app="minimax"),
+        {
+            linear_aig.ACCESS_TOKEN_ENV: "generic_token",
+            linear_aig.WEBHOOK_SECRET_ENV: "generic_secret",
+            linear_aig.PROVIDER_ENV: "generic-provider",
+            "HERMES_LINEAR_AIG_MINIMAX_ACCESS_TOKEN": "minimax_token",
+            "HERMES_LINEAR_AIG_MINIMAX_WEBHOOK_SECRET": "minimax_secret",
+        },
+    )
+
+    assert config.app == "minimax"
+    assert config.access_token == "minimax_token"
+    assert config.webhook_secret == "minimax_secret"
+    assert config.provider == "generic-provider"
+
+
+def test_minimax_app_defaults_to_oauth_provider():
+    config = linear_aig.load_runtime_config(
+        _args(app="minimax"),
+        {
+            "HERMES_LINEAR_AIG_MINIMAX_ACCESS_TOKEN": "minimax_token",
+            "HERMES_LINEAR_AIG_MINIMAX_WEBHOOK_SECRET": "minimax_secret",
+        },
+    )
+
+    assert config.provider == "minimax-oauth"
+
+
+def test_windsurf_app_uses_app_specific_credentials_without_provider_default():
+    config = linear_aig.load_runtime_config(
+        _args(app="windsurf"),
+        {
+            "HERMES_LINEAR_AIG_WINDSURF_ACCESS_TOKEN": "windsurf_token",
+            "HERMES_LINEAR_AIG_WINDSURF_WEBHOOK_SECRET": "windsurf_secret",
+        },
+    )
+
+    assert config.app == "windsurf"
+    assert config.access_token == "windsurf_token"
+    assert config.webhook_secret == "windsurf_secret"
+    assert config.provider is None
+
+
+def test_load_runtime_config_rejects_unknown_app():
+    with pytest.raises(ValueError, match="app"):
+        linear_aig.load_runtime_config(
+            _args(app="unknown"),
+            {
+                linear_aig.ACCESS_TOKEN_ENV: "lin_access_token",
+                linear_aig.WEBHOOK_SECRET_ENV: "signing_secret",
+            },
+        )
 
 
 def test_load_runtime_config_requires_token_and_webhook_secret():
