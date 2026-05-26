@@ -1,0 +1,2138 @@
+"""Tests for Slice 4 — Hermes Production Workflow Runtime Bridge.
+
+Tests the ``production_order_db`` module against an in-memory Kanban DB
+fixture.  Covers:
+
+- ProductionOrder dataclass schema
+- production_order_id generation (format, uniqueness)
+- Parent Kanban card creation with workflow_template_id
+- Six child cards with correct owner profiles and linking
+- State transition validation (valid + invalid + ownership)
+- Trigger phrase detection (accept + reject)
+- Brief validation (accept + reject)
+- Event logging to production_order_events table
+- Handoff packet creation and freezing on OrchestratorOS card
+- Full bridge end-to-end smoke test
+- Backward/compatibility: pre-existing tasks have NULL new columns
+- Negative: empty brief, invalid transitions, wrong profile
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import time
+from pathlib import Path
+
+import pytest
+
+from hermes_cli import kanban_db as kb
+from hermes_cli.production_order_db import (
+    CHILD_CARD_DEFS,
+    PRODUCTION_ORDER_FIELD,
+    STATE_FIELD,
+    WORKFLOW_INITIAL_STATE,
+    WORKFLOW_SPEC_SOURCE,
+    WORKFLOW_TEMPLATE_ID,
+    ProductionOrder,
+    StageEntry,
+    StateTransitionError,
+    _base36_random,
+    create_architect_handoff,
+    create_auditos_handoff,
+    create_devos_handoff,
+    create_orchestrator_handoff,
+    create_production_kanban_graph,
+    create_production_order,
+    detect_approval_phrase,
+    freeze_handoff_on_card,
+    freeze_result_on_card,
+    generate_production_order_id,
+    list_production_orders,
+    log_workflow_event,
+    run_architect_spec_bridge,
+    run_architect_reconcile_bridge,
+    run_auditos_review_complete_bridge,
+    run_default_final_review_bridge,
+    run_devos_complete_bridge,
+    run_full_bridge,
+    run_orchestrator_triage_bridge,
+    transition_state,
+    validate_auditos_review_packet,
+    validate_architect_spec_packet,
+    validate_architect_reconcile_packet,
+    validate_brief,
+    validate_default_final_review_packet,
+    validate_devos_build_packet,
+    validate_state_transition,
+)
+from hermes_cli.kanban import _cmd_production_order
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def kanban_home(tmp_path, monkeypatch):
+    """Set up a temp Kanban DB for testing."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+    yield
+    # cleanup handled by tmp_path
+
+
+@pytest.fixture
+def conn(kanban_home):
+    """Provide a Kanban DB connection."""
+    conn = kb.connect()
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+@pytest.fixture
+def sample_brief() -> dict:
+    """A valid approved brief for testing."""
+    return {
+        "title": "Test authentication feature",
+        "objective": "Add JWT authentication to the Relay demo",
+        "target repo or workspace": "relay-go-app",
+        "scope": "Implement /login and /register endpoints",
+        "out of scope": "OAuth, password reset",
+        "acceptance criteria": "All tests pass, protected routes reject unauthenticated requests",
+        "stop conditions": "Secret management requires external service",
+        "approval boundaries": "No spending, no publishing",
+        "constraints": "Use existing Go module",
+        "expected output": "Working auth endpoints with tests",
+    }
+
+
+@pytest.fixture
+def snake_case_brief(sample_brief) -> dict:
+    """Equivalent valid brief using supported snake_case aliases."""
+    return {
+        "title": sample_brief["title"],
+        "objective": sample_brief["objective"],
+        "target_repo_or_workspace": sample_brief["target repo or workspace"],
+        "scope": sample_brief["scope"],
+        "out_of_scope": sample_brief["out of scope"],
+        "acceptance_criteria": sample_brief["acceptance criteria"],
+        "stop_conditions": sample_brief["stop conditions"],
+        "approval_boundaries": sample_brief["approval boundaries"],
+        "constraints": sample_brief["constraints"],
+        "expected_output": sample_brief["expected output"],
+    }
+
+
+def architect_spec_packet(production_order_id: str) -> dict:
+    """Minimal ArchitectOS result/spec packet for Slice 6 tests."""
+    return {
+        "production_order_id": production_order_id,
+        "stage": "architect_spec",
+        "owner_profile": "architect_os",
+        "objective": "Specify the bounded Slice 6 handoff bridge.",
+        "source_truth": [WORKFLOW_SPEC_SOURCE],
+        "scope": ["Attach a DevOS handoff packet and advance the PO state."],
+        "out_of_scope": ["DevOS implementation execution", "Slice 7"],
+        "acceptance_criteria": [
+            "Production order transitions to ARCHITECT_READY_FOR_DEV.",
+            "Current owner becomes dev_os.",
+        ],
+        "devos_task": "Prepare for implementation from the approved spec; do not execute Slice 7.",
+        "files_or_areas_allowed": [
+            "hermes_cli/production_order_db.py",
+            "hermes_cli/kanban.py",
+            "tests/hermes_cli/test_production_order_bridge.py",
+        ],
+        "stop_conditions": [
+            "Production order is not in ARCHITECT_SPEC.",
+            "Current owner is not architect_os.",
+        ],
+        "approval_boundaries": ["Do not trigger DevOS execution in Slice 6."],
+        "artifact_references": ["architect-spec.json"],
+        "next_state": "ARCHITECT_READY_FOR_DEV",
+    }
+
+
+def devos_build_packet(production_order_id: str) -> dict:
+    """Minimal DevOS build/result packet for Slice 7 tests."""
+    return {
+        "production_order_id": production_order_id,
+        "owner_profile": "dev_os",
+        "source_state": "ARCHITECT_READY_FOR_DEV",
+        "result_type": "build_complete",
+        "summary": "Implemented the approved Slice 7 bridge and preserved graph semantics.",
+        "files_changed": [
+            "hermes_cli/production_order_db.py",
+            "hermes_cli/kanban.py",
+            "tests/hermes_cli/test_production_order_bridge.py",
+        ],
+        "tests_run": [
+            "pytest tests/hermes_cli/test_production_order_bridge.py -q",
+        ],
+        "test_status": "green",
+        "limitations_or_notes": ["AuditOS should verify smoke evidence against the existing board."],
+        "next_handoff_target": "audit_os",
+    }
+
+
+def create_ready_for_dev_order(conn, sample_brief) -> ProductionOrder:
+    """Advance a fresh production order through Slice 6 for Slice 7 tests."""
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+    po = run_orchestrator_triage_bridge(conn, production_order_id=po.production_order_id)
+    return run_architect_spec_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        architect_packet=architect_spec_packet(po.production_order_id),
+    )
+
+
+def audit_review_packet(production_order_id: str, source_state: str = "DEV_COMPLETE") -> dict:
+    """Minimal AuditOS review/result packet for happy-path tests."""
+    return {
+        "production_order_id": production_order_id,
+        "owner_profile": "audit_os",
+        "source_state": source_state,
+        "review_result": "passed",
+        "summary": "Audit verified the implementation and evidence.",
+        "evidence": ["tests passed", "changed files reviewed"],
+        "tests_reviewed": ["pytest tests/hermes_cli/test_production_order_bridge.py -q"],
+        "verdict": "PASS",
+        "risks_or_notes": ["No blocking risks found."],
+        "next_handoff_target": "architect_os",
+    }
+
+
+def architect_reconcile_packet(
+    production_order_id: str,
+    source_state: str = "AUDIT_PASSED",
+) -> dict:
+    """Minimal ArchitectOS reconciliation packet for happy-path tests."""
+    return {
+        "production_order_id": production_order_id,
+        "owner_profile": "architect_os",
+        "source_state": source_state,
+        "reconcile_result": "accepted",
+        "summary": "Implementation remains aligned with the approved architecture.",
+        "architecture_alignment": "aligned",
+        "drift_assessment": "No architecture drift.",
+        "spec_patch_needed": False,
+        "risks_or_notes": ["No rework needed."],
+        "next_handoff_target": "default",
+    }
+
+
+def final_review_packet(
+    production_order_id: str,
+    source_state: str = "ARCHITECT_ACCEPTED",
+) -> dict:
+    """Minimal Default Hermes final-review packet for happy-path tests."""
+    return {
+        "production_order_id": production_order_id,
+        "owner_profile": "default",
+        "source_state": source_state,
+        "final_review_result": "accepted",
+        "summary": "Final review confirms the approved brief is complete.",
+        "original_brief_alignment": "Matches the approved brief.",
+        "artifacts_reviewed": ["DevOS result", "AuditOS result", "ArchitectOS reconcile result"],
+        "evidence_summary": "All stage evidence is present and accepted.",
+        "final_status": "DONE",
+        "next_action": "report_done_to_jarren",
+    }
+
+
+def create_dev_complete_order(conn, sample_brief) -> ProductionOrder:
+    """Advance a fresh production order through Slice 7."""
+    po = create_ready_for_dev_order(conn, sample_brief)
+    return run_devos_complete_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        devos_packet=devos_build_packet(po.production_order_id),
+    )
+
+
+def create_audit_passed_order(conn, sample_brief) -> ProductionOrder:
+    """Advance a fresh production order through AuditOS happy path."""
+    po = create_dev_complete_order(conn, sample_brief)
+    return run_auditos_review_complete_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        review_packet=audit_review_packet(po.production_order_id),
+    )
+
+
+def create_architect_accepted_order(conn, sample_brief) -> ProductionOrder:
+    """Advance a fresh production order through ArchitectOS reconciliation."""
+    po = create_audit_passed_order(conn, sample_brief)
+    return run_architect_reconcile_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        reconcile_packet=architect_reconcile_packet(po.production_order_id),
+    )
+
+# ---------------------------------------------------------------------------
+# Production Order ID Generation
+# ---------------------------------------------------------------------------
+
+
+
+def test_production_order_id_format():
+    """ID format: PO-YYYYMMDD-XXXX where XXXX is base36."""
+    po_id = generate_production_order_id()
+    assert re.match(r"^PO-\d{8}-[0-9a-z]{4}$", po_id), f"Bad format: {po_id}"
+
+
+def test_production_order_id_collision():
+    """Two calls produce different IDs (extremely unlikely collision)."""
+    ids = {generate_production_order_id() for _ in range(100)}
+    assert len(ids) > 1, "All generated IDs are identical (extremely unlikely)"
+
+
+def test_production_order_id_unique_within_date():
+    """IDs generated on the same date are different."""
+    ids = {generate_production_order_id() for _ in range(50)}
+    assert len(ids) == 50, "Expected 50 unique IDs"
+
+
+# ---------------------------------------------------------------------------
+# ProductionOrder Dataclass
+# ---------------------------------------------------------------------------
+
+
+def test_production_order_schema():
+    """All ProductionOrder fields populated correctly."""
+    po = ProductionOrder(
+        production_order_id="PO-20260525-A3XF",
+        title="Test order",
+        source_brief="The brief",
+        approved_by="Jarren",
+        approved_at=1234567890,
+        priority_lane="Hermes OS",
+        repo_or_workspace="hermes-agent",
+        current_state="PRODUCTION_ORDER_CREATED",
+        current_owner_profile="orchestrator_os",
+        stage_history=[StageEntry("BRIEF_DRAFTED", "ACTION_APPROVED", "hermes", 1234567890)],
+        parent_kanban_card_id="abc123",
+        child_kanban_card_ids=["child1", "child2"],
+    )
+    assert po.production_order_id == "PO-20260525-A3XF"
+    assert po.title == "Test order"
+    assert po.current_state == "PRODUCTION_ORDER_CREATED"
+    assert po.current_owner_profile == "orchestrator_os"
+    assert len(po.stage_history) == 1
+    assert po.parent_kanban_card_id == "abc123"
+    assert po.child_kanban_card_ids == ["child1", "child2"]
+    assert po.final_status is None
+
+
+# ---------------------------------------------------------------------------
+# Production Order Creation
+# ---------------------------------------------------------------------------
+
+
+def test_create_production_order(conn, sample_brief):
+    """Creates a production order with parent card and correct fields."""
+    brief_text = json.dumps(sample_brief, indent=2)
+    po = create_production_order(
+        conn,
+        title=sample_brief["title"],
+        source_brief=brief_text,
+        approved_by="Jarren",
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+
+    # Check production_order_id format
+    assert re.match(r"^PO-\d{8}-[0-9a-z]{4}$", po.production_order_id)
+
+    # Check parent card exists
+    parent = kb.get_task(conn, po.parent_kanban_card_id)
+    assert parent is not None
+    assert parent.title == f"Production Order: {sample_brief['title']}"
+    assert parent.body == brief_text
+    assert parent.production_order_id == po.production_order_id
+    assert parent.current_state == WORKFLOW_INITIAL_STATE
+    assert parent.workflow_template_id == WORKFLOW_TEMPLATE_ID
+
+
+def test_parent_kanban_card_created(conn, sample_brief):
+    """Parent card exists with correct metadata."""
+    po = create_production_order(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+    )
+    parent = kb.get_task(conn, po.parent_kanban_card_id)
+    assert parent is not None
+    assert parent.workflow_template_id == WORKFLOW_TEMPLATE_ID
+    assert parent.production_order_id == po.production_order_id
+    assert parent.current_state == WORKFLOW_INITIAL_STATE
+
+
+def test_production_order_idempotency(conn, sample_brief):
+    """Same idempotency_key returns existing order, no duplicate."""
+    brief_text = json.dumps(sample_brief, indent=2)
+    key = "test-dup-key"
+    po1 = create_production_order(
+        conn, title=sample_brief["title"],
+        source_brief=brief_text,
+        idempotency_key=key,
+    )
+    po2 = create_production_order(
+        conn, title=sample_brief["title"],
+        source_brief=brief_text,
+        idempotency_key=key,
+    )
+    assert po1.production_order_id == po2.production_order_id
+    assert po1.parent_kanban_card_id == po2.parent_kanban_card_id
+
+
+# ---------------------------------------------------------------------------
+# Kanban Graph Creation
+# ---------------------------------------------------------------------------
+
+
+def test_six_child_cards_created(conn, sample_brief):
+    """Exactly 6 child cards exist."""
+    po = create_production_order(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+    )
+    child_ids = create_production_kanban_graph(conn, po)
+    assert len(child_ids) == 6, f"Expected 6 child cards, got {len(child_ids)}"
+
+
+def test_child_card_owner_profiles(conn, sample_brief):
+    """Each child card has the correct assignee."""
+    po = create_production_order(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+    )
+    child_ids = create_production_kanban_graph(conn, po)
+
+    for child_id, (order, expected_title, expected_owner, expected_status) in zip(
+        child_ids, CHILD_CARD_DEFS
+    ):
+        task = kb.get_task(conn, child_id)
+        assert task is not None, f"Child card {child_id} not found"
+        assert task.assignee == expected_owner, (
+            f"Card {order}: expected assignee {expected_owner!r}, got {task.assignee!r}"
+        )
+
+
+def test_child_card_linked_to_parent(conn, sample_brief):
+    """task_links has 6 parent->child entries."""
+    po = create_production_order(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+    )
+    child_ids = create_production_kanban_graph(conn, po)
+
+    links = conn.execute(
+        "SELECT COUNT(*) AS n FROM task_links WHERE parent_id = ?",
+        (po.parent_kanban_card_id,),
+    ).fetchone()["n"]
+    assert links == 6, f"Expected 6 parent->child links, got {links}"
+
+
+def test_child_card_initial_status(conn, sample_brief):
+    """OrchestratorOS card is ready, others are todo."""
+    po = create_production_order(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+    )
+    child_ids = create_production_kanban_graph(conn, po)
+
+    for child_id, (order, title, owner, expected_status) in zip(
+        child_ids, CHILD_CARD_DEFS
+    ):
+        task = kb.get_task(conn, child_id)
+        assert task is not None
+        assert task.status == expected_status, (
+            f"Card {title}: expected status {expected_status!r}, got {task.status!r}"
+        )
+
+
+def test_workflow_template_id_set(conn, sample_brief):
+    """All 7 cards have workflow_template_id = hermes-production-workflow-v1."""
+    po = create_production_order(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+    )
+    child_ids = create_production_kanban_graph(conn, po)
+
+    all_ids = [po.parent_kanban_card_id] + child_ids
+    for card_id in all_ids:
+        task = kb.get_task(conn, card_id)
+        assert task is not None
+        assert task.workflow_template_id == WORKFLOW_TEMPLATE_ID, (
+            f"Card {card_id}: expected template ID {WORKFLOW_TEMPLATE_ID}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# State Transition Validation
+# ---------------------------------------------------------------------------
+
+
+def test_valid_state_transitions():
+    """Wired production workflow transitions pass validation."""
+    # BRIEF_DRAFTED -> ACTION_APPROVED
+    assert validate_state_transition("BRIEF_DRAFTED", "ACTION_APPROVED", "hermes")
+    # ACTION_APPROVED -> PRODUCTION_ORDER_CREATED
+    assert validate_state_transition("ACTION_APPROVED", "PRODUCTION_ORDER_CREATED", "hermes")
+    # PRODUCTION_ORDER_CREATED -> ORCHESTRATOR_TRIAGE
+    assert validate_state_transition("PRODUCTION_ORDER_CREATED", "ORCHESTRATOR_TRIAGE", "orchestrator_os")
+    # ORCHESTRATOR_TRIAGE -> ARCHITECT_SPEC
+    assert validate_state_transition("ORCHESTRATOR_TRIAGE", "ARCHITECT_SPEC", "orchestrator_os")
+    # ARCHITECT_SPEC -> ARCHITECT_READY_FOR_DEV
+    assert validate_state_transition("ARCHITECT_SPEC", "ARCHITECT_READY_FOR_DEV", "architect_os")
+    assert validate_state_transition("ARCHITECT_READY_FOR_DEV", "DEV_COMPLETE", "dev_os")
+    assert validate_state_transition("DEV_COMPLETE", "AUDIT_REVIEW", "audit_os")
+    assert validate_state_transition("AUDIT_REVIEW", "AUDIT_PASSED", "audit_os")
+    assert validate_state_transition("AUDIT_PASSED", "ARCHITECT_RECONCILE", "architect_os")
+    assert validate_state_transition("ARCHITECT_RECONCILE", "ARCHITECT_ACCEPTED", "architect_os")
+    assert validate_state_transition("ARCHITECT_ACCEPTED", "DEFAULT_FINAL_REVIEW", "default")
+    assert validate_state_transition("DEFAULT_FINAL_REVIEW", "DONE", "default")
+
+
+def test_invalid_state_transition_rejected():
+    """Invalid transition raises StateTransitionError."""
+    # DEV_IMPLEMENTING -> AUDIT_REVIEW (skip DEV_COMPLETE) - not wired in Slice 4
+    with pytest.raises(StateTransitionError):
+        validate_state_transition("DEV_IMPLEMENTING", "AUDIT_REVIEW", "dev_os")
+
+    # Unknown from_state
+    with pytest.raises(StateTransitionError):
+        validate_state_transition("UNKNOWN_STATE", "SOME_STATE", "hermes")
+
+
+def test_state_ownership_enforced():
+    """Wrong profile for state raises StateTransitionError."""
+    # dev_os cannot transition PRODUCTION_ORDER_CREATED (owned by orchestrator_os)
+    with pytest.raises(StateTransitionError):
+        validate_state_transition("PRODUCTION_ORDER_CREATED", "ORCHESTRATOR_TRIAGE", "dev_os")
+
+
+def test_invalid_state_transition_empty():
+    """Empty from_state or to_state raises ValueError."""
+    with pytest.raises(ValueError, match="from_state is required"):
+        validate_state_transition("", "ACTION_APPROVED", "hermes")
+    with pytest.raises(ValueError, match="to_state is required"):
+        validate_state_transition("BRIEF_DRAFTED", "", "hermes")
+    with pytest.raises(ValueError, match="calling_profile is required"):
+        validate_state_transition("BRIEF_DRAFTED", "ACTION_APPROVED", "")
+
+
+# ---------------------------------------------------------------------------
+# State Transition Execution
+# ---------------------------------------------------------------------------
+
+
+def test_transition_state_execution(conn, sample_brief):
+    """Transition updates card state, PO object, and logs event."""
+    po = create_production_order(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+    )
+
+    new_state = transition_state(
+        conn, po, "ORCHESTRATOR_TRIAGE", "orchestrator_os",
+        next_action="dispatch_orchestrator",
+    )
+    assert new_state == "ORCHESTRATOR_TRIAGE"
+    assert po.current_state == "ORCHESTRATOR_TRIAGE"
+    assert len(po.stage_history) == 3  # 2 from creation + 1 from transition
+
+    # Parent card state updated
+    parent = kb.get_task(conn, po.parent_kanban_card_id)
+    assert parent.current_state == "ORCHESTRATOR_TRIAGE"
+
+
+def test_transition_state_rejects_invalid(conn, sample_brief):
+    """Invalid transition via transition_state raises and doesn't mutate."""
+    po = create_production_order(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+    )
+    with pytest.raises(StateTransitionError):
+        transition_state(conn, po, "DEV_IMPLEMENTING", "dev_os")
+
+    # State should NOT have changed
+    assert po.current_state == WORKFLOW_INITIAL_STATE
+
+
+# ---------------------------------------------------------------------------
+# Trigger Phrase Detection
+# ---------------------------------------------------------------------------
+
+
+def test_trigger_phrase_detection():
+    """Recognizes all 4 approval phrases."""
+    assert detect_approval_phrase("Action approved for this brief.") == "approved"
+    assert detect_approval_phrase("Approved. Execute this brief.") == "approved"
+    assert detect_approval_phrase("Send this into the production workflow.") == "approved"
+    assert detect_approval_phrase("Proceed with this approved scope.") == "approved"
+
+
+def test_non_trigger_phrases_rejected():
+    """looks good, go ahead, approved (bare) return None."""
+    assert detect_approval_phrase("looks good") is None
+    assert detect_approval_phrase("go ahead") is None
+    assert detect_approval_phrase("sounds right") is None
+    assert detect_approval_phrase("approved") is None
+    assert detect_approval_phrase("") is None
+    assert detect_approval_phrase("this is not an approval") is None
+
+
+def test_trigger_phrase_case_insensitive():
+    """Detection is case-insensitive."""
+    assert detect_approval_phrase("ACTION APPROVED FOR THIS BRIEF.") == "approved"
+    assert detect_approval_phrase("action Approved for this brief!!") == "approved"
+
+
+# ---------------------------------------------------------------------------
+# Brief Validation
+# ---------------------------------------------------------------------------
+
+
+def test_approval_brief_validated(conn, sample_brief):
+    """Valid brief passes validation."""
+    missing = validate_brief(sample_brief)
+    assert missing == [], f"Unexpected missing fields: {missing}"
+
+
+def test_approval_brief_snake_case_aliases_validated(snake_case_brief):
+    """Snake_case aliases satisfy required brief fields."""
+    missing = validate_brief(snake_case_brief)
+    assert missing == [], f"Unexpected missing fields: {missing}"
+
+
+def test_cli_create_with_human_label_brief_keys_succeeds(kanban_home, tmp_path, sample_brief, capsys):
+    """CLI create accepts canonical human-label brief keys."""
+    brief_path = tmp_path / "human-brief.json"
+    brief_path.write_text(json.dumps(sample_brief), encoding="utf-8")
+
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="create",
+        brief_path=str(brief_path),
+        board=None,
+        idempotency_key=None,
+        json=True,
+    ))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["production_order_id"].startswith("PO-")
+    assert len(payload["child_card_ids"]) == 6
+
+
+def test_cli_create_with_snake_case_brief_keys_succeeds(kanban_home, tmp_path, snake_case_brief, capsys):
+    """CLI create accepts snake_case brief aliases."""
+    brief_path = tmp_path / "snake-brief.json"
+    brief_path.write_text(json.dumps(snake_case_brief), encoding="utf-8")
+
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="create",
+        brief_path=str(brief_path),
+        board=None,
+        idempotency_key=None,
+        json=True,
+    ))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["production_order_id"].startswith("PO-")
+    assert len(payload["child_card_ids"]) == 6
+
+
+def test_missing_brief_validation():
+    """Empty brief raises validation with all fields missing."""
+    missing = validate_brief({})
+    # All required fields should be missing
+    assert len(missing) == 9, f"Expected 9 missing fields, got {len(missing)}: {missing}"
+
+
+def test_partial_brief_rejected():
+    """Brief missing 'scope' is rejected."""
+    brief = {
+        "objective": "Do something",
+        "target repo or workspace": "repo",
+        # missing: scope
+        "out of scope": "N/A",
+        "acceptance criteria": "Works",
+        "stop conditions": "None",
+        "approval boundaries": "None",
+        "constraints": "None",
+        "expected output": "Something",
+    }
+    missing = validate_brief(brief)
+    assert "scope" in missing
+
+
+def test_scope_expansion_detected():
+    """Validate brief recognizes missing fields."""
+    brief = {
+        "objective": "Task",
+        "target repo or workspace": "repo",
+        "scope": "In scope",
+        "out of scope": "Out of scope",
+        "acceptance criteria": "Criteria",
+        "stop conditions": "None",
+        "approval boundaries": "None",
+        "constraints": "None",
+        "expected output": "Output",
+    }
+    missing = validate_brief(brief)
+    assert missing == []
+
+
+# ---------------------------------------------------------------------------
+# Event Logging
+# ---------------------------------------------------------------------------
+
+
+def test_event_log_creation(conn, sample_brief):
+    """Events written with correct production_order_id and event_type."""
+    po = create_production_order(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+    )
+    child_ids = create_production_kanban_graph(conn, po)
+
+    events = conn.execute(
+        "SELECT * FROM production_order_events "
+        "WHERE production_order_id = ? ORDER BY id",
+        (po.production_order_id,),
+    ).fetchall()
+
+    assert len(events) >= 2
+    assert events[0]["event_type"] == "brief_approved"
+    assert events[0]["production_order_id"] == po.production_order_id
+    assert events[1]["event_type"] == "production_order_created"
+
+    # Check kanban_graph_created event exists
+    graph_events = [e for e in events if e["event_type"] == "kanban_graph_created"]
+    assert len(graph_events) == 1
+
+
+def test_event_log_schema_enforced(conn):
+    """Event log with missing production_order_id raises."""
+    with pytest.raises(ValueError, match="production_order_id is required"):
+        log_workflow_event(conn, "", "state_transitioned")
+    with pytest.raises(ValueError, match="event_type is required"):
+        log_workflow_event(conn, "PO-1", "")
+
+
+def test_production_order_events_table_exists(conn):
+    """production_order_events table is created."""
+    tables = [
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    ]
+    assert "production_order_events" in tables
+
+
+# ---------------------------------------------------------------------------
+# Handoff Packet
+# ---------------------------------------------------------------------------
+
+
+def test_handoff_packet_created(conn, sample_brief):
+    """OrchestratorOS handoff packet contains all required fields."""
+    po = create_production_order(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+    )
+    child_ids = create_production_kanban_graph(conn, po)
+
+    handoff = create_orchestrator_handoff(
+        po, scope=sample_brief["scope"], out_of_scope=sample_brief["out of scope"]
+    )
+    required_fields = [
+        "production_order_id", "from_profile", "to_profile",
+        "current_state", "requested_next_state", "objective",
+        "context", "source_truth", "scope", "out_of_scope",
+        "inputs", "expected_output", "acceptance_criteria",
+        "stop_conditions", "approval_required_before", "evidence_required",
+    ]
+    for field in required_fields:
+        assert field in handoff, f"Missing handoff field: {field}"
+        assert handoff[field], f"Empty handoff field: {field}"
+
+    assert handoff["from_profile"] == "hermes"
+    assert handoff["to_profile"] == "orchestrator_os"
+    assert handoff["current_state"] == WORKFLOW_INITIAL_STATE
+    assert handoff["requested_next_state"] == "ORCHESTRATOR_TRIAGE"
+
+
+def test_handoff_packet_frozen(conn, sample_brief):
+    """OrchestratorOS card body contains valid handoff packet."""
+    po = create_production_order(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+    )
+    child_ids = create_production_kanban_graph(conn, po)
+    handoff = create_orchestrator_handoff(po)
+    freeze_handoff_on_card(conn, child_ids[0], handoff)
+
+    card = kb.get_task(conn, child_ids[0])
+    assert card is not None
+    assert card.body is not None
+    assert "--- HANDOFF PACKET ---" in card.body
+    assert po.production_order_id in card.body
+    assert "orchestrator_os" in card.body
+
+
+# ---------------------------------------------------------------------------
+# Full Bridge End-to-End
+# ---------------------------------------------------------------------------
+
+
+def test_full_bridge_smoke(conn, sample_brief):
+    """Full bridge creates PO, graph, handoff, transitions to ORCHESTRATOR_TRIAGE."""
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+
+    # Check PO created
+    assert re.match(r"^PO-\d{8}-[0-9a-z]{4}$", po.production_order_id)
+    assert po.current_state == "ORCHESTRATOR_TRIAGE"
+    assert po.current_owner_profile == "orchestrator_os"
+
+    # Check parent card
+    parent = kb.get_task(conn, po.parent_kanban_card_id)
+    assert parent is not None
+    assert parent.current_state == "ORCHESTRATOR_TRIAGE"
+
+    # Check child cards
+    assert len(po.child_kanban_card_ids) == 6
+
+    # Check OrchestratorOS card has handoff packet
+    os_card = kb.get_task(conn, po.child_kanban_card_ids[0])
+    assert os_card is not None
+    assert os_card.body is not None
+    assert "--- HANDOFF PACKET ---" in os_card.body
+
+    # Check events exist
+    events = conn.execute(
+        "SELECT event_type FROM production_order_events "
+        "WHERE production_order_id = ? ORDER BY id",
+        (po.production_order_id,),
+    ).fetchall()
+    event_types = [e["event_type"] for e in events]
+    assert "brief_approved" in event_types
+    assert "production_order_created" in event_types
+    assert "kanban_graph_created" in event_types
+    assert "handoff_created" in event_types
+    assert "state_transitioned" in event_types
+
+
+def test_orchestrator_triage_bridge_moves_existing_order_to_architect_spec(conn, sample_brief):
+    """Slice 5 advances an existing PO without duplicating the Kanban graph."""
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+    original_child_ids = list(po.child_kanban_card_ids)
+
+    triaged = run_orchestrator_triage_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+    )
+
+    assert triaged.current_state == "ARCHITECT_SPEC"
+    assert triaged.current_owner_profile == "architect_os"
+    assert triaged.child_kanban_card_ids == original_child_ids
+    assert len(triaged.child_kanban_card_ids) == 6
+    assert triaged.repo_or_workspace == sample_brief["target repo or workspace"]
+    assert any(
+        s.from_state == "ORCHESTRATOR_TRIAGE" and s.to_state == "ARCHITECT_SPEC"
+        for s in triaged.stage_history
+    )
+
+    link_count = conn.execute(
+        "SELECT COUNT(*) AS n FROM task_links WHERE parent_id = ?",
+        (triaged.parent_kanban_card_id,),
+    ).fetchone()["n"]
+    assert link_count == 6
+
+    architect_card = kb.get_task(conn, original_child_ids[1])
+    assert architect_card is not None
+    assert architect_card.status == "ready"
+    assert architect_card.body is not None
+    assert "--- HANDOFF PACKET ---" in architect_card.body
+    assert '"to_profile": "architect_os"' in architect_card.body
+
+    events = conn.execute(
+        "SELECT event_type, from_state, to_state, owner_profile FROM production_order_events "
+        "WHERE production_order_id = ? ORDER BY id",
+        (po.production_order_id,),
+    ).fetchall()
+    assert [event["event_type"] for event in events] == [
+        "brief_approved",
+        "production_order_created",
+        "kanban_graph_created",
+        "state_transitioned",
+        "handoff_created",
+        "orchestrator_triage_completed",
+        "handoff_created",
+    ]
+    assert events[-2]["from_state"] == "ORCHESTRATOR_TRIAGE"
+    assert events[-2]["to_state"] == "ARCHITECT_SPEC"
+    assert events[-2]["owner_profile"] == "orchestrator_os"
+
+
+def test_orchestrator_triage_bridge_rejects_missing_graph(conn, sample_brief):
+    """Slice 5 requires the already-created 6-card Kanban graph."""
+    po = create_production_order(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+    )
+    transition_state(conn, po, "ORCHESTRATOR_TRIAGE", "orchestrator_os")
+
+    with pytest.raises(ValueError, match="must have 6 child cards"):
+        run_orchestrator_triage_bridge(
+            conn,
+            production_order_id=po.production_order_id,
+        )
+
+
+def test_architect_handoff_uses_frozen_brief_metadata(conn, sample_brief):
+    """ArchitectOS handoff packet is derived from the frozen PO brief."""
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+
+    handoff = create_architect_handoff(po)
+
+    assert handoff["from_profile"] == "orchestrator_os"
+    assert handoff["to_profile"] == "architect_os"
+    assert handoff["current_state"] == "ORCHESTRATOR_TRIAGE"
+    assert handoff["requested_next_state"] == "ARCHITECT_SPEC"
+    assert handoff["scope"] == sample_brief["scope"]
+    assert handoff["out_of_scope"] == sample_brief["out of scope"]
+    assert sample_brief["target repo or workspace"] in handoff["inputs"]
+
+
+def test_validate_architect_spec_packet_accepts_minimal_packet():
+    """Slice 6 packet accepts explicit canonical workflow source truth."""
+    packet = architect_spec_packet("PO-20260525-test")
+
+    validated = validate_architect_spec_packet(
+        packet,
+        expected_production_order_id="PO-20260525-test",
+    )
+
+    assert validated is packet
+
+
+def test_validate_architect_spec_packet_rejects_missing_required_field():
+    """Slice 6 requires a complete ArchitectOS packet; runtime cannot invent it."""
+    packet = architect_spec_packet("PO-20260525-test")
+    packet.pop("devos_task")
+
+    with pytest.raises(ValueError, match="devos_task"):
+        validate_architect_spec_packet(
+            packet,
+            expected_production_order_id="PO-20260525-test",
+        )
+
+
+def test_validate_architect_spec_packet_rejects_wrong_source_truth():
+    """ArchitectOS packet must cite the canonical workspace workflow spec."""
+    packet = architect_spec_packet("PO-20260525-test")
+    packet["source_truth"] = [
+        "specs/architecture/workflows/hermes-production-workflow-v1.md"
+    ]
+
+    with pytest.raises(ValueError, match="canonical workflow spec"):
+        validate_architect_spec_packet(
+            packet,
+            expected_production_order_id="PO-20260525-test",
+        )
+
+
+def test_create_devos_handoff_from_architect_packet(conn, sample_brief):
+    """DevOS handoff packet preserves ArchitectOS packet boundaries."""
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+    packet = architect_spec_packet(po.production_order_id)
+
+    handoff = create_devos_handoff(po, packet)
+
+    assert handoff["production_order_id"] == po.production_order_id
+    assert handoff["current_state"] == "ARCHITECT_SPEC"
+    assert handoff["requested_next_state"] == "ARCHITECT_READY_FOR_DEV"
+    assert handoff["from_profile"] == "architect_os"
+    assert handoff["to_profile"] == "dev_os"
+    assert handoff["devos_task"] == packet["devos_task"]
+    assert handoff["allowed_files_or_areas"] == packet["files_or_areas_allowed"]
+    assert handoff["approval_boundaries"] == packet["approval_boundaries"]
+    assert handoff["artifact_references"] == packet["artifact_references"]
+
+
+def test_architect_spec_bridge_moves_existing_order_to_ready_for_dev(conn, sample_brief):
+    """Slice 6 advances an existing ARCHITECT_SPEC PO and preserves its graph."""
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+    po = run_orchestrator_triage_bridge(conn, production_order_id=po.production_order_id)
+    original_parent_id = po.parent_kanban_card_id
+    original_child_ids = list(po.child_kanban_card_ids)
+
+    completed = run_architect_spec_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        architect_packet=architect_spec_packet(po.production_order_id),
+    )
+
+    assert completed.current_state == "ARCHITECT_READY_FOR_DEV"
+    assert completed.current_owner_profile == "dev_os"
+    assert completed.parent_kanban_card_id == original_parent_id
+    assert completed.child_kanban_card_ids == original_child_ids
+    assert len(completed.child_kanban_card_ids) == 6
+    assert completed.repo_or_workspace == sample_brief["target repo or workspace"]
+    assert any(
+        s.from_state == "ARCHITECT_SPEC" and s.to_state == "ARCHITECT_READY_FOR_DEV"
+        for s in completed.stage_history
+    )
+
+    link_count = conn.execute(
+        "SELECT COUNT(*) AS n FROM task_links WHERE parent_id = ?",
+        (completed.parent_kanban_card_id,),
+    ).fetchone()["n"]
+    assert link_count == 6
+
+    devos_card = kb.get_task(conn, original_child_ids[2])
+    assert devos_card is not None
+    assert devos_card.status == "ready"
+    assert devos_card.body is not None
+    assert "--- HANDOFF PACKET ---" in devos_card.body
+    assert '\"to_profile\": \"dev_os\"' in devos_card.body
+    assert "Prepare for implementation from the approved spec" in devos_card.body
+
+    events = conn.execute(
+        "SELECT event_type, from_state, to_state, owner_profile FROM production_order_events "
+        "WHERE production_order_id = ? ORDER BY id",
+        (po.production_order_id,),
+    ).fetchall()
+    assert [event["event_type"] for event in events] == [
+        "brief_approved",
+        "production_order_created",
+        "kanban_graph_created",
+        "state_transitioned",
+        "handoff_created",
+        "orchestrator_triage_completed",
+        "handoff_created",
+        "architect_spec_completed",
+        "handoff_created",
+    ]
+    assert events[-2]["from_state"] == "ARCHITECT_SPEC"
+    assert events[-2]["to_state"] == "ARCHITECT_READY_FOR_DEV"
+    assert events[-2]["owner_profile"] == "architect_os"
+
+
+def test_architect_spec_bridge_rejects_wrong_state(conn, sample_brief):
+    """Slice 6 refuses to skip OrchestratorOS triage / ArchitectOS spec ownership."""
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+
+    with pytest.raises(StateTransitionError, match="expected 'ARCHITECT_SPEC'"):
+        run_architect_spec_bridge(
+            conn,
+            production_order_id=po.production_order_id,
+            architect_packet=architect_spec_packet(po.production_order_id),
+        )
+
+
+def test_cli_architect_complete_json(capsys, conn, tmp_path, sample_brief):
+    """CLI architect-complete consumes a JSON spec packet and emits strict JSON."""
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+    po = run_orchestrator_triage_bridge(conn, production_order_id=po.production_order_id)
+    packet_path = tmp_path / "architect-packet.json"
+    packet_path.write_text(json.dumps(architect_spec_packet(po.production_order_id)), encoding="utf-8")
+
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="architect-complete",
+        production_order_id=po.production_order_id,
+        board=None,
+        spec_file=str(packet_path),
+        json=True,
+    ))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    parsed = json.loads(captured.out)
+    assert parsed["production_order_id"] == po.production_order_id
+    assert parsed["current_state"] == "ARCHITECT_READY_FOR_DEV"
+    assert parsed["current_owner_profile"] == "dev_os"
+    assert parsed["child_card_ids"] == po.child_kanban_card_ids
+    assert "Slice 6" not in captured.out
+
+
+def test_validate_devos_build_packet_accepts_minimal_packet():
+    packet = devos_build_packet("PO-20260525-test")
+
+    validated = validate_devos_build_packet(
+        packet,
+        expected_production_order_id="PO-20260525-test",
+    )
+
+    assert validated is packet
+
+
+def test_validate_devos_build_packet_accepts_stage_result_and_implementation_artifacts():
+    packet = devos_build_packet("PO-20260525-test")
+    packet.pop("result_type")
+    packet.pop("files_changed")
+    packet["stage_result"] = "build_complete"
+    packet["implementation_artifacts"] = ["runtime-bridge.patch"]
+
+    validated = validate_devos_build_packet(
+        packet,
+        expected_production_order_id="PO-20260525-test",
+    )
+
+    assert validated is packet
+
+
+@pytest.mark.parametrize(
+    ("mutator", "expected_message"),
+    [
+        (lambda packet: packet.pop("summary"), "summary"),
+        (lambda packet: packet.__setitem__("production_order_id", "PO-wrong"), "production_order_id"),
+        (lambda packet: packet.__setitem__("owner_profile", "architect_os"), "owner_profile"),
+        (lambda packet: packet.__setitem__("source_state", "ARCHITECT_SPEC"), "source_state"),
+        (lambda packet: packet.__setitem__("test_status", "failed"), "pass/green/success"),
+        (lambda packet: packet.__setitem__("next_handoff_target", "dev_os"), "next_handoff_target"),
+    ],
+)
+def test_validate_devos_build_packet_rejects_invalid_fields(mutator, expected_message):
+    packet = devos_build_packet("PO-20260525-test")
+    mutator(packet)
+
+    with pytest.raises(ValueError, match=expected_message):
+        validate_devos_build_packet(
+            packet,
+            expected_production_order_id="PO-20260525-test",
+        )
+
+
+def test_freeze_result_on_card_appends_packet(conn):
+    task_id = kb.create_task(conn, title="DevOS card", body="existing")
+    result_packet = devos_build_packet("PO-20260525-test")
+
+    freeze_result_on_card(conn, task_id, result_packet)
+
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    assert task.body is not None
+    assert "existing" in task.body
+    assert "--- RESULT PACKET ---" in task.body
+    assert '"owner_profile": "dev_os"' in task.body
+
+
+def test_create_auditos_handoff_contains_expected_fields(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+
+    handoff = create_auditos_handoff(po, devos_build_packet(po.production_order_id))
+
+    assert handoff["production_order_id"] == po.production_order_id
+    assert handoff["from_profile"] == "dev_os"
+    assert handoff["to_profile"] == "audit_os"
+    assert handoff["from_state"] == "ARCHITECT_READY_FOR_DEV"
+    assert handoff["to_state"] == "DEV_COMPLETE"
+    assert handoff["devos_summary"]
+    assert handoff["implementation_artifacts"]
+    assert handoff["tests_and_evidence"]["tests_run"]
+    assert handoff["tests_and_evidence"]["test_status"] == "green"
+    assert handoff["acceptance_criteria"]
+    assert handoff["stop_conditions"]
+    assert handoff["reference_workflow_spec"] == WORKFLOW_SPEC_SOURCE
+
+
+def test_devos_complete_bridge_moves_existing_order_to_dev_complete(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    original_parent_id = po.parent_kanban_card_id
+    original_child_ids = list(po.child_kanban_card_ids)
+
+    completed = run_devos_complete_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        devos_packet=devos_build_packet(po.production_order_id),
+    )
+
+    assert completed.current_state == "DEV_COMPLETE"
+    assert completed.current_owner_profile == "audit_os"
+    assert completed.parent_kanban_card_id == original_parent_id
+    assert completed.child_kanban_card_ids == original_child_ids
+    assert len(completed.child_kanban_card_ids) == 6
+    assert any(
+        s.from_state == "ARCHITECT_READY_FOR_DEV" and s.to_state == "DEV_COMPLETE"
+        for s in completed.stage_history
+    )
+
+    link_count = conn.execute(
+        "SELECT COUNT(*) AS n FROM task_links WHERE parent_id = ?",
+        (completed.parent_kanban_card_id,),
+    ).fetchone()["n"]
+    assert link_count == 6
+
+    devos_card = kb.get_task(conn, original_child_ids[2])
+    audit_card = kb.get_task(conn, original_child_ids[3])
+    assert devos_card is not None
+    assert audit_card is not None
+    assert devos_card.body is not None
+    assert audit_card.body is not None
+    assert "--- RESULT PACKET ---" in devos_card.body
+    assert '"owner_profile": "dev_os"' in devos_card.body
+    assert "--- HANDOFF PACKET ---" in audit_card.body
+    assert '\"to_profile\": \"audit_os\"' in audit_card.body
+    assert audit_card.status == "ready"
+
+    events = conn.execute(
+        "SELECT event_type, from_state, to_state, owner_profile FROM production_order_events "
+        "WHERE production_order_id = ? ORDER BY id",
+        (po.production_order_id,),
+    ).fetchall()
+    assert [event["event_type"] for event in events][-2:] == [
+        "dev_build_completed",
+        "handoff_created",
+    ]
+    assert events[-2]["from_state"] == "ARCHITECT_READY_FOR_DEV"
+    assert events[-2]["to_state"] == "DEV_COMPLETE"
+    assert events[-2]["owner_profile"] == "dev_os"
+
+
+@pytest.mark.parametrize(
+    ("mutator", "expected_exception", "expected_message"),
+    [
+        (lambda po, packet: packet.pop("summary"), ValueError, "summary"),
+        (lambda po, packet: packet.__setitem__("production_order_id", "PO-wrong"), ValueError, "production_order_id"),
+        (lambda po, packet: packet.__setitem__("owner_profile", "architect_os"), ValueError, "owner_profile"),
+        (lambda po, packet: packet.__setitem__("source_state", "ARCHITECT_SPEC"), ValueError, "source_state"),
+        (lambda po, packet: packet.__setitem__("test_status", "failed"), ValueError, "pass/green/success"),
+    ],
+)
+def test_devos_complete_bridge_failures_do_not_mutate_state(
+    conn,
+    sample_brief,
+    mutator,
+    expected_exception,
+    expected_message,
+):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    packet = devos_build_packet(po.production_order_id)
+    original_parent = kb.get_task(conn, po.parent_kanban_card_id)
+    original_devos = kb.get_task(conn, po.child_kanban_card_ids[2])
+    original_audit = kb.get_task(conn, po.child_kanban_card_ids[3])
+    original_event_count = conn.execute(
+        "SELECT COUNT(*) AS n FROM production_order_events WHERE production_order_id = ?",
+        (po.production_order_id,),
+    ).fetchone()["n"]
+
+    assert original_parent is not None
+    assert original_devos is not None
+    assert original_audit is not None
+    mutator(po, packet)
+
+    with pytest.raises(expected_exception, match=expected_message):
+        run_devos_complete_bridge(
+            conn,
+            production_order_id=po.production_order_id,
+            devos_packet=packet,
+        )
+
+    refreshed = [
+        order for order in list_production_orders(conn)
+        if order.production_order_id == po.production_order_id
+    ][0]
+    refreshed_parent = kb.get_task(conn, refreshed.parent_kanban_card_id)
+    refreshed_devos = kb.get_task(conn, refreshed.child_kanban_card_ids[2])
+    refreshed_audit = kb.get_task(conn, refreshed.child_kanban_card_ids[3])
+    refreshed_event_count = conn.execute(
+        "SELECT COUNT(*) AS n FROM production_order_events WHERE production_order_id = ?",
+        (po.production_order_id,),
+    ).fetchone()["n"]
+
+    assert refreshed_parent is not None
+    assert refreshed_devos is not None
+    assert refreshed_audit is not None
+    assert refreshed.current_state == "ARCHITECT_READY_FOR_DEV"
+    assert refreshed.current_owner_profile == "dev_os"
+    assert refreshed_parent.current_state == original_parent.current_state
+    assert refreshed_devos.body == original_devos.body
+    assert refreshed_audit.body == original_audit.body
+    assert refreshed_event_count == original_event_count
+    assert len(refreshed.child_kanban_card_ids) == 6
+
+
+def test_devos_complete_bridge_rejects_wrong_runtime_state_without_mutation(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    original_event_count = conn.execute(
+        "SELECT COUNT(*) AS n FROM production_order_events WHERE production_order_id = ?",
+        (po.production_order_id,),
+    ).fetchone()["n"]
+    conn.execute(
+        "UPDATE tasks SET current_state = ? WHERE id = ?",
+        ("ARCHITECT_SPEC", po.parent_kanban_card_id),
+    )
+
+    with pytest.raises(StateTransitionError, match="expected 'ARCHITECT_READY_FOR_DEV'"):
+        run_devos_complete_bridge(
+            conn,
+            production_order_id=po.production_order_id,
+            devos_packet=devos_build_packet(po.production_order_id),
+        )
+
+    refreshed = [
+        order for order in list_production_orders(conn)
+        if order.production_order_id == po.production_order_id
+    ][0]
+    refreshed_event_count = conn.execute(
+        "SELECT COUNT(*) AS n FROM production_order_events WHERE production_order_id = ?",
+        (po.production_order_id,),
+    ).fetchone()["n"]
+    assert refreshed.current_state == "ARCHITECT_SPEC"
+    assert refreshed.current_owner_profile == "architect_os"
+    assert len(refreshed.child_kanban_card_ids) == 6
+    assert refreshed_event_count == original_event_count
+
+
+def test_cli_dev_complete_requires_result_file(capsys):
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="dev-complete",
+        production_order_id="PO-20260525-test",
+        board=None,
+        result_file=None,
+        json=False,
+    ))
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "--result-file is required" in captured.err
+
+
+def test_cli_dev_complete_json(capsys, conn, tmp_path, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    packet_path = tmp_path / "devos-packet.json"
+    packet_path.write_text(json.dumps(devos_build_packet(po.production_order_id)), encoding="utf-8")
+
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="dev-complete",
+        production_order_id=po.production_order_id,
+        board=None,
+        result_file=str(packet_path),
+        json=True,
+    ))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    parsed = json.loads(captured.out)
+    assert parsed["production_order_id"] == po.production_order_id
+    assert parsed["current_state"] == "DEV_COMPLETE"
+    assert parsed["current_owner_profile"] == "audit_os"
+    assert parsed["child_card_ids"] == po.child_kanban_card_ids
+    assert "Slice 7" not in captured.out
+
+
+def test_dev_complete_show_events_json_is_strict_json(capsys, conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    run_devos_complete_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        devos_packet=devos_build_packet(po.production_order_id),
+    )
+
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="show",
+        production_order_id=po.production_order_id,
+        board=None,
+        events=True,
+        json=True,
+    ))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    parsed = json.loads(captured.out)
+    assert parsed["current_state"] == "DEV_COMPLETE"
+    assert parsed["current_owner_profile"] == "audit_os"
+    event_types = [event["event_type"] for event in parsed["events"]]
+    assert event_types[-2:] == ["dev_build_completed", "handoff_created"]
+    assert "\n  Events (" not in captured.out
+
+
+def test_dev_complete_show_events_text_remains_human_readable(capsys, conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    run_devos_complete_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        devos_packet=devos_build_packet(po.production_order_id),
+    )
+
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="show",
+        production_order_id=po.production_order_id,
+        board=None,
+        events=True,
+        json=False,
+    ))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "Events (11):" in captured.out
+    assert "dev_build_completed" in captured.out
+    assert "handoff_created" in captured.out
+    assert "dispatch_audit_os" not in captured.out
+
+
+# ---------------------------------------------------------------------------
+# AuditOS / ArchitectOS Reconcile / Final Review Bridges
+# ---------------------------------------------------------------------------
+
+
+def _po_event_types(conn, production_order_id: str) -> list[str]:
+    rows = conn.execute(
+        "SELECT event_type FROM production_order_events "
+        "WHERE production_order_id = ? ORDER BY id",
+        (production_order_id,),
+    ).fetchall()
+    return [row["event_type"] for row in rows]
+
+
+def _assert_six_card_graph_preserved(conn, po: ProductionOrder, original_child_ids: list[str]) -> None:
+    assert po.child_kanban_card_ids == original_child_ids
+    assert len(po.child_kanban_card_ids) == 6
+    assert len(set(po.child_kanban_card_ids)) == 6
+    link_count = conn.execute(
+        "SELECT COUNT(*) AS n FROM task_links WHERE parent_id = ?",
+        (po.parent_kanban_card_id,),
+    ).fetchone()["n"]
+    assert link_count == 6
+
+
+def test_validate_auditos_review_packet_accepts_minimal_packet():
+    packet = audit_review_packet("PO-20260525-test")
+
+    validated = validate_auditos_review_packet(
+        packet,
+        expected_production_order_id="PO-20260525-test",
+        expected_source_state="DEV_COMPLETE",
+    )
+
+    assert validated is packet
+
+
+def test_validate_architect_reconcile_packet_accepts_minimal_packet():
+    packet = architect_reconcile_packet("PO-20260525-test")
+
+    validated = validate_architect_reconcile_packet(
+        packet,
+        expected_production_order_id="PO-20260525-test",
+        expected_source_state="AUDIT_PASSED",
+    )
+
+    assert validated is packet
+
+
+def test_validate_default_final_review_packet_accepts_minimal_packet():
+    packet = final_review_packet("PO-20260525-test")
+
+    validated = validate_default_final_review_packet(
+        packet,
+        expected_production_order_id="PO-20260525-test",
+        expected_source_state="ARCHITECT_ACCEPTED",
+    )
+
+    assert validated is packet
+
+
+def test_auditos_review_bridge_moves_existing_order_to_audit_passed(conn, sample_brief):
+    po = create_dev_complete_order(conn, sample_brief)
+    original_child_ids = list(po.child_kanban_card_ids)
+
+    completed = run_auditos_review_complete_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        review_packet=audit_review_packet(po.production_order_id),
+    )
+
+    assert completed.current_state == "AUDIT_PASSED"
+    assert completed.current_owner_profile == "architect_os"
+    _assert_six_card_graph_preserved(conn, completed, original_child_ids)
+
+    audit_card = kb.get_task(conn, original_child_ids[3])
+    reconcile_card = kb.get_task(conn, original_child_ids[4])
+    assert audit_card is not None
+    assert reconcile_card is not None
+    assert audit_card.body is not None
+    assert reconcile_card.body is not None
+    assert "--- RESULT PACKET ---" in audit_card.body
+    assert '"owner_profile": "audit_os"' in audit_card.body
+    assert "--- HANDOFF PACKET ---" in reconcile_card.body
+    assert '"to_profile": "architect_os"' in reconcile_card.body
+    assert reconcile_card.status == "ready"
+
+    event_types = _po_event_types(conn, po.production_order_id)
+    assert event_types[-3:] == [
+        "audit_review_started",
+        "audit_review_completed",
+        "handoff_created",
+    ]
+
+
+def test_architect_reconcile_bridge_moves_existing_order_to_architect_accepted(conn, sample_brief):
+    po = create_audit_passed_order(conn, sample_brief)
+    original_child_ids = list(po.child_kanban_card_ids)
+
+    completed = run_architect_reconcile_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        reconcile_packet=architect_reconcile_packet(po.production_order_id),
+    )
+
+    assert completed.current_state == "ARCHITECT_ACCEPTED"
+    assert completed.current_owner_profile == "default"
+    _assert_six_card_graph_preserved(conn, completed, original_child_ids)
+
+    reconcile_card = kb.get_task(conn, original_child_ids[4])
+    final_card = kb.get_task(conn, original_child_ids[5])
+    assert reconcile_card is not None
+    assert final_card is not None
+    assert reconcile_card.body is not None
+    assert final_card.body is not None
+    assert "--- RESULT PACKET ---" in reconcile_card.body
+    assert '"owner_profile": "architect_os"' in reconcile_card.body
+    assert "--- HANDOFF PACKET ---" in final_card.body
+    assert '"to_profile": "default"' in final_card.body
+    assert final_card.status == "ready"
+
+    event_types = _po_event_types(conn, po.production_order_id)
+    assert event_types[-3:] == [
+        "architect_reconcile_started",
+        "architect_reconcile_completed",
+        "handoff_created",
+    ]
+
+
+def test_default_final_review_bridge_moves_existing_order_to_done(conn, sample_brief):
+    po = create_architect_accepted_order(conn, sample_brief)
+    original_child_ids = list(po.child_kanban_card_ids)
+
+    completed = run_default_final_review_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        final_packet=final_review_packet(po.production_order_id),
+    )
+
+    assert completed.current_state == "DONE"
+    assert completed.current_owner_profile == "default"
+    assert completed.final_status == "DONE"
+    _assert_six_card_graph_preserved(conn, completed, original_child_ids)
+
+    final_card = kb.get_task(conn, original_child_ids[5])
+    assert final_card is not None
+    assert final_card.body is not None
+    assert "--- RESULT PACKET ---" in final_card.body
+    assert '"owner_profile": "default"' in final_card.body
+    assert final_card.status == "done"
+
+    event_types = _po_event_types(conn, po.production_order_id)
+    assert event_types[-3:] == [
+        "default_final_review_started",
+        "default_final_review_completed",
+        "workflow_completed",
+    ]
+
+
+def test_full_happy_path_chain_from_dev_complete_to_done(conn, sample_brief):
+    po = create_dev_complete_order(conn, sample_brief)
+    original_parent_id = po.parent_kanban_card_id
+    original_child_ids = list(po.child_kanban_card_ids)
+
+    po = run_auditos_review_complete_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        review_packet=audit_review_packet(po.production_order_id),
+    )
+    po = run_architect_reconcile_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        reconcile_packet=architect_reconcile_packet(po.production_order_id),
+    )
+    po = run_default_final_review_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        final_packet=final_review_packet(po.production_order_id),
+    )
+
+    assert po.current_state == "DONE"
+    assert po.current_owner_profile == "default"
+    assert po.parent_kanban_card_id == original_parent_id
+    _assert_six_card_graph_preserved(conn, po, original_child_ids)
+    assert po.repo_or_workspace == sample_brief["target repo or workspace"]
+    assert any(s.to_state == "AUDIT_REVIEW" for s in po.stage_history)
+    assert any(s.to_state == "AUDIT_PASSED" for s in po.stage_history)
+    assert any(s.to_state == "ARCHITECT_RECONCILE" for s in po.stage_history)
+    assert any(s.to_state == "ARCHITECT_ACCEPTED" for s in po.stage_history)
+    assert any(s.to_state == "DEFAULT_FINAL_REVIEW" for s in po.stage_history)
+    assert any(s.to_state == "DONE" for s in po.stage_history)
+
+    event_types = _po_event_types(conn, po.production_order_id)
+    assert "audit_review_completed" in event_types
+    assert "architect_reconcile_completed" in event_types
+    assert "default_final_review_completed" in event_types
+    assert "workflow_completed" in event_types
+    assert event_types.count("handoff_created") >= 5
+
+
+@pytest.mark.parametrize(
+    ("po_action", "file_attr", "expected"),
+    [
+        ("audit-complete", "review_file", "--review-file is required"),
+        ("architect-reconcile", "reconcile_file", "--reconcile-file is required"),
+        ("final-review", "final_file", "--final-file is required"),
+    ],
+)
+def test_remaining_bridge_cli_commands_require_packet_files(capsys, po_action, file_attr, expected):
+    args = {
+        "po_action": po_action,
+        "production_order_id": "PO-20260525-test",
+        "board": None,
+        "json": False,
+        "review_file": None,
+        "reconcile_file": None,
+        "final_file": None,
+    }
+    args[file_attr] = None
+
+    rc = _cmd_production_order(argparse.Namespace(**args))
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert expected in captured.err
+
+
+@pytest.mark.parametrize(
+    ("bridge_name", "po_factory", "packet_factory", "runner", "mutator", "expected_message"),
+    [
+        ("audit", create_dev_complete_order, audit_review_packet, run_auditos_review_complete_bridge, lambda p: p.pop("summary"), "summary"),
+        ("audit", create_dev_complete_order, audit_review_packet, run_auditos_review_complete_bridge, lambda p: p.__setitem__("production_order_id", "PO-wrong"), "production_order_id"),
+        ("audit", create_dev_complete_order, audit_review_packet, run_auditos_review_complete_bridge, lambda p: p.__setitem__("owner_profile", "dev_os"), "owner_profile"),
+        ("audit", create_dev_complete_order, audit_review_packet, run_auditos_review_complete_bridge, lambda p: p.__setitem__("source_state", "ARCHITECT_READY_FOR_DEV"), "source_state"),
+        ("audit", create_dev_complete_order, audit_review_packet, run_auditos_review_complete_bridge, lambda p: p.__setitem__("verdict", "FAIL"), "happy-path"),
+        ("reconcile", create_audit_passed_order, architect_reconcile_packet, run_architect_reconcile_bridge, lambda p: p.pop("summary"), "summary"),
+        ("reconcile", create_audit_passed_order, architect_reconcile_packet, run_architect_reconcile_bridge, lambda p: p.__setitem__("production_order_id", "PO-wrong"), "production_order_id"),
+        ("reconcile", create_audit_passed_order, architect_reconcile_packet, run_architect_reconcile_bridge, lambda p: p.__setitem__("owner_profile", "audit_os"), "owner_profile"),
+        ("reconcile", create_audit_passed_order, architect_reconcile_packet, run_architect_reconcile_bridge, lambda p: p.__setitem__("source_state", "AUDIT_REVIEW"), "source_state"),
+        ("reconcile", create_audit_passed_order, architect_reconcile_packet, run_architect_reconcile_bridge, lambda p: p.__setitem__("reconcile_result", "rejected"), "happy-path"),
+        ("final", create_architect_accepted_order, final_review_packet, run_default_final_review_bridge, lambda p: p.pop("summary"), "summary"),
+        ("final", create_architect_accepted_order, final_review_packet, run_default_final_review_bridge, lambda p: p.__setitem__("production_order_id", "PO-wrong"), "production_order_id"),
+        ("final", create_architect_accepted_order, final_review_packet, run_default_final_review_bridge, lambda p: p.__setitem__("owner_profile", "audit_os"), "owner_profile"),
+        ("final", create_architect_accepted_order, final_review_packet, run_default_final_review_bridge, lambda p: p.__setitem__("source_state", "ARCHITECT_RECONCILE"), "source_state"),
+        ("final", create_architect_accepted_order, final_review_packet, run_default_final_review_bridge, lambda p: p.__setitem__("final_status", "rejected"), "happy-path"),
+    ],
+)
+def test_remaining_bridge_packet_failures_do_not_mutate_state(
+    conn,
+    sample_brief,
+    bridge_name,
+    po_factory,
+    packet_factory,
+    runner,
+    mutator,
+    expected_message,
+):
+    po = po_factory(conn, sample_brief)
+    original_state = po.current_state
+    original_owner = po.current_owner_profile
+    original_event_count = conn.execute(
+        "SELECT COUNT(*) AS n FROM production_order_events WHERE production_order_id = ?",
+        (po.production_order_id,),
+    ).fetchone()["n"]
+    original_bodies = {
+        cid: kb.get_task(conn, cid).body
+        for cid in po.child_kanban_card_ids
+        if kb.get_task(conn, cid) is not None
+    }
+    packet = packet_factory(po.production_order_id)
+    mutator(packet)
+
+    with pytest.raises(ValueError, match=expected_message):
+        if bridge_name == "audit":
+            runner(conn, production_order_id=po.production_order_id, review_packet=packet)
+        elif bridge_name == "reconcile":
+            runner(conn, production_order_id=po.production_order_id, reconcile_packet=packet)
+        else:
+            runner(conn, production_order_id=po.production_order_id, final_packet=packet)
+
+    refreshed = [
+        order for order in list_production_orders(conn)
+        if order.production_order_id == po.production_order_id
+    ][0]
+    refreshed_event_count = conn.execute(
+        "SELECT COUNT(*) AS n FROM production_order_events WHERE production_order_id = ?",
+        (po.production_order_id,),
+    ).fetchone()["n"]
+    assert refreshed.current_state == original_state
+    assert refreshed.current_owner_profile == original_owner
+    assert refreshed.child_kanban_card_ids == po.child_kanban_card_ids
+    assert refreshed_event_count == original_event_count
+    for cid, body in original_bodies.items():
+        task = kb.get_task(conn, cid)
+        assert task is not None
+        assert task.body == body
+
+
+def test_remaining_bridge_cli_json_outputs(capsys, conn, tmp_path, sample_brief):
+    po = create_dev_complete_order(conn, sample_brief)
+    audit_path = tmp_path / "audit.json"
+    audit_path.write_text(json.dumps(audit_review_packet(po.production_order_id)), encoding="utf-8")
+
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="audit-complete",
+        production_order_id=po.production_order_id,
+        board=None,
+        review_file=str(audit_path),
+        json=True,
+    ))
+    captured = capsys.readouterr()
+    assert rc == 0
+    parsed = json.loads(captured.out)
+    assert parsed["current_state"] == "AUDIT_PASSED"
+    assert parsed["current_owner_profile"] == "architect_os"
+
+    reconcile_path = tmp_path / "reconcile.json"
+    reconcile_path.write_text(
+        json.dumps(architect_reconcile_packet(po.production_order_id)),
+        encoding="utf-8",
+    )
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="architect-reconcile",
+        production_order_id=po.production_order_id,
+        board=None,
+        reconcile_file=str(reconcile_path),
+        json=True,
+    ))
+    captured = capsys.readouterr()
+    assert rc == 0
+    parsed = json.loads(captured.out)
+    assert parsed["current_state"] == "ARCHITECT_ACCEPTED"
+    assert parsed["current_owner_profile"] == "default"
+
+    final_path = tmp_path / "final.json"
+    final_path.write_text(json.dumps(final_review_packet(po.production_order_id)), encoding="utf-8")
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="final-review",
+        production_order_id=po.production_order_id,
+        board=None,
+        final_file=str(final_path),
+        json=True,
+    ))
+    captured = capsys.readouterr()
+    assert rc == 0
+    parsed = json.loads(captured.out)
+    assert parsed["current_state"] == "DONE"
+    assert parsed["current_owner_profile"] == "default"
+
+
+def test_completed_workflow_show_events_json_is_strict_json(capsys, conn, sample_brief):
+    po = create_architect_accepted_order(conn, sample_brief)
+    po = run_default_final_review_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        final_packet=final_review_packet(po.production_order_id),
+    )
+
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="show",
+        production_order_id=po.production_order_id,
+        board=None,
+        events=True,
+        json=True,
+    ))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    parsed = json.loads(captured.out)
+    assert captured.err == ""
+    assert parsed["current_state"] == "DONE"
+    assert parsed["current_owner_profile"] == "default"
+    event_types = [event["event_type"] for event in parsed["events"]]
+    assert "audit_review_completed" in event_types
+    assert "architect_reconcile_completed" in event_types
+    assert "default_final_review_completed" in event_types
+    assert "workflow_completed" in event_types
+    assert "\n  Events (" not in captured.out
+
+
+def test_completed_workflow_show_events_text_remains_human_readable(capsys, conn, sample_brief):
+    po = create_architect_accepted_order(conn, sample_brief)
+    po = run_default_final_review_bridge(
+        conn,
+        production_order_id=po.production_order_id,
+        final_packet=final_review_packet(po.production_order_id),
+    )
+
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="show",
+        production_order_id=po.production_order_id,
+        board=None,
+        events=True,
+        json=False,
+    ))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "Events (" in captured.out
+    assert "audit_review_completed" in captured.out
+    assert "architect_reconcile_completed" in captured.out
+    assert "default_final_review_completed" in captured.out
+    assert "workflow_completed" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# List / Status
+# ---------------------------------------------------------------------------
+
+
+def test_list_production_orders(conn, sample_brief):
+    """List returns created production orders."""
+    po = create_production_order(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+    )
+    create_production_kanban_graph(conn, po)
+
+    orders = list_production_orders(conn)
+    found = [o for o in orders if o.production_order_id == po.production_order_id]
+    assert len(found) == 1
+    assert found[0].title == sample_brief["title"]
+
+
+def test_reconstructed_order_includes_children_repo_and_stage_history(conn, sample_brief):
+    """List/show reconstruction returns a trustworthy runtime view after create."""
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+
+    reconstructed = [
+        o for o in list_production_orders(conn)
+        if o.production_order_id == po.production_order_id
+    ][0]
+
+    assert reconstructed.child_kanban_card_ids == po.child_kanban_card_ids
+    assert len(reconstructed.child_kanban_card_ids) == 6
+    assert reconstructed.repo_or_workspace == sample_brief["target repo or workspace"]
+    assert reconstructed.stage_history
+    assert any(s.to_state == "ORCHESTRATOR_TRIAGE" for s in reconstructed.stage_history)
+
+
+def test_reconstructed_order_uses_snake_case_repo_alias(conn, snake_case_brief):
+    """Reconstruction populates repo/workspace from snake_case brief metadata."""
+    po = run_full_bridge(
+        conn,
+        title=snake_case_brief["title"],
+        source_brief=json.dumps(snake_case_brief),
+        priority_lane="Hermes OS",
+        repo_or_workspace=snake_case_brief["target_repo_or_workspace"],
+    )
+
+    reconstructed = [
+        o for o in list_production_orders(conn)
+        if o.production_order_id == po.production_order_id
+    ][0]
+
+    assert reconstructed.repo_or_workspace == snake_case_brief["target_repo_or_workspace"]
+
+
+def test_production_order_show_events_json_is_strict_json(capsys, conn, sample_brief):
+    """``show --events --json`` emits one strict JSON object with events embedded."""
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="show",
+        production_order_id=po.production_order_id,
+        board=None,
+        events=True,
+        json=True,
+    ))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    parsed = json.loads(captured.out)
+    assert parsed["production_order_id"] == po.production_order_id
+    assert "\n  Events (" not in captured.out
+    assert "events" in parsed
+    assert [event["event_type"] for event in parsed["events"]] == [
+        "brief_approved",
+        "production_order_created",
+        "kanban_graph_created",
+        "state_transitioned",
+        "handoff_created",
+    ]
+
+
+def test_production_order_show_events_text_still_prints_block(capsys, conn, sample_brief):
+    """``show --events`` keeps human-readable event output outside JSON mode."""
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+        priority_lane="Relay",
+        repo_or_workspace=sample_brief["target repo or workspace"],
+    )
+
+    rc = _cmd_production_order(argparse.Namespace(
+        po_action="show",
+        production_order_id=po.production_order_id,
+        board=None,
+        events=True,
+        json=False,
+    ))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "\n  Events (5):" in captured.out
+    assert "brief_approved" in captured.out
+    assert "handoff_created" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# Negative Tests
+# ---------------------------------------------------------------------------
+
+
+def test_kanban_card_without_parent_exists_independently(conn):
+    """A regular Kanban task can exist without a production order."""
+    task_id = kb.create_task(conn, title="Regular task")
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    assert task.production_order_id is None
+    assert task.current_state is None
+
+
+def test_new_columns_null_on_existing_tasks(conn):
+    """Existing (non-PO) tasks have NULL for production_order_id and current_state."""
+    task_id = kb.create_task(conn, title="Regular task")
+
+    row = conn.execute(
+        "SELECT production_order_id, current_state FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    assert row["production_order_id"] is None
+    assert row["current_state"] is None
+
+
+def test_empty_brief_rejected(conn):
+    """Empty/empty brief fields are caught by validate_brief."""
+    brief = {}
+    missing = validate_brief(brief)
+    assert len(missing) == 9
+
+
+def test_production_order_duplicate_id_is_unique():
+    """Two consecutive calls produce different IDs."""
+    a = generate_production_order_id()
+    b = generate_production_order_id()
+    assert a != b
+
+
+def test_approval_boundary_none(conn, sample_brief):
+    """Bridge does NOT enter BLOCKED_NEEDS_JARREN for internal operations."""
+    po = run_full_bridge(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+    )
+    assert po.current_state != "BLOCKED_NEEDS_JARREN"
+    assert po.blockers == []
+
+
+def test_handoff_packet_missing_field(conn, sample_brief):
+    """Handoff packet always has all required fields (template is complete)."""
+    po = create_production_order(
+        conn,
+        title=sample_brief["title"],
+        source_brief=json.dumps(sample_brief),
+    )
+    handoff = create_orchestrator_handoff(po)
+    required = [
+        "production_order_id", "from_profile", "to_profile",
+        "current_state", "requested_next_state", "objective",
+        "source_truth", "stop_conditions", "approval_required_before",
+        "evidence_required",
+    ]
+    for field in required:
+        assert field in handoff, f"Missing required field: {field}"
+        assert handoff[field], f"Empty required field: {field}"
+
+
+# ---------------------------------------------------------------------------
+# Full Bridge with Fixture Files
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def fixture_path() -> Path:
+    """Path to test fixture directory."""
+    return Path(__file__).parent.parent / "fixtures" / "production-workflow"
+
+
+def test_full_bridge_with_good_fixture(conn, fixture_path):
+    """accepted-good-brief.json fixture creates a full production order."""
+    path = fixture_path / "accepted-good-brief.json"
+    assert path.exists(), f"Fixture not found: {path}"
+
+    brief = json.loads(path.read_text())
+    po = run_full_bridge(
+        conn,
+        title=brief.get("title", brief.get("objective", "Untitled")),
+        source_brief=json.dumps(brief, indent=2),
+        priority_lane=brief.get("priority_lane", "Hermes OS"),
+        repo_or_workspace=brief.get("target repo or workspace", ""),
+    )
+
+    assert po.production_order_id.startswith("PO-")
+    assert po.current_state == "ORCHESTRATOR_TRIAGE"
+    assert len(po.child_kanban_card_ids) == 6
+
+
+def test_vague_brief_blocked(conn, fixture_path):
+    """rejected-vague-brief.json has missing 'scope' field.
+
+    Note: validate_brief catches the missing field BEFORE any bridge
+    side effects. This test verifies that the bridge would block.
+    """
+    path = fixture_path / "rejected-vague-brief.json"
+    assert path.exists()
+
+    brief = json.loads(path.read_text())
+    missing = validate_brief(brief)
+    assert "scope" in missing or "out of scope" in missing
+
+
+def test_ambiguous_approval_detected():
+    """Non-explicit approval phrase is rejected by detect_approval_phrase."""
+    # A message like "approved" (bare) is not sufficient
+    assert detect_approval_phrase("approved") is None
+    assert detect_approval_phrase("looks good") is None
+
+
+def test_skill_only_request_no_side_effects(conn, fixture_path):
+    """skill-only-request.json: the bridge does NOT create side effects
+    unless explicitly routed through a production order.
+
+    Note: In Slice 4, the bridge is called intentionally (approved brief
+    + explicit bridge invocation). This test verifies that even with a
+    valid brief, no production order is created unless the user invokes
+    the bridge.
+    """
+    path = fixture_path / "skill-only-request.json"
+    assert path.exists()
+
+    brief = json.loads(path.read_text())
+    # Valid brief - would pass validation
+    missing = validate_brief(brief)
+    assert missing == [], f"Fixture should be valid but has missing: {missing}"
+
+    # But if we DON'T call create_production_order, no PO exists
+    orders = list_production_orders(conn)
+    matching = [o for o in orders if o.title == brief.get("objective")]
+    assert len(matching) == 0
+
+
+def test_dashboard_ignores_null_columns(conn):
+    """Dashboard helper includes new fields as null for non-PO tasks."""
+    task_id = kb.create_task(conn, title="Non-PO task")
+
+    # The _task_to_dict in kanban.py includes production_order_id and
+    # current_state, both None for non-PO tasks
+    task = kb.get_task(conn, task_id)
+    assert task.production_order_id is None
+    assert task.current_state is None
+
+    # Kanban db list_tasks also works
+    tasks = kb.list_tasks(conn)
+    assert any(t.id == task_id for t in tasks)
+    non_po = [t for t in tasks if t.id == task_id]
+    assert len(non_po) == 1
+    assert non_po[0].production_order_id is None
+
+
+def test_base36_random():
+    """base36 random string has correct length and character set."""
+    chars = "0123456789abcdefghijklmnopqrstuvwxyz"
+    for length in [1, 4, 8]:
+        result = _base36_random(length)
+        assert len(result) == length
+        assert all(c in chars for c in result)
