@@ -899,10 +899,15 @@ function AutomationPosturePanel({ jobs }: { jobs: CronJob[] }) {
                 Copies a chat command for Jenny review. It does not pause, remove, trigger, edit cron, or restart anything.
               </div>
             </div>
-            <Button onClick={copyPauseProposal} disabled={!needsReview.length} className="gap-2">
-              <Clipboard className="h-4 w-4" />
-              {copyState === "copied" ? "Copied proposal" : copyState === "failed" ? "Copy failed" : "Copy pause proposal"}
-            </Button>
+            <button
+              type="button"
+              onClick={copyPauseProposal}
+              disabled={!needsReview.length}
+              className="font-readable-ui inline-flex items-center justify-center gap-2 rounded-md bg-midground px-4 py-2.5 text-sm font-semibold leading-normal tracking-normal text-background-base shadow-[inset_-1px_-1px_0_0_#00000080,inset_1px_1px_0_0_#ffffff80] transition-colors hover:bg-midground/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-midground/50 disabled:pointer-events-none disabled:bg-midground/15 disabled:text-midground/60 disabled:shadow-none"
+            >
+              <Clipboard className="h-4 w-4 shrink-0" />
+              <span>{copyState === "copied" ? "Copied proposal" : copyState === "failed" ? "Copy failed" : "Copy pause proposal"}</span>
+            </button>
           </div>
         </div>
       </CardContent>
