@@ -87,15 +87,17 @@ WORKFLOW_SPEC_SOURCE = (
     "hermes-production-workflow-v1.md"
 )
 
-# Only implemented runtime bridge transitions are wired. Remaining transitions
-# become live when each downstream profile uses the state machine.
+# Only implemented runtime bridge transitions are wired. Remaining failure-loop
+# transitions become live when each downstream profile uses the full state
+# machine.
 VALID_TRANSITIONS: dict[str, set[str]] = {
     "BRIEF_DRAFTED":                {"ACTION_APPROVED"},
     "ACTION_APPROVED":              {"PRODUCTION_ORDER_CREATED"},
     "PRODUCTION_ORDER_CREATED":     {"ORCHESTRATOR_TRIAGE"},
     "ORCHESTRATOR_TRIAGE":          {"ARCHITECT_SPEC"},
     "ARCHITECT_SPEC":               {"ARCHITECT_READY_FOR_DEV"},
-    "ARCHITECT_READY_FOR_DEV":      {"DEV_COMPLETE"},
+    "ARCHITECT_READY_FOR_DEV":      {"DEV_IMPLEMENTING"},
+    "DEV_IMPLEMENTING":             {"DEV_COMPLETE"},
     "DEV_COMPLETE":                 {"AUDIT_REVIEW"},
     "AUDIT_REVIEW":                 {"AUDIT_PASSED"},
     "AUDIT_PASSED":                 {"ARCHITECT_RECONCILE"},
@@ -111,6 +113,7 @@ STATE_OWNERS: dict[str, str] = {
     "ORCHESTRATOR_TRIAGE":          "orchestrator_os",
     "ARCHITECT_SPEC":               "architect_os",
     "ARCHITECT_READY_FOR_DEV":      "dev_os",
+    "DEV_IMPLEMENTING":             "dev_os",
     "DEV_COMPLETE":                 "audit_os",
     "AUDIT_REVIEW":                 "audit_os",
     "AUDIT_PASSED":                 "architect_os",
@@ -242,7 +245,7 @@ REQUIRED_ARCHITECT_SPEC_PACKET_FIELDS = {
 DEVOS_BUILD_RESULT_TEMPLATE: dict[str, Any] = {
     "from_profile": "dev_os",
     "to_profile": "audit_os",
-    "from_state": "ARCHITECT_READY_FOR_DEV",
+    "from_state": "DEV_IMPLEMENTING",
     "to_state": "DEV_COMPLETE",
     "reference_workflow_spec": WORKFLOW_SPEC_SOURCE,
 }
@@ -1759,7 +1762,7 @@ def run_devos_complete_bridge(
     production_order_id: str,
     devos_packet: dict[str, Any],
 ) -> ProductionOrder:
-    """Advance ARCHITECT_READY_FOR_DEV → DEV_COMPLETE for an existing order."""
+    """Advance ARCHITECT_READY_FOR_DEV → DEV_IMPLEMENTING → DEV_COMPLETE."""
     matches = [
         order for order in list_production_orders(conn)
         if order.production_order_id == production_order_id
@@ -1808,6 +1811,18 @@ def run_devos_complete_bridge(
     audit_handoff = create_auditos_handoff(po, packet)
 
     freeze_result_on_card(conn, devos_card_id, packet)
+
+    transition_state(
+        conn,
+        po,
+        "DEV_IMPLEMENTING",
+        "dev_os",
+        result="dev implementation started",
+        next_action="complete_dev_build",
+        card_id=po.parent_kanban_card_id,
+        event_type="dev_build_started",
+    )
+
     freeze_handoff_on_card(conn, auditos_card_id, audit_handoff)
 
     transition_state(
@@ -1825,7 +1840,7 @@ def run_devos_complete_bridge(
         conn,
         po.production_order_id,
         "handoff_created",
-        from_state="ARCHITECT_READY_FOR_DEV",
+        from_state="DEV_IMPLEMENTING",
         to_state="DEV_COMPLETE",
         owner_profile="dev_os",
         kanban_card_id=auditos_card_id,

@@ -505,7 +505,8 @@ def test_valid_state_transitions():
     assert validate_state_transition("ORCHESTRATOR_TRIAGE", "ARCHITECT_SPEC", "orchestrator_os")
     # ARCHITECT_SPEC -> ARCHITECT_READY_FOR_DEV
     assert validate_state_transition("ARCHITECT_SPEC", "ARCHITECT_READY_FOR_DEV", "architect_os")
-    assert validate_state_transition("ARCHITECT_READY_FOR_DEV", "DEV_COMPLETE", "dev_os")
+    assert validate_state_transition("ARCHITECT_READY_FOR_DEV", "DEV_IMPLEMENTING", "dev_os")
+    assert validate_state_transition("DEV_IMPLEMENTING", "DEV_COMPLETE", "dev_os")
     assert validate_state_transition("DEV_COMPLETE", "AUDIT_REVIEW", "audit_os")
     assert validate_state_transition("AUDIT_REVIEW", "AUDIT_PASSED", "audit_os")
     assert validate_state_transition("AUDIT_PASSED", "ARCHITECT_RECONCILE", "architect_os")
@@ -516,6 +517,10 @@ def test_valid_state_transitions():
 
 def test_invalid_state_transition_rejected():
     """Invalid transition raises StateTransitionError."""
+    # ARCHITECT_READY_FOR_DEV -> DEV_COMPLETE (skip DEV_IMPLEMENTING) - not wired
+    with pytest.raises(StateTransitionError):
+        validate_state_transition("ARCHITECT_READY_FOR_DEV", "DEV_COMPLETE", "dev_os")
+
     # DEV_IMPLEMENTING -> AUDIT_REVIEW (skip DEV_COMPLETE) - not wired in Slice 4
     with pytest.raises(StateTransitionError):
         validate_state_transition("DEV_IMPLEMENTING", "AUDIT_REVIEW", "dev_os")
@@ -1198,7 +1203,7 @@ def test_create_auditos_handoff_contains_expected_fields(conn, sample_brief):
     assert handoff["production_order_id"] == po.production_order_id
     assert handoff["from_profile"] == "dev_os"
     assert handoff["to_profile"] == "audit_os"
-    assert handoff["from_state"] == "ARCHITECT_READY_FOR_DEV"
+    assert handoff["from_state"] == "DEV_IMPLEMENTING"
     assert handoff["to_state"] == "DEV_COMPLETE"
     assert handoff["devos_summary"]
     assert handoff["implementation_artifacts"]
@@ -1226,7 +1231,11 @@ def test_devos_complete_bridge_moves_existing_order_to_dev_complete(conn, sample
     assert completed.child_kanban_card_ids == original_child_ids
     assert len(completed.child_kanban_card_ids) == 6
     assert any(
-        s.from_state == "ARCHITECT_READY_FOR_DEV" and s.to_state == "DEV_COMPLETE"
+        s.from_state == "ARCHITECT_READY_FOR_DEV" and s.to_state == "DEV_IMPLEMENTING"
+        for s in completed.stage_history
+    )
+    assert any(
+        s.from_state == "DEV_IMPLEMENTING" and s.to_state == "DEV_COMPLETE"
         for s in completed.stage_history
     )
 
@@ -1253,13 +1262,20 @@ def test_devos_complete_bridge_moves_existing_order_to_dev_complete(conn, sample
         "WHERE production_order_id = ? ORDER BY id",
         (po.production_order_id,),
     ).fetchall()
-    assert [event["event_type"] for event in events][-2:] == [
+    assert [event["event_type"] for event in events][-3:] == [
+        "dev_build_started",
         "dev_build_completed",
         "handoff_created",
     ]
-    assert events[-2]["from_state"] == "ARCHITECT_READY_FOR_DEV"
+    assert events[-3]["from_state"] == "ARCHITECT_READY_FOR_DEV"
+    assert events[-3]["to_state"] == "DEV_IMPLEMENTING"
+    assert events[-2]["from_state"] == "DEV_IMPLEMENTING"
     assert events[-2]["to_state"] == "DEV_COMPLETE"
+    assert events[-1]["from_state"] == "DEV_IMPLEMENTING"
+    assert events[-1]["to_state"] == "DEV_COMPLETE"
+    assert events[-3]["owner_profile"] == "dev_os"
     assert events[-2]["owner_profile"] == "dev_os"
+    assert events[-1]["owner_profile"] == "dev_os"
 
 
 @pytest.mark.parametrize(
@@ -1438,7 +1454,8 @@ def test_dev_complete_show_events_text_remains_human_readable(capsys, conn, samp
 
     captured = capsys.readouterr()
     assert rc == 0
-    assert "Events (11):" in captured.out
+    assert "Events (12):" in captured.out
+    assert "dev_build_started" in captured.out
     assert "dev_build_completed" in captured.out
     assert "handoff_created" in captured.out
     assert "dispatch_audit_os" not in captured.out
