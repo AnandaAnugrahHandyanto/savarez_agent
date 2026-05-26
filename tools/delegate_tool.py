@@ -560,6 +560,39 @@ _HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 40 * 30s = 1200s stuck on same tool → 
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
 
 
+def _clean_route_override(value: Any) -> Optional[str]:
+    """Sanitize per-call route override values from user input."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped if stripped else None
+    return None
+
+
+def _merge_delegation_route_config(
+    cfg: Optional[Dict[str, Any]],
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Merge per-call overrides into a delegation config dict."""
+    merged = dict(cfg or {})
+    if provider is not None:
+        merged["provider"] = provider
+        # A persistent direct endpoint would otherwise take precedence over
+        # provider resolution.  Per-call provider overrides should be complete
+        # route overrides, so clear direct-endpoint-only fields.
+        merged.pop("base_url", None)
+        merged.pop("api_key", None)
+        merged.pop("api_mode", None)
+    if model is not None:
+        merged["model"] = model
+    if reasoning_effort is not None:
+        merged["reasoning_effort"] = reasoning_effort
+    return merged
+
+
 # ---------------------------------------------------------------------------
 # Delegation progress event types
 # ---------------------------------------------------------------------------
@@ -1372,6 +1405,8 @@ def _build_child_agent(
     override_base_url: Optional[str] = None,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
+    # Reasoning effort override — per-call > delegation config > parent inherit
+    override_reasoning_effort: Optional[str] = None,
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
@@ -1380,6 +1415,7 @@ def _build_child_agent(
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
     quota_assessment: Optional[Dict[str, Any]] = None,
+    route_override_source: str = "delegation",
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1523,26 +1559,34 @@ def _build_child_agent(
         effective_provider = "copilot-acp"
         effective_api_mode = "chat_completions"
 
-    # Resolve reasoning config: delegation override > parent inherit
+    # Resolve reasoning config: per-call override > delegation config > parent inherit
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
     delegation_reasoning_applied = False
-    try:
-        delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
-        if delegation_effort:
-            from hermes_constants import parse_reasoning_effort
+    reasoning_override_applied = False
+    if override_reasoning_effort:
+        from hermes_constants import parse_reasoning_effort
+        parsed = parse_reasoning_effort(override_reasoning_effort)
+        if parsed is not None:
+            child_reasoning = parsed
+            reasoning_override_applied = True
+    if not reasoning_override_applied:
+        try:
+            delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
+            if delegation_effort:
+                from hermes_constants import parse_reasoning_effort
 
-            parsed = parse_reasoning_effort(delegation_effort)
-            if parsed is not None:
-                child_reasoning = parsed
-                delegation_reasoning_applied = True
-            else:
-                logger.warning(
-                    "Unknown delegation.reasoning_effort '%s', inheriting parent level",
-                    delegation_effort,
-                )
-    except Exception as exc:
-        logger.debug("Could not load delegation reasoning_effort: %s", exc)
+                parsed = parse_reasoning_effort(delegation_effort)
+                if parsed is not None:
+                    child_reasoning = parsed
+                    delegation_reasoning_applied = True
+                else:
+                    logger.warning(
+                        "Unknown delegation.reasoning_effort '%s', inheriting parent level",
+                        delegation_effort,
+                    )
+        except Exception as exc:
+            logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
     # Inherit the parent's fallback provider chain so subagents can recover
     # from rate-limits and credential exhaustion exactly like the top-level
@@ -1579,7 +1623,11 @@ def _build_child_agent(
     if model:
         route_reason_bits.append("delegation model override")
     if child_reasoning_effort:
-        route_reason_bits.append("delegation reasoning override" if delegation_reasoning_applied else "inherited reasoning")
+        route_reason_bits.append(
+            "per-call reasoning override" if reasoning_override_applied
+            else "delegation reasoning override" if delegation_reasoning_applied
+            else "inherited reasoning"
+        )
     route_reason = ", ".join(route_reason_bits) or "delegate_task default route"
     child_progress_cb = _build_child_progress_callback(
         task_index,
@@ -1661,7 +1709,7 @@ def _build_child_agent(
         override_provider
         or model
         or override_acp_command
-        or delegation_reasoning_applied
+        or reasoning_override_applied
     )
     setattr(child, "_orchestration_route_telemetry", {
         "action_type": "spawn_subagent",
@@ -1710,7 +1758,7 @@ def _build_child_agent(
         override_provider
         or model
         or override_acp_command
-        or delegation_reasoning_applied
+        or reasoning_override_applied
     )
     setattr(child, "_orchestration_route_telemetry", {
         "action_type": "spawn_subagent",
@@ -2709,6 +2757,9 @@ def delegate_task(
     context: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
@@ -2743,6 +2794,9 @@ def delegate_task(
 
     # Normalise the top-level role once; per-task overrides re-normalise.
     top_role = _normalize_role(role)
+    top_provider = _clean_route_override(provider)
+    top_model = _clean_route_override(model)
+    top_reasoning_effort = _clean_route_override(reasoning_effort)
 
     # Depth limit — configurable via delegation.max_spawn_depth,
     # default 2 for parity with the original MAX_DEPTH constant.
@@ -2813,58 +2867,82 @@ def delegate_task(
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
 
-    # Resolve delegation credentials (provider:model pair) only after cheap
-    # argument validation. Invalid tool calls should return validation errors
-    # without depending on the caller's provider auth state.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
+    # Resolve route credentials per task only after cheap argument validation.
+    # This lets one delegation call use different provider/model/effort choices
+    # for data-gathering leaves and premium synthesis leaves.
+    route_specs: List[Dict[str, Any]] = []
+    for i, task in enumerate(task_list):
+        task_provider = _clean_route_override(task.get("provider")) or top_provider
+        task_model = _clean_route_override(task.get("model")) or top_model
+        task_reasoning_effort = (
+            _clean_route_override(task.get("reasoning_effort"))
+            or top_reasoning_effort
+        )
+        route_cfg = _merge_delegation_route_config(
+            cfg,
+            provider=task_provider,
+            model=task_model,
+            reasoning_effort=task_reasoning_effort,
+        )
+        try:
+            creds = _resolve_delegation_credentials(route_cfg, parent_agent)
+        except ValueError as exc:
+            return tool_error(f"Task {i} route error: {exc}")
 
-    effective_provider_for_quota = creds.get("provider") or getattr(parent_agent, "provider", None)
-    effective_model_for_quota = creds.get("model") or getattr(parent_agent, "model", None)
-    effective_base_url_for_quota = creds.get("base_url") or getattr(parent_agent, "base_url", None)
-    effective_api_mode_for_quota = creds.get("api_mode") or getattr(parent_agent, "api_mode", None)
-    quota_assessment = _assess_delegate_route_quota(
-        provider=effective_provider_for_quota if isinstance(effective_provider_for_quota, str) else None,
-        model=effective_model_for_quota if isinstance(effective_model_for_quota, str) else None,
-        base_url=effective_base_url_for_quota if isinstance(effective_base_url_for_quota, str) else None,
-        api_mode=effective_api_mode_for_quota if isinstance(effective_api_mode_for_quota, str) else None,
-        parent_agent=parent_agent,
-        cfg=cfg,
-    )
-    if quota_assessment.get("decision") == "avoid":
-        diagnostic_route = {
-            "selected_route": "delegate_task",
-            "provider": quota_assessment.get("provider"),
-            "model": quota_assessment.get("model"),
-            "execution_mode": "delegate_task",
-            "quota_decision": quota_assessment,
-            "suggested_next_step": (
-                "Use direct tools, reduce fan-out, wait for reset, or configure "
-                "delegation.provider/model to a non-front-door lane. Set "
-                "delegation.allow_high_usage_delegation=true only for deliberate overrides."
-            ),
-        }
-        _append_delegate_route_telemetry(
-            "route.blocked",
-            status="blocked_quota",
-            action_type="spawn_subagent",
-            route={
-                "chosen_route": "delegate_task",
+        effective_provider_for_quota = creds.get("provider") or getattr(parent_agent, "provider", None)
+        effective_model_for_quota = creds.get("model") or getattr(parent_agent, "model", None)
+        effective_base_url_for_quota = creds.get("base_url") or getattr(parent_agent, "base_url", None)
+        effective_api_mode_for_quota = creds.get("api_mode") or getattr(parent_agent, "api_mode", None)
+        quota_assessment = _assess_delegate_route_quota(
+            provider=effective_provider_for_quota if isinstance(effective_provider_for_quota, str) else None,
+            model=effective_model_for_quota if isinstance(effective_model_for_quota, str) else None,
+            base_url=effective_base_url_for_quota if isinstance(effective_base_url_for_quota, str) else None,
+            api_mode=effective_api_mode_for_quota if isinstance(effective_api_mode_for_quota, str) else None,
+            parent_agent=parent_agent,
+            cfg=route_cfg,
+        )
+        if quota_assessment.get("decision") == "avoid":
+            diagnostic_route = {
+                "selected_route": "delegate_task",
                 "provider": quota_assessment.get("provider"),
                 "model": quota_assessment.get("model"),
                 "execution_mode": "delegate_task",
-            },
-            quota=quota_assessment,
-            retry={"retryable": True, "strategy": diagnostic_route["suggested_next_step"]},
-            diagnostic_route=diagnostic_route,
-        )
-        return tool_error(
-            "Delegation avoided to preserve premium/front-door capacity: "
-            f"{quota_assessment.get('reason')}. "
-            "Use direct tools, route delegation.provider/model to a non-front-door lane, "
-            "or explicitly enable delegation.allow_high_usage_delegation only if this delegation is necessary."
+                "quota_decision": quota_assessment,
+                "suggested_next_step": (
+                    "Use direct tools, reduce fan-out, wait for reset, route this "
+                    "task to a cheaper per-call provider/model, or set "
+                    "delegation.allow_high_usage_delegation=true only for deliberate overrides."
+                ),
+            }
+            _append_delegate_route_telemetry(
+                "route.blocked",
+                status="blocked_quota",
+                action_type="spawn_subagent",
+                route={
+                    "chosen_route": "delegate_task",
+                    "provider": quota_assessment.get("provider"),
+                    "model": quota_assessment.get("model"),
+                    "execution_mode": "delegate_task",
+                    "task_index": i,
+                },
+                quota=quota_assessment,
+                retry={"retryable": True, "strategy": diagnostic_route["suggested_next_step"]},
+                diagnostic_route=diagnostic_route,
+            )
+            return tool_error(
+                f"Task {i}: Delegation avoided to preserve premium/front-door capacity: "
+                f"{quota_assessment.get('reason')}. "
+                "Use direct tools, choose a cheaper per-call provider/model, "
+                "or explicitly enable delegation.allow_high_usage_delegation only if this delegation is necessary."
+            )
+
+        route_specs.append(
+            {
+                "creds": creds,
+                "reasoning_effort": task_reasoning_effort,
+                "provider_model_source": "per-call" if (task_provider or task_model) else "delegation",
+                "quota_assessment": quota_assessment,
+            }
         )
 
     overall_start = time.monotonic()
@@ -2888,6 +2966,8 @@ def delegate_task(
     try:
         for i, t in enumerate(task_list):
             task_acp_args = t.get("acp_args") if "acp_args" in t else None
+            route_spec = route_specs[i]
+            creds = route_spec["creds"]
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
@@ -2904,6 +2984,7 @@ def delegate_task(
                 override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
+                override_reasoning_effort=route_spec.get("reasoning_effort"),
                 override_acp_command=t.get("acp_command")
                 or acp_command
                 or creds.get("command"),
@@ -2913,7 +2994,8 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
-                quota_assessment=quota_assessment,
+                route_override_source=route_spec.get("provider_model_source"),
+                quota_assessment=route_spec.get("quota_assessment"),
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -3379,6 +3461,16 @@ def _build_top_level_description() -> str:
         "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
         "- Tasks that would flood your context with intermediate data\n"
         "- Parallel independent workstreams (research A and B simultaneously)\n\n"
+        "ROUTE OVERRIDES:\n"
+        "- Optional provider/model/reasoning_effort fields are transport-level "
+        "overrides, not prompt text. Top-level values apply to every child; "
+        "per-task values override the top level.\n"
+        "- Use them to decompose for best bang-for-buck, e.g. cheap/fast public "
+        "data gathering leaves on Nous DeepSeek V4 Flash with low effort, then "
+        "premium GPT/Codex xhigh only for final synthesis or genuinely hard reasoning.\n"
+        "- Do not route private, business-sensitive, security, PII, finance/legal, "
+        "or credential-adjacent context to public/free/cheap providers unless "
+        "the user explicitly authorizes that risk.\n\n"
         "WHEN NOT TO USE (use these instead):\n"
         "- Mechanical multi-step work with no reasoning needed -> use execute_code\n"
         "- Single tool call -> just call the tool directly\n"
@@ -3537,6 +3629,32 @@ DELEGATE_TASK_SCHEMA = {
                     "['terminal', 'file', 'web'] for full-stack tasks."
                 ),
             },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Optional transport-level provider override for this delegate_task call. "
+                    "Top-level value applies to all children unless a task overrides it. "
+                    "Examples: 'nous', 'openai-codex', 'anthropic'. Use only when privacy/risk gates allow."
+                ),
+            },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Optional transport-level model override for this delegate_task call. "
+                    "Top-level value applies to all children unless a task overrides it. "
+                    "Examples: 'deepseek/deepseek-v4-flash:free', 'gpt-5.5'. "
+                    "Use only when privacy/risk gates allow."
+                ),
+            },
+            "reasoning_effort": {
+                "type": "string",
+                "description": (
+                    "Optional reasoning effort override: 'minimal', 'low', 'medium', or 'xhigh'. "
+                    "Top-level value applies to all children unless a task overrides it. "
+                    "Use 'low'/'minimal' for cheap/bounded leaf collection work and "
+                    "'xhigh' for final synthesis, architecture analysis, or high-stakes judgment."
+                ),
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -3569,6 +3687,18 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "string",
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": "Per-task transport-level provider override. Overrides top-level 'provider'. Use only when privacy/risk gates allow.",
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": "Per-task transport-level model override. Overrides top-level 'model'. Use only when privacy/risk gates allow.",
+                        },
+                        "reasoning_effort": {
+                            "type": "string",
+                            "description": "Per-task reasoning effort override: 'minimal', 'low', 'medium', or 'xhigh'. Overrides top-level 'reasoning_effort'.",
                         },
                     },
                     "required": ["goal"],
