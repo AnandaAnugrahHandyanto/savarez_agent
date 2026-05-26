@@ -69,6 +69,9 @@ mini-swe-agent/
 .wrangler/
 cloudflare/**/.wrangler/
 
+# Local Hermes/agent-generated artifacts
+.hermes/uat/
+
 # Nix
 .direnv/
 .nix-stamps/
