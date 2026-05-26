@@ -164,6 +164,12 @@ def _validate_bundle_rel_path(rel_path: str) -> str:
     return _normalize_bundle_path(rel_path, field_name="bundle file path", allow_nested=True)
 
 
+def _is_path_redirect(path: Path) -> bool:
+    """True when ``path`` is a symlink or Windows directory junction."""
+    is_junction = getattr(path, "is_junction", None)
+    return bool(path.is_symlink() or (callable(is_junction) and is_junction()))
+
+
 # ---------------------------------------------------------------------------
 # GitHub Authentication
 # ---------------------------------------------------------------------------
@@ -2786,6 +2792,20 @@ def install_from_quarantine(
                 )
         except OSError:
             pass
+
+    # Reject symlinks inside the quarantined skill before moving it into the
+    # live skills tree. A malicious bundle could otherwise point outside the
+    # quarantine and leak local file contents when the installed skill is read.
+    for entry in quarantine_path.rglob("*"):
+        if not _is_path_redirect(entry):
+            continue
+        try:
+            rel = entry.relative_to(quarantine_resolved)
+        except ValueError:
+            rel = entry
+        raise ValueError(
+            f"Installed skill contains symlinks, which is not allowed: {rel}"
+        )
 
     install_dir.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(quarantine_path), str(install_dir))

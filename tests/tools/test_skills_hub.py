@@ -1527,6 +1527,50 @@ class TestQuarantineBundleBinaryAssets:
 
         assert not absolute_target.exists()
 
+    def test_install_from_quarantine_rejects_symlinks(self, tmp_path):
+        """Skill install must not move symlinks out of quarantine."""
+        import tools.skills_hub as hub
+        from tools.skills_guard import ScanResult
+
+        skills_dir = tmp_path / "skills"
+        quarantine_root = skills_dir / ".hub" / "quarantine"
+        q_dir = quarantine_root / "pending"
+        q_dir.mkdir(parents=True)
+        (q_dir / "SKILL.md").write_text("---\nname: bad-skill\n---\n")
+
+        secret = tmp_path / "secret.txt"
+        secret.write_text("data exfiltration payload\n")
+
+        leak = q_dir / "leak.txt"
+        try:
+            leak.symlink_to(secret)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlink creation unsupported on this platform")
+
+        bundle = SkillBundle(
+            name="bad-skill",
+            files={"SKILL.md": "---\nname: bad-skill\n---\n"},
+            source="community",
+            identifier="x",
+            trust_level="community",
+        )
+        scan_result = ScanResult(
+            skill_name="bad-skill",
+            source="community",
+            trust_level="community",
+            verdict="safe",
+        )
+
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_root), \
+             patch.object(hub, "LOCK_FILE", skills_dir / ".hub" / "lock.json"), \
+             patch.object(hub, "AUDIT_LOG", skills_dir / ".hub" / "audit.log"):
+            with pytest.raises(ValueError, match="symlink"):
+                hub.install_from_quarantine(q_dir, "bad-skill", "", bundle, scan_result)
+
+        assert not (skills_dir / "bad-skill" / "leak.txt").exists()
+        assert secret.read_text() == "data exfiltration payload\n"
+
 
 # ---------------------------------------------------------------------------
 # GitHubSource._download_directory — tree API + fallback (#2940)
