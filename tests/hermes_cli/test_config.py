@@ -169,7 +169,7 @@ class TestSaveAndLoadRoundtrip:
             assert reloaded["model"] == "test/custom-model"
             assert reloaded["agent"]["max_turns"] == 42
 
-            saved = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
             assert saved["agent"]["max_turns"] == 42
             assert "max_turns" not in saved
 
@@ -177,7 +177,7 @@ class TestSaveAndLoadRoundtrip:
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             save_config({"model": "test/custom-model", "max_turns": 37})
 
-            saved = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
             assert saved["agent"]["max_turns"] == 37
             assert "max_turns" not in saved
 
@@ -324,7 +324,7 @@ class TestSaveConfigAtomicity:
 
             # Read raw YAML to verify it's valid and correct
             config_path = tmp_path / "config.yaml"
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 raw = yaml.safe_load(f)
             assert raw["model"] == "test/atomic-model"
             assert raw["agent"]["max_turns"] == 77

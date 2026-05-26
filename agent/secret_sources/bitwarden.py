@@ -160,6 +160,7 @@ def _write_disk_cache(cache_key: _CacheKey, entry: "_CachedFetch",
                 json.dump(payload, f)
             os.chmod(tmp, 0o600)
             os.replace(tmp, path)
+            os.chmod(path, 0o600)
         except BaseException:
             try:
                 os.unlink(tmp)

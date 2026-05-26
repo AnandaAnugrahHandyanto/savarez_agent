@@ -603,9 +603,13 @@ def test_disk_cache_written_after_first_fetch(monkeypatch, tmp_path):
 
     cache_path = bw._disk_cache_path(home)
     assert cache_path.exists()
-    # Mode must be 0600 — disk cache contains plaintext secret values
+    # POSIX must expose 0600. Windows reports coarse DOS mode bits here,
+    # even after chmod(0600), so tests accept the native st_mode value.
     mode = os.stat(cache_path).st_mode & 0o777
-    assert mode == 0o600, f"expected 0o600, got 0o{mode:o}"
+    if os.name == "nt":
+        assert mode in {0o600, 0o666}, f"expected Windows-compatible mode, got 0o{mode:o}"
+    else:
+        assert mode == 0o600, f"expected 0o600, got 0o{mode:o}"
 
     # File contents: key (fingerprint not raw token), secrets dict, fetched_at
     payload_disk = json.loads(cache_path.read_text())

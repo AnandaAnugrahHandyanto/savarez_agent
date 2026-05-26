@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from hermes_cli.windows_env import ensure_windows_subprocess_env
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -59,6 +61,7 @@ def _run_gateway_import(hermes_home: Path, initial_env: dict[str, str]) -> dict[
     for k in ("PATH", "PYTHONPATH", "VIRTUAL_ENV", "HOME"):
         if k in os.environ and k not in env:
             env[k] = os.environ[k]
+    ensure_windows_subprocess_env(env)
 
     result = subprocess.run(
         [sys.executable, "-c", script],

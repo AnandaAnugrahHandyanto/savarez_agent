@@ -47,6 +47,10 @@ import uuid
 _IS_WINDOWS = platform.system() == "Windows"
 from typing import Any, Dict, List, Optional
 
+from hermes_cli.windows_env import (
+    WINDOWS_ESSENTIAL_ENV_VARS as _SHARED_WINDOWS_ESSENTIAL_ENV_VARS,
+)
+
 # Availability gate.  On Windows we fall back to loopback TCP for the
 # sandbox RPC transport (AF_UNIX is unreliable on Windows Python) — see
 # ``_use_tcp_rpc`` in ``_execute_local`` below.  That makes execute_code
@@ -83,36 +87,7 @@ _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
 _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
                       "PASSWD", "AUTH")
 
-# Windows-only: a handful of variables are required by the OS/CRT itself.
-# Without them, even stdlib calls like ``socket.socket()`` fail with
-# WinError 10106 (Winsock can't locate mswsock.dll) and ``subprocess``
-# can't resolve cmd.exe.  These are well-known OS paths, not secrets, so
-# we allow them through by exact name.  The _SECRET_SUBSTRINGS block
-# still runs as a safety net (none of these names match those substrings).
-_WINDOWS_ESSENTIAL_ENV_VARS = frozenset({
-    "SYSTEMROOT",       # %SYSTEMROOT%\System32 — Winsock needs this
-    "SYSTEMDRIVE",      # C: (or wherever Windows lives)
-    "WINDIR",           # usually same as SYSTEMROOT
-    "COMSPEC",          # cmd.exe path — subprocess shell=True needs it
-    "PATHEXT",          # .COM;.EXE;.BAT;... — shell lookup
-    "OS",               # "Windows_NT" — some tools gate on this
-    "PROCESSOR_ARCHITECTURE",
-    "NUMBER_OF_PROCESSORS",
-    "PUBLIC",           # C:\Users\Public
-    "ALLUSERSPROFILE",  # C:\ProgramData — some stdlib paths use it
-    "PROGRAMDATA",      # C:\ProgramData
-    "PROGRAMFILES",
-    "PROGRAMFILES(X86)",
-    "PROGRAMW6432",
-    "APPDATA",          # %USERPROFILE%\AppData\Roaming — Python uses it
-    "LOCALAPPDATA",     # %USERPROFILE%\AppData\Local
-    "USERPROFILE",      # C:\Users\<name> — Python's expanduser uses it
-    "USERDOMAIN",
-    "USERNAME",
-    "HOMEDRIVE",        # C:
-    "HOMEPATH",         # \Users\<name>
-    "COMPUTERNAME",
-})
+_WINDOWS_ESSENTIAL_ENV_VARS = _SHARED_WINDOWS_ESSENTIAL_ENV_VARS
 
 
 def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):

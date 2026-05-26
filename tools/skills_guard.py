@@ -766,6 +766,8 @@ def content_hash(skill_path: Path) -> str:
         for f in files:
             try:
                 rel_path = f.relative_to(skill_path).as_posix()
+                h.update(rel_path.encode("utf-8"))
+                h.update(b"\x00")
                 h.update(canonical_content_bytes(rel_path, f.read_bytes()))
             except OSError:
                 continue
