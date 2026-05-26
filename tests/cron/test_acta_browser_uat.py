@@ -75,7 +75,7 @@ def _valid_outputs_dom() -> str:
           <span>CONF HIGH</span>
           <span>SOURCE morning_digest JOB daily ID 2026-05-25_09-00-00</span>
           <span>SCHEDULE daily brief OUTPUT 2h ago</span>
-          <a>OPEN</a>
+          <a href="/acta/outputs/morning-operator-brief">OPEN</a>
           <span>UNREAD</span>
           <button>Mark read</button>
         </article>
@@ -269,6 +269,118 @@ def test_validate_jobs_contract_fails_on_acta_sign_in_wall():
 
 def test_validate_outputs_contract_accepts_operator_useful_outputs_dom():
     assert acta_browser_uat._validate_outputs_contract(_valid_outputs_dom()) == []
+
+
+def test_validate_outputs_contract_accepts_production_style_data_open_url():
+    dom = """
+    <html><body>
+      <h1>Outputs</h1>
+      <article class="output-row" data-open-url="/acta/outputs/morning-operator-brief">
+        <h2>Morning operator brief</h2>
+        <span>CONF HIGH</span>
+        <span>SOURCE morning_digest JOB daily ID 2026-05-25_09-00-00</span>
+        <span>SCHEDULE daily brief OUTPUT 2h ago</span>
+        <span>SIGNED</span>
+        <span>UNREAD</span>
+        <button>Mark read</button>
+      </article>
+    </body></html>
+    """
+
+    assert acta_browser_uat._validate_outputs_contract(dom) == []
+
+
+@pytest.mark.parametrize(
+    "affordance_html",
+    [
+        '<a href="">OPEN</a>',
+        '<a href="   ">OPEN</a>',
+        '<a href="#">OPEN</a>',
+        '<a href="javascript:alert(1)">OPEN</a>',
+        '<article class="output-row" data-open-url="">',
+        '<article class="output-row" data-open-url="   ">',
+        '<article class="output-row" data-open-url="#">',
+        '<article class="output-row" data-open-url="javascript:alert(1)">',
+    ],
+)
+def test_validate_outputs_contract_rejects_empty_or_invalid_clickable_affordances(affordance_html: str):
+    if affordance_html.startswith("<article"):
+        row_start = affordance_html
+        action_html = "<span>SIGNED</span>"
+    else:
+        row_start = '<article class="output-row">'
+        action_html = affordance_html
+    dom = f"""
+    <html><body>
+      <h1>Outputs</h1>
+      {row_start}
+        <h2>Latest artifact</h2>
+        <span>CONF HIGH</span>
+        <span>SOURCE digest JOB daily ID 2026-05-25_09-00-00</span>
+        <span>SCHEDULE daily brief OUTPUT 10m ago</span>
+        {action_html}
+        <span>UNREAD</span>
+        <button>Mark read</button>
+      </article>
+    </body></html>
+    """
+
+    failures = acta_browser_uat._validate_outputs_contract(dom)
+
+    assert "Output row 1 is missing clickable open affordance (href/data-open-url)" in failures
+
+
+def test_validate_outputs_contract_extracts_rows_with_void_tags_inside():
+    dom = """
+    <html><body>
+      <h1>Outputs</h1>
+      <article class="output-row" data-open-url="/acta/outputs/morning-operator-brief">
+        <h2>Morning operator brief</h2>
+        <br><img src="x" alt=""><input type="hidden" value="ignored">
+        <span>CONF HIGH</span>
+        <span>SOURCE morning_digest JOB daily ID 2026-05-25_09-00-00</span>
+        <span>SCHEDULE daily brief OUTPUT 2h ago</span>
+        <span>SIGNED</span>
+        <span>UNREAD</span>
+        <button>Mark read</button>
+      </article>
+    </body></html>
+    """
+
+    assert acta_browser_uat._extract_html_by_class(dom, "output-row") == [
+        """<article class="output-row" data-open-url="/acta/outputs/morning-operator-brief">
+        <h2>Morning operator brief</h2>
+        <br><img src="x" alt=""><input type="hidden" value="ignored">
+        <span>CONF HIGH</span>
+        <span>SOURCE morning_digest JOB daily ID 2026-05-25_09-00-00</span>
+        <span>SCHEDULE daily brief OUTPUT 2h ago</span>
+        <span>SIGNED</span>
+        <span>UNREAD</span>
+        <button>Mark read</button>
+      </article>"""
+    ]
+    assert acta_browser_uat._validate_outputs_contract(dom) == []
+
+
+def test_validate_outputs_contract_fails_when_action_copy_has_no_clickable_open_affordance():
+    dom = """
+    <html><body>
+      <h1>Outputs</h1>
+      <article class="output-row">
+        <h2>Latest artifact</h2>
+        <span>CONF HIGH</span>
+        <span>SOURCE digest JOB daily ID 2026-05-25_09-00-00</span>
+        <span>SCHEDULE daily brief OUTPUT 10m ago</span>
+        <a>OPEN</a>
+        <span>UNREAD</span>
+        <button>Mark read</button>
+      </article>
+    </body></html>
+    """
+
+    failures = acta_browser_uat._validate_outputs_contract(dom)
+
+    assert "Output row 1 is missing clickable open affordance (href/data-open-url)" in failures
 
 
 def test_validate_outputs_contract_fails_when_signed_open_row_lacks_read_state_and_toggle():

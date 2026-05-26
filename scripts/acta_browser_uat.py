@@ -33,6 +33,22 @@ OUTPUT_LEAK_RE = re.compile(
     r"##\s*(?:Prompt|Tool)\b|tool\s+output|Traceback|/Users/|C:\\Users\\|HERMES_HOME|api_key=",
     re.I,
 )
+HTML_VOID_TAGS = {
+    "area",
+    "base",
+    "br",
+    "col",
+    "embed",
+    "hr",
+    "img",
+    "input",
+    "link",
+    "meta",
+    "param",
+    "source",
+    "track",
+    "wbr",
+}
 
 
 class _ClassTextExtractor(HTMLParser):
@@ -46,6 +62,7 @@ class _ClassTextExtractor(HTMLParser):
         self.matches: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
         classes = ""
         for key, value in attrs:
             if key.lower() == "class" and value:
@@ -54,7 +71,7 @@ class _ClassTextExtractor(HTMLParser):
         if self.depth == 0 and self.class_name in classes.split():
             self.depth = 1
             self.current = []
-        elif self.depth:
+        elif self.depth and tag not in HTML_VOID_TAGS:
             self.depth += 1
 
     def handle_endtag(self, tag: str) -> None:
@@ -69,6 +86,67 @@ class _ClassTextExtractor(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self.depth and data.strip():
             self.current.append(data.strip())
+
+
+class _ClassHtmlExtractor(HTMLParser):
+    """Extract raw HTML from elements carrying a CSS class."""
+
+    VOID_TAGS = {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+
+    def __init__(self, dom: str, class_name: str):
+        super().__init__(convert_charrefs=False)
+        self.dom = dom
+        self.class_name = class_name
+        self.line_offsets = [0]
+        for match in re.finditer(r"\n", dom):
+            self.line_offsets.append(match.end())
+        self.depth = 0
+        self.start_offset = 0
+        self.matches: list[str] = []
+
+    def _absolute_offset(self) -> int:
+        line, column = self.getpos()
+        return self.line_offsets[line - 1] + column
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        classes = ""
+        for key, value in attrs:
+            if key.lower() == "class" and value:
+                classes = value
+                break
+        if self.depth == 0 and self.class_name in classes.split():
+            self.depth = 1
+            self.start_offset = self._absolute_offset()
+        elif self.depth and tag not in self.VOID_TAGS:
+            self.depth += 1
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        # Self-closing nested tags do not affect the enclosing element depth.
+        return
+
+    def handle_endtag(self, tag: str) -> None:
+        if not self.depth:
+            return
+        self.depth -= 1
+        if self.depth == 0:
+            end_offset = self._absolute_offset() + len(f"</{tag}>")
+            self.matches.append(self.dom[self.start_offset:end_offset])
 
 
 @dataclass
@@ -90,6 +168,52 @@ def _extract_text_by_class(dom: str, class_name: str) -> list[str]:
     parser.feed(dom)
     parser.close()
     return parser.matches
+
+
+def _extract_html_by_class(dom: str, class_name: str) -> list[str]:
+    parser = _ClassHtmlExtractor(dom, class_name)
+    parser.feed(dom)
+    parser.close()
+    return parser.matches
+
+
+def _is_usable_open_url(value: str | None) -> bool:
+    if value is None:
+        return False
+    stripped = value.strip()
+    if not stripped or stripped == "#":
+        return False
+    if stripped.lower().startswith("javascript:"):
+        return False
+    return True
+
+
+class _ClickableOpenAffordanceParser(HTMLParser):
+    """Detect usable row-level or anchor-level open affordances in row HTML."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.has_affordance = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self.has_affordance:
+            return
+        tag = tag.lower()
+        for key, value in attrs:
+            key = key.lower()
+            if key == "data-open-url" and _is_usable_open_url(value):
+                self.has_affordance = True
+                return
+            if tag == "a" and key == "href" and _is_usable_open_url(value):
+                self.has_affordance = True
+                return
+
+
+def _has_clickable_open_affordance(row_html: str) -> bool:
+    parser = _ClickableOpenAffordanceParser()
+    parser.feed(row_html)
+    parser.close()
+    return parser.has_affordance
 
 
 def _agent_browser_command() -> list[str]:
@@ -402,11 +526,13 @@ def _validate_outputs_contract(
         failures.append("Outputs shelf identity is missing")
 
     output_rows = _extract_text_by_class(dom, "output-row")
+    output_row_html = _extract_html_by_class(dom, "output-row")
     if not output_rows:
         failures.append("No browser-rendered output rows found")
         return failures
 
     for index, row_text in enumerate(output_rows, start=1):
+        row_html = output_row_html[index - 1] if index <= len(output_row_html) else ""
         if not OUTPUT_CONFIDENCE_RE.search(row_text):
             failures.append(f"Output row {index} is missing visible confidence/status copy (CONF HIGH/MED/LOW-GAP or CATALOG)")
         has_source = bool(re.search(r"\bSOURCE\b", row_text, re.I))
@@ -426,6 +552,8 @@ def _validate_outputs_contract(
             r"\bNo\s+(?:signed|public)\s+link\b", row_text, re.I
         )
         if actionable:
+            if not _has_clickable_open_affordance(row_html):
+                failures.append(f"Output row {index} is missing clickable open affordance (href/data-open-url)")
             row_without_toggle_copy = re.sub(r"\bMark\s+(?:read|unread)\b", " ", row_text, flags=re.I)
             if not re.search(r"\b(?:READ|UNREAD)\b", row_without_toggle_copy, re.I):
                 failures.append(f"Output row {index} is missing read/unread state")
