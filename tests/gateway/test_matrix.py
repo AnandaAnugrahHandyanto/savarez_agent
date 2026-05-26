@@ -1186,6 +1186,11 @@ class TestMatrixPasswordLoginDeviceId:
                 "user_id": "@bot:example.org",
                 "password": "secret",
                 "device_id": "STABLE_PW_DEVICE",
+                # Keep this unit focused on password-login device-id plumbing.
+                # The live MacPapi test environment sets MATRIX_ENCRYPTION=true,
+                # which would otherwise drive the fake mautrix client through
+                # E2EE key verification that this test does not stub.
+                "encryption": False,
             },
         )
         adapter = MatrixAdapter(config)
