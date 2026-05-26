@@ -244,6 +244,10 @@ class _VikingClient:
         except Exception:
             return False
 
+    def validate_connection(self) -> dict:
+        """Validate authenticated OpenViking access without mutating state."""
+        return self.get("/api/v1/system/status")
+
 
 # ---------------------------------------------------------------------------
 # Tool schemas
@@ -593,17 +597,11 @@ def _remember_ovcli_path(provider_config: dict, ovcli_path: Path) -> None:
 def _ovcli_data_from_connection_values(values: dict) -> dict:
     data = {"url": _clean_config_value(values.get("endpoint")) or _DEFAULT_ENDPOINT}
     api_key = _clean_config_value(values.get("api_key"))
-    api_key_type = _clean_config_value(values.get("api_key_type"))
-    root_api_key = _clean_config_value(values.get("root_api_key"))
     account = _clean_config_value(values.get("account"))
     user = _clean_config_value(values.get("user"))
     agent = _clean_config_value(values.get("agent")) or _DEFAULT_AGENT
     if api_key:
         data["api_key"] = api_key
-    if root_api_key:
-        data["root_api_key"] = root_api_key
-    elif api_key and api_key_type == "root":
-        data["root_api_key"] = api_key
     if account:
         data["account"] = account
     if user:
@@ -617,6 +615,28 @@ def _write_ovcli_config(path: Path, values: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(_ovcli_data_from_connection_values(values), indent=2) + "\n", encoding="utf-8")
     _restrict_secret_file_permissions(path)
+
+
+def _validate_openviking_connection_values(values: dict) -> tuple[bool, str]:
+    endpoint = _clean_config_value(values.get("endpoint")) or _DEFAULT_ENDPOINT
+    client = _VikingClient(
+        endpoint,
+        _clean_config_value(values.get("api_key")),
+        account=_clean_config_value(values.get("account")),
+        user=_clean_config_value(values.get("user")),
+        agent=_clean_config_value(values.get("agent")) or _DEFAULT_AGENT,
+    )
+    try:
+        if not client.health():
+            return False, f"OpenViking server is not reachable at {endpoint}."
+    except Exception as e:
+        return False, f"OpenViking server is not reachable at {endpoint}: {e}"
+
+    try:
+        client.validate_connection()
+    except Exception as e:
+        return False, f"OpenViking authentication validation failed: {e}"
+    return True, ""
 
 
 def _prompt_manual_connection_values(prompt, select, cancelled):
@@ -839,6 +859,14 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 return
             if values is None:
                 return
+
+            print("\n  Validating OpenViking connection...")
+            validation_ok, validation_message = _validate_openviking_connection_values(values)
+            if not validation_ok:
+                print(f"  {validation_message}")
+                print("  No changes saved.\n")
+                return
+            print("  Connection validated.")
 
             save_choice = _curses_select(
                 "  Save OpenViking config",

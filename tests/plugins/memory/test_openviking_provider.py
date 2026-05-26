@@ -34,6 +34,15 @@ def _prompt_from_values(values: dict[str, str], *, forbidden: set[str] | None = 
     return _prompt
 
 
+def _allow_setup_validation(monkeypatch):
+    monkeypatch.setattr(
+        openviking_module,
+        "_validate_openviking_connection_values",
+        lambda values: (True, ""),
+        raising=False,
+    )
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
 def test_openviking_env_writer_restricts_file_permissions(tmp_path):
     env_path = tmp_path / ".env"
@@ -210,6 +219,7 @@ def test_post_setup_manual_remote_root_writes_ovcli_and_links(tmp_path, monkeypa
     ovcli_path.write_text(json.dumps({"url": "http://old.local"}), encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("OPENVIKING_CLI_CONFIG_FILE", str(ovcli_path))
+    _allow_setup_validation(monkeypatch)
 
     from hermes_cli import memory_setup
 
@@ -242,7 +252,6 @@ def test_post_setup_manual_remote_root_writes_ovcli_and_links(tmp_path, monkeypa
     assert data == {
         "url": "https://openviking.example",
         "api_key": "root-secret",
-        "root_api_key": "root-secret",
         "account": "acct",
         "user": "alice",
         "agent_id": "agent",
@@ -258,6 +267,7 @@ def test_post_setup_manual_remote_user_keeps_only_hermes_env(tmp_path, monkeypat
     ovcli_path.write_text(original_ovcli, encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("OPENVIKING_CLI_CONFIG_FILE", str(ovcli_path))
+    _allow_setup_validation(monkeypatch)
 
     from hermes_cli import memory_setup
 
@@ -298,6 +308,53 @@ def test_post_setup_manual_remote_user_keeps_only_hermes_env(tmp_path, monkeypat
     assert "OPENVIKING_USER" not in env_text
 
 
+def test_post_setup_manual_validation_failure_writes_nothing(tmp_path, monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    ovcli_path = tmp_path / "ovcli.conf"
+    original_ovcli = json.dumps({"url": "http://old.local"})
+    ovcli_path.write_text(original_ovcli, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("OPENVIKING_CLI_CONFIG_FILE", str(ovcli_path))
+    _allow_setup_validation(monkeypatch)
+    monkeypatch.setattr(
+        openviking_module,
+        "_validate_openviking_connection_values",
+        lambda values: (False, "OpenViking authentication validation failed: bad key"),
+        raising=False,
+    )
+
+    from hermes_cli import config as hermes_config
+    from hermes_cli import memory_setup
+
+    save_config = MagicMock()
+    choices = iter([2, 0])
+    monkeypatch.setattr(hermes_config, "save_config", save_config)
+    monkeypatch.setattr(
+        memory_setup,
+        "_curses_select",
+        lambda *args, **kwargs: next(choices),
+    )
+    monkeypatch.setattr(
+        memory_setup,
+        "_prompt",
+        _prompt_from_values({
+            "OpenViking server URL": "https://openviking.example",
+            "OpenViking user API key": "bad-key",
+            "OpenViking agent": "agent",
+        }),
+    )
+    config = {"memory": {"provider": "builtin"}}
+
+    OpenVikingMemoryProvider().post_setup(str(hermes_home), config)
+
+    save_config.assert_not_called()
+    assert config == {"memory": {"provider": "builtin"}}
+    assert ovcli_path.read_text(encoding="utf-8") == original_ovcli
+    assert not (hermes_home / ".env").exists()
+
+
 def test_post_setup_manual_remote_requires_api_key(tmp_path, monkeypatch):
     _clear_openviking_env(monkeypatch)
     hermes_home = tmp_path / "hermes"
@@ -307,6 +364,7 @@ def test_post_setup_manual_remote_requires_api_key(tmp_path, monkeypatch):
     ovcli_path.write_text(original_ovcli, encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("OPENVIKING_CLI_CONFIG_FILE", str(ovcli_path))
+    _allow_setup_validation(monkeypatch)
 
     from hermes_cli import config as hermes_config
     from hermes_cli import memory_setup
@@ -387,6 +445,7 @@ def test_post_setup_manual_local_allows_blank_api_key(tmp_path, monkeypatch):
     ovcli_path.write_text(original_ovcli, encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("OPENVIKING_CLI_CONFIG_FILE", str(ovcli_path))
+    _allow_setup_validation(monkeypatch)
 
     from hermes_cli import memory_setup
 
@@ -957,6 +1016,97 @@ def test_viking_client_health_sends_auth_headers(monkeypatch):
     assert client.health() is True
     assert captured["url"] == "https://example.com/health"
     assert captured["headers"]["Authorization"] == "Bearer test-key"
+
+
+def test_viking_client_validate_connection_uses_authenticated_system_status(monkeypatch):
+    client = _VikingClient(
+        "https://example.com",
+        api_key="test-key",
+        account="acct",
+        user="alice",
+        agent="hermes",
+    )
+    captured = {}
+
+    def capture_get(url, **kwargs):
+        captured["url"] = url
+        captured["headers"] = kwargs.get("headers") or {}
+        return SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {"status": "ok", "result": {"initialized": True}},
+            raise_for_status=lambda: None,
+        )
+
+    monkeypatch.setattr(client._httpx, "get", capture_get)
+
+    assert client.validate_connection() == {
+        "status": "ok",
+        "result": {"initialized": True},
+    }
+    assert captured["url"] == "https://example.com/api/v1/system/status"
+    assert captured["headers"]["Authorization"] == "Bearer test-key"
+    assert captured["headers"]["X-OpenViking-Account"] == "acct"
+    assert captured["headers"]["X-OpenViking-User"] == "alice"
+
+
+def test_validate_openviking_connection_values_checks_health_then_auth(monkeypatch):
+    events = []
+
+    class FakeVikingClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            assert endpoint == "https://openviking.example"
+            assert api_key == "test-key"
+            assert account == "acct"
+            assert user == "alice"
+            assert agent == "hermes"
+
+        def health(self):
+            events.append("health")
+            return True
+
+        def validate_connection(self):
+            events.append("validate")
+            return {"status": "ok"}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeVikingClient)
+
+    ok, message = openviking_module._validate_openviking_connection_values({
+        "endpoint": "https://openviking.example",
+        "api_key": "test-key",
+        "account": "acct",
+        "user": "alice",
+        "agent": "hermes",
+    })
+
+    assert ok is True
+    assert message == ""
+    assert events == ["health", "validate"]
+
+
+def test_validate_openviking_connection_values_stops_when_health_fails(monkeypatch):
+    events = []
+
+    class FakeVikingClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            self.endpoint = endpoint
+
+        def health(self):
+            events.append("health")
+            return False
+
+        def validate_connection(self):
+            raise AssertionError("auth validation should not run")
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeVikingClient)
+
+    ok, message = openviking_module._validate_openviking_connection_values({
+        "endpoint": "https://openviking.example",
+    })
+
+    assert ok is False
+    assert "not reachable" in message
+    assert events == ["health"]
 
 
 def test_tool_search_uses_openviking_limit_and_ignores_dead_mode():
