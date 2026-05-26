@@ -274,5 +274,23 @@ class TestToolsPatchParser:
             f"tools/patch_parser.py has F821 violation(s):\n"
             f"{result.stdout}\n{result.stderr}\n"
         )
+class TestBrowserCdpTool:
+    """tools/browser_cdp_tool.py must have zero F401 violations."""
 
+    TARGET = REPO_ROOT / "tools" / "browser_cdp_tool.py"
 
+    def test_browser_cdp_tool_has_zero_f401(self):
+        """tools/browser_cdp_tool.py must have zero F401 (unused-import) violations."""
+        import subprocess as _subprocess
+        import sys as _sys
+
+        result = _subprocess.run(
+            [_sys.executable, "-m", "ruff", "check", "--select=F401",
+             "--output-format=concise", str(self.TARGET)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            f"tools/browser_cdp_tool.py has F401 violation(s):\n"
+            f"{result.stdout}\n{result.stderr}\n"
+        )
