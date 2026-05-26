@@ -3117,6 +3117,38 @@ class GatewayRunner:
             return
         merge_pending_message_event(adapter._pending_messages, session_key, event)
 
+    async def _handle_busy_slash_command_followup(self, event: MessageEvent, session_key: str) -> None:
+        """Treat a blocked mid-run slash command as an intentional follow-up.
+
+        The active-session fast path dispatches recognized slash commands
+        directly to the runner so commands like /approve and /stop can break
+        deadlocks.  For commands that are unsafe to execute mid-turn (/undo,
+        /retry, /model, /reasoning, ...), a hard "can't run mid-turn" response
+        is not what the user meant.  They are trying to steer the busy session.
+
+        Reuse the normal busy-session follow-up machinery so the user gets the
+        same queue/interrupt/steer semantics and inline controls as ordinary
+        text.  Force the runner-side handler instead of adapter text debounce;
+        this path is already past the adapter fallback, so returning False would
+        otherwise drop the command after the bypass dispatch.
+        """
+        state = getattr(self, "__dict__", {})
+        had_busy_text_mode = "_busy_text_mode" in state
+        previous_busy_text_mode = str(state.get("_busy_text_mode", "interrupt"))
+        self._busy_text_mode = "interrupt"
+        try:
+            handled = await self._handle_active_session_busy_message(event, session_key)
+        finally:
+            if had_busy_text_mode:
+                self._busy_text_mode = previous_busy_text_mode
+            else:
+                try:
+                    delattr(self, "_busy_text_mode")
+                except AttributeError:
+                    pass
+        if not handled:
+            self._queue_or_replace_pending_event(session_key, event)
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
@@ -7698,15 +7730,14 @@ class GatewayRunner:
                     adapter._pending_messages[_quick_key] = queued_event
                 return "No active agent — /steer queued for the next turn."
 
-            # /model must not be used while the agent is running.
-            if _cmd_def_inner and _cmd_def_inner.name == "model":
-                return "Agent is running — wait or /stop first, then switch models."
-
-            # /codex-runtime must not be used while the agent is running.
-            # Switching mid-turn would split a turn across two transports.
-            if _cmd_def_inner and _cmd_def_inner.name == "codex-runtime":
-                return ("Agent is running — wait or /stop first, then "
-                        "change runtime.")
+            # /model and /codex-runtime must not execute while the agent is
+            # running: switching mid-turn would split one turn across two model
+            # transports. Treat the slash command as a busy follow-up instead,
+            # so the user can choose queue/interrupt/steer via the normal busy
+            # controls rather than hitting a dead-end warning.
+            if _cmd_def_inner and _cmd_def_inner.name in {"model", "codex-runtime"}:
+                await self._handle_busy_slash_command_followup(event, _quick_key)
+                return None
 
             # /approve and /deny must bypass the running-agent interrupt path.
             # The agent thread is blocked on a threading.Event inside
@@ -7745,7 +7776,8 @@ class GatewayRunner:
                 _goal_arg = (event.get_command_args() or "").strip().lower()
                 if not _goal_arg or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done"}:
                     return await self._handle_goal_command(event)
-                return "Agent is running — use /goal status / pause / clear mid-run, or /stop before setting a new goal."
+                await self._handle_busy_slash_command_followup(event, _quick_key)
+                return None
 
             # /subgoal is safe mid-run — it only modifies the goal's
             # subgoals list, which the judge reads at the next turn
@@ -7782,19 +7814,13 @@ class GatewayRunner:
                     return await self._handle_update_command(event)
 
             # Catch-all: any other recognized slash command reached the
-            # running-agent guard. Reject gracefully rather than falling
-            # through to interrupt + discard. Without this, commands
-            # like /model, /reasoning, /voice, /insights, /title,
-            # /resume, /retry, /undo, /compress, /usage,
-            # /reload-mcp, /sethome, /reset (all registered as Discord
-            # slash commands) would interrupt the agent AND get
-            # silently discarded by the slash-command safety net,
-            # producing a zero-char response. See #5057, #6252, #10370.
+            # running-agent guard. It cannot safely execute mid-turn, but the
+            # user intent is still a follow-up to the busy session. Route it
+            # through normal busy controls so the user can choose queue,
+            # interrupt, or steer instead of hitting a dead-end warning.
             if _cmd_def_inner:
-                return (
-                    f"⏳ Agent is running — `/{_cmd_def_inner.name}` can't run "
-                    f"mid-turn. Wait for the current response or `/stop` first."
-                )
+                await self._handle_busy_slash_command_followup(event, _quick_key)
+                return None
 
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
