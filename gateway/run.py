@@ -7241,6 +7241,9 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "background":
                 return await self._handle_background_command(event)
 
+            if _cmd_def_inner and _cmd_def_inner.name == "sidequest":
+                return await self._handle_sidequest_command(event)
+
             # /kanban must bypass the guard. It writes to a profile-agnostic
             # DB (kanban.db), not to the running agent's state. In fact
             # /kanban unblock is often the only way to free a worker that
@@ -7654,6 +7657,9 @@ class GatewayRunner:
 
         if canonical == "background":
             return await self._handle_background_command(event)
+
+        if canonical == "sidequest":
+            return await self._handle_sidequest_command(event)
 
         if canonical == "steer":
             # No active agent — /steer has no tool call to inject into.
@@ -11704,6 +11710,160 @@ class GatewayRunner:
             )
         return t("gateway.rollback.restore_failed", error=result["error"])
 
+    def _sidequest_store(self):
+        from gateway.sidequests import SidequestStore
+        return SidequestStore()
+
+    def _background_owner(self, source: "SessionSource") -> tuple[str, str, Optional[str]]:
+        return (
+            str(_platform_config_key(source.platform)),
+            str(source.chat_id or ""),
+            str(source.user_id) if source.user_id is not None else None,
+        )
+
+    @staticmethod
+    def _clip_summary(text: str, limit: int = 2400) -> str:
+        text = (text or "").strip()
+        if len(text) <= limit:
+            return text
+        return text[: limit - 1].rstrip() + "…"
+
+    def _format_background_run(self, run: dict) -> str:
+        artifacts = run.get("artifact_paths") or []
+        lines = [
+            f"{run['bg_id']} — {run.get('status', 'unknown')}",
+            f"Prompt: {run.get('prompt', '')[:120]}",
+        ]
+        if run.get("latest_summary"):
+            lines.append(f"Summary: {run['latest_summary'][:500]}")
+        if artifacts:
+            lines.append("Artifacts: " + ", ".join(artifacts[:5]))
+        lines.append(f"Follow-up: /bg {run['bg_id']} <message>")
+        lines.append(f"Promote: /bg {run['bg_id']} promote")
+        return "\n".join(lines)
+
+    async def _handle_background_control(self, event: MessageEvent, args: str) -> Optional[str]:
+        source = event.source
+        platform, chat_id, user_id = self._background_owner(source)
+        store = self._sidequest_store()
+        parts = args.split(maxsplit=2)
+        head = parts[0].lower() if parts else ""
+
+        if head in {"list", "ls", "status"} and len(parts) == 1:
+            runs = store.list_background_runs(platform=platform, chat_id=chat_id, limit=5)
+            if not runs:
+                return "No background tasks yet. Start one with /background <prompt>."
+            return "Background tasks:\n" + "\n".join(
+                f"- {r['bg_id']} — {r.get('status', 'unknown')} — {r.get('prompt', '')[:70]}"
+                for r in runs
+            )
+
+        if head.startswith("bg_"):
+            bg_id = parts[0]
+            action = parts[1].lower() if len(parts) >= 2 else "status"
+            rest = parts[2].strip() if len(parts) >= 3 else ""
+            run = store.get_background_run(bg_id, platform=platform, chat_id=chat_id)
+            if not run:
+                return f"Unknown background task {bg_id}."
+            if action in {"status", "show"}:
+                return self._format_background_run(run)
+            if action in {"artifacts", "files"}:
+                artifacts = run.get("artifact_paths") or []
+                return "Artifacts:\n" + "\n".join(artifacts) if artifacts else f"No artifacts recorded for {bg_id}."
+            if action == "promote":
+                quest = store.promote_background_run(bg_id, platform=platform, chat_id=chat_id)
+                return (
+                    f"⚡ Promoted {bg_id} to sidequest #{quest['alias']} ({quest['quest_id']}).\n"
+                    f"Follow-up: /sq {quest['alias']} <message>"
+                )
+            followup_text = " ".join([action, rest]).strip()
+            if followup_text:
+                store.add_followup(
+                    target_id=bg_id,
+                    message=followup_text,
+                    platform=platform,
+                    chat_id=chat_id,
+                    user_id=user_id,
+                )
+                resume_prompt = (
+                    "Continue this completed background task using the previous context below.\n\n"
+                    f"Original prompt:\n{run.get('prompt', '')}\n\n"
+                    f"Previous summary:\n{run.get('latest_summary') or '(none recorded)'}\n\n"
+                    f"User follow-up:\n{followup_text}"
+                )
+                event.text = f"/background {resume_prompt}"
+                return await self._handle_background_command(event)
+        return None
+
+    async def _handle_sidequest_command(self, event: MessageEvent) -> str:
+        """Handle /sidequest and /sq durable async work."""
+        args = event.get_command_args().strip()
+        source = event.source
+        platform, chat_id, user_id = self._background_owner(source)
+        store = self._sidequest_store()
+
+        if not args or args.lower() in {"list", "ls", "status"}:
+            quests = store.list_quests(platform=platform, chat_id=chat_id, limit=10)
+            if not quests:
+                return "No sidequests yet. Start one with /sidequest <goal>."
+            return "Sidequests:\n" + "\n".join(
+                f"- #{q['alias']} {q['quest_id']} — {q.get('status', 'active')} — {q.get('title', '')[:70]}"
+                for q in quests
+            )
+
+        parts = args.split(maxsplit=2)
+        ident = parts[0]
+        quest = store.resolve_quest(ident, platform=platform, chat_id=chat_id)
+        if quest:
+            action = parts[1].lower() if len(parts) >= 2 else "status"
+            rest = parts[2].strip() if len(parts) >= 3 else ""
+            if action in {"status", "show"}:
+                artifacts = quest.get("artifact_paths") or []
+                lines = [
+                    f"Sidequest #{quest['alias']} ({quest['quest_id']}) — {quest.get('status', 'active')}",
+                    f"Title: {quest.get('title', '')}",
+                ]
+                if quest.get("latest_summary"):
+                    lines.append(f"Summary: {quest['latest_summary'][:500]}")
+                if artifacts:
+                    lines.append("Artifacts: " + ", ".join(artifacts[:5]))
+                lines.append(f"Follow-up: /sq {quest['alias']} <message>")
+                return "\n".join(lines)
+            if action in {"artifacts", "files"}:
+                artifacts = quest.get("artifact_paths") or []
+                return "Artifacts:\n" + "\n".join(artifacts) if artifacts else f"No artifacts recorded for #{quest['alias']}."
+            followup_text = " ".join([action, rest]).strip()
+            store.add_followup(
+                target_id=quest["quest_id"],
+                message=followup_text,
+                platform=platform,
+                chat_id=chat_id,
+                user_id=user_id,
+            )
+            resume_prompt = (
+                "Continue this sidequest using the previous context below.\n\n"
+                f"Sidequest #{quest['alias']} / {quest['quest_id']}: {quest.get('title', '')}\n\n"
+                f"Previous summary:\n{quest.get('latest_summary') or '(none recorded)'}\n\n"
+                f"User follow-up:\n{followup_text}"
+            )
+            event.text = f"/background {resume_prompt}"
+            return await self._handle_background_command(event)
+
+        quest = store.create_quest(title=args, platform=platform, chat_id=chat_id, user_id=user_id)
+        event.text = f"/background {args}"
+        started = await self._handle_background_command(event)
+        for line in started.splitlines():
+            if "Task ID:" in line:
+                bg_id = line.split("Task ID:", 1)[1].strip()
+                if bg_id:
+                    store.attach_background_to_quest(quest_id=quest["quest_id"], bg_id=bg_id)
+                break
+        return (
+            f"⚡ Sidequest #{quest['alias']} ({quest['quest_id']}) created.\n"
+            f"Status: /sq {quest['alias']} status\n"
+            f"Follow-up: /sq {quest['alias']} <message>\n\n{started}"
+        )
+
     async def _handle_background_command(self, event: MessageEvent) -> str:
         """Handle /background <prompt> — run a prompt in a separate background session.
 
@@ -11715,8 +11875,21 @@ class GatewayRunner:
         if not prompt:
             return t("gateway.background.usage")
 
+        control_response = await self._handle_background_control(event, prompt)
+        if control_response is not None:
+            return control_response
+
         source = event.source
         task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
+        platform, chat_id, user_id = self._background_owner(source)
+        self._sidequest_store().create_background_run(
+            bg_id=task_id,
+            prompt=prompt,
+            platform=platform,
+            chat_id=chat_id,
+            user_id=user_id,
+            session_id=task_id,
+        )
 
         event_message_id = self._reply_anchor_for_event(event)
 
@@ -11755,9 +11928,13 @@ class GatewayRunner:
 
         media_urls = media_urls or []
         media_types = media_types or []
+        platform, chat_id, _user_id = self._background_owner(source)
+        store = self._sidequest_store()
+        store.mark_running(task_id)
 
         adapter = self.adapters.get(source.platform)
         if not adapter:
+            store.mark_failed(task_id, f"no adapter for platform {source.platform}")
             logger.warning("No adapter for platform %s in background task %s", source.platform, task_id)
             return
 
@@ -11770,6 +11947,7 @@ class GatewayRunner:
                 user_config=user_config,
             )
             if not runtime_kwargs.get("api_key"):
+                store.mark_failed(task_id, "no provider credentials configured")
                 await adapter.send(
                     source.chat_id,
                     f"❌ Background task {task_id} failed: no provider credentials configured.",
@@ -11858,6 +12036,12 @@ class GatewayRunner:
                 from gateway.platforms.base import BasePlatformAdapter
                 media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
                 images, text_content = adapter.extract_images(response)
+                artifact_paths = [str(path) for path, _is_voice in (media_files or [])]
+                store.mark_completed(
+                    task_id,
+                    summary=self._clip_summary(text_content or response or "(No response generated)"),
+                    artifact_paths=artifact_paths,
+                )
 
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
                 header = f'✅ Background task complete\nPrompt: "{preview}"\n\n'
@@ -11898,6 +12082,7 @@ class GatewayRunner:
                     except Exception:
                         pass
             else:
+                store.mark_completed(task_id, summary="(No response generated)")
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
                 await adapter.send(
                     chat_id=source.chat_id,
@@ -11907,6 +12092,10 @@ class GatewayRunner:
 
         except Exception as e:
             logger.exception("Background task %s failed", task_id)
+            try:
+                store.mark_failed(task_id, str(e))
+            except Exception:
+                pass
             try:
                 await adapter.send(
                     chat_id=source.chat_id,
