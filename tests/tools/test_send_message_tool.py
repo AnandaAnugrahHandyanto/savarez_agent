@@ -412,6 +412,68 @@ class TestSendMessageTool:
             force_document=False,
         )
 
+    def test_dropped_media_surfaces_warning_not_clean_success(self, tmp_path, monkeypatch):
+        """A MEDIA path rejected by the safety filter must not be reported as a
+        clean success — the result has to carry a warning so the model/user
+        learns the attachment never went out (issue #32644)."""
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+        config, _telegram_cfg = _make_config()
+        archived = tmp_path / "voice-episodes" / "teaser.ogg"
+        archived.parent.mkdir(parents=True)
+        archived.write_bytes(b"OggS")
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:12345",
+                        "message": f"[[audio_as_voice]]\nteaser published\nMEDIA:{archived}",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        warnings = result.get("warnings", [])
+        assert any("1 MEDIA attachment(s) were blocked" in w for w in warnings), warnings
+        assert any("HERMES_MEDIA_ALLOW_DIRS" in w for w in warnings), warnings
+
+    def test_safe_media_send_has_no_dropped_warning(self, tmp_path, monkeypatch):
+        """A MEDIA path the filter accepts must not trigger the dropped-media
+        warning — guards against false positives from the issue #32644 fix."""
+        extra_root = tmp_path / "operator-media"
+        archived = extra_root / "teaser.ogg"
+        archived.parent.mkdir(parents=True)
+        archived.write_bytes(b"OggS")
+        monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(extra_root))
+        config, _telegram_cfg = _make_config()
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:12345",
+                        "message": f"[[audio_as_voice]]\nteaser published\nMEDIA:{archived}",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert not any(
+            "blocked" in w for w in result.get("warnings", [])
+        ), result.get("warnings")
+        _, kwargs = send_mock.await_args
+        assert kwargs["media_files"] == [(str(archived.resolve()), True)]
+
     def test_top_level_send_failure_redacts_query_token(self):
         config, _telegram_cfg = _make_config()
         leaked = "very-secret-query-token-123456"

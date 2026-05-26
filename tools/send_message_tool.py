@@ -251,7 +251,13 @@ def _handle_send(args):
     force_document_attachments = "[[as_document]]" in message
 
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
+    requested_media_count = len(media_files)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    # MEDIA paths the safety filter rejected (resolved outside the allowed
+    # media roots). The text portion still sends, but the attachment silently
+    # vanishes — so the count is surfaced on the result rather than reporting an
+    # unqualified success the user reads as "attachment delivered" (issue #32644).
+    dropped_media_count = requested_media_count - len(media_files)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False
@@ -313,6 +319,18 @@ def _handle_send(args):
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
+
+        # Surface dropped attachments so a text-only send isn't reported as a
+        # clean success when the user asked for a media attachment (issue #32644).
+        if dropped_media_count and isinstance(result, dict) and result.get("success"):
+            warnings = list(result.get("warnings", []))
+            warnings.append(
+                f"{dropped_media_count} MEDIA attachment(s) were blocked and NOT "
+                "delivered: the resolved path is outside the allowed media roots, "
+                "so only the text was sent. Move the file under a Hermes media "
+                "cache or add its directory to HERMES_MEDIA_ALLOW_DIRS, then resend."
+            )
+            result["warnings"] = warnings
 
         # Mirror the sent message into the target's gateway session
         if isinstance(result, dict) and result.get("success") and mirror_text:
