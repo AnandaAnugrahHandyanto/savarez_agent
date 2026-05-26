@@ -3576,6 +3576,7 @@ class GatewayRunner:
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+            self._configure_native_call_handler(adapter)
             
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
@@ -4969,6 +4970,7 @@ class GatewayRunner:
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+                    self._configure_native_call_handler(adapter)
 
                     success = await self._connect_adapter_with_timeout(adapter, platform)
                     if success:
@@ -10223,18 +10225,21 @@ class GatewayRunner:
     def _configure_native_call_handlers(self) -> None:
         adapters = getattr(self, "adapters", {}) or {}
         for adapter in adapters.values():
-            adapter_platform = getattr(adapter, "platform", None)
-            platform_value = getattr(adapter_platform, "value", adapter_platform)
-            if str(platform_value) != "simplex":
-                continue
-            if not bool(getattr(adapter, "native_calls_enabled", False)):
-                continue
-            try:
-                adapter.native_call_handler = self._handle_simplex_native_call
-            except Exception:
-                logger.exception(
-                    "Failed to install SimpleX native call handler on connected adapter"
-                )
+            self._configure_native_call_handler(adapter)
+
+    def _configure_native_call_handler(self, adapter) -> None:
+        adapter_platform = getattr(adapter, "platform", None)
+        platform_value = getattr(adapter_platform, "value", adapter_platform)
+        if str(platform_value) != "simplex":
+            return
+        if not bool(getattr(adapter, "native_calls_enabled", False)):
+            return
+        try:
+            adapter.native_call_handler = self._handle_simplex_native_call
+        except Exception:
+            logger.exception(
+                "Failed to install SimpleX native call handler on connected adapter"
+            )
 
     def _find_simplex_adapter(self, source) -> Any:
         adapters = getattr(self, "adapters", {}) or {}
@@ -10327,13 +10332,7 @@ class GatewayRunner:
             platform = getattr(source_platform, "value", source_platform)
             if str(platform) != "simplex":
                 return "SimpleX-native calls are only available from an authorized SimpleX DM."
-            adapters = getattr(self, "adapters", {}) or {}
-            try:
-                adapter = adapters.get(source_platform)
-            except TypeError:
-                adapter = None
-            if adapter is None:
-                adapter = adapters.get(str(platform))
+            adapter = self._find_simplex_adapter(event.source)
             if adapter is None:
                 return "SimpleX-native calls are unavailable: SimpleX adapter not connected."
             if not bool(getattr(adapter, "native_calls_enabled", False)):

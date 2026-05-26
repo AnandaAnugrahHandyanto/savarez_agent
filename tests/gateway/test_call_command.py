@@ -5,6 +5,7 @@ import sys
 
 import pytest
 
+import gateway.run as gateway_run
 from gateway.calls.native.ports import NativeCallInvitation
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import MessageEvent, MessageType
@@ -105,6 +106,20 @@ async def test_handle_call_native_reports_native_enabled():
     assert "incoming SimpleX app calls" in result
 
 
+@pytest.mark.asyncio
+async def test_handle_call_native_finds_platform_key_from_value_wrapper():
+    runner = _runner()
+    runner.adapters[Platform("simplex")] = SimpleNamespace(
+        platform=Platform("simplex"),
+        native_calls_enabled=True,
+        native_call_handler=lambda source, invitation: None,
+    )
+
+    result = await runner._handle_call_command(_event("/call native", platform="simplex"))
+
+    assert "SimpleX-native calls are enabled" in result
+
+
 def test_configure_native_call_handlers_installs_simplex_handler():
     runner = _runner()
     adapter = SimpleNamespace(
@@ -118,6 +133,75 @@ def test_configure_native_call_handlers_installs_simplex_handler():
 
     assert callable(adapter.native_call_handler)
     assert adapter.native_call_handler == runner._handle_simplex_native_call
+
+
+@pytest.mark.asyncio
+async def test_start_installs_simplex_native_handler_before_connect(monkeypatch):
+    runner = _runner()
+    platform = Platform("simplex")
+    observed = {}
+    platform_config = SimpleNamespace(enabled=True)
+    adapter = SimpleNamespace(
+        platform=platform,
+        native_calls_enabled=True,
+        native_call_handler=None,
+        has_fatal_error=False,
+        set_message_handler=lambda _handler: None,
+        set_fatal_error_handler=lambda _handler: None,
+        set_session_store=lambda _store: None,
+        set_busy_session_handler=lambda _handler: None,
+    )
+
+    async def connect_adapter(connecting_adapter, connecting_platform):
+        observed["platform"] = connecting_platform
+        observed["handler_ready"] = callable(connecting_adapter.native_call_handler)
+        return False
+
+    async def noop_async(*_args, **_kwargs):
+        return None
+
+    def close_task(coro):
+        coro.close()
+        return SimpleNamespace(cancel=lambda: None)
+
+    runner.config = SimpleNamespace(
+        sessions_dir="/tmp/hermes-test-sessions",
+        platforms={platform: platform_config},
+    )
+    runner.session_store = SimpleNamespace(suspend_recently_active=lambda: 0)
+    runner.hooks = SimpleNamespace(
+        loaded_hooks=[],
+        discover_and_load=lambda: None,
+        emit=noop_async,
+    )
+    runner.delivery_router = SimpleNamespace(adapters={})
+    runner._restart_drain_timeout = 1
+    runner._failed_platforms = {}
+    runner._create_adapter = lambda _platform, _config: adapter
+    runner._connect_adapter_with_timeout = connect_adapter
+    runner._safe_adapter_disconnect = noop_async
+    runner._sync_voice_mode_state_to_adapter = lambda _adapter: None
+    runner._update_platform_runtime_status = lambda *_args, **_kwargs: None
+    runner._update_runtime_status = lambda *_args, **_kwargs: None
+    runner._wire_teams_pipeline_runtime = lambda: None
+    async def send_update_notification():
+        return False
+
+    runner._send_update_notification = send_update_notification
+    runner._send_restart_notification = noop_async
+    runner._send_home_channel_startup_notifications = noop_async
+    runner._schedule_resume_pending_sessions = lambda: None
+    runner._session_expiry_watcher = noop_async
+    runner._kanban_notifier_watcher = noop_async
+    runner._kanban_dispatcher_watcher = noop_async
+    runner._platform_reconnect_watcher = noop_async
+    runner._handoff_watcher = noop_async
+
+    monkeypatch.setattr(gateway_run.asyncio, "create_task", close_task)
+
+    await runner.start()
+
+    assert observed == {"platform": platform, "handler_ready": True}
 
 
 @pytest.mark.asyncio
