@@ -88,7 +88,7 @@ _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
                       "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
                       "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA")
 _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
-                      "PASSWD", "AUTH", "DSN", "WEBHOOK")
+                      "PASSWD", "PASSPHRASE", "AUTH", "DSN", "WEBHOOK")
 
 # Operational HERMES_* vars the child legitimately needs by exact name — these
 # are non-secret runtime-location flags (the same set hermes_cli treats as the
@@ -231,9 +231,9 @@ _TOOL_STUBS = {
     ),
     "write_file": (
         "write_file",
-        "path: str, content: str, cross_profile: bool = False",
-        '"""Write content to a file (always overwrites). Returns dict with status. cross_profile=True opts out of the cross-Hermes-profile soft guard."""',
-        '{"path": path, "content": content, "cross_profile": cross_profile}',
+        "path: str, content: str",
+        '"""Write content to a file (always overwrites). Returns dict with status."""',
+        '{"path": path, "content": content}',
     ),
     "search_files": (
         "search_files",
@@ -243,9 +243,9 @@ _TOOL_STUBS = {
     ),
     "patch": (
         "patch",
-        'path: str = None, old_string: str = None, new_string: str = None, replace_all: bool = False, mode: str = "replace", patch: str = None, cross_profile: bool = False',
-        '"""Targeted find-and-replace (mode="replace") or V4A multi-file patches (mode="patch"). Returns dict with status. cross_profile=True opts out of the cross-Hermes-profile soft guard."""',
-        '{"path": path, "old_string": old_string, "new_string": new_string, "replace_all": replace_all, "mode": mode, "patch": patch, "cross_profile": cross_profile}',
+        'path: str = None, old_string: str = None, new_string: str = None, replace_all: bool = False, mode: str = "replace", patch: str = None',
+        '"""Targeted find-and-replace (mode="replace") or V4A multi-file patches (mode="patch"). Returns dict with status."""',
+        '{"path": path, "old_string": old_string, "new_string": new_string, "replace_all": replace_all, "mode": mode, "patch": patch}',
     ),
     "terminal": (
         "terminal",

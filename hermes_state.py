@@ -29,6 +29,46 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
 
+# ── Database encryption (opt-in) ───────────────────────────────────────────
+# When ``security.encryption.encrypt_databases`` is on, state.db / kanban.db
+# are SQLCipher-encrypted. SQLCipher is a drop-in for the sqlite3 DB-API, so
+# the module-level ``sqlite3`` name is rebound to ``sqlcipher3.dbapi2`` for the
+# whole process — every ``sqlite3.X`` below (connect, Row, OperationalError)
+# then consistently resolves to the keyed module. The choice is made once:
+# the encryption flag is stable for a process lifetime (toggling it is a
+# separate ``hermes encrypt`` CLI invocation).
+_DB_ENCRYPTED = False
+try:
+    from hermes_crypto import database_encryption_active as _hc_db_active
+
+    if _hc_db_active():
+        import sqlcipher3.dbapi2 as sqlite3  # noqa: F811 — keyed-DB drop-in
+
+        _DB_ENCRYPTED = True
+except ImportError:
+    # sqlcipher3 missing while encryption is on — SessionDB.__init__ will fail
+    # to open the encrypted file and surface a captured error via /resume.
+    logger.warning(
+        "Database encryption is enabled but the 'sqlcipher3' module is not "
+        "installed — run: pip install 'hermes-agent[encryption]'"
+    )
+except Exception:  # noqa: BLE001 — never let this break import of the DB layer
+    pass
+
+
+def _apply_db_key(conn) -> None:
+    """Issue ``PRAGMA key`` on a SQLCipher connection (no-op for plain sqlite3).
+
+    Must run before any other statement on the connection.
+    """
+    if not _DB_ENCRYPTED:
+        return
+    from hermes_crypto import get_data_key
+
+    hexkey = get_data_key().hex()
+    conn.execute(f"PRAGMA key = \"x'{hexkey}'\"")
+
+
 def _delegate_from_json(col: str = "model_config") -> str:
     return f"json_extract(COALESCE({col}, '{{}}'), '$._delegate_from')"
 
@@ -703,6 +743,7 @@ class SessionDB:
                     timeout=1.0,
                     isolation_level=None,
                 )
+                _apply_db_key(self._conn)
                 self._conn.row_factory = sqlite3.Row
                 return
 
@@ -721,6 +762,7 @@ class SessionDB:
                     # transactions ourselves.
                     isolation_level=None,
                 )
+                _apply_db_key(self._conn)
                 self._conn.row_factory = sqlite3.Row
                 apply_wal_with_fallback(self._conn, db_label="state.db")
                 self._conn.execute("PRAGMA foreign_keys=ON")
@@ -2431,8 +2473,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -2449,7 +2491,6 @@ class SessionDB:
                     codex_items_json,
                     codex_message_items_json,
                     platform_message_id,
-                    1 if observed else 0,
                 ),
             )
             msg_id = cursor.lastrowid
@@ -2531,8 +2572,8 @@ class SessionDB:
                     """INSERT INTO messages (session_id, role, content, tool_call_id,
                        tool_calls, tool_name, timestamp, token_count, finish_reason,
                        reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                       codex_message_items, platform_message_id, observed)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       codex_message_items, platform_message_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         session_id,
                         role,
@@ -2549,7 +2590,6 @@ class SessionDB:
                         codex_items_json,
                         codex_message_items_json,
                         platform_msg_id,
-                        1 if msg.get("observed") else 0,
                     ),
                 )
                 total_messages += 1
@@ -2919,8 +2959,6 @@ class SessionDB:
             # for backward compatibility with the JSONL transcript shape.
             if row["platform_message_id"]:
                 msg["message_id"] = row["platform_message_id"]
-            if row["observed"]:
-                msg["observed"] = True
             # Restore reasoning fields on assistant messages so providers
             # that replay reasoning (OpenRouter, OpenAI, Nous) receive
             # coherent multi-turn reasoning context.
