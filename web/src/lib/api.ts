@@ -168,6 +168,7 @@ export const api = {
   },
   getOpsApprovalSummary: () => fetchJSON<OpsApprovalSummary>("/api/ops/approvals/summary"),
   getOpsActionRegistryStatus: () => fetchJSON<OpsActionRegistryStatus>("/api/ops/actions"),
+  getOpsMemoryStatus: () => fetchJSON<OpsMemoryStatus>("/api/ops/memory-status"),
   getOpsSocialPlatformStatus: () => fetchJSON<OpsSocialPlatformStatus>("/api/ops/social-platform-status"),
   getOpsSocialPlatformStatusHistory: (limit = 8) => fetchJSON<OpsSocialPlatformHistory>(`/api/ops/social-platform-status/history?limit=${encodeURIComponent(String(limit))}`),
   updateOpsSocialPlatformStatus: (payload: OpsSocialPlatformStatusUpdate) =>
@@ -705,6 +706,36 @@ export interface OpsActionRegistryStatus {
   }>;
   blocked_action_classes: string[];
   message: string;
+}
+
+export interface OpsMemoryFileStatus {
+  target: "memory" | "user" | string;
+  filename: string;
+  path: string;
+  exists: boolean;
+  enabled: boolean;
+  chars: number;
+  limit: number;
+  percent_used: number;
+  entries: number;
+  duplicate_entries: number;
+  status: "ok" | "warning" | "critical" | "missing" | "disabled" | string;
+}
+
+export interface OpsMemoryStatus {
+  ok: boolean;
+  mode: "local_read_only";
+  profile_home: string;
+  provider: string;
+  memory_enabled: boolean;
+  user_profile_enabled: boolean;
+  updated_at: string;
+  status: "ok" | "warning" | "critical" | "missing" | "disabled" | string;
+  total_chars: number;
+  total_limit: number;
+  total_percent_used: number;
+  warning?: string | null;
+  files: OpsMemoryFileStatus[];
 }
 
 export interface OpsSocialPlatformStatusItem {

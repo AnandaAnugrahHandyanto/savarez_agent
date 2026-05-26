@@ -32,7 +32,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { H2, Typography } from "@/components/NouiTypography";
 import { Card, CardContent } from "@/components/ui/card";
 import { api } from "@/lib/api";
-import type { CronJob, OpsApprovalSummary, OpsSocialPlatformHistory, OpsSocialPlatformHistoryEvent, OpsSocialPlatformStatus, OpsSocialPlatformStatusItem, OpsSocialPlatformStatusUpdate, SessionInfo, StatusResponse } from "@/lib/api";
+import type { CronJob, OpsApprovalSummary, OpsMemoryStatus, OpsSocialPlatformHistory, OpsSocialPlatformHistoryEvent, OpsSocialPlatformStatus, OpsSocialPlatformStatusItem, OpsSocialPlatformStatusUpdate, SessionInfo, StatusResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { usePageHeader } from "@/contexts/usePageHeader";
 
@@ -355,6 +355,28 @@ function projectHealthTone(health?: string): string {
   if (value.includes("gate") || value.includes("review")) return "border-amber-400/40 text-amber-200";
   if (value.includes("dormant")) return "border-slate-400/40 text-slate-200";
   return "border-cyan-400/30 text-cyan-200";
+}
+
+function memoryStatusTone(status?: string | null): string {
+  const value = String(status || "ok").toLowerCase();
+  if (value === "critical") return "border-red-400/40 bg-red-500/10 text-red-100";
+  if (value === "warning") return "border-amber-400/40 bg-amber-500/10 text-amber-100";
+  if (value === "missing" || value === "disabled") return "border-slate-400/30 bg-slate-500/10 text-slate-100";
+  return "border-emerald-400/35 bg-emerald-500/10 text-emerald-100";
+}
+
+function memoryStatusLabel(status?: string | null): string {
+  const value = String(status || "ok").toLowerCase();
+  if (value === "critical") return "Critical";
+  if (value === "warning") return "Watch";
+  if (value === "missing") return "Missing";
+  if (value === "disabled") return "Disabled";
+  return "OK";
+}
+
+function formatMemoryNumber(value?: number | null): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+  return value.toLocaleString();
 }
 
 function socialPlatformTone(item: OpsSocialPlatformStatusItem): string {
@@ -786,6 +808,82 @@ function TodayView({ status, activeJobs, jobs, approvalSummary }: { status: Stat
   );
 }
 
+function MemoryStatusPanel({ memoryStatus }: { memoryStatus: OpsMemoryStatus | null }) {
+  const files = memoryStatus?.files || [];
+  return (
+    <Card className={cockpitCard}>
+      <CardContent className="space-y-5 p-5">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <div className="flex items-center gap-2 text-midground">
+              <Database className="h-5 w-5" />
+              <H2 className="text-xl">Hermes memory status</H2>
+            </div>
+            <Typography className="mt-1 max-w-3xl text-sm leading-6 text-text-secondary">
+              Read-only profile-local capacity check for durable memory files. This does not compact, edit, or write memory.
+            </Typography>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Badge tone="outline" className={cn("capitalize", memoryStatusTone(memoryStatus?.status))}>
+              {memoryStatus ? memoryStatusLabel(memoryStatus.status) : "Loading"}
+            </Badge>
+            <Badge tone="outline" className="border-cyan-400/30 text-cyan-200">
+              {memoryStatus?.provider || "builtin"}
+            </Badge>
+          </div>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-3">
+          <div className={cn("rounded-xl border p-4", memoryStatusTone(memoryStatus?.status))}>
+            <div className="text-sm font-semibold uppercase tracking-[0.08em]">Total usage</div>
+            <div className="mt-2 text-3xl font-semibold text-text-primary">{memoryStatus?.total_percent_used ?? "—"}%</div>
+            <div className="mt-2 text-sm leading-6 text-text-secondary">
+              {formatMemoryNumber(memoryStatus?.total_chars)} / {formatMemoryNumber(memoryStatus?.total_limit)} chars
+            </div>
+          </div>
+          <div className={readablePanel}>
+            <div className={readableSectionHeading}>Memory enabled</div>
+            <div className="mt-2 text-xl font-semibold text-text-primary">{memoryStatus?.memory_enabled === false ? "No" : "Yes"}</div>
+            <div className={readableBody}>System/project durable notes from <code>MEMORY.md</code>.</div>
+          </div>
+          <div className={readablePanel}>
+            <div className={readableSectionHeading}>User profile enabled</div>
+            <div className="mt-2 text-xl font-semibold text-text-primary">{memoryStatus?.user_profile_enabled === false ? "No" : "Yes"}</div>
+            <div className={readableBody}>Travis preference/person profile from <code>USER.md</code>.</div>
+          </div>
+        </div>
+
+        <div className="grid gap-3 lg:grid-cols-2">
+          {files.length ? files.map((file) => (
+            <div key={file.target} className={readablePanel}>
+              <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
+                  <div className={readableTitle}>{file.filename}</div>
+                  <div className={readableBody}>{file.entries} entries · {file.duplicate_entries} exact duplicates · {file.exists ? "file present" : "file missing"}</div>
+                </div>
+                <Badge tone="outline" className={cn(readableBadge, memoryStatusTone(file.status))}>{memoryStatusLabel(file.status)}</Badge>
+              </div>
+              <div className="mt-4 h-2 overflow-hidden rounded-full bg-black/40">
+                <div
+                  className={cn("h-full rounded-full", file.status === "critical" ? "bg-red-400" : file.status === "warning" ? "bg-amber-300" : "bg-emerald-300")}
+                  style={{ width: `${Math.min(Math.max(file.percent_used, 0), 100)}%` }}
+                />
+              </div>
+              <div className="mt-2 flex flex-wrap justify-between gap-2 text-sm leading-6 text-text-secondary">
+                <span>{file.percent_used}% used</span>
+                <span>{formatMemoryNumber(file.chars)} / {formatMemoryNumber(file.limit)} chars</span>
+              </div>
+              <div className="mt-2 break-all text-xs leading-5 text-text-secondary">{file.path}</div>
+            </div>
+          )) : (
+            <div className="rounded-xl border border-[#284848] bg-black/30 p-4 text-sm leading-6 text-text-secondary">Memory status is loading.</div>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function AutomationPosturePanel({ jobs }: { jobs: CronJob[] }) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const active = jobs.filter(isActiveJob);
@@ -1198,6 +1296,7 @@ export default function MissionControlPage() {
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [approvalSummary, setApprovalSummary] = useState<OpsApprovalSummary | null>(null);
+  const [memoryStatus, setMemoryStatus] = useState<OpsMemoryStatus | null>(null);
   const [socialStatus, setSocialStatus] = useState<OpsSocialPlatformStatus | null>(null);
   const [socialHistory, setSocialHistory] = useState<OpsSocialPlatformHistory | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1210,16 +1309,18 @@ export default function MissionControlPage() {
       api.getCronJobs("all"),
       api.getSessions(8),
       api.getOpsApprovalSummary(),
+      api.getOpsMemoryStatus(),
       api.getOpsSocialPlatformStatus(),
       api.getOpsSocialPlatformStatusHistory(8),
-    ]).then(([statusResult, jobsResult, sessionsResult, approvalSummaryResult, socialStatusResult, socialHistoryResult]) => {
+    ]).then(([statusResult, jobsResult, sessionsResult, approvalSummaryResult, memoryStatusResult, socialStatusResult, socialHistoryResult]) => {
       if (statusResult.status === "fulfilled") setStatus(statusResult.value);
       if (jobsResult.status === "fulfilled") setJobs(jobsResult.value);
       if (sessionsResult.status === "fulfilled") setSessions(sessionsResult.value.sessions);
       if (approvalSummaryResult.status === "fulfilled") setApprovalSummary(approvalSummaryResult.value);
+      if (memoryStatusResult.status === "fulfilled") setMemoryStatus(memoryStatusResult.value);
       if (socialStatusResult.status === "fulfilled") setSocialStatus(socialStatusResult.value);
       if (socialHistoryResult.status === "fulfilled") setSocialHistory(socialHistoryResult.value);
-      const failures = [statusResult, jobsResult, sessionsResult, approvalSummaryResult, socialStatusResult, socialHistoryResult].filter((r) => r.status === "rejected");
+      const failures = [statusResult, jobsResult, sessionsResult, approvalSummaryResult, memoryStatusResult, socialStatusResult, socialHistoryResult].filter((r) => r.status === "rejected");
       setError(failures.length ? "Some live status panels could not refresh." : null);
     });
   }, []);
@@ -1313,6 +1414,7 @@ export default function MissionControlPage() {
         )}
 
         <TodayView status={status} activeJobs={activeJobs} jobs={jobs} approvalSummary={approvalSummary} />
+        <MemoryStatusPanel memoryStatus={memoryStatus} />
         <AutomationPosturePanel jobs={jobs} />
         </div>
 

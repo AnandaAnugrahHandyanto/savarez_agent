@@ -191,6 +191,28 @@ class TestWebServerEndpoints:
         assert resp.json()["gateway_state"] == "startup_failed"
         assert resp.json()["gateway_platforms"] == {}
 
+    def test_get_ops_memory_status_reads_profile_memory_files(self):
+        from hermes_constants import get_hermes_home
+
+        home = get_hermes_home()
+        memories = home / "memories"
+        memories.mkdir(parents=True, exist_ok=True)
+        (memories / "MEMORY.md").write_text("One stable fact\n§\nAnother stable fact\n", encoding="utf-8")
+        (memories / "USER.md").write_text("User preference\n", encoding="utf-8")
+
+        resp = self.client.get("/api/ops/memory-status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["mode"] == "local_read_only"
+        assert data["profile_home"] == str(home)
+        files = {item["target"]: item for item in data["files"]}
+        assert files["memory"]["filename"] == "MEMORY.md"
+        assert files["memory"]["entries"] == 2
+        assert files["memory"]["exists"] is True
+        assert files["user"]["filename"] == "USER.md"
+        assert data["total_chars"] >= files["memory"]["chars"]
+
     def test_get_ops_social_platform_status_defaults(self):
         resp = self.client.get("/api/ops/social-platform-status")
 

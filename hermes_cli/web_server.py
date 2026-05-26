@@ -2671,6 +2671,16 @@ async def get_ops_action_registry_status():
         raise _approval_error(exc) from exc
 
 
+@app.get("/api/ops/memory-status")
+async def get_ops_memory_status():
+    try:
+        from hermes_cli.ops_memory_status import read_ops_memory_status
+
+        return read_ops_memory_status()
+    except Exception as exc:
+        raise _approval_error(exc) from exc
+
+
 @app.get("/api/ops/social-platform-status")
 async def get_ops_social_platform_status():
     try:
