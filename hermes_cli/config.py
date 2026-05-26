@@ -1717,6 +1717,12 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        # Whether bare local paths in agent output, such as
+        # ``Full report: /tmp/report.pdf``, are automatically promoted to
+        # native platform attachments. Explicit ``MEDIA:<path>`` directives
+        # remain active even when this is false. Bridged to
+        # HERMES_AUTO_ATTACH_LOCAL_PATHS.
+        "auto_attach_local_paths": True,
         # Extra directories from which model-emitted bare file paths may be
         # uploaded as native gateway attachments. Files inside the Hermes
         # cache (~/.hermes/cache/{documents,images,audio,video,screenshots})

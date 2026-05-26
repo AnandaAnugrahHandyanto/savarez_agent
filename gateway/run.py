@@ -935,6 +935,11 @@ if _config_path.exists():
         # Gateway settings (media delivery allowlist + recency trust)
         _gateway_cfg = _cfg.get("gateway", {})
         if isinstance(_gateway_cfg, dict):
+            _auto_attach = _gateway_cfg.get("auto_attach_local_paths")
+            if _auto_attach is not None:
+                os.environ["HERMES_AUTO_ATTACH_LOCAL_PATHS"] = (
+                    "1" if _auto_attach else "0"
+                )
             _allow_dirs = _gateway_cfg.get("media_delivery_allow_dirs")
             if _allow_dirs:
                 if isinstance(_allow_dirs, str):
@@ -11465,8 +11470,10 @@ class GatewayRunner:
             media_files, _ = adapter.extract_media(response)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
             _, cleaned = adapter.extract_images(response)
-            local_files, _ = adapter.extract_local_files(cleaned)
-            local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
+            local_files = []
+            if BasePlatformAdapter.auto_attach_local_paths_enabled():
+                local_files, _ = adapter.extract_local_files(cleaned)
+                local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
 
             _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
 

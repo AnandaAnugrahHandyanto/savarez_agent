@@ -641,6 +641,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
     # in config.yaml for clean output.
     wrap_response = True
+    user_cfg = {}
     try:
         user_cfg = load_config()
         wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
@@ -664,6 +665,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     from gateway.platforms.base import BasePlatformAdapter
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    auto_attach_local_paths = True
+    try:
+        gateway_cfg = user_cfg.get("gateway", {}) if isinstance(user_cfg, dict) else {}
+        auto_attach_local_paths = gateway_cfg.get("auto_attach_local_paths", True)
+    except Exception:
+        auto_attach_local_paths = True
+    if auto_attach_local_paths and BasePlatformAdapter.auto_attach_local_paths_enabled():
+        local_files, cleaned_delivery_content = BasePlatformAdapter.extract_local_files(cleaned_delivery_content)
+        local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
+        media_files.extend((path, False) for path in local_files)
 
     try:
         config = load_gateway_config()

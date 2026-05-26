@@ -829,6 +829,7 @@ _HERMES_HOME = get_hermes_home()
 MEDIA_DELIVERY_ALLOW_DIRS_ENV = "HERMES_MEDIA_ALLOW_DIRS"
 MEDIA_DELIVERY_TRUST_RECENT_ENV = "HERMES_MEDIA_TRUST_RECENT_FILES"
 MEDIA_DELIVERY_TRUST_RECENT_SECONDS_ENV = "HERMES_MEDIA_TRUST_RECENT_SECONDS"
+MEDIA_DELIVERY_AUTO_ATTACH_LOCAL_PATHS_ENV = "HERMES_AUTO_ATTACH_LOCAL_PATHS"
 MEDIA_DELIVERY_SAFE_ROOTS = (
     IMAGE_CACHE_DIR,
     AUDIO_CACHE_DIR,
@@ -916,6 +917,17 @@ def _media_delivery_recency_seconds() -> float:
     except (TypeError, ValueError):
         pass
     return float(_MEDIA_DELIVERY_TRUST_RECENT_DEFAULT_SECONDS)
+
+
+def auto_attach_local_paths_enabled() -> bool:
+    """Return whether bare local file paths in outbound text become attachments.
+
+    ``MEDIA:<path>`` remains explicit and always goes through the media delivery
+    path. This flag only controls opportunistic detection of plain paths like
+    ``Full report: /tmp/report.pdf`` in agent/gateway output.
+    """
+    raw = os.environ.get(MEDIA_DELIVERY_AUTO_ATTACH_LOCAL_PATHS_ENV, "1")
+    return str(raw).strip().lower() not in {"0", "false", "no", "off", ""}
 
 
 def _media_delivery_denied_paths() -> List[Path]:
@@ -2374,6 +2386,11 @@ class BasePlatformAdapter(ABC):
         return safe_paths
 
     @staticmethod
+    def auto_attach_local_paths_enabled() -> bool:
+        """Whether bare local file paths should be promoted to attachments."""
+        return auto_attach_local_paths_enabled()
+
+    @staticmethod
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
         """
         Extract MEDIA:<path> tags and [[audio_as_voice]] directives from response text.
@@ -3593,9 +3610,13 @@ class BasePlatformAdapter(ABC):
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
 
                 # Auto-detect bare local file paths for native media delivery
-                # (helps small models that don't use MEDIA: syntax)
-                local_files, text_content = self.extract_local_files(text_content)
-                local_files = self.filter_local_delivery_paths(local_files)
+                # (helps small models that don't use MEDIA: syntax). Gated so
+                # operators can disable opportunistic path scraping while keeping
+                # explicit MEDIA:<path> delivery available.
+                local_files = []
+                if self.auto_attach_local_paths_enabled():
+                    local_files, text_content = self.extract_local_files(text_content)
+                    local_files = self.filter_local_delivery_paths(local_files)
                 if local_files:
                     logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
                 
