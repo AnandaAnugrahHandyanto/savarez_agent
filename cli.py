@@ -46,6 +46,9 @@ from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
+# Sentinel object to represent agents that are starting but not yet ready
+_AGENT_PENDING_SENTINEL = object()
+
 # Suppress startup messages for clean CLI experience
 os.environ["HERMES_QUIET"] = "1"  # Our own modules
 
@@ -5250,21 +5253,79 @@ class HermesCLI:
         """Handle /agents — show background processes and agent status."""
         from tools.process_registry import format_uptime_short, process_registry
 
-        processes = process_registry.list_sessions()
-        running = [p for p in processes if p.get("status") == "running"]
-        finished = [p for p in processes if p.get("status") != "running"]
+        now = time.time()
 
-        _cprint(f"  Running processes: {len(running)}")
-        for p in running:
-            cmd = p.get("command", "")[:80]
-            up = format_uptime_short(p.get("uptime_seconds", 0))
-            _cprint(f"    {p.get('session_id', '?')} · {up} · {cmd}")
+        # Get running agents from the agent registry
+        running_agents: dict = getattr(self, "_running_agents", {}) or {}
+        running_started: dict = getattr(self, "_running_agents_ts", {}) or {}
 
-        if finished:
-            _cprint(f"  Recently finished: {len(finished)}")
+        agent_rows: list[dict] = []
+        for session_key, agent in running_agents.items():
+            started = float(running_started.get(session_key, now))
+            elapsed = max(0, int(now - started))
+            is_pending = agent is _AGENT_PENDING_SENTINEL
+            agent_rows.append(
+                {
+                    "session_key": session_key,
+                    "elapsed": elapsed,
+                    "state": "starting" if is_pending else "running",
+                    "session_id": "" if is_pending else str(getattr(agent, "session_id", "") or ""),
+                    "model": "" if is_pending else str(getattr(agent, "model", "") or ""),
+                }
+            )
 
+        agent_rows.sort(key=lambda row: row["elapsed"], reverse=True)
+
+        # Get running processes from process registry
+        try:
+            processes = process_registry.list_sessions()
+            running_processes = [p for p in processes if p.get("status") == "running"]
+        except Exception:
+            running_processes = []
+
+        # Get background tasks
+        background_tasks = [
+            t for t in (getattr(self, "_background_tasks", set()) or set())
+            if hasattr(t, "done") and not t.done()
+        ]
+
+        # Display active agents
+        _cprint(f"  {_BOLD}Active Agents & Tasks{_RST}")
+        _cprint(f"  Active agents: {len(agent_rows)}")
+
+        if agent_rows:
+            for idx, row in enumerate(agent_rows[:12], 1):
+                sid = f" · {row['session_id']}" if row["session_id"] else ""
+                model = f" · {row['model']}" if row["model"] else ""
+                _cprint(f"    {idx}. {row['session_key']} · {row['state']} · "
+                       f"{format_uptime_short(row['elapsed'])}{sid}{model}")
+            if len(agent_rows) > 12:
+                _cprint(f"    ... and {len(agent_rows) - 12} more")
+        else:
+            _cprint(f"    {_DIM}No active agents{_RST}")
+
+        # Display running processes
+        _cprint(f"  Running processes: {len(running_processes)}")
+        if running_processes:
+            for proc in running_processes[:12]:
+                cmd = " ".join(str(proc.get("command", "")).split())
+                if len(cmd) > 90:
+                    cmd = cmd[:87] + "..."
+                _cprint(f"    - {proc.get('session_id', '?')} · "
+                       f"{format_uptime_short(int(proc.get('uptime_seconds', 0)))} · {cmd}")
+            if len(running_processes) > 12:
+                _cprint(f"    ... and {len(running_processes) - 12} more")
+        else:
+            _cprint(f"    {_DIM}No running processes{_RST}")
+
+        # Display background tasks
+        if background_tasks:
+            _cprint(f"  Background tasks: {len(background_tasks)}")
+            _cprint(f"    {_DIM}{len(background_tasks)} async job(s) running{_RST}")
+
+        # Display current agent status
         agent_running = getattr(self, "_agent_running", False)
-        _cprint(f"  Agent: {'running' if agent_running else 'idle'}")
+        _cprint(f"  Current session: {'running' if agent_running else 'idle'}")
 
     def _handle_paste_command(self):
         """Handle /paste — explicitly check clipboard for an image.
