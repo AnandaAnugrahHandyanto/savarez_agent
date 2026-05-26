@@ -486,6 +486,11 @@ class GatewayConfig:
     # fresh session exactly as if the reset policy had fired.  0 = disabled.
     session_store_max_age_days: int = 90
 
+    # Additional gateway-scoped config sections that do not deserve bespoke
+    # dataclass fields yet. Used for feature-specific runtime config such as
+    # calls.browser.
+    extra: Dict[str, Any] = field(default_factory=dict)
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -579,6 +584,7 @@ class GatewayConfig:
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
+            "extra": self.extra,
         }
     
     @classmethod
@@ -632,6 +638,13 @@ class GatewayConfig:
         except (TypeError, ValueError):
             session_store_max_age_days = 90
 
+        extra = data.get("extra", {})
+        if not isinstance(extra, dict):
+            extra = {}
+        calls_cfg = data.get("calls")
+        if isinstance(calls_cfg, dict):
+            extra = {**extra, "calls": calls_cfg}
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -647,6 +660,7 @@ class GatewayConfig:
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
+            extra=extra,
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:

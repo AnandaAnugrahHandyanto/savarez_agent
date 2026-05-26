@@ -5,7 +5,9 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.platforms.base import MessageEvent, MessageType
+from gateway.config import GatewayConfig
 from gateway.run import GatewayRunner
+from hermes_cli.config import DEFAULT_CONFIG
 
 
 def test_call_command_is_gateway_visible():
@@ -58,3 +60,27 @@ async def test_handle_call_status_reports_idle():
     result = await _runner()._handle_call_command(_event("/call status"))
 
     assert "No active call" in result
+
+
+def test_default_config_has_tailnet_call_settings():
+    calls = DEFAULT_CONFIG["calls"]["browser"]
+
+    assert calls["base_url"] == ""
+    assert calls["public_exposure_enabled"] is False
+    assert calls["ttl_seconds"] == 600
+
+
+def test_gateway_config_preserves_calls_extra():
+    cfg = GatewayConfig.from_dict(
+        {
+            "calls": {
+                "browser": {
+                    "base_url": "https://host.ts.net/call",
+                    "public_exposure_enabled": False,
+                    "ttl_seconds": 300,
+                }
+            }
+        }
+    )
+
+    assert cfg.extra["calls"]["browser"]["base_url"] == "https://host.ts.net/call"

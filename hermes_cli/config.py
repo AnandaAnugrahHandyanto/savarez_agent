@@ -1131,6 +1131,14 @@ DEFAULT_CONFIG = {
         "silence_threshold": 200,     # RMS below this = silence (0-32767)
         "silence_duration": 3.0,      # Seconds of silence before auto-stop
     },
+
+    "calls": {
+        "browser": {
+            "base_url": "",
+            "public_exposure_enabled": False,
+            "ttl_seconds": 600,
+        },
+    },
     
     "human_delay": {
         "mode": "off",
