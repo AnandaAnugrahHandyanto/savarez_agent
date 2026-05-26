@@ -584,6 +584,8 @@ def test_platforms_dingtalk_gates_are_loaded_from_documented_path(
         "      - '^hermes'\n"
         "    free_response_chats:\n"
         "      - cidABC\n"
+        "    allowed_chats:\n"
+        "      - group42\n"
         "    allowed_users:\n"
         "      - manager1234\n",
         encoding="utf-8",
@@ -593,6 +595,7 @@ def test_platforms_dingtalk_gates_are_loaded_from_documented_path(
         "DINGTALK_REQUIRE_MENTION",
         "DINGTALK_MENTION_PATTERNS",
         "DINGTALK_FREE_RESPONSE_CHATS",
+        "DINGTALK_ALLOWED_CHATS",
         "DINGTALK_ALLOWED_USERS",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -603,6 +606,7 @@ def test_platforms_dingtalk_gates_are_loaded_from_documented_path(
     assert dingtalk_extra["require_mention"] is True
     assert dingtalk_extra["mention_patterns"] == ["^hermes"]
     assert dingtalk_extra["free_response_chats"] == ["cidABC"]
+    assert dingtalk_extra["allowed_chats"] == ["group42"]
     assert dingtalk_extra["allowed_users"] == ["manager1234"]
 
     import os as _os
@@ -610,6 +614,7 @@ def test_platforms_dingtalk_gates_are_loaded_from_documented_path(
     assert _os.environ["DINGTALK_REQUIRE_MENTION"] == "true"
     assert _os.environ["DINGTALK_MENTION_PATTERNS"] == '["^hermes"]'
     assert _os.environ["DINGTALK_FREE_RESPONSE_CHATS"] == "cidABC"
+    assert _os.environ["DINGTALK_ALLOWED_CHATS"] == "group42"
     assert _os.environ["DINGTALK_ALLOWED_USERS"] == "manager1234"
 
 
