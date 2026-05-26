@@ -2149,9 +2149,32 @@ class BasePlatformAdapter(ABC):
     def prepare_tts_text(self, text: str) -> str:
         """Prepare text for TTS. Override to filter tool output, code, etc.
 
-        Default strips markdown formatting and truncates to 4000 chars.
+        Default strips markdown-like characters that would otherwise be read
+        literally (``*``, ``_``, `` ` ``, ``#``, ``[``, ``]``, ``(``, ``)``)
+        and truncates to 4000 chars.
+
+        Square brackets are preserved when the active TTS provider is Inworld
+        TTS-2, which treats ``[directive]`` as performance steering — both
+        instruction tags (``[say excitedly]``) and non-verbal tags
+        (``[laugh]``, ``[sigh]``). Stripping them would surface the directive
+        prose as literal speech (e.g. ``"say excitedly Oh you want me to..."``).
+        Other providers render bracket contents literally, so the default
+        remains to strip.
         """
-        return re.sub(r'[*_`#\[\]()]', '', text)[:4000].strip()
+        strip_chars = r'[*_`#\[\]()]'
+        try:
+            from tools.tts_tool import _load_tts_config, _get_provider
+            _tts_cfg = _load_tts_config() or {}
+            _provider = (_get_provider(_tts_cfg) or "").strip().lower()
+            if _provider == "inworld":
+                _model_id = str(
+                    (_tts_cfg.get("inworld") or {}).get("model_id") or ""
+                ).strip().lower()
+                if _model_id == "inworld-tts-2":
+                    strip_chars = r'[*_`#()]'
+        except Exception:
+            pass
+        return re.sub(strip_chars, '', text)[:4000].strip()
 
     async def play_tts(
         self,
