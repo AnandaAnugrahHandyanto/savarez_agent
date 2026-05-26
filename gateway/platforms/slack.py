@@ -932,9 +932,15 @@ class SlackAdapter(BasePlatformAdapter):
         """Clear the assistant thread status indicator."""
         if not self._app:
             return
-        thread_ts = self._active_status_threads.pop(chat_id, None)
+        tracked_thread_ts = self._active_status_threads.get(chat_id)
+        requested_thread_ts = None
+        if metadata:
+            requested_thread_ts = metadata.get("thread_id") or metadata.get("thread_ts")
+        thread_ts = requested_thread_ts or tracked_thread_ts
         if not thread_ts:
             return
+        if tracked_thread_ts == thread_ts:
+            self._active_status_threads.pop(chat_id, None)
         try:
             await self._get_client(chat_id).assistant_threads_setStatus(
                 channel_id=chat_id,

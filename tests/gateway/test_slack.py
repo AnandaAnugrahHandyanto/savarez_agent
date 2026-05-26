@@ -1313,6 +1313,19 @@ class TestSendTyping:
         adapter._app.client.assistant_threads_setStatus.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_stop_typing_uses_metadata_when_tracking_missing(self, adapter):
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+
+        await adapter.stop_typing("C123", metadata={"thread_id": "parent_ts"})
+
+        adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="",
+        )
+        assert "C123" not in adapter._active_status_threads
+
+    @pytest.mark.asyncio
     async def test_stop_typing_handles_api_error_gracefully(self, adapter):
         adapter._active_status_threads["C123"] = "parent_ts"
         adapter._app.client.assistant_threads_setStatus = AsyncMock(

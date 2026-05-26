@@ -9811,6 +9811,22 @@ class GatewayRunner:
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+        adapter = self.adapters.get(source.platform)
+
+        async def _clear_typing_indicator() -> None:
+            if not adapter or not hasattr(adapter, "stop_typing"):
+                return
+            try:
+                if source.platform == Platform.SLACK:
+                    metadata = self._thread_metadata_for_source(
+                        source,
+                        self._reply_anchor_for_event(event),
+                    )
+                    await adapter.stop_typing(source.chat_id, metadata=metadata)
+                else:
+                    await adapter.stop_typing(source.chat_id)
+            except Exception:
+                pass
 
         agent = self._running_agents.get(session_key)
         if agent is _AGENT_PENDING_SENTINEL:
@@ -9821,6 +9837,7 @@ class GatewayRunner:
                 interrupt_reason=_INTERRUPT_REASON_STOP,
                 invalidation_reason="stop_command_pending",
             )
+            await _clear_typing_indicator()
             logger.info("STOP (pending) for session %s — sentinel cleared", session_key)
             return EphemeralReply(t("gateway.stop.stopped_pending"))
         if agent:
@@ -9832,8 +9849,10 @@ class GatewayRunner:
                 interrupt_reason=_INTERRUPT_REASON_STOP,
                 invalidation_reason="stop_command_handler",
             )
+            await _clear_typing_indicator()
             return EphemeralReply(t("gateway.stop.stopped"))
         else:
+            await _clear_typing_indicator()
             return t("gateway.stop.no_active")
 
     async def _handle_platform_command(self, event: MessageEvent) -> str:
