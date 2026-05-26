@@ -738,9 +738,11 @@ def _build_table_card_payload(content: str) -> str:
     before being wrapped into the card JSON.
     """
     # Limit table count (max 3) — extras become fenced code blocks.
-    sanitised = _sanitise_card_text(content)
+    # Escape user content first, then optimise — optimisation adds <br> tags
+    # that must NOT be escaped.
+    escaped = _escape_card_markdown(content)
+    sanitised = _sanitise_card_text(escaped)
     optimised = _optimise_markdown_for_feishu(sanitised)
-    escaped = _escape_card_markdown(optimised)
     return json.dumps(
         {
             "schema": "2.0",
