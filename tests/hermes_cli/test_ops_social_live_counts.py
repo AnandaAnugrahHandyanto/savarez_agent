@@ -35,6 +35,28 @@ def test_probe_dry_run_does_not_call_http(tmp_path):
     assert result["snapshot"] is None
 
 
+def test_youtube_token_file_inventory_and_probe(tmp_path, monkeypatch):
+    token_file = tmp_path / "youtube_token_signalroom.json"
+    token_file.write_text(json.dumps({"token": "youtube-access-token", "channel_id": "UC123", "scopes": ["scope"], "expiry": "2099-01-01T00:00:00Z"}), encoding="utf-8")
+    monkeypatch.setenv("YOUTUBE_TOKEN_FILE", str(token_file))
+
+    inventory = credential_inventory(["youtube"], env_file=tmp_path / ".env")
+    token_meta = [item for item in inventory["platforms"][0]["credentials"] if item["key"] == "YOUTUBE_TOKEN_FILE"][0]
+    assert inventory["platforms"][0]["can_attempt_probe"] is True
+    assert token_meta["present"] is True
+    assert token_meta["path_name"] == "youtube_token_signalroom.json"
+
+    def fake_http(url, headers, timeout):
+        assert "mine=true" in url
+        assert headers["Authorization"] == "Bearer youtube-access-token"
+        return {"ok": True, "status_code": 200, "json": {"items": [{"statistics": {"videoCount": "7"}}]}}
+
+    result = probe_social_counts(["youtube"], env_file=tmp_path / ".env", http_get=fake_http)
+    payload = json.dumps(result)
+    assert result["platforms"][0]["published"] == "7"
+    assert "youtube-access-token" not in payload
+
+
 def test_probe_youtube_with_mock_http_writes_snapshot(tmp_path):
     env_file = tmp_path / ".env"
     env_file.write_text("YOUTUBE_API_KEY=secret-youtube-key\nYOUTUBE_CHANNEL_ID=channel-123456\n", encoding="utf-8")

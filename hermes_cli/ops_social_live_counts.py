@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
-from hermes_constants import get_env_path
+from hermes_constants import get_env_path, get_hermes_home
 from hermes_cli.ops_social_status import write_manual_social_platform_status
 
 HTTP_TIMEOUT_SECONDS = 12
@@ -42,6 +42,8 @@ PLATFORM_LABELS = {
     "instagram": "Instagram",
     "tiktok": "TikTok",
 }
+
+YOUTUBE_TOKEN_FILES = ("youtube_token_signalroom.json", "youtube_token.json")
 
 HttpGet = Callable[[str, Mapping[str, str], int], Dict[str, Any]]
 
@@ -73,6 +75,42 @@ def _load_env_file_values(path: Optional[Path] = None) -> Dict[str, str]:
 
 def _env_value(key: str, env_file_values: Mapping[str, str]) -> str:
     return os.environ.get(key) or env_file_values.get(key, "")
+
+
+def _load_json_file(path: Path) -> Dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _youtube_token_file() -> Optional[Path]:
+    explicit = os.environ.get("YOUTUBE_TOKEN_FILE", "").strip()
+    candidates = [Path(explicit).expanduser()] if explicit else []
+    candidates.extend(get_hermes_home() / name for name in YOUTUBE_TOKEN_FILES)
+    for candidate in candidates:
+        if candidate.exists():
+            data = _load_json_file(candidate)
+            if data.get("token"):
+                return candidate
+    return None
+
+
+def _youtube_token_file_metadata() -> Dict[str, Any]:
+    path = _youtube_token_file()
+    if path is None:
+        return {"present": False, "source": "missing", "shape": "missing"}
+    data = _load_json_file(path)
+    return {
+        "present": True,
+        "source": "token_file",
+        "shape": "present" if len(str(data.get("token") or "")) >= 8 else "present_short",
+        "path_name": path.name,
+        "channel_id_present": bool(data.get("channel_id")),
+        "expiry_present": bool(data.get("expiry")),
+        "scopes_count": len(data.get("scopes") or []),
+    }
 
 
 def _credential_shape(value: str) -> str:
@@ -113,6 +151,8 @@ def credential_inventory(platforms: Iterable[str] = PLATFORM_CREDENTIALS, *, env
                     "shape": _credential_shape(value),
                 }
             )
+        if platform == "youtube":
+            credentials.append({"key": "YOUTUBE_TOKEN_FILE", **_youtube_token_file_metadata()})
         result["platforms"].append(
             {
                 "platform": PLATFORM_LABELS[platform],
@@ -137,7 +177,7 @@ def _normalize_platforms(platforms: Iterable[str]) -> List[str]:
 
 def _can_attempt_platform(platform: str, env_file_values: Mapping[str, str]) -> bool:
     if platform == "youtube":
-        return bool(_env_value("YOUTUBE_ACCESS_TOKEN", env_file_values)) or bool(
+        return bool(_youtube_token_file()) or bool(_env_value("YOUTUBE_ACCESS_TOKEN", env_file_values)) or bool(
             _env_value("YOUTUBE_API_KEY", env_file_values) and _env_value("YOUTUBE_CHANNEL_ID", env_file_values)
         )
     if platform == "facebook":
@@ -189,11 +229,13 @@ def _row(platform: str, *, published: Any = "Needs sync", scheduled: Any = "Need
 
 
 def _probe_youtube(env_values: Mapping[str, str], http_get: HttpGet) -> Dict[str, Any]:
-    access_token = _env_value("YOUTUBE_ACCESS_TOKEN", env_values)
+    token_path = _youtube_token_file()
+    token_data = _load_json_file(token_path) if token_path else {}
+    access_token = _env_value("YOUTUBE_ACCESS_TOKEN", env_values) or str(token_data.get("token") or "")
     api_key = _env_value("YOUTUBE_API_KEY", env_values)
-    channel_id = _env_value("YOUTUBE_CHANNEL_ID", env_values)
+    channel_id = _env_value("YOUTUBE_CHANNEL_ID", env_values) or str(token_data.get("channel_id") or "")
     if access_token:
-        params = urllib.parse.urlencode({"part": "statistics", "mine": "true"})
+        params = urllib.parse.urlencode({"part": "statistics,snippet", "mine": "true"})
         response = http_get(f"https://www.googleapis.com/youtube/v3/channels?{params}", {"Authorization": f"Bearer {access_token}"}, HTTP_TIMEOUT_SECONDS)
     elif api_key and channel_id:
         params = urllib.parse.urlencode({"part": "statistics", "id": channel_id, "key": api_key})
