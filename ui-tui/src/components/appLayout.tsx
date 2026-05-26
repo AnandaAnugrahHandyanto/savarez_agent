@@ -314,7 +314,7 @@ const ComposerPane = memo(function ComposerPane({
         )}
       </Box>
 
-      {!composer.empty && !ui.sid && <Text color={ui.theme.color.muted}>⚕ {ui.status}</Text>}
+      {!composer.empty && !ui.sid && <Text color={ui.theme.color.muted}>⚕ {status.statusLabel ?? ui.status}</Text>}
 
       <StatusRulePane at="bottom" composer={composer} status={status} />
     </NoSelect>
@@ -361,6 +361,7 @@ const StatusRulePane = memo(function StatusRulePane({
         showCost={ui.showCost}
         status={ui.status}
         statusColor={status.statusColor}
+        statusLabel={status.statusLabel}
         t={ui.theme}
         turnStartedAt={status.turnStartedAt}
         usage={ui.usage}

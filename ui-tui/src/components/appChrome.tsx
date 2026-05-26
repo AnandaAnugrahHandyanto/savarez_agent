@@ -293,6 +293,7 @@ export function StatusRule({
   busy,
   status,
   statusColor,
+  statusLabel,
   model,
   modelFast,
   modelReasoningEffort,
@@ -324,7 +325,7 @@ export function StatusRule({
           {busy ? (
             <FaceTicker color={statusColor} startedAt={turnStartedAt} />
           ) : (
-            <Text color={statusColor}>{status}</Text>
+            <Text color={statusColor}>{statusLabel ?? status}</Text>
           )}
           <Text color={t.color.muted}> │ {modelLabel(model, modelReasoningEffort, modelFast)}</Text>
           {ctxLabel ? <Text color={t.color.muted}> │ {ctxLabel}</Text> : null}
@@ -490,6 +491,7 @@ interface StatusRuleProps {
   showCost: boolean
   status: string
   statusColor: string
+  statusLabel?: string
   t: Theme
   turnStartedAt?: null | number
   usage: Usage

@@ -46,6 +46,23 @@ export const zh: TUITranslations = {
   status: {
     running: '运行中…',
     ready: '就绪',
+    approvalNeeded: '需要审批',
+    sudoNeeded: '需要 sudo 密码',
+    secretNeeded: '需要输入密钥',
+    waitingInput: '等待输入…',
+    gatewayTimeout: '网关启动超时',
+    protocolWarning: '协议警告',
+    resuming: '恢复中…',
+    forgingSession: '创建会话中…',
+    resumingRecent: '恢复最近会话…',
+    setupRequired: '需要设置',
+    compressed: '已压缩',
+    compressing: '压缩中…',
+    interrupted: '已中断',
+    error: '错误',
+    failed: '失败',
+    timeout: '超时',
+    cancelled: '已取消'
   },
   statusBar: {
     voiceOn: '语音开启',

@@ -46,6 +46,23 @@ export const en: TUITranslations = {
   status: {
     running: 'Running…',
     ready: 'Ready',
+    approvalNeeded: 'Approval needed',
+    sudoNeeded: 'Sudo password needed',
+    secretNeeded: 'Secret input needed',
+    waitingInput: 'Waiting for input…',
+    gatewayTimeout: 'Gateway startup timeout',
+    protocolWarning: 'Protocol warning',
+    resuming: 'Resuming…',
+    forgingSession: 'Forging session…',
+    resumingRecent: 'Resuming most recent…',
+    setupRequired: 'Setup required',
+    compressed: 'Compressed',
+    compressing: 'Compressing…',
+    interrupted: 'Interrupted',
+    error: 'Error',
+    failed: 'Failed',
+    timeout: 'Timeout',
+    cancelled: 'Cancelled'
   },
   statusBar: {
     voiceOn: 'voice on',

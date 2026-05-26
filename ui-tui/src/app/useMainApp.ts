@@ -852,6 +852,37 @@ export function useMainApp(gw: GatewayClient) {
   const cwd = ui.info?.cwd || process.env.HERMES_CWD || process.cwd()
   const gitBranch = useGitBranch(cwd)
 
+  // Translate the raw status string for display in the status bar.
+  // Known static keys are translated; unknown/dynamic values fall back to
+  // the raw string so thinking deltas and gateway messages still show.
+  const translatedStatus = useMemo(() => {
+    const s = ui.status
+    // Known i18n keys
+    if (s === 'ready') return t('status.ready')
+    if (s === 'running') return t('status.running')
+    // Gateway-settled short labels
+    const known: Record<string, string> = {
+      'approval needed': t('status.approvalNeeded'),
+      'sudo password needed': t('status.sudoNeeded'),
+      'secret input needed': t('status.secretNeeded'),
+      'waiting for input…': t('status.waitingInput'),
+      'gateway startup timeout': t('status.gatewayTimeout'),
+      'protocol warning': t('status.protocolWarning'),
+      'resuming…': t('status.resuming'),
+      'forging session…': t('status.forgingSession'),
+      'resuming most recent…': t('status.resumingRecent'),
+      'setup required': t('status.setupRequired'),
+      'compressed': t('status.compressed'),
+      'compressing': t('status.compressing'),
+      'interrupted': t('status.interrupted'),
+      'error': t('status.error'),
+      'failed': t('status.failed'),
+      'timeout': t('status.timeout'),
+      'cancelled': t('status.cancelled')
+    }
+    return known[s] ?? s
+  }, [ui.status, t])
+
   const appStatus = useMemo(
     () => ({
       cwdLabel: fmtCwdBranch(cwd, gitBranch),
@@ -859,6 +890,7 @@ export function useMainApp(gw: GatewayClient) {
       sessionStartedAt: ui.sid ? sessionStartedAt : null,
       showStickyPrompt: !!stickyPrompt,
       statusColor: statusColorOf(ui.status, ui.theme.color),
+      statusLabel: translatedStatus,
       stickyPrompt,
       turnStartedAt: ui.sid ? turnStartedAt : null,
       // CLI parity: the classic prompt_toolkit status bar shows a red dot
@@ -872,6 +904,7 @@ export function useMainApp(gw: GatewayClient) {
       sessionStartedAt,
       stickyPrompt,
       turnStartedAt,
+      translatedStatus,
       ui,
       voiceEnabled,
       voiceProcessing,

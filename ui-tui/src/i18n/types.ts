@@ -52,6 +52,23 @@ export interface TUITranslations {
   status: {
     running: string;
     ready: string;
+    approvalNeeded: string;
+    sudoNeeded: string;
+    secretNeeded: string;
+    waitingInput: string;
+    gatewayTimeout: string;
+    protocolWarning: string;
+    resuming: string;
+    forgingSession: string;
+    resumingRecent: string;
+    setupRequired: string;
+    compressed: string;
+    compressing: string;
+    interrupted: string;
+    error: string;
+    failed: string;
+    timeout: string;
+    cancelled: string;
   };
 
   statusBar: {

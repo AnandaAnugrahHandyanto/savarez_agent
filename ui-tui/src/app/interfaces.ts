@@ -341,6 +341,7 @@ export interface AppLayoutStatusProps {
   sessionStartedAt: null | number
   showStickyPrompt: boolean
   statusColor: string
+  statusLabel: string
   stickyPrompt: string
   turnStartedAt: null | number
   voiceLabel: string
