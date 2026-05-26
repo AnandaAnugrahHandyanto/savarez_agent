@@ -15,6 +15,7 @@ import re
 import socket as _socket
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -840,6 +841,15 @@ MEDIA_DELIVERY_SAFE_ROOTS = (
     _HERMES_HOME / "video_cache",
     _HERMES_HOME / "document_cache",
     _HERMES_HOME / "browser_screenshots",
+    # Agents frequently write deliverables to temp dirs and the user's home
+    # via write_file / execute_code. On macOS tempfile.gettempdir() returns
+    # the per-user sandbox under /var/folders/.../T while /tmp symlinks to
+    # /private/tmp — a separate path — so include both. Path.home() and
+    # project dirs are also common write targets for tools.
+    Path(tempfile.gettempdir()),
+    Path("/tmp"),
+    Path("/private/tmp"),
+    Path.home(),
 )
 
 # Default recency window for trusting freshly-produced files (seconds).
@@ -2358,7 +2368,10 @@ class BasePlatformAdapter(ABC):
             if safe_path:
                 safe_media.append((safe_path, bool(is_voice)))
             else:
-                logger.warning("Skipping unsafe MEDIA directive path outside allowed roots")
+                logger.warning(
+                    "Skipping unsafe MEDIA directive path outside allowed roots: %s",
+                    media_path,
+                )
         return safe_media
 
     @staticmethod
@@ -2370,7 +2383,10 @@ class BasePlatformAdapter(ABC):
             if safe_path:
                 safe_paths.append(safe_path)
             else:
-                logger.warning("Skipping unsafe local file path outside allowed roots")
+                logger.warning(
+                    "Skipping unsafe local file path outside allowed roots: %s",
+                    file_path,
+                )
         return safe_paths
 
     @staticmethod

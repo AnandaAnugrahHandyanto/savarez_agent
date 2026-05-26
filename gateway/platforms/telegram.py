@@ -2477,10 +2477,15 @@ class TelegramAdapter(BasePlatformAdapter):
         text = content if len(content) <= self.MAX_MESSAGE_LENGTH else \
             self.truncate_message(content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)[0]
 
+        # Format here so streaming styling matches the final sendMessage path —
+        # without parse_mode + MarkdownV2 conversion, users see raw markdown
+        # syntax (e.g. **bold**) in the draft preview during streaming.
+        formatted = self.format_message(text)
         kwargs: Dict[str, Any] = {
             "chat_id": int(chat_id),
             "draft_id": int(draft_id),
-            "text": text,
+            "text": formatted,
+            "parse_mode": ParseMode.MARKDOWN_V2,
         }
         thread_id = self._metadata_thread_id(metadata)
         if thread_id is not None:
