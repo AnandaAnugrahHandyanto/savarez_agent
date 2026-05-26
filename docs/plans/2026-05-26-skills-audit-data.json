@@ -375,7 +375,7 @@
         "opencode"
       ],
       "relative_path": "autonomous-ai-agents/hermes-agent/SKILL.md",
-      "sha256": "bdeaebaa5ca078a8b7a084bd382f7168d9588516acf3a4780a49fbaf582c082e",
+      "sha256": "b3f71fcd4370c46a9d360465e56f59f24b760555a26f17259f15f6650cdff6bc",
       "source": "active_user_local",
       "tags": [
         "hermes",
@@ -2164,7 +2164,7 @@
       "path": "/Users/alfred/.hermes/skills/software-development/exceptional-engineering-discipline/SKILL.md",
       "related_skills": [],
       "relative_path": "software-development/exceptional-engineering-discipline/SKILL.md",
-      "sha256": "7200359668d6f26e0822cd1937ac58023f5f5f63a02e5a8689db00cfb6c2b9a1",
+      "sha256": "a4e7ee862c478a201162464d9d124e16f06aece2ab5a6ef0e914e94261b4e38e",
       "source": "active_user_local",
       "tags": []
     },
@@ -2331,7 +2331,7 @@
         "plan"
       ],
       "relative_path": "software-development/spike/SKILL.md",
-      "sha256": "1ce4223091decf1c7753520d7413378850d3b72506e4f7796e9c56102ce4baea",
+      "sha256": "236bc472acfc31621a1ce9617857e9dfcc1118a9d51ef152b3a69889853930d2",
       "source": "active_user_local",
       "tags": [
         "spike",
