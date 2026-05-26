@@ -20,7 +20,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { H2, Typography } from "@/components/NouiTypography";
 import { Card, CardContent } from "@/components/ui/card";
 import { api } from "@/lib/api";
-import type { CronJob, OpsActionDryRun, OpsApproval, OpsApprovalAuditEvent, OpsApprovalCreate, OpsApprovalSummary, StatusResponse } from "@/lib/api";
+import type { CronJob, OpsActionDryRun, OpsActionExecute, OpsApproval, OpsApprovalAuditEvent, OpsApprovalCreate, OpsApprovalSummary, StatusResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { usePageHeader } from "@/contexts/usePageHeader";
 
@@ -210,7 +210,8 @@ export default function ApprovalInboxPage() {
   const [approvalProjectFilter, setApprovalProjectFilter] = useState("all");
   const [proposalForm, setProposalForm] = useState<OpsApprovalCreate>(EMPTY_PROPOSAL_FORM);
   const [dryRunResults, setDryRunResults] = useState<Record<string, OpsActionDryRun>>({});
-  const [decisionNote, setDecisionNote] = useState("Approved in dashboard; Jenny must still execute through normal chat/tool flow only.");
+  const [executeResults, setExecuteResults] = useState<Record<string, OpsActionExecute>>({});
+  const [decisionNote, setDecisionNote] = useState("Approved in dashboard; only the fixed read-only status probe may execute from this page when config allows it.");
   const [actioningId, setActioningId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -231,9 +232,12 @@ export default function ApprovalInboxPage() {
   }, []);
 
   useEffect(() => {
-    load();
+    const initial = window.setTimeout(load, 0);
     const timer = window.setInterval(load, 30_000);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(timer);
+    };
   }, [load]);
 
   useEffect(() => {
@@ -376,6 +380,21 @@ export default function ApprovalInboxPage() {
       .finally(() => setActioningId(null));
   }, []);
 
+  const executeFixedAction = useCallback((item: OpsApproval, actionName: string) => {
+    setActioningId(`${item.id}:execute`);
+    setMessage(null);
+    setError(null);
+    api.executeOpsApprovalAction(item.id, actionName)
+      .then((result) => {
+        setExecuteResults((current) => ({ ...current, [item.id]: result }));
+        setMessage(result.message || "Read-only status probe completed.");
+        return api.getOpsApprovalAudit();
+      })
+      .then(setAuditEvents)
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setActioningId(null));
+  }, []);
+
   return (
     <main className="h-full overflow-auto px-4 py-5 lg:px-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-5">
@@ -387,10 +406,10 @@ export default function ApprovalInboxPage() {
               </div>
               <H2 className="text-3xl font-bold tracking-tight lg:text-5xl">Decisions before side effects</H2>
               <Typography className="mt-3 max-w-3xl text-sm leading-6 text-text-secondary lg:text-base">
-                Read/write approval ledger. Travis can approve, reject, clarify, or snooze bounded Jenny proposals. Decisions write to an audit log and may generate a Jenny chat command, but the dashboard still cannot execute the action.
+                Read/write approval ledger. Travis can approve, reject, clarify, or snooze bounded Jenny proposals. The only dashboard-side executable action is a fixed, config-gated read-only status probe that writes audit events only.
               </Typography>
             </div>
-            <Badge tone="outline" className="w-fit border-amber-400/40 text-amber-200">writable decisions / no execution</Badge>
+            <Badge tone="outline" className="w-fit border-amber-400/40 text-amber-200">fixed read-only execute gate</Badge>
           </div>
         </section>
 
@@ -418,7 +437,7 @@ export default function ApprovalInboxPage() {
             <div>
               <div className="flex items-center gap-2 text-amber-200"><ClipboardCheck className="h-5 w-5" /><H2 className="text-xl">Writable approval ledger</H2></div>
               <Typography className="mt-2 max-w-3xl text-sm leading-6 text-amber-50/90">
-                Approval records are stored under Hermes state with append-only audit events. Jenny can now ingest gated proposals from chat/tool workflows. Approving creates a copyable Jenny command; it does not run the command.
+                Approval records are stored under Hermes state with append-only audit events. Jenny can ingest gated proposals from chat/tool workflows. Approving creates a copyable Jenny command; only the fixed read-only status probe may execute from this page, and only when config explicitly enables and allowlists it.
               </Typography>
             </div>
             <Button onClick={createSampleApproval} disabled={actioningId === "new"} className="w-fit gap-2">
@@ -595,12 +614,19 @@ export default function ApprovalInboxPage() {
                     <div className="rounded-xl border border-cyan-400/20 bg-cyan-500/10 p-3">
                       <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
                         <div>
-                          <div className="text-xs font-semibold uppercase tracking-wide text-cyan-200">Fixed action dry run</div>
-                          <div className="mt-1 text-sm leading-6 text-cyan-50/90">Checks named registry action <span className="font-mono text-cyan-100">{fixedActionForApproval(item)}</span>. Dry run only — no action executed.</div>
+                          <div className="text-xs font-semibold uppercase tracking-wide text-cyan-200">Fixed action gate</div>
+                          <div className="mt-1 text-sm leading-6 text-cyan-50/90">
+                            Registry action <span className="font-mono text-cyan-100">{fixedActionForApproval(item)}</span>. Dry-run checks the gate; execute runs only the read-only status probe and appends audit events.
+                          </div>
                         </div>
-                        <Button ghost onClick={() => dryRunFixedAction(item, fixedActionForApproval(item) || "")} disabled={Boolean(actioningId)} className="w-fit gap-2">
-                          <ShieldCheck className="h-4 w-4" /> Check fixed action
-                        </Button>
+                        <div className="flex flex-wrap gap-2">
+                          <Button ghost onClick={() => dryRunFixedAction(item, fixedActionForApproval(item) || "")} disabled={Boolean(actioningId)} className="w-fit gap-2">
+                            <ShieldCheck className="h-4 w-4" /> Check gate
+                          </Button>
+                          <Button onClick={() => executeFixedAction(item, fixedActionForApproval(item) || "")} disabled={Boolean(actioningId)} className="w-fit gap-2">
+                            <ShieldCheck className="h-4 w-4" /> Execute read-only probe
+                          </Button>
+                        </div>
                       </div>
                       {dryRunResults[item.id] && (
                         <div className="mt-3 rounded-lg border border-cyan-300/20 bg-black/25 p-3 text-xs leading-5 text-cyan-50/90">
@@ -609,6 +635,15 @@ export default function ApprovalInboxPage() {
                           <div>Config: {dryRunResults[item.id].config.reason}</div>
                           <div>Approval: {dryRunResults[item.id].approval.reason}</div>
                           <div className="font-semibold text-cyan-100">Dry run only — no action executed.</div>
+                        </div>
+                      )}
+                      {executeResults[item.id] && (
+                        <div className="mt-3 rounded-lg border border-emerald-300/20 bg-black/25 p-3 text-xs leading-5 text-emerald-50/90">
+                          <div className="font-semibold text-emerald-100">{executeResults[item.id].message}</div>
+                          <div>Mutation scope: {executeResults[item.id].mutation_scope}</div>
+                          <div>Gateway: {String(executeResults[item.id].result.gateway_running)} · {executeResults[item.id].result.gateway_state || "unknown"}</div>
+                          <div>Platforms: {executeResults[item.id].result.gateway_platform_count}</div>
+                          <div>Audit: execute_requested + execute_completed</div>
                         </div>
                       )}
                     </div>
@@ -708,7 +743,7 @@ export default function ApprovalInboxPage() {
               <CardContent className="space-y-3 p-5">
                 <div className="flex items-center gap-2 text-amber-200"><ShieldAlert className="h-5 w-5" /><H2 className="text-xl">Current boundary</H2></div>
                 <Typography className="text-sm leading-6 text-amber-50/90">
-                  This is not an execution system. The backend stores decisions and audit events only. Approval produces a bounded Jenny chat command; no dashboard route runs shell commands, restarts services, deletes files, publishes, sends outreach, or changes credentials.
+                  The backend stores decisions and audit events. The only dashboard execution route is <span className="font-mono">read_only_status_probe</span>: it is disabled unless config explicitly enables and allowlists it, never runs shell, and never restarts services.
                 </Typography>
               </CardContent>
             </Card>

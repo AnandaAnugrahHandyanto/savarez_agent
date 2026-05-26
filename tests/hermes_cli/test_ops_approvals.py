@@ -324,7 +324,7 @@ def test_approval_api_summary_endpoint(_isolate_hermes_home):
     assert summary["blocked_execution"] is True
 
 
-def test_approval_api_records_decision_but_has_no_execute_route(_isolate_hermes_home):
+def test_approval_api_records_decision_and_execute_route_is_config_gated(_isolate_hermes_home):
     try:
         from starlette.testclient import TestClient
     except ImportError:
@@ -353,9 +353,13 @@ def test_approval_api_records_decision_but_has_no_execute_route(_isolate_hermes_
 
     route_paths = {getattr(route, "path", "") for route in app.routes}
     assert f"/api/ops/approvals/{{approval_id}}/execute" not in route_paths
-    assert "/api/ops/approvals/{approval_id}/actions/{action_name}/execute" not in route_paths
+    assert "/api/ops/approvals/{approval_id}/actions/{action_name}/execute" in route_paths
     execute_resp = client.post(f"/api/ops/approvals/{approval['id']}/execute")
     assert execute_resp.status_code in {404, 405}
+
+    gated_resp = client.post(f"/api/ops/approvals/{approval['id']}/actions/read_only_status_probe/execute")
+    assert gated_resp.status_code == 400
+    assert "disabled" in gated_resp.text.lower()
 
 
 def test_approval_action_dry_run_route_preflights_without_execution(_isolate_hermes_home):
@@ -392,18 +396,86 @@ def test_approval_action_dry_run_route_preflights_without_execution(_isolate_her
     assert body["config"]["allowed"] is False  # default config remains disabled
 
 
-def test_approval_action_dry_run_route_rejects_unknown_action(_isolate_hermes_home):
+
+
+def test_approval_action_execute_route_runs_only_read_only_probe_when_explicitly_enabled(_isolate_hermes_home, monkeypatch):
     try:
         from starlette.testclient import TestClient
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
 
+    import hermes_cli.ops_actions as ops_actions
     from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+    monkeypatch.setattr(
+        ops_actions,
+        "_load_runtime_config",
+        lambda: {"ops_center": {"action_execution_enabled": True, "allowed_actions": ["read_only_status_probe"]}},
+    )
+    monkeypatch.setattr(ops_actions, "_read_status_metadata", lambda: {
+        "gateway_running": True,
+        "gateway_state": "running",
+        "gateway_pid": 12345,
+        "gateway_platforms": {"discord": {"state": "connected"}},
+    })
+
+    client = TestClient(app)
+    client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+    created = client.post("/api/ops/approvals", json=_valid_request(
+        title="Probe status only",
+        risk_label="Read-only",
+        proposed_action="read_only_status_probe",
+        target="read_only_status_probe",
+        preview="Return status metadata only; no restart or write.",
+        rollback_or_verification="Confirm response has mutation_scope audit_log_only and gateway_running only.",
+    )).json()
+    approved = client.post(
+        f"/api/ops/approvals/{created['id']}/approve",
+        json={"decided_by": "Travis", "decision_note": "Approved read-only probe only"},
+    ).json()
+
+    resp = client.post(f"/api/ops/approvals/{approved['id']}/actions/read_only_status_probe/execute")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["executed"] is True
+    assert body["action"]["name"] == "read_only_status_probe"
+    assert body["approval_id"] == approved["id"]
+    assert body["mutation_scope"] == "audit_log_only"
+    assert body["result"]["gateway_running"] is True
+    assert body["result"]["gateway_pid"] == 12345
+    assert body["result"]["gateway_platform_count"] == 1
+
+    audit = client.get(f"/api/ops/approvals/audit?approval_id={approved['id']}").json()
+    assert [event["event"] for event in audit][-2:] == ["execute_requested", "execute_completed"]
+    assert all("secret" not in json.dumps(event).lower() for event in audit)
+
+
+def test_approval_action_execute_route_rejects_non_probe_action_even_if_configured(_isolate_hermes_home, monkeypatch):
+    try:
+        from starlette.testclient import TestClient
+    except ImportError:
+        pytest.skip("fastapi/starlette not installed")
+
+    import hermes_cli.ops_actions as ops_actions
+    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+    monkeypatch.setattr(
+        ops_actions,
+        "_load_runtime_config",
+        lambda: {"ops_center": {"action_execution_enabled": True, "allowed_actions": ["read_only_status_probe", "restart_gateway"]}},
+    )
 
     client = TestClient(app)
     client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
     created = client.post("/api/ops/approvals", json=_valid_request()).json()
+    approved = client.post(
+        f"/api/ops/approvals/{created['id']}/approve",
+        json={"decided_by": "Travis", "decision_note": "Should still not execute"},
+    ).json()
 
-    resp = client.post(f"/api/ops/approvals/{created['id']}/actions/shell/dry-run")
+    resp = client.post(f"/api/ops/approvals/{approved['id']}/actions/restart_gateway/execute")
 
     assert resp.status_code == 400
+    assert "only read_only_status_probe" in resp.text

@@ -282,6 +282,13 @@ class ApprovalStore:
         )
         return proposal
 
+    def append_audit_event(self, event: str, approval: Dict[str, Any], *, actor: Optional[str] = None, note: Optional[str] = None) -> None:
+        """Append a bounded audit event for approved dashboard-side probes.
+
+        This is intentionally audit-only; it does not modify the approval record.
+        """
+        self._append_audit(event, approval, actor=actor, note=note)
+
     def decide(self, approval_id: str, status: str, *, decided_by: str, decision_note: Optional[str] = None) -> Dict[str, Any]:
         if status not in DECISION_STATUSES:
             raise ApprovalError(f"Invalid decision status: {status}")

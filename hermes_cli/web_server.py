@@ -2673,6 +2673,27 @@ async def dry_run_ops_approval_action(approval_id: str, action_name: str):
         raise _approval_error(exc) from exc
 
 
+@app.post("/api/ops/approvals/{approval_id}/actions/{action_name}/execute")
+async def execute_ops_approval_action(approval_id: str, action_name: str):
+    try:
+        from hermes_cli.ops_actions import execute_read_only_status_probe
+
+        store = _approval_store()
+        approval = store.get(approval_id)
+
+        def _audit(event: str, item: Dict[str, Any], actor: str) -> None:
+            store.append_audit_event(event, dict(item), actor=actor, note=action_name)
+
+        return execute_read_only_status_probe(
+            action_name,
+            approval,
+            audit=_audit,
+            actor="dashboard",
+        )
+    except Exception as exc:
+        raise _approval_error(exc) from exc
+
+
 @app.post("/api/ops/approvals/{approval_id}/approve")
 async def approve_ops_approval(approval_id: str, body: ApprovalDecision):
     try:

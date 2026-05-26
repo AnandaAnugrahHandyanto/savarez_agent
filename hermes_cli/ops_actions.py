@@ -1,15 +1,15 @@
-"""Fixed action dry-run helpers for Jenny Ops Center.
+"""Fixed action helpers for Jenny Ops Center.
 
-This module intentionally does not execute actions. It exposes a small registry,
-config gating, and approval preflight checks so the dashboard can show what would
-be allowed before any future execution route is separately approved.
+This module exposes a small hardcoded registry, config gating, approval preflight,
+dry-run checks, and the first explicitly gated execute path. Execution is limited to
+``read_only_status_probe`` and never accepts shell/command text from the dashboard.
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 
 
 class OpsActionError(ValueError):
@@ -225,4 +225,98 @@ def dry_run_action(
         "execution_allowed": False,
         "would_execute": False,
         "message": "Dry run only — no action executed",
+    }
+
+
+
+def _read_status_metadata() -> dict[str, Any]:
+    """Return existing dashboard/gateway metadata without mutating services.
+
+    This intentionally calls only in-process readers used by the dashboard status
+    endpoint. It must not shell out, restart services, write config, or send
+    messages.
+    """
+    try:
+        from gateway.status import get_running_pid, read_runtime_status
+    except Exception:
+        return {
+            "gateway_running": None,
+            "gateway_state": None,
+            "gateway_pid": None,
+            "gateway_platforms": {},
+        }
+
+    gateway_pid = get_running_pid()
+    runtime = read_runtime_status() or {}
+    platforms = runtime.get("platforms") if isinstance(runtime, Mapping) else {}
+    return {
+        "gateway_running": gateway_pid is not None,
+        "gateway_state": runtime.get("gateway_state") if isinstance(runtime, Mapping) else None,
+        "gateway_pid": gateway_pid,
+        "gateway_platforms": platforms if isinstance(platforms, Mapping) else {},
+        "gateway_updated_at": runtime.get("updated_at") if isinstance(runtime, Mapping) else None,
+        "gateway_exit_reason": runtime.get("exit_reason") if isinstance(runtime, Mapping) else None,
+    }
+
+
+def execute_read_only_status_probe(
+    action_name: str,
+    approval: Mapping[str, Any],
+    *,
+    config: Optional[Mapping[str, Any]] = None,
+    now: Optional[datetime] = None,
+    audit: Optional[Callable[[str, Mapping[str, Any], str], None]] = None,
+    actor: str = "dashboard",
+) -> dict[str, Any]:
+    """Execute the single approved read-only status probe.
+
+    The only side effect permitted here is append-only audit logging via the
+    provided callback. The probe itself is read-only metadata collection.
+    """
+    if str(action_name or "").strip() != "read_only_status_probe":
+        raise OpsActionError("only read_only_status_probe can be executed from the Ops Center")
+
+    config_result = preflight_action_config(action_name, config=config)
+    if not config_result["allowed"]:
+        raise OpsActionError(config_result["reason"])
+
+    approval_result = preflight_approval_for_action(approval, action_name, now=now)
+    action = config_result["action"]
+    approval_id = approval.get("id")
+
+    if audit is not None:
+        audit("execute_requested", approval, actor)
+
+    try:
+        status = _read_status_metadata()
+        platforms = status.get("gateway_platforms") or {}
+        result = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "gateway_running": status.get("gateway_running"),
+            "gateway_state": status.get("gateway_state"),
+            "gateway_pid": status.get("gateway_pid"),
+            "gateway_platform_count": len(platforms) if isinstance(platforms, Mapping) else 0,
+            "gateway_updated_at": status.get("gateway_updated_at"),
+            "gateway_exit_reason": status.get("gateway_exit_reason"),
+            "action_execution_enabled": config_result["execution_enabled"],
+            "allowed_actions": config_result["allowed_actions"],
+            "approval_status": approval.get("status"),
+        }
+    except Exception:
+        if audit is not None:
+            audit("execute_failed", approval, actor)
+        raise
+
+    if audit is not None:
+        audit("execute_completed", approval, actor)
+
+    return {
+        "ok": True,
+        "executed": True,
+        "action": action,
+        "approval": approval_result,
+        "approval_id": approval_id,
+        "mutation_scope": "audit_log_only",
+        "result": result,
+        "message": "Read-only status probe completed; no service, config, cron, messaging, credential, file, or public action was changed.",
     }

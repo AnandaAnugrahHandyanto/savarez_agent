@@ -171,6 +171,10 @@ export const api = {
     fetchJSON<OpsActionDryRun>(`/api/ops/approvals/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionName)}/dry-run`, {
       method: "POST",
     }),
+  executeOpsApprovalAction: (id: string, actionName: string) =>
+    fetchJSON<OpsActionExecute>(`/api/ops/approvals/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionName)}/execute`, {
+      method: "POST",
+    }),
 
   // Cron jobs
   getCronJobs: (profile = "all") =>
@@ -679,6 +683,34 @@ export interface OpsActionDryRun {
   };
   execution_allowed: false;
   would_execute: false;
+  message: string;
+}
+
+export interface OpsActionExecute {
+  ok: boolean;
+  executed: true;
+  approval_id?: string | null;
+  action: OpsActionDryRun["action"];
+  approval: {
+    allowed: boolean;
+    would_execute: false;
+    execution_allowed: false;
+    reason: string;
+    approval_id?: string | null;
+  };
+  mutation_scope: "audit_log_only";
+  result: {
+    timestamp: string;
+    gateway_running?: boolean | null;
+    gateway_state?: string | null;
+    gateway_pid?: number | string | null;
+    gateway_platform_count: number;
+    gateway_updated_at?: string | null;
+    gateway_exit_reason?: string | null;
+    action_execution_enabled: boolean;
+    allowed_actions: string[];
+    approval_status?: string | null;
+  };
   message: string;
 }
 
