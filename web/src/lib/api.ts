@@ -763,9 +763,15 @@ export interface CronJob {
   enabled: boolean;
   state?: string | null;
   deliver?: string | null;
+  repeat?: string | null;
   last_run_at?: string | null;
   next_run_at?: string | null;
+  last_status?: string | null;
   last_error?: string | null;
+  last_delivery_error?: string | null;
+  paused_reason?: string | null;
+  no_agent?: boolean;
+  workdir?: string | null;
 }
 
 export interface SkillInfo {

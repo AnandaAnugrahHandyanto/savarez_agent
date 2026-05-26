@@ -372,6 +372,77 @@ function getSchedule(job: CronJob): string {
   return job.schedule_display || job.schedule?.display || job.schedule?.expr || "—";
 }
 
+function jobSearchText(job: CronJob): string {
+  return `${job.id || ""} ${job.name || ""} ${job.prompt || ""} ${job.script || ""} ${job.deliver || ""} ${job.workdir || ""}`.toLowerCase();
+}
+
+function isActiveJob(job: CronJob): boolean {
+  return job.enabled !== false && getJobState(job) !== "paused";
+}
+
+function isApprovedStandingGuard(job: CronJob): boolean {
+  const text = jobSearchText(job);
+  return (
+    text.includes("backup") ||
+    text.includes("storage hygiene guard") ||
+    text.includes("memory capacity guard") ||
+    text.includes("discord thread lifecycle") ||
+    text.includes("redacted export")
+  );
+}
+
+function isProjectAutomation(job: CronJob): boolean {
+  const text = jobSearchText(job);
+  return (
+    text.includes("tool") ||
+    text.includes("tally") ||
+    text.includes("signal") ||
+    text.includes("instagram") ||
+    text.includes("family") ||
+    text.includes("vendorproof") ||
+    text.includes("outreach") ||
+    text.includes("queue") ||
+    text.includes("email") ||
+    text.includes("launch-gate")
+  );
+}
+
+function needsAutomationReview(job: CronJob): boolean {
+  if (!isActiveJob(job)) return false;
+  if (isProblemJob(job)) return true;
+  const text = jobSearchText(job);
+  const schedule = getSchedule(job).toLowerCase();
+  const deliver = (job.deliver || "").toLowerCase();
+  return (
+    deliver === "origin" ||
+    Boolean(job.last_delivery_error) ||
+    schedule.includes("every 1m") ||
+    schedule.includes("every 5m") ||
+    text.includes("outreach") ||
+    text.includes("queue runner") ||
+    text.includes("email watcher") ||
+    text.includes("launch-gate") ||
+    (!isApprovedStandingGuard(job) && !isProjectAutomation(job))
+  );
+}
+
+function describeAutomationReason(job: CronJob): string {
+  if (!isActiveJob(job)) return "Paused or retired — not currently running.";
+  if (isProblemJob(job)) return "Problem state or recent error reported.";
+  const schedule = getSchedule(job).toLowerCase();
+  const deliver = (job.deliver || "").toLowerCase();
+  if (deliver === "origin") return "Delivers to the current thread; review whether it should stay visible.";
+  if (schedule.includes("every 1m") || schedule.includes("every 5m")) return "High-frequency automation; confirm it is still intentionally active.";
+  if (isApprovedStandingGuard(job)) return "Protective/backup-style standing guard candidate.";
+  if (isProjectAutomation(job)) return "Project automation/watchdog; keep only if the project gate still approves it.";
+  return "Active automation without a clear standing approval category.";
+}
+
+function buildPauseProposalCommand(jobs: CronJob[]): string {
+  const lines = jobs.map((job) => `- ${job.id} (${job.profile || "default"}): ${getJobTitle(job)} — ${getSchedule(job)} — ${describeAutomationReason(job)}`);
+  return `/goal Draft a pause-review proposal for these enabled Hermes cron/automation jobs. Do not pause, remove, trigger, or edit any job yet. Summarize why each job may need Travis review and ask for exact approval before mutation.\n${lines.join("\n")}`;
+}
+
 function formatTime(value?: string | number | null): string {
   if (!value) return "—";
   const date = typeof value === "number" ? new Date(value * 1000) : new Date(value);
@@ -637,6 +708,140 @@ function TodayView({ status, activeJobs, jobs, approvalSummary }: { status: Stat
   );
 }
 
+function AutomationPosturePanel({ jobs }: { jobs: CronJob[] }) {
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const active = jobs.filter(isActiveJob);
+  const needsReview = active.filter(needsAutomationReview);
+  const approvedStanding = active.filter((job) => isApprovedStandingGuard(job) && !needsAutomationReview(job));
+  const projectAutomations = active.filter((job) => isProjectAutomation(job) && !needsAutomationReview(job) && !isApprovedStandingGuard(job));
+  const paused = jobs.filter((job) => !isActiveJob(job));
+
+  const groups = [
+    {
+      key: "approved",
+      title: "Approved standing guards",
+      description: "Protective or backup-style jobs that look intentionally durable. Still visible, not auto-mutated.",
+      tone: "border-emerald-400/30 bg-emerald-500/10 text-emerald-100",
+      jobs: approvedStanding,
+    },
+    {
+      key: "project",
+      title: "Project watchdogs / business automations",
+      description: "Project-specific jobs that may be valid only while their project gate is active.",
+      tone: "border-cyan-400/30 bg-cyan-500/10 text-cyan-100",
+      jobs: projectAutomations,
+    },
+    {
+      key: "review",
+      title: "Needs review",
+      description: "High-frequency, origin-delivering, error-prone, or unclear active jobs. Dashboard can draft a proposal, not pause them.",
+      tone: "border-amber-400/35 bg-amber-500/12 text-amber-100",
+      jobs: needsReview,
+    },
+    {
+      key: "paused",
+      title: "Paused / retired",
+      description: "Not currently active; shown so old jobs do not blend into running automation.",
+      tone: "border-slate-400/25 bg-slate-500/10 text-slate-100",
+      jobs: paused,
+    },
+  ];
+
+  const copyPauseProposal = async () => {
+    try {
+      await navigator.clipboard.writeText(buildPauseProposalCommand(needsReview));
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+  };
+
+  return (
+    <Card className={cockpitCard}>
+      <CardContent className="space-y-5 p-5">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <div className="flex items-center gap-2 text-midground">
+              <Activity className="h-5 w-5" />
+              <H2 className="text-xl">Automation posture</H2>
+            </div>
+            <Typography className="mt-1 max-w-3xl text-sm leading-6 text-text-secondary">
+              Read-only grouping for enabled cron/watchdog jobs. This answers what is running and why before any pause/remove/trigger action is proposed.
+            </Typography>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Badge tone="outline" className="border-emerald-400/30 text-emerald-200">{active.length} active</Badge>
+            <Badge tone="outline" className="border-amber-400/35 text-amber-200">{needsReview.length} review</Badge>
+            <Link to="/ops-runs" className="inline-flex">
+              <Button ghost size="sm" className="gap-2">Run ledger <ArrowRight className="h-4 w-4" /></Button>
+            </Link>
+          </div>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-4">
+          {groups.map((group) => (
+            <div key={group.key} className={cn("rounded-xl border p-4", group.tone)}>
+              <div className="text-sm font-semibold uppercase tracking-[0.08em]">{group.title}</div>
+              <div className="mt-2 text-3xl font-semibold text-text-primary">{group.jobs.length}</div>
+              <div className="mt-2 text-sm leading-6 text-text-secondary">{group.description}</div>
+            </div>
+          ))}
+        </div>
+
+        <div className="grid gap-4 xl:grid-cols-[1fr_1fr]">
+          {groups.map((group) => (
+            <div key={`${group.key}-list`} className="min-w-0 space-y-2">
+              <div className={readableSectionHeading}>{group.title}</div>
+              <div className="space-y-2">
+                {group.jobs.length ? group.jobs.slice(0, 5).map((job) => (
+                  <div key={`${group.key}:${job.profile || "default"}:${job.id}`} className={readablePanel}>
+                    <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="min-w-0">
+                        <div className={readableTitle}>{getJobTitle(job)}</div>
+                        <div className={readableBody}>{describeAutomationReason(job)}</div>
+                        <div className="mt-2 flex flex-wrap gap-2 text-xs leading-5 text-text-secondary">
+                          <span className="rounded-full border border-[#284848] bg-black/25 px-2 py-0.5">{job.profile || "default"}</span>
+                          <span className="rounded-full border border-[#284848] bg-black/25 px-2 py-0.5">{getSchedule(job)}</span>
+                          <span className="rounded-full border border-[#284848] bg-black/25 px-2 py-0.5">next {formatTime(job.next_run_at)}</span>
+                        </div>
+                      </div>
+                      <Badge tone="outline" className={cn(readableBadge, isActiveJob(job) ? "border-emerald-400/30 text-emerald-200" : "border-slate-400/30 text-slate-200")}>
+                        {getJobState(job)}
+                      </Badge>
+                    </div>
+                  </div>
+                )) : (
+                  <div className="rounded-xl border border-[#284848] bg-black/30 p-4 text-sm leading-6 text-text-secondary">No jobs in this group.</div>
+                )}
+                {group.jobs.length > 5 && (
+                  <div className="rounded-xl border border-[#284848] bg-black/30 p-3 text-sm text-text-secondary">
+                    +{group.jobs.length - 5} more visible in Ops Runs.
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="rounded-xl border border-amber-400/25 bg-amber-500/10 p-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <div className="text-base font-semibold text-text-primary">Draft pause-review proposal</div>
+              <div className="mt-1 text-sm leading-6 text-text-secondary">
+                Copies a chat command for Jenny review. It does not pause, remove, trigger, edit cron, or restart anything.
+              </div>
+            </div>
+            <Button onClick={copyPauseProposal} disabled={!needsReview.length} className="gap-2">
+              <Clipboard className="h-4 w-4" />
+              {copyState === "copied" ? "Copied proposal" : copyState === "failed" ? "Copy failed" : "Copy pause proposal"}
+            </Button>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function GoalLauncher() {
   const [selected, setSelected] = useState(GOAL_TEMPLATES[0]);
   const [customGoal, setCustomGoal] = useState(GOAL_TEMPLATES[0].prompt);
@@ -776,7 +981,7 @@ export default function MissionControlPage() {
   }, [load, setEnd]);
 
   const activeJobs = useMemo(
-    () => jobs.filter((job) => job.enabled !== false && getJobState(job) !== "paused"),
+    () => jobs.filter(isActiveJob),
     [jobs],
   );
   const recentSessions = useMemo(() => sessions.slice(0, 5), [sessions]);
@@ -841,6 +1046,7 @@ export default function MissionControlPage() {
         )}
 
         <TodayView status={status} activeJobs={activeJobs} jobs={jobs} approvalSummary={approvalSummary} />
+        <AutomationPosturePanel jobs={jobs} />
         </div>
 
         <CommandDeck status={status} activeJobs={activeJobs} approvalSummary={approvalSummary} />
