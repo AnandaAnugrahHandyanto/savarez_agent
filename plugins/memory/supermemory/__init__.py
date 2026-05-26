@@ -268,7 +268,19 @@ class _SupermemoryClient:
         self._container_tag = container_tag
         self._search_mode = search_mode if search_mode in _VALID_SEARCH_MODES else _DEFAULT_SEARCH_MODE
         self._timeout = timeout
-        self._client = Supermemory(api_key=api_key, timeout=timeout, max_retries=0)
+        self._client = Supermemory(
+            api_key=api_key,
+            timeout=timeout,
+            max_retries=0,
+            default_headers={"x-sm-source": "hermes"},
+        )
+
+    def _merge_metadata(self, metadata: Optional[dict]) -> dict:
+        merged = {"sm_source": "hermes", **(metadata or {})}
+        legacy_source = merged.pop("source", None)
+        if legacy_source and "type" not in merged:
+            merged["type"] = str(legacy_source)
+        return merged
 
     def add_memory(self, content: str, metadata: Optional[dict] = None, *,
                    entity_context: str = "", container_tag: Optional[str] = None,
@@ -279,7 +291,7 @@ class _SupermemoryClient:
             "container_tags": [tag],
         }
         if metadata:
-            kwargs["metadata"] = metadata
+            kwargs["metadata"] = self._merge_metadata(metadata)
         if entity_context:
             kwargs["entity_context"] = _clamp_entity_context(entity_context)
         if custom_id:
@@ -360,6 +372,7 @@ class _SupermemoryClient:
             headers={
                 "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",
+                "x-sm-source": "hermes",
             },
             method="POST",
         )
@@ -500,8 +513,6 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._search_mode = self._config["search_mode"]
         self._entity_context = self._config["entity_context"]
         self._api_timeout = self._config["api_timeout"]
-
-        # Multi-container setup
         self._enable_custom_containers = self._config["enable_custom_container_tags"]
         self._custom_containers = self._config["custom_containers"]
         self._custom_container_instructions = self._config["custom_container_instructions"]
@@ -533,7 +544,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         lines = [
             "# Supermemory",
             f"Active. Container: {self._container_tag}.",
-            "Use supermemory_search, supermemory_store, supermemory_forget, and supermemory_profile for explicit memory operations.",
+            "Use supermemory-search, supermemory-save, supermemory-forget, and supermemory-profile (aliases: supermemory_search, supermemory_store, supermemory_forget, supermemory_profile).",
         ]
         if self._enable_custom_containers and self._custom_containers:
             tags_str = ", ".join(self._allowed_containers)
@@ -578,7 +589,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
             f"[role: user]\n{clean_user}\n[user:end]\n\n"
             f"[role: assistant]\n{clean_assistant}\n[assistant:end]"
         )
-        metadata = {"source": "hermes", "type": "conversation_turn"}
+        metadata = {"type": "conversation_turn", "sm_capture_mode": "turn"}
 
         def _run():
             try:
@@ -624,7 +635,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
             try:
                 self._client.add_memory(
                     content.strip(),
-                    metadata={"source": "hermes_memory", "target": target, "type": "explicit_memory"},
+                    metadata={"target": target, "type": "explicit_memory", "sm_capture_mode": "tool"},
                     entity_context=self._entity_context,
                 )
             except Exception:
@@ -664,8 +675,25 @@ class SupermemoryMemoryProvider(MemoryProvider):
         return sanitized
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
+        def with_kebab_aliases(schemas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            aliases = {
+                "supermemory_store": "supermemory-save",
+                "supermemory_search": "supermemory-search",
+                "supermemory_forget": "supermemory-forget",
+                "supermemory_profile": "supermemory-profile",
+            }
+            expanded = list(schemas)
+            for schema in schemas:
+                kebab = aliases.get(schema.get("name", ""))
+                if not kebab:
+                    continue
+                copy = json.loads(json.dumps(schema))
+                copy["name"] = kebab
+                expanded.append(copy)
+            return expanded
+
         if not self._enable_custom_containers:
-            return [STORE_SCHEMA, SEARCH_SCHEMA, FORGET_SCHEMA, PROFILE_SCHEMA]
+            return with_kebab_aliases([STORE_SCHEMA, SEARCH_SCHEMA, FORGET_SCHEMA, PROFILE_SCHEMA])
 
         # When multi-container is enabled, add optional container_tag to relevant tools
         container_param = {
@@ -677,7 +705,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
             schema = json.loads(json.dumps(base))  # deep copy
             schema["parameters"]["properties"]["container_tag"] = container_param
             schemas.append(schema)
-        return schemas
+        return with_kebab_aliases(schemas)
 
     def _tool_store(self, args: dict) -> str:
         content = str(args.get("content") or "").strip()
@@ -691,7 +719,8 @@ class SupermemoryMemoryProvider(MemoryProvider):
         if not isinstance(metadata, dict):
             metadata = {}
         metadata.setdefault("type", _detect_category(content))
-        metadata["source"] = "hermes_tool"
+        metadata["sm_capture_mode"] = metadata.get("sm_capture_mode", "tool")
+        metadata.pop("source", None)
         try:
             result = self._client.add_memory(content, metadata=metadata, entity_context=self._entity_context, container_tag=tag)
             preview = content[:80] + ("..." if len(content) > 80 else "")
@@ -776,6 +805,13 @@ class SupermemoryMemoryProvider(MemoryProvider):
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         if not self._active or not self._client:
             return tool_error("Supermemory is not configured")
+        aliases = {
+            "supermemory-save": "supermemory_store",
+            "supermemory-search": "supermemory_search",
+            "supermemory-forget": "supermemory_forget",
+            "supermemory-profile": "supermemory_profile",
+        }
+        tool_name = aliases.get(tool_name, tool_name)
         if tool_name == "supermemory_store":
             return self._tool_store(args)
         if tool_name == "supermemory_search":
