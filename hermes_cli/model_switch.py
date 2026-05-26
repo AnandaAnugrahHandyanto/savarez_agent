@@ -1051,6 +1051,7 @@ def list_authenticated_providers(
     custom_providers: list | None = None,
     max_models: int = 8,
     current_model: str = "",
+    custom_models: list | None = None,
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
@@ -1732,6 +1733,24 @@ def list_authenticated_providers(
             })
             seen_slugs.add(slug.lower())
             _section4_emitted_slugs.add(slug.lower())
+
+    # --- 5. User-defined custom models from model.available ---
+    # If the user has model.available in model: but no endpoint-based custom
+    # provider row (sections 3/4) and no built-in row covering it, emit a
+    # skeleton ``custom`` row so the picker can show those models. Fixes
+    # the TUI/Dashboard model picker not showing model.available entries.
+    if custom_models and isinstance(custom_models, list) and custom_models:
+        if "custom" not in seen_slugs and "custom".lower() not in seen_slugs:
+            results.append({
+                "slug": "custom",
+                "name": "Custom endpoint",
+                "is_current": True,
+                "is_user_defined": True,
+                "models": list(custom_models),
+                "total_models": len(custom_models),
+                "source": "user-config",
+            })
+            seen_slugs.add("custom")
 
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))

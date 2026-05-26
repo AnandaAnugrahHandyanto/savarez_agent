@@ -52,6 +52,7 @@ class ConfigContext:
     current_base_url: str
     user_providers: dict
     custom_providers: list
+    custom_models: list
 
     def with_overrides(
         self,
@@ -90,11 +91,19 @@ def load_picker_context() -> ConfigContext:
         current_model = model_cfg.get("default", model_cfg.get("name", "")) or ""
         current_provider = model_cfg.get("provider", "") or ""
         current_base_url = model_cfg.get("base_url", "") or ""
+        # Read user-defined model list for the custom provider picker row.
+        available_models = model_cfg.get("available", [])
+        if isinstance(available_models, dict):
+            available_models = list(available_models.keys())
+        elif not isinstance(available_models, list):
+            available_models = []
+        available_models = [m for m in available_models if m]
     else:
         # config.model can be a bare string in older configs.
         current_model = str(model_cfg) if model_cfg else ""
         current_provider = ""
         current_base_url = ""
+        available_models = []
     raw = cfg.get("providers")
     return ConfigContext(
         current_provider=current_provider,
@@ -102,6 +111,7 @@ def load_picker_context() -> ConfigContext:
         current_base_url=current_base_url,
         user_providers=raw if isinstance(raw, dict) else {},
         custom_providers=get_compatible_custom_providers(cfg),
+        custom_models=available_models,
     )
 
 
@@ -137,6 +147,7 @@ def build_models_payload(
         current_model=ctx.current_model,
         user_providers=ctx.user_providers,
         custom_providers=ctx.custom_providers,
+        custom_models=ctx.custom_models,
         max_models=max_models,
     )
 
