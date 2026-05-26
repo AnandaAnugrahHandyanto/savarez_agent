@@ -70,9 +70,13 @@ _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 
 # Strip prior Grant verdict marker blocks from rendered prompts so re-reviews
 # do not regurgitate stale verdicts. Matches a marker comment + body up to the
-# next marker or end of string. See card kn7d6xch.
+# next marker, a known post-verdict work/status boundary, a blank line pair
+# followed by a non-verdict heading, or end of string. See card kn7d6xch.
 _GRANT_VERDICT_MARKER_RE = re.compile(
-    r"<!--\s*grant-verdict:[^>]+-->.*?(?=<!--\s*grant-verdict:|\Z)",
+    r"<!--\s*grant-verdict:[^>]+-->.*?"
+    r"(?=\n\s*\n(?:POST-VERDICT REID SIGNAL:|REID POST-VERDICT:|"
+    r"Fresh work status:|Reid completion:|Reid follow-up:|## |# )|"
+    r"<!--\s*grant-verdict:|\Z)",
     re.DOTALL,
 )
 _GRANT_FRESH_AUDIT_INSTRUCTION = (

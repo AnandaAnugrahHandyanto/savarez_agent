@@ -9,6 +9,7 @@ from gateway.config import PlatformConfig
 from gateway.platforms.webhook import (
     WebhookAdapter,
     _DYNAMIC_ROUTES_FILENAME,
+    _GRANT_FRESH_AUDIT_INSTRUCTION,
     _INSECURE_NO_AUTH,
 )
 
@@ -174,3 +175,143 @@ class TestDynamicRouteSecretValidation:
         adapter._reload_dynamic_routes()
         assert "good" in adapter._routes
         assert "bad" not in adapter._routes
+
+
+class TestGrantAutoReviewPromptRendering:
+    def test_zero_markers_noop(self):
+        adapter = _make_adapter()
+        template = "Review {title}\n\nNo prior verdict."
+
+        rendered = adapter._render_prompt(
+            template,
+            {"title": "card"},
+            "convex.task.in_review",
+            "grant-auto-review",
+        )
+
+        assert rendered == "Review card\n\nNo prior verdict."
+        assert not rendered.startswith(_GRANT_FRESH_AUDIT_INSTRUCTION)
+
+    def test_one_marker_strips_and_prefixes(self):
+        adapter = _make_adapter()
+        template = (
+            "Before\n"
+            "<!-- grant-verdict:2026-05-26T15:05:00Z:CHANGES_REQUIRED -->\n"
+            "Old verdict text"
+        )
+
+        rendered = adapter._render_prompt(
+            template,
+            {},
+            "convex.task.in_review",
+            "grant-auto-review",
+        )
+
+        assert rendered.startswith(_GRANT_FRESH_AUDIT_INSTRUCTION)
+        assert "Before" in rendered
+        assert "grant-verdict" not in rendered
+        assert "Old verdict text" not in rendered
+
+    def test_two_markers_strip_both_and_prefix(self):
+        adapter = _make_adapter()
+        template = (
+            "Before\n"
+            "<!-- grant-verdict:2026-05-26T15:05:00Z:CHANGES_REQUIRED -->\n"
+            "Old verdict one\n"
+            "<!-- grant-verdict:2026-05-26T16:05:00Z:CHANGES_REQUIRED -->\n"
+            "Old verdict two"
+        )
+
+        rendered = adapter._render_prompt(
+            template,
+            {},
+            "convex.task.in_review",
+            "grant-auto-review",
+        )
+
+        assert rendered.startswith(_GRANT_FRESH_AUDIT_INSTRUCTION)
+        assert "Before" in rendered
+        assert "grant-verdict" not in rendered
+        assert "Old verdict one" not in rendered
+        assert "Old verdict two" not in rendered
+
+    def test_non_grant_auto_review_route_no_change(self):
+        adapter = _make_adapter()
+        template = (
+            "Before\n"
+            "<!-- grant-verdict:2026-05-26T15:05:00Z:CHANGES_REQUIRED -->\n"
+            "Old verdict text"
+        )
+
+        rendered = adapter._render_prompt(
+            template,
+            {},
+            "convex.task.in_review",
+            "other-route",
+        )
+
+        assert rendered == template
+        assert not rendered.startswith(_GRANT_FRESH_AUDIT_INSTRUCTION)
+
+    def test_single_marker_preserves_trailing_post_verdict_text(self):
+        adapter = _make_adapter()
+        template = (
+            "Before\n"
+            "<!-- grant-verdict:2026-05-26T15:05:00Z:CHANGES_REQUIRED -->\n"
+            "Old verdict text\n\n"
+            "POST-VERDICT REID SIGNAL: commit abc123 fixed the gap"
+        )
+
+        rendered = adapter._render_prompt(
+            template,
+            {},
+            "convex.task.in_review",
+            "grant-auto-review",
+        )
+
+        assert rendered.startswith(_GRANT_FRESH_AUDIT_INSTRUCTION)
+        assert "Before" in rendered
+        assert "POST-VERDICT REID SIGNAL: commit abc123 fixed the gap" in rendered
+        assert "grant-verdict" not in rendered
+        assert "Old verdict text" not in rendered
+
+    @pytest.mark.parametrize(
+        "notes",
+        [
+            """<!-- grant-verdict:2026-05-26T15:05:00Z:CHANGES_REQUIRED -->
+
+Terminal allowlist (Gate 1) is shipped cleanly on main at 5c8e675d6 and works as specified: tools/approval.py:884-997 implements _is_webhook_readonly_terminal_command(), the hardline floor still runs first (line 1199-1202), shell control operators are rejected, curl is method+host gated, and python/node -c blocks subprocess/child_process. All 3 new tests in tests/tools/test_approval.py::TestWebhookReadonlyAllowlist pass (verified locally). Config block is live at ~/.hermes/config.yaml under safety.webhook_allowlist.
+
+Gate 2 (outbound-to-human allowlist) is NOT addressed. The internal_destinations config list is consumed only by the curl branch of the terminal allowlist, never by send_message_tool.py or any gateway platform adapter. Codebase-wide grep for 'outbound to human', 'blocked by safety gate', 'Holding. Stopping all other actions' returns zero matches in source. The gateway.log evidence at 08:47:56 cited in the card is the agent's own assistant-message text (a model self-imposed refusal), not a real Hermes code-level gate firing. AC smoke tests 2 and 4 therefore can't be verified as written because they presuppose a send_message gate that doesn't exist.
+
+To close: (a) confirm in a follow-up commit or comment that Gate 2 was a model-layer refusal not a code-level gate, document that the existing send_message path has no outbound-to-human approval to allowlist against, and update or strike the Gate 2 portion of AC + smoke tests 2/4; OR (b) actually ship a send_message-level destination allowlist that consumes safety.webhook_allowlist.internal_destinations and add a smoke test for the external Discord case. Lightest path is (a), the real-world unblock (terminal allowlist) is already shipped and the 3 stuck cards this morning will move.
+
+Reid completion: safety webhook allowlist shipped in commit 5c8e675d6, tests pass.
+""",
+            """<!-- grant-verdict:2026-05-26T13:05:00Z:CHANGES_REQUIRED -->
+
+CHANGES_REQUIRED. Original 7 AC all verified clean: script at /Users/TJ/hermes-workspace/Lex-Workspace/scripts/discipline-gap-card-filer.py is executable and stdlib-only; dry-run with state file present returns `{created:[], skipped:[3 titles], candidate_count:3}` confirming idempotent week-bucket dedupe; cron job 033a017062ed registered via Hermes (21:30 ET, 30 min after audit cc24e88bbe6b); 14-day backfill produced the three expected MC cards (kn76n5f.../decisions-2026-05, kn7avbj.../memory-curated, kn77tepd.../learnings-promoted), all in status=overnight, agent=lex, with `auto-filed` + `discipline-gap` tags; dedup state at ~/.hermes/state/discipline-gap-cards.json holds the three sha256 signatures with card_id + filed_at; brain note exists at concepts/discipline-gap-auto-filing with full provenance. Pitfalls handled correctly: week-bucket signatures (sha256("stale:{slug}:{iso-week}")) not day-bucket so daily reruns don't spam; discipline_gaps parsed defensively as strings via parse_gap_string; correction_samples filtered to recorded_within_24h==False only.
+
+The gap: the folded auto-clear AC from kn7c8gzc28 ("when a flagged synthesis page is refreshed, the next night's run AUTO-ARCHIVES any open MC cards it filed for that slug") is NOT implemented. build_cards() only emits new GapCards for currently-flagged slugs; there is no inverse pass that walks state.filed_signatures, checks whether the slug is still in the latest run's discipline_gaps set, and POSTs tasks:archive for the card_id when the page has self-healed. Without that pass, the three cards filed tonight will persist in `overnight` even after Lex appends to the synthesis pages, and Lex has to remember to flip them done manually, exactly the "discipline-not-enforcement" failure mode this card was built to kill.
+
+Fix scope for Reid (small, ~20 lines): after the create loop in main(), build `still_flagged_signatures = {hashlib.sha256(f"stale:{slug}:{iso_week_bucket(now_utc())}".encode()).hexdigest() for slug in latest_flagged_slugs(rows)}`, then iterate `state["filed_signatures"]` and for any signature in state but NOT in still_flagged_signatures (and not already archived), call `tasks:archive` via the same node scripts/file-card path or via direct curl to mellow-mule-232 prod, then mark `archived_at` in the state entry to prevent double-archive. Add a `--no-archive` flag for safety during the first soak night. Smoke: run filer, manually `touch` one of the synthesis pages, rerun filer, confirm the corresponding kn... card flips to archived and state entry gains `archived_at`.
+
+Reid follow-up: inverse auto-archive shipped in commit 3076daa66, live smoke verified.
+""",
+        ],
+    )
+    def test_replay_real_notes_strips_prior_verdict_without_regurgitation(self, notes):
+        adapter = _make_adapter()
+
+        rendered = adapter._render_prompt(
+            "Task notes:\n{notes}",
+            {"notes": notes},
+            "convex.task.in_review",
+            "grant-auto-review",
+        )
+
+        assert rendered.startswith(_GRANT_FRESH_AUDIT_INSTRUCTION)
+        body = rendered.removeprefix(_GRANT_FRESH_AUDIT_INSTRUCTION)
+        assert "<!-- grant-verdict:" not in body
+        assert "CHANGES_REQUIRED" not in body
+        assert "Reid" in body
