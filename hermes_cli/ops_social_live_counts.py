@@ -1,0 +1,319 @@
+"""One-shot read-only social platform counting probes for Jenny Ops Center.
+
+This module is deliberately narrow:
+- reads existing credentials only
+- redacts all credential evidence
+- calls only read/list style endpoints
+- writes only the local Ops Center social snapshot when explicitly requested
+- never posts, schedules, deletes, changes privacy, repairs tokens, or creates cron jobs
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
+
+from hermes_constants import get_env_path
+from hermes_cli.ops_social_status import write_manual_social_platform_status
+
+HTTP_TIMEOUT_SECONDS = 12
+SOURCE_NAME = "live-read-only-probe"
+
+CredentialMap = Dict[str, Sequence[str]]
+
+PLATFORM_CREDENTIALS: CredentialMap = {
+    "youtube": ("YOUTUBE_API_KEY", "YOUTUBE_CHANNEL_ID", "YOUTUBE_ACCESS_TOKEN"),
+    "facebook": ("META_ACCESS_TOKEN", "FACEBOOK_PAGE_ACCESS_TOKEN", "FACEBOOK_PAGE_ID"),
+    "instagram": ("INSTAGRAM_ACCESS_TOKEN", "INSTAGRAM_BUSINESS_ACCOUNT_ID", "META_ACCESS_TOKEN"),
+    "tiktok": ("TIKTOK_ACCESS_TOKEN",),
+}
+
+PLATFORM_LABELS = {
+    "youtube": "YouTube",
+    "facebook": "Facebook",
+    "instagram": "Instagram",
+    "tiktok": "TikTok",
+}
+
+HttpGet = Callable[[str, Mapping[str, str], int], Dict[str, Any]]
+
+
+def _load_env_file_values(path: Optional[Path] = None) -> Dict[str, str]:
+    env_path = path or get_env_path()
+    values: Dict[str, str] = {}
+    if not env_path.exists():
+        return values
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return values
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            values[key] = value
+    return values
+
+
+def _env_value(key: str, env_file_values: Mapping[str, str]) -> str:
+    return os.environ.get(key) or env_file_values.get(key, "")
+
+
+def _credential_shape(value: str) -> str:
+    if not value:
+        return "missing"
+    stripped = value.strip()
+    if len(stripped) < 8:
+        return "present_short"
+    if " " in stripped or "\n" in stripped:
+        return "present_multivalue"
+    return "present"
+
+
+def credential_inventory(platforms: Iterable[str] = PLATFORM_CREDENTIALS, *, env_file: Optional[Path] = None) -> Dict[str, Any]:
+    """Return redacted credential presence metadata only."""
+
+    env_file_values = _load_env_file_values(env_file)
+    checked_at = datetime.now(timezone.utc).isoformat()
+    result: Dict[str, Any] = {
+        "ok": True,
+        "mode": "redacted_presence_only",
+        "checked_at": checked_at,
+        "platforms": [],
+        "message": "Credential inventory is redacted. Values are never returned.",
+    }
+    for platform in _normalize_platforms(platforms):
+        keys = PLATFORM_CREDENTIALS[platform]
+        credentials = []
+        for key in keys:
+            file_present = key in env_file_values and bool(env_file_values[key])
+            env_present = bool(os.environ.get(key))
+            value = _env_value(key, env_file_values)
+            credentials.append(
+                {
+                    "key": key,
+                    "present": bool(value),
+                    "source": "process_env" if env_present else "env_file" if file_present else "missing",
+                    "shape": _credential_shape(value),
+                }
+            )
+        result["platforms"].append(
+            {
+                "platform": PLATFORM_LABELS[platform],
+                "key": platform,
+                "credentials": credentials,
+                "can_attempt_probe": _can_attempt_platform(platform, env_file_values),
+            }
+        )
+    return result
+
+
+def _normalize_platforms(platforms: Iterable[str]) -> List[str]:
+    normalized: List[str] = []
+    for raw in platforms:
+        item = str(raw or "").strip().lower()
+        if item == "all":
+            return list(PLATFORM_CREDENTIALS)
+        if item in PLATFORM_CREDENTIALS and item not in normalized:
+            normalized.append(item)
+    return normalized or list(PLATFORM_CREDENTIALS)
+
+
+def _can_attempt_platform(platform: str, env_file_values: Mapping[str, str]) -> bool:
+    if platform == "youtube":
+        return bool(_env_value("YOUTUBE_ACCESS_TOKEN", env_file_values)) or bool(
+            _env_value("YOUTUBE_API_KEY", env_file_values) and _env_value("YOUTUBE_CHANNEL_ID", env_file_values)
+        )
+    if platform == "facebook":
+        return bool((_env_value("FACEBOOK_PAGE_ACCESS_TOKEN", env_file_values) or _env_value("META_ACCESS_TOKEN", env_file_values)) and _env_value("FACEBOOK_PAGE_ID", env_file_values))
+    if platform == "instagram":
+        return bool((_env_value("INSTAGRAM_ACCESS_TOKEN", env_file_values) or _env_value("META_ACCESS_TOKEN", env_file_values)) and _env_value("INSTAGRAM_BUSINESS_ACCOUNT_ID", env_file_values))
+    if platform == "tiktok":
+        return bool(_env_value("TIKTOK_ACCESS_TOKEN", env_file_values))
+    return False
+
+
+def _http_get_json(url: str, headers: Mapping[str, str], timeout: int = HTTP_TIMEOUT_SECONDS) -> Dict[str, Any]:
+    request = urllib.request.Request(url, headers=dict(headers), method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310 - explicit approved read-only user API probe
+            raw = response.read().decode("utf-8", errors="replace")
+            return {"ok": True, "status_code": response.status, "json": json.loads(raw)}
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")[:500]
+        return {"ok": False, "status_code": exc.code, "error": _sanitize_error(body or str(exc))}
+    except Exception as exc:
+        return {"ok": False, "status_code": None, "error": _sanitize_error(str(exc))}
+
+
+def _sanitize_error(text: str) -> str:
+    cleaned = str(text or "").replace("\n", " ").replace("\r", " ")
+    for key in {key for keys in PLATFORM_CREDENTIALS.values() for key in keys}:
+        value = os.environ.get(key)
+        if value:
+            cleaned = cleaned.replace(value, "[redacted]")
+    return cleaned[:500]
+
+
+def _response_error(response: Mapping[str, Any]) -> str:
+    return _sanitize_error(str(response.get("error") or "API unavailable"))
+
+
+def _row(platform: str, *, published: Any = "Needs sync", scheduled: Any = "Needs sync", issues: str, readiness: str, status: str, source: str = SOURCE_NAME) -> Dict[str, Any]:
+    return {
+        "platform": PLATFORM_LABELS.get(platform, platform.title()),
+        "published": published,
+        "scheduled": scheduled,
+        "issues_private": issues,
+        "readiness": readiness,
+        "source": source,
+        "status": status,
+        "last_checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _probe_youtube(env_values: Mapping[str, str], http_get: HttpGet) -> Dict[str, Any]:
+    access_token = _env_value("YOUTUBE_ACCESS_TOKEN", env_values)
+    api_key = _env_value("YOUTUBE_API_KEY", env_values)
+    channel_id = _env_value("YOUTUBE_CHANNEL_ID", env_values)
+    if access_token:
+        params = urllib.parse.urlencode({"part": "statistics", "mine": "true"})
+        response = http_get(f"https://www.googleapis.com/youtube/v3/channels?{params}", {"Authorization": f"Bearer {access_token}"}, HTTP_TIMEOUT_SECONDS)
+    elif api_key and channel_id:
+        params = urllib.parse.urlencode({"part": "statistics", "id": channel_id, "key": api_key})
+        response = http_get(f"https://www.googleapis.com/youtube/v3/channels?{params}", {}, HTTP_TIMEOUT_SECONDS)
+    else:
+        return _row("youtube", issues="Missing existing YouTube credential/channel configuration.", readiness="Read-only live count probe not attempted.", status="not_connected")
+    if not response.get("ok"):
+        return _row("youtube", issues=f"Read-only YouTube probe failed: {response.get('status_code') or 'error'}", readiness=_response_error(response), status="needs_review")
+    items = response.get("json", {}).get("items") or []
+    stats = (items[0].get("statistics") if items else {}) or {}
+    return _row("youtube", published=stats.get("videoCount", "Needs sync"), scheduled="Needs sync", issues="Live read-only channel statistics retrieved; scheduled count not available from this probe.", readiness="Existing credential supported read-only YouTube statistics.", status="ok")
+
+
+def _probe_facebook(env_values: Mapping[str, str], http_get: HttpGet) -> Dict[str, Any]:
+    token = _env_value("FACEBOOK_PAGE_ACCESS_TOKEN", env_values) or _env_value("META_ACCESS_TOKEN", env_values)
+    page_id = _env_value("FACEBOOK_PAGE_ID", env_values)
+    if not (token and page_id):
+        return _row("facebook", issues="Missing existing Facebook page token/page id configuration.", readiness="Read-only live count probe not attempted.", status="not_connected")
+    fields = "fan_count,followers_count,instagram_business_account{id,username,media_count,followers_count}"
+    params = urllib.parse.urlencode({"fields": fields, "access_token": token})
+    response = http_get(f"https://graph.facebook.com/v19.0/{urllib.parse.quote(page_id)}?{params}", {}, HTTP_TIMEOUT_SECONDS)
+    if not response.get("ok"):
+        return _row("facebook", issues=f"Read-only Facebook probe failed: {response.get('status_code') or 'error'}", readiness=_response_error(response), status="needs_review")
+    data = response.get("json", {})
+    return _row("facebook", published=data.get("followers_count") or data.get("fan_count") or "Needs sync", scheduled="Needs sync", issues="Live read-only page counts retrieved; scheduled queue count not available from this probe.", readiness="Existing credential supported read-only Facebook page metadata.", status="ok")
+
+
+def _probe_instagram(env_values: Mapping[str, str], http_get: HttpGet) -> Dict[str, Any]:
+    token = _env_value("INSTAGRAM_ACCESS_TOKEN", env_values) or _env_value("META_ACCESS_TOKEN", env_values)
+    account_id = _env_value("INSTAGRAM_BUSINESS_ACCOUNT_ID", env_values)
+    if not (token and account_id):
+        return _row("instagram", issues="Missing existing Instagram business token/account id configuration.", readiness="Read-only live count probe not attempted.", status="not_connected")
+    params = urllib.parse.urlencode({"fields": "media_count,followers_count,username", "access_token": token})
+    response = http_get(f"https://graph.facebook.com/v19.0/{urllib.parse.quote(account_id)}?{params}", {}, HTTP_TIMEOUT_SECONDS)
+    if not response.get("ok"):
+        return _row("instagram", issues=f"Read-only Instagram probe failed: {response.get('status_code') or 'error'}", readiness=_response_error(response), status="needs_review")
+    data = response.get("json", {})
+    return _row("instagram", published=data.get("media_count", "Needs sync"), scheduled="Needs sync", issues="Live read-only media count retrieved; scheduler readiness still separate.", readiness="Existing credential supported read-only Instagram business metadata.", status="ok")
+
+
+def _probe_tiktok(env_values: Mapping[str, str], http_get: HttpGet) -> Dict[str, Any]:
+    token = _env_value("TIKTOK_ACCESS_TOKEN", env_values)
+    if not token:
+        return _row("tiktok", published="0", scheduled="0", issues="Missing existing TikTok access token configuration.", readiness="Read-only live count probe not attempted.", status="not_connected")
+    fields = "open_id,display_name,is_verified,follower_count,likes_count,video_count"
+    response = http_get(f"https://open.tiktokapis.com/v2/user/info/?fields={urllib.parse.quote(fields)}", {"Authorization": f"Bearer {token}"}, HTTP_TIMEOUT_SECONDS)
+    if not response.get("ok"):
+        return _row("tiktok", issues=f"Read-only TikTok probe failed: {response.get('status_code') or 'error'}", readiness=_response_error(response), status="needs_review")
+    user = ((response.get("json", {}).get("data") or {}).get("user") or {})
+    return _row("tiktok", published=user.get("video_count", "Needs sync"), scheduled="0", issues="Live read-only TikTok user count retrieved; scheduling/posting remains gated.", readiness="Existing credential supported read-only TikTok user info.", status="ok")
+
+
+PROBERS: Dict[str, Callable[[Mapping[str, str], HttpGet], Dict[str, Any]]] = {
+    "youtube": _probe_youtube,
+    "facebook": _probe_facebook,
+    "instagram": _probe_instagram,
+    "tiktok": _probe_tiktok,
+}
+
+
+def probe_social_counts(
+    platforms: Iterable[str] = ("all",),
+    *,
+    env_file: Optional[Path] = None,
+    http_get: HttpGet = _http_get_json,
+    write_snapshot: bool = False,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    env_values = _load_env_file_values(env_file)
+    selected = _normalize_platforms(platforms)
+    inventory = credential_inventory(selected, env_file=env_file)
+    rows: List[Dict[str, Any]] = []
+    for platform in selected:
+        if dry_run:
+            can_attempt = next((item.get("can_attempt_probe") for item in inventory["platforms"] if item.get("key") == platform), False)
+            rows.append(_row(platform, issues="Dry run only; no platform API call performed.", readiness="Existing credentials look sufficient for a probe." if can_attempt else "Existing credentials missing for probe.", status="needs_sync" if can_attempt else "not_connected"))
+            continue
+        rows.append(PROBERS[platform](env_values, http_get))
+
+    result: Dict[str, Any] = {
+        "ok": True,
+        "mode": "live_read_only_probe",
+        "dry_run": dry_run,
+        "write_snapshot": write_snapshot,
+        "source": SOURCE_NAME,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "credential_inventory": inventory,
+        "platforms": rows,
+        "snapshot": None,
+        "forbidden_actions": ["post", "upload", "schedule", "delete", "privacy_change", "token_repair", "cron_create"],
+    }
+    if write_snapshot and not dry_run:
+        result["snapshot"] = write_manual_social_platform_status({"source": SOURCE_NAME, "platforms": rows})
+    return result
+
+
+def _print_json(data: Mapping[str, Any]) -> None:
+    print(json.dumps(data, indent=2, sort_keys=True))
+
+
+def cli_main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description="Run redacted, read-only social platform count probes for Jenny Ops Center.")
+    sub = parser.add_subparsers(dest="command", required=True)
+    cred = sub.add_parser("credentials", help="Show redacted credential presence only")
+    cred.add_argument("--platform", action="append", default=["all"], help="Platform to inspect: youtube/facebook/instagram/tiktok/all")
+    probe = sub.add_parser("probe", help="Run one-shot read-only platform count probe")
+    probe.add_argument("--platform", action="append", default=["all"], help="Platform to probe: youtube/facebook/instagram/tiktok/all")
+    probe.add_argument("--write-snapshot", action="store_true", help="Write successful probe rows to local Ops Center snapshot/history")
+    probe.add_argument("--dry-run", action="store_true", help="Do not call platform APIs; report what would be attempted")
+    args = parser.parse_args(argv)
+
+    if args.command == "credentials":
+        _print_json(credential_inventory(args.platform))
+        return 0
+    if args.command == "probe":
+        _print_json(probe_social_counts(args.platform, write_snapshot=args.write_snapshot, dry_run=args.dry_run))
+        return 0
+    parser.error("unknown command")
+    return 2
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(cli_main(sys.argv[1:]))
