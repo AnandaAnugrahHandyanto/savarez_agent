@@ -1616,3 +1616,53 @@ def test_dashboard_bulk_approve_and_reject_endpoints(isolate_home):
     final_counts = bulk_reject.json()["overview"]["draft_status_counts"]
     assert final_counts.get("rejected") == 2
     assert final_counts.get("needs_review", 0) == 0
+
+
+def test_brand_memory_force_lifts_rejection_reason_when_llm_drops_it(isolate_home, monkeypatch):
+    """LLM summarizer with class-imbalanced data (1 reject / many approvals) often
+    returns what_to_avoid=[]. The agent must force-lift rejection reasons so the
+    negative signal is never lost — this is what we observed dropping 'furry friend'
+    from Pupular steering on 2026-05-26.
+    """
+    from plugins.marketing_factory import pipeline as pipeline_module
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    generated = pipe.generate_campaign("pupular", days=2)
+    drafts = generated["drafts"]
+    store.set_approval(drafts[0]["id"], "approved", reviewer="tester", reason="great hook")
+    store.set_approval(drafts[1]["id"], "rejected", reviewer="tester", reason="furry friend")
+
+    # Make _should_use_llm return True and stub dispatch_json to return an envelope
+    # where the model omitted what_to_avoid (the bug we're guarding against).
+    monkeypatch.setattr(pipeline_module, "_should_use_llm", lambda: True)
+    captured_prompt: dict = {}
+
+    def fake_dispatch_json(route, prompt, **kwargs):
+        captured_prompt["prompt"] = prompt
+        return {
+            "route": route,
+            "model": "qwen2.5:14b",
+            "tokens_used": 50,
+            "parsed": {
+                "what_works": ["Warm adoption hook"],
+                "what_to_avoid": [],  # bug condition: LLM dropped the rejection signal
+                "tone_notes": ["Optimistic, warm"],
+            },
+            "fallback_used": False,
+            "elapsed_ms": 100,
+        }
+
+    monkeypatch.setattr(pipeline_module, "dispatch_json", fake_dispatch_json)
+    # Cache was already invalidated by set_approval calls above.
+
+    steering = pipe.brand_memory.get_steering(store, "pupular")
+    assert steering is not None
+    assert steering["method"] == "llm"
+    # The force-lift must have recovered the rejection reason.
+    assert "furry friend" in steering["what_to_avoid"], (
+        f"Expected rejection reason to be force-lifted; got what_to_avoid={steering['what_to_avoid']}"
+    )

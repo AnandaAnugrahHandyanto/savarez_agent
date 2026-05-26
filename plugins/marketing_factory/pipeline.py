@@ -632,12 +632,26 @@ class BrandMemoryAgent:
         parsed = env.get("parsed")
         if env.get("fallback_used") or not isinstance(parsed, dict):
             return None
+        what_to_avoid = [str(x)[:200] for x in (parsed.get("what_to_avoid") or [])[:5]]
+        # Force-lift rejection reasons when the LLM returns an empty what_to_avoid
+        # despite real rejections in the data. With class-imbalanced histories (e.g.
+        # 1 reject / 41 approvals) the summarizer often deems the negative signal
+        # too thin and drops it — but every explicit rejection reason from a human
+        # reviewer is high-value steering and must not be lost.
+        rejections = [e for e in learnings if e.get("kind") == "draft_rejected" and e.get("reason")]
+        if not what_to_avoid and rejections:
+            seen: set = set()
+            for r in rejections[-3:]:
+                reason = str(r.get("reason"))[:200].strip()
+                if reason and reason.lower() not in seen:
+                    what_to_avoid.append(reason)
+                    seen.add(reason.lower())
         return {
             "generated_at": utc_now(),
             "method": "llm",
             "model": env.get("model"),
             "what_works": [str(x)[:200] for x in (parsed.get("what_works") or [])[:5]],
-            "what_to_avoid": [str(x)[:200] for x in (parsed.get("what_to_avoid") or [])[:5]],
+            "what_to_avoid": what_to_avoid,
             "tone_notes": [str(x)[:200] for x in (parsed.get("tone_notes") or [])[:5]],
             "approved_count": sum(1 for e in learnings if e.get("kind") == "draft_approved"),
             "rejected_count": sum(1 for e in learnings if e.get("kind") == "draft_rejected"),
