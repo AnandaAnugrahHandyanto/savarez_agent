@@ -150,12 +150,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _MARKDOWN_HINT_RE = re.compile(
-    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)|(^\|.*\|\n\|[-|: ]+\|)",
+    r"(^#{1,6}\s)|(^^\s*[-*]\s)|(^^\s*\d+\.\s)|(^^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([)]+\))|(^\>\s)|(^\\|.*\\|\r?\n\\|[-|: ]+\|)",
     re.MULTILINE,
 )
-# Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
-_MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -461,7 +458,8 @@ def _escape_markdown_text(text: str) -> str:
     if '|' not in text:
         return _MARKDOWN_SPECIAL_CHARS_RE.sub(r"\\\1", text)
     
-    lines = text.split('\n')
+    # Handle both LF and CRLF line endings
+    lines = re.split(r'\r?\n', text)
     escaped_lines = []
     
     for line in lines:
@@ -491,7 +489,9 @@ def _escape_markdown_text(text: str) -> str:
             escaped_line = _MARKDOWN_SPECIAL_CHARS_RE.sub(r"\\\1", line)
             escaped_lines.append(escaped_line)
     
-    return '\n'.join(escaped_lines)
+    # Preserve original line ending style
+    # Use \n if input was LF, or \r\n if input was CRLF
+    return '\n'.join(escaped_lines) if '\r\n' not in text else '\r\n'.join(escaped_lines)
 
 
 def _to_boolean(value: Any) -> bool:
