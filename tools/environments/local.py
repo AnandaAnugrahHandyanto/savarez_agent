@@ -160,6 +160,23 @@ def _build_provider_env_blocklist() -> frozenset:
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
         "DAYTONA_API_KEY",
+        # AWS Bedrock uses ``auth_type="aws_sdk"`` so its credentials live in
+        # the standard AWS env vars rather than a Hermes-style ``*_API_KEY``,
+        # meaning the registry-derived branch above contributes nothing for
+        # this provider. List them explicitly so terminal/execute_code
+        # subprocesses don't see AWS creds. Mirrors
+        # ``agent/bedrock_adapter.py::_AWS_CREDENTIAL_ENV_VARS`` plus the
+        # paired secret/session vars boto3 also reads via its default chain.
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_PROFILE",
+        "AWS_ROLE_ARN",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        "AWS_CONTAINER_AUTHORIZATION_TOKEN",
     })
     return frozenset(blocked)
 
