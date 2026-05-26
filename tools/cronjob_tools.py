@@ -657,7 +657,18 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
             },
         },
-        "required": ["action"]
+        "required": ["action"],
+        "if": {
+            "properties": {"action": {"const": "create"}},
+            "required": ["action"]
+        },
+        "then": {
+            "required": ["action", "schedule", "prompt"],
+            "properties": {
+                "schedule": {"type": "string"},
+                "prompt": {"type": "string"}
+            }
+        }
     }
 }
 
