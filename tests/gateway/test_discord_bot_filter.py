@@ -9,7 +9,26 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from gateway.config import PlatformConfig
 from gateway.platforms import discord as discord_platform
-from gateway.platforms.discord import DiscordAdapter, _has_raw_user_mention
+from gateway.platforms.discord import (
+    DiscordAdapter,
+    _discord_bot_reply_false_reaction,
+    _has_raw_user_mention,
+    _parse_discord_bot_msg_v1,
+)
+
+
+VALID_BOT_MSG = "\r\n".join(
+    [
+        "\t<@99999> ",
+        " BOT_MSG v1\t",
+        "reply_expected: true",
+        "kind: status",
+        "correlation_id: pm-1.2:3_ok",
+        "---",
+        "body line 1",
+        "BOT_MSG v1 inside body is opaque",
+    ]
+)
 
 
 def _make_author(*, bot: bool = False, is_self: bool = False):
@@ -97,44 +116,68 @@ class TestDiscordBotFilter(unittest.TestCase):
         self.assertFalse(adapter._should_accept_bot_message(msg, "mentions"))
 
     def test_actual_mentions_mode_accepts_raw_self_mention(self):
+        adapter = self._adapter(DISCORD_ALLOW_BOTS="mentions", DISCORD_ALLOWED_BOT_USERS="12345")
+        bot = _make_author(bot=True)
+        msg = _make_message(author=bot, content=VALID_BOT_MSG, mentions=[])
+        self.assertTrue(adapter._should_accept_bot_message(msg, "mentions"))
+
+    def test_actual_mentions_mode_fails_closed_without_allowed_bot_users(self):
         adapter = self._adapter(DISCORD_ALLOW_BOTS="mentions")
         bot = _make_author(bot=True)
-        msg = _make_message(author=bot, content="<@99999> checkpoint ready", mentions=[])
-        self.assertTrue(adapter._should_accept_bot_message(msg, "mentions"))
+        msg = _make_message(author=bot, content=VALID_BOT_MSG, mentions=[])
+        self.assertFalse(adapter._should_accept_bot_message(msg, "mentions"))
 
     def test_actual_mentions_mode_respects_allowed_bot_users(self):
         adapter = self._adapter(DISCORD_ALLOW_BOTS="mentions", DISCORD_ALLOWED_BOT_USERS="777")
+        bot = _make_author(bot=True)
+        msg = _make_message(author=bot, content=VALID_BOT_MSG, mentions=[])
+        self.assertFalse(adapter._should_accept_bot_message(msg, "mentions"))
+
+    def test_actual_mentions_mode_rejects_malformed_bot_msg_protocol(self):
+        adapter = self._adapter(DISCORD_ALLOW_BOTS="mentions", DISCORD_ALLOWED_BOT_USERS="12345")
         bot = _make_author(bot=True)
         msg = _make_message(author=bot, content="<@99999> checkpoint ready", mentions=[])
         self.assertFalse(adapter._should_accept_bot_message(msg, "mentions"))
 
     def test_bot_loop_fuse_applies_to_explicit_mentions(self):
-        adapter = self._adapter(DISCORD_ALLOW_BOTS="mentions")
+        adapter = self._adapter(DISCORD_ALLOW_BOTS="mentions", DISCORD_ALLOWED_BOT_USERS="12345")
         bot = _make_author(bot=True)
         results = []
         for idx in range(6):
-            msg = _make_message(author=bot, content=f"<@99999> msg {idx}", mentions=[])
+            msg = _make_message(author=bot, content=VALID_BOT_MSG.replace("pm-1.2:3_ok", f"pm-{idx}"), mentions=[])
             msg.id = idx
             results.append(adapter._should_accept_bot_message(msg, "mentions"))
         self.assertEqual(results, [True, True, True, True, True, True])
-        seventh = _make_message(author=bot, content="<@99999> msg 6", mentions=[])
+        seventh = _make_message(author=bot, content=VALID_BOT_MSG.replace("pm-1.2:3_ok", "pm-6"), mentions=[])
         seventh.id = 6
         self.assertFalse(adapter._should_accept_bot_message(seventh, "mentions"))
+
+    def test_reply_expected_false_bypasses_loop_fuse_for_no_model_ack(self):
+        adapter = self._adapter(DISCORD_ALLOW_BOTS="mentions", DISCORD_ALLOWED_BOT_USERS="12345")
+        bot = _make_author(bot=True)
+        content = VALID_BOT_MSG.replace("reply_expected: true", "reply_expected: false")
+        results = []
+        for idx in range(8):
+            msg = _make_message(author=bot, content=content.replace("pm-1.2:3_ok", f"ack-{idx}"), mentions=[])
+            msg.id = idx
+            results.append(adapter._should_accept_bot_message(msg, "mentions"))
+        self.assertEqual(results, [True] * 8)
 
     def test_bot_loop_fuse_env_override_restores_strict_threshold(self):
         adapter = self._adapter(
             DISCORD_ALLOW_BOTS="mentions",
+            DISCORD_ALLOWED_BOT_USERS="12345",
             DISCORD_BOT_LOOP_FUSE_MAX_MESSAGES="3",
             DISCORD_BOT_LOOP_FUSE_SUPPRESS_SECONDS="600",
         )
         bot = _make_author(bot=True)
         results = []
         for idx in range(4):
-            msg = _make_message(author=bot, content=f"<@99999> msg {idx}", mentions=[])
+            msg = _make_message(author=bot, content=VALID_BOT_MSG.replace("pm-1.2:3_ok", f"pm-{idx}"), mentions=[])
             msg.id = idx
             results.append(adapter._should_accept_bot_message(msg, "mentions"))
         self.assertEqual(results, [True, True, True, True])
-        fifth = _make_message(author=bot, content="<@99999> msg 5", mentions=[])
+        fifth = _make_message(author=bot, content=VALID_BOT_MSG.replace("pm-1.2:3_ok", "pm-5"), mentions=[])
         fifth.id = 5
         self.assertFalse(adapter._should_accept_bot_message(fifth, "mentions"))
 
@@ -177,14 +220,29 @@ class TestDiscordBotFilter(unittest.TestCase):
                 self.parent_id = 333
                 self.parent = SimpleNamespace(id=333)
 
+        original_discord = discord_platform.discord
+        original_thread = getattr(discord_platform.discord, "Thread", None) if discord_platform.discord is not None else None
         if discord_platform.discord is None:
             discord_platform.discord = SimpleNamespace(Thread=FakeThread)
         else:
             setattr(discord_platform.discord, "Thread", FakeThread)
 
+        def restore_thread_class():
+            if original_discord is None:
+                discord_platform.discord = None
+            elif original_thread is None:
+                try:
+                    delattr(discord_platform.discord, "Thread")
+                except AttributeError:
+                    pass
+            else:
+                setattr(discord_platform.discord, "Thread", original_thread)
+
+        self.addCleanup(restore_thread_class)
+
         adapter = self._adapter(DISCORD_ALLOW_BOTS="mentions", DISCORD_ALLOWED_BOT_USERS="12345")
         bot = _make_author(bot=True)
-        invite = _make_message(author=bot, content="<@99999> start", mentions=[])
+        invite = _make_message(author=bot, content=VALID_BOT_MSG, mentions=[])
         invite.channel = FakeThread()
         invite.id = 1
         self.assertTrue(adapter._should_accept_bot_message(invite, "mentions"))
@@ -199,14 +257,61 @@ class TestDiscordBotFilter(unittest.TestCase):
             DISCORD_ALLOWED_BOT_USERS="12345",
             DISCORD_BOT_CONTROL_CHANNELS="333",
         )
-        invite2 = _make_message(author=bot, content="<@99999> start", mentions=[])
+        invite2 = _make_message(author=bot, content=VALID_BOT_MSG, mentions=[])
         invite2.channel = FakeThread()
         invite2.id = 3
         self.assertTrue(adapter_scoped._should_accept_bot_message(invite2, "mentions"))
         followup2 = _make_message(author=bot, content="continue", mentions=[])
         followup2.channel = FakeThread()
         followup2.id = 4
-        self.assertTrue(adapter_scoped._should_accept_bot_message(followup2, "mentions"))
+        self.assertFalse(adapter_scoped._should_accept_bot_message(followup2, "mentions"))
+
+    def test_bot_msg_v1_parser_accepts_crlf_and_keeps_body_opaque(self):
+        parsed = _parse_discord_bot_msg_v1(VALID_BOT_MSG, "99999")
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertTrue(parsed["reply_expected"])
+        self.assertEqual(parsed["kind"], "status")
+        self.assertEqual(parsed["correlation_id"], "pm-1.2:3_ok")
+        self.assertEqual(parsed["body"], "body line 1\nBOT_MSG v1 inside body is opaque")
+
+    def test_bot_msg_v1_parser_rejects_bad_header_details(self):
+        bad_cases = [
+            VALID_BOT_MSG.replace("<@99999>", "<@12345>"),
+            VALID_BOT_MSG.replace("BOT_MSG v1", "BOT_MSG v2", 1),
+            VALID_BOT_MSG.replace("reply_expected: true", "reply_expected: True"),
+            VALID_BOT_MSG.replace("kind: status", "kind: unknown"),
+            VALID_BOT_MSG.replace("correlation_id: pm-1.2:3_ok", "correlation_id: bad id"),
+            VALID_BOT_MSG.replace("---", "--"),
+        ]
+        for content in bad_cases:
+            self.assertIsNone(_parse_discord_bot_msg_v1(content, "99999"))
+
+    def test_bot_msg_v1_parser_rejects_unicode_leading_whitespace_before_mention(self):
+        content = VALID_BOT_MSG.replace("\t<@99999> ", "\u200b<@99999>", 1)
+
+        self.assertIsNone(_parse_discord_bot_msg_v1(content, "99999"))
+
+    def test_bot_msg_v1_parser_rejects_empty_body_for_non_status_kind(self):
+        content = "\n".join(
+            [
+                "<@99999>",
+                "BOT_MSG v1",
+                "reply_expected: true",
+                "kind: action_required",
+                "correlation_id: needs-body",
+                "---",
+                "",
+            ]
+        )
+
+        self.assertIsNone(_parse_discord_bot_msg_v1(content, "99999"))
+
+    def test_reply_false_reaction_is_configurable(self):
+        with patch.dict(os.environ, {"DISCORD_BOT_REPLY_FALSE_REACTION": "✅"}, clear=False):
+            self.assertEqual(_discord_bot_reply_false_reaction(), "✅")
+        with patch.dict(os.environ, {"DISCORD_BOT_REPLY_FALSE_REACTION": ""}, clear=False):
+            self.assertEqual(_discord_bot_reply_false_reaction(), "👀")
 
     def test_own_messages_always_ignored(self):
         """Bot's own messages are always ignored regardless of allow_bots."""

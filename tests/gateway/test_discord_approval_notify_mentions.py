@@ -73,6 +73,36 @@ async def test_send_exec_approval_mentions_supervisor_and_includes_text_command_
 
 
 @pytest.mark.asyncio
+async def test_send_exec_approval_uses_bot_msg_for_allowed_supervisor_bot(monkeypatch):
+    adapter = _make_adapter()
+    monkeypatch.setenv("DISCORD_APPROVAL_NOTIFY_MENTIONS", "<@777>")
+    monkeypatch.setenv("DISCORD_ALLOWED_BOT_USERS", "777")
+
+    channel = MagicMock()
+    channel.send = AsyncMock(return_value=SimpleNamespace(id=12345))
+    client = adapter._client
+    assert client is not None
+    client.get_channel.return_value = channel
+
+    result = await adapter.send_exec_approval(
+        chat_id="1507587363164131349",
+        command="rm -rf /tmp/nonexistent-approval-smoke",
+        session_key="discord:thread:abc",
+        description="approval visibility smoke",
+    )
+
+    assert result.success is True
+    content = channel.send.await_args.kwargs["content"]
+    parsed = discord_adapter._parse_discord_bot_msg_v1(content, "777")
+    assert parsed is not None
+    assert parsed["reply_expected"] is True
+    assert parsed["kind"] == "approval_request"
+    assert parsed["correlation_id"].startswith("approval:")
+    assert "approval required" in parsed["body"]
+    assert "/approve" in parsed["body"]
+
+
+@pytest.mark.asyncio
 async def test_send_exec_approval_keeps_content_optional_without_notify(monkeypatch):
     adapter = _make_adapter()
     monkeypatch.delenv("DISCORD_APPROVAL_NOTIFY_MENTIONS", raising=False)

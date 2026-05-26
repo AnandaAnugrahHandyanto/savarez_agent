@@ -130,6 +130,130 @@ def _has_raw_user_mention(content: str, user_id: Any) -> bool:
     return f"<@{sid}>" in content or f"<@!{sid}>" in content
 
 
+_DISCORD_BOT_MSG_KINDS = {
+    "status",
+    "action_required",
+    "approval_request",
+    "decision_request",
+    "handoff",
+    "review_request",
+    "audit",
+}
+_DISCORD_BOT_MSG_CORRELATION_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+_DISCORD_BOT_MSG_PROTOCOL_VERSION = "v1"
+
+
+def _discord_bot_reply_false_reaction() -> str:
+    """Reaction used to acknowledge BOT_MSG v1 messages that need no reply."""
+    return (os.getenv("DISCORD_BOT_REPLY_FALSE_REACTION", "👀") or "👀").strip() or "👀"
+
+
+def _discord_bot_msg_protocol_version() -> str:
+    return (os.getenv("DISCORD_BOT_MSG_PROTOCOL", _DISCORD_BOT_MSG_PROTOCOL_VERSION) or "").strip()
+
+
+def _discord_mention_id(mention: str) -> Optional[str]:
+    match = re.fullmatch(r"<@!?(\d+)>", (mention or "").strip())
+    return match.group(1) if match else None
+
+
+def _build_discord_bot_msg_v1(
+    *,
+    recipient_bot_id: str,
+    body: str,
+    reply_expected: bool,
+    kind: str,
+    correlation_id: str,
+) -> str:
+    if kind not in _DISCORD_BOT_MSG_KINDS:
+        raise ValueError(f"Invalid BOT_MSG v1 kind: {kind}")
+    if not _DISCORD_BOT_MSG_CORRELATION_RE.fullmatch(correlation_id or ""):
+        raise ValueError("Invalid BOT_MSG v1 correlation_id")
+    if kind != "status" and body == "":
+        raise ValueError("BOT_MSG v1 body is required for non-status kinds")
+    return "\n".join(
+        [
+            f"<@{recipient_bot_id}>",
+            "BOT_MSG v1",
+            f"reply_expected: {'true' if reply_expected else 'false'}",
+            f"kind: {kind}",
+            f"correlation_id: {correlation_id}",
+            "---",
+            body or "",
+        ]
+    )
+
+
+def _parse_discord_bot_msg_v1(content: str, recipient_bot_id: Any) -> Optional[Dict[str, Any]]:
+    """Parse the strict Discord BOT_MSG v1 envelope.
+
+    Header grammar is deliberately narrow. Body lines are opaque and may
+    contain strings that look like protocol headers.
+    """
+    sid = str(recipient_bot_id or "")
+    if not sid:
+        return None
+    text = (content or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.split("\n")
+    if len(lines) < 6:
+        return None
+
+    def h(line: str) -> str:
+        return line.strip(" \t")
+
+    mention = h(lines[0])
+    if mention not in {f"<@{sid}>", f"<@!{sid}>"}:
+        return None
+    if h(lines[1]) != "BOT_MSG v1":
+        return None
+
+    expected_fields = ["reply_expected", "kind", "correlation_id"]
+    values: Dict[str, str] = {}
+    for idx, field in enumerate(expected_fields, start=2):
+        line = h(lines[idx])
+        prefix = f"{field}:"
+        if not line.startswith(prefix):
+            return None
+        values[field] = line[len(prefix):].strip(" \t")
+
+    if values["reply_expected"] not in {"true", "false"}:
+        return None
+    if values["kind"] not in _DISCORD_BOT_MSG_KINDS:
+        return None
+    if not _DISCORD_BOT_MSG_CORRELATION_RE.fullmatch(values["correlation_id"]):
+        return None
+    if h(lines[5]) != "---":
+        return None
+
+    body = "\n".join(lines[6:])
+    if values["kind"] != "status" and body == "":
+        return None
+
+    return {
+        "reply_expected": values["reply_expected"] == "true",
+        "kind": values["kind"],
+        "correlation_id": values["correlation_id"],
+        "body": body,
+    }
+
+
+def _discord_content_mentioned_allowed_bots(content: str, allowed_bot_ids: set[str]) -> list[str]:
+    """Return allowed bot IDs raw-mentioned in content, in content order."""
+    if not content or not allowed_bot_ids:
+        return []
+    mentioned: list[str] = []
+    for match in re.finditer(r"<@!?(\d+)>", content):
+        bot_id = match.group(1)
+        if bot_id in allowed_bot_ids and bot_id not in mentioned:
+            mentioned.append(bot_id)
+    return mentioned
+
+
+def _discord_content_mentions_allowed_bot(content: str, allowed_bot_ids: set[str]) -> Optional[str]:
+    mentioned = _discord_content_mentioned_allowed_bots(content, allowed_bot_ids)
+    return mentioned[0] if mentioned else None
+
+
 def _build_allowed_mentions(*, replied_user: Optional[bool] = None):
     """Build Discord ``AllowedMentions`` with safe defaults, overridable via env.
 
@@ -633,11 +757,11 @@ class DiscordAdapter(BasePlatformAdapter):
             if not self._warned_unrestricted_bot_acceptance:
                 logger.warning(
                     "[%s] DISCORD_ALLOW_BOTS admits bot messages but DISCORD_ALLOWED_BOT_USERS is unset; "
-                    "preserving backward-compatible broad bot admission.",
+                    "failing closed for bot-authored admission.",
                     self.name,
                 )
                 self._warned_unrestricted_bot_acceptance = True
-            return True
+            return False
         return str(user_id) in allowed
 
     def _discord_bot_control_channels(self) -> set[str]:
@@ -761,11 +885,20 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client or not self._client.user:
             return False
         raw_self_mentioned = _has_raw_user_mention(message.content, self._client.user.id)
-        registered_followup = False if raw_self_mentioned else self._allow_registered_bot_thread_followup(message)
-        if not raw_self_mentioned and not registered_followup:
+        if not raw_self_mentioned:
             return False
         if not self._is_allowed_bot_user(message.author.id):
             return False
+        bot_msg = _parse_discord_bot_msg_v1(message.content, self._client.user.id)
+        if bot_msg is None:
+            logger.warning(
+                "[%s] Rejecting Discord bot message from %s: malformed or missing BOT_MSG v1 envelope",
+                self.name,
+                message.author.id,
+            )
+            return False
+        if not bot_msg["reply_expected"]:
+            return True
         if self._is_bot_fuse_suppressed(message):
             logger.warning("[%s] Suppressing Discord bot message from %s: loop fuse active", self.name, message.author.id)
             return False
@@ -813,6 +946,15 @@ class DiscordAdapter(BasePlatformAdapter):
 
         if not self.config.token:
             logger.error("[%s] No bot token configured", self.name)
+            return False
+        protocol_version = _discord_bot_msg_protocol_version()
+        if protocol_version != _DISCORD_BOT_MSG_PROTOCOL_VERSION:
+            logger.error(
+                "[%s] Unsupported Discord bot message protocol %r; supported: %s",
+                self.name,
+                protocol_version,
+                _DISCORD_BOT_MSG_PROTOCOL_VERSION,
+            )
             return False
 
         try:
@@ -936,7 +1078,52 @@ class DiscordAdapter(BasePlatformAdapter):
                 if getattr(message.author, "bot", False):
                     allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
                     if not adapter_self._should_accept_bot_message(message, allow_bots):
+                        if (
+                            allow_bots == "mentions"
+                            and adapter_self._client
+                            and adapter_self._client.user
+                            and _has_raw_user_mention(message.content, adapter_self._client.user.id)
+                            and adapter_self._is_allowed_bot_user(message.author.id)
+                            and _parse_discord_bot_msg_v1(message.content, adapter_self._client.user.id) is None
+                        ):
+                            try:
+                                await asyncio.wait_for(adapter_self._add_reaction(message, "❌"), timeout=3.0)
+                            except asyncio.TimeoutError:
+                                logger.warning(
+                                    "[%s] Timed out rejecting malformed BOT_MSG v1 from %s",
+                                    adapter_self.name,
+                                    message.author.id,
+                                )
                         return
+                    if allow_bots == "mentions" and adapter_self._client and adapter_self._client.user:
+                        _bot_msg = _parse_discord_bot_msg_v1(message.content, adapter_self._client.user.id)
+                        if _bot_msg is None:
+                            return
+                        if not _bot_msg["reply_expected"]:
+                            ack_reaction = _discord_bot_reply_false_reaction()
+                            try:
+                                ack_added = await asyncio.wait_for(adapter_self._add_reaction(message, ack_reaction), timeout=3.0)
+                                if not ack_added:
+                                    logger.warning(
+                                        "[%s] Failed acknowledging reply_expected=false BOT_MSG v1 from %s: add_reaction returned false",
+                                        adapter_self.name,
+                                        message.author.id,
+                                    )
+                            except asyncio.TimeoutError:
+                                logger.warning(
+                                    "[%s] Timed out acknowledging reply_expected=false BOT_MSG v1 from %s",
+                                    adapter_self.name,
+                                    message.author.id,
+                                )
+                            except Exception as exc:
+                                logger.warning(
+                                    "[%s] Failed acknowledging reply_expected=false BOT_MSG v1 from %s: %s",
+                                    adapter_self.name,
+                                    message.author.id,
+                                    exc,
+                                )
+                            return
+                        message.content = _bot_msg["body"]
                     # Bot is permitted — skip the human-user allowlist below
                     # (bots aren't in it).
                 else:
@@ -1551,6 +1738,63 @@ class DiscordAdapter(BasePlatformAdapter):
             elif outcome == ProcessingOutcome.FAILURE:
                 await self._add_reaction(message, "❌")
 
+    def _validate_outbound_bot_msg_v1(
+        self,
+        formatted: str,
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Fail closed for outbound messages that mention allowed supervisor bots."""
+        allowed_bot_ids = self._discord_allowed_bot_users()
+        mentioned_allowed_bots = _discord_content_mentioned_allowed_bots(formatted, allowed_bot_ids)
+        if len(mentioned_allowed_bots) > 1:
+            return "Multiple allowed bot mentions are not permitted in a BOT_MSG v1 envelope"
+        if not mentioned_allowed_bots:
+            return None
+
+        mentioned_allowed_bot = mentioned_allowed_bots[0]
+        is_internal_bot_msg = bool(metadata and metadata.get("_discord_bot_msg_v1_internal"))
+        parsed_bot_msg = _parse_discord_bot_msg_v1(formatted, mentioned_allowed_bot)
+        if not is_internal_bot_msg:
+            return (
+                f"Outbound raw mention of allowed bot {mentioned_allowed_bot} requires "
+                "send_bot_message(...) to create a BOT_MSG v1 envelope"
+            )
+        if parsed_bot_msg is None:
+            return (
+                f"Internal BOT_MSG v1 envelope addressed to allowed bot {mentioned_allowed_bot} "
+                "is invalid"
+            )
+        if len(formatted) > self.MAX_MESSAGE_LENGTH:
+            return "BOT_MSG v1 envelope exceeds Discord message length and will not be chunked"
+        return None
+
+    async def send_bot_message(
+        self,
+        chat_id: str,
+        *,
+        recipient_bot_id: str,
+        body: str,
+        reply_expected: bool,
+        kind: str,
+        correlation_id: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a structured BOT_MSG v1 envelope to another Discord bot."""
+        try:
+            envelope = _build_discord_bot_msg_v1(
+                recipient_bot_id=recipient_bot_id,
+                body=body,
+                reply_expected=reply_expected,
+                kind=kind,
+                correlation_id=correlation_id,
+            )
+        except ValueError as exc:
+            return SendResult(success=False, error=str(exc))
+        outbound_metadata = dict(metadata or {})
+        outbound_metadata["_discord_bot_msg_v1_internal"] = True
+        return await self.send(chat_id, envelope, reply_to=reply_to, metadata=outbound_metadata)
+
     async def send(
         self,
         chat_id: str,
@@ -1592,10 +1836,13 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
-                return await self._send_to_forum(channel, content)
+                return await self._send_to_forum(channel, content, metadata=metadata)
 
             # Format and split message if needed
             formatted = self.format_message(content)
+            validation_error = self._validate_outbound_bot_msg_v1(formatted, metadata)
+            if validation_error:
+                return SendResult(success=False, error=validation_error)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
             message_ids = []
@@ -1688,7 +1935,13 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
-    async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
+    async def _send_to_forum(
+        self,
+        forum_channel: Any,
+        content: str,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
         """Create a thread post in a forum channel with the message as starter content.
 
         Forum channels (type 15) don't support direct messages.  Instead we
@@ -1701,6 +1954,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # module — no cross-module import needed.
 
         formatted = self.format_message(content)
+        validation_error = self._validate_outbound_bot_msg_v1(formatted, metadata)
+        if validation_error:
+            return SendResult(success=False, error=validation_error)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
         thread_name = _derive_forum_thread_name(content)
@@ -4354,9 +4610,38 @@ class DiscordAdapter(BasePlatformAdapter):
                 self_mention = ""
             notify_mentions = self._discord_approval_notify_mentions()
             content_lines = []
+            used_bot_msg_envelope = False
             if notify_mentions:
-                content_lines.append(" ".join(notify_mentions) + " approval required")
-            if self_mention:
+                allowed_bot_ids = self._discord_allowed_bot_users()
+                recipient_bot_id = next(
+                    (
+                        mention_id
+                        for mention in notify_mentions
+                        for mention_id in [_discord_mention_id(mention)]
+                        if mention_id and mention_id in allowed_bot_ids
+                    ),
+                    None,
+                )
+                if recipient_bot_id:
+                    body_lines = ["approval required"]
+                    if self_mention:
+                        body_lines.append(
+                            f"Galt/another supervisor bot can approve by replying in this same thread/session with `{self_mention} /approve` "
+                            f"or deny with `{self_mention} /deny`."
+                        )
+                    content_lines.append(
+                        _build_discord_bot_msg_v1(
+                            recipient_bot_id=recipient_bot_id,
+                            body="\n".join(body_lines),
+                            reply_expected=True,
+                            kind="approval_request",
+                            correlation_id=f"approval:{hashlib.sha256(session_key.encode('utf-8')).hexdigest()[:32]}",
+                        )
+                    )
+                    used_bot_msg_envelope = True
+                else:
+                    content_lines.append(" ".join(notify_mentions) + " approval required")
+            if self_mention and not used_bot_msg_envelope:
                 content_lines.append(
                     f"Galt/another supervisor bot can approve by replying in this same thread/session with `{self_mention} /approve` "
                     f"or deny with `{self_mention} /deny`."

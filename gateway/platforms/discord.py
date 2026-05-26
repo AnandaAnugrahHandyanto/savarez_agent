@@ -11,5 +11,7 @@ from plugins.platforms.discord.adapter import *  # noqa: F401,F403
 
 # Re-export selected private helpers used by compatibility tests/integrations.
 _has_raw_user_mention = _adapter._has_raw_user_mention
+_parse_discord_bot_msg_v1 = _adapter._parse_discord_bot_msg_v1
+_discord_bot_reply_false_reaction = _adapter._discord_bot_reply_false_reaction
 _build_allowed_mentions = _adapter._build_allowed_mentions
 _define_discord_view_classes = _adapter._define_discord_view_classes
