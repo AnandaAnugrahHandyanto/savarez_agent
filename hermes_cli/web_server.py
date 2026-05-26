@@ -22,6 +22,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -472,6 +473,12 @@ class ModelAssignment(BaseModel):
     provider: str
     model: str
     task: str = ""
+
+
+class AgentModelUpdate(BaseModel):
+    """Payload for PUT /api/agents/{agent_id}/model."""
+    model_ref: str
+    allow_deprecated: bool = False
 
 
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
@@ -1130,6 +1137,483 @@ async def set_model_assignment(body: ModelAssignment):
     except Exception:
         _log.exception("POST /api/model/set failed")
         raise HTTPException(status_code=500, detail="Failed to save model assignment")
+
+
+# ---------------------------------------------------------------------------
+# Managed Agent admin — model bindings, model pool, usage, subscriptions
+# ---------------------------------------------------------------------------
+
+_AGENTS_CONFIG_PATH = PROJECT_ROOT / "configs" / "managed_agents" / "agents.yaml"
+_RUNTIME_AGENT_REGISTRY_PATH = get_hermes_home() / "config" / "agent-registry.json"
+_MODELS_CONFIG_PATH = get_hermes_home() / "config" / "models.yaml"
+_MODEL_SUBSCRIPTIONS_PATH = get_hermes_home() / "config" / "model-subscriptions.yaml"
+_EXTERNAL_AGENT_RUNTIMES = frozenset({"claude_code_cli", "codex_cli"})
+_SUBSCRIPTION_CACHE_TTL_SECONDS = 300
+
+
+def _read_yaml_mapping(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=500, detail=f"{path.name} must be a YAML mapping")
+    return data
+
+
+def _write_yaml_mapping(path: Path, data: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+
+
+def _load_models_config() -> Dict[str, Any]:
+    data = _read_yaml_mapping(_MODELS_CONFIG_PATH)
+    models = data.get("models")
+    if not isinstance(models, dict):
+        return {}
+    return models
+
+
+def _load_managed_agents_config() -> Dict[str, Any]:
+    return _read_yaml_mapping(_AGENTS_CONFIG_PATH)
+
+
+def _save_managed_agents_config(data: Dict[str, Any]) -> None:
+    _write_yaml_mapping(_AGENTS_CONFIG_PATH, data)
+    try:
+        from agent.managed_agents.runtime_mirror import write_runtime_registry
+        write_runtime_registry(_AGENTS_CONFIG_PATH, _RUNTIME_AGENT_REGISTRY_PATH)
+    except Exception as exc:
+        _log.exception("Failed to sync runtime agent registry")
+        raise HTTPException(status_code=500, detail=f"Saved agents.yaml but failed to sync runtime registry: {exc}") from exc
+
+
+def _redact_workspace_id(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    if len(raw) <= 8:
+        return "***"
+    return f"{raw[:4]}...{raw[-4:]}"
+
+
+def _subscription_default() -> Dict[str, Any]:
+    return {
+        "provider": "",
+        "workspace_id_redacted": "",
+        "expires_at": None,
+        "monthly_limit_usd": None,
+        "usage_percent": None,
+        "reset_at": None,
+        "source": "unavailable",
+        "error": None,
+    }
+
+
+def _load_subscription_config() -> Dict[str, Any]:
+    data = _read_yaml_mapping(_MODEL_SUBSCRIPTIONS_PATH)
+    providers = data.get("providers")
+    if not isinstance(providers, dict):
+        data["providers"] = {}
+    return data
+
+
+def _save_subscription_config(data: Dict[str, Any]) -> None:
+    _write_yaml_mapping(_MODEL_SUBSCRIPTIONS_PATH, data)
+
+
+def _extract_opencode_usage(html: str) -> tuple[Optional[float], Optional[str]]:
+    """Best-effort parser for OpenCode Go dashboard hydration data."""
+    percent: Optional[float] = None
+    reset_at: Optional[str] = None
+
+    percent_patterns = (
+        r'"usagePercent"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+        r'"monthlyUsage"[^{}]*"usagePercent"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+        r'usagePercent["\']?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)',
+    )
+    for pattern in percent_patterns:
+        match = re.search(pattern, html)
+        if match:
+            try:
+                percent = max(0.0, min(100.0, float(match.group(1))))
+                break
+            except ValueError:
+                pass
+
+    reset_patterns = (
+        r'"resetInSec"\s*:\s*([0-9]+)',
+        r'resetInSec["\']?\s*[:=]\s*([0-9]+)',
+    )
+    for pattern in reset_patterns:
+        match = re.search(pattern, html)
+        if match:
+            try:
+                reset_in_sec = max(0, int(match.group(1)))
+                reset_at = time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ",
+                    time.gmtime(time.time() + reset_in_sec),
+                )
+                break
+            except ValueError:
+                pass
+
+    return percent, reset_at
+
+
+def _fetch_opencode_go_subscription(
+    provider_cfg: Dict[str, Any],
+    cached: Dict[str, Any],
+) -> Dict[str, Any]:
+    result = _subscription_default()
+    result.update({
+        "provider": "opencode-go",
+        "expires_at": provider_cfg.get("expires_at"),
+        "monthly_limit_usd": provider_cfg.get("monthly_limit_usd"),
+    })
+
+    env = load_env()
+    workspace_id = str(
+        provider_cfg.get("workspace_id")
+        or env.get("OPENCODE_GO_WORKSPACE_ID")
+        or os.getenv("OPENCODE_GO_WORKSPACE_ID", "")
+    ).strip()
+    auth_cookie = str(
+        provider_cfg.get("auth_cookie")
+        or env.get("OPENCODE_GO_AUTH_COOKIE")
+        or os.getenv("OPENCODE_GO_AUTH_COOKIE", "")
+    ).strip()
+    result["workspace_id_redacted"] = _redact_workspace_id(workspace_id)
+
+    last_checked = float(cached.get("checked_at") or 0)
+    if cached and time.time() - last_checked < _SUBSCRIPTION_CACHE_TTL_SECONDS:
+        cached_result = dict(result)
+        cached_result.update({k: v for k, v in cached.items() if k != "checked_at"})
+        cached_result["source"] = "cache"
+        return cached_result
+
+    if not workspace_id or not auth_cookie:
+        result["source"] = "manual" if provider_cfg else "unavailable"
+        result["error"] = "OPENCODE_GO_WORKSPACE_ID or OPENCODE_GO_AUTH_COOKIE not configured"
+        if cached:
+            result.update({k: v for k, v in cached.items() if k != "checked_at"})
+            result["source"] = "cache"
+        return result
+
+    url = f"https://opencode.ai/workspace/{urllib.parse.quote(workspace_id, safe='')}/go"
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Hermes-Agent-Dashboard/1.0",
+                "Accept": "text/html,application/xhtml+xml",
+                "Cookie": f"auth={auth_cookie}",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+        usage_percent, reset_at = _extract_opencode_usage(html)
+        if usage_percent is None:
+            raise ValueError("Could not parse usagePercent from OpenCode Go dashboard")
+        result.update({
+            "usage_percent": usage_percent,
+            "reset_at": reset_at,
+            "source": "live",
+            "error": None,
+        })
+        return result
+    except Exception as exc:
+        result["source"] = "cache" if cached else "unavailable"
+        result["error"] = str(exc)[:240]
+        if cached:
+            result.update({k: v for k, v in cached.items() if k != "checked_at"})
+            result["source"] = "cache"
+        return result
+
+
+def _subscription_for_model(model_ref: str, model_cfg: Dict[str, Any], sub_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    provider = str(model_cfg.get("provider") or "")
+    providers = sub_cfg.get("providers") if isinstance(sub_cfg.get("providers"), dict) else {}
+    provider_cfg = providers.get(provider, {}) if isinstance(providers.get(provider), dict) else {}
+    model_cfg_sub = provider_cfg.get("models", {}).get(model_ref, {}) if isinstance(provider_cfg.get("models"), dict) else {}
+    merged_cfg = {**provider_cfg, **model_cfg_sub}
+    cache = merged_cfg.get("cache") if isinstance(merged_cfg.get("cache"), dict) else {}
+
+    if provider == "opencode-go" and merged_cfg.get("auto_fetch", True):
+        status = _fetch_opencode_go_subscription(merged_cfg, cache)
+        if status.get("source") == "live":
+            sub_cfg.setdefault("providers", {}).setdefault(provider, {}).setdefault("cache", {})
+            sub_cfg["providers"][provider]["cache"] = {
+                "checked_at": time.time(),
+                "usage_percent": status.get("usage_percent"),
+                "reset_at": status.get("reset_at"),
+                "expires_at": status.get("expires_at"),
+                "monthly_limit_usd": status.get("monthly_limit_usd"),
+                "workspace_id_redacted": status.get("workspace_id_redacted"),
+            }
+            try:
+                _save_subscription_config(sub_cfg)
+            except Exception:
+                _log.debug("Failed to update model subscription cache", exc_info=True)
+        return status
+
+    status = _subscription_default()
+    status.update({
+        "provider": provider,
+        "expires_at": merged_cfg.get("expires_at"),
+        "monthly_limit_usd": merged_cfg.get("monthly_limit_usd"),
+        "usage_percent": merged_cfg.get("usage_percent"),
+        "reset_at": merged_cfg.get("reset_at"),
+        "source": "manual" if merged_cfg else "unavailable",
+    })
+    return status
+
+
+def _model_usage_by_model(days: int) -> tuple[Dict[tuple[str, str], Dict[str, Any]], Dict[str, Any]]:
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        cutoff = time.time() - (days * 86400)
+        cur = db._conn.execute("""
+            SELECT model,
+                   billing_provider,
+                   SUM(input_tokens) as input_tokens,
+                   SUM(output_tokens) as output_tokens,
+                   SUM(cache_read_tokens) as cache_read_tokens,
+                   SUM(reasoning_tokens) as reasoning_tokens,
+                   COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
+                   COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
+                   COUNT(*) as sessions,
+                   SUM(COALESCE(api_call_count, 0)) as api_calls,
+                   MAX(started_at) as last_used_at
+            FROM sessions
+            WHERE started_at > ? AND model IS NOT NULL AND model != ''
+            GROUP BY model, billing_provider
+        """, (cutoff,))
+        usage: Dict[tuple[str, str], Dict[str, Any]] = {}
+        totals = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "reasoning_tokens": 0,
+            "estimated_cost": 0.0,
+            "actual_cost": 0.0,
+            "sessions": 0,
+            "api_calls": 0,
+        }
+        for row in cur.fetchall():
+            item = dict(row)
+            provider = item.get("billing_provider") or ""
+            model = item.get("model") or ""
+            usage[(model, provider)] = item
+            totals["input_tokens"] += int(item.get("input_tokens") or 0)
+            totals["output_tokens"] += int(item.get("output_tokens") or 0)
+            totals["cache_read_tokens"] += int(item.get("cache_read_tokens") or 0)
+            totals["reasoning_tokens"] += int(item.get("reasoning_tokens") or 0)
+            totals["estimated_cost"] += float(item.get("estimated_cost") or 0)
+            totals["actual_cost"] += float(item.get("actual_cost") or 0)
+            totals["sessions"] += int(item.get("sessions") or 0)
+            totals["api_calls"] += int(item.get("api_calls") or 0)
+        return usage, totals
+    finally:
+        db.close()
+
+
+def _agent_usage_from_events(days: int) -> tuple[Dict[str, Dict[str, Any]], Dict[str, Any]]:
+    import sqlite3
+
+    db_path = get_hermes_home() / "events.db"
+    usage: Dict[str, Dict[str, Any]] = {}
+    totals = {"attributed_events": 0, "unknown_events": 0}
+    if not db_path.exists():
+        return usage, totals
+
+    cutoff = time.time() - (days * 86400)
+    try:
+        conn = sqlite3.connect(str(db_path))
+        rows = conn.execute(
+            "SELECT timestamp, payload_json FROM events WHERE type = ? AND timestamp > ?",
+            ("subagent.completed", cutoff),
+        ).fetchall()
+    except Exception:
+        _log.debug("Failed to read subagent usage events", exc_info=True)
+        return usage, totals
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    for ts, payload_json in rows:
+        try:
+            payload = json.loads(payload_json)
+        except Exception:
+            continue
+        agent_id = str(payload.get("agent_id") or "unknown")
+        if agent_id == "unknown":
+            totals["unknown_events"] += 1
+        else:
+            totals["attributed_events"] += 1
+        item = usage.setdefault(agent_id, {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "reasoning_tokens": 0,
+            "api_calls": 0,
+            "runs": 0,
+            "duration_seconds": 0.0,
+            "last_used_at": None,
+        })
+        tokens = payload.get("tokens") if isinstance(payload.get("tokens"), dict) else {}
+        item["input_tokens"] += int(tokens.get("input_tokens") or tokens.get("input") or 0)
+        item["output_tokens"] += int(tokens.get("output_tokens") or tokens.get("output") or 0)
+        item["cache_read_tokens"] += int(tokens.get("cache_read_tokens") or 0)
+        item["reasoning_tokens"] += int(tokens.get("reasoning_tokens") or 0)
+        item["api_calls"] += int(payload.get("api_calls") or 0)
+        item["runs"] += 1
+        item["duration_seconds"] += float(payload.get("duration_seconds") or 0)
+        item["last_used_at"] = max(float(ts or 0), float(item["last_used_at"] or 0))
+    return usage, totals
+
+
+def _empty_usage() -> Dict[str, Any]:
+    return {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "reasoning_tokens": 0,
+        "api_calls": 0,
+        "runs": 0,
+        "duration_seconds": 0.0,
+        "last_used_at": None,
+    }
+
+
+@app.get("/api/agents/managed")
+async def get_managed_agents(days: int = 30):
+    try:
+        from agent.managed_agents.registry import load_agent_registry
+
+        days = max(1, min(int(days or 30), 365))
+        models_cfg = _load_models_config()
+        sub_cfg = _load_subscription_config()
+        registry = load_agent_registry(_AGENTS_CONFIG_PATH)
+        model_usage, model_totals = _model_usage_by_model(days)
+        agent_usage, attribution = _agent_usage_from_events(days)
+
+        models = []
+        for model_ref, cfg in models_cfg.items():
+            if not isinstance(cfg, dict):
+                continue
+            subscription = _subscription_for_model(str(model_ref), cfg, sub_cfg)
+            usage = model_usage.get((str(cfg.get("model") or ""), str(cfg.get("provider") or "")))
+            models.append({
+                "model_ref": str(model_ref),
+                "provider": str(cfg.get("provider") or ""),
+                "model": str(cfg.get("model") or ""),
+                "role": str(cfg.get("role") or ""),
+                "status": str(cfg.get("status") or "active"),
+                "tokens_per_million": cfg.get("tokens_per_million"),
+                "notes": str(cfg.get("notes") or ""),
+                "subscription": subscription,
+                "usage": usage or _empty_usage(),
+            })
+
+        agents = []
+        for agent_id, agent in registry.agents.items():
+            model_cfg = models_cfg.get(agent.model_ref, {}) if agent.model_ref else {}
+            runtime = agent.runtime or ""
+            editable = runtime not in _EXTERNAL_AGENT_RUNTIMES
+            agents.append({
+                "agent_id": agent_id,
+                "display_name": agent.name,
+                "role_summary": agent.role_summary,
+                "runtime": runtime,
+                "editable": editable,
+                "model_ref": agent.model_ref,
+                "model": str(model_cfg.get("model") or ""),
+                "provider": str(model_cfg.get("provider") or ""),
+                "status": str(model_cfg.get("status") or ""),
+                "tools": list(agent.tools),
+                "permission": agent.permission.value,
+                "usage": agent_usage.get(agent_id, _empty_usage()),
+            })
+
+        return {
+            "agents": agents,
+            "models": models,
+            "totals": {
+                "period_days": days,
+                **model_totals,
+                "agent_attributed_events": attribution["attributed_events"],
+                "agent_unknown_events": attribution["unknown_events"],
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("GET /api/agents/managed failed")
+        raise HTTPException(status_code=500, detail=f"Failed to load managed agents: {exc}") from exc
+
+
+@app.put("/api/agents/{agent_id}/model")
+async def update_managed_agent_model(agent_id: str, body: AgentModelUpdate):
+    requested_ref = (body.model_ref or "").strip()
+    if not requested_ref:
+        raise HTTPException(status_code=400, detail="model_ref is required")
+
+    try:
+        from agent.managed_agents.registry import load_agent_registry
+
+        models_cfg = _load_models_config()
+        if requested_ref not in models_cfg:
+            raise HTTPException(status_code=400, detail=f"Unknown model_ref: {requested_ref}")
+        model_status = str((models_cfg.get(requested_ref) or {}).get("status") or "active").lower()
+        if model_status == "deprecated" and not body.allow_deprecated:
+            raise HTTPException(status_code=400, detail=f"model_ref {requested_ref} is deprecated")
+
+        registry = load_agent_registry(_AGENTS_CONFIG_PATH)
+        resolved_agent_id = registry.resolve_agent_id(agent_id) or agent_id
+        if resolved_agent_id not in registry.agents:
+            raise HTTPException(status_code=404, detail=f"Unknown agent_id: {agent_id}")
+        agent = registry.get(resolved_agent_id)
+        if agent.runtime in _EXTERNAL_AGENT_RUNTIMES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{resolved_agent_id} is managed by external CLI runtime: {agent.runtime}",
+            )
+
+        data = _load_managed_agents_config()
+        raw_agents = data.get("agents")
+        if not isinstance(raw_agents, list):
+            raise HTTPException(status_code=500, detail="agents.yaml agents must be a list")
+        updated = False
+        for raw in raw_agents:
+            if isinstance(raw, dict) and raw.get("agent_id") == resolved_agent_id:
+                raw["model_ref"] = requested_ref
+                updated = True
+                break
+        if not updated:
+            raise HTTPException(status_code=404, detail=f"Agent {resolved_agent_id} not found in agents.yaml")
+
+        _save_managed_agents_config(data)
+        return {
+            "ok": True,
+            "agent_id": resolved_agent_id,
+            "model_ref": requested_ref,
+            "provider": str((models_cfg.get(requested_ref) or {}).get("provider") or ""),
+            "model": str((models_cfg.get(requested_ref) or {}).get("model") or ""),
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("PUT /api/agents/%s/model failed", agent_id)
+        raise HTTPException(status_code=500, detail=f"Failed to update agent model: {exc}") from exc
 
 
 
@@ -3129,7 +3613,6 @@ async def get_models_analytics(days: int = 30):
 # though uvicorn binds to 127.0.0.1.
 # ---------------------------------------------------------------------------
 
-import re
 import asyncio
 
 # PTY bridge is POSIX-only (depends on fcntl/termios/ptyprocess).  On native

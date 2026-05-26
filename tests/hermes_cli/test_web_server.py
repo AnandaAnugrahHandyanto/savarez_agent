@@ -3,10 +3,12 @@
 import os
 import json
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
+import yaml
 
 from hermes_cli.config import (
     DEFAULT_CONFIG,
@@ -15,6 +17,122 @@ from hermes_cli.config import (
     _EXTRA_ENV_KEYS,
     OPTIONAL_ENV_VARS,
 )
+
+
+def _write_agent_admin_files(hermes_home: Path):
+    config_dir = hermes_home / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    models_yaml = {
+        "models": {
+            "deepseek_pro": {
+                "provider": "deepseek",
+                "base_url": "https://api.deepseek.com",
+                "api_key_env": "DEEPSEEK_API_KEY",
+                "model": "deepseek-v4-pro",
+                "role": "complex_reasoning",
+                "tokens_per_million": 0.5,
+                "status": "active",
+                "notes": "stable",
+            },
+            "deepseek_flash": {
+                "provider": "deepseek",
+                "base_url": "https://api.deepseek.com",
+                "api_key_env": "DEEPSEEK_API_KEY",
+                "model": "deepseek-v4-flash",
+                "role": "cheap",
+                "tokens_per_million": 0.1,
+                "status": "active",
+                "notes": "cheap",
+            },
+            "old_model": {
+                "provider": "legacy",
+                "model": "old",
+                "role": "deprecated",
+                "tokens_per_million": 1.0,
+                "status": "deprecated",
+                "notes": "do not use",
+            },
+            "opencode_go_kimi26": {
+                "provider": "opencode-go",
+                "base_url": "https://opencode.ai/zen/go/v1",
+                "api_key_env": "OPENCODE_GO_API_KEY",
+                "model": "kimi-k2.6",
+                "role": "experimental",
+                "tokens_per_million": 0.2,
+                "status": "experimental",
+                "notes": "pool",
+            },
+            "claude_opus": {
+                "provider": "anthropic",
+                "model": "claude-opus-4-7",
+                "role": "external",
+                "status": "active",
+            },
+            "codex_cli": {
+                "provider": "openai-codex",
+                "model": "gpt-5.5",
+                "role": "external",
+                "status": "active",
+            },
+        }
+    }
+    (config_dir / "models.yaml").write_text(
+        yaml.safe_dump(models_yaml, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    agents_yaml = {
+        "version": "test",
+        "agents": [
+            {
+                "agent_id": "hermes-internal",
+                "name": "Hermes 技术翻译官",
+                "role": "internal_reasoner",
+                "aliases": ["技术翻译官", "nesta"],
+                "role_summary": "技术中间层",
+                "model_ref": "deepseek_pro",
+                "skills": ["codebase-inspection"],
+                "tools": ["file"],
+                "permission": "read_only",
+                "can_delegate": False,
+                "capabilities": ["analysis"],
+                "risk_allowed": ["R0", "R1"],
+            },
+            {
+                "agent_id": "claude",
+                "name": "Claude 主程执行官",
+                "role": "lead_implementer",
+                "aliases": ["claude"],
+                "role_summary": "外部 Claude Code CLI",
+                "model_ref": "claude_opus",
+                "runtime": "claude_code_cli",
+                "skills": ["codebase-inspection"],
+                "tools": ["file", "terminal"],
+                "permission": "ask",
+                "can_delegate": False,
+                "capabilities": ["code_edit"],
+                "risk_allowed": ["R1"],
+            },
+            {
+                "agent_id": "codex",
+                "name": "Codex 代码审查官",
+                "role": "principal_engineer",
+                "aliases": ["codex"],
+                "role_summary": "外部 Codex CLI",
+                "model_ref": "codex_cli",
+                "runtime": "codex_cli",
+                "skills": ["github-code-review"],
+                "tools": ["file"],
+                "permission": "read_only",
+                "can_delegate": False,
+                "capabilities": ["code_review"],
+                "risk_allowed": ["R0", "R1"],
+            },
+        ],
+        "routing": {"capability_routes": {"analysis": "hermes-internal", "code_edit": "claude", "code_review": "codex"}},
+    }
+    source = hermes_home / "agents.yaml"
+    source.write_text(yaml.safe_dump(agents_yaml, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    return source
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +308,159 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json()["gateway_state"] == "startup_failed"
         assert resp.json()["gateway_platforms"] == {}
+
+    def test_get_managed_agents_returns_agents_models_and_redacts_cookie(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.web_server as web_server
+
+        hermes_home = get_hermes_home()
+        source = _write_agent_admin_files(hermes_home)
+        monkeypatch.setattr(web_server, "_AGENTS_CONFIG_PATH", source)
+        monkeypatch.setattr(web_server, "_RUNTIME_AGENT_REGISTRY_PATH", hermes_home / "config" / "agent-registry.json")
+        monkeypatch.setattr(web_server, "_MODELS_CONFIG_PATH", hermes_home / "config" / "models.yaml")
+        monkeypatch.setattr(web_server, "_MODEL_SUBSCRIPTIONS_PATH", hermes_home / "config" / "model-subscriptions.yaml")
+        (hermes_home / ".env").write_text(
+            "OPENCODE_GO_WORKSPACE_ID=workspace-123456789\n"
+            "OPENCODE_GO_AUTH_COOKIE=secret-cookie-value\n",
+            encoding="utf-8",
+        )
+
+        def fake_fetch(provider_cfg, cached):
+            return {
+                "provider": "opencode-go",
+                "workspace_id_redacted": "work...6789",
+                "expires_at": None,
+                "monthly_limit_usd": 60,
+                "usage_percent": 12.5,
+                "reset_at": "2026-05-27T00:00:00Z",
+                "source": "live",
+                "error": None,
+            }
+
+        monkeypatch.setattr(web_server, "_fetch_opencode_go_subscription", fake_fetch)
+
+        resp = self.client.get("/api/agents/managed?days=30")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["agents"]) == 3
+        assert {a["agent_id"]: a["editable"] for a in data["agents"]} == {
+            "hermes-internal": True,
+            "claude": False,
+            "codex": False,
+        }
+        body = json.dumps(data, ensure_ascii=False)
+        assert "secret-cookie-value" not in body
+        assert "opencode_go_kimi26" in body
+        assert "work...6789" in body
+
+    def test_update_managed_agent_model_syncs_runtime_registry(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.web_server as web_server
+
+        hermes_home = get_hermes_home()
+        source = _write_agent_admin_files(hermes_home)
+        runtime = hermes_home / "config" / "agent-registry.json"
+        monkeypatch.setattr(web_server, "_AGENTS_CONFIG_PATH", source)
+        monkeypatch.setattr(web_server, "_RUNTIME_AGENT_REGISTRY_PATH", runtime)
+        monkeypatch.setattr(web_server, "_MODELS_CONFIG_PATH", hermes_home / "config" / "models.yaml")
+
+        resp = self.client.put(
+            "/api/agents/hermes-internal/model",
+            json={"model_ref": "deepseek_flash"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["model_ref"] == "deepseek_flash"
+        agents_yaml = yaml.safe_load(source.read_text(encoding="utf-8"))
+        updated = {a["agent_id"]: a["model_ref"] for a in agents_yaml["agents"]}
+        assert updated["hermes-internal"] == "deepseek_flash"
+        runtime_json = json.loads(runtime.read_text(encoding="utf-8"))
+        assert runtime_json["agents"]["hermes-internal"]["model_ref"] == "deepseek_flash"
+        assert runtime_json["agents"]["hermes-internal"]["subagent_profile"]["model_ref"] == "deepseek_flash"
+
+    def test_update_managed_agent_model_rejects_external_cli(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.web_server as web_server
+
+        hermes_home = get_hermes_home()
+        source = _write_agent_admin_files(hermes_home)
+        monkeypatch.setattr(web_server, "_AGENTS_CONFIG_PATH", source)
+        monkeypatch.setattr(web_server, "_MODELS_CONFIG_PATH", hermes_home / "config" / "models.yaml")
+
+        resp = self.client.put(
+            "/api/agents/claude/model",
+            json={"model_ref": "deepseek_flash"},
+        )
+
+        assert resp.status_code == 400
+        assert "external CLI" in resp.text
+
+    def test_update_managed_agent_model_rejects_unknown_and_deprecated(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.web_server as web_server
+
+        hermes_home = get_hermes_home()
+        source = _write_agent_admin_files(hermes_home)
+        monkeypatch.setattr(web_server, "_AGENTS_CONFIG_PATH", source)
+        monkeypatch.setattr(web_server, "_RUNTIME_AGENT_REGISTRY_PATH", hermes_home / "config" / "agent-registry.json")
+        monkeypatch.setattr(web_server, "_MODELS_CONFIG_PATH", hermes_home / "config" / "models.yaml")
+
+        missing = self.client.put(
+            "/api/agents/hermes-internal/model",
+            json={"model_ref": "missing_model"},
+        )
+        assert missing.status_code == 400
+        assert "Unknown model_ref" in missing.text
+
+        deprecated = self.client.put(
+            "/api/agents/hermes-internal/model",
+            json={"model_ref": "old_model"},
+        )
+        assert deprecated.status_code == 400
+        assert "deprecated" in deprecated.text
+
+        allowed = self.client.put(
+            "/api/agents/hermes-internal/model",
+            json={"model_ref": "old_model", "allow_deprecated": True},
+        )
+        assert allowed.status_code == 200
+        assert allowed.json()["model_ref"] == "old_model"
+
+    def test_managed_agent_usage_aggregates_subagent_completed_events(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.web_server as web_server
+        from agent.session_event_log import EventLog
+
+        hermes_home = get_hermes_home()
+        source = _write_agent_admin_files(hermes_home)
+        monkeypatch.setattr(web_server, "_AGENTS_CONFIG_PATH", source)
+        monkeypatch.setattr(web_server, "_MODELS_CONFIG_PATH", hermes_home / "config" / "models.yaml")
+        monkeypatch.setattr(web_server, "_MODEL_SUBSCRIPTIONS_PATH", hermes_home / "config" / "model-subscriptions.yaml")
+
+        elog = EventLog(db_path=hermes_home / "events.db")
+        elog.log_subagent_completed(
+            task_id="task-1",
+            session_id="session-1",
+            subagent_id="sa-1",
+            status="completed",
+            agent_id="hermes-internal",
+            duration_seconds=2.5,
+            api_calls=3,
+            tokens={"input_tokens": 100, "output_tokens": 25},
+        )
+        elog.close()
+
+        resp = self.client.get("/api/agents/managed?days=30")
+
+        assert resp.status_code == 200
+        agents = {a["agent_id"]: a for a in resp.json()["agents"]}
+        usage = agents["hermes-internal"]["usage"]
+        assert usage["input_tokens"] == 100
+        assert usage["output_tokens"] == 25
+        assert usage["api_calls"] == 3
+        assert usage["runs"] == 1
+        assert resp.json()["totals"]["agent_attributed_events"] == 1
 
     def test_get_config_schema(self):
         resp = self.client.get("/api/config/schema")

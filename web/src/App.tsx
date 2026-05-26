@@ -18,6 +18,7 @@ import {
   Activity,
   BarChart3,
   BookOpen,
+  Bot,
   Clock,
   Code,
   Cpu,
@@ -62,6 +63,7 @@ import SessionsPage from "@/pages/SessionsPage";
 import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
 import ModelsPage from "@/pages/ModelsPage";
+import AgentsPage from "@/pages/AgentsPage";
 import CronPage from "@/pages/CronPage";
 import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
@@ -110,6 +112,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/sessions": SessionsPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
+  "/agents": AgentsPage,
   "/logs": LogsPage,
   "/cron": CronPage,
   "/skills": SkillsPage,
@@ -146,6 +149,11 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "models",
     label: "Models",
     icon: Cpu,
+  },
+  {
+    path: "/agents",
+    label: "Agents",
+    icon: Bot,
   },
   { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },

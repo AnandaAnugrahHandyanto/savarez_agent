@@ -99,6 +99,17 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
+  getManagedAgents: (days: number) =>
+    fetchJSON<ManagedAgentsResponse>(`/api/agents/managed?days=${days}`),
+  setManagedAgentModel: (agentId: string, body: UpdateAgentModelRequest) =>
+    fetchJSON<UpdateAgentModelResponse>(
+      `/api/agents/${encodeURIComponent(agentId)}/model`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
   saveConfig: (config: Record<string, unknown>) =>
     fetchJSON<{ ok: boolean }>("/api/config", {
       method: "PUT",
@@ -659,6 +670,92 @@ export interface ModelAssignmentResponse {
   model?: string;
   tasks?: string[];
   reset?: boolean;
+}
+
+// ── Managed Agent admin types ──────────────────────────────────────────
+
+export interface AgentUsageSummary {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  reasoning_tokens: number;
+  api_calls: number;
+  runs: number;
+  duration_seconds: number;
+  last_used_at: number | null;
+}
+
+export interface SubscriptionStatus {
+  provider: string;
+  workspace_id_redacted: string;
+  expires_at: string | null;
+  monthly_limit_usd: number | null;
+  usage_percent: number | null;
+  reset_at: string | null;
+  source: "live" | "cache" | "manual" | "unavailable";
+  error?: string | null;
+}
+
+export interface ManagedAgentEntry {
+  agent_id: string;
+  display_name: string;
+  role_summary: string;
+  runtime: string;
+  editable: boolean;
+  model_ref: string;
+  model: string;
+  provider: string;
+  status: string;
+  tools: string[];
+  permission: string;
+  usage: AgentUsageSummary;
+}
+
+export interface ManagedModelEntry {
+  model_ref: string;
+  provider: string;
+  model: string;
+  role: string;
+  status: string;
+  tokens_per_million: number | null;
+  notes: string;
+  subscription: SubscriptionStatus;
+  usage: AgentUsageSummary & {
+    estimated_cost?: number;
+    actual_cost?: number;
+    sessions?: number;
+  };
+}
+
+export interface ManagedAgentsResponse {
+  agents: ManagedAgentEntry[];
+  models: ManagedModelEntry[];
+  totals: {
+    period_days: number;
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens: number;
+    reasoning_tokens: number;
+    estimated_cost: number;
+    actual_cost: number;
+    sessions: number;
+    api_calls: number;
+    agent_attributed_events: number;
+    agent_unknown_events: number;
+  };
+}
+
+export interface UpdateAgentModelRequest {
+  model_ref: string;
+  allow_deprecated?: boolean;
+}
+
+export interface UpdateAgentModelResponse {
+  ok: boolean;
+  agent_id: string;
+  model_ref: string;
+  provider: string;
+  model: string;
 }
 
 // ── OAuth provider types ────────────────────────────────────────────────
