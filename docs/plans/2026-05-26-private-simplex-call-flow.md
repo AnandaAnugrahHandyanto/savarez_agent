@@ -18,6 +18,7 @@
 - `/call` works across authorized private messaging channels, including Telegram and SimpleX.
 - When `/call` is entered in Telegram, Hermes sends the browser room link back in Telegram.
 - When `/call` is entered in SimpleX, Hermes sends the browser room link back in SimpleX.
+- Browser room links are Tailnet-only for MVP. The URL must target a Tailscale-reachable host, and joining must require the caller's device to be on the same Tailnet.
 - Calls are private-only for MVP. Group/channel invocations fail loudly and do not mint links.
 - `/call browser` is an alias for `/call`.
 - `/call native` is explicit SimpleX-native only.
@@ -32,6 +33,7 @@
 - Multi-user rooms.
 - Native SimpleX call initiation from non-SimpleX channels, except a later explicit configured mapping such as `/call me`.
 - Public unauthenticated call links.
+- Tailscale Funnel or other public exposure for `/call` links.
 - Reusing dashboard auth for guest/mobile call access.
 - Guaranteeing SimpleX-native call compatibility before a proof-of-concept WebRTC endpoint validates signaling, encryption, media capture, and audio playback.
 
@@ -123,9 +125,9 @@ Example response:
 
 ```text
 Private call room ready:
-https://<private-host>/call/<opaque-token>
+https://<tailnet-host>/call/<opaque-token>
 
-This link expires in 10 minutes.
+This Tailnet-only link expires in 10 minutes.
 ```
 
 ### 3.2 `/call` in SimpleX DM
@@ -281,7 +283,7 @@ class BrowserRoomProvider(Protocol):
     async def end_room(self, room_id: str) -> None: ...
 ```
 
-Recommended provider: self-hosted LiveKit, privately exposed over Tailscale or another HTTPS endpoint reachable by mobile.
+Recommended provider: self-hosted LiveKit, privately exposed over Tailscale. The default MVP join URL must use a Tailscale host name or Tailnet IP, not a public hostname.
 
 Do not reuse dashboard auth. Call rooms need short-lived guest/mobile credentials scoped only to one room.
 
@@ -337,6 +339,10 @@ MVP rules:
 
 - Calls are private-only.
 - Browser links are sent back only in the channel where `/call` was authorized.
+- Browser links are Tailnet-only by default.
+- The room host must be reachable only from devices on the configured Tailscale Tailnet.
+- Tailscale Funnel, public reverse proxies, and public DNS endpoints are out of MVP unless explicitly enabled by a later config flag.
+- A user can receive a `/call` link in Telegram or SimpleX from outside the Tailnet, but joining the room must fail at the network boundary unless the device is on the Tailnet.
 - Browser room links must be short-lived.
 - Tokens bind to `platform`, `chat_id`, `user_id`, `call_id`, nonce, and expiry.
 - Store only token hashes server-side.
@@ -348,7 +354,7 @@ MVP rules:
 
 For browser media encryption:
 
-- Use HTTPS/WSS at minimum.
+- Use HTTPS/WSS at minimum, even on the Tailnet.
 - If LiveKit E2EE is enabled, keep the media key out of server logs and URLs seen by the HTTP server.
 - Hermes must access decrypted audio to transcribe/respond, so E2EE protects transport/SFU paths, not the local Hermes process.
 
@@ -364,7 +370,9 @@ Required reason codes:
 - `call_auth_denied`
 - `call_already_active`
 - `call_browser_provider_missing`
+- `call_tailnet_required`
 - `call_public_url_missing`
+- `call_public_exposure_disabled`
 - `call_room_create_failed`
 - `call_token_expired`
 - `call_join_auth_failed`
@@ -402,6 +410,7 @@ Deliver:
 - call manager;
 - private chat enforcement;
 - browser room provider interface;
+- Tailnet-only join URL enforcement;
 - token minting/verification;
 - Telegram and SimpleX outbound link delivery;
 - `/call status`;
@@ -457,6 +466,8 @@ Deliver:
 - private-chat enforcement rejects group/channel requests;
 - token creation binds platform/chat/user/call/expiry;
 - token verification rejects expired, replayed, or mismatched tokens;
+- browser room provider rejects public hostnames unless public exposure is explicitly enabled;
+- browser room provider requires a Tailnet host/Tailnet IP by default;
 - call manager enforces one active call per route;
 - call manager cleans expired sessions;
 - logs redact room URLs and tokens.
@@ -467,6 +478,7 @@ Deliver:
 - SimpleX DM `/call` sends a browser room link in SimpleX.
 - Telegram group `/call` fails with private-only message.
 - SimpleX group `/call` fails with private-only message.
+- `/call` fails loudly when the configured browser room URL is public and public exposure is disabled.
 - `/call status` reports idle, waiting, active, expired, and ended states.
 - `/call end` ends a current browser room.
 - provider misconfiguration returns a loud user-facing error.
@@ -483,6 +495,8 @@ Deliver:
 
 - Send `/call` in Telegram DM and join from mobile browser.
 - Send `/call` in SimpleX DM and join from mobile browser.
+- Verify the browser room link opens from a device on the Tailnet.
+- Verify the browser room link does not connect from a device outside the Tailnet.
 - Verify group/channel `/call` does not create a room.
 - Verify room link expires.
 - Verify logs contain reason codes and no raw JWT/link secrets.
@@ -493,8 +507,7 @@ Deliver:
 
 ## 10. Open Questions For Implementation Planning
 
-- Which private HTTPS endpoint should serve the browser room: existing dashboard host, a dedicated call subservice, or a LiveKit-hosted path behind Tailscale?
+- Which Tailnet HTTPS endpoint should serve the browser room: existing dashboard host on the Tailnet, a dedicated call subservice, or a LiveKit-hosted path behind Tailscale?
 - Which local STT/TTS stack should be enabled first on this Mac for low-latency calls?
 - Should Phase 1 use a stub room provider for tests before LiveKit is fully configured?
 - Is EC2 SSH inspection still needed to recover a missing SimpleX-native prototype, or should Hermes rebuild from current SimpleX source plus OpenClaw runtime concepts?
-
