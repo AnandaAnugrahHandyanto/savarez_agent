@@ -1183,6 +1183,21 @@ DEFAULT_CONFIG = {
         "show_token_analytics": False,
     },
 
+    # Free, opt-in observability baseline. Dependencies are only required
+    # when installing the `observability` extra; disabled installs no-op.
+    "observability": {
+        "enabled": False,
+        "service": "hermes-agent",
+        "env": "local",
+        "version": "",
+        "otlp_endpoint": "http://localhost:4317",
+        "posthog_host": "https://us.i.posthog.com",
+        "posthog_project_api_key": "",
+        "analytics_enabled": False,
+        "tracing_enabled": False,
+        "structured_json_logs": False,
+    },
+
     # Privacy settings
     "privacy": {
         "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context

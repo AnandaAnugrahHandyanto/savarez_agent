@@ -402,6 +402,22 @@ def run_conversation(
         agent.platform or "unknown", len(conversation_history or []),
         _msg_preview,
     )
+    try:
+        from agent.observability import track
+        track(
+            "agent_turn_started",
+            user_id=agent.session_id or None,
+            properties={
+                "session_id": agent.session_id,
+                "model": agent.model,
+                "provider": agent.provider or "unknown",
+                "platform": agent.platform or "unknown",
+                "history_count": len(conversation_history or []),
+            },
+            source="agent",
+        )
+    except Exception:
+        pass
 
     # Initialize conversation (copy to avoid mutating the caller's list)
     messages = list(conversation_history) if conversation_history else []
@@ -1176,6 +1192,22 @@ def run_conversation(
                     response = agent._interruptible_api_call(api_kwargs)
                 
                 api_duration = time.time() - api_start_time
+                try:
+                    from agent.observability import track
+                    track(
+                        "llm_call_completed",
+                        user_id=agent.session_id or None,
+                        properties={
+                            "session_id": agent.session_id,
+                            "api_call_count": api_call_count,
+                            "model": agent.model,
+                            "provider": agent.provider or "unknown",
+                            "duration_ms": int(api_duration * 1000),
+                        },
+                        source="agent",
+                    )
+                except Exception:
+                    pass
                 
                 # Stop thinking spinner silently -- the response box or tool
                 # execution messages that follow are more informative.
@@ -3953,6 +3985,22 @@ def run_conversation(
             # recover the call site.  logger.exception() includes the
             # traceback automatically and emits at ERROR.
             logger.exception("Outer loop error in API call #%d", api_call_count)
+            try:
+                from agent.observability import track
+                track(
+                    "api_error",
+                    user_id=agent.session_id or None,
+                    properties={
+                        "session_id": agent.session_id,
+                        "api_call_count": api_call_count,
+                        "model": agent.model,
+                        "provider": agent.provider or "unknown",
+                        "error": type(e).__name__,
+                    },
+                    source="agent",
+                )
+            except Exception:
+                pass
             
             # If an assistant message with tool_calls was already appended,
             # the API expects a role="tool" result for every tool_call_id.
@@ -4298,6 +4346,29 @@ def run_conversation(
         )
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)
+
+    try:
+        from agent.observability import track
+        track(
+            "agent_turn_completed",
+            user_id=agent.session_id or None,
+            properties={
+                "session_id": agent.session_id,
+                "model": agent.model,
+                "provider": agent.provider or "unknown",
+                "api_calls": api_call_count,
+                "completed": completed,
+                "failed": failed,
+                "interrupted": interrupted,
+                "turn_exit_reason": _turn_exit_reason,
+                "input_tokens": agent.session_input_tokens,
+                "output_tokens": agent.session_output_tokens,
+                "total_tokens": agent.session_total_tokens,
+            },
+            source="agent",
+        )
+    except Exception:
+        pass
 
     return result
 

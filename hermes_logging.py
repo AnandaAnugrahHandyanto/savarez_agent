@@ -24,6 +24,7 @@ Session context:
 """
 
 import logging
+import json
 import os
 import threading
 from logging.handlers import RotatingFileHandler
@@ -78,6 +79,28 @@ def set_session_context(session_id: str) -> None:
     _session_context.session_id = session_id
 
 
+def set_observability_context(
+    *,
+    request_id: Optional[str] = None,
+    correlation_id: Optional[str] = None,
+    event_id: Optional[str] = None,
+) -> None:
+    """Set per-thread request/event context for structured logs."""
+    if request_id is not None:
+        _session_context.request_id = request_id
+    if correlation_id is not None:
+        _session_context.correlation_id = correlation_id
+    if event_id is not None:
+        _session_context.event_id = event_id
+
+
+def clear_observability_context() -> None:
+    """Clear per-thread request/event context."""
+    _session_context.request_id = ""
+    _session_context.correlation_id = ""
+    _session_context.event_id = ""
+
+
 def clear_session_context() -> None:
     """Clear the session ID for the current thread."""
     _session_context.session_id = None
@@ -101,16 +124,27 @@ def _install_session_record_factory() -> None:
     the module is reloaded.
     """
     current_factory = logging.getLogRecordFactory()
-    if getattr(current_factory, "_hermes_session_injector", False):
+    if getattr(current_factory, "_hermes_observability_injector", False):
         return  # already installed
 
     def _session_record_factory(*args, **kwargs):
         record = current_factory(*args, **kwargs)
         sid = getattr(_session_context, "session_id", None)
         record.session_tag = f" [{sid}]" if sid else ""  # type: ignore[attr-defined]
+        record.request_id = getattr(_session_context, "request_id", "") or getattr(record, "request_id", "")  # type: ignore[attr-defined]
+        record.correlation_id = getattr(_session_context, "correlation_id", "") or getattr(record, "correlation_id", "")  # type: ignore[attr-defined]
+        record.event_id = getattr(_session_context, "event_id", "") or getattr(record, "event_id", "")  # type: ignore[attr-defined]
+        try:
+            from agent.observability import current_trace_ids
+            trace_id, span_id = current_trace_ids()
+        except Exception:
+            trace_id, span_id = "", ""
+        record.trace_id = trace_id or getattr(record, "trace_id", "")  # type: ignore[attr-defined]
+        record.span_id = span_id or getattr(record, "span_id", "")  # type: ignore[attr-defined]
         return record
 
     _session_record_factory._hermes_session_injector = True  # type: ignore[attr-defined]
+    _session_record_factory._hermes_observability_injector = True  # type: ignore[attr-defined]
     logging.setLogRecordFactory(_session_record_factory)
 
 
@@ -201,6 +235,7 @@ def setup_logging(
 
     # Read config defaults (best-effort — config may not be loaded yet).
     cfg_level, cfg_max_size, cfg_backup = _read_logging_config()
+    cfg_json_logs = _read_observability_config()
 
     level_name = (log_level or cfg_level or "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
@@ -209,6 +244,7 @@ def setup_logging(
 
     # Lazy import to avoid circular dependency at module load time.
     from agent.redact import RedactingFormatter
+    formatter = _JsonRedactingFormatter() if cfg_json_logs else RedactingFormatter(_LOG_FORMAT)
 
     root = logging.getLogger()
 
@@ -219,7 +255,7 @@ def setup_logging(
         level=level,
         max_bytes=max_bytes,
         backup_count=backups,
-        formatter=RedactingFormatter(_LOG_FORMAT),
+        formatter=formatter,
     )
 
     # --- errors.log (WARNING+) — quick triage log --------------------------
@@ -229,7 +265,7 @@ def setup_logging(
         level=logging.WARNING,
         max_bytes=2 * 1024 * 1024,
         backup_count=2,
-        formatter=RedactingFormatter(_LOG_FORMAT),
+        formatter=formatter,
     )
 
     # --- gateway.log (INFO+, gateway component only) ------------------------
@@ -240,7 +276,7 @@ def setup_logging(
             level=logging.INFO,
             max_bytes=5 * 1024 * 1024,
             backup_count=3,
-            formatter=RedactingFormatter(_LOG_FORMAT),
+            formatter=formatter,
             log_filter=_ComponentFilter(COMPONENT_PREFIXES["gateway"]),
         )
 
@@ -327,6 +363,29 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         self._chmod_if_managed()
 
 
+class _JsonRedactingFormatter(logging.Formatter):
+    """JSON log formatter carrying trace and request context."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        from agent.redact import redact_sensitive_text
+
+        payload = {
+            "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
+            "level": record.levelname,
+            "msg": record.getMessage(),
+            "service": "hermes-agent",
+            "logger": record.name,
+            "trace_id": getattr(record, "trace_id", "") or "",
+            "span_id": getattr(record, "span_id", "") or "",
+            "request_id": getattr(record, "request_id", "") or "",
+            "correlation_id": getattr(record, "correlation_id", "") or "",
+            "event_id": getattr(record, "event_id", "") or "",
+        }
+        if record.exc_info:
+            payload["exc_info"] = self.formatException(record.exc_info)
+        return redact_sensitive_text(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+
 def _add_rotating_handler(
     logger: logging.Logger,
     path: Path,
@@ -387,3 +446,22 @@ def _read_logging_config():
     except Exception:
         pass
     return (None, None, None)
+
+
+def _read_observability_config():
+    """Best-effort read of observability-specific logging flags from config.yaml.
+
+    Returns ``structured_json_logs`` if configured, else ``None``.
+    """
+    try:
+        import yaml
+        config_path = get_config_path()
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            obs_cfg = cfg.get("observability", {})
+            if isinstance(obs_cfg, dict):
+                return obs_cfg.get("structured_json_logs")
+    except Exception:
+        pass
+    return None

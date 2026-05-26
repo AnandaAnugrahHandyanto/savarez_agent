@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -79,6 +80,11 @@ WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.enviro
 _log = logging.getLogger(__name__)
 
 app = FastAPI(title="Hermes Agent", version=__version__)
+try:
+    from agent.observability import init_observability
+    init_observability(app)
+except Exception:
+    pass
 
 # ---------------------------------------------------------------------------
 # Session token for protecting sensitive endpoints (reveal).
@@ -115,6 +121,7 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 _PUBLIC_API_PATHS: frozenset = frozenset({
     "/api/status",
+    "/api/observability/config",
     "/api/config/defaults",
     "/api/config/schema",
     "/api/model/info",
@@ -245,6 +252,68 @@ async def auth_middleware(request: Request, call_next):
                 content={"detail": "Unauthorized"},
             )
     return await call_next(request)
+
+
+@app.middleware("http")
+async def observability_middleware(request: Request, call_next):
+    """Attach request/trace headers and emit baseline dashboard API events."""
+    from agent import observability as obs
+    from hermes_logging import clear_observability_context, set_observability_context
+
+    request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+    correlation_id = request.headers.get("x-correlation-id") or request_id
+    set_observability_context(request_id=request_id, correlation_id=correlation_id)
+    request.state.request_id = request_id
+    request.state.correlation_id = correlation_id
+
+    path = request.url.path
+    started = time.monotonic()
+    try:
+        with obs.span(
+            f"{request.method} {path}",
+            {
+                "http.request.method": request.method,
+                "url.path": path,
+                "request.id": request_id,
+                "correlation.id": correlation_id,
+            },
+        ):
+            response = await call_next(request)
+    except Exception as exc:
+        trace_id, _span_id = obs.current_trace_ids()
+        obs.track(
+            "dashboard_api_error",
+            properties={
+                "method": request.method,
+                "path": path,
+                "request_id": request_id,
+                "correlation_id": correlation_id,
+                "error": type(exc).__name__,
+            },
+            source="dashboard",
+        )
+        clear_observability_context()
+        raise
+
+    trace_id, _span_id = obs.current_trace_ids()
+    response.headers["X-Request-Id"] = request_id
+    response.headers["X-Trace-Id"] = trace_id or request_id.replace("-", "")
+    if path.startswith("/api/"):
+        duration_ms = int((time.monotonic() - started) * 1000)
+        props = {
+            "method": request.method,
+            "path": path,
+            "status_code": response.status_code,
+            "duration_ms": duration_ms,
+            "request_id": request_id,
+            "correlation_id": correlation_id,
+        }
+        if response.status_code >= 400:
+            obs.track("dashboard_api_error", properties=props, source="dashboard")
+        else:
+            obs.track("dashboard_api_request", properties=props, source="dashboard")
+    clear_observability_context()
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -641,6 +710,13 @@ async def get_status():
     }
 
 
+@app.get("/api/observability/config")
+async def get_observability_config():
+    from agent.observability import public_dashboard_config
+
+    return public_dashboard_config()
+
+
 # ---------------------------------------------------------------------------
 # Gateway + update actions (invoked from the Status page).
 #
@@ -717,11 +793,14 @@ def _tail_lines(path: Path, n: int) -> List[str]:
 @app.post("/api/gateway/restart")
 async def restart_gateway():
     """Kick off a ``hermes gateway restart`` in the background."""
+    from agent.observability import track
+
     try:
         proc = _spawn_hermes_action(["gateway", "restart"], "gateway-restart")
     except Exception as exc:
         _log.exception("Failed to spawn gateway restart")
         raise HTTPException(status_code=500, detail=f"Failed to restart gateway: {exc}")
+    track("gateway_restart_requested", properties={"pid": proc.pid}, source="dashboard")
     return {
         "ok": True,
         "pid": proc.pid,
@@ -732,11 +811,14 @@ async def restart_gateway():
 @app.post("/api/hermes/update")
 async def update_hermes():
     """Kick off ``hermes update`` in the background."""
+    from agent.observability import track
+
     try:
         proc = _spawn_hermes_action(["update"], "hermes-update")
     except Exception as exc:
         _log.exception("Failed to spawn hermes update")
         raise HTTPException(status_code=500, detail=f"Failed to start update: {exc}")
+    track("hermes_update_requested", properties={"pid": proc.pid}, source="dashboard")
     return {
         "ok": True,
         "pid": proc.pid,
@@ -1085,6 +1167,8 @@ async def set_model_assignment(body: ModelAssignment):
                 model_cfg.pop("context_length", None)
             cfg["model"] = model_cfg
             save_config(cfg)
+            from agent.observability import track
+            track("model_set", properties={"scope": "main", "provider": provider, "model": model}, source="dashboard")
             return {"ok": True, "scope": "main", "provider": provider, "model": model}
 
         # scope == "auxiliary"
@@ -1103,6 +1187,8 @@ async def set_model_assignment(body: ModelAssignment):
                 aux[slot] = slot_cfg
             cfg["auxiliary"] = aux
             save_config(cfg)
+            from agent.observability import track
+            track("model_set", properties={"scope": "auxiliary", "reset": True}, source="dashboard")
             return {"ok": True, "scope": "auxiliary", "reset": True}
 
         if not provider:
@@ -1121,6 +1207,12 @@ async def set_model_assignment(body: ModelAssignment):
 
         cfg["auxiliary"] = aux
         save_config(cfg)
+        from agent.observability import track
+        track(
+            "model_set",
+            properties={"scope": "auxiliary", "tasks": targets, "provider": provider, "model": model},
+            source="dashboard",
+        )
         return {
             "ok": True,
             "scope": "auxiliary",
@@ -1193,6 +1285,8 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
 async def update_config(body: ConfigUpdate):
     try:
         save_config(_denormalize_config_from_web(body.config))
+        from agent.observability import track
+        track("config_saved", properties={"mode": "structured"}, source="dashboard")
         return {"ok": True}
     except Exception:
         _log.exception("PUT /api/config failed")
@@ -2508,6 +2602,8 @@ async def delete_session_endpoint(session_id: str):
     try:
         if not db.delete_session(session_id):
             raise HTTPException(status_code=404, detail="Session not found")
+        from agent.observability import track
+        track("session_deleted", properties={"session_id": session_id}, source="dashboard")
         return {"ok": True}
     finally:
         db.close()
@@ -3115,6 +3211,8 @@ async def update_config_raw(body: RawConfigUpdate):
         if not isinstance(parsed, dict):
             raise HTTPException(status_code=400, detail="YAML must be a mapping")
         save_config(parsed)
+        from agent.observability import track
+        track("config_saved", properties={"mode": "raw_yaml"}, source="dashboard")
         return {"ok": True}
     except yaml.YAMLError as e:
         raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
@@ -4454,6 +4552,8 @@ async def post_agent_plugin_enable(request: Request, name: str):
     result = dashboard_set_agent_plugin_enabled(name, enabled=True)
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error") or "Enable failed.")
+    from agent.observability import track
+    track("plugin_enabled", properties={"name": name}, source="dashboard")
     return result
 
 
@@ -4466,6 +4566,8 @@ async def post_agent_plugin_disable(request: Request, name: str):
     result = dashboard_set_agent_plugin_enabled(name, enabled=False)
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error") or "Disable failed.")
+    from agent.observability import track
+    track("plugin_disabled", properties={"name": name}, source="dashboard")
     return result
 
 

@@ -18,6 +18,7 @@ export const HERMES_BASE_PATH = readBasePath();
 const BASE = HERMES_BASE_PATH;
 
 import type { DashboardTheme } from "@/themes/types";
+import { analytics } from "@/lib/analytics";
 
 // Ephemeral session token for protected endpoints.
 // Injected into index.html by the server — never fetched via API.
@@ -29,6 +30,7 @@ declare global {
 }
 let _sessionToken: string | null = null;
 const SESSION_HEADER = "X-Hermes-Session-Token";
+const REQUEST_HEADER = "X-Request-Id";
 
 function setSessionHeader(headers: Headers, token: string): void {
   if (!headers.has(SESSION_HEADER)) {
@@ -39,13 +41,27 @@ function setSessionHeader(headers: Headers, token: string): void {
 export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
   // Inject the session token into all /api/ requests.
   const headers = new Headers(init?.headers);
+  const requestId =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  if (!headers.has(REQUEST_HEADER)) {
+    headers.set(REQUEST_HEADER, requestId);
+  }
   const token = window.__HERMES_SESSION_TOKEN__;
   if (token) {
     setSessionHeader(headers, token);
   }
   const res = await fetch(`${BASE}${url}`, { ...init, headers });
+  analytics.rememberResponse(res);
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
+    analytics.track("dashboard_api_error", {
+      url,
+      status: res.status,
+      request_id: res.headers.get("X-Request-Id") || requestId,
+      trace_id: res.headers.get("X-Trace-Id") || "",
+    });
     throw new Error(`${res.status}: ${text}`);
   }
   return res.json();

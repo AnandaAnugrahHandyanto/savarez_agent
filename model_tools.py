@@ -845,6 +845,22 @@ def handle_function_call(
                 user_task=user_task,
             )
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
+        try:
+            from agent.observability import track
+            track(
+                "tool_used",
+                user_id=session_id or None,
+                properties={
+                    "tool_name": function_name,
+                    "task_id": task_id or "",
+                    "session_id": session_id or "",
+                    "tool_call_id": tool_call_id or "",
+                    "duration_ms": duration_ms,
+                },
+                source="agent",
+            )
+        except Exception:
+            pass
 
         try:
             from hermes_cli.plugins import invoke_hook
