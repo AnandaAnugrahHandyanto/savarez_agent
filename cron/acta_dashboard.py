@@ -35,7 +35,7 @@ from cron.html_publish import HtmlArtifactPublishError, publish_html_artifact
 
 INTERACTIVE_HTML_CSP = (
     "default-src 'none'; img-src data: https:; style-src 'unsafe-inline'; "
-    "script-src 'none'; frame-src data:; child-src data:; object-src 'none'; "
+    "script-src 'none'; frame-src 'self'; child-src 'self'; object-src 'none'; "
     "base-uri 'none'; form-action 'none'"
 )
 
@@ -149,15 +149,18 @@ def _outputs_read_state_script() -> str:
     document.querySelectorAll('.output-row.readable').forEach(function(row){ if(!row.classList.contains('read')) unread++; });
     document.querySelectorAll('[data-unread-count]').forEach(function(el){ el.textContent=String(unread); el.dataset.unreadCount=String(unread); });
   }
+  function applyReadKey(k){
+    document.querySelectorAll('.readable[data-read-key]').forEach(function(node){ if((node.dataset.readKey||'')===k) apply(node); });
+  }
   function setRead(el, value){
     var k=el.dataset.readKey || '';
     if(!k) return;
     state[k]=!!value;
     save();
-    apply(el);
+    applyReadKey(k);
     updateUnreadCount();
   }
-  document.querySelectorAll('.output-row.readable').forEach(function(el){
+  document.querySelectorAll('.readable[data-read-key]').forEach(function(el){
     apply(el);
     el.querySelectorAll('.read-toggle').forEach(function(button){
       button.addEventListener('click', function(ev){
@@ -166,7 +169,7 @@ def _outputs_read_state_script() -> str:
         setRead(el, el.classList.contains('read') ? false : true);
       });
     });
-    el.querySelectorAll('.output-open-overlay').forEach(function(anchor){
+    el.querySelectorAll('.output-open-overlay,.latest-open').forEach(function(anchor){
       anchor.addEventListener('click', function(){
         setRead(el, true);
       });
@@ -2033,16 +2036,18 @@ def render_catalog_outputs_page(
         latest_dt = _parse_iso_datetime(latest_item.updated_at) or _parse_iso_datetime(latest_item.created_at)
         latest_age = _age_label(latest_dt, now) if latest_dt else "catalog"
         latest_source = Path(latest_item.source_name).name or "catalog"
+        latest_read_key = f"output:{latest_item.id}"
         latest_state = "READ" if latest_item.read else "UNREAD"
+        latest_read_class = "read" if latest_item.read else "unread"
         latest_pinned = "<span>PINNED</span>" if latest_item.pinned else ""
         latest_callout = f"""
-  <section class="latest-artifact">
+  <section class="latest-artifact readable {latest_read_class}" data-read-key="{html.escape(latest_read_key, quote=True)}" data-read-initial="{str(bool(latest_item.read)).lower()}" data-read-title="{html.escape(latest_item.title, quote=True)}">
     <div>
       <span class="latest-label">LATEST ARTIFACT</span>
       <strong>{_safe_text(latest_item.title)}</strong>
-      <div class="output-meta"><span>{_safe_text(latest_age)}</span><span>SOURCE {_safe_text(latest_source)}</span><span>ID {_safe_text(latest_item.id)}</span><span>{latest_state}</span>{latest_pinned}</div>
+      <div class="output-meta"><span class="read-state">{latest_state}</span><span>{_safe_text(latest_age)}</span><span>SOURCE {_safe_text(latest_source)}</span><span>ID {_safe_text(latest_item.id)}</span>{latest_pinned}</div>
     </div>
-    <a href="{html.escape(latest_href, quote=True)}">Open latest artifact</a>
+    <a class="latest-open" href="{html.escape(latest_href, quote=True)}">Open latest artifact</a>
   </section>"""
     for index, item in enumerate(outputs, start=1):
         href = _catalog_output_open_href(item, local_artifact_base)
@@ -2311,7 +2316,7 @@ def _interactive_redacted_placeholder() -> str:
 
 
 def _inject_interactive_iframe_csp(raw: str) -> str:
-    """Add an inner CSP to the embedded artifact before base64/data iframe delivery."""
+    """Add an inner CSP to the embedded artifact before sandboxed iframe delivery."""
     meta = f'<meta http-equiv="Content-Security-Policy" content="{html.escape(INTERACTIVE_IFRAME_CSP, quote=True)}">'
     if re.search(r"<meta\b[^>]+http-equiv=[\"']?Content-Security-Policy", raw, flags=re.IGNORECASE):
         raw = re.sub(r"<meta\b[^>]+http-equiv=[\"']?Content-Security-Policy[\s\S]*?>", "", raw, flags=re.IGNORECASE)
@@ -2330,7 +2335,7 @@ def render_interactive_html_detail_report(
 ) -> str:
     """Wrap a standalone interactive HTML artifact in Acta chrome without flattening it.
 
-    The artifact runs in a sandboxed data-URL iframe so its own buttons/tabs/scripts
+    The artifact runs in a sandboxed srcdoc iframe so its own buttons/tabs/scripts
     survive, while Acta still owns the outer shell, provenance, nav, and CSP boundary.
     """
     if isinstance(metadata, Mapping):
@@ -2342,7 +2347,7 @@ def render_interactive_html_detail_report(
     run_time = str(meta.run_time or datetime.now(timezone.utc).isoformat())
     source_filename = str(meta.source_filename or "")
     safe_source = _redact_interactive_html_source(source_html)
-    frame_src = "data:text/html;base64," + base64.b64encode(safe_source.encode("utf-8", errors="replace")).decode("ascii")
+    frame_srcdoc = html.escape(safe_source, quote=True)
     footer_bits = [
         f"<span><b>JOB</b> {html.escape(job_id)}</span>",
         f"<span><b>RUN</b> {html.escape(run_time)}</span>",
@@ -2371,7 +2376,7 @@ def render_interactive_html_detail_report(
 <title>{html.escape(title)} · Acta Interactive Output</title>
 <style>{_acta_page_css()}
 .interactive-frame-card {{ margin-top:18px; border:1px solid rgba(255,255,255,.12); border-radius:24px; overflow:hidden; background:#03060b; box-shadow:0 24px 80px rgba(0,0,0,.34); }}
-.interactive-frame {{ display:block; width:100%; min-height:72vh; border:0; background:#03060b; }}
+.interactive-frame {{ display:block; width:100%; min-height:72vh; border:0; background:#03060b; color-scheme:dark; }}
 .interactive-note {{ margin:12px 0 0; color:var(--muted); font:520 12px/1.4 var(--ui); letter-spacing:.02em; }}
 @media (max-width:700px) {{ .interactive-frame-card {{ border-radius:18px; margin-left:-4px; margin-right:-4px; }} .interactive-frame {{ min-height:76vh; }} }}
 </style>
@@ -2385,7 +2390,7 @@ def render_interactive_html_detail_report(
     <div class="meta">{''.join(footer_bits)}</div>
     <p class="interactive-note">Interactive Hermes/Acta output preserved inside the current Acta shell.</p>
     <div class="interactive-frame-card">
-      <iframe class="interactive-frame" title="{html.escape(title, quote=True)} interactive output" sandbox="allow-scripts" src="{frame_src}"></iframe>
+      <iframe class="interactive-frame" title="{html.escape(title, quote=True)} interactive output" sandbox="allow-scripts" srcdoc="{frame_srcdoc}"></iframe>
     </div>
   </section>
   <footer>Signed Acta interactive detail. Outer shell is Acta; embedded artifact keeps its own controls.</footer>

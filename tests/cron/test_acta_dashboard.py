@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import html
 import json
 import re
 import subprocess
@@ -37,9 +38,9 @@ from cron.acta_dashboard import (
 
 
 def _interactive_frame_source(rendered: str) -> str:
-    match = re.search(r'<iframe[^>]+\ssrc="data:text/html;base64,([^"]+)"', rendered)
+    match = re.search(r'<iframe[^>]+\ssrcdoc="([^"]*)"', rendered)
     assert match, rendered
-    return base64.b64decode(match.group(1)).decode("utf-8")
+    return html.unescape(match.group(1))
 
 
 def test_collects_latest_cron_outputs_from_response_section(tmp_path: Path):
@@ -125,7 +126,7 @@ def test_interactive_html_detail_report_preserves_controls_inside_acta_shell():
     assert "ACTA</em> / INTERACTIVE" in html
     assert "Interactive Hermes/Acta output preserved" in html
     assert "sandbox=\"allow-scripts" in html
-    assert "src=\"data:text/html;base64," in html
+    assert "srcdoc=" in html
     frame_source = _interactive_frame_source(html)
     assert '<button id="run-lane">Run specialist lane</button>' in frame_source
     assert "document.getElementById('run-lane').onclick" in frame_source
@@ -143,7 +144,7 @@ def test_interactive_html_detail_report_uses_strict_outer_csp_and_sandbox():
     csp = csp_match.group(1)
     assert "script-src 'none'" in csp
     assert "script-src 'unsafe-inline'" not in csp
-    assert "frame-src data:" in csp
+    assert "frame-src 'self'" in csp
     frame_source = _interactive_frame_source(html).replace("&#x27;", "'")
     assert "connect-src 'none'" in frame_source
     assert "form-action 'none'" in frame_source
@@ -2278,7 +2279,9 @@ def test_outputs_page_uses_v9_shell_and_signed_source_rows():
     assert '<span class="read-state">UNREAD</span>' in html
     assert '<div class="stat">Unread <b data-unread-count="1">1</b></div>' in html
     assert "document.querySelectorAll('.output-row.readable')" in html
-    assert "el.querySelectorAll('.output-open-overlay')" in html
+    assert "function applyReadKey(k)" in html
+    assert "document.querySelectorAll('.readable[data-read-key]')" in html
+    assert "el.querySelectorAll('.output-open-overlay,.latest-open')" in html
     assert "setRead(el, true);" in html
     assert "script-src 'sha256-" in html
     assert "script-src 'unsafe-inline'" not in html
@@ -2705,18 +2708,21 @@ def test_catalog_outputs_latest_callout_chooses_newest_safe_not_unsafe():
     ]
 
     html = render_catalog_outputs_page(catalog_items, generated_at=datetime(2026, 5, 24, 17, tzinfo=timezone.utc))
-    match = re.search(r"<section class=\"latest-artifact\">.*?</section>", html, re.S)
+    match = re.search(r"<section class=\"latest-artifact[^\"]*\"[^>]*>.*?</section>", html, re.S)
     assert match is not None
     callout = match.group(0)
 
     assert "LATEST ARTIFACT" in callout
     assert "Open latest artifact" in callout
     assert "Older Safe Artifact" in callout
-    assert 'href="/outputs/older-safe"' in callout
+    assert 'class="latest-open" href="/outputs/older-safe"' in callout
+    assert 'data-read-key="output:older-safe"' in callout
+    assert 'data-read-initial="true"' in callout
+    assert 'data-read-title="Older Safe Artifact"' in callout
+    assert '<span class="read-state">READ</span>' in callout
     assert "60m ago" in callout
     assert "SOURCE older-safe.html" in callout
     assert "ID older-safe" in callout
-    assert "READ" in callout
     assert "PINNED" in callout
     assert "Newest Unsafe" not in callout
     assert "javascript:alert" not in html
@@ -2823,15 +2829,18 @@ def test_catalog_outputs_latest_callout_local_artifact_base_uses_safe_relative_f
         generated_at=datetime(2026, 5, 24, 17, tzinfo=timezone.utc),
         local_artifact_base="../../../artifacts/acta-outputs",
     )
-    match = re.search(r"<section class=\"latest-artifact\">.*?</section>", html, re.S)
+    match = re.search(r"<section class=\"latest-artifact[^\"]*\"[^>]*>.*?</section>", html, re.S)
     assert match is not None
     callout = match.group(0)
 
     assert "Decision Tree" in callout
-    assert 'href="../../../artifacts/acta-outputs/decision-tree.html"' in callout
+    assert 'class="latest-open" href="../../../artifacts/acta-outputs/decision-tree.html"' in callout
+    assert 'data-read-key="output:decision-tree"' in callout
+    assert 'data-read-initial="false"' in callout
+    assert 'data-read-title="Decision Tree"' in callout
+    assert '<span class="read-state">UNREAD</span>' in callout
     assert "SOURCE decision-tree.html" in callout
     assert "ID decision-tree" in callout
-    assert "UNREAD" in callout
     assert "../../../artifacts/acta-outputs/%2e%2e%2fsecret.html" not in html
     assert 'href="/outputs/encoded-traversal"' in html
 
@@ -3007,7 +3016,9 @@ def test_run_history_published_rows_open_signed_detail_without_prompt_or_path_le
     assert re.search(r'<span class="read-state">UNREAD</span><span class="confidence-chip">[^<]+</span>', html)
     assert '<div class="stat">Unread <b data-unread-count="1">1</b></div>' in html
     assert "document.querySelectorAll('.output-row.readable')" in html
-    assert "el.querySelectorAll('.output-open-overlay')" in html
+    assert "function applyReadKey(k)" in html
+    assert "document.querySelectorAll('.readable[data-read-key]')" in html
+    assert "el.querySelectorAll('.output-open-overlay,.latest-open')" in html
     assert "setRead(el, true);" in html
     assert "script-src 'sha256-" in html
     assert "script-src 'unsafe-inline'" not in html
