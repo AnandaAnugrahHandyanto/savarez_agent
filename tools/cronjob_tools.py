@@ -586,6 +586,12 @@ def cronjob(
         if normalized in {"directive_set", "set_directive"}:
             if not directive_text:
                 return tool_error("directive_text is required for directive_set", success=False)
+            if job.get("no_agent"):
+                return tool_error(
+                    "directive_set is not supported for no_agent jobs because "
+                    "operator directives require an agent runtime.",
+                    success=False,
+                )
             directive = create_operator_directive(
                 job_id,
                 directive_text,

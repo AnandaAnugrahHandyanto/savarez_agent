@@ -1,4 +1,7 @@
 import json
+import sys
+import types
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -11,7 +14,7 @@ from cron.jobs import (
     create_operator_directive,
     list_directive_events,
 )
-from cron.scheduler import _build_job_prompt
+from cron.scheduler import _build_job_prompt, run_job
 
 
 @pytest.fixture(autouse=True)
@@ -69,6 +72,27 @@ def test_consumed_directive_cannot_be_reused_by_id():
         )
 
     assert "not pending" in str(exc.value)
+
+
+def test_concurrent_consumers_cannot_both_consume():
+    directive = create_operator_directive("job-a", "Do the named slice.", "operator-test", ttl_seconds=600)
+
+    def consume_once(run_id):
+        return consume_operator_directive_for_run("job-a", run_id)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(consume_once, ["cron_job-a_1", "cron_job-a_2"]))
+
+    consumed = [result for result in results if result is not None]
+    misses = [result for result in results if result is None]
+    assert len(consumed) == 1
+    assert len(misses) == 1
+    assert consumed[0]["directive_id"] == directive["directive_id"]
+    assert consumed[0]["status"] == "consumed"
+
+    events = list_directive_events(job_id="job-a", event_type="consumed")
+    assert len(events) == 1
+    assert events[0]["directive_id"] == directive["directive_id"]
 
 
 def test_expired_directive_fails_closed():
@@ -166,6 +190,73 @@ def test_supervised_directive_forces_prompt_when_script_output_empty():
     assert autonomous is None
     assert supervised is not None
     assert "Run the operator-named slice anyway." in supervised
+
+
+def test_consumed_directive_prompt_assembly_failure_audited_once(monkeypatch):
+    directive = create_operator_directive("job-a", "Do the named slice.", "operator-test", ttl_seconds=600)
+    monkeypatch.setitem(
+        sys.modules,
+        "run_agent",
+        types.SimpleNamespace(AIAgent=object),
+    )
+
+    def fail_build(*args, **kwargs):
+        raise RuntimeError("prompt assembly exploded")
+
+    monkeypatch.setattr("cron.scheduler._build_job_prompt", fail_build)
+
+    success, output, final_response, error = run_job(_job())
+
+    assert success is False
+    assert final_response == ""
+    assert "prompt assembly exploded" in error
+    assert "prompt assembly exploded" in output
+    events = list_directive_events(job_id="job-a", event_type="consumed-but-runner-failed")
+    assert len(events) == 1
+    assert events[0]["directive_id"] == directive["directive_id"]
+
+
+def test_consumed_directive_prerun_script_failure_audited_once(monkeypatch):
+    directive = create_operator_directive("job-a", "Do the named slice.", "operator-test", ttl_seconds=600)
+    monkeypatch.setitem(
+        sys.modules,
+        "run_agent",
+        types.SimpleNamespace(AIAgent=object),
+    )
+
+    def fail_script(*args, **kwargs):
+        raise RuntimeError("pre-run script exploded")
+
+    monkeypatch.setattr("cron.scheduler._run_job_script", fail_script)
+
+    success, output, final_response, error = run_job({**_job(), "script": "noop.py"})
+
+    assert success is False
+    assert final_response == ""
+    assert "pre-run script exploded" in error
+    assert "pre-run script exploded" in output
+    events = list_directive_events(job_id="job-a", event_type="consumed-but-runner-failed")
+    assert len(events) == 1
+    assert events[0]["directive_id"] == directive["directive_id"]
+
+
+def test_no_agent_job_with_manual_directive_fails_closed_before_script(monkeypatch):
+    directive = create_operator_directive("job-a", "Do the named slice.", "operator-test", ttl_seconds=600)
+
+    def script_should_not_run(*args, **kwargs):
+        raise AssertionError("no_agent script should not run when directive is present")
+
+    monkeypatch.setattr("cron.scheduler._run_job_script", script_should_not_run)
+    success, output, final_response, error = run_job({**_job(), "no_agent": True, "script": "noop.py"})
+
+    assert success is False
+    assert final_response == ""
+    assert "no_agent jobs cannot consume directives" in error
+    assert "BLOCKED" in output
+    events = list_directive_events(job_id="job-a", event_type="invalid")
+    assert len(events) == 1
+    assert events[0]["directive_id"] == directive["directive_id"]
+    assert events[0]["context"]["reason"] == "no_agent_jobs_do_not_support_operator_directives"
 
 
 def test_atomic_append_event_file_is_writable(_cron_paths):

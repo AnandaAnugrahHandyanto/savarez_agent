@@ -621,6 +621,56 @@ def consume_operator_directive_for_run(
     return consumed
 
 
+def reject_operator_directive_for_no_agent(job_id: str, run_id: str) -> Optional[Dict[str, Any]]:
+    """Fail closed when a directive exists for a no_agent job.
+
+    Operator directives require an agent runtime so there is nowhere safe to
+    inject directive_text for no_agent script-only jobs. If a directive was
+    written manually or by an older tool version, mark it invalid before the
+    script can run.
+    """
+    canonical_job_id = str(job_id or "").strip()
+    with _directive_store_lock():
+        store = _load_directive_store_unlocked()
+        directive = _latest_unconsumed_directive_for_job(store, canonical_job_id)
+        if directive is None:
+            return None
+        try:
+            _validate_directive_record(directive)
+        except Exception as exc:
+            append_directive_event(
+                "invalid",
+                canonical_job_id,
+                directive.get("directive_id") if isinstance(directive, dict) else None,
+                {"reason": str(exc), "run_id": run_id, "job_mode": "no_agent"},
+            )
+            raise CronDirectiveError(
+                f"Invalid operator directive for no_agent job: {exc}",
+                event_type="invalid",
+                directive=directive if isinstance(directive, dict) else None,
+            ) from exc
+        if directive.get("status") == "pending":
+            directive["status"] = "invalid"
+            directive["version"] = int(directive.get("version") or 1) + 1
+            _save_directive_store_unlocked(store)
+        append_directive_event(
+            "invalid",
+            canonical_job_id,
+            directive.get("directive_id"),
+            {
+                "reason": "no_agent_jobs_do_not_support_operator_directives",
+                "run_id": run_id,
+                "job_mode": "no_agent",
+                "directive_status": directive.get("status"),
+            },
+        )
+        raise CronDirectiveError(
+            "Operator directives require an agent runtime; no_agent jobs cannot consume directives",
+            event_type="invalid",
+            directive=directive,
+        )
+
+
 # =============================================================================
 # Schedule Parsing
 # =============================================================================

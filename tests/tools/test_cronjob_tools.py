@@ -264,6 +264,29 @@ class TestUnifiedCronjobTool:
             "cancelled",
         ]
 
+    def test_directive_set_rejects_no_agent_job(self):
+        from cron.jobs import create_job
+
+        job = create_job(
+            prompt="",
+            schedule="every 1h",
+            script="noop.py",
+            no_agent=True,
+        )
+
+        result = json.loads(
+            cronjob(
+                action="directive_set",
+                job_id=job["id"],
+                directive_text="Slice source: Operator-named dry check.",
+                ttl_seconds=600,
+                created_by="pytest",
+            )
+        )
+
+        assert result["success"] is False
+        assert "no_agent jobs" in result["error"]
+
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs
 
