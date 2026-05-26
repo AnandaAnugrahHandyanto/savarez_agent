@@ -599,6 +599,16 @@ class TelegramAdapter(BasePlatformAdapter):
         return str(guest_query_id) if guest_query_id is not None else None
 
     @classmethod
+    def _message_guest_query_id(cls, message: Any) -> Optional[str]:
+        """Return Telegram Guest Bot query id from typed or SDK-lag message fields."""
+        guest_query_id = getattr(message, "guest_query_id", None)
+        if guest_query_id is None:
+            api_kwargs = getattr(message, "api_kwargs", None) or {}
+            if isinstance(api_kwargs, dict):
+                guest_query_id = api_kwargs.get("guest_query_id")
+        return str(guest_query_id) if guest_query_id is not None else None
+
+    @classmethod
     def _metadata_reply_to_message_id(cls, metadata: Optional[Dict[str, Any]]) -> Optional[int]:
         if not metadata:
             return None
@@ -5885,9 +5895,9 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_topic=chat_topic,
             message_id=str(message.message_id),
         )
-        guest_query_id = getattr(message, "guest_query_id", None)
+        guest_query_id = self._message_guest_query_id(message)
         if guest_query_id:
-            source.guest_query_id = str(guest_query_id)
+            source.guest_query_id = guest_query_id
         
         # Extract reply context if this message is a reply.
         # Prefer Telegram's native partial quote (message.quote, TextQuote)
