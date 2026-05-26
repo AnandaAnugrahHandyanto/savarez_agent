@@ -368,7 +368,7 @@ def test_env_scrub_logs_dropped_hermes_vars(caplog):
         "HERMES_API_KEY": "sk",       # secret → dropped silently (not logged)
         "PATH": "/usr/bin",           # safe prefix → kept
     }
-    with caplog.at_level(logging.DEBUG, logger="tools.code_execution_tool"):
+    with caplog.at_level(logging.DEBUG, logger="agent.credential_exposure_policy"):
         out = _scrub_child_env(env, is_passthrough=lambda _: False, is_windows=False)
 
     assert "HERMES_HOME" in out and "PATH" in out
@@ -387,7 +387,7 @@ def test_env_scrub_no_log_when_nothing_dropped(caplog):
 
     from tools.code_execution_tool import _scrub_child_env
 
-    with caplog.at_level(logging.DEBUG, logger="tools.code_execution_tool"):
+    with caplog.at_level(logging.DEBUG, logger="agent.credential_exposure_policy"):
         _scrub_child_env(
             {"HERMES_HOME": "/h", "PATH": "/usr/bin"},
             is_passthrough=lambda _: False,

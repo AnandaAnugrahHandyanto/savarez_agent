@@ -32,6 +32,7 @@ from tools.code_execution_tool import (
     _WINDOWS_ESSENTIAL_ENV_VARS,
     _scrub_child_env,
 )
+from agent.credential_exposure_policy import HERMES_CREDENTIAL_ENV_BLOCKLIST
 
 
 def _no_passthrough(_name):
@@ -205,6 +206,38 @@ class TestScrubChildEnvPassthroughInteraction:
         assert scrubbed.get("SYSTEMROOT") == r"C:\Windows"
         assert "OPENAI_API_KEY" not in scrubbed
 
+    def test_passthrough_cannot_override_hermes_credential_blocklist(self):
+        # AWS_BEARER_TOKEN_BEDROCK is a Hermes-managed inference credential
+        # (blocklisted). The general AWS chain is NOT — AWS_PROFILE belongs to
+        # the user and stays inheritable per #32314 / GHSA-rhgp-j443-p4rf.
+        env = {
+            "AWS_BEARER_TOKEN_BEDROCK": "bedrock-bearer",
+            "OPENAI_API_KEY": "sk-secret",
+            "TENOR_API_KEY": "tenor",
+            "PATH": "/bin",
+        }
+        scrubbed = _scrub_child_env(
+            env,
+            is_passthrough=lambda _k: True,
+            is_windows=False,
+        )
+
+        assert "AWS_BEARER_TOKEN_BEDROCK" not in scrubbed
+        assert "OPENAI_API_KEY" not in scrubbed
+        assert scrubbed["TENOR_API_KEY"] == "tenor"
+        assert scrubbed["PATH"] == "/bin"
+
+    def test_aws_profile_blocked_without_secret_substring(self):
+        env = {"AWS_PROFILE": "prod-admin", "PATH": "/bin"}
+        scrubbed = _scrub_child_env(
+            env,
+            is_passthrough=_no_passthrough,
+            is_windows=False,
+        )
+
+        assert "AWS_PROFILE" not in scrubbed
+        assert scrubbed["PATH"] == "/bin"
+
 
 @pytest.mark.skipif(
     sys.platform != "win32",
@@ -257,11 +290,12 @@ def _legacy_posix_scrubber(source_env, is_passthrough):
     _scrub_child_env's POSIX behavior, used to prove the production helper does
     what we think it does.
 
-    Deliberately updated for #27303 (the broad ``HERMES_`` prefix was dropped
-    in favor of an explicit operational allowlist, and DSN/WEBHOOK were added
-    to the secret substrings).  The original docstring said: if POSIX behavior
-    legitimately needs to evolve, adjust this oracle on purpose so the churn is
-    visible in review — that is what this change is.
+    Applies the shared Hermes credential blocklist first, then the explicit
+    prefix/substring rules.  Reflects #27303 (the broad ``HERMES_`` prefix was
+    dropped in favor of an explicit operational allowlist, and DSN/WEBHOOK were
+    added to the secret substrings).  If execute_code's POSIX behavior
+    legitimately evolves, update this oracle in the same PR so the churn is
+    visible in review.
     """
     _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
                           "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
@@ -273,6 +307,8 @@ def _legacy_posix_scrubber(source_env, is_passthrough):
     })
     out = {}
     for k, v in source_env.items():
+        if k in HERMES_CREDENTIAL_ENV_BLOCKLIST:
+            continue
         if is_passthrough(k):
             out[k] = v
             continue
@@ -326,6 +362,7 @@ class TestPosixEquivalence:
         "OPENAI_API_KEY": "sk-xxx",
         "GITHUB_TOKEN": "ghp_xxx",
         "AWS_SECRET_ACCESS_KEY": "yyy",
+        "AWS_PROFILE": "prod-admin",
         "MY_PASSWORD": "hunter2",
         "SENTRY_DSN": "https://abc@sentry.io/1",     # DSN substring → blocked
         "SLACK_WEBHOOK": "https://hooks.slack/x",    # WEBHOOK substring → blocked

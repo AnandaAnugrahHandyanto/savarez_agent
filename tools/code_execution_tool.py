@@ -43,6 +43,13 @@ import threading
 import time
 import uuid
 
+from agent.credential_exposure_policy import (
+    DEFAULT_CREDENTIAL_EXPOSURE_POLICY,
+    SAFE_SANDBOX_ENV_PREFIXES,
+    SECRET_ENV_SUBSTRINGS,
+    WINDOWS_ESSENTIAL_ENV_VARS,
+)
+
 _IS_WINDOWS = platform.system() == "Windows"
 from typing import Any, Dict, List, Optional
 
@@ -75,31 +82,13 @@ MAX_STDOUT_BYTES = 50_000    # 50 KB
 MAX_STDERR_BYTES = 10_000    # 10 KB
 
 # Environment variable scrubbing rules (shared between the local + remote
-# backends).  Secret-substring block is applied first; anything left must
-# match a safe prefix, the operational HERMES_ allowlist, or (on Windows) an
-# OS-essential name.
-#
-# NB: the broad "HERMES_" prefix was deliberately removed (#27303) — it leaked
-# HERMES_*-named config that lacks a secret substring (e.g. HERMES_BASE_URL,
-# HERMES_KANBAN_DB, HERMES_*_WEBHOOK).  The child only needs the few
-# location/profile vars in _HERMES_CHILD_ALLOWED below; HERMES_RPC_SOCKET /
-# HERMES_RPC_DIR / TZ / HOME are injected explicitly after scrubbing.
-_SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
-                      "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
-                      "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA")
-_SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
-                      "PASSWD", "AUTH", "DSN", "WEBHOOK")
-
-# Operational HERMES_* vars the child legitimately needs by exact name — these
-# are non-secret runtime-location flags (the same set hermes_cli treats as the
-# runtime location) that repo-root modules a sandbox script imports may read at
-# import time.  None match _SECRET_SUBSTRINGS.
-_HERMES_CHILD_ALLOWED = frozenset({
-    "HERMES_HOME",
-    "HERMES_PROFILE",
-    "HERMES_CONFIG",
-    "HERMES_ENV",
-})
+# backends).  Hermes-managed credentials are blocked first; anything left
+# must be passthrough, match a safe prefix, be the operational HERMES_*
+# allowlist, or be an OS-essential Windows name.  The detailed rules (incl.
+# the #27303 HERMES_ tightening and the DSN/WEBHOOK secret substrings) live in
+# agent/credential_exposure_policy.py.
+_SAFE_ENV_PREFIXES = SAFE_SANDBOX_ENV_PREFIXES
+_SECRET_SUBSTRINGS = SECRET_ENV_SUBSTRINGS
 
 # Windows-only: a handful of variables are required by the OS/CRT itself.
 # Without them, even stdlib calls like ``socket.socket()`` fail with
@@ -107,41 +96,19 @@ _HERMES_CHILD_ALLOWED = frozenset({
 # can't resolve cmd.exe.  These are well-known OS paths, not secrets, so
 # we allow them through by exact name.  The _SECRET_SUBSTRINGS block
 # still runs as a safety net (none of these names match those substrings).
-_WINDOWS_ESSENTIAL_ENV_VARS = frozenset({
-    "SYSTEMROOT",       # %SYSTEMROOT%\System32 — Winsock needs this
-    "SYSTEMDRIVE",      # C: (or wherever Windows lives)
-    "WINDIR",           # usually same as SYSTEMROOT
-    "COMSPEC",          # cmd.exe path — subprocess shell=True needs it
-    "PATHEXT",          # .COM;.EXE;.BAT;... — shell lookup
-    "OS",               # "Windows_NT" — some tools gate on this
-    "PROCESSOR_ARCHITECTURE",
-    "NUMBER_OF_PROCESSORS",
-    "PUBLIC",           # C:\Users\Public
-    "ALLUSERSPROFILE",  # C:\ProgramData — some stdlib paths use it
-    "PROGRAMDATA",      # C:\ProgramData
-    "PROGRAMFILES",
-    "PROGRAMFILES(X86)",
-    "PROGRAMW6432",
-    "APPDATA",          # %USERPROFILE%\AppData\Roaming — Python uses it
-    "LOCALAPPDATA",     # %USERPROFILE%\AppData\Local
-    "USERPROFILE",      # C:\Users\<name> — Python's expanduser uses it
-    "USERDOMAIN",
-    "USERNAME",
-    "HOMEDRIVE",        # C:
-    "HOMEPATH",         # \Users\<name>
-    "COMPUTERNAME",
-})
+_WINDOWS_ESSENTIAL_ENV_VARS = WINDOWS_ESSENTIAL_ENV_VARS
 
 
 def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
     """Produce the scrubbed child-process env for execute_code.
 
     Rules (order matters):
-      1. Passthrough vars (skill- or config-declared) always pass.
-      2. Secret-substring names (KEY/TOKEN/DSN/WEBHOOK/etc.) are blocked.
-      3. Names matching a safe prefix pass.
-      4. Operational HERMES_* vars (_HERMES_CHILD_ALLOWED) pass by exact name.
-      5. On Windows, a small OS-essential allowlist passes by exact name
+      1. Hermes-managed credentials are always blocked.
+      2. Passthrough vars (skill- or config-declared) pass.
+      3. Secret-substring names (KEY/TOKEN/DSN/WEBHOOK/etc.) are blocked.
+      4. Names matching a safe prefix pass.
+      5. Operational HERMES_* vars pass by exact name; other HERMES_* dropped.
+      6. On Windows, a small OS-essential allowlist passes by exact name
          — without these the child can't even create a socket or spawn a
          subprocess.
 
@@ -157,44 +124,11 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None):
     if is_windows is None:
         is_windows = _IS_WINDOWS
 
-    scrubbed = {}
-    # Non-secret HERMES_* vars dropped by the tightened allowlist (#27303). The
-    # broad "HERMES_" prefix used to pass these through; now only the
-    # operational set does. The drop is intentional (those vars can carry
-    # config like HERMES_KANBAN_DB / HERMES_BASE_URL), but a sandbox script
-    # that imports a repo module reading one at import time would otherwise see
-    # it silently unset. Surface the drop once so the behavior change is
-    # diagnosable and points at the env_passthrough opt-in escape hatch.
-    _dropped_hermes = []
-    for k, v in source_env.items():
-        if is_passthrough(k):
-            scrubbed[k] = v
-            continue
-        if any(s in k.upper() for s in _SECRET_SUBSTRINGS):
-            continue
-        if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
-            scrubbed[k] = v
-            continue
-        if k in _HERMES_CHILD_ALLOWED:
-            scrubbed[k] = v
-            continue
-        if is_windows and k.upper() in _WINDOWS_ESSENTIAL_ENV_VARS:
-            scrubbed[k] = v
-            continue
-        if k.startswith("HERMES_"):
-            # Non-secret (secrets were already dropped above) and not in any
-            # allowlist — a deliberately-dropped HERMES_* var.
-            _dropped_hermes.append(k)
-    if _dropped_hermes:
-        logger.debug(
-            "execute_code: dropped %d non-allowlisted HERMES_* var(s) from the "
-            "sandbox child env (%s). This is intentional hardening (#27303); if "
-            "a sandbox script legitimately needs one, declare it via "
-            "env_passthrough in the skill/config so it passes by explicit opt-in.",
-            len(_dropped_hermes),
-            ", ".join(sorted(_dropped_hermes)),
-        )
-    return scrubbed
+    return DEFAULT_CREDENTIAL_EXPOSURE_POLICY.sanitize_sandbox_env(
+        source_env,
+        is_passthrough=is_passthrough,
+        is_windows=is_windows,
+    )
 
 
 def check_sandbox_requirements() -> bool:
