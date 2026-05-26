@@ -4,6 +4,10 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Resolve-Path (Join-Path $ScriptDir "..\..")
+$PythonExe = Join-Path $RepoRoot "venv\Scripts\python.exe"
+if (-not (Test-Path -LiteralPath $PythonExe)) {
+    $PythonExe = (Get-Command python -ErrorAction Stop).Source
+}
 
 $DelaySeconds = 30
 $WindowStyle = "Normal"
@@ -29,10 +33,26 @@ $HermesHome = if ($env:HERMES_HOME -and $env:HERMES_HOME.Trim()) {
 $LogDir = Join-Path $HermesHome "logs"
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 
+$env:HERMES_HOME = $HermesHome
+$envFile = Join-Path $HermesHome ".env"
+if (Test-Path -LiteralPath $envFile) {
+    foreach ($line in Get-Content -LiteralPath $envFile -Encoding UTF8) {
+        if ($line -match '^\s*#' -or $line -notmatch '=') {
+            continue
+        }
+        $parts = $line -split '=', 2
+        $name = $parts[0].Trim()
+        $value = $parts[1]
+        if ($name) {
+            [Environment]::SetEnvironmentVariable($name, $value, "Process")
+        }
+    }
+}
+
 # Avoid duplicate launches.
 $isRunning = "0"
 try {
-    $isRunning = & py -3 -c "from gateway.status import is_gateway_running; print('1' if is_gateway_running() else '0')" 2>$null
+    $isRunning = & $PythonExe -c "from gateway.status import is_gateway_running; print('1' if is_gateway_running() else '0')" 2>$null
 } catch {
     $isRunning = "0"
 }
@@ -56,8 +76,15 @@ if (Test-Path -LiteralPath $llamaScript) {
     }
 }
 
+$env:PYTHONIOENCODING = "utf-8"
+$env:PYTHONUTF8 = "1"
+$stdoutLog = Join-Path $LogDir "gateway-stdout.log"
+$stderrLog = Join-Path $LogDir "gateway-stderr.log"
+
 Start-Process `
-    -FilePath "cmd.exe" `
-    -ArgumentList "/c", "set PYTHONIOENCODING=utf-8&& set PYTHONUTF8=1&& py -3 -m hermes_cli gateway run --replace" `
+    -FilePath $PythonExe `
+    -ArgumentList @("-m", "hermes_cli.main", "gateway", "run") `
     -WorkingDirectory $RepoRoot `
-    -WindowStyle $WindowStyle
+    -WindowStyle $WindowStyle `
+    -RedirectStandardOutput $stdoutLog `
+    -RedirectStandardError $stderrLog

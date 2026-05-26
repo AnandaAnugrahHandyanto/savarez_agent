@@ -1,0 +1,6 @@
+name: ebbinghaus
+version: 0.1.0
+description: "Local Ebbinghaus memory with cue encoding, SQLite storage, recall scoring, rehearsal, and forgetting-curve decay."
+hooks:
+  - on_memory_write
+  - on_session_end
