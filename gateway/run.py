@@ -7199,11 +7199,13 @@ class GatewayRunner:
             # /fast and /reasoning are config-only and take effect next
             # message, so they fall through to the catch-all busy response
             # below — users should wait and set them between turns.
-            if _cmd_def_inner and _cmd_def_inner.name in {"yolo", "verbose"}:
+            if _cmd_def_inner and _cmd_def_inner.name in {"yolo", "verbose", "attachments"}:
                 if _cmd_def_inner.name == "yolo":
                     return await self._handle_yolo_command(event)
                 if _cmd_def_inner.name == "verbose":
                     return await self._handle_verbose_command(event)
+                if _cmd_def_inner.name == "attachments":
+                    return await self._handle_attachments_command(event)
                 if _cmd_def_inner.name == "footer":
                     return await self._handle_footer_command(event)
 
@@ -7498,6 +7500,9 @@ class GatewayRunner:
 
         if canonical == "footer":
             return await self._handle_footer_command(event)
+
+        if canonical == "attachments":
+            return await self._handle_attachments_command(event)
 
         if canonical == "yolo":
             return await self._handle_yolo_command(event)
@@ -12160,6 +12165,77 @@ class GatewayRunner:
             if preview:
                 example = t("gateway.footer.example_line", preview=preview)
         return t("gateway.footer.saved", state=state, example=example)
+
+    async def _handle_attachments_command(self, event: MessageEvent) -> str:
+        """Handle /attachments command — toggle bare local path auto-attachments.
+
+        Usage:
+            /attachments           → toggle on/off for this bot/profile
+            /attachments on        → enable for this bot/profile
+            /attachments off       → disable for this bot/profile
+            /attachments status    → show current state
+
+        The setting is saved to ``gateway.auto_attach_local_paths`` in the
+        active Hermes profile's config.yaml. Each gateway profile has its own
+        config and bot token, so this is intentionally bot-local rather than a
+        shared/global toggle.
+        """
+        config_path = _hermes_home / "config.yaml"
+        profile_name = os.getenv("HERMES_PROFILE") or "default"
+
+        arg = ""
+        try:
+            text = (getattr(event, "message", None) or getattr(event, "text", None) or "").strip()
+            if text.startswith("/"):
+                parts = text.split(None, 1)
+                if len(parts) > 1:
+                    arg = parts[1].strip().lower()
+        except Exception:
+            arg = ""
+
+        try:
+            user_config: dict = _load_gateway_config()
+        except Exception as e:
+            return t("gateway.config_read_failed", error=e)
+
+        gateway_cfg = user_config.get("gateway") if isinstance(user_config, dict) else {}
+        if not isinstance(gateway_cfg, dict):
+            gateway_cfg = {}
+        current = bool(gateway_cfg.get("auto_attach_local_paths", True))
+
+        if arg in {"status", "?"}:
+            state = "on" if current else "off"
+            return (
+                f"Local path auto-attachments are {state} for this bot/profile "
+                f"(`{profile_name}`).\n"
+                "Use `/attachments on` or `/attachments off`."
+            )
+
+        if arg in {"on", "enable", "true", "1"}:
+            new_state = True
+        elif arg in {"off", "disable", "false", "0"}:
+            new_state = False
+        elif arg == "":
+            new_state = not current
+        else:
+            return "Usage: `/attachments [on|off|status]`"
+
+        try:
+            if not isinstance(user_config.get("gateway"), dict):
+                user_config["gateway"] = {}
+            user_config["gateway"]["auto_attach_local_paths"] = new_state
+            atomic_yaml_write(config_path, user_config)
+            os.environ["HERMES_AUTO_ATTACH_LOCAL_PATHS"] = "1" if new_state else "0"
+        except Exception as e:
+            logger.warning("Failed to save gateway.auto_attach_local_paths: %s", e)
+            return t("gateway.config_save_failed", error=e)
+
+        state = "enabled" if new_state else "disabled"
+        if new_state:
+            detail = "Bare local paths in replies can be sent as native files."
+        else:
+            detail = "Only explicit `MEDIA:/path` attachments will be sent as files."
+        return f"Local path auto-attachments {state} for this bot/profile (`{profile_name}`).\n{detail}"
 
     async def _handle_compress_command(self, event: MessageEvent) -> str:
         """Handle /compress command -- manually compress conversation context.
