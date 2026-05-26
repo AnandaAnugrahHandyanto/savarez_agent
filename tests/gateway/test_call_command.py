@@ -84,3 +84,23 @@ def test_gateway_config_preserves_calls_extra():
     )
 
     assert cfg.extra["calls"]["browser"]["base_url"] == "https://host.ts.net/call"
+
+
+def test_load_gateway_config_preserves_calls_from_config_yaml(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        """
+calls:
+  browser:
+    base_url: https://host.ts.net/call
+    public_exposure_enabled: false
+    ttl_seconds: 300
+""",
+        encoding="utf-8",
+    )
+    from gateway.config import load_gateway_config
+
+    cfg = load_gateway_config()
+
+    assert cfg.extra["calls"]["browser"]["base_url"] == "https://host.ts.net/call"
+    assert cfg.extra["calls"]["browser"]["ttl_seconds"] == 300

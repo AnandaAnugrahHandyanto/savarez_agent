@@ -575,7 +575,40 @@ class SimplexAdapter(BasePlatformAdapter):
                 ):
                     item_wrapper = {"chatInfo": chat_info, "chatItem": item_wrapper}
                 await self._handle_new_chat_item(item_wrapper)
+        elif resp_type == "callInvitation":
+            await self._handle_call_invitation(payload)
         # Ignore all other event types (delivery receipts, contact updates, etc.)
+
+    async def _handle_call_invitation(self, payload: dict) -> None:
+        """Process a SimpleX native-call invitation event."""
+        invitation = payload.get("callInvitation")
+        if not isinstance(invitation, dict):
+            invitation = payload
+        contact = invitation.get("contact") if isinstance(invitation, dict) else {}
+        if not isinstance(contact, dict):
+            contact = {}
+        contact_id = str(contact.get("contactId") or contact.get("id") or "")
+        if not contact_id:
+            logger.warning("SimpleX: call invitation missing contact id: %s", payload)
+            return
+        contact_name = (
+            contact.get("displayName")
+            or contact.get("localDisplayName")
+            or contact_id
+        )
+        source = self.build_source(
+            chat_id=contact_id,
+            chat_name=contact_name,
+            chat_type="dm",
+            user_id=contact_id,
+            user_name=contact_name,
+        )
+        await self._handle_native_call_item(
+            source,
+            contact_id,
+            {"type": "rcvCall", "status": "pending", "duration": 0},
+            {},
+        )
 
     async def _handle_new_chat_item(self, wrapper: dict) -> None:
         """Process a single newChatItem event into a MessageEvent."""
@@ -587,12 +620,6 @@ class SimplexAdapter(BasePlatformAdapter):
             "content" in wrapper or "meta" in wrapper or "chatDir" in wrapper
         ):
             chat_item = wrapper
-
-        # Only process messages (not calls, deleted items, etc.)
-        item_content = chat_item.get("content") or {}
-        msg_content = item_content.get("msgContent") or {}
-        if not msg_content:
-            return
 
         # Filter out messages sent by us (direction == "snd")
         meta = chat_item.get("meta") or {}
@@ -638,6 +665,25 @@ class SimplexAdapter(BasePlatformAdapter):
             sender_id = chat_id
             sender_name = chat_name
 
+        source = self.build_source(
+            chat_id=chat_id,
+            chat_name=chat_name,
+            chat_type="group" if is_group else "dm",
+            user_id=sender_id,
+            user_name=sender_name,
+        )
+
+        item_content = chat_item.get("content") or {}
+        content_type = str(item_content.get("type") or "")
+        if content_type == "rcvCall":
+            await self._handle_native_call_item(source, chat_id, item_content, meta)
+            return
+
+        # Only process regular message content here.
+        msg_content = item_content.get("msgContent") or {}
+        if not msg_content:
+            return
+
         # Extract text
         text = msg_content.get("text") or ""
 
@@ -674,15 +720,6 @@ class SimplexAdapter(BasePlatformAdapter):
         except (ValueError, AttributeError):
             timestamp = datetime.now(tz=timezone.utc)
 
-        # Build source
-        source = self.build_source(
-            chat_id=chat_id,
-            chat_name=chat_name,
-            chat_type="group" if is_group else "dm",
-            user_id=sender_id,
-            user_name=sender_name,
-        )
-
         # Message type
         msg_type = MessageType.TEXT
         simplex_msg_type = msg_content.get("type", "")
@@ -708,6 +745,90 @@ class SimplexAdapter(BasePlatformAdapter):
         item_id = meta.get("itemId")
         if item_id is not None:
             await self._mark_chat_items_read(chat_id, [item_id])
+
+    async def _handle_native_call_item(
+        self,
+        source,
+        chat_id: str,
+        item_content: dict,
+        meta: dict,
+    ) -> None:
+        """Reject unsupported SimpleX native calls with a clear fallback."""
+        item_id = meta.get("itemId")
+        status = str(item_content.get("status") or "").lower()
+        if status != "pending":
+            logger.info(
+                "SimpleX: native call event ignored: chat_id=%s status=%s item_id=%s",
+                chat_id,
+                status or "unknown",
+                item_id,
+            )
+            if item_id is not None:
+                await self._mark_chat_items_read(chat_id, [item_id])
+            return
+
+        authorized = True
+        runner = getattr(self, "gateway_runner", None)
+        auth_fn = getattr(runner, "_is_user_authorized", None)
+        if callable(auth_fn):
+            try:
+                authorized = bool(auth_fn(source))
+            except Exception:
+                authorized = False
+                logger.exception(
+                    "SimpleX: authorization check failed for native call from chat_id=%s",
+                    chat_id,
+                )
+
+        if not authorized:
+            logger.warning(
+                "SimpleX: rejected unauthorized SimpleX native call from user_id=%s chat_id=%s",
+                getattr(source, "user_id", None),
+                chat_id,
+            )
+            await self._reject_native_call(chat_id)
+            if item_id is not None:
+                await self._mark_chat_items_read(chat_id, [item_id])
+            return
+
+        logger.warning(
+            "SimpleX: rejecting native call from chat_id=%s because native WebRTC bridge is unavailable",
+            chat_id,
+        )
+        rejected = await self._reject_native_call(chat_id)
+        note = (
+            "I saw your SimpleX native call, but I cannot answer native SimpleX calls yet. "
+            "Use /call for the private browser fallback."
+        )
+        if not rejected:
+            note = (
+                "I saw your SimpleX native call, but I could not reject it automatically. "
+                "Use /call for the private browser fallback."
+            )
+        result = await self.send(chat_id, note)
+        if isinstance(result, SendResult) and not result.success:
+            logger.error(
+                "SimpleX: failed to send native-call fallback to chat_id=%s: %s",
+                chat_id,
+                result.error,
+            )
+        if item_id is not None:
+            await self._mark_chat_items_read(chat_id, [item_id])
+
+    async def _reject_native_call(self, chat_id: str) -> bool:
+        """Tell SimpleX to reject a pending native call."""
+        cmd = f"/_call reject {_chat_ref_for_chat_id(chat_id)}"
+        try:
+            await self._send_command(cmd)
+            return True
+        except Exception as exc:
+            logger.error(
+                "SimpleX: failed to reject native call for chat_id=%s: %s",
+                chat_id,
+                exc,
+                exc_info=True,
+            )
+            return False
 
     async def _fetch_file(self, file_id: Any, file_name: str) -> Optional[str]:
         """Ask the daemon to receive and return a file attachment."""

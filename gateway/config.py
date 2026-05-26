@@ -756,6 +756,10 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(streaming_cfg, dict):
                 gw_data["streaming"] = streaming_cfg
 
+            calls_cfg = yaml_cfg.get("calls")
+            if isinstance(calls_cfg, dict):
+                gw_data["calls"] = calls_cfg
+
             if "reset_triggers" in yaml_cfg:
                 gw_data["reset_triggers"] = yaml_cfg["reset_triggers"]
 
