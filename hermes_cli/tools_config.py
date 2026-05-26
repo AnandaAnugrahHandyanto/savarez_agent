@@ -116,6 +116,21 @@ _TELEGRAM_COMMITMENT_MCP_TRIGGER_RE = re.compile(
     re.IGNORECASE,
 )
 
+_TELEGRAM_EXTERNAL_ACTION_MCP_TRIGGER_RE = re.compile(
+    r"\b(?:"
+    r"(?:draft|compose|create|write)\s+(?:me\s+|us\s+)?"
+    r"(?:(?:an?|the|this|that)\s+)?"
+    r"(?:outlook\s+)?(?:email|mail|message|draft(?:\s+(?:email|mail|message))?)"
+    r"|(?:draft|compose|create|write|save|put|place)\b[^\n.!?]{0,80}\b"
+    r"(?:in|to|into)\s+(?:my\s+)?(?:outlook|m365|microsoft\s*365|drafts?|inbox)"
+    r"|(?:outlook|m365|microsoft\s*365|graph)\b[^\n.!?]{0,80}\b"
+    r"(?:draft|compose|create|write|save|put|place)"
+    r"|(?:email|mail)\s+(?:me|us)\b"
+    r"|(?:email|mail)\b[^\n.!?]{0,80}\b(?:draft|outlook|inbox)"
+    r")\b",
+    re.IGNORECASE,
+)
+
 _TELEGRAM_GATED_MCP_TOOL_RE = re.compile(
     r"(?:^|_)("
     r"approve|archive|batch_decide|commit|complete|confirmed|create|"
@@ -143,7 +158,10 @@ def _telegram_message_requests_commitment_mcp(message: str) -> bool:
         return False
     if text.startswith("/"):
         return True
-    return bool(_TELEGRAM_COMMITMENT_MCP_TRIGGER_RE.search(text))
+    return bool(
+        _TELEGRAM_COMMITMENT_MCP_TRIGGER_RE.search(text)
+        or _TELEGRAM_EXTERNAL_ACTION_MCP_TRIGGER_RE.search(text)
+    )
 
 
 def _mcp_toolset_target(toolset_name: str) -> str | None:
