@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from copy import deepcopy
 from typing import Any, Mapping
 
@@ -11,6 +9,13 @@ from agent.memory_human_approval_token_real_write_executor_implementation_dry_ru
     explain_human_approval_token_real_write_executor_implementation_dry_run,
     recommend_human_approval_token_real_write_executor_implementation_dry_run_action,
     validate_human_approval_token_real_write_executor_implementation_dry_run,
+)
+from agent.memory_read_only_candidate_utils import (
+    build_stable_digest,
+    deep_copy_mapping,
+    summarize_candidates,
+    validate_forbidden_true_keys_false_or_absent,
+    validate_policy_flags,
 )
 
 
@@ -620,14 +625,18 @@ def validate_human_approval_token_real_write_executor_code_review_plan(
     for field, expected in deterministic_fields:
         if plan.get(field) != expected:
             errors.append(f"{field}_must_match_v0_1_deterministic_plan")
-    for forbidden_key in _FORBIDDEN_TRUE_KEYS:
-        if plan.get(forbidden_key) is True:
-            errors.append(f"{forbidden_key}_must_be_false_or_absent")
-    for key, expected in (
-        MEMORY_HUMAN_APPROVAL_TOKEN_REAL_WRITE_EXECUTOR_CODE_REVIEW_PLAN_POLICY.items()
-    ):
-        if policy.get(key) is not expected:
-            errors.append(f"policy_{key}_must_be_{str(expected).lower()}")
+    errors.extend(
+        validate_forbidden_true_keys_false_or_absent(
+            plan,
+            _FORBIDDEN_TRUE_KEYS,
+        )
+    )
+    errors.extend(
+        validate_policy_flags(
+            policy,
+            MEMORY_HUMAN_APPROVAL_TOKEN_REAL_WRITE_EXECUTOR_CODE_REVIEW_PLAN_POLICY,
+        )
+    )
 
     return {"valid": not errors, "errors": _dedupe(errors)}
 
@@ -751,18 +760,13 @@ def recommend_human_approval_token_real_write_executor_code_review_plan_action(
 def summarize_human_approval_token_real_write_executor_code_review_plans(
     plans: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
 ) -> dict[str, Any]:
-    by_block_type: dict[str, int] = {}
-    by_status: dict[str, int] = {}
+    candidate_summary = summarize_candidates(plans, "plan_status")
     by_lock_reason: dict[str, int] = {}
     code_review_gate_required_count = 0
     locked_count = 0
     valid_count = 0
     invalid_count = 0
     for plan in plans:
-        block_type = str(plan.get("block_type"))
-        by_block_type[block_type] = by_block_type.get(block_type, 0) + 1
-        status = str(plan.get("plan_status"))
-        by_status[status] = by_status.get(status, 0) + 1
         lock_reason = str(plan.get("lock_reason"))
         by_lock_reason[lock_reason] = by_lock_reason.get(lock_reason, 0) + 1
         if (
@@ -783,15 +787,15 @@ def summarize_human_approval_token_real_write_executor_code_review_plans(
         else:
             invalid_count += 1
     return {
-        "total": len(plans),
+        "total": candidate_summary["total"],
         "valid_count": valid_count,
         "invalid_count": invalid_count,
         "real_token_write_executor_code_review_gate_required_count": (
             code_review_gate_required_count
         ),
         "locked_count": locked_count,
-        "by_block_type": dict(sorted(by_block_type.items())),
-        "by_status": dict(sorted(by_status.items())),
+        "by_block_type": candidate_summary["by_block_type"],
+        "by_status": candidate_summary["by_status"],
         "by_lock_reason": dict(sorted(by_lock_reason.items())),
         "policy": dict(MEMORY_HUMAN_APPROVAL_TOKEN_REAL_WRITE_EXECUTOR_CODE_REVIEW_PLAN_POLICY),
     }
@@ -1381,16 +1385,14 @@ def _plan_id(plan: Mapping[str, Any]) -> str:
         ),
         "policy": plan.get("policy", {}),
     }
-    payload = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str)
-    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
-    return (
-        "memory-human-approval-token-real-write-executor-code-review-plan:"
-        f"v0.1:{digest}"
+    return build_stable_digest(
+        "memory-human-approval-token-real-write-executor-code-review-plan:v0.1",
+        identity,
     )
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
-    return deepcopy(dict(value)) if isinstance(value, Mapping) else {}
+    return deep_copy_mapping(value)
 
 
 def _dedupe(values: list[str]) -> list[str]:

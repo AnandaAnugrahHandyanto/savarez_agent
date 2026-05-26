@@ -127,6 +127,18 @@ def test_valid_implementation_dry_run_creates_code_review_gate_required_plan():
     assert plan["next_step_recommendation"]["creates_executor_tests"] is False
 
 
+def test_code_review_plan_id_preserves_canonical_v0_1_digest():
+    plan = create_human_approval_token_real_write_executor_code_review_plan(
+        _dry_run(),
+        reviewer="code-review-planner",
+    )
+
+    assert plan["plan_id"] == (
+        "memory-human-approval-token-real-write-executor-code-review-plan:"
+        "v0.1:85cc9cf97d96acbc"
+    )
+
+
 def test_locked_implementation_dry_run_creates_locked_plan():
     dry_run = _dry_run(outcome="request_contract_changes")
 
