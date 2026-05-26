@@ -372,7 +372,10 @@ const StatusRulePane = memo(function StatusRulePane({
         t={ui.theme}
         turnStartedAt={status.turnStartedAt}
         usage={ui.usage}
-        voiceLabel={status.voiceLabel}
+        voiceTts={status.voiceTts}
+        voiceEnabled={status.voiceEnabled}
+        voiceProcessing={status.voiceProcessing}
+        voiceRecording={status.voiceRecording}
       />
     </Box>
   )

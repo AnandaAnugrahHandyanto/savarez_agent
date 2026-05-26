@@ -322,7 +322,10 @@ export function StatusRule({
   sessionStartedAt,
   showCost,
   turnStartedAt,
-  voiceLabel,
+  voiceRecording,
+  voiceProcessing,
+  voiceEnabled,
+  voiceTts,
   t
 }: StatusRuleProps) {
   const i18n = useI18n()
@@ -337,6 +340,13 @@ export function StatusRule({
 
   const bar = usage.context_max ? ctxBar(pct) : ''
   const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, cwdLabel)
+
+  // Computed inside I18nProvider so voice idle/on/off labels translate.
+  const voiceLabel = voiceRecording
+    ? '● REC'
+    : voiceProcessing
+      ? '◉ STT'
+      : i18n.t('voice.idle', { state: voiceEnabled ? i18n.t('voice.on') : i18n.t('voice.off') }) + (voiceTts ? ' [tts]' : '')
 
   return (
     <Box height={1}>
@@ -516,7 +526,10 @@ interface StatusRuleProps {
   t: Theme
   turnStartedAt?: null | number
   usage: Usage
-  voiceLabel?: string
+  voiceRecording: boolean
+  voiceProcessing: boolean
+  voiceEnabled: boolean
+  voiceTts: boolean
 }
 
 interface StickyPromptTrackerProps {

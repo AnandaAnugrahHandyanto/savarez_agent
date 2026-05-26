@@ -345,7 +345,10 @@ export interface AppLayoutStatusProps {
   statusColor: string
   stickyPrompt: string
   turnStartedAt: null | number
-  voiceLabel: string
+  voiceRecording: boolean
+  voiceProcessing: boolean
+  voiceEnabled: boolean
+  voiceTts: boolean
 }
 
 export interface AppLayoutTranscriptProps {

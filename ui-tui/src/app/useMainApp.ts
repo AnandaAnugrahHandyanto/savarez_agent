@@ -16,7 +16,7 @@ import type {
 } from '../gatewayTypes.js'
 import { useGitBranch } from '../hooks/useGitBranch.js'
 import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
-import { translate, type TranslationKey, useI18n } from '../i18n/index.js'
+import { translate, type TranslationKey } from '../i18n/index.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage } from '../lib/messages.js'
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
@@ -113,7 +113,6 @@ export function useMainApp(gw: GatewayClient) {
   const [bellOnComplete, setBellOnComplete] = useState(false)
 
   const ui = useStore($uiState)
-  const i18n = useI18n()
   const ti = useCallback((key: TranslationKey, vars?: Record<string, string | number>) => translate(ui.locale, key, vars), [ui.locale])
   const overlay = useStore($overlayState)
 
@@ -866,11 +865,13 @@ export function useMainApp(gw: GatewayClient) {
       turnStartedAt: ui.sid ? turnStartedAt : null,
       // CLI parity: the classic prompt_toolkit status bar shows a red dot
       // on REC (cli.py:_get_voice_status_fragments line 2344).
-      voiceLabel: voiceRecording
-        ? '● REC'
-        : voiceProcessing
-          ? '◉ STT'
-          : i18n.t('voice.idle', { state: voiceEnabled ? i18n.t('voice.on') : i18n.t('voice.off') }) + (voiceTts ? ' [tts]' : '')
+      // Raw voice state passed through so StatusRule (inside I18nProvider)
+      // can compute the translated label — useMainApp runs outside I18nProvider
+      // so its useI18n() always returns the default 'en' context.
+      voiceRecording,
+      voiceProcessing,
+      voiceEnabled,
+      voiceTts,
     }),
     [
       cwd,
@@ -883,7 +884,6 @@ export function useMainApp(gw: GatewayClient) {
       voiceEnabled,
       voiceProcessing,
       voiceRecording,
-      i18n,
       voiceTts
     ]
   )

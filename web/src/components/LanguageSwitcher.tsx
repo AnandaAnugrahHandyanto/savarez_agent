@@ -25,7 +25,7 @@ import { cn } from "@/lib/utils";
  * viewport / overflow ancestors. Below the `sm` breakpoint, `dropUp` uses a
  * bottom sheet portaled to `document.body` instead of an anchored dropdown.
  */
-export function LanguageSwitcher({ dropUp = false }: LanguageSwitcherProps) {
+export function LanguageSwitcher({ dropUp = false, onLocaleChange }: LanguageSwitcherProps) {
   const { locale, setLocale, t } = useI18n();
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -94,6 +94,7 @@ export function LanguageSwitcher({ dropUp = false }: LanguageSwitcherProps) {
               locale={locale}
               setLocale={setLocale}
               setOpen={setOpen}
+              onLocaleChange={onLocaleChange}
             />
           </div>
         </BottomPickSheet>
@@ -113,6 +114,7 @@ export function LanguageSwitcher({ dropUp = false }: LanguageSwitcherProps) {
             locale={locale}
             setLocale={setLocale}
             setOpen={setOpen}
+            onLocaleChange={onLocaleChange}
           />
         </div>
       )}
@@ -125,6 +127,7 @@ function LanguageSwitcherOptions({
   locale,
   setLocale,
   setOpen,
+  onLocaleChange,
 }: LanguageSwitcherOptionsProps) {
   return (
     <>
@@ -141,6 +144,7 @@ function LanguageSwitcherOptions({
             key={code}
             onClick={() => {
               setLocale(code);
+              onLocaleChange?.(code);
               setOpen(false);
             }}
             role="option"
@@ -161,8 +165,14 @@ interface LanguageSwitcherOptionsProps {
   locale: Locale;
   setLocale: (code: Locale) => void;
   setOpen: (open: boolean) => void;
+  onLocaleChange?: (locale: Locale) => void;
 }
 
 interface LanguageSwitcherProps {
   dropUp?: boolean;
+  /** Fire-and-forget callback when user picks a locale.
+   *  Called *after* the React state + localStorage are already updated.
+   *  Intended for syncing `display.language` to config so the embedded
+   *  TUI picks up the change via `useConfigSync` mtime polling. */
+  onLocaleChange?: (locale: Locale) => void;
 }
