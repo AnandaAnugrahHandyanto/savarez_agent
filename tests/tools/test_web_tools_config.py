@@ -451,28 +451,69 @@ class TestParallelClientConfig:
 class TestWebSearchSchema:
     """Test suite for web_search tool schema and handler wiring."""
 
-    def test_schema_exposes_optional_limit(self):
+    def test_schema_exposes_only_tavily_search_options(self):
         import tools.web_tools
 
-        limit_schema = tools.web_tools.WEB_SEARCH_SCHEMA["parameters"]["properties"]["limit"]
+        props = tools.web_tools.WEB_SEARCH_SCHEMA["parameters"]["properties"]
 
-        assert limit_schema["type"] == "integer"
-        assert limit_schema["minimum"] == 1
-        assert limit_schema["maximum"] == 100
-        assert limit_schema["default"] == 5
-        assert "limit" not in tools.web_tools.WEB_SEARCH_SCHEMA["parameters"]["required"]
+        assert set(props) == {
+            "query",
+            "search_depth",
+            "chunks_per_source",
+            "max_results",
+            "include_images",
+            "include_image_descriptions",
+        }
+        assert props["search_depth"]["default"] == "advanced"
+        assert props["chunks_per_source"]["default"] == 5
+        assert props["max_results"]["default"] == 10
+        assert props["include_images"]["default"] is True
+        assert props["include_image_descriptions"]["default"] is True
 
-    def test_registered_handler_passes_limit(self):
+    def test_registered_handler_passes_tavily_search_options(self):
         import tools.web_tools
 
         entry = tools.web_tools.registry.get_entry("web_search")
         with patch("tools.web_tools.web_search_tool", return_value='{"success": true}') as mock_search:
-            result = entry.handler({"query": "site:example.com docs", "limit": 12})
+            result = entry.handler(
+                {
+                    "query": "site:example.com docs",
+                    "search_depth": "advanced",
+                    "chunks_per_source": 5,
+                    "max_results": 10,
+                    "include_images": True,
+                    "include_image_descriptions": True,
+                }
+            )
 
         assert result == '{"success": true}'
-        mock_search.assert_called_once_with("site:example.com docs", limit=12)
+        mock_search.assert_called_once_with(
+            "site:example.com docs",
+            max_results=10,
+            search_depth="advanced",
+            chunks_per_source=5,
+            include_images=True,
+            include_image_descriptions=True,
+        )
 
-    def test_registered_handler_defaults_limit_to_five(self):
+    def test_registered_handler_accepts_legacy_limit_alias(self):
+        import tools.web_tools
+
+        entry = tools.web_tools.registry.get_entry("web_search")
+        with patch("tools.web_tools.web_search_tool", return_value='{"success": true}') as mock_search:
+            result = entry.handler({"query": "docs", "limit": 7})
+
+        assert result == '{"success": true}'
+        mock_search.assert_called_once_with(
+            "docs",
+            max_results=7,
+            search_depth="advanced",
+            chunks_per_source=5,
+            include_images=True,
+            include_image_descriptions=True,
+        )
+
+    def test_registered_handler_defaults_to_requested_tavily_values(self):
         import tools.web_tools
 
         entry = tools.web_tools.registry.get_entry("web_search")
@@ -480,7 +521,14 @@ class TestWebSearchSchema:
             result = entry.handler({"query": "docs"})
 
         assert result == '{"success": true}'
-        mock_search.assert_called_once_with("docs", limit=5)
+        mock_search.assert_called_once_with(
+            "docs",
+            max_results=10,
+            search_depth="advanced",
+            chunks_per_source=5,
+            include_images=True,
+            include_image_descriptions=True,
+        )
 
     def test_web_search_clamps_limit_before_backend_call(self):
         import tools.web_tools

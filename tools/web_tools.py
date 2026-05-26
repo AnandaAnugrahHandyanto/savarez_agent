@@ -743,50 +743,38 @@ def clean_base64_images(text: str) -> str:
 # dispatchers in this file resolve them via get_active_*_provider().
 
 
-def web_search_tool(query: str, limit: int = 5) -> str:
+def web_search_tool(
+    query: str,
+    limit: int = 5,
+    max_results: Optional[int] = None,
+    search_depth: str = "advanced",
+    chunks_per_source: int = 5,
+    include_images: bool = True,
+    include_image_descriptions: bool = True,
+) -> str:
     """
-    Search the web for information using available search API backend.
+    Search the web for information using the configured search backend.
 
-    This function provides a generic interface for web search that can work
-    with multiple backends (Parallel or Firecrawl).
-
-    Note: This function returns search result metadata only (URLs, titles, descriptions).
-    Use web_extract_tool to get full content from specific URLs.
-    
-    Args:
-        query (str): The search query to look up
-        limit (int): Maximum number of results to return (default: 5)
-    
-    Returns:
-        str: JSON string containing search results with the following structure:
-             {
-                 "success": bool,
-                 "data": {
-                     "web": [
-                         {
-                             "title": str,
-                             "url": str,
-                             "description": str,
-                             "position": int
-                         },
-                         ...
-                     ]
-                 }
-             }
-    
-    Raises:
-        Exception: If search fails or API key is not set
+    Note: This function returns search result metadata only (URLs, titles,
+    descriptions). Use web_extract_tool to get full content from specific URLs.
+    Tavily-specific search options are forwarded only when Tavily is the active
+    backend; other providers ignore them.
     """
+    effective_max_results = max_results if max_results is not None else limit
     try:
-        limit = int(limit)
+        effective_max_results = int(effective_max_results)
     except (TypeError, ValueError):
-        limit = 5
-    limit = min(max(limit, 1), 100)
+        effective_max_results = 10 if max_results is not None else 5
+    effective_max_results = min(max(effective_max_results, 1), 100)
 
     debug_call_data = {
         "parameters": {
             "query": query,
-            "limit": limit
+            "max_results": effective_max_results,
+            "search_depth": search_depth,
+            "chunks_per_source": chunks_per_source,
+            "include_images": include_images,
+            "include_image_descriptions": include_image_descriptions,
         },
         "error": None,
         "results_count": 0,
@@ -826,10 +814,20 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             }
         else:
             logger.info(
-                "Web search via %s: '%s' (limit: %d)",
-                provider.name, query, limit,
+                "Web search via %s: '%s' (max_results: %d)",
+                provider.name, query, effective_max_results,
             )
-            response_data = provider.search(query, limit)
+            if provider.name == "tavily":
+                response_data = provider.search(
+                    query,
+                    effective_max_results,
+                    search_depth=search_depth,
+                    chunks_per_source=chunks_per_source,
+                    include_images=include_images,
+                    include_image_descriptions=include_image_descriptions,
+                )
+            else:
+                response_data = provider.search(query, effective_max_results)
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
@@ -1500,7 +1498,7 @@ from tools.registry import registry, tool_error
 
 WEB_SEARCH_SCHEMA = {
     "name": "web_search",
-    "description": "Search the web for information. Returns up to 5 results by default with titles, URLs, and descriptions. The query is passed through to the configured backend, so operators such as site:domain, filetype:pdf, intitle:word, -term, and \"exact phrase\" may work when the backend supports them.",
+    "description": "Search the web for information. Returns up to 10 results by default with titles, URLs, and descriptions. The query is passed through to the configured backend, so operators such as site:domain, filetype:pdf, intitle:word, -term, and \"exact phrase\" may work when the backend supports them.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1508,12 +1506,35 @@ WEB_SEARCH_SCHEMA = {
                 "type": "string",
                 "description": "The search query to look up on the web. You may include backend-supported operators such as site:example.com, filetype:pdf, intitle:word, -term, or \"exact phrase\"."
             },
-            "limit": {
+            "search_depth": {
+                "type": "string",
+                "description": "Search depth for Tavily-backed web search.",
+                "enum": ["basic", "advanced"],
+                "default": "advanced"
+            },
+            "chunks_per_source": {
                 "type": "integer",
-                "description": "Maximum number of results to return. Defaults to 5.",
+                "description": "Maximum Tavily chunks to return per source.",
                 "minimum": 1,
-                "maximum": 100,
+                "maximum": 5,
                 "default": 5
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Maximum number of results to return. Defaults to 10.",
+                "minimum": 1,
+                "maximum": 20,
+                "default": 10
+            },
+            "include_images": {
+                "type": "boolean",
+                "description": "Whether to include result images when supported.",
+                "default": True
+            },
+            "include_image_descriptions": {
+                "type": "boolean",
+                "description": "Whether to include descriptions for returned images when supported.",
+                "default": True
             }
         },
         "required": ["query"]
@@ -1541,7 +1562,14 @@ registry.register(
     name="web_search",
     toolset="web",
     schema=WEB_SEARCH_SCHEMA,
-    handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=args.get("limit", 5)),
+    handler=lambda args, **kw: web_search_tool(
+        args.get("query", ""),
+        max_results=args.get("max_results", args.get("limit", 10)),
+        search_depth=args.get("search_depth", "advanced"),
+        chunks_per_source=args.get("chunks_per_source", 5),
+        include_images=args.get("include_images", True),
+        include_image_descriptions=args.get("include_image_descriptions", True),
+    ),
     check_fn=check_web_api_key,
     requires_env=_web_requires_env(),
     emoji="🔍",

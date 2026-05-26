@@ -162,7 +162,7 @@ class TavilyWebSearchProvider(WebSearchProvider):
     def supports_crawl(self) -> bool:
         return True
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, limit: int = 5, **kwargs: Any) -> Dict[str, Any]:
         """Execute a Tavily search."""
         try:
             from tools.interrupt import is_interrupted
@@ -170,14 +170,30 @@ class TavilyWebSearchProvider(WebSearchProvider):
             if is_interrupted():
                 return {"success": False, "error": "Interrupted"}
 
+            search_depth = str(kwargs.get("search_depth") or "advanced").strip().lower()
+            if search_depth not in {"basic", "advanced"}:
+                search_depth = "advanced"
+
+            try:
+                chunks_per_source = int(kwargs.get("chunks_per_source", 5))
+            except (TypeError, ValueError):
+                chunks_per_source = 5
+            chunks_per_source = min(max(chunks_per_source, 1), 5)
+
+            include_images = bool(kwargs.get("include_images", True))
+            include_image_descriptions = bool(kwargs.get("include_image_descriptions", True))
+
             logger.info("Tavily search: '%s' (limit=%d)", query, limit)
             raw = _tavily_request(
                 "search",
                 {
                     "query": query,
+                    "search_depth": search_depth,
+                    "chunks_per_source": chunks_per_source,
                     "max_results": min(limit, 20),
                     "include_raw_content": False,
-                    "include_images": False,
+                    "include_images": include_images,
+                    "include_image_descriptions": include_image_descriptions,
                 },
             )
             return _normalize_tavily_search_results(raw)

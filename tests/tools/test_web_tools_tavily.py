@@ -183,13 +183,28 @@ class TestWebSearchTavily:
 
         with patch("tools.web_tools._get_backend", return_value="tavily"), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
-             patch("tools.web_tools.httpx.post", return_value=mock_response), \
+             patch("tools.web_tools.httpx.post", return_value=mock_response) as mock_post, \
              patch("tools.interrupt.is_interrupted", return_value=False):
             from tools.web_tools import web_search_tool
-            result = json.loads(web_search_tool("test query", limit=3))
+            result = json.loads(
+                web_search_tool(
+                    "test query",
+                    max_results=10,
+                    search_depth="advanced",
+                    chunks_per_source=5,
+                    include_images=True,
+                    include_image_descriptions=True,
+                )
+            )
             assert result["success"] is True
             assert len(result["data"]["web"]) == 1
             assert result["data"]["web"][0]["title"] == "Result"
+            payload = mock_post.call_args.kwargs["json"]
+            assert payload["search_depth"] == "advanced"
+            assert payload["chunks_per_source"] == 5
+            assert payload["max_results"] == 10
+            assert payload["include_images"] is True
+            assert payload["include_image_descriptions"] is True
 
 
 # ─── web_extract_tool (Tavily dispatch) ───────────────────────────────────────
