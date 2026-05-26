@@ -24,9 +24,14 @@ from hermes_cli.production_order_dispatch import (
 )
 from hermes_cli.production_order_autonomous import (
     apply_profile_result_return,
+    brief_packet_from_approved_action_envelope,
     collect_profile_result_packet,
+    create_approved_action_envelope,
+    hermes_profile_runner,
     invoke_profile_task,
+    run_approved_action_envelope_autonomously,
     run_production_order_autonomously,
+    validate_approved_action_envelope,
 )
 
 
@@ -558,3 +563,131 @@ def test_run_production_order_autonomously_respects_retry_limit_on_failed_invoca
     assert result.done is False
     assert result.terminal_reason == "retry_limit_exceeded"
     assert any("exit_code=1" in error for error in result.errors)
+
+
+def test_hermes_profile_runner_fails_safe_when_real_runtime_is_disabled(conn, sample_brief, monkeypatch):
+    monkeypatch.delenv("HERMES_ENABLE_PRODUCTION_PROFILE_RUNTIME", raising=False)
+    po = create_ready_for_dev_order(conn, sample_brief)
+    envelope = build_profile_task_envelope(conn, po.production_order_id)
+
+    result = hermes_profile_runner(envelope.to_dict(), timeout_seconds=15)
+
+    assert result["exit_code"] == 1
+    assert result["stdout"] == ""
+    assert "disabled" in result["stderr"].lower()
+    assert result["log_ref"] == f"profile-runtime:{envelope.target_profile}:disabled"
+
+
+def test_validate_approved_action_envelope_rejects_raw_chat_and_wrong_control_object_type():
+    envelope = create_approved_action_envelope(
+        approved_brief={"objective": "Ship the approved slice."},
+        approved_by="Jarren",
+        approved_at="2026-05-26T00:00:00Z",
+        approval_phrase="I approve this production workflow brief.",
+        priority_lane="Hermes OS",
+        repo_or_workspace="alphathetacoding/hermes-agent",
+        scope=["Implement the bounded runtime slice."],
+        out_of_scope=["No daemon changes."],
+        acceptance_criteria=["Return structured production results."],
+        approval_boundaries=["Pause before publishing or deployment."],
+        stop_conditions=["Stop if architecture changes are required."],
+        source_truth=[WORKFLOW_SPEC_SOURCE],
+        silence_protocol={"mode": "silent"},
+        idempotency_key="aae-test-1",
+    )
+
+    with pytest.raises(ValueError, match="rejects raw chat"):
+        validate_approved_action_envelope({**envelope, "raw_chat": "please just do it"})
+
+    with pytest.raises(ValueError, match="control_object_type"):
+        validate_approved_action_envelope(
+            {**envelope, "control_object_type": "freeform_chat_request"}
+        )
+
+
+def test_brief_packet_from_approved_action_envelope_maps_runtime_brief_fields():
+    envelope = create_approved_action_envelope(
+        approved_brief={"objective": "Implement Slice 13 safely."},
+        approved_by="Jarren",
+        approved_at="2026-05-26T00:00:00Z",
+        approval_phrase="I approve this production workflow brief.",
+        priority_lane="Hermes OS",
+        repo_or_workspace="alphathetacoding/hermes-agent",
+        scope=["Implement approved envelope entrypoint."],
+        out_of_scope=["Do not add background workers."],
+        acceptance_criteria=["Use approved brief as frozen source."],
+        approval_boundaries=["Pause before broad architecture change."],
+        stop_conditions=["Stop if real runtime would be faked."],
+        source_truth=[WORKFLOW_SPEC_SOURCE],
+        silence_protocol={"mode": "silent"},
+        idempotency_key="aae-test-2",
+    )
+
+    packet = brief_packet_from_approved_action_envelope(envelope)
+
+    assert packet["target repo or workspace"] == "alphathetacoding/hermes-agent"
+    assert packet["out of scope"] == ["Do not add background workers."]
+    assert packet["approval boundaries"] == ["Pause before broad architecture change."]
+    assert packet["idempotency_key"] == "aae-test-2"
+
+
+def test_run_approved_action_envelope_autonomously_creates_or_reuses_order_and_preserves_silence_protocol(conn):
+    envelope = create_approved_action_envelope(
+        approved_brief={
+            "title": "Approved autonomous entrypoint",
+            "objective": "Run the approved brief through the existing production-order runtime.",
+            "constraints": "No broad architecture changes.",
+            "expected output": "Structured production run result.",
+        },
+        approved_by="Jarren",
+        approved_at="2026-05-26T00:00:00Z",
+        approval_phrase="I approve this production workflow brief.",
+        priority_lane="Hermes OS",
+        repo_or_workspace="alphathetacoding/hermes-agent",
+        scope=["Implement slices 11.5B and 13."],
+        out_of_scope=["No slice 14 or slice 15 work."],
+        acceptance_criteria=["Create or reuse production order idempotently."],
+        approval_boundaries=["Pause before deployment or publishing."],
+        stop_conditions=["Stop if real runtime would be faked."],
+        source_truth=[WORKFLOW_SPEC_SOURCE],
+        silence_protocol={"mode": "silent", "channel": "none"},
+        idempotency_key="approved-envelope-idempotency",
+    )
+
+    def fake_runner(payload: dict) -> dict:
+        packet_map = {
+            ("architect_os", "ARCHITECT_SPEC"): architect_spec_packet(payload["production_order_id"]),
+            ("dev_os", "ARCHITECT_READY_FOR_DEV"): devos_build_packet(payload["production_order_id"]),
+            ("audit_os", "DEV_COMPLETE"): audit_review_packet(payload["production_order_id"]),
+            ("architect_os", "AUDIT_PASSED"): architect_reconcile_packet(payload["production_order_id"]),
+            ("default", "ARCHITECT_ACCEPTED"): final_review_packet(payload["production_order_id"]),
+        }
+        return {
+            "stdout": "",
+            "stderr": "",
+            "exit_code": 0,
+            "duration_ms": 5,
+            "result_channel": packet_map[(payload["target_profile"], payload["source_state"])],
+        }
+
+    first = run_approved_action_envelope_autonomously(
+        conn,
+        envelope,
+        runner=fake_runner,
+        max_steps=10,
+        max_retries=1,
+        timeout_seconds=30,
+    )
+    second = run_approved_action_envelope_autonomously(
+        conn,
+        envelope,
+        runner=fake_runner,
+        max_steps=10,
+        max_retries=1,
+        timeout_seconds=30,
+    )
+
+    assert first["silence_protocol"] == {"mode": "silent", "channel": "none"}
+    assert first["production_run_result"]["done"] is True
+    assert second["production_order"]["production_order_id"] == first["production_order"]["production_order_id"]
+    assert second["production_run_result"]["terminal_reason"] == "already_terminal_or_paused"
