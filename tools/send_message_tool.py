@@ -752,7 +752,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     last_result = None
     for chunk in chunks:
         if platform == Platform.SLACK:
-            result = await _send_slack(pconfig.token, chat_id, chunk)
+            result = await _send_slack(pconfig.token, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WHATSAPP:
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SIGNAL:
@@ -1036,8 +1036,14 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         return _error(f"Telegram send failed: {e}")
 
 
-async def _send_slack(token, chat_id, message):
-    """Send via Slack Web API."""
+async def _send_slack(token, chat_id, message, thread_id=None):
+    """Send via Slack Web API.
+
+    When ``thread_id`` is provided it is forwarded as ``thread_ts`` so the
+    message threads under the given parent. Without this, 3-segment targets
+    like ``slack:<channel>:<thread_ts>`` silently degrade to channel-root
+    posts.
+    """
     try:
         import aiohttp
     except ImportError:
@@ -1050,6 +1056,8 @@ async def _send_slack(token, chat_id, message):
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             payload = {"channel": chat_id, "text": message, "mrkdwn": True}
+            if thread_id:
+                payload["thread_ts"] = str(thread_id)
             async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
                 data = await resp.json()
                 if data.get("ok"):

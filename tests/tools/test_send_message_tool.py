@@ -590,7 +590,98 @@ class TestSendToPlatformChunking:
             "***",
             "C123",
             "*hello* from <https://example.com|Hermes>",
+            thread_id=None,
         )
+
+    def test_slack_thread_id_forwarded_to_send_slack(self, monkeypatch):
+        """3-segment Slack targets must reach _send_slack with thread_id set
+        so chat.postMessage receives thread_ts and the message threads."""
+        _ensure_slack_mock(monkeypatch)
+        import gateway.platforms.slack as slack_mod
+
+        monkeypatch.setattr(slack_mod, "SLACK_AVAILABLE", True)
+        send = AsyncMock(return_value={"success": True, "message_id": "1"})
+
+        with patch("tools.send_message_tool._send_slack", send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.SLACK,
+                    SimpleNamespace(enabled=True, token="***", extra={}),
+                    "C123",
+                    "hello in thread",
+                    thread_id="1779330010.215119",
+                )
+            )
+
+        assert result["success"] is True
+        send.assert_awaited_once_with(
+            "***",
+            "C123",
+            "hello in thread",
+            thread_id="1779330010.215119",
+        )
+
+    def test_slack_send_slack_includes_thread_ts_in_payload(self, monkeypatch):
+        """_send_slack must put thread_ts on the chat.postMessage payload
+        when thread_id is provided."""
+        from tools.send_message_tool import _send_slack
+
+        captured = {}
+
+        class _FakeResp:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def json(self): return {"ok": True, "ts": "9999.0001"}
+
+        class _FakeSession:
+            def __init__(self, *a, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            def post(self, url, headers=None, json=None, **kw):
+                captured["url"] = url
+                captured["payload"] = json
+                return _FakeResp()
+
+        import aiohttp
+        monkeypatch.setattr(aiohttp, "ClientSession", _FakeSession)
+
+        result = asyncio.run(
+            _send_slack("xoxb-token", "C123", "hi", thread_id="1779330010.215119")
+        )
+
+        assert result["success"] is True
+        assert captured["url"] == "https://slack.com/api/chat.postMessage"
+        assert captured["payload"]["channel"] == "C123"
+        assert captured["payload"]["text"] == "hi"
+        assert captured["payload"]["thread_ts"] == "1779330010.215119"
+
+    def test_slack_send_slack_omits_thread_ts_when_no_thread_id(self, monkeypatch):
+        """Without thread_id, _send_slack must not put a thread_ts key on the
+        payload (so the message lands at the channel root as intended)."""
+        from tools.send_message_tool import _send_slack
+
+        captured = {}
+
+        class _FakeResp:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def json(self): return {"ok": True, "ts": "9999.0001"}
+
+        class _FakeSession:
+            def __init__(self, *a, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            def post(self, url, headers=None, json=None, **kw):
+                captured["payload"] = json
+                return _FakeResp()
+
+        import aiohttp
+        monkeypatch.setattr(aiohttp, "ClientSession", _FakeSession)
+
+        result = asyncio.run(_send_slack("xoxb-token", "C123", "hi"))
+
+        assert result["success"] is True
+        assert "thread_ts" not in captured["payload"]
 
     def test_slack_bold_italic_formatted_before_send(self, monkeypatch):
         """Bold+italic ***text*** survives tool-layer formatting."""
