@@ -1113,6 +1113,7 @@ AUTHOR_MAP = {
     "ginwu05@gmail.com": "GinWU05",  # PR #19093
     "shashwatgokhe2@gmail.com": "shashwatgokhe",  # PR #19196
     "stevenchou.ai@gmail.com": "stevenchouai",  # PR #19221
+    "steveonjava@gmail.com": "steveonjava",
     "leo.gong@phizchat.com": "agilejava",  # PR #19346
     "acc001k@pm.me": "acc001k",  # PR #19358
     "kowenhao@users.noreply.github.com": "kowenhaoai",  # PR #19376
