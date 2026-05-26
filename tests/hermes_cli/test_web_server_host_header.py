@@ -215,3 +215,27 @@ class TestWebSocketHostOriginGuard:
             },
         ):
             pass
+
+    def test_remote_websocket_client_allowed_for_public_bind(self, monkeypatch):
+        """Binding to 0.0.0.0 with --insecure makes HTTP public, so the
+        companion WebSocket endpoints must not stay loopback-only."""
+        from typing import Any, cast
+        from types import SimpleNamespace
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "0.0.0.0", raising=False)
+
+        fake_ws = cast(Any, SimpleNamespace(client=SimpleNamespace(host="10.0.0.42")))
+        assert ws._ws_client_is_allowed(fake_ws)
+
+    def test_remote_websocket_client_rejected_for_loopback_bind(self, monkeypatch):
+        from typing import Any, cast
+        from types import SimpleNamespace
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+
+        fake_ws = cast(Any, SimpleNamespace(client=SimpleNamespace(host="10.0.0.42")))
+        assert not ws._ws_client_is_allowed(fake_ws)

@@ -3330,8 +3330,15 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     """Check if the WebSocket client IP is acceptable.
 
-    Allows loopback clients only.
+    Defaults to loopback-only. When the operator explicitly binds the
+    dashboard to a non-loopback interface (which start_server only permits
+    with ``--insecure``), allow remote WebSocket clients too; HTTP access is
+    already public in that mode and the WebSocket guard should match it.
     """
+    bound_host = getattr(app.state, "bound_host", None)
+    if bound_host and bound_host.lower() not in _LOOPBACK_HOST_VALUES:
+        return True
+
     client_host = ws.client.host if ws.client else ""
     if not client_host:
         return True
