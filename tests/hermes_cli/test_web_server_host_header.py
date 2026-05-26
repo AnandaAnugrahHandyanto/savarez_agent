@@ -215,3 +215,40 @@ class TestWebSocketHostOriginGuard:
             },
         ):
             pass
+
+    def test_non_loopback_client_matching_bound_host_is_accepted(self, monkeypatch):
+        """Dashboard WebSockets work when bound to an explicit tailnet host.
+
+        Tailscale Serve can forward WebSocket upgrades from the same tailnet IP
+        that the dashboard was intentionally bound to.  Keep the peer-IP guard
+        strict for loopback binds, but allow this explicit non-loopback bind
+        once Host/Origin validation has already matched the bound host.
+        """
+        from types import SimpleNamespace
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "vps.tailnet.test", raising=False)
+        monkeypatch.setitem(
+            sys.modules,
+            "socket",
+            SimpleNamespace(
+                getaddrinfo=lambda host, port: [
+                    (0, 0, 0, "", ("100.64.0.10", 0)),
+                ],
+            ),
+        )
+
+        fake_ws = SimpleNamespace(client=SimpleNamespace(host="100.64.0.10"))
+
+        assert ws._ws_client_is_allowed(fake_ws)  # type: ignore[arg-type]
+
+    def test_non_loopback_client_is_rejected_for_loopback_bind(self, monkeypatch):
+        from types import SimpleNamespace
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+        fake_ws = SimpleNamespace(client=SimpleNamespace(host="100.64.0.10"))
+
+        assert not ws._ws_client_is_allowed(fake_ws)  # type: ignore[arg-type]

@@ -3330,12 +3330,32 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     """Check if the WebSocket client IP is acceptable.
 
-    Allows loopback clients only.
+    Allows loopback clients by default.  When the dashboard is explicitly bound
+    to a non-loopback hostname/IP (for example a Tailscale name used behind
+    ``tailscale serve``), also allow clients that arrive from that bound address.
+    Host/Origin validation still runs separately in _ws_host_origin_is_allowed().
     """
     client_host = ws.client.host if ws.client else ""
     if not client_host:
         return True
-    return client_host in _LOOPBACK_HOSTS
+    if client_host in _LOOPBACK_HOSTS:
+        return True
+
+    bound_host = getattr(app.state, "bound_host", "") or ""
+    bound_host = bound_host.strip().lower()
+    if not bound_host or bound_host in _LOOPBACK_HOSTS:
+        return False
+
+    allowed_hosts = {bound_host}
+    try:
+        import socket
+        for info in socket.getaddrinfo(bound_host, None):
+            if info and info[4]:
+                allowed_hosts.add(str(info[4][0]).lower())
+    except Exception:
+        pass
+
+    return client_host.strip().lower() in allowed_hosts
 
 
 def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:
