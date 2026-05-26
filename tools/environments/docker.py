@@ -633,21 +633,30 @@ class DockerEnvironment(BaseEnvironment):
         """Stop and remove the container. Bind-mount dirs persist if persistent=True."""
         if self._container_id:
             try:
-                # Stop in background so cleanup doesn't block
-                stop_cmd = (
-                    f"(timeout 60 {self._docker_exe} stop {self._container_id} || "
-                    f"{self._docker_exe} rm -f {self._container_id}) >/dev/null 2>&1 &"
+                # Stop in background so cleanup doesn't block.
+                # List-form args (shell=False) eliminate shell injection risk.
+                # start_new_session=True detaches the process from the parent TTY.
+                subprocess.Popen(
+                    [self._docker_exe, "stop", self._container_id],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
                 )
-                subprocess.Popen(stop_cmd, shell=True)
             except Exception as e:
                 logger.warning("Failed to stop container %s: %s", self._container_id, e)
 
             if not self._persistent:
-                # Also schedule removal (stop only leaves it as stopped)
+                # Also schedule removal (stop only leaves it as stopped).
+                # Use a detached Python subprocess instead of shell compound command.
                 try:
                     subprocess.Popen(
-                        f"sleep 3 && {self._docker_exe} rm -f {self._container_id} >/dev/null 2>&1 &",
-                        shell=True,
+                        ["python3", "-c",
+                         f"import time; time.sleep(3); "
+                         f"import subprocess; subprocess.run(['{self._docker_exe}', 'rm', '-f', '{self._container_id}'], "
+                         f"stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
                     )
                 except Exception:
                     pass
