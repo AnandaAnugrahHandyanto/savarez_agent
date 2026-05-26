@@ -1714,9 +1714,7 @@ def create_task(
             (idempotency_key,),
         ).fetchone()
         if row:
-            existing_id = row["id"]
-            _apply_default_notify_subscriptions(conn, existing_id)
-            return existing_id
+            return row["id"]
 
     now = int(time.time())
 

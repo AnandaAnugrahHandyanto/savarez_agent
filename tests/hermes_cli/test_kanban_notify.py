@@ -59,6 +59,47 @@ def test_create_task_applies_default_notify_subscriptions(kanban_home, monkeypat
     }]
 
 
+def test_idempotent_create_does_not_reapply_default_notify_subscriptions(kanban_home, monkeypatch):
+    """Idempotent retries should not undo an intentional unsubscribe."""
+    default_subs = [{
+        "platform": "telegram",
+        "chat_id": "235856371",
+        "thread_id": None,
+        "user_id": None,
+        "notifier_profile": "default",
+    }]
+    monkeypatch.setattr(kb, "_default_notify_subscriptions", lambda: default_subs)
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="notify once",
+            assignee="worker1",
+            idempotency_key="same-task",
+        )
+        assert kb.list_notify_subs(conn, tid)
+        assert kb.remove_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="235856371",
+        )
+
+        same_tid = kb.create_task(
+            conn,
+            title="notify once",
+            assignee="worker1",
+            idempotency_key="same-task",
+        )
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+
+    assert same_tid == tid
+    assert subs == []
+
+
 @pytest.mark.asyncio
 async def test_notifier_unsubs_after_completed_event(kanban_home):
     """
