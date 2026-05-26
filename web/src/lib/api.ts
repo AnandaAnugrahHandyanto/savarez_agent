@@ -18,6 +18,7 @@ export const HERMES_BASE_PATH = readBasePath();
 const BASE = HERMES_BASE_PATH;
 
 import type { DashboardTheme } from "@/themes/types";
+import { AguiSseDecoder, type AguiEvent } from "./agui";
 
 // Ephemeral session token for protected endpoints.
 // Injected into index.html by the server — never fetched via API.
@@ -281,6 +282,41 @@ export const api = {
       `/api/actions/${encodeURIComponent(name)}/status?lines=${lines}`,
     ),
 
+  // Cockpit / AG-UI
+  getCockpitStatus: () => fetchJSON<CockpitStatusResponse>("/api/cockpit/status"),
+  streamCockpitAguiRun: async (
+    body: CockpitAguiRunRequest,
+    onEvent: (event: AguiEvent) => void,
+    signal?: AbortSignal,
+  ) => {
+    const headers = new Headers({ "Content-Type": "application/json" });
+    const token = window.__HERMES_SESSION_TOKEN__;
+    if (token) setSessionHeader(headers, token);
+    const res = await fetch(`${BASE}/api/cockpit/agui/runs`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText);
+      throw new Error(`${res.status}: ${text}`);
+    }
+    if (!res.body) throw new Error("Streaming response body unavailable");
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    const sse = new AguiSseDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      for (const event of sse.push(decoder.decode(value, { stream: true }))) {
+        onEvent(event);
+      }
+    }
+    for (const event of sse.flush()) onEvent(event);
+  },
+
   // Dashboard plugins
   getPlugins: () =>
     fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
@@ -360,6 +396,33 @@ export interface ActionStatusResponse {
   name: string;
   pid: number | null;
   running: boolean;
+}
+
+export interface CockpitStatusResponse {
+  api_server: {
+    configured: boolean;
+    enabled: boolean;
+    host: string;
+    port: number;
+    base_url: string;
+    auth_configured: boolean;
+    key_preview: string;
+    reachable: boolean;
+  };
+  capabilities: Record<string, unknown>;
+}
+
+export interface CockpitAguiMessage {
+  id?: string;
+  role: "user" | "assistant" | "system" | string;
+  content: string | Array<{ type?: string; text?: string; content?: string }>;
+}
+
+export interface CockpitAguiRunRequest {
+  threadId?: string;
+  runId?: string;
+  state?: Record<string, unknown>;
+  messages: CockpitAguiMessage[];
 }
 
 export interface PlatformStatus {

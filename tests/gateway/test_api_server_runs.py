@@ -21,6 +21,8 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
+    _agui_events_from_run_event,
+    _runs_body_from_agui_input,
     cors_middleware,
     security_headers_middleware,
 )
@@ -47,8 +49,11 @@ def _create_runs_app(adapter: APIServerAdapter) -> web.Application:
     app = web.Application(middlewares=mws)
     app["api_server_adapter"] = adapter
     app.router.add_post("/v1/runs", adapter._handle_runs)
+    app.router.add_post("/v1/agui/runs", adapter._handle_agui_runs)
     app.router.add_get("/v1/runs/{run_id}", adapter._handle_get_run)
     app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
+    app.router.add_get("/v1/runs/{run_id}/events/replay", adapter._handle_run_event_replay)
+    app.router.add_get("/v1/runs/{run_id}/agui-events", adapter._handle_run_agui_events)
     app.router.add_post("/v1/runs/{run_id}/approval", adapter._handle_run_approval)
     app.router.add_post("/v1/runs/{run_id}/stop", adapter._handle_stop_run)
     return app
@@ -277,6 +282,75 @@ class TestRunStatus:
 # ---------------------------------------------------------------------------
 
 
+class TestAGUIEventMapping:
+    def test_translates_agui_input_to_runs_body(self):
+        body = _runs_body_from_agui_input({
+            "threadId": "thread-1",
+            "runId": "run-client-1",
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+            ],
+        })
+
+        assert body["session_id"] == "thread-1"
+        assert body["agui_run_id"] == "run-client-1"
+        assert body["input"] == [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+
+    def test_maps_message_delta_to_text_message_content(self):
+        events = _agui_events_from_run_event({
+            "event": "message.delta",
+            "run_id": "run_123",
+            "delta": "hello",
+        })
+
+        assert events == [{
+            "type": "TEXT_MESSAGE_CONTENT",
+            "runId": "run_123",
+            "messageId": "run_123_message",
+            "delta": "hello",
+        }]
+
+    def test_maps_tool_and_run_events_to_agui_types(self):
+        tool_events = _agui_events_from_run_event({
+            "event": "tool.started",
+            "run_id": "run_123",
+            "tool": "terminal",
+            "preview": "pytest",
+        })
+        completed_events = _agui_events_from_run_event({
+            "event": "run.completed",
+            "run_id": "run_123",
+            "output": "done",
+            "usage": {"total_tokens": 3},
+        })
+
+        assert tool_events == [{
+            "type": "TOOL_CALL_START",
+            "runId": "run_123",
+            "toolCallId": "run_123_terminal",
+            "toolCallName": "terminal",
+            "parentMessageId": "run_123_message",
+            "args": {"preview": "pytest"},
+        }]
+        assert completed_events == [
+            {
+                "type": "TEXT_MESSAGE_END",
+                "runId": "run_123",
+                "messageId": "run_123_message",
+            },
+            {
+                "type": "RUN_FINISHED",
+                "runId": "run_123",
+                "result": "done",
+                "usage": {"total_tokens": 3},
+            },
+        ]
+
+
 class TestRunEvents:
     @pytest.mark.asyncio
     async def test_events_stream_returns_completed(self, adapter):
@@ -305,6 +379,149 @@ class TestRunEvents:
                 # Should contain run.completed
                 assert "run.completed" in body
                 assert "Hello!" in body
+
+    @pytest.mark.asyncio
+    async def test_event_replay_returns_auditable_completed_events(self, adapter):
+        """Completed run events should remain replayable after the SSE stream closes."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "Replay me"}
+                mock_agent.session_prompt_tokens = 2
+                mock_agent.session_completion_tokens = 3
+                mock_agent.session_total_tokens = 5
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                for _ in range(20):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                replay_resp = await cli.get(f"/v1/runs/{run_id}/events/replay")
+                assert replay_resp.status == 200
+                replay = await replay_resp.json()
+
+        assert replay["object"] == "hermes.run.events"
+        assert replay["run_id"] == run_id
+        assert replay["status"] == "completed"
+        assert replay["events"]
+        assert [event["seq"] for event in replay["events"]] == list(range(1, len(replay["events"]) + 1))
+        completed = replay["events"][-1]
+        assert completed["event"] == "run.completed"
+        assert completed["output"] == "Replay me"
+        assert completed["usage"]["total_tokens"] == 5
+        assert replay["next_after"] == completed["seq"]
+
+    @pytest.mark.asyncio
+    async def test_event_replay_after_filters_prior_events(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                for _ in range(20):
+                    status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                first_resp = await cli.get(f"/v1/runs/{run_id}/events/replay")
+                first = await first_resp.json()
+                replay_resp = await cli.get(
+                    f"/v1/runs/{run_id}/events/replay",
+                    params={"after": str(first["next_after"])},
+                )
+                replay = await replay_resp.json()
+
+        assert replay_resp.status == 200
+        assert replay["events"] == []
+        assert replay["next_after"] == first["next_after"]
+
+    @pytest.mark.asyncio
+    async def test_event_replay_requires_auth(self, auth_adapter):
+        app = _create_runs_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/runs/run_any/events/replay")
+        assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_agui_events_stream_maps_run_events(self, adapter):
+        """AG-UI stream should expose run events using AG-UI event names."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "Hello AG-UI"}
+                mock_agent.session_prompt_tokens = 1
+                mock_agent.session_completion_tokens = 2
+                mock_agent.session_total_tokens = 3
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                data = await resp.json()
+                run_id = data["run_id"]
+
+                events_resp = await cli.get(f"/v1/runs/{run_id}/agui-events")
+                assert events_resp.status == 200
+                body = await events_resp.text()
+
+                assert "RUN_STARTED" in body
+                assert "TEXT_MESSAGE_END" in body
+                assert "RUN_FINISHED" in body
+                assert "Hello AG-UI" in body
+    @pytest.mark.asyncio
+    async def test_agui_post_starts_run_and_streams_events(self, adapter):
+        """AG-UI POST endpoint should accept RunAgentInput and stream AG-UI events."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "Hello direct AG-UI"}
+                mock_agent.session_prompt_tokens = 1
+                mock_agent.session_completion_tokens = 2
+                mock_agent.session_total_tokens = 3
+                mock_create.return_value = mock_agent
+
+                events_resp = await cli.post(
+                    "/v1/agui/runs",
+                    json={
+                        "threadId": "thread-direct",
+                        "runId": "run-direct",
+                        "messages": [{"role": "user", "content": "hello"}],
+                    },
+                )
+                assert events_resp.status == 200
+                body = await events_resp.text()
+
+                assert "RUN_STARTED" in body
+                assert '"runId": "run-direct"' in body
+                assert '"threadId": "thread-direct"' in body
+                assert "RUN_FINISHED" in body
+                assert "Hello direct AG-UI" in body
+
+    @pytest.mark.asyncio
+    async def test_agui_post_rejects_missing_messages(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/agui/runs", json={"threadId": "thread-empty"})
+            assert resp.status == 400
+            data = await resp.json()
+        assert "messages" in data["error"]["message"]
 
 
 
