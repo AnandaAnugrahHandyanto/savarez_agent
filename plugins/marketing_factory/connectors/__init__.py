@@ -22,6 +22,7 @@ from typing import Dict, Optional, Type
 
 from plugins.marketing_factory.connectors.base import BaseChannelConnector
 from plugins.marketing_factory.connectors.dry_run import DryRunConnector
+from plugins.marketing_factory.connectors.x_stub import XConnector
 
 _REGISTRY: Dict[str, BaseChannelConnector] = {}
 
@@ -34,6 +35,12 @@ _DRY_RUN: BaseChannelConnector = DryRunConnector()
 def register(channel: str, connector: BaseChannelConnector) -> None:
     """Register a real connector for a channel. Last-writer-wins."""
     _REGISTRY[channel] = connector
+
+
+# Auto-register the X connector. Cred validation happens lazily inside
+# XConnector.publish(); missing env vars raise ConnectorError → PublisherAgent
+# audit-falls-back to dry_run. So this is safe to enable unconditionally.
+register("x", XConnector())
 
 
 def get_live_connector(channel: str) -> Optional[BaseChannelConnector]:

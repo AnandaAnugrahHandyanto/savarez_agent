@@ -380,6 +380,7 @@ def test_publish_scheduled_falls_back_to_dry_run_when_no_live_connector(isolate_
     """Phase 4 safety contract: channel_mode=live without a registered connector
     must publish as dry_run and emit a `publish.dry_run.fallback` audit event
     so the dashboard can flag it."""
+    from plugins.marketing_factory import connectors
     from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
     from plugins.marketing_factory.store import MarketingFactoryStore
 
@@ -392,11 +393,17 @@ def test_publish_scheduled_falls_back_to_dry_run_when_no_live_connector(isolate_
     schedule = pipe.scheduler.schedule_approved(store, app_slug="pupular")
     assert schedule, "scheduler should produce at least one schedule"
 
-    # Flip the channel to live — but no real connector is registered, so the
-    # publisher must fall back gracefully instead of raising or posting.
+    # Flip the channel to live — but pop the registered connector for this
+    # channel so we're exercising the "no connector at all" branch (not the
+    # "connector exists but raised" branch, which has different fallback text).
+    previous = connectors._REGISTRY.pop(draft["channel"], None)
     store.set_channel_mode("pupular", draft["channel"], "live", reviewer="tester")
+    try:
+        events = pipe.publisher.publish_scheduled(store, app_slug="pupular")
+    finally:
+        if previous is not None:
+            connectors._REGISTRY[draft["channel"]] = previous
 
-    events = pipe.publisher.publish_scheduled(store, app_slug="pupular")
     assert len(events) == 1
     event = events[0]
     assert event["mode"] == "dry_run"
@@ -1732,3 +1739,217 @@ def test_brand_memory_force_lifts_rejection_reason_when_llm_drops_it(isolate_hom
     assert "furry friend" in steering["what_to_avoid"], (
         f"Expected rejection reason to be force-lifted; got what_to_avoid={steering['what_to_avoid']}"
     )
+
+
+# ---------------------------------------------------------------------------
+# XConnector tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def x_creds(monkeypatch):
+    """Inject fake X OAuth1 creds so XConnector.publish proceeds past the env-var guard."""
+    monkeypatch.setenv("X_API_KEY", "fake-key")
+    monkeypatch.setenv("X_API_SECRET", "fake-secret")
+    monkeypatch.setenv("X_ACCESS_TOKEN", "fake-token")
+    monkeypatch.setenv("X_ACCESS_TOKEN_SECRET", "fake-token-secret")
+
+
+class _FakeResponse:
+    """Tiny stand-in for requests.Response so tests don't need responses/requests-mock."""
+
+    def __init__(self, status_code=200, json_data=None, text="", content=b""):
+        self.status_code = status_code
+        self._json = json_data if json_data is not None else {}
+        self.text = text
+        self.content = content
+
+    def json(self):
+        return self._json
+
+
+def test_xconnector_missing_creds_raises_connector_error(isolate_home, monkeypatch):
+    """If any of the 4 required env vars is absent, publish must raise so
+    PublisherAgent can audit-fall-back. No silent failure, no broken post."""
+    from plugins.marketing_factory.connectors.base import ConnectorError
+    from plugins.marketing_factory.connectors.x_stub import XConnector
+
+    for var in ("X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET"):
+        monkeypatch.delenv(var, raising=False)
+
+    with pytest.raises(ConnectorError) as exc_info:
+        XConnector().publish({"id": "draft_1", "body": "hello world", "channel": "x"})
+    assert "missing env vars" in str(exc_info.value)
+
+
+def test_xconnector_text_only_post_returns_live_event(isolate_home, x_creds, monkeypatch):
+    """Successful text-only tweet returns posted=True with tweet_id + tweet_url
+    in the payload. Verifies happy path and OAuth1 signing happens."""
+    import requests as _real_requests
+    from plugins.marketing_factory.connectors.x_stub import XConnector
+
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        captured["json"] = kwargs.get("json")
+        captured["auth"] = kwargs.get("auth")
+        return _FakeResponse(status_code=201, json_data={"data": {"id": "9999", "text": kwargs["json"]["text"]}})
+
+    monkeypatch.setattr(_real_requests, "post", fake_post)
+
+    result = XConnector().publish({
+        "id": "draft_xyz",
+        "body": "find your new best friend today",
+        "channel": "x",
+        "images": [],
+    })
+
+    assert result["mode"] == "live"
+    assert result["posted"] is True
+    assert result["channel"] == "x"
+    assert result["payload"]["tweet_id"] == "9999"
+    assert result["payload"]["tweet_url"] == "https://x.com/i/web/status/9999"
+    assert result["payload"]["media_ids"] == []
+    assert captured["url"] == "https://api.twitter.com/2/tweets"
+    assert captured["json"] == {"text": "find your new best friend today"}
+    assert captured["auth"] is not None
+
+
+def test_xconnector_api_error_raises_connector_error(isolate_home, x_creds, monkeypatch):
+    """A 401 / 403 / 5xx from X must raise ConnectorError so PublisherAgent
+    audit-falls-back to dry_run rather than silently swallowing the failure."""
+    import requests as _real_requests
+    from plugins.marketing_factory.connectors.base import ConnectorError
+    from plugins.marketing_factory.connectors.x_stub import XConnector
+
+    def fake_post(url, **kwargs):
+        return _FakeResponse(status_code=401, text='{"detail":"Unauthorized"}')
+
+    monkeypatch.setattr(_real_requests, "post", fake_post)
+
+    with pytest.raises(ConnectorError) as exc_info:
+        XConnector().publish({"id": "d", "body": "hi", "channel": "x"})
+    assert "401" in str(exc_info.value)
+
+
+def test_xconnector_attaches_media_id_on_image_upload(isolate_home, x_creds, monkeypatch):
+    """When a draft carries an image URL, the connector fetches it, uploads to
+    v1.1 media/upload, and attaches the returned media_id to the v2 tweet."""
+    import requests as _real_requests
+    from plugins.marketing_factory.connectors.x_stub import XConnector
+
+    call_log = []
+
+    def fake_get(url, **kwargs):
+        call_log.append(("GET", url))
+        return _FakeResponse(status_code=200, content=b"fake-image-bytes")
+
+    def fake_post(url, **kwargs):
+        call_log.append(("POST", url))
+        if "upload.twitter.com" in url:
+            return _FakeResponse(status_code=200, json_data={"media_id_string": "media_42"})
+        # Tweet creation — assert media_ids attached
+        json_payload = kwargs.get("json") or {}
+        assert json_payload.get("media", {}).get("media_ids") == ["media_42"], (
+            f"Tweet payload missing media_ids; got {json_payload}"
+        )
+        return _FakeResponse(status_code=201, json_data={"data": {"id": "tweet_77"}})
+
+    monkeypatch.setattr(_real_requests, "get", fake_get)
+    monkeypatch.setattr(_real_requests, "post", fake_post)
+
+    result = XConnector().publish({
+        "id": "d",
+        "body": "look at this pup",
+        "channel": "x",
+        "images": [{"url": "https://example.com/pet.jpg"}],
+    })
+
+    assert result["posted"] is True
+    assert result["payload"]["media_ids"] == ["media_42"]
+    assert result["payload"]["tweet_id"] == "tweet_77"
+    # Confirm we hit fetch → upload → tweet in order.
+    assert call_log[0] == ("GET", "https://example.com/pet.jpg")
+    assert call_log[1][1] == "https://upload.twitter.com/1.1/media/upload.json"
+    assert call_log[2][1] == "https://api.twitter.com/2/tweets"
+
+
+def test_xconnector_image_fetch_failure_falls_back_to_text_only(isolate_home, x_creds, monkeypatch):
+    """If image fetch fails (e.g. CDN 404), the tweet must still post text-only
+    rather than failing the whole publish. Image is best-effort."""
+    import requests as _real_requests
+    from plugins.marketing_factory.connectors.x_stub import XConnector
+
+    def fake_get(url, **kwargs):
+        return _FakeResponse(status_code=404, text="not found")
+
+    posted = {}
+
+    def fake_post(url, **kwargs):
+        if "upload.twitter.com" in url:
+            raise AssertionError("media/upload should not be called when image fetch failed")
+        posted["body"] = kwargs.get("json", {}).get("text")
+        posted["media"] = kwargs.get("json", {}).get("media")
+        return _FakeResponse(status_code=201, json_data={"data": {"id": "fallback_tweet"}})
+
+    monkeypatch.setattr(_real_requests, "get", fake_get)
+    monkeypatch.setattr(_real_requests, "post", fake_post)
+
+    result = XConnector().publish({
+        "id": "d",
+        "body": "text only fallback",
+        "channel": "x",
+        "images": [{"url": "https://example.com/missing.jpg"}],
+    })
+
+    assert result["posted"] is True
+    assert result["payload"]["media_ids"] == []
+    assert posted["body"] == "text only fallback"
+    assert posted["media"] is None
+
+
+def test_xconnector_oversize_body_raises_before_calling_api(isolate_home, x_creds):
+    """Defense-in-depth: even though safety review should catch >280-char bodies,
+    the connector double-checks so a buggy upstream can't post a malformed tweet."""
+    from plugins.marketing_factory.connectors.base import ConnectorError
+    from plugins.marketing_factory.connectors.x_stub import XConnector
+
+    long_body = "x" * 281
+    with pytest.raises(ConnectorError) as exc_info:
+        XConnector().publish({"id": "d", "body": long_body, "channel": "x"})
+    assert "280" in str(exc_info.value)
+
+
+def test_publish_scheduled_audit_falls_back_when_xconnector_missing_creds(isolate_home, monkeypatch):
+    """End-to-end: with channel_modes[x]=live and the real XConnector registered
+    but no X_* env vars set, PublisherAgent must audit-fall-back to dry_run with
+    fallback_reason indicating a connector error (NOT 'no_live_connector')."""
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    for var in ("X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET"):
+        monkeypatch.delenv(var, raising=False)
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    generated = pipe.generate_campaign("pupular", days=1)
+    draft = generated["drafts"][0]
+    # Force the channel to x so the registered XConnector is selected.
+    state = store.load()
+    state["drafts"][draft["id"]]["channel"] = "x"
+    store._write_state(state)
+    store.set_approval(draft["id"], "approved", reviewer="tester")
+    pipe.scheduler.schedule_approved(store, app_slug="pupular")
+    store.set_channel_mode("pupular", "x", "live", reviewer="tester")
+
+    events = pipe.publisher.publish_scheduled(store, app_slug="pupular")
+    assert len(events) == 1
+    event = events[0]
+    assert event["mode"] == "dry_run"
+    assert event["posted"] is False
+    assert event["fallback_reason"] and "missing env vars" in event["fallback_reason"]
+
+    final_draft = store.load()["drafts"][draft["id"]]
+    assert final_draft["status"] == "dry_run_posted"

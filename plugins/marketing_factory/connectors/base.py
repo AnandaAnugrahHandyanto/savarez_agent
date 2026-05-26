@@ -23,6 +23,8 @@ class BaseChannelConnector(ABC):
         `posted=True` means the draft was actually published to a real channel.
       - On failure, raise `ConnectorError` (caught by PublisherAgent, which falls
         back to dry-run + audit).
+      - `can_publish()` reports readiness (creds present, etc.) so the advisor
+        can warn before a scheduled run silently falls back to dry_run.
     """
 
     mode: str = "dry_run"
@@ -31,6 +33,12 @@ class BaseChannelConnector(ABC):
     @abstractmethod
     def publish(self, draft: Dict[str, Any]) -> Dict[str, Any]:
         ...
+
+    def can_publish(self) -> "tuple[bool, str]":
+        """Return (ready, reason). Default assumes always-ready; live connectors
+        with external creds should override to surface missing-env state.
+        """
+        return True, ""
 
 
 class ConnectorError(RuntimeError):

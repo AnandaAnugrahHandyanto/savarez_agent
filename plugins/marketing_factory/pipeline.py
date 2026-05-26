@@ -1145,18 +1145,32 @@ class MarketingFactoryPipeline:
         state = self.store.load()
         items: List[Dict[str, Any]] = []
 
-        # Check 1: channel_modes says "live" but no real connector registered.
+        # Check 1: channel_modes says "live" but the channel can't actually post —
+        # either no connector is registered, or the connector is registered but
+        # not ready (e.g. missing API creds). Either way the publisher will
+        # audit-fall-back to dry_run, so surface it before the user notices via
+        # silent posting failures.
         for app in state.get("apps", {}).values():
             modes = app.get("channel_modes") or {}
             for channel, mode in modes.items():
                 if mode != "live":
                     continue
-                if _connectors.get_live_connector(channel) is None:
+                connector = _connectors.get_live_connector(channel)
+                if connector is None:
                     items.append({
                         "severity": "warning",
                         "app_slug": app["slug"],
                         "message": f"{app['slug']}.{channel} is set to live but no connector is registered — publish_scheduled will silently fall back to dry_run.",
                         "action": f"Wire connectors/{channel}_stub.py and register it in connectors/__init__.py, or flip {channel} back to dry_run.",
+                    })
+                    continue
+                ready, reason = connector.can_publish()
+                if not ready:
+                    items.append({
+                        "severity": "warning",
+                        "app_slug": app["slug"],
+                        "message": f"{app['slug']}.{channel} is set to live but the connector is not ready: {reason}. publish_scheduled will fall back to dry_run.",
+                        "action": f"Resolve the connector's readiness issue ({reason}), or flip {channel} back to dry_run.",
                     })
 
         # Check 2: app with no campaign in 7+ days.
