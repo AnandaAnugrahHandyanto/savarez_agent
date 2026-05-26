@@ -4367,6 +4367,10 @@ class AIAgent:
             except RuntimeError as exc:
                 err_text = str(exc)
                 missing_completed = "response.completed" in err_text
+                unexpected_initial_event = (
+                    "Expected to have received `response.created` before" in err_text
+                    or "When snapshot hasn't been set yet, expected 'response.created' event" in err_text
+                )
                 if missing_completed and attempt < max_stream_retries:
                     logger.debug(
                         "Responses stream closed before completion (attempt %s/%s); retrying. %s",
@@ -4379,6 +4383,14 @@ class AIAgent:
                     logger.debug(
                         "Responses stream did not emit response.completed; falling back to create(stream=True). %s",
                         self._client_log_context(),
+                    )
+                    return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+                if unexpected_initial_event:
+                    logger.debug(
+                        "Responses stream received a provider-specific prelude event; "
+                        "falling back to create(stream=True). %s error=%s",
+                        self._client_log_context(),
+                        exc,
                     )
                     return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
                 raise
