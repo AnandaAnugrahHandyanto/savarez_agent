@@ -156,6 +156,7 @@ class TestGatewaySelfTerminationBlock:
         monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
         monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
 
         result = check_all_command_guards("pkill -f hermes", "local")
@@ -168,6 +169,7 @@ class TestGatewaySelfTerminationBlock:
         monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
         monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
 
         result = check_all_command_guards(
@@ -198,6 +200,7 @@ class TestGatewaySelfTerminationBlock:
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
         monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
 
         result = check_all_command_guards("pkill -f hermes", "local")
