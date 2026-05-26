@@ -205,6 +205,51 @@ async def test_start_installs_simplex_native_handler_before_connect(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_reconnect_installs_simplex_native_handler_before_connect(monkeypatch):
+    runner = _runner()
+    platform = Platform("simplex")
+    observed = {}
+    platform_config = SimpleNamespace(enabled=True)
+    adapter = SimpleNamespace(
+        platform=platform,
+        native_calls_enabled=True,
+        native_call_handler=None,
+        has_fatal_error=False,
+        fatal_error_code=None,
+        fatal_error_message=None,
+        set_message_handler=lambda _handler: None,
+        set_fatal_error_handler=lambda _handler: None,
+        set_session_store=lambda _store: None,
+        set_busy_session_handler=lambda _handler: None,
+    )
+
+    async def connect_adapter(connecting_adapter, connecting_platform):
+        observed["platform"] = connecting_platform
+        observed["handler_ready"] = callable(connecting_adapter.native_call_handler)
+        runner._running = False
+        return False
+
+    async def sleep_without_waiting(_seconds):
+        return None
+
+    runner.session_store = SimpleNamespace()
+    runner._running = True
+    runner._failed_platforms = {
+        platform: {"config": platform_config, "attempts": 0, "next_retry": 0}
+    }
+    runner._create_adapter = lambda _platform, _config: adapter
+    runner._connect_adapter_with_timeout = connect_adapter
+    runner._update_platform_runtime_status = lambda *_args, **_kwargs: None
+    runner._pause_failed_platform = lambda *_args, **_kwargs: None
+
+    monkeypatch.setattr(gateway_run.asyncio, "sleep", sleep_without_waiting)
+
+    await runner._platform_reconnect_watcher()
+
+    assert observed == {"platform": platform, "handler_ready": True}
+
+
+@pytest.mark.asyncio
 async def test_handle_simplex_native_call_reports_disconnected_without_adapter():
     runner = _runner()
     source = SimpleNamespace(
