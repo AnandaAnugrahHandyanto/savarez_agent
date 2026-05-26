@@ -924,6 +924,42 @@ def _build_child_progress_callback(
     return _callback
 
 
+def _append_delegate_route_telemetry(
+    event_type: str,
+    *,
+    child: Any,
+    status: Optional[str] = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Best-effort metadata-only route telemetry for delegate_task.
+
+    The shared writer sanitizes defensively; this helper still avoids passing
+    goal/context/summary/error strings so route observability never depends on
+    content redaction to stay private.
+    """
+    try:
+        from orchestration_telemetry import append_event
+
+        payload: Dict[str, Any] = dict(
+            getattr(child, "_orchestration_route_telemetry", {}) or {}
+        )
+        if extra:
+            payload.update(extra)
+        append_event(event_type, surface="delegate_task", status=status, **payload)
+    except Exception:
+        logger.debug("delegate route telemetry failed", exc_info=True)
+
+
+def _tool_count_for_agent(agent: Any) -> Optional[int]:
+    try:
+        tool_names = getattr(agent, "valid_tool_names", None)
+        if isinstance(tool_names, (list, tuple, set, frozenset)):
+            return len(tool_names)
+    except Exception:
+        pass
+    return None
+
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -1220,6 +1256,53 @@ def _build_child_agent(
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
+
+    explicit_route_override = bool(
+        override_provider
+        or model
+        or override_acp_command
+        or delegation_reasoning_applied
+    )
+    setattr(child, "_orchestration_route_telemetry", {
+        "action_type": "spawn_subagent",
+        "route": {
+            "chosen_route": "delegate_task",
+            "provider": effective_provider,
+            "model": effective_model_for_cb,
+            "reasoning_effort": child_reasoning_effort,
+            "role": effective_role,
+            "execution_mode": "delegate_task",
+            "route_reason": route_reason,
+            "explicit_override": explicit_route_override,
+        },
+        "tree": {
+            "subagent_id": subagent_id,
+            "parent_id": parent_subagent_id,
+            "depth": tui_depth,
+            "task_index": task_index,
+            "task_count": task_count,
+        },
+        "tooling": {
+            "toolsets": list(child_toolsets),
+            "tool_count": _tool_count_for_agent(child),
+        },
+        "input_shape": {
+            "goal_chars": len(goal or ""),
+            "context_chars": len(context or ""),
+            "context_supplied": bool(context and str(context).strip()),
+        },
+        "gates": {
+            "privacy": "goal/context/prompts/messages/tool args/tool outputs excluded",
+            "tool_access": "parent-intersected toolsets with blocked child tools stripped",
+            "side_effects": "child receives only its restricted toolset; parent must verify side effects",
+        },
+        "parent_session_id": getattr(parent_agent, "session_id", None),
+    })
+    _append_delegate_route_telemetry(
+        "route.selected",
+        child=child,
+        status="selected",
+    )
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
@@ -1675,6 +1758,27 @@ def _run_single_child(
             else:
                 _err = str(_timeout_exc)
 
+            _append_delegate_route_telemetry(
+                "route.completed",
+                child=child,
+                status="timeout" if is_timeout else "error",
+                extra={
+                    "outcome": {
+                        "success": False,
+                        "exit_reason": "timeout" if is_timeout else "error",
+                        "error_class": type(_timeout_exc).__name__,
+                    },
+                    "metrics": {
+                        "duration_seconds": duration,
+                        "api_calls": child_api_calls,
+                    },
+                    "verification": {
+                        "status": "not_applicable",
+                        "reason": "child did not return a completed summary",
+                    },
+                },
+            )
+
             return {
                 "task_index": task_index,
                 "status": "timeout" if is_timeout else "error",
@@ -1903,6 +2007,40 @@ def _run_single_child(
             except (TypeError, ValueError):
                 pass
 
+        telemetry_metrics: Dict[str, Any] = {
+            "duration_seconds": duration,
+            "api_calls": int(api_calls) if isinstance(api_calls, (int, float)) else 0,
+            "tokens": {
+                "input": int(_input_tokens) if isinstance(_input_tokens, (int, float)) else 0,
+                "output": int(_output_tokens) if isinstance(_output_tokens, (int, float)) else 0,
+                "reasoning": int(_reasoning_tokens) if isinstance(_reasoning_tokens, (int, float)) else 0,
+            },
+            "tool_call_count": len(tool_trace),
+            "files_read_count": len(_files_read),
+            "files_written_count": len(_files_written),
+        }
+        if _cost_usd is not None:
+            try:
+                telemetry_metrics["cost_usd"] = float(_cost_usd)
+            except (TypeError, ValueError):
+                pass
+        _append_delegate_route_telemetry(
+            "route.completed",
+            child=child,
+            status=status,
+            extra={
+                "outcome": {
+                    "success": status == "completed",
+                    "exit_reason": exit_reason,
+                },
+                "metrics": telemetry_metrics,
+                "verification": {
+                    "status": "parent_required",
+                    "reason": "subagent summaries are self-reports until the parent verifies side effects",
+                },
+            },
+        )
+
         if child_progress_cb:
             try:
                 child_progress_cb("subagent.complete", **complete_kwargs)
@@ -1925,6 +2063,26 @@ def _run_single_child(
                 )
             except Exception as e:
                 logger.debug("Progress callback failure relay failed: %s", e)
+        _append_delegate_route_telemetry(
+            "route.completed",
+            child=child,
+            status="error",
+            extra={
+                "outcome": {
+                    "success": False,
+                    "exit_reason": "error",
+                    "error_class": type(exc).__name__,
+                },
+                "metrics": {
+                    "duration_seconds": duration,
+                    "api_calls": 0,
+                },
+                "verification": {
+                    "status": "not_applicable",
+                    "reason": "child failed before returning a completed summary",
+                },
+            },
+        )
         return {
             "task_index": task_index,
             "status": "error",

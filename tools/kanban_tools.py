@@ -180,6 +180,21 @@ def _ok(**fields: Any) -> str:
     return json.dumps({"ok": True, **fields})
 
 
+def _append_kanban_route_telemetry(
+    event_type: str,
+    *,
+    status: Optional[str] = None,
+    **fields: Any,
+) -> None:
+    """Best-effort metadata-only route telemetry for Kanban routing."""
+    try:
+        from orchestration_telemetry import append_event
+
+        append_event(event_type, surface="kanban_create", status=status, **fields)
+    except Exception:
+        logger.debug("kanban route telemetry failed", exc_info=True)
+
+
 def _normalize_profile(value: Any) -> Optional[str]:
     """Normalize CLI-compatible assignee sentinels for the tool surface."""
     if value is None:
@@ -707,9 +722,43 @@ def _handle_create(args: dict, **kw) -> str:
                 session_id=session_id,
             )
             new_task = kb.get_task(conn, new_tid)
+            task_status = new_task.status if new_task else None
+            skill_list = list(skills or []) if isinstance(skills, (list, tuple)) else []
+            _append_kanban_route_telemetry(
+                "route.selected",
+                status=task_status,
+                action_type="create_kanban_task",
+                route={
+                    "chosen_route": "kanban_create",
+                    "assignee_profile": str(assignee),
+                    "initial_status": str(initial_status),
+                    "workspace_kind": str(workspace_kind),
+                    "explicit_override": bool(skill_list or max_runtime_seconds or workspace_path),
+                },
+                tree={
+                    "task_id": new_tid,
+                    "parent_task_ids": list(parents),
+                    "parent_count": len(parents),
+                },
+                tooling={
+                    "skills": skill_list,
+                    "skill_count": len(skill_list),
+                },
+                input_shape={
+                    "title_chars": len(str(title)),
+                    "body_chars": len(str(body or "")),
+                    "body_supplied": bool(body and str(body).strip()),
+                },
+                gates={
+                    "privacy": "title/body/idempotency_key excluded from telemetry",
+                    "lifecycle": "task body remains in Kanban DB; routing log stores metadata only",
+                },
+                priority=int(priority) if priority is not None else 0,
+                tenant_present=bool(tenant),
+            )
             return _ok(
                 task_id=new_tid,
-                status=new_task.status if new_task else None,
+                status=task_status,
             )
         finally:
             conn.close()

@@ -1591,6 +1591,13 @@ DEFAULT_CONFIG = {
             "enabled": True,         # Flip to false to silence the periodic line
             "interval_seconds": 300, # Default: every 5 minutes
         },
+        # Privacy-safe coordinator/orchestrator routing telemetry. When enabled,
+        # delegate_task and kanban_create append metadata-only JSONL records to
+        # logs/orchestration-routing.jsonl. Prompt/task content, raw tool args,
+        # summaries, outputs, and credential-shaped values are excluded/redacted.
+        "orchestration_telemetry": {
+            "enabled": False,
+        },
     },
 
     # Remotely-hosted model catalog manifest.  When enabled, the CLI fetches
