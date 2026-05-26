@@ -279,7 +279,7 @@ def _ensure_discord_mock():
 _ensure_discord_mock()
 
 import discord
-from gateway.platforms.discord import DiscordAdapter
+from plugins.platforms.discord.adapter import DiscordAdapter
 
 
 def _make_discord_adapter():
