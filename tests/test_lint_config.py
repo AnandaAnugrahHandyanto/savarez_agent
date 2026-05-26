@@ -66,6 +66,183 @@ class TestRuffConfig:
             "verify PLW1514 still fires in a sample test run first."
         )
 
+class TestCleanRUF100:
+    """RUF100 (unused noqa directive) must stay at zero for targeted files.
+
+    RUF100 is a universally-applied rule — it fires whenever a ``# noqa``
+    directive names a rule that ruff's selected rule set doesn't enforce.
+    Accumulated stale noqa directives create noise that buries real issues.
+
+    These tests guard against re-introducing stale noqa directives after
+    they've been cleaned up.
+    """
+
+    TARGET = REPO_ROOT / "acp_adapter" / "entry.py"
+
+    def test_acp_adapter_entry_py_has_zero_ruf100_violations(self):
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=RUF100",
+             "--output-format=concise", str(self.TARGET)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, (
+            f"{self.TARGET.relative_to(REPO_ROOT)} has RUF100 violation(s):\n"
+            f"{result.stdout}"
+        )
+
+
+
+
+class TestCleanRUF100AgentInit:
+    """RUF100 (unused noqa directive) must stay at zero for agent/agent_init.py.
+
+    RUF100 fires whenever a ``# noqa`` directive names a rule that ruff's
+    selected rule set doesn't enforce.  The stale ``# noqa: BLE001``
+    directive was removed from ``except Exception`` because BLE001 is not
+    in the enabled rule set.
+    """
+
+    TARGET = REPO_ROOT / "agent" / "agent_init.py"
+
+    def test_agent_init_py_has_zero_ruf100_violations(self):
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=RUF100",
+             "--output-format=concise", str(self.TARGET)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, (
+            f"{self.TARGET.relative_to(REPO_ROOT)} has RUF100 violation(s):\n"
+            f"{result.stdout}"
+        )
+
+
+class TestCleanRUF100AgentRuntimeHelpers:
+    """RUF100 (unused noqa directive) must stay at zero for agent/agent_runtime_helpers.py.
+
+    RUF100 fires whenever a ``# noqa`` directive names a rule that ruff's
+    selected rule set doesn't enforce.  The stale ``# noqa: BLE001``
+    directive was removed from ``except Exception`` because BLE001 is not
+    in the enabled rule set.
+    """
+
+    TARGET = REPO_ROOT / "agent" / "agent_runtime_helpers.py"
+
+    def test_agent_runtime_helpers_py_has_zero_ruf100_violations(self):
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=RUF100",
+             "--output-format=concise", str(self.TARGET)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, (
+            f"{self.TARGET.relative_to(REPO_ROOT)} has RUF100 violation(s):\n"
+            f"{result.stdout}"
+        )
+
+class TestCleanF821:
+    """F821 (undefined name) must stay at zero for source files.
+
+    F821 fires when a name used in an annotation or expression is not
+    importable at module level.  Forward-reference string annotations
+    that reference names imported only inside function bodies (to avoid
+    circular imports) must have a TYPE_CHECKING guard so ruff can
+    resolve the name statically.
+    """
+
+    TARGET = REPO_ROOT / "tools" / "patch_parser.py"
+
+    def test_tools_patch_parser_py_has_zero_f821_violations(self):
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F821",
+             "--output-format=concise", str(self.TARGET)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, (
+            f"{self.TARGET.relative_to(REPO_ROOT)} has F821 violation(s):\n"
+            f"{result.stdout}"
+        )
+
+
+
+
+
+
+
+class TestCleanRUF100BrowserTool:
+    """RUF100 (unused noqa directive) must stay at zero for tools/browser_tool.py.
+
+    RUF100 is a universally-applied rule — it fires whenever a ``# noqa``
+    directive names a rule that ruff's selected rule set doesn't enforce.
+    """
+
+    TARGET = REPO_ROOT / "tools" / "browser_tool.py"
+
+    def test_tools_browser_tool_py_has_zero_ruf100_violations(self):
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=RUF100",
+             "--output-format=concise", str(self.TARGET)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, (
+            f"{self.TARGET.relative_to(REPO_ROOT)} has RUF100 violation(s):\n"
+            f"{result.stdout}"
+        )
+
+
+class TestCleanF401:
+    """F401 (unused import) must stay at zero for targeted files.
+
+    F401 fires when an imported name is never used in the module.
+    Backward-compat re-exports should use ``# noqa: F401`` with a
+    comment naming the dependent callers.
+
+    Note: F401 is NOT in ``[tool.ruff.lint.select]``, so these tests
+    explicitly pass ``--select=F401`` to check it.
+    """
+
+    TARGET = REPO_ROOT / "tools" / "browser_tool.py"
+
+    def test_tools_browser_tool_py_has_zero_f401_violations(self):
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F401",
+             "--output-format=concise", str(self.TARGET)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, (
+            f"{self.TARGET.relative_to(REPO_ROOT)} has F401 violation(s):\n"
+            f"{result.stdout}"
+        )
+
+
+class TestCleanF401ZombieProcess:
+    """F401 (unused import) must stay at zero for
+    tests/tools/test_zombie_process_cleanup.py.
+
+    This file was found to have 3 unused imports that were not caught
+    because F401 is not in the project's select list.  This regression
+    test explicitly passes --select=F401 to catch re-introductions.
+    """
+
+    TARGET = REPO_ROOT / "tests" / "tools" / "test_zombie_process_cleanup.py"
+
+    def test_zombie_process_cleanup_py_has_zero_f401_violations(self):
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F401",
+             "--output-format=concise", str(self.TARGET)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, (
+            f"{self.TARGET.relative_to(REPO_ROOT)} has F401 violation(s):\n"
+            f"{result.stdout}"
+        )
+
+
 
 class TestLintWorkflow:
     WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "lint.yml"
