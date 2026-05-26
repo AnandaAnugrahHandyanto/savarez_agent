@@ -4,13 +4,16 @@ import {
   AlertTriangle,
   ArrowRight,
   Bot,
+  CalendarDays,
   CheckCircle2,
   Clipboard,
   Clock,
+  Database,
   ExternalLink,
   FileText,
   FolderKanban,
   Gauge,
+  Inbox,
   Link as LinkIcon,
   ListChecks,
   MessageSquare,
@@ -20,6 +23,7 @@ import {
   Sparkles,
   Target,
   Terminal,
+  Zap,
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -260,10 +264,29 @@ const DECISION_QUEUE = [
   },
 ];
 
-const readablePanel = "rounded-xl border border-white/15 bg-[#061f1f]/75 p-4 shadow-sm shadow-black/20";
+const OPERATIONS_FOLDERS = [
+  { label: "00 Human", tone: "border-red-400/40 text-red-200", detail: "Travis decisions" },
+  { label: "Copilot", tone: "border-orange-400/40 text-orange-200", detail: "Jenny coordination" },
+  { label: "Docs", tone: "border-yellow-400/40 text-yellow-100", detail: "AI Ops Brain" },
+  { label: "Machine", tone: "border-emerald-400/40 text-emerald-200", detail: "VPS + workers" },
+  { label: "Sessions", tone: "border-cyan-400/40 text-cyan-200", detail: "Recent runs" },
+  { label: "System", tone: "border-blue-400/40 text-blue-200", detail: "Gateway health" },
+];
+
+const DAILY_DRIVERS = [
+  "Inbox triage",
+  "Approval review",
+  "Gateway health",
+  "Project routing",
+  "Record durable state",
+];
+
+const readablePanel = "rounded-xl border border-[#284848] bg-[#061f1f]/85 p-4 shadow-sm shadow-black/20";
+const cockpitCard = "border-[#264545] bg-[#071717]/90 shadow-[0_0_0_1px_rgba(47,214,161,0.04),0_18px_60px_rgba(0,0,0,0.28)]";
+const cockpitPanel = "rounded-xl border border-[#284848] bg-black/30 p-3";
 const readableTitle = "text-base font-semibold leading-6 text-text-primary";
 const readableBody = "mt-1 text-sm leading-6 text-text-secondary";
-const readableSectionHeading = "text-sm font-semibold uppercase tracking-[0.03em] text-text-primary/90";
+const readableSectionHeading = "text-sm font-semibold uppercase tracking-[0.08em] text-emerald-100/90";
 
 function isProblemJob(job: CronJob): boolean {
   const state = getJobState(job).toLowerCase();
@@ -305,6 +328,129 @@ function platformSummary(status: StatusResponse | null): string {
   return names.length ? names.join(" · ") : "No active platforms reported";
 }
 
+function WorkspaceRail({ activeJobs, recentSessions }: { activeJobs: CronJob[]; recentSessions: SessionInfo[] }) {
+  return (
+    <aside className="font-readable-ui hidden xl:block">
+      <div className="sticky top-5 space-y-4">
+        <Card className={cn(cockpitCard, "overflow-hidden")}>
+          <CardContent className="space-y-4 p-4">
+            <div className="flex items-center gap-2 text-emerald-200">
+              <Database className="h-4 w-4" />
+              <div className="text-sm font-semibold uppercase tracking-[0.12em]">Operations vault</div>
+            </div>
+            <div className="space-y-2">
+              {OPERATIONS_FOLDERS.map((folder) => (
+                <div key={folder.label} className={cn("rounded-lg border bg-black/25 px-3 py-2", folder.tone)}>
+                  <div className="text-sm font-semibold">{folder.label}</div>
+                  <div className="mt-0.5 text-xs text-text-secondary">{folder.detail}</div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className={cockpitCard}>
+          <CardContent className="space-y-3 p-4">
+            <div className="flex items-center gap-2 text-emerald-200">
+              <Bot className="h-4 w-4" />
+              <div className="text-sm font-semibold uppercase tracking-[0.12em]">Recent trace</div>
+            </div>
+            <div className="space-y-2">
+              {recentSessions.slice(0, 4).map((session) => (
+                <Link
+                  key={session.id}
+                  to={`/sessions?session=${encodeURIComponent(session.id)}`}
+                  className="block rounded-lg border border-[#284848] bg-black/25 p-3 transition hover:border-emerald-400/40"
+                >
+                  <div className="line-clamp-2 text-sm font-medium leading-5 text-text-primary">{session.title || session.preview || session.id}</div>
+                  <div className="mt-1 text-xs text-text-secondary">{session.source || "session"}</div>
+                </Link>
+              ))}
+              {!recentSessions.length && <div className="rounded-lg border border-[#284848] bg-black/25 p-3 text-sm text-text-secondary">No sessions loaded.</div>}
+            </div>
+          </CardContent>
+        </Card>
+
+        <div className="rounded-2xl border border-emerald-400/20 bg-emerald-500/10 p-3 text-sm text-emerald-100">
+          {activeJobs.length} active automation entr{activeJobs.length === 1 ? "y" : "ies"}; risky actions still require chat approval.
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function CommandDeck({ status, activeJobs, approvalSummary }: { status: StatusResponse | null; activeJobs: CronJob[]; approvalSummary: OpsApprovalSummary | null }) {
+  return (
+    <aside className="font-readable-ui hidden 2xl:block">
+      <div className="sticky top-5 space-y-4">
+        <Card className={cockpitCard}>
+          <CardContent className="space-y-4 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-emerald-200">
+                <CalendarDays className="h-4 w-4" />
+                <div className="text-sm font-semibold uppercase tracking-[0.12em]">Command stack</div>
+              </div>
+              <Badge tone="outline" className="border-emerald-400/30 text-emerald-200">Now</Badge>
+            </div>
+
+            <div className="space-y-2">
+              <div className="rounded-xl border border-emerald-400/30 bg-emerald-500/10 p-3">
+                <div className="text-xs uppercase tracking-[0.1em] text-emerald-100/80">Current focus</div>
+                <div className="mt-2 text-lg font-semibold leading-6 text-text-primary">Make Ops Center a real Jenny dashboard</div>
+                <div className="mt-2 text-sm leading-6 text-text-secondary">Design upgrade only: no gateway restart, no cron creation, no execution hooks.</div>
+              </div>
+              <Link to="/approvals" className="block rounded-xl border border-amber-400/25 bg-amber-500/10 p-3 transition hover:border-amber-300/50">
+                <div className="flex items-center gap-2 text-amber-100">
+                  <Inbox className="h-4 w-4" />
+                  <span className="text-sm font-semibold">Approval inbox</span>
+                </div>
+                <div className="mt-2 text-2xl font-semibold text-text-primary">{approvalSummary?.pending_count ?? DECISION_QUEUE.length}</div>
+                <div className="text-sm text-text-secondary">pending / standing gates</div>
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className={cockpitCard}>
+          <CardContent className="space-y-3 p-4">
+            <div className="flex items-center gap-2 text-emerald-200">
+              <Zap className="h-4 w-4" />
+              <div className="text-sm font-semibold uppercase tracking-[0.12em]">Daily drivers</div>
+            </div>
+            <div className="space-y-2">
+              {DAILY_DRIVERS.map((driver, idx) => (
+                <div key={driver} className="flex items-center gap-3 rounded-full border border-[#284848] bg-black/30 px-3 py-2 text-sm text-text-primary">
+                  <span className={cn("h-2.5 w-2.5 rounded-full", idx < 2 ? "bg-emerald-400" : "bg-black ring-1 ring-[#56716f]")} />
+                  {driver}
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className={cockpitCard}>
+          <CardContent className="space-y-3 p-4">
+            <div className="flex items-center gap-2 text-emerald-200">
+              <ShieldCheck className="h-4 w-4" />
+              <div className="text-sm font-semibold uppercase tracking-[0.12em]">Live guardrail</div>
+            </div>
+            <div className={cockpitPanel}>
+              <div className="text-xs uppercase tracking-[0.1em] text-text-secondary">Gateway</div>
+              <div className={cn("mt-1 text-base font-semibold", status?.gateway_running ? "text-emerald-300" : "text-red-300")}>
+                {status?.gateway_running ? "Running" : "Unknown"}
+              </div>
+            </div>
+            <div className={cockpitPanel}>
+              <div className="text-xs uppercase tracking-[0.1em] text-text-secondary">Active runs</div>
+              <div className="mt-1 text-base font-semibold text-text-primary">{activeJobs.length}</div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </aside>
+  );
+}
+
 function TodayView({ status, activeJobs, jobs, approvalSummary }: { status: StatusResponse | null; activeJobs: CronJob[]; jobs: CronJob[]; approvalSummary: OpsApprovalSummary | null }) {
   const problemJobs = jobs.filter(isProblemJob);
   const nextProjects = PROJECTS.slice(0, 6);
@@ -312,7 +458,7 @@ function TodayView({ status, activeJobs, jobs, approvalSummary }: { status: Stat
 
   return (
     <section className="font-readable-ui grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
-      <Card className="border-white/10 bg-white/[0.04]">
+      <Card className={cockpitCard}>
         <CardContent className="space-y-4 p-5">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
@@ -324,8 +470,8 @@ function TodayView({ status, activeJobs, jobs, approvalSummary }: { status: Stat
                 Operator snapshot: what needs Travis, what is active, what failed, and the safest next moves.
               </Typography>
             </div>
-            <Badge tone="outline" className="border-cyan-400/30 text-cyan-200">
-              read-only phase 1
+            <Badge tone="outline" className="shrink-0 whitespace-nowrap border-cyan-400/30 text-cyan-200">
+              RO phase 1
             </Badge>
           </div>
 
@@ -394,7 +540,7 @@ function TodayView({ status, activeJobs, jobs, approvalSummary }: { status: Stat
         </CardContent>
       </Card>
 
-      <Card className="border-white/10 bg-white/[0.04]">
+      <Card className={cockpitCard}>
         <CardContent className="space-y-4 p-5">
           <div className="flex items-center gap-2 text-midground">
             <ShieldCheck className="h-5 w-5" />
@@ -450,7 +596,7 @@ function GoalLauncher() {
   };
 
   return (
-    <Card className="border-white/10 bg-white/[0.03]">
+    <Card className={cockpitCard}>
       <CardContent className="space-y-4 p-5">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
           <div>
@@ -477,7 +623,7 @@ function GoalLauncher() {
                 "rounded-xl border p-3 text-left transition",
                 selected.name === item.name
                   ? "border-midground/60 bg-midground/10"
-                  : "border-white/10 bg-black/20 hover:border-white/30",
+                  : "border-[#284848] bg-black/30 hover:border-emerald-400/40",
               )}
             >
               <div className="text-sm font-semibold text-text-primary">{item.name}</div>
@@ -491,11 +637,11 @@ function GoalLauncher() {
           <textarea
             value={customGoal}
             onChange={(event) => setCustomGoal(event.target.value)}
-            className="min-h-32 w-full rounded-xl border border-white/10 bg-black/35 p-3 text-sm text-text-primary outline-none focus:border-midground/60"
+            className="min-h-32 w-full rounded-xl border border-[#284848] bg-black/45 p-3 text-sm text-text-primary outline-none focus:border-emerald-400/60"
           />
         </label>
 
-        <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+        <div className={cockpitPanel}>
           <div className="mb-1 text-xs uppercase tracking-wide text-text-secondary">Command to send in Chat</div>
           <code className="break-words text-sm text-midground">{command}</code>
         </div>
@@ -568,33 +714,36 @@ export default function MissionControlPage() {
   const recentSessions = useMemo(() => sessions.slice(0, 5), [sessions]);
 
   return (
-    <main className="h-full overflow-auto px-4 py-5 lg:px-8">
-      <div className="mx-auto flex max-w-7xl flex-col gap-5">
-        <section className="overflow-hidden rounded-3xl border border-white/10 bg-[radial-gradient(circle_at_top_left,rgba(20,184,166,0.22),transparent_35%),rgba(255,255,255,0.035)] p-5 shadow-2xl shadow-black/30 lg:p-7">
+    <main className="h-full overflow-auto bg-[radial-gradient(circle_at_50%_-10%,rgba(16,185,129,0.18),transparent_34%),linear-gradient(180deg,#031111_0%,#061616_55%,#030808_100%)] px-4 py-5 lg:px-6">
+      <div className="mx-auto grid max-w-[1800px] gap-5 xl:grid-cols-[250px_minmax(0,1fr)] 2xl:grid-cols-[250px_minmax(0,1fr)_330px]">
+        <WorkspaceRail activeJobs={activeJobs} recentSessions={recentSessions} />
+
+        <div className="flex min-w-0 flex-col gap-5">
+        <section className="font-readable-ui overflow-hidden rounded-3xl border border-emerald-400/20 bg-[radial-gradient(circle_at_top_right,rgba(47,214,161,0.18),transparent_32%),linear-gradient(135deg,rgba(6,31,31,0.98),rgba(3,12,12,0.96))] p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04),0_24px_80px_rgba(0,0,0,0.38)] lg:p-7">
           <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
             <div className="max-w-3xl">
-              <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-midground/30 bg-midground/10 px-3 py-1 text-xs uppercase tracking-[0.22em] text-midground">
-                <Sparkles className="h-3.5 w-3.5" /> Jenny Mission Control
+              <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-emerald-400/30 bg-emerald-500/10 px-3 py-1 text-xs uppercase tracking-[0.24em] text-emerald-200 shadow-[0_0_18px_rgba(47,214,161,0.12)]">
+                <Sparkles className="h-3.5 w-3.5" /> Jenny Command Center
               </div>
-              <H2 className="text-3xl font-bold tracking-tight lg:text-5xl">
+              <H2 className="text-4xl font-semibold leading-none tracking-[-0.04em] text-emerald-300 lg:text-6xl">
                 Operations Dashboard
               </H2>
-              <Typography className="mt-3 max-w-2xl text-sm leading-6 text-text-secondary lg:text-base">
-                Obsidian-style operating system for Jenny: capture requests in chat, route work to the right project/profile, execute safely, then record the durable state in AI Ops Brain.
+              <Typography className="mt-3 max-w-2xl text-base leading-7 text-text-secondary lg:text-lg">
+                A practical Obsidian-style operating cockpit for Jenny: focus, approvals, live status, project routing, run traces, and durable AI Ops Brain records — without hidden execution.
               </Typography>
             </div>
             <div className="grid min-w-72 gap-2 text-sm">
-              <div className="flex items-center justify-between rounded-xl border border-white/10 bg-black/25 px-3 py-2">
+              <div className="flex items-center justify-between rounded-xl border border-[#284848] bg-black/30 px-3 py-2">
                 <span className="text-text-secondary">Gateway</span>
                 <span className={cn("font-semibold", status?.gateway_running ? "text-emerald-300" : "text-red-300")}>
                   {status?.gateway_running ? "Running" : "Unknown"}
                 </span>
               </div>
-              <div className="flex items-center justify-between rounded-xl border border-white/10 bg-black/25 px-3 py-2">
+              <div className="flex items-center justify-between rounded-xl border border-[#284848] bg-black/30 px-3 py-2">
                 <span className="text-text-secondary">Active sessions</span>
                 <span className="font-semibold text-text-primary">{status?.active_sessions ?? "—"}</span>
               </div>
-              <div className="flex items-center justify-between rounded-xl border border-white/10 bg-black/25 px-3 py-2">
+              <div className="flex items-center justify-between rounded-xl border border-[#284848] bg-black/30 px-3 py-2">
                 <span className="text-text-secondary">Cron jobs enabled</span>
                 <span className="font-semibold text-text-primary">{activeJobs.length}</span>
               </div>
@@ -612,7 +761,7 @@ export default function MissionControlPage() {
 
         <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           {DASHBOARD_METRICS.map((metric) => (
-            <Card key={metric.label} className="border-white/10 bg-white/[0.03]">
+            <Card key={metric.label} className={cockpitCard}>
               <CardContent className="p-4">
                 <div className="flex items-center justify-between gap-2">
                   <div className="text-xs uppercase tracking-wide text-text-secondary">{metric.label}</div>
@@ -626,7 +775,7 @@ export default function MissionControlPage() {
         </section>
 
         <section className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
-          <Card className="border-white/10 bg-white/[0.03]">
+          <Card className={cockpitCard}>
             <CardContent className="space-y-4 p-5">
               <div className="flex items-center gap-2 text-midground">
                 <Target className="h-5 w-5" />
@@ -634,7 +783,7 @@ export default function MissionControlPage() {
               </div>
               <div className="grid gap-3 md:grid-cols-4">
                 {OPERATING_LANES.map((lane, idx) => (
-                  <div key={lane.label} className="rounded-xl border border-white/10 bg-black/25 p-3">
+                  <div key={lane.label} className={cockpitPanel}>
                     <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-text-primary">
                       <span className="flex h-6 w-6 items-center justify-center rounded-full border border-midground/40 bg-midground/10 text-xs text-midground">
                         {idx + 1}
@@ -648,7 +797,7 @@ export default function MissionControlPage() {
             </CardContent>
           </Card>
 
-          <Card className="border-white/10 bg-white/[0.03]">
+          <Card className={cockpitCard}>
             <CardContent className="space-y-4 p-5">
               <div className="flex items-center gap-2 text-midground">
                 <FileText className="h-5 w-5" />
@@ -656,7 +805,7 @@ export default function MissionControlPage() {
               </div>
               <div className="space-y-2">
                 {VAULT_LINKS.map((path) => (
-                  <div key={path} className="rounded-xl border border-white/10 bg-black/25 p-3 text-xs text-text-secondary">
+                  <div key={path} className="rounded-xl border border-[#284848] bg-black/30 p-3 text-xs text-text-secondary">
                     <div className="break-all">{path}</div>
                   </div>
                 ))}
@@ -668,22 +817,22 @@ export default function MissionControlPage() {
         <section className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
           <GoalLauncher />
 
-          <Card className="border-white/10 bg-white/[0.03]">
+          <Card className={cockpitCard}>
             <CardContent className="space-y-4 p-5">
               <div className="flex items-center gap-2 text-midground">
                 <ShieldCheck className="h-5 w-5" />
                 <H2 className="text-xl">Live status</H2>
               </div>
               <div className="grid gap-3 text-sm">
-                <div className="rounded-xl border border-white/10 bg-black/25 p-3">
+                <div className={cockpitPanel}>
                   <div className="text-xs uppercase tracking-wide text-text-secondary">Hermes</div>
                   <div className="mt-1 text-text-primary">v{status?.version ?? "—"} · {status?.release_date ?? "—"}</div>
                 </div>
-                <div className="rounded-xl border border-white/10 bg-black/25 p-3">
+                <div className={cockpitPanel}>
                   <div className="text-xs uppercase tracking-wide text-text-secondary">Platforms</div>
                   <div className="mt-1 text-text-primary">{platformSummary(status)}</div>
                 </div>
-                <div className="rounded-xl border border-white/10 bg-black/25 p-3">
+                <div className={cockpitPanel}>
                   <div className="text-xs uppercase tracking-wide text-text-secondary">AI Ops Brain</div>
                   <div className="mt-1 break-all text-text-primary">/home/jenny/ai-ops-brain/PROJECT_COMMAND_CENTER.md</div>
                 </div>
@@ -699,7 +848,7 @@ export default function MissionControlPage() {
           </div>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {PROJECTS.map((project) => (
-              <Card key={project.name} className="overflow-hidden border-white/10 bg-white/[0.03]">
+              <Card key={project.name} className={cn(cockpitCard, "overflow-hidden")}>
                 <CardContent className={cn("space-y-4 bg-gradient-to-br p-4", project.tone)}>
                   <div className="flex items-start justify-between gap-3">
                     <div>
@@ -712,18 +861,18 @@ export default function MissionControlPage() {
                   </div>
 
                   <div className="grid gap-2 text-xs text-text-secondary">
-                    <div className="rounded-xl border border-white/10 bg-black/25 p-3">
+                    <div className={cockpitPanel}>
                       <div className="mb-1 flex items-center justify-between gap-2 font-semibold text-text-primary">
                         <span className="flex items-center gap-1"><CheckCircle2 className="h-3.5 w-3.5" /> Project health</span>
                         <Badge tone="outline" className={projectHealthTone(project.health)}>{project.health}</Badge>
                       </div>
                       <div>{project.phase}</div>
                     </div>
-                    <div className="rounded-xl border border-white/10 bg-black/25 p-3">
+                    <div className={cockpitPanel}>
                       <div className="mb-1 font-semibold text-text-primary">Next safe posture</div>
                       {project.next}
                     </div>
-                    <div className="rounded-xl border border-white/10 bg-black/25 p-3">
+                    <div className={cockpitPanel}>
                       <div className="mb-1 font-semibold text-text-primary">Waiting / gate</div>
                       {project.waitingOn}
                     </div>
@@ -755,7 +904,7 @@ export default function MissionControlPage() {
         </section>
 
         <section className="grid gap-4 lg:grid-cols-2">
-          <Card className="border-white/10 bg-white/[0.03]">
+          <Card className={cockpitCard}>
             <CardContent className="space-y-4 p-5">
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2 text-midground">
@@ -768,7 +917,7 @@ export default function MissionControlPage() {
               </div>
               <div className="space-y-2">
                 {activeJobs.length ? activeJobs.slice(0, 6).map((job) => (
-                  <div key={`${job.profile ?? "default"}:${job.id}`} className="rounded-xl border border-white/10 bg-black/25 p-3">
+                  <div key={`${job.profile ?? "default"}:${job.id}`} className={cockpitPanel}>
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <div className="font-medium text-text-primary">{getJobTitle(job)}</div>
@@ -780,7 +929,7 @@ export default function MissionControlPage() {
                     </div>
                   </div>
                 )) : (
-                  <div className="rounded-xl border border-white/10 bg-black/25 p-4 text-sm text-text-secondary">
+                  <div className="rounded-xl border border-[#284848] bg-black/30 p-4 text-sm text-text-secondary">
                     No enabled cron runs reported. That matches the “cron off unless requested” operating preference.
                   </div>
                 )}
@@ -788,7 +937,7 @@ export default function MissionControlPage() {
             </CardContent>
           </Card>
 
-          <Card className="border-white/10 bg-white/[0.03]">
+          <Card className={cockpitCard}>
             <CardContent className="space-y-4 p-5">
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2 text-midground">
@@ -804,7 +953,7 @@ export default function MissionControlPage() {
                   <Link
                     key={session.id}
                     to={`/sessions?session=${encodeURIComponent(session.id)}`}
-                    className="block rounded-xl border border-white/10 bg-black/25 p-3 transition hover:border-white/30"
+                    className="block rounded-xl border border-[#284848] bg-black/30 p-3 transition hover:border-emerald-400/40"
                   >
                     <div className="font-medium text-text-primary">{session.title || session.preview || session.id}</div>
                     <div className="mt-1 text-xs text-text-secondary">
@@ -812,7 +961,7 @@ export default function MissionControlPage() {
                     </div>
                   </Link>
                 )) : (
-                  <div className="rounded-xl border border-white/10 bg-black/25 p-4 text-sm text-text-secondary">
+                  <div className="rounded-xl border border-[#284848] bg-black/30 p-4 text-sm text-text-secondary">
                     No recent sessions loaded.
                   </div>
                 )}
@@ -821,7 +970,7 @@ export default function MissionControlPage() {
           </Card>
         </section>
 
-        <section className="rounded-2xl border border-white/10 bg-black/25 p-4 text-sm text-text-secondary">
+        <section className="rounded-2xl border border-[#284848] bg-black/30 p-4 text-sm text-text-secondary">
           <div className="mb-2 flex items-center gap-2 font-semibold text-text-primary">
             <ExternalLink className="h-4 w-4" /> Useful links
           </div>
@@ -831,6 +980,9 @@ export default function MissionControlPage() {
             <a className="hover:text-midground" href={discordThreadUrl("1507671041118437416")} target="_blank" rel="noreferrer">Hermes Ops Discord</a>
           </div>
         </section>
+        </div>
+
+        <CommandDeck status={status} activeJobs={activeJobs} approvalSummary={approvalSummary} />
       </div>
     </main>
   );

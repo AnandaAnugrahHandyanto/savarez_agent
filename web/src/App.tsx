@@ -592,7 +592,7 @@ export default function App() {
                 >
                   <span
                     className={cn(
-                      "px-5 pt-2.5 pb-1",
+                      "px-5 pt-2 pb-1",
                       "font-mondwest text-display text-xs tracking-[0.12em] text-text-tertiary",
                     )}
                     id="hermes-sidebar-plugin-nav-heading"
@@ -723,7 +723,7 @@ function SidebarNavLink({ closeMobile, item, pendingApprovalCount, t }: SidebarN
         className={({ isActive }) =>
           cn(
             "group relative flex items-center gap-3",
-            "px-5 py-2.5",
+            "px-5 py-2",
             "font-mondwest text-display uppercase text-sm tracking-[0.12em]",
             "whitespace-nowrap transition-colors cursor-pointer",
             "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
