@@ -1072,6 +1072,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         api_messages = []
         for msg in messages:
             api_msg = msg.copy()
+
+            # Safety net: normalize None content to empty string (same as main
+            # loop in conversation_loop.py).  Some providers (DeepSeek V4 Flash
+            # thinking mode) reject null content.
+            if api_msg.get("content") is None:
+                api_msg["content"] = ""
+
             agent._copy_reasoning_content_for_api(msg, api_msg)
             for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
                 api_msg.pop(internal_field, None)

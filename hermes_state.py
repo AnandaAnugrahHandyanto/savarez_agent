@@ -1937,6 +1937,12 @@ class SessionDB:
         messages = []
         for row in rows:
             content = self._decode_content(row["content"])
+            # Normalize None content to empty string — some strict providers
+            # (DeepSeek V4 Flash thinking mode, etc.) reject null content with
+            # "content should be a string or a list".  All roles accept empty
+            # string as valid content.  Refs #<tbd>.
+            if content is None:
+                content = ""
             if row["role"] in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()
             msg = {"role": row["role"], "content": content}

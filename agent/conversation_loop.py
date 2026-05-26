@@ -789,6 +789,15 @@ def run_conversation(
         for idx, msg in enumerate(messages):
             api_msg = msg.copy()
 
+            # Safety net: normalize None content to empty string.  Some
+            # providers (DeepSeek V4 Flash thinking mode, etc.) reject null
+            # content with "content should be a string or a list".  All roles
+            # accept empty string as valid content.  Covers edge cases where
+            # tool messages or assistant(tool_calls) messages were persisted
+            # with null content from older sessions.
+            if api_msg.get("content") is None:
+                api_msg["content"] = ""
+
             # Inject ephemeral context into the current turn's user message.
             # Sources: memory manager prefetch + plugin pre_llm_call hooks
             # with target="user_message" (the default).  Both are
