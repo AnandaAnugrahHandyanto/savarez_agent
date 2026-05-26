@@ -1206,6 +1206,46 @@ def get_curated_nous_model_ids() -> list[str]:
     return list(_PROVIDER_MODELS.get("nous", []))
 
 
+def get_nous_picker_model_ids(portal_base_url: str = "") -> list[str]:
+    """Return the tier-appropriate Nous Portal model list for pickers.
+
+    The docs-hosted curated catalog can lag the Portal's live
+    ``/api/nous/recommended-models`` response.  Picker surfaces must therefore
+    apply the same live recommendation/tier logic as the OAuth login flow:
+
+    * free-tier users get Portal ``freeRecommendedModels`` unioned in, then the
+      list is filtered to selectable free models;
+    * paid-tier users get Portal ``paidRecommendedModels`` unioned in so newly
+      launched paid models appear without a Hermes release.
+
+    Any network/auth/pricing failure degrades to the curated list so model
+    selection never blanks out because of an auxiliary catalog hiccup.
+    """
+    model_ids = get_curated_nous_model_ids()
+    if not model_ids:
+        return []
+
+    try:
+        pricing = get_pricing_for_provider("nous")
+        free_tier = check_nous_free_tier()
+        portal_for_recs = portal_base_url or _resolve_nous_portal_url()
+        if free_tier:
+            model_ids, pricing = union_with_portal_free_recommendations(
+                model_ids, pricing, portal_for_recs,
+            )
+            selectable, _unavailable = partition_nous_models_by_tier(
+                model_ids, pricing, free_tier=True,
+            )
+            return selectable
+
+        model_ids, _pricing = union_with_portal_paid_recommendations(
+            model_ids, pricing, portal_for_recs,
+        )
+        return model_ids
+    except Exception:
+        return list(model_ids)
+
+
 def _ai_gateway_model_is_free(pricing: Any) -> bool:
     """Return True if an AI Gateway model has $0 input AND output pricing."""
     if not isinstance(pricing, dict):

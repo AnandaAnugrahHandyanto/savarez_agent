@@ -315,6 +315,12 @@ class TestIntegrationWithModelsModule:
 
             with patch.object(
                 model_catalog, "_fetch_manifest", return_value=_valid_manifest()
+            ), patch(
+                "hermes_cli.models.get_pricing_for_provider", return_value={}
+            ), patch(
+                "hermes_cli.models.check_nous_free_tier", return_value=False
+            ), patch(
+                "hermes_cli.models.fetch_nous_recommended_models", return_value={}
             ):
                 picker = list_picker_providers(
                     current_provider="nous", max_models=99
