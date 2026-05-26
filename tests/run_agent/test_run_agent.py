@@ -2963,6 +2963,75 @@ class TestRunConversation:
         assert result["final_response"] == "Here is the actual answer."
         assert result["api_calls"] == 2  # 1 original + 1 nudge retry
 
+    def test_rate_limit_after_primary_timeout_recovery_activates_fallback(self, agent):
+        """A 429 after primary timeout recovery should not stay pinned to the primary model."""
+        self._setup_agent(agent)
+        agent.base_url = "https://open.bigmodel.cn/api/coding/paas/v4"
+        agent.provider = "zai"
+        agent.model = "glm-5.1"
+        agent._fallback_chain = [
+            {
+                "provider": "zai",
+                "model": "glm-4.7",
+                "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+            }
+        ]
+        agent._fallback_index = 0
+        agent._fallback_activated = False
+        class _Pool:
+            def has_available(self):
+                return True
+
+            def entries(self):
+                return [SimpleNamespace(label="primary"), SimpleNamespace(label="secondary")]
+
+            def current(self):
+                return SimpleNamespace(label="primary", last_status=None)
+
+            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+                return SimpleNamespace(label="secondary")
+
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        class _TimeoutError(Exception):
+            pass
+
+        class _RateLimitError(Exception):
+            status_code = 429
+
+        fallback_resp = _mock_response(content="Fallback answer.", finish_reason="stop")
+        primary_create = agent.client.chat.completions.create
+        primary_create.side_effect = [
+            _TimeoutError("request timed out"),
+            _TimeoutError("request timed out"),
+            _TimeoutError("request timed out"),
+            _RateLimitError("HTTP 429: rate limit"),
+            AssertionError("primary should not be called again after timeout recovery then 429"),
+        ]
+
+        fallback_client = MagicMock()
+        fallback_client.api_key = "fallback-key"
+        fallback_client.base_url = "https://open.bigmodel.cn/api/coding/paas/v4"
+        fallback_client.chat.completions.create.return_value = fallback_resp
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_try_recover_primary_transport", return_value=True),
+            patch.object(agent, "_emit_status"),
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(fallback_client, "glm-4.7")) as resolve_provider_client,
+        ):
+            result = agent.run_conversation("answer me")
+
+        resolve_provider_client.assert_called_once()
+        assert primary_create.call_count == 4
+        agent._swap_credential.assert_not_called()
+        assert result["completed"] is True
+        assert result["final_response"] == "Fallback answer."
+        assert agent.model == "glm-4.7"
+
     def test_empty_response_triggers_fallback_provider(self, agent):
         """After 3 empty retries, fallback provider is activated and produces content."""
         self._setup_agent(agent)

@@ -2092,6 +2092,20 @@ def run_conversation(
                     classified.should_rotate_credential, classified.should_fallback,
                 )
 
+                if (
+                    primary_recovery_attempted
+                    and classified.reason in {FailoverReason.rate_limit, FailoverReason.billing}
+                    and agent._fallback_index < len(agent._fallback_chain)
+                ):
+                    agent._emit_status(
+                        "⚠️ Rate limited after primary timeout recovery — switching to fallback provider..."
+                    )
+                    if agent._try_activate_fallback(reason=classified.reason):
+                        retry_count = 0
+                        compression_attempts = 0
+                        primary_recovery_attempted = False
+                        continue
+
                 recovered_with_pool, has_retried_429 = agent._recover_with_credential_pool(
                     status_code=status_code,
                     has_retried_429=has_retried_429,
