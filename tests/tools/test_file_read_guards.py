@@ -403,6 +403,30 @@ class TestResultShaping(unittest.TestCase):
         self.assertIn("result_mode='full'", result["_hint"])
         self.assertIn("output_mode='files_only'", result["_hint"])
         self.assertGreater(result["omitted_matches"], 0)
+        self.assertIn("offset=12", result["_hint"])
+
+    @patch("tools.file_tools.file_state.record_read")
+    @patch("tools.file_tools._get_file_ops")
+    def test_compacted_read_is_recorded_as_partial(self, mock_ops, mock_record_read):
+        content = "\n".join(
+            f"{i:6d}|{('large line %04d ' % i) + ('x' * 180)}"
+            for i in range(1, 260)
+        )
+        mock_ops.return_value = _make_fake_ops(
+            content=content,
+            total_lines=260,
+            file_size=len(content),
+        )
+
+        result = json.loads(read_file_tool(
+            "/tmp/large.txt",
+            limit=500,
+            task_id="large-read-partial",
+        ))
+
+        self.assertTrue(result["compacted"])
+        mock_record_read.assert_called_once()
+        self.assertTrue(mock_record_read.call_args.kwargs.get("partial"))
 
     @patch("tools.file_tools._get_file_ops")
     def test_disable_result_compaction_preserves_large_search_auto_result(self, mock_ops):

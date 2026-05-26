@@ -588,7 +588,7 @@ def _compact_search_result(result_dict: dict, *, pattern: str, path: str,
 
     total_count = int(result_dict.get("total_count") or len(matches))
     omitted = max(total_count - len(preview_matches), 0)
-    next_offset = offset + min(limit, len(matches))
+    next_offset = offset + len(preview_matches)
 
     compacted = dict(result_dict)
     compacted["matches"] = preview_matches
@@ -654,7 +654,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500,
         # file hasn't been modified since, return a lightweight stub
         # instead of re-sending the same content.  Saves context tokens.
         resolved_str = str(_resolved)
-        dedup_key = (resolved_str, offset, limit)
+        dedup_key = (resolved_str, offset, limit, result_mode)
         with _read_tracker_lock:
             task_data = _read_tracker.setdefault(task_id, {
                 "last_key": None, "consecutive": 0,
@@ -755,7 +755,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500,
             ))
 
         # ── Track for consecutive-loop detection ──────────────────────
-        read_key = ("read", path, offset, limit)
+        read_key = ("read", path, offset, limit, result_mode)
         with _read_tracker_lock:
             # Ensure "dedup" / "dedup_hits" keys exist (backward compat with
             # old tracker state from pre-dedup-guard sessions).
@@ -767,7 +767,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500,
             # reset its hit counter.  (File either changed or stat failed
             # earlier and we fell through.)
             task_data["dedup_hits"].pop(dedup_key, None)
-            task_data["read_history"].add((path, offset, limit))
+            task_data["read_history"].add((path, offset, limit, result_mode))
             if task_data["last_key"] == read_key:
                 task_data["consecutive"] += 1
             else:
@@ -789,19 +789,6 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500,
             # Bound the per-task containers so a long CLI session doesn't
             # accumulate megabytes of dict/set state.  See _cap_read_tracker_data.
             _cap_read_tracker_data(task_data)
-
-        # Cross-agent file-state registry (separate from per-task read
-        # tracker above): records that THIS agent has read this path so
-        # write/patch can detect sibling-subagent writes that happened
-        # after our read.  Partial read when offset>1 or the read was
-        # truncated (large file with more content than limit covered).
-        # Outside the _read_tracker_lock so the registry's own locking
-        # isn't nested under ours.
-        try:
-            _partial = (offset > 1) or bool(result_dict.get("truncated"))
-            file_state.record_read(task_id, resolved_str, partial=_partial)
-        except Exception:
-            logger.debug("file_state.record_read failed", exc_info=True)
 
         if count >= 4:
             # Hard block: stop returning content to break the loop
@@ -828,6 +815,19 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500,
             limit=limit,
             result_mode=result_mode,
         )
+        # Cross-agent file-state registry (separate from per-task read
+        # tracker above): records that THIS agent has read this path so
+        # write/patch can detect sibling-subagent writes that happened
+        # after our read. Partial includes compacted model-visible output.
+        try:
+            _partial = (
+                (offset > 1)
+                or bool(result_dict.get("truncated"))
+                or bool(result_dict.get("compacted"))
+            )
+            file_state.record_read(task_id, resolved_str, partial=_partial)
+        except Exception:
+            logger.debug("file_state.record_read failed", exc_info=True)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))

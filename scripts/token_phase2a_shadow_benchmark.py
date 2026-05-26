@@ -96,10 +96,12 @@ def main() -> int:
     hermes_home = Path(tempfile.mkdtemp(prefix="hermes-phase2a-home-"))
     old_home = os.environ.get("HERMES_HOME")
     old_metrics = os.environ.get("HERMES_TOKEN_OPTIMIZATION_METRICS")
+    old_disable = os.environ.get("HERMES_DISABLE_RESULT_COMPACTION")
 
     try:
         os.environ["HERMES_HOME"] = str(hermes_home)
         os.environ["HERMES_TOKEN_OPTIMIZATION_METRICS"] = "1"
+        os.environ.pop("HERMES_DISABLE_RESULT_COMPACTION", None)
         large_file, search_root = _build_fixture(fixture_root)
 
         calls = [
@@ -162,7 +164,12 @@ def main() -> int:
             os.environ.pop("HERMES_TOKEN_OPTIMIZATION_METRICS", None)
         else:
             os.environ["HERMES_TOKEN_OPTIMIZATION_METRICS"] = old_metrics
+        if old_disable is None:
+            os.environ.pop("HERMES_DISABLE_RESULT_COMPACTION", None)
+        else:
+            os.environ["HERMES_DISABLE_RESULT_COMPACTION"] = old_disable
         shutil.rmtree(fixture_root, ignore_errors=True)
+        shutil.rmtree(hermes_home, ignore_errors=True)
 
 
 if __name__ == "__main__":
