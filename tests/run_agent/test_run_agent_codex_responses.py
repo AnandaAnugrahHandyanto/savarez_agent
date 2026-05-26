@@ -154,6 +154,15 @@ def _codex_ack_message_response(text: str):
     )
 
 
+def _codex_message_item(text: str):
+    return SimpleNamespace(
+        type="message",
+        role="assistant",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text=text)],
+    )
+
+
 class _FakeResponsesStream:
     def __init__(self, *, final_response=None, final_error=None):
         self._final_response = final_response
@@ -172,6 +181,54 @@ class _FakeResponsesStream:
         if self._final_error is not None:
             raise self._final_error
         return self._final_response
+
+
+class _FakeResponsesStreamTypeErrorAfterEvents:
+    def __init__(self, events):
+        self._events = list(events)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def __iter__(self):
+        for event in self._events:
+            yield event
+        raise TypeError("'NoneType' object is not iterable")
+
+    def get_final_response(self):
+        raise AssertionError("should recover before get_final_response()")
+
+
+class _FakeResponsesStreamTypeErrorInCallback:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def __iter__(self):
+        yield SimpleNamespace(type="response.output_text.delta", delta="Hello")
+
+    def get_final_response(self):
+        return _codex_message_response("unused")
+
+
+class _FakeResponsesForFinalNone:
+    def __init__(self, events):
+        self.events = list(events)
+        self.stream_calls = 0
+        self.create_calls = 0
+
+    def stream(self, **kwargs):
+        self.stream_calls += 1
+        return _FakeResponsesStreamTypeErrorAfterEvents(self.events)
+
+    def create(self, **kwargs):
+        self.create_calls += 1
+        raise AssertionError("create fallback should not run after recoverable stream output")
 
 
 class _FakeCreateStream:
@@ -482,6 +539,92 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert calls["create"] == 1
     assert create_stream.closed is True
     assert response.output[0].content[0].text == "streamed create ok"
+
+
+@pytest.mark.parametrize(
+    ("events", "expected_text"),
+    [
+        (
+            [
+                SimpleNamespace(type="response.output_text.delta", delta="Hello "),
+                SimpleNamespace(type="response.output_text.delta", delta="world"),
+            ],
+            "Hello world",
+        ),
+        (
+            [
+                SimpleNamespace(
+                    type="response.output_item.done",
+                    item=_codex_message_item("done item text"),
+                )
+            ],
+            "done item text",
+        ),
+    ],
+)
+def test_run_codex_stream_recovers_when_sdk_final_parser_sees_none_output(
+    monkeypatch, events, expected_text
+):
+    agent = _build_agent(monkeypatch)
+    fake_responses = _FakeResponsesForFinalNone(events)
+    agent.client = SimpleNamespace(responses=fake_responses)
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert fake_responses.stream_calls == 1
+    assert fake_responses.create_calls == 0
+    assert response.status == "completed"
+    assert response.model == "gpt-5-codex"
+    assert response.output[0].type == "message"
+    assert response.output[0].content[0].text == expected_text
+
+
+def test_run_codex_stream_does_not_synthesize_text_after_tool_call(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    fake_responses = _FakeResponsesForFinalNone(
+        [
+            SimpleNamespace(type="response.output_item.added"),
+            SimpleNamespace(type="response.function_call_arguments.delta", delta="{}"),
+            SimpleNamespace(type="response.output_text.delta", delta="tool text"),
+        ]
+    )
+    agent.client = SimpleNamespace(responses=fake_responses)
+
+    with pytest.raises(TypeError, match="NoneType"):
+        agent._run_codex_stream(_codex_request_kwargs())
+
+    assert fake_responses.create_calls == 0
+
+
+def test_run_codex_stream_does_not_recover_without_streamed_output(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    fake_responses = _FakeResponsesForFinalNone([SimpleNamespace(type="response.created")])
+    agent.client = SimpleNamespace(responses=fake_responses)
+
+    with pytest.raises(TypeError, match="NoneType"):
+        agent._run_codex_stream(_codex_request_kwargs())
+
+    assert fake_responses.create_calls == 0
+
+
+def test_run_codex_stream_does_not_hide_callback_type_errors(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeResponsesStreamTypeErrorInCallback(),
+            create=lambda **kwargs: (_ for _ in ()).throw(
+                AssertionError("create fallback should not run")
+            ),
+        )
+    )
+
+    def _raise_callback(*_args, **_kwargs):
+        raise TypeError("'NoneType' object is not iterable")
+
+    agent._fire_stream_delta = _raise_callback
+
+    with pytest.raises(TypeError, match="NoneType"):
+        agent._run_codex_stream(_codex_request_kwargs())
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):

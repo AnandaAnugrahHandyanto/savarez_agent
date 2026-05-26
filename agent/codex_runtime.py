@@ -173,7 +173,59 @@ def run_codex_app_server_turn(
         "codex_turn_id": turn.turn_id,
     }
 
+def _build_recovered_codex_stream_response(
+    *,
+    api_kwargs: dict,
+    collected_output_items: list,
+    streamed_text_parts: list,
+    has_tool_calls: bool,
+    terminal_status: str | None = None,
+    final_response: Any = None,
+    reason: str,
+):
+    status = terminal_status or getattr(final_response, "status", None) or "completed"
+    model = getattr(final_response, "model", None) or api_kwargs.get("model")
+    usage = getattr(final_response, "usage", None)
 
+    if collected_output_items:
+        logger.debug(
+            "Codex stream: recovered %d output items after %s",
+            len(collected_output_items),
+            reason,
+        )
+        return SimpleNamespace(
+            status=status,
+            model=model,
+            usage=usage,
+            output=list(collected_output_items),
+            output_text="".join(streamed_text_parts) or None,
+        )
+
+    if terminal_status in {"failed", "cancelled", "incomplete"}:
+        return None
+
+    if streamed_text_parts and not has_tool_calls:
+        assembled = "".join(streamed_text_parts)
+        logger.debug(
+            "Codex stream: recovered from %d text deltas after %s (%d chars)",
+            len(streamed_text_parts),
+            reason,
+            len(assembled),
+        )
+        return SimpleNamespace(
+            status=status,
+            model=model,
+            usage=usage,
+            output=[SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text=assembled)],
+            )],
+            output_text=assembled,
+        )
+
+    return None
 
 
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
@@ -188,13 +240,38 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     # returns empty output (e.g. chatgpt.com backend-api sends
     # response.incomplete instead of response.completed).
     agent._codex_streamed_text_parts: list = []
+
     for attempt in range(max_stream_retries + 1):
         if agent._interrupt_requested:
             raise InterruptedError("Agent interrupted before Codex stream retry")
         collected_output_items: list = []
+        terminal_status: str | None = None
         try:
             with active_client.responses.stream(**api_kwargs) as stream:
-                for event in stream:
+                stream_iter = iter(stream)
+                while True:
+                    try:
+                        event = next(stream_iter)
+                    except StopIteration:
+                        break
+                    except TypeError as exc:
+                        err_text = str(exc)
+                        # ChatGPT Codex can stream valid output and then send a
+                        # terminal response with output=None. openai-python may
+                        # raise while parsing that final SSE frame; recover only
+                        # if we already captured usable streamed content.
+                        if "'NoneType' object is not iterable" in err_text:
+                            recovered = _build_recovered_codex_stream_response(
+                                api_kwargs=api_kwargs,
+                                collected_output_items=collected_output_items,
+                                streamed_text_parts=agent._codex_streamed_text_parts,
+                                has_tool_calls=has_tool_calls,
+                                terminal_status=terminal_status,
+                                reason="SDK stream parser saw response.output=None",
+                            )
+                            if recovered is not None:
+                                return recovered
+                        raise
                     # Mark stream activity for the TTFB watchdog in
                     # interruptible_api_call. The Codex backend can accept the
                     # connection but never emit a single event; this timestamp
@@ -238,6 +315,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     elif event_type in {"response.incomplete", "response.failed"}:
                         resp_obj = getattr(event, "response", None)
                         status = getattr(resp_obj, "status", None) if resp_obj else None
+                        terminal_status = status or event_type.removeprefix("response.")
                         incomplete_details = getattr(resp_obj, "incomplete_details", None) if resp_obj else None
                         logger.warning(
                             "Codex Responses stream received terminal event %s "
@@ -252,24 +330,19 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 # Backfill from collected items or synthesize from deltas.
                 _out = getattr(final_response, "output", None)
                 if isinstance(_out, list) and not _out:
-                    if collected_output_items:
-                        final_response.output = list(collected_output_items)
-                        logger.debug(
-                            "Codex stream: backfilled %d output items from stream events",
-                            len(collected_output_items),
-                        )
-                    elif agent._codex_streamed_text_parts and not has_tool_calls:
-                        assembled = "".join(agent._codex_streamed_text_parts)
-                        final_response.output = [SimpleNamespace(
-                            type="message",
-                            role="assistant",
-                            status="completed",
-                            content=[SimpleNamespace(type="output_text", text=assembled)],
-                        )]
-                        logger.debug(
-                            "Codex stream: synthesized output from %d text deltas (%d chars)",
-                            len(agent._codex_streamed_text_parts), len(assembled),
-                        )
+                    recovered = _build_recovered_codex_stream_response(
+                        api_kwargs=api_kwargs,
+                        collected_output_items=collected_output_items,
+                        streamed_text_parts=agent._codex_streamed_text_parts,
+                        has_tool_calls=has_tool_calls,
+                        terminal_status=terminal_status,
+                        final_response=final_response,
+                        reason="empty final response output",
+                    )
+                    if recovered is not None:
+                        final_response.output = recovered.output
+                        if getattr(final_response, "output_text", None) is None:
+                            final_response.output_text = recovered.output_text
                 return final_response
         except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
             if attempt < max_stream_retries:
