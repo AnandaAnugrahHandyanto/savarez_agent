@@ -147,7 +147,16 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.jobs import (
+    CronDirectiveError,
+    append_directive_event,
+    consume_operator_directive_for_run,
+    get_due_jobs,
+    mark_job_run,
+    reject_operator_directive_for_no_agent,
+    save_job_output,
+    advance_next_run,
+)
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -1001,7 +1010,11 @@ def _parse_wake_gate(script_output: str) -> bool:
     return gate.get("wakeAgent", True) is not False
 
 
-def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
+def _build_job_prompt(
+    job: dict,
+    prerun_script: Optional[tuple] = None,
+    operator_directive: Optional[str] = None,
+) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first.
 
     Args:
@@ -1011,6 +1024,8 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             When provided, the script is not re-executed and the cached
             result is used for prompt injection. When omitted, the script
             (if any) runs inline as before.
+        operator_directive: Optional one-time supervised directive consumed
+            from the cron directive store before prompt assembly.
     """
     prompt = str(job.get("prompt") or "")
     skills = job.get("skills")
@@ -1032,8 +1047,9 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                     f"{prompt}"
                 )
             else:
-                # Script produced no output — nothing to report, skip AI call.
-                return None
+                if not operator_directive:
+                    # Script produced no output — nothing to report, skip AI call.
+                    return None
         else:
             prompt = (
                 "## Script Error\n"
@@ -1088,6 +1104,16 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             except (OSError, PermissionError) as e:
                 logger.warning("context_from: failed to read output for job %r: %s", source_job_id, e)
                 # silent skip — do not pollute the prompt with error messages
+
+    if operator_directive:
+        prompt = (
+            "## Operator Directive\n"
+            "This run is supervised by an operator directive. Follow this "
+            "directive before any autonomous slice selection or prioritization.\n\n"
+            f"{operator_directive.strip()}\n\n"
+            "## Stored Job Prompt\n\n"
+            f"{prompt}"
+        )
 
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.
@@ -1208,6 +1234,19 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         return _run_job_impl(job)
 
 
+def _directive_blocked_output(job: dict, job_name: str, message: str) -> str:
+    return (
+        f"# Cron Job: {job_name} (BLOCKED)\n\n"
+        f"**Job ID:** {job.get('id')}\n"
+        f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"**Schedule:** {job.get('schedule_display', 'N/A')}\n"
+        "**Status:** BLOCKED\n\n"
+        "The cron runner was halted before prompt finalization because an "
+        "operator directive was present but could not be used safely.\n\n"
+        f"**Directive error:** {message}\n"
+    )
+
+
 def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
@@ -1217,6 +1256,21 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
+    _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+    consumed_directive = None
+    _directive_failure_reported = False
+
+    def _record_consumed_directive_failure(error: str) -> None:
+        nonlocal _directive_failure_reported
+        if not consumed_directive or _directive_failure_reported:
+            return
+        append_directive_event(
+            "consumed-but-runner-failed",
+            job_id,
+            consumed_directive.get("directive_id"),
+            {"run_id": _cron_session_id, "error": str(error)},
+        )
+        _directive_failure_reported = True
 
     # ---------------------------------------------------------------
     # no_agent short-circuit — the script IS the job, no LLM involvement.
@@ -1237,6 +1291,22 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     #                               the whole point of no_agent is that there
     #                               is no agent to wake
     if job.get("no_agent"):
+        try:
+            reject_operator_directive_for_no_agent(job_id, _cron_session_id)
+        except CronDirectiveError as directive_exc:
+            logger.error(
+                "Job '%s' (ID: %s): blocked by operator directive handoff — %s",
+                job_name,
+                job_id,
+                directive_exc,
+            )
+            return (
+                False,
+                _directive_blocked_output(job, job_name, str(directive_exc)),
+                "",
+                str(directive_exc),
+            )
+
         script_path = job.get("script")
         if not script_path:
             err = "no_agent=True but no script is set for this job"
@@ -1338,6 +1408,26 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     except Exception as e:
         logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
 
+    try:
+        consumed_directive = consume_operator_directive_for_run(
+            job_id,
+            _cron_session_id,
+            directive_id=job.get("operator_directive_id"),
+        )
+    except CronDirectiveError as directive_exc:
+        logger.error(
+            "Job '%s' (ID: %s): blocked by operator directive handoff — %s",
+            job_name,
+            job_id,
+            directive_exc,
+        )
+        return (
+            False,
+            _directive_blocked_output(job, job_name, str(directive_exc)),
+            "",
+            str(directive_exc),
+        )
+
     # Wake-gate: if this job has a pre-check script, run it BEFORE building
     # the prompt so a ``{"wakeAgent": false}`` response can short-circuit
     # the whole agent run. We pass the result into _build_job_prompt so
@@ -1345,23 +1435,49 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script(script_path)
-        _ran_ok, _script_output = prerun_script
-        if _ran_ok and not _parse_wake_gate(_script_output):
-            logger.info(
-                "Job '%s' (ID: %s): wakeAgent=false, skipping agent run",
-                job_name, job_id,
-            )
-            silent_doc = (
-                f"# Cron Job: {job_name}\n\n"
-                f"**Job ID:** {job_id}\n"
-                f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-                "Script gate returned `wakeAgent=false` — agent skipped.\n"
-            )
-            return True, silent_doc, SILENT_MARKER, None
+        try:
+            prerun_script = _run_job_script(script_path)
+            _ran_ok, _script_output = prerun_script
+            if _ran_ok and not consumed_directive and not _parse_wake_gate(_script_output):
+                logger.info(
+                    "Job '%s' (ID: %s): wakeAgent=false, skipping agent run",
+                    job_name, job_id,
+                )
+                silent_doc = (
+                    f"# Cron Job: {job_name}\n\n"
+                    f"**Job ID:** {job_id}\n"
+                    f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                    "Script gate returned `wakeAgent=false` — agent skipped.\n"
+                )
+                return True, silent_doc, SILENT_MARKER, None
+        except Exception as script_exc:
+            error_msg = f"{type(script_exc).__name__}: {script_exc}"
+            logger.exception("Job '%s' failed during pre-run script: %s", job_name, error_msg)
+            _record_consumed_directive_failure(error_msg)
+            output = f"""# Cron Job: {job_name} (FAILED)
+
+**Job ID:** {job_id}
+**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
+**Schedule:** {job.get('schedule_display', 'N/A')}
+
+## Error
+
+```
+{error_msg}
+```
+"""
+            return False, output, "", error_msg
 
     try:
-        prompt = _build_job_prompt(job, prerun_script=prerun_script)
+        prompt = _build_job_prompt(
+            job,
+            prerun_script=prerun_script,
+            operator_directive=(
+                consumed_directive.get("directive_text")
+                if consumed_directive
+                else None
+            ),
+        )
     except CronPromptInjectionBlocked as block_exc:
         # Assembled prompt (user prompt + loaded skill content) tripped the
         # injection scanner. Refuse to run the agent this tick and surface
@@ -1384,13 +1500,34 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             "and the match is a false positive, rephrase the content to avoid "
             "the threat pattern (`tools/cronjob_tools.py::_CRON_THREAT_PATTERNS`)."
         )
+        _record_consumed_directive_failure(str(block_exc))
         return False, blocked_doc, "", str(block_exc)
+    except Exception as prompt_exc:
+        error_msg = f"{type(prompt_exc).__name__}: {prompt_exc}"
+        logger.exception("Job '%s' failed during prompt assembly: %s", job_name, error_msg)
+        _record_consumed_directive_failure(error_msg)
+        output = f"""# Cron Job: {job_name} (FAILED)
+
+**Job ID:** {job_id}
+**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
+**Schedule:** {job.get('schedule_display', 'N/A')}
+
+## Error
+
+```
+{error_msg}
+```
+"""
+        return False, output, "", error_msg
     if prompt is None:
+        if consumed_directive:
+            error_msg = "Prompt assembly returned no prompt after consuming an operator directive"
+            logger.error("Job '%s' failed: %s", job_name, error_msg)
+            _record_consumed_directive_failure(error_msg)
+            return False, _directive_blocked_output(job, job_name, error_msg), "", error_msg
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
         return True, "", SILENT_MARKER, None
     origin = _resolve_origin(job)
-    _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
-
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
 
@@ -1793,6 +1930,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
+        _record_consumed_directive_failure(error_msg)
         
         output = f"""# Cron Job: {job_name} (FAILED)
 
