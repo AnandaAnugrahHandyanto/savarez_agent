@@ -645,7 +645,15 @@ class SimplexAdapter(BasePlatformAdapter):
             contact = {}
         contact_id = str(contact.get("contactId") or contact.get("id") or "")
         if not contact_id:
-            logger.warning("SimpleX: call invitation missing contact id: %s", payload)
+            payload_keys = sorted(str(key) for key in payload.keys())
+            invitation_keys = sorted(str(key) for key in invitation.keys())
+            logger.warning(
+                "SimpleX: call invitation missing contact id: event_type=%s "
+                "payload_keys=%s invitation_keys=%s",
+                payload.get("type") or "unknown",
+                payload_keys,
+                invitation_keys,
+            )
             return
         contact_name = (
             contact.get("displayName")

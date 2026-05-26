@@ -1042,6 +1042,28 @@ async def test_handle_event_rejects_simplex_call_invitation_event():
 
 
 @pytest.mark.asyncio
+async def test_handle_event_redacts_malformed_call_invitation_warning(caplog):
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    caplog.set_level("WARNING")
+
+    await adapter._handle_event(
+        {
+            "type": "callInvitation",
+            "callInvitation": {
+                "contact": {"displayName": "Missing Id"},
+                "callType": {"media": "audio"},
+                "sharedKey": "secret-call-key",
+            },
+        }
+    )
+
+    assert "call invitation missing contact id" in caplog.text
+    assert "secret-call-key" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_fetch_file_searches_configured_simplex_files_folder(monkeypatch, tmp_path):
     """Voice downloads land in the daemon's configured files folder."""
     _install_fake_websockets(monkeypatch)
