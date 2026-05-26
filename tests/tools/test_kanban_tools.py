@@ -1142,8 +1142,11 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
     assert "kanban_complete" in prompt
     assert "kanban_block" in prompt
     assert "kanban_create" in prompt
-    # Anti-shell guidance
+    # Anti-shell and Agent Team Lite v2 handoff guidance
     assert "Do not shell out" in prompt or "tools — they work" in prompt
+    assert "Do not block merely for review-needed" in prompt
+    assert "legacy `bubble_text`" in prompt
+    assert "never required for completion" in prompt
 
 
 def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
