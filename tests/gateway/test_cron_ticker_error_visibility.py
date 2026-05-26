@@ -8,9 +8,6 @@ stayed dead for 15+ hours while ``hermes cron status`` reported healthy.
 
 import logging
 import threading
-from unittest.mock import patch
-
-import pytest
 
 
 def _run_one_tick(monkeypatch, side_effect):

@@ -18577,10 +18577,12 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
             # default INFO log level; exc_info captures the traceback for
             # diagnosis instead of just the str(e).
             logger.warning("Cron tick error", exc_info=True)
-        except BaseException:
-            # `except Exception` does not catch SystemExit, KeyboardInterrupt,
-            # or BaseExceptionGroup — log a traceback first, then re-raise so
-            # the thread exits as Python intends rather than dying silently.
+        except (SystemExit, KeyboardInterrupt, BaseExceptionGroup):
+            # `except Exception` does not catch these — log a traceback first,
+            # then re-raise so the thread exits as Python intends rather than
+            # dying silently. Narrow rather than `except BaseException` so we
+            # don't intercept `GeneratorExit` or other interpreter-shutdown
+            # signals.
             logger.error(
                 "Cron ticker fatal error; thread will exit", exc_info=True
             )
