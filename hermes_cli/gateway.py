@@ -3302,8 +3302,32 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
         print("\nGateway stopped.")
         return
     except SystemExit as e:
-        _exit_diag("asyncio.run.SystemExit", code=getattr(e, "code", None),
-                   traceback=_traceback.format_exc())
+        exit_code = getattr(e, "code", None)
+        _exit_diag(
+            "asyncio.run.SystemExit",
+            code=exit_code,
+            traceback=_traceback.format_exc(),
+        )
+        if exit_code == GATEWAY_SERVICE_RESTART_EXIT_CODE:
+            # The async gateway runner raises SystemExit(75) after a planned
+            # service-managed restart has completed graceful teardown. A
+            # normal SystemExit only exits the main thread; if non-daemon
+            # worker or network threads survived shutdown, the process can
+            # remain alive with all messaging adapters disconnected. The
+            # service manager then still sees the old PID as active and
+            # never observes exit 75, so systemd's RestartForceExitStatus=75
+            # (and launchd's non-success relaunch) cannot respawn it.
+            #
+            # For this planned restart handoff only, terminate the process
+            # decisively after flushing diagnostics so the service manager
+            # can relaunch per the existing exit-code-75 contract.
+            try:
+                sys.stdout.flush()
+                sys.stderr.flush()
+                logging.shutdown()
+            except Exception:
+                pass
+            os._exit(GATEWAY_SERVICE_RESTART_EXIT_CODE)
         raise
     except BaseException as e:
         # Absolutely everything else: Exception, asyncio.CancelledError,

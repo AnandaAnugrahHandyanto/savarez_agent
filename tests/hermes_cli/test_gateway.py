@@ -68,6 +68,66 @@ def test_run_gateway_exits_nonzero_when_start_gateway_reports_failure(monkeypatc
     assert calls == [(True, None)]
 
 
+def test_run_gateway_hard_exits_on_service_restart_code(monkeypatch):
+    """SystemExit(75) from the async runner must terminate the process via
+    ``os._exit(75)`` so service managers (systemd ``RestartForceExitStatus=75``
+    and launchd's non-success relaunch) see the planned restart code even
+    when non-daemon worker or network threads survive shutdown. A plain
+    ``raise`` only exits the main thread, which can leave the gateway PID
+    alive while messaging adapters are already disconnected."""
+
+    def fake_start_gateway(*, replace, verbosity):
+        return object()
+
+    def fake_asyncio_run(coro):
+        raise SystemExit(gateway.GATEWAY_SERVICE_RESTART_EXIT_CODE)
+
+    calls = []
+
+    class HardExitCalled(Exception):
+        pass
+
+    def fake_os_exit(code):
+        calls.append(code)
+        raise HardExitCalled
+
+    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
+    monkeypatch.setattr(gateway.asyncio, "run", fake_asyncio_run)
+    monkeypatch.setattr(gateway.os, "_exit", fake_os_exit)
+
+    with pytest.raises(HardExitCalled):
+        gateway.run_gateway(verbose=0, quiet=True, replace=False)
+
+    assert calls == [gateway.GATEWAY_SERVICE_RESTART_EXIT_CODE]
+
+
+def test_run_gateway_reraises_non_restart_system_exit(monkeypatch):
+    """SystemExit codes other than the planned restart code must NOT be
+    hard-exited; they should propagate via the normal re-raise path so
+    that startup failures, root-guard exits, etc. keep their existing
+    semantics for the service manager and the caller."""
+
+    def fake_start_gateway(*, replace, verbosity):
+        return object()
+
+    def fake_asyncio_run(coro):
+        raise SystemExit(1)
+
+    def fake_os_exit(code):
+        raise AssertionError(
+            f"os._exit must not be called for non-restart code {code!r}"
+        )
+
+    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
+    monkeypatch.setattr(gateway.asyncio, "run", fake_asyncio_run)
+    monkeypatch.setattr(gateway.os, "_exit", fake_os_exit)
+
+    with pytest.raises(SystemExit) as exc_info:
+        gateway.run_gateway(verbose=0, quiet=True, replace=False)
+
+    assert exc_info.value.code == 1
+
+
 def test_run_gateway_refuses_root_in_official_docker(monkeypatch, tmp_path, capsys):
     project_root = tmp_path / "opt" / "hermes"
     (project_root / "docker").mkdir(parents=True)
