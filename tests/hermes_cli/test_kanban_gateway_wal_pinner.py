@@ -174,50 +174,62 @@ def test_pinner_query_only_cannot_write():
 
 @pytest.mark.skipif(sys.platform != "linux", reason="/proc/pid/fd only on Linux")
 def test_no_pinner_accumulates_deleted_fds():
-    """Regression guard: a plain open connection accumulates deleted WAL/shm FDs.
+    """Regression guard: the wal/shm unlink IS triggered without a WAL read-mark.
 
-    Without the pinner's BEGIN+read, concurrent open/close churn triggers the
-    "last connection closing" path and unlinks wal/shm. Any connection that had
-    those files open before the unlink now holds deleted-inode FDs. If this
-    assertion ever stops being true the positive test above is vacuous.
+    Uses raw os.open() FDs (not sqlite3 connection FDs) to deterministically
+    observe deleted-inode state. When the last SQLite connection closes without
+    a live read-mark, SQLite unlinks wal/shm; any process FD that was open to
+    those files beforehand now shows up as (deleted) in /proc/<pid>/fd.
+
+    This test is the complement of test_wal_pinner_no_deleted_fds_after_
+    dispatcher_traffic — it confirms that the unlink DOES happen when the
+    pinner's read-mark is absent, making the positive test non-vacuous.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "kanban.db")
-        _make_wal_db(db_path)
 
-        # Sentinel holds the WAL/shm files open (via isolation_level=None +
-        # explicit BEGIN) so that when a peer thread's close becomes the
-        # "last connection" and unlinks wal/shm, the sentinel's FDs point to
-        # deleted inodes.  No SELECT follows — this intentionally does NOT
-        # establish a WAL read-mark, which is the missing piece the pinner adds.
-        sentinel = sqlite3.connect(db_path, isolation_level=None)
-        sentinel.execute("BEGIN")
+        # Create WAL-mode DB with data so sidecars are created.
+        setup = sqlite3.connect(db_path)
+        setup.execute("PRAGMA journal_mode=WAL")
+        setup.execute("PRAGMA wal_autocheckpoint=0")
+        setup.execute("CREATE TABLE t (x INTEGER)")
+        setup.execute("INSERT INTO t VALUES (1)")
+        setup.commit()
 
-        stop_event = threading.Event()
-        threads = [
-            threading.Thread(
-                target=_spam_connections, args=(db_path, stop_event), daemon=True
+        wal_path = db_path + "-wal"
+        shm_path = db_path + "-shm"
+
+        assert os.path.exists(wal_path), "wal sidecar must exist before the unlink test"
+
+        # Hold raw OS-level FDs so we can observe the unlink via /proc/<pid>/fd.
+        # SQLite's own FDs are closed by sqlite3_close before returning, so we
+        # need out-of-band FDs to catch the (deleted) state.
+        wal_fd = os.open(wal_path, os.O_RDONLY)
+        shm_fd = os.open(shm_path, os.O_RDONLY)
+
+        try:
+            # Close setup — it is the last connection that holds a WAL read lock
+            # (no other connection has called BEGIN+SELECT). SQLite enters the
+            # "last connection closing" path and unlinks wal/shm.
+            setup.close()
+
+            assert not os.path.exists(wal_path), (
+                "setup.close() should have unlinked the WAL (no read-mark held by anyone)"
             )
-            for _ in range(4)
-        ]
-        for t in threads:
-            t.start()
-        time.sleep(5)
-        stop_event.set()
-        for t in threads:
-            t.join(timeout=10)
 
-        deleted_count = _count_deleted_wal_fds(db_path)
-        sentinel.close()
+            pid = os.getpid()
+            wal_link = os.readlink(f"/proc/{pid}/fd/{wal_fd}")
+            shm_link = os.readlink(f"/proc/{pid}/fd/{shm_fd}")
 
-        # The bug requires a race where every connection in the process closes
-        # while a peer has FDs mmap'd; reproducing reliably from pytest is
-        # environment-dependent (kernel scheduling, glibc malloc timing,
-        # SQLite build flags). The strong invariant we exercise lives in the
-        # positive test above — this one is best-effort and intentionally
-        # permits 0 so CI does not flap on systems where the unlink path is
-        # not reached during the 5s window.
-        assert deleted_count >= 0
+            assert "(deleted)" in wal_link, (
+                f"expected wal_fd to be a deleted inode after unlink, got: {wal_link}"
+            )
+            assert "(deleted)" in shm_link, (
+                f"expected shm_fd to be a deleted inode after unlink, got: {shm_link}"
+            )
+        finally:
+            os.close(wal_fd)
+            os.close(shm_fd)
 
 
 def test_pinner_does_not_affect_cli_connect():
