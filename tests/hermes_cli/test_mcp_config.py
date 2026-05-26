@@ -600,3 +600,27 @@ class TestMcpLogin:
         out = capsys.readouterr().out
         assert "no URL" in out or "not an OAuth" in out
 
+    def test_login_uses_oauth_sized_probe_timeout(self, tmp_path, monkeypatch):
+        _seed_config(tmp_path, {
+            "srv": {"url": "https://example.com/mcp", "auth": "oauth"},
+        })
+        calls = []
+
+        class DummyManager:
+            def remove(self, name):
+                pass
+
+        def fake_probe(name, config, connect_timeout=30):
+            calls.append((name, connect_timeout))
+            return [("tool", "desc")]
+
+        monkeypatch.setattr(
+            "tools.mcp_oauth_manager.get_manager", lambda: DummyManager()
+        )
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", fake_probe)
+
+        from hermes_cli.mcp_config import cmd_mcp_login
+        cmd_mcp_login(_make_args(name="srv"))
+
+        assert calls == [("srv", 360)]
+
