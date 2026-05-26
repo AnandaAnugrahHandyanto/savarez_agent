@@ -408,3 +408,56 @@ def test_explicit_max_tokens_is_respected():
 
     req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=4096)
     assert req["generationConfig"]["maxOutputTokens"] == 4096
+
+
+def _tooled_messages():
+    return [
+        {"role": "system", "content": "You are helpful."},
+        {"role": "user", "content": "Hi"},
+    ]
+
+
+_WEATHER_TOOL = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Weather",
+            "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+        },
+    }
+]
+
+
+def test_cached_content_omits_system_instruction_and_tools():
+    """With a cachedContents resource, the request references it and must NOT
+    resend systemInstruction / tools / toolConfig (Gemini rejects that with 400).
+    """
+    from agent.gemini_native_adapter import build_gemini_request
+
+    req = build_gemini_request(
+        messages=_tooled_messages(),
+        tools=_WEATHER_TOOL,
+        tool_choice="auto",
+        cached_content_name="cachedContents/abc123",
+    )
+    assert req["cachedContent"] == "cachedContents/abc123"
+    assert "systemInstruction" not in req
+    assert "tools" not in req
+    assert "toolConfig" not in req
+    # Conversation turns themselves are still sent.
+    assert req["contents"]
+
+
+def test_without_cached_content_sends_full_payload():
+    """Without a cache name, behavior is unchanged: systemInstruction + tools present."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    req = build_gemini_request(
+        messages=_tooled_messages(),
+        tools=_WEATHER_TOOL,
+        tool_choice="auto",
+    )
+    assert "cachedContent" not in req
+    assert req["systemInstruction"]["parts"][0]["text"] == "You are helpful."
+    assert req["tools"][0]["functionDeclarations"][0]["name"] == "get_weather"
