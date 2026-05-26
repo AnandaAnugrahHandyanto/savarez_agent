@@ -91,6 +91,9 @@ class SessionSource:
     guild_id: Optional[str] = None  # Discord guild / Slack workspace / Matrix server scope
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
+    # Telegram Bot API 10.0 Guest Bot reply token. Ephemeral, intentionally not
+    # serialized in to_dict() so old guest queries are not reused after resume.
+    guest_query_id: Optional[str] = None
     
     @property
     def description(self) -> str:
