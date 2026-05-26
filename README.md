@@ -35,6 +35,19 @@ Current baseline: merged `upstream/main` through `2517917de` on 2026-05-26, then
 
 ---
 
+## AI/Agent Engineering Evidence Card
+
+| Field | Current public evidence |
+| --- | --- |
+| Agent surface | OpenCode Zen `auto-free` routing, llama.cpp TurboQuant fallback, gateway automation, Skills Hub, cron, delegation, TUI, and WebUI companion paths |
+| Model/runtime surface | Free cloud model rotation, local GGUF fallback at `http://127.0.0.1:8080/v1`, RTX Windows launch scripts, and provider catalog refresh tooling |
+| Repro command | `pip install -e ".[all,dev]"`, `python -m hermes_cli.main setup`, `py -3 scripts/refresh_opencode_free_catalog.py --force`, and `hermes fallback list` |
+| Operational proof | Windows autostart scripts, gateway hardening, OpenClaw credential bridge, VRChat Quest 2 doctors, and profile-safe config/logging guidance |
+| Metrics to inspect | Test suite results, gateway uptime, fallback switch events, free-model catalog freshness, llama fallback health checks, and VRChat preflight output |
+| Limitations | This fork is an operations stack for a personal Windows deployment; secrets, local models, and gateway credentials are intentionally external |
+
+---
+
 ## Unique Features
 
 | Feature | What it does |
