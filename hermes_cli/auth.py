@@ -54,6 +54,9 @@ from utils import atomic_replace, atomic_yaml_write, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
+# Transport with retries for DNS multi-IP fallback (issue #28500).
+_RETRY_TRANSPORT = httpx.HTTPTransport(retries=3)
+
 try:
     import fcntl
 except Exception:
@@ -3262,7 +3265,7 @@ def refresh_codex_oauth_pure(
         )
 
     timeout = httpx.Timeout(max(5.0, float(timeout_seconds)))
-    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}) as client:
+    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, transport=_RETRY_TRANSPORT) as client:
         response = client.post(
             CODEX_OAUTH_TOKEN_URL,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -3709,7 +3712,7 @@ def refresh_xai_oauth_pure(
     # with a clear error so the user can re-run `hermes model` to refetch.
     _xai_validate_oauth_endpoint(endpoint, field="token_endpoint")
     timeout = httpx.Timeout(max(5.0, float(timeout_seconds)))
-    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}) as client:
+    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, transport=_RETRY_TRANSPORT) as client:
         response = client.post(
             endpoint,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -4650,7 +4653,7 @@ def fetch_nous_models(
 ) -> List[str]:
     """Fetch available model IDs from the Nous inference API."""
     timeout = httpx.Timeout(timeout_seconds)
-    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
+    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify, transport=httpx.HTTPTransport(retries=3, verify=verify)) as client:
         response = client.get(
             f"{inference_base_url.rstrip('/')}/models",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -4769,7 +4772,7 @@ def resolve_nous_access_token(
             with httpx.Client(
                 timeout=timeout,
                 headers={"Accept": "application/json"},
-                verify=verify,
+                verify=verify, transport=httpx.HTTPTransport(retries=3, verify=verify),
             ) as client:
                 try:
                     refreshed = _refresh_access_token(
@@ -4866,7 +4869,7 @@ def refresh_nous_oauth_pure(
     verify = _resolve_verify(insecure=insecure, ca_bundle=ca_bundle, auth_state=state)
     timeout = httpx.Timeout(timeout_seconds if timeout_seconds else 15.0)
 
-    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
+    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify, transport=httpx.HTTPTransport(retries=3, verify=verify)) as client:
         min_agent_key_ttl = max(60, int(min_key_ttl_seconds))
         legacy_session_keys = _nous_legacy_session_keys_forced()
         current_invoke_jwt_usable = (
@@ -5137,7 +5140,7 @@ def resolve_nous_runtime_credentials(
             refresh_token_fp=_token_fingerprint(state.get("refresh_token")),
         )
 
-        with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
+        with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify, transport=httpx.HTTPTransport(retries=3, verify=verify)) as client:
             access_token = state.get("access_token")
             refresh_token = state.get("refresh_token")
 
@@ -6742,7 +6745,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
 
     # Step 1: Request device code
     try:
-        with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+        with httpx.Client(timeout=httpx.Timeout(15.0), transport=_RETRY_TRANSPORT) as client:
             resp = client.post(
                 f"{issuer}/api/accounts/deviceauth/usercode",
                 json={"client_id": client_id},
@@ -6785,7 +6788,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
     code_resp = None
 
     try:
-        with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+        with httpx.Client(timeout=httpx.Timeout(15.0), transport=_RETRY_TRANSPORT) as client:
             while _time.monotonic() - start < max_wait:
                 _time.sleep(poll_interval)
                 poll_resp = client.post(
@@ -6826,7 +6829,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
         )
 
     try:
-        with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+        with httpx.Client(timeout=httpx.Timeout(15.0), transport=_RETRY_TRANSPORT) as client:
             token_resp = client.post(
                 CODEX_OAUTH_TOKEN_URL,
                 data={
@@ -7039,7 +7042,7 @@ def _minimax_oauth_login(
 
     with httpx.Client(timeout=httpx.Timeout(timeout_seconds),
                       headers={"Accept": "application/json"},
-                      follow_redirects=True) as client:
+                      follow_redirects=True, transport=_RETRY_TRANSPORT) as client:
         code_data = _minimax_request_user_code(
             client, portal_base_url=portal_base_url,
             client_id=pconfig.client_id,
@@ -7119,7 +7122,7 @@ def _refresh_minimax_oauth_state(
 
     portal_base_url = state["portal_base_url"]
     with httpx.Client(timeout=httpx.Timeout(timeout_seconds),
-                      follow_redirects=True) as client:
+                      follow_redirects=True, transport=_RETRY_TRANSPORT) as client:
         response = client.post(
             f"{portal_base_url}/oauth/token",
             data={
@@ -7353,7 +7356,7 @@ def _nous_device_code_login(
     elif ca_bundle:
         print(f"TLS verification: custom CA bundle ({ca_bundle})")
 
-    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
+    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify, transport=httpx.HTTPTransport(retries=3, verify=verify)) as client:
         device_data, scope = _request_nous_device_code_with_scope_fallback(
             client=client,
             portal_base_url=portal_base_url,
