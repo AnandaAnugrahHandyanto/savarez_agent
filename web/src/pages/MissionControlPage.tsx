@@ -448,9 +448,18 @@ function isActiveJob(job: CronJob): boolean {
   return job.enabled !== false && getJobState(job) !== "paused";
 }
 
+function isToolTallyOrderPaymentEmailGuard(job: CronJob): boolean {
+  const text = jobSearchText(job);
+  return (
+    text.includes("tool & tally order/payment + email alert watchdog") ||
+    text.includes("tooltally_order_and_email_watchdog")
+  );
+}
+
 function isApprovedStandingGuard(job: CronJob): boolean {
   const text = jobSearchText(job);
   return (
+    isToolTallyOrderPaymentEmailGuard(job) ||
     text.includes("backup") ||
     text.includes("storage hygiene guard") ||
     text.includes("memory capacity guard") ||
@@ -478,6 +487,7 @@ function isProjectAutomation(job: CronJob): boolean {
 function needsAutomationReview(job: CronJob): boolean {
   if (!isActiveJob(job)) return false;
   if (isProblemJob(job)) return true;
+  if (isApprovedStandingGuard(job)) return false;
   const text = jobSearchText(job);
   const schedule = getSchedule(job).toLowerCase();
   const deliver = (job.deliver || "").toLowerCase();
@@ -788,7 +798,7 @@ function AutomationPosturePanel({ jobs }: { jobs: CronJob[] }) {
     {
       key: "approved",
       title: "Approved standing guards",
-      description: "Protective or backup-style jobs that look intentionally durable. Still visible, not auto-mutated.",
+      description: "Protective, backup, or Travis-approved standing guard jobs. Still visible, not auto-mutated.",
       tone: "border-emerald-400/30 bg-emerald-500/10 text-emerald-100",
       jobs: approvedStanding,
     },
