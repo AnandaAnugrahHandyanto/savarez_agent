@@ -1865,8 +1865,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 )
                 return json.dumps({
                     "result": (
-                        f"Mental model refreshed. "
-                        f"ID: {resp.mental_model_id or 'pending'}, "
+                        f"Mental model '{mental_model_id}' refresh submitted. "
                         f"Operation ID: {resp.operation_id}"
                     )
                 })
