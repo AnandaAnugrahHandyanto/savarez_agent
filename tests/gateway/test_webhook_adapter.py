@@ -343,6 +343,18 @@ class TestRenderPrompt:
         )
         assert "{nonexistent}" in result
 
+    def test_render_prompt_missing_key_can_be_blank(self):
+        """Routes can opt into blanking missing keys for multi-device templates."""
+        adapter = _make_adapter()
+        result = adapter._render_prompt(
+            "Lock={context.lockState} Open={context.openState}",
+            {"context": {"lockState": "LOCKED"}},
+            "changeReport",
+            "switchbot-events",
+            preserve_missing=False,
+        )
+        assert result == "Lock=LOCKED Open="
+
     def test_render_prompt_no_template_dumps_json(self):
         """Empty template → JSON dump fallback with event/route context."""
         adapter = _make_adapter()

@@ -33,9 +33,12 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 import subprocess
 import time
+import urllib.error
+import urllib.request
 from typing import Any, Dict, List, Optional
 
 try:
@@ -383,8 +386,16 @@ class WebhookAdapter(BasePlatformAdapter):
         # INSECURE_NO_AUTH mode). Missing/empty secrets must fail closed here,
         # not only during connect(), so direct handler reuse cannot turn a
         # network webhook route into an unauthenticated agent-dispatch surface.
+        # Some providers (for example SwitchBot) cannot send custom HMAC
+        # headers, but do allow registering a URL with query parameters. For
+        # those routes, allow a route-scoped signed-URL token while keeping the
+        # normal HMAC path for providers that support headers.
         secret = route_config.get("secret", self._global_secret)
-        if not secret:
+        query_secret = route_config.get("query_secret", "")
+        query_token_valid = bool(query_secret) and hmac.compare_digest(
+            request.query.get("token", ""), str(query_secret)
+        )
+        if not secret and not query_token_valid:
             logger.error(
                 "[webhook] Route %s has no HMAC secret; refusing request",
                 route_name,
@@ -393,7 +404,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"error": "Webhook route is missing an HMAC secret"},
                 status=403,
             )
-        if secret != _INSECURE_NO_AUTH:
+        if secret != _INSECURE_NO_AUTH and not query_token_valid:
             if not self._validate_signature(request, raw_body, secret):
                 logger.warning(
                     "[webhook] Invalid signature for route %s", route_name
@@ -433,6 +444,7 @@ class WebhookAdapter(BasePlatformAdapter):
             request.headers.get("X-GitHub-Event", "")
             or request.headers.get("X-GitLab-Event", "")
             or payload.get("event_type", "")
+            or payload.get("eventType", "")
             or payload.get("type", "")
             or "unknown"
         )
@@ -448,10 +460,28 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"status": "ignored", "event": event_type}
             )
 
+        filter_match, failed_filter = self._payload_filters_match(
+            route_config.get("filters", {}), payload
+        )
+        if not filter_match:
+            logger.debug(
+                "[webhook] Ignoring event %s for route %s (payload filter failed: %s)",
+                event_type,
+                route_name,
+                failed_filter,
+            )
+            return web.json_response(
+                {"status": "ignored", "event": event_type, "filter": failed_filter}
+            )
+
         # Format prompt from template
         prompt_template = route_config.get("prompt", "")
         prompt = self._render_prompt(
-            prompt_template, payload, event_type, route_name
+            prompt_template,
+            payload,
+            event_type,
+            route_name,
+            preserve_missing=not route_config.get("blank_missing_placeholders", False),
         )
 
         # Inject skill content if configured.
@@ -510,6 +540,15 @@ class WebhookAdapter(BasePlatformAdapter):
                 status=200,
             )
         self._seen_deliveries[delivery_id] = now
+
+        if route_config.get("github_reaction"):
+            await self._apply_github_reaction(
+                route_config=route_config,
+                payload=payload,
+                event_type=event_type,
+                route_name=route_name,
+                delivery_id=delivery_id,
+            )
 
         # ── Direct delivery mode (deliver_only) ─────────────────
         # Skip the agent entirely — the rendered prompt IS the message we
@@ -627,6 +666,120 @@ class WebhookAdapter(BasePlatformAdapter):
             status=202,
         )
 
+    async def _apply_github_reaction(
+        self,
+        *,
+        route_config: dict,
+        payload: dict,
+        event_type: str,
+        route_name: str,
+        delivery_id: str,
+    ) -> None:
+        """Add a GitHub reaction before direct-delivery or agent dispatch.
+
+        This is a lightweight acknowledgement that the webhook reached Hermes
+        and passed filters.  Failures are logged but never block the webhook
+        response or the subsequent agent run.
+        """
+        content = str(route_config.get("github_reaction") or "eyes")
+        repo = self._get_payload_value(payload, "repository.full_name")
+        if not repo:
+            logger.warning(
+                "[webhook] Cannot add GitHub reaction for route=%s delivery=%s: missing repository.full_name",
+                route_name,
+                delivery_id,
+            )
+            return
+
+        comment_id = self._get_payload_value(payload, "comment.id")
+        issue_number = self._get_payload_value(payload, "issue.number")
+        if comment_id:
+            endpoint = f"https://api.github.com/repos/{repo}/issues/comments/{comment_id}/reactions"
+        elif issue_number:
+            endpoint = f"https://api.github.com/repos/{repo}/issues/{issue_number}/reactions"
+        else:
+            logger.warning(
+                "[webhook] Cannot add GitHub reaction for route=%s delivery=%s event=%s: missing issue.number/comment.id",
+                route_name,
+                delivery_id,
+                event_type,
+            )
+            return
+
+        token = self._get_github_token()
+        if not token:
+            logger.warning(
+                "[webhook] Cannot add GitHub reaction for route=%s delivery=%s: GITHUB_TOKEN/gh auth token unavailable",
+                route_name,
+                delivery_id,
+            )
+            return
+
+        try:
+            status = await asyncio.to_thread(
+                self._post_github_reaction,
+                endpoint,
+                token,
+                content,
+            )
+            logger.info(
+                "[webhook] Added GitHub :%s: reaction route=%s delivery=%s status=%s",
+                content,
+                route_name,
+                delivery_id,
+                status,
+            )
+        except Exception as e:
+            logger.warning(
+                "[webhook] Failed to add GitHub :%s: reaction route=%s delivery=%s: %s",
+                content,
+                route_name,
+                delivery_id,
+                e,
+            )
+
+    def _get_github_token(self) -> str:
+        token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
+        if token:
+            return token.strip()
+        try:
+            result = subprocess.run(
+                ["gh", "auth", "token"],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=5,
+            )
+        except Exception:
+            return ""
+        if result.returncode == 0:
+            return result.stdout.strip()
+        return ""
+
+    def _post_github_reaction(self, endpoint: str, token: str, content: str) -> int:
+        body = json.dumps({"content": content}).encode("utf-8")
+        request = urllib.request.Request(
+            endpoint,
+            data=body,
+            method="POST",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "User-Agent": "Hermes-Agent-Webhook",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return int(response.status)
+        except urllib.error.HTTPError as e:
+            # A duplicate reaction can be reported as 200/201 by GitHub in
+            # normal use, but keep 4xx/5xx visible in logs for auth/scope bugs.
+            detail = e.read().decode("utf-8", errors="replace")[:300]
+            raise RuntimeError(f"GitHub API HTTP {e.code}: {detail}") from e
+
     # ------------------------------------------------------------------
     # Signature validation
     # ------------------------------------------------------------------
@@ -741,12 +894,98 @@ class WebhookAdapter(BasePlatformAdapter):
     # Prompt rendering
     # ------------------------------------------------------------------
 
+    def _get_payload_value(self, payload: dict, dotted_key: str) -> Any:
+        """Return a nested payload value addressed by dot notation.
+
+        Missing keys return ``None`` so route filters can treat absent fields
+        as non-matches without raising during webhook handling.
+        """
+        value: Any = payload
+        for part in dotted_key.split("."):
+            if not isinstance(value, dict) or part not in value:
+                return None
+            value = value[part]
+        return value
+
+    def _payload_filters_match(self, filters: Any, payload: dict) -> tuple[bool, Optional[str]]:
+        """Return whether all configured payload filters match.
+
+        Supported route config formats:
+
+        Exact scalar/list match, ANDed across keys::
+
+            filters: {"context.deviceType": ["WoCamera", "WoPanTiltCam"]}
+
+        Substring match, ORed across rules::
+
+            filters: {
+                "contains_any": [
+                    {"path": "issue.body", "text": "/hermes"},
+                    {"path": "comment.body", "text": "/hermes"},
+                ]
+            }
+
+        The substring form is evaluated before prompt rendering / agent dispatch,
+        so ignored webhooks do not start an LLM run.
+        """
+        if not filters:
+            return True, None
+        if not isinstance(filters, dict):
+            logger.warning("[webhook] Ignoring invalid filters config: %r", filters)
+            return True, None
+
+        contains_any = filters.get("contains_any")
+        if contains_any is not None:
+            if not self._contains_any_filter_matches(contains_any, payload):
+                return False, "contains_any"
+
+        for key, expected in filters.items():
+            if key == "contains_any":
+                continue
+            actual = self._get_payload_value(payload, str(key))
+            allowed = expected if isinstance(expected, list) else [expected]
+            if actual not in allowed:
+                return False, str(key)
+        return True, None
+
+    def _contains_any_filter_matches(self, rules: Any, payload: dict) -> bool:
+        """Return True if any substring filter rule matches the payload.
+
+        Invalid rules are treated as non-matches and logged.  Matching is
+        case-sensitive by default, which is appropriate for explicit bot
+        mentions such as ``@hermes``.
+        """
+        if isinstance(rules, dict):
+            rules = [rules]
+        if not isinstance(rules, list):
+            logger.warning("[webhook] Ignoring invalid contains_any filter: %r", rules)
+            return True
+
+        for rule in rules:
+            if not isinstance(rule, dict):
+                logger.warning("[webhook] Ignoring invalid contains_any rule: %r", rule)
+                continue
+            path = str(rule.get("path", ""))
+            needle = rule.get("text", rule.get("contains", ""))
+            if not path or needle in (None, ""):
+                logger.warning("[webhook] Ignoring incomplete contains_any rule: %r", rule)
+                continue
+
+            actual = self._get_payload_value(payload, path)
+            if actual is None:
+                continue
+            haystack = actual if isinstance(actual, str) else json.dumps(actual, ensure_ascii=False)
+            if str(needle) in haystack:
+                return True
+        return False
+
     def _render_prompt(
         self,
         template: str,
         payload: dict,
         event_type: str,
         route_name: str,
+        preserve_missing: bool = True,
     ) -> str:
         """Render a prompt template with the webhook payload.
 
@@ -772,9 +1011,12 @@ class WebhookAdapter(BasePlatformAdapter):
             value: Any = payload
             for part in key.split("."):
                 if isinstance(value, dict):
-                    value = value.get(part, f"{{{key}}}")
+                    if part in value:
+                        value = value[part]
+                    else:
+                        return f"{{{key}}}" if preserve_missing else ""
                 else:
-                    return f"{{{key}}}"
+                    return f"{{{key}}}" if preserve_missing else ""
             if isinstance(value, (dict, list)):
                 return json.dumps(value, indent=2)[:2000]
             return str(value)

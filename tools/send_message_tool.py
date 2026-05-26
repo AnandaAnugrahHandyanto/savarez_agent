@@ -564,7 +564,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     """
     from gateway.config import Platform
     from gateway.platforms.base import BasePlatformAdapter, utf16_len
-    from gateway.platforms.slack import SlackAdapter
+    from gateway.platforms.slack import SlackAdapter, _parse_slack_block_kit_payload
 
     # Telegram adapter import is optional (requires python-telegram-bot)
     try:
@@ -582,7 +582,11 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 
     media_files = media_files or []
 
-    if platform == Platform.SLACK and message:
+    is_slack_block_kit_message = bool(
+        platform == Platform.SLACK and message and _parse_slack_block_kit_payload(message)
+    )
+
+    if platform == Platform.SLACK and message and not is_slack_block_kit_message:
         try:
             slack_adapter = SlackAdapter.__new__(SlackAdapter)
             message = slack_adapter.format_message(message)
@@ -612,7 +616,9 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     # For short messages or platforms without a known limit this is a no-op.
     # Telegram measures length in UTF-16 code units, not Unicode codepoints.
     max_len = _MAX_LENGTHS.get(platform)
-    if max_len:
+    if is_slack_block_kit_message:
+        chunks = [message]
+    elif max_len:
         _len_fn = utf16_len if platform == Platform.TELEGRAM else None
         chunks = BasePlatformAdapter.truncate_message(message, max_len, len_fn=_len_fn)
     else:
@@ -752,7 +758,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     last_result = None
     for chunk in chunks:
         if platform == Platform.SLACK:
-            result = await _send_slack(pconfig.token, chat_id, chunk)
+            result = await _send_slack(pconfig.token, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WHATSAPP:
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SIGNAL:
@@ -1034,10 +1040,11 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         return _error(f"Telegram send failed: {e}")
 
 
-async def _send_slack(token, chat_id, message):
+async def _send_slack(token, chat_id, message, thread_id=None):
     """Send via Slack Web API."""
     try:
         import aiohttp
+        from gateway.platforms.slack import _parse_slack_block_kit_payload
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
@@ -1047,7 +1054,14 @@ async def _send_slack(token, chat_id, message):
         url = "https://slack.com/api/chat.postMessage"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
-            payload = {"channel": chat_id, "text": message, "mrkdwn": True}
+            block_payload = _parse_slack_block_kit_payload(message)
+            if block_payload:
+                fallback_text, blocks = block_payload
+                payload = {"channel": chat_id, "text": fallback_text, "blocks": blocks}
+            else:
+                payload = {"channel": chat_id, "text": message, "mrkdwn": True}
+            if thread_id:
+                payload["thread_ts"] = thread_id
             async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
                 data = await resp.json()
                 if data.get("ok"):

@@ -179,10 +179,241 @@ class TestDeliverOnlyBypassesAgent:
 
 
 # ===================================================================
+# Payload filters
+# ===================================================================
+class TestDeliverOnlyPayloadFilters:
+
+    @pytest.mark.asyncio
+    async def test_matching_payload_filter_delivers_notification(self):
+        routes = {
+            "switchbot": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["changeReport"],
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {"chat_id": "c-1"},
+                "prompt": "SwitchBot {context.deviceType}",
+                "filters": {
+                    "context.deviceType": ["WoCamera", "WoPanTiltCam", "WoVideoDoorbell"],
+                },
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+        app = _create_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/switchbot",
+                json={
+                    "eventType": "changeReport",
+                    "context": {"deviceType": "WoCamera"},
+                },
+                headers={"X-GitHub-Delivery": "filter-match-1"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "delivered"
+
+        mock_target.send.assert_awaited_once()
+        assert mock_target.send.await_args.args[1] == "SwitchBot WoCamera"
+
+    @pytest.mark.asyncio
+    async def test_non_matching_payload_filter_is_ignored_without_delivery(self):
+        routes = {
+            "switchbot": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["changeReport"],
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {"chat_id": "c-1"},
+                "prompt": "SwitchBot {context.deviceType}",
+                "filters": {
+                    "context.deviceType": ["WoCamera", "WoPanTiltCam", "WoVideoDoorbell"],
+                },
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+        app = _create_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/switchbot",
+                json={
+                    "eventType": "changeReport",
+                    "context": {"deviceType": "Meter"},
+                },
+                headers={"X-GitHub-Delivery": "filter-ignore-1"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data == {
+                "status": "ignored",
+                "event": "changeReport",
+                "filter": "context.deviceType",
+            }
+
+        mock_target.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_contains_any_payload_filter_matches_github_mention(self):
+        routes = {
+            "github": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["issues"],
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {"chat_id": "c-1"},
+                "prompt": "Issue {issue.number}: {issue.body}",
+                "filters": {
+                    "contains_any": [
+                        {"path": "issue.body", "text": "@hermes"},
+                        {"path": "comment.body", "text": "@hermes"},
+                    ],
+                },
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+        app = _create_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/github",
+                json={"issue": {"number": 12, "body": "please handle this @hermes"}},
+                headers={"X-GitHub-Event": "issues", "X-GitHub-Delivery": "mention-1"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "delivered"
+
+        mock_target.send.assert_awaited_once()
+        assert mock_target.send.await_args.args[1] == "Issue 12: please handle this @hermes"
+
+    @pytest.mark.asyncio
+    async def test_contains_any_payload_filter_ignores_without_invoking_agent(self):
+        routes = {
+            "github": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["issues"],
+                "deliver": "slack",
+                "prompt": "Issue {issue.number}: {issue.body}",
+                "filters": {
+                    "contains_any": [
+                        {"path": "issue.body", "text": "@hermes"},
+                        {"path": "comment.body", "text": "@hermes"},
+                    ],
+                },
+            }
+        }
+        adapter = _make_adapter(routes)
+        handle_message = AsyncMock()
+        adapter.handle_message = handle_message
+        app = _create_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/github",
+                json={"issue": {"number": 13, "body": "no bot mention here"}},
+                headers={"X-GitHub-Event": "issues", "X-GitHub-Delivery": "mention-2"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data == {
+                "status": "ignored",
+                "event": "issues",
+                "filter": "contains_any",
+            }
+
+        handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_github_reaction_runs_before_agent_dispatch(self):
+        routes = {
+            "github": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["issues"],
+                "deliver": "slack",
+                "prompt": "Issue {issue.number}: {issue.body}",
+                "github_reaction": "eyes",
+                "filters": {
+                    "contains_any": [
+                        {"path": "issue.body", "text": "/hermes"},
+                    ],
+                },
+            }
+        }
+        adapter = _make_adapter(routes)
+        handle_message = AsyncMock()
+        reaction = AsyncMock()
+        adapter.handle_message = handle_message
+        adapter._apply_github_reaction = reaction
+        app = _create_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/github",
+                json={
+                    "repository": {"full_name": "pokeca-chips/test"},
+                    "issue": {"number": 14, "body": "/hermes please handle"},
+                },
+                headers={"X-GitHub-Event": "issues", "X-GitHub-Delivery": "reaction-1"},
+            )
+            assert resp.status == 202
+            data = await resp.json()
+            assert data["status"] == "accepted"
+
+        reaction.assert_awaited_once()
+        await asyncio.sleep(0.05)
+        handle_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_github_reaction_not_run_when_filter_ignores(self):
+        routes = {
+            "github": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["issues"],
+                "deliver": "slack",
+                "prompt": "Issue {issue.number}: {issue.body}",
+                "github_reaction": "eyes",
+                "filters": {
+                    "contains_any": [
+                        {"path": "issue.body", "text": "/hermes"},
+                    ],
+                },
+            }
+        }
+        adapter = _make_adapter(routes)
+        handle_message = AsyncMock()
+        reaction = AsyncMock()
+        adapter.handle_message = handle_message
+        adapter._apply_github_reaction = reaction
+        app = _create_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/github",
+                json={
+                    "repository": {"full_name": "pokeca-chips/test"},
+                    "issue": {"number": 15, "body": "no slash command"},
+                },
+                headers={"X-GitHub-Event": "issues", "X-GitHub-Delivery": "reaction-2"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "ignored"
+            assert data["filter"] == "contains_any"
+
+        reaction.assert_not_awaited()
+        handle_message.assert_not_awaited()
+
+
+# ===================================================================
 # HTTP status codes
 # ===================================================================
-
 class TestDeliverOnlyStatusCodes:
+
 
     @pytest.mark.asyncio
     async def test_delivery_failure_returns_502(self):

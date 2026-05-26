@@ -63,7 +63,7 @@ _ensure_slack_mock()
 import gateway.platforms.slack as _slack_mod
 _slack_mod.SLACK_AVAILABLE = True
 
-from gateway.platforms.slack import SlackAdapter  # noqa: E402
+from gateway.platforms.slack import SlackAdapter, _parse_slack_block_kit_payload  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -2474,6 +2474,29 @@ class TestMessageSplitting:
         await adapter.send("C123", "See [Foo](https://en.wikipedia.org/wiki/Foo_(bar))")
         kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
         assert "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>" in kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_send_slack_block_kit_payload(self, adapter):
+        """A fenced slack-block-kit payload is sent via Slack blocks."""
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+        payload = '''Cronjob Response: pokemon-card-x-trends
+```slack-block-kit
+{"text":"ポケカまとめ","blocks":[{"type":"header","text":{"type":"plain_text","text":"🃏 ポケカX話題まとめ"}},{"type":"section","text":{"type":"mrkdwn","text":"*要点*\\n• 大会結果あり"}}]}
+```
+footer'''
+
+        result = await adapter.send("C123", payload, metadata={"thread_id": "parent_ts"})
+
+        assert result.success
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["channel"] == "C123"
+        assert kwargs["text"] == "ポケカまとめ"
+        assert kwargs["thread_ts"] == "parent_ts"
+        assert kwargs["blocks"][0]["type"] == "header"
+        assert "Cronjob Response" not in str(kwargs["blocks"])
+
+    def test_parse_slack_block_kit_ignores_plain_json(self):
+        assert _parse_slack_block_kit_payload('{"blocks": []}') is None
 
 
 # ---------------------------------------------------------------------------

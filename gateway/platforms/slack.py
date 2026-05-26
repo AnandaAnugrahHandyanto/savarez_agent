@@ -52,6 +52,60 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+
+_SLACK_BLOCK_KIT_FENCE_RE = re.compile(
+    r"```(?:slack-block-kit|block-kit)\s*\n(?P<payload>.*?)\n?```",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _parse_slack_block_kit_payload(content: str) -> Optional[Tuple[str, List[Dict[str, Any]]]]:
+    """Parse an opt-in Slack Block Kit payload embedded in a text response.
+
+    Agents and cron jobs normally return plain text.  For Slack-only rich
+    layouts they can instead include a fenced block like::
+
+        ```slack-block-kit
+        {"text": "fallback", "blocks": [{"type": "section", ...}]}
+        ```
+
+    The payload is deliberately opt-in (``slack-block-kit`` / ``block-kit``
+    fence only) so ordinary JSON snippets in assistant replies are never sent
+    as Block Kit by accident.  ``content`` may contain cron header/footer text;
+    the fenced payload is extracted from anywhere in the message.
+    """
+    if not isinstance(content, str) or not content.strip():
+        return None
+
+    match = _SLACK_BLOCK_KIT_FENCE_RE.search(content)
+    if not match:
+        return None
+
+    try:
+        payload = json.loads(match.group("payload"))
+    except Exception:
+        logger.warning("[Slack] Invalid slack-block-kit JSON payload", exc_info=True)
+        return None
+
+    if isinstance(payload, list):
+        blocks = payload
+        text = "Slack Block Kit message"
+    elif isinstance(payload, dict):
+        blocks = payload.get("blocks")
+        text = payload.get("text") or payload.get("fallback") or "Slack Block Kit message"
+    else:
+        return None
+
+    if not isinstance(blocks, list) or not blocks:
+        return None
+    if len(blocks) > 50:
+        logger.warning("[Slack] Refusing Block Kit payload with %d blocks (>50)", len(blocks))
+        return None
+    if not all(isinstance(block, dict) and isinstance(block.get("type"), str) for block in blocks):
+        return None
+
+    return str(text)[:3000], blocks
+
 # ContextVar carrying the user_id of the slash-command invoker.
 # Set in _handle_slash_command, read in send() to match the correct
 # stashed response_url when multiple users issue commands on the same
@@ -776,6 +830,41 @@ class SlackAdapter(BasePlatformAdapter):
             if slash_ctx:
                 return await self._send_slash_ephemeral(
                     slash_ctx, content,
+                )
+
+            block_payload = _parse_slack_block_kit_payload(content)
+            if block_payload:
+                fallback_text, blocks = block_payload
+                thread_ts = self._resolve_thread_ts(reply_to, metadata)
+                kwargs = {
+                    "channel": chat_id,
+                    "text": fallback_text,
+                    "blocks": blocks,
+                }
+                if thread_ts:
+                    kwargs["thread_ts"] = thread_ts
+                    if self.config.extra.get("reply_broadcast", False):
+                        kwargs["reply_broadcast"] = True
+
+                last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+
+                if thread_ts:
+                    await self.stop_typing(chat_id)
+
+                sent_ts = last_result.get("ts") if last_result else None
+                if sent_ts:
+                    self._bot_message_ts.add(sent_ts)
+                    if thread_ts:
+                        self._bot_message_ts.add(thread_ts)
+                    if len(self._bot_message_ts) > self._BOT_TS_MAX:
+                        excess = len(self._bot_message_ts) - self._BOT_TS_MAX // 2
+                        for old_ts in list(self._bot_message_ts)[:excess]:
+                            self._bot_message_ts.discard(old_ts)
+
+                return SendResult(
+                    success=True,
+                    message_id=sent_ts,
+                    raw_response=last_result,
                 )
 
             # Convert standard markdown → Slack mrkdwn
