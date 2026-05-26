@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -37,6 +38,7 @@ class TestUserSystemdPrivateSocketPreflight:
         assert calls == ["env"]
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="requires systemd (Linux only)")
 class TestSystemdServiceRefresh:
     def test_systemd_install_repairs_outdated_unit_without_force(self, tmp_path, monkeypatch):
         unit_path = tmp_path / "hermes-gateway.service"
@@ -736,6 +738,7 @@ class TestGatewayServiceDetection:
 
         assert gateway_cli._is_service_running() is False
 
+@pytest.mark.skipif(sys.platform != "linux", reason="requires systemd (Linux only)")
 class TestGatewaySystemServiceRouting:
     def test_systemd_restart_gracefully_restarts_running_service_and_waits(self, monkeypatch, capsys):
         calls = []

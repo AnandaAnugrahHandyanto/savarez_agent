@@ -121,6 +121,7 @@ class TestWslSystemdOperational:
 # supports_systemd_services() WSL integration
 # =============================================================================
 
+@pytest.mark.skipif(sys.platform != "linux", reason="requires systemd (Linux only)")
 class TestSupportsSystemdServicesWSL:
     """Test that supports_systemd_services() handles WSL correctly."""
 
