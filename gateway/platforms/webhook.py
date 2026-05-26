@@ -27,13 +27,16 @@ Security:
 """
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 import subprocess
 import time
+import urllib.parse
 from typing import Any, Dict, List, Optional
 
 try:
@@ -243,6 +246,9 @@ class WebhookAdapter(BasePlatformAdapter):
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
 
+        if deliver_type == "dingtalk_robot":
+            return await self._deliver_dingtalk_robot(content, delivery)
+
         # Cross-platform delivery — any platform with a gateway adapter.
         # Check both built-in names and plugin-registered platforms.
         _is_known_platform = deliver_type in _BUILTIN_DELIVER_PLATFORMS
@@ -389,12 +395,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 )
 
         # Check event type filter
-        event_type = (
-            request.headers.get("X-GitHub-Event", "")
-            or request.headers.get("X-GitLab-Event", "")
-            or payload.get("event_type", "")
-            or "unknown"
-        )
+        event_type = self._extract_event_type(request.headers, payload)
         allowed_events = route_config.get("events", [])
         if allowed_events and event_type not in allowed_events:
             logger.debug(
@@ -474,11 +475,14 @@ class WebhookAdapter(BasePlatformAdapter):
         # to a user's chat with zero LLM cost.  Reuses the same HMAC auth,
         # rate limiting, idempotency, and template rendering as agent mode.
         if route_config.get("deliver_only"):
+            state_delivery = self._resolve_delivery_from_notify_state(payload, route_config)
+            route_extra = self._render_delivery_extra(
+                route_config.get("deliver_extra", {}), payload
+            )
+            state_extra = (state_delivery or {}).get("deliver_extra") or {}
             delivery = {
-                "deliver": route_config.get("deliver", "log"),
-                "deliver_extra": self._render_delivery_extra(
-                    route_config.get("deliver_extra", {}), payload
-                ),
+                "deliver": (state_delivery or {}).get("deliver") or route_config.get("deliver", "log"),
+                "deliver_extra": {**route_extra, **state_extra},
                 "payload": payload,
             }
             logger.info(
@@ -532,11 +536,14 @@ class WebhookAdapter(BasePlatformAdapter):
         # Store delivery info for send().  Read by every send() invocation
         # for this chat_id (interim status messages and the final response),
         # so we do NOT pop on send.  TTL-based cleanup keeps the dict bounded.
+        state_delivery = self._resolve_delivery_from_notify_state(payload, route_config)
+        route_extra = self._render_delivery_extra(
+            route_config.get("deliver_extra", {}), payload
+        )
+        state_extra = (state_delivery or {}).get("deliver_extra") or {}
         deliver_config = {
-            "deliver": route_config.get("deliver", "log"),
-            "deliver_extra": self._render_delivery_extra(
-                route_config.get("deliver_extra", {}), payload
-            ),
+            "deliver": (state_delivery or {}).get("deliver") or route_config.get("deliver", "log"),
+            "deliver_extra": {**route_extra, **state_extra},
             "payload": payload,
         }
         self._delivery_info[session_chat_id] = deliver_config
@@ -662,6 +669,131 @@ class WebhookAdapter(BasePlatformAdapter):
 
         return re.sub(r"\{([a-zA-Z0-9_.]+)\}", _resolve, template)
 
+    def _extract_event_type(self, headers: Any, payload: dict) -> str:
+        """Extract provider or payload event type for route filtering.
+
+        GitHub/GitLab-style webhooks normally use headers, while internal
+        producers such as roombook often put the event at top-level `event`.
+        Keep `event_type` first for backwards compatibility, then fall back to
+        the common `event` alias before classifying as unknown.
+        """
+        event_type = (
+            headers.get("X-GitHub-Event", "")
+            or headers.get("X-GitLab-Event", "")
+            or payload.get("event_type", "")
+            or payload.get("event", "")
+            or "unknown"
+        )
+        return str(event_type) if event_type else "unknown"
+
+    def _resolve_delivery_from_notify_state(
+        self, payload: dict, route_config: Optional[dict] = None
+    ) -> Optional[dict]:
+        """Return opt-in delivery config encoded in roombook fields.notify_state.
+
+        Roombook treats notify_state as opaque and echoes it back in async
+        callbacks.  Hermes-created roombook tasks store the originating
+        conversation there so callbacks can return to the same platform/chat/
+        thread that created the task instead of a profile-wide static route.
+
+        Supported schema:
+            {"v":1,"target":{"platform":"discord","chat_id":"...","thread_id":"..."}}
+        Backwards-compatible aliases:
+            target.type / target.deliver can be used instead of platform.
+
+        Security: this is disabled unless the route sets
+        allow_notify_state_delivery=true.  Even then, targets must either match
+        the route's configured deliver/deliver_extra or appear in
+        notify_state_allowed_targets as platform:chat_id[:thread_id].
+        DingTalk robot env-var names must also be allowlisted explicitly.
+        """
+        route_config = route_config or {}
+        if not route_config.get("allow_notify_state_delivery"):
+            return None
+
+        fields = payload.get("fields") if isinstance(payload, dict) else None
+        raw_state = ""
+        if isinstance(fields, dict):
+            raw_state = fields.get("notify_state") or fields.get("notifyState") or ""
+        if not raw_state and isinstance(payload, dict):
+            raw_state = payload.get("notify_state") or payload.get("notifyState") or ""
+        if not isinstance(raw_state, str) or not raw_state.strip():
+            return None
+
+        try:
+            state = json.loads(raw_state)
+        except Exception:
+            return None
+        if not isinstance(state, dict):
+            return None
+
+        target = state.get("target")
+        if not isinstance(target, dict):
+            return None
+
+        deliver = target.get("platform") or target.get("deliver") or target.get("type")
+        if deliver == "conversation":
+            deliver = target.get("platform")
+        if not isinstance(deliver, str) or not deliver:
+            return None
+        if deliver not in _BUILTIN_DELIVER_PLATFORMS and deliver != "dingtalk_robot":
+            logger.warning("[webhook] Ignoring notify_state with unsupported deliver target: %s", deliver)
+            return None
+
+        extra: Dict[str, Any] = {}
+        if isinstance(target.get("chat_id"), str) and target.get("chat_id"):
+            extra["chat_id"] = target["chat_id"]
+        thread_id = target.get("thread_id") or target.get("message_thread_id")
+        if isinstance(thread_id, str) and thread_id:
+            extra["thread_id"] = thread_id
+        # dingtalk_robot is a durable fixed-robot route; it needs env-var names,
+        # not chat_id.  Allow these only when explicitly encoded by the creator.
+        for key in ("webhook_env", "secret_env", "keyword"):
+            if isinstance(target.get(key), str) and target.get(key):
+                extra[key] = target[key]
+
+        # A partially populated notify_state must not bypass route-level
+        # delivery policy. By default, only the route's configured target is
+        # accepted. Broader per-task return routing must be explicitly listed.
+        route_extra = route_config.get("deliver_extra", {})
+        if not isinstance(route_extra, dict):
+            route_extra = {}
+        allowed_targets = route_config.get("notify_state_allowed_targets", [])
+        if not isinstance(allowed_targets, list):
+            allowed_targets = []
+        candidate_parts = [deliver]
+        if extra.get("chat_id"):
+            candidate_parts.append(str(extra["chat_id"]))
+        if extra.get("thread_id"):
+            candidate_parts.append(str(extra["thread_id"]))
+        candidate = ":".join(candidate_parts)
+        route_match = (
+            deliver == route_config.get("deliver")
+            and (not extra.get("chat_id") or extra.get("chat_id") == route_extra.get("chat_id"))
+            and (not extra.get("thread_id") or extra.get("thread_id") == route_extra.get("thread_id"))
+        )
+        if not route_match and candidate not in allowed_targets:
+            logger.warning("[webhook] Ignoring notify_state target outside route allowlist: %s", candidate)
+            return None
+
+        if deliver == "dingtalk_robot":
+            allowed_envs = route_config.get("notify_state_allowed_envs", [])
+            if not isinstance(allowed_envs, list):
+                allowed_envs = []
+            for env_key in ("webhook_env", "secret_env"):
+                env_name = extra.get(env_key)
+                if env_name and env_name not in allowed_envs:
+                    logger.warning("[webhook] Ignoring notify_state DingTalk env outside allowlist")
+                    return None
+
+        logger.info(
+            "[webhook] notify_state routing override target=%s has_chat=%s has_thread=%s",
+            deliver,
+            bool(extra.get("chat_id") or extra.get("webhook_env")),
+            bool(extra.get("thread_id")),
+        )
+        return {"deliver": deliver, "deliver_extra": extra}
+
     def _render_delivery_extra(
         self, extra: dict, payload: dict
     ) -> dict:
@@ -699,6 +831,9 @@ class WebhookAdapter(BasePlatformAdapter):
 
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
+
+        if deliver_type == "dingtalk_robot":
+            return await self._deliver_dingtalk_robot(content, delivery)
 
         # Fall through to the cross-platform dispatcher, which validates the
         # target name and routes via the gateway runner.
@@ -758,6 +893,122 @@ class WebhookAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             logger.error("[webhook] github_comment delivery error: %s", e)
+            return SendResult(success=False, error=str(e))
+
+    async def _deliver_dingtalk_robot(
+        self, content: str, delivery: dict
+    ) -> SendResult:
+        """Send a webhook response via a fixed DingTalk group robot webhook.
+
+        This is a direct HTTP POST to a DingTalk group robot webhook URL,
+        independent of any session_webhook validity constraints.
+
+        Config expects:
+            deliver_extra:
+                webhook_env: ENV_VAR_NAME  (contains full webhook URL)
+                secret_env: ENV_VAR_NAME   (optional 加签 secret)
+                keyword: TEXT              (optional keyword to include in payload)
+        """
+        extra = delivery.get("deliver_extra", {})
+        webhook_env = extra.get("webhook_env", "")
+        secret_env = extra.get("secret_env", "")
+        keyword = extra.get("keyword", "")
+
+        if not webhook_env:
+            logger.error(
+                "[webhook] dingtalk_robot delivery missing webhook_env"
+            )
+            return SendResult(
+                success=False, error="Missing webhook_env"
+            )
+
+        webhook_url = os.environ.get(webhook_env, "")
+        if not webhook_url:
+            logger.error(
+                "[webhook] dingtalk_robot webhook_env %r not found in environment",
+                webhook_env,
+            )
+            return SendResult(
+                success=False, error=f"{webhook_env} not in environment"
+            )
+
+        try:
+            import aiohttp
+
+            # DingTalk keyword-secured robots require the keyword to appear in
+            # the message content, not just in configuration metadata.
+            message = content
+            if keyword and keyword not in message:
+                message = f"{keyword}\n{message}"
+            payload = {"msgtype": "text", "text": {"content": message}}
+
+            # Compute 加签 (HMAC signature) if secret is configured, preserving
+            # any existing access_token query string on the robot URL.
+            if secret_env:
+                secret = os.environ.get(secret_env, "")
+                if secret:
+                    timestamp = str(int(time.time() * 1000))
+                    msg_to_sign = timestamp + "\n" + secret
+                    sign = base64.b64encode(
+                        hmac.new(
+                            secret.encode(),
+                            msg_to_sign.encode(),
+                            hashlib.sha256,
+                        ).digest()
+                    ).decode()
+                    parsed = urllib.parse.urlsplit(webhook_url)
+                    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+                    query.extend([("timestamp", timestamp), ("sign", sign)])
+                    webhook_url = urllib.parse.urlunsplit(
+                        parsed._replace(query=urllib.parse.urlencode(query))
+                    )
+
+            timeout = aiohttp.ClientTimeout(total=15)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(webhook_url, json=payload) as resp:
+                    body = await resp.text()
+                    if resp.status not in (200, 201):
+                        logger.error(
+                            "[webhook] DingTalk robot POST failed: %d %s",
+                            resp.status,
+                            body[:200],
+                        )
+                        return SendResult(
+                            success=False,
+                            error=f"HTTP {resp.status}",
+                        )
+
+                    try:
+                        result = json.loads(body) if body else {}
+                    except Exception:
+                        result = {}
+                    errcode = result.get("errcode") if isinstance(result, dict) else None
+                    if errcode not in (None, 0):
+                        errmsg = result.get("errmsg", "") if isinstance(result, dict) else ""
+                        logger.error(
+                            "[webhook] DingTalk robot returned errcode=%s errmsg=%s",
+                            errcode,
+                            errmsg,
+                        )
+                        return SendResult(
+                            success=False,
+                            error=f"DingTalk errcode {errcode}: {errmsg}",
+                        )
+
+                    logger.info(
+                        "[webhook] DingTalk robot POST succeeded: %d",
+                        resp.status,
+                    )
+                    return SendResult(success=True)
+        except ModuleNotFoundError:
+            logger.error(
+                "[webhook] aiohttp not available for dingtalk_robot delivery"
+            )
+            return SendResult(
+                success=False, error="aiohttp not installed"
+            )
+        except Exception as e:
+            logger.error("[webhook] dingtalk_robot delivery error: %s", e)
             return SendResult(success=False, error=str(e))
 
     async def _deliver_cross_platform(

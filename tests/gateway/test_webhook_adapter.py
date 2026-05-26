@@ -229,6 +229,126 @@ class TestRenderDeliveryExtra:
         assert result["static"] == 42  # non-string left as-is
 
 
+class TestResolveNotifyStateDelivery:
+    def test_resolves_roombook_notify_state_target(self):
+        adapter = _make_adapter()
+        payload = {
+            "fields": {
+                "notify_state": json.dumps(
+                    {
+                        "v": 1,
+                        "target": {
+                            "platform": "discord",
+                            "chat_id": "1498372995712942172",
+                            "thread_id": "1508726721388740649",
+                        },
+                    }
+                )
+            }
+        }
+
+        route_config = {
+            "allow_notify_state_delivery": True,
+            "deliver": "discord",
+            "deliver_extra": {
+                "chat_id": "1498372995712942172",
+                "thread_id": "1508726721388740649",
+            },
+        }
+        result = adapter._resolve_delivery_from_notify_state(payload, route_config)
+
+        assert result == {
+            "deliver": "discord",
+            "deliver_extra": {
+                "chat_id": "1498372995712942172",
+                "thread_id": "1508726721388740649",
+            },
+        }
+
+    def test_ignores_malformed_or_unsupported_notify_state(self):
+        adapter = _make_adapter()
+        route_config = {"allow_notify_state_delivery": True, "deliver": "discord"}
+        assert adapter._resolve_delivery_from_notify_state({"fields": {"notify_state": "not-json"}}, route_config) is None
+        assert adapter._resolve_delivery_from_notify_state(
+            {"fields": {"notify_state": json.dumps({"target": {"platform": "unknown-platform"}})}},
+            route_config,
+        ) is None
+
+    def test_notify_state_delivery_is_opt_in(self):
+        adapter = _make_adapter()
+        payload = {"fields": {"notify_state": json.dumps({"target": {"platform": "discord", "chat_id": "target"}})}}
+
+        assert adapter._resolve_delivery_from_notify_state(payload, {"deliver": "discord"}) is None
+
+    def test_notify_state_rejects_unallowlisted_target(self):
+        adapter = _make_adapter()
+        payload = {"fields": {"notify_state": json.dumps({"target": {"platform": "discord", "chat_id": "evil"}})}}
+        route_config = {
+            "allow_notify_state_delivery": True,
+            "deliver": "discord",
+            "deliver_extra": {"chat_id": "safe"},
+        }
+
+        assert adapter._resolve_delivery_from_notify_state(payload, route_config) is None
+
+    def test_notify_state_allows_explicit_allowlisted_target(self):
+        adapter = _make_adapter()
+        payload = {
+            "fields": {
+                "notify_state": json.dumps(
+                    {"target": {"platform": "discord", "chat_id": "other", "thread_id": "t1"}}
+                )
+            }
+        }
+        route_config = {
+            "allow_notify_state_delivery": True,
+            "deliver": "discord",
+            "notify_state_allowed_targets": ["discord:other:t1"],
+        }
+
+        result = adapter._resolve_delivery_from_notify_state(payload, route_config)
+
+        assert result == {"deliver": "discord", "deliver_extra": {"chat_id": "other", "thread_id": "t1"}}
+
+    @pytest.mark.asyncio
+    async def test_notify_state_extra_merges_with_route_extra(self):
+        routes = {
+            "roombook": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "ok",
+                "deliver": "dingtalk_robot",
+                "deliver_extra": {
+                    "webhook_env": "DT_ROBOT_WEBHOOK",
+                    "secret_env": "DT_ROBOT_SECRET",
+                },
+                "allow_notify_state_delivery": True,
+                "notify_state_allowed_targets": ["dingtalk_robot"],
+            }
+        }
+        payload = {
+            "fields": {
+                "notify_state": json.dumps(
+                    {"target": {"platform": "dingtalk_robot", "keyword": "有成会议"}}
+                )
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/roombook", json=payload)
+
+        assert resp.status == 202
+        delivery = next(iter(adapter._delivery_info.values()))
+        assert delivery["deliver"] == "dingtalk_robot"
+        assert delivery["deliver_extra"] == {
+            "webhook_env": "DT_ROBOT_WEBHOOK",
+            "secret_env": "DT_ROBOT_SECRET",
+            "keyword": "有成会议",
+        }
+
+
 # ===================================================================
 # Event filtering
 # ===================================================================
@@ -259,6 +379,52 @@ class TestEventFilter:
                 headers={"X-GitHub-Event": "pull_request"},
             )
             assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_event_filter_accepts_payload_event_alias(self):
+        """Top-level payload.event is accepted for internal producers like roombook."""
+        routes = {
+            "roombook": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["task.failed"],
+                "prompt": "Task failed: {message}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/roombook",
+                json={"event": "task.failed", "message": "room unavailable"},
+            )
+            assert resp.status == 202
+            data = await resp.json()
+            assert data["event"] == "task.failed"
+
+    @pytest.mark.asyncio
+    async def test_event_type_field_takes_precedence_over_event_alias(self):
+        """Existing event_type semantics stay stable when both fields exist."""
+        routes = {
+            "r": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["preferred"],
+                "prompt": "ok",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/r",
+                json={"event_type": "preferred", "event": "fallback"},
+            )
+            assert resp.status == 202
+            data = await resp.json()
+            assert data["event"] == "preferred"
 
     @pytest.mark.asyncio
     async def test_event_filter_rejects_non_matching(self):
@@ -692,6 +858,83 @@ class TestRawTemplateToken:
         assert result.startswith("Action=closed Raw=")
         assert '"action": "closed"' in result
         assert '"number": 7' in result
+
+
+# ===================================================================
+# DingTalk robot delivery
+# ===================================================================
+
+
+class TestDingTalkRobotDelivery:
+    @pytest.mark.asyncio
+    async def test_send_routes_agent_mode_dingtalk_robot(self):
+        adapter = _make_adapter()
+        chat_id = "webhook:test:dt"
+        adapter._delivery_info[chat_id] = {
+            "deliver": "dingtalk_robot",
+            "deliver_extra": {"webhook_env": "DUMMY"},
+        }
+        adapter._deliver_dingtalk_robot = AsyncMock(return_value=SendResult(success=True))
+
+        result = await adapter.send(chat_id, "hello")
+
+        assert result.success is True
+        adapter._deliver_dingtalk_robot.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_dingtalk_robot_success_includes_keyword_and_signature(self, monkeypatch):
+        adapter = _make_adapter()
+        received = []
+
+        async def robot_handler(request):
+            received.append({"query": dict(request.query), "body": await request.json()})
+            return web.json_response({"errcode": 0, "errmsg": "ok"})
+
+        app = web.Application()
+        app.router.add_post("/robot", robot_handler)
+        async with TestClient(TestServer(app)) as cli:
+            monkeypatch.setenv("DT_ROBOT_WEBHOOK", str(cli.make_url("/robot?access_token=abc")))
+            monkeypatch.setenv("DT_ROBOT_SECRET", "sign-secret")
+
+            result = await adapter._deliver_dingtalk_robot(
+                "booking recovered",
+                {
+                    "deliver_extra": {
+                        "webhook_env": "DT_ROBOT_WEBHOOK",
+                        "secret_env": "DT_ROBOT_SECRET",
+                        "keyword": "有成会议",
+                    }
+                },
+            )
+
+        assert result.success is True
+        assert received[0]["query"]["access_token"] == "abc"
+        assert "timestamp" in received[0]["query"]
+        assert "sign" in received[0]["query"]
+        assert received[0]["body"] == {
+            "msgtype": "text",
+            "text": {"content": "有成会议\nbooking recovered"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_dingtalk_robot_200_errcode_is_failure(self, monkeypatch):
+        adapter = _make_adapter()
+
+        async def robot_handler(request):
+            return web.json_response({"errcode": 310000, "errmsg": "keywords not in content"})
+
+        app = web.Application()
+        app.router.add_post("/robot", robot_handler)
+        async with TestClient(TestServer(app)) as cli:
+            monkeypatch.setenv("DT_ROBOT_WEBHOOK", str(cli.make_url("/robot")))
+
+            result = await adapter._deliver_dingtalk_robot(
+                "booking recovered",
+                {"deliver_extra": {"webhook_env": "DT_ROBOT_WEBHOOK"}},
+            )
+
+        assert result.success is False
+        assert "DingTalk errcode 310000" in (result.error or "")
 
 
 # ===================================================================
