@@ -48,6 +48,7 @@ AUTHOR_MAP = {
     "9592417+adam91holt@users.noreply.github.com": "adam91holt",
     # teknium (multiple emails)
     "teknium1@gmail.com": "teknium1",
+    "leon.breukelman@gmail.com": "leonbreukelman",
     "kenyon1977@gmail.com": "kenyonxu",
     "cipherframe@users.noreply.github.com": "CipherFrame",
     "121752779+jacevys@users.noreply.github.com": "jacevys",
