@@ -966,6 +966,20 @@ class SignalAdapter(BasePlatformAdapter):
     # Sending
     # ------------------------------------------------------------------
 
+    def _dobby_allowed_signal_targets(self) -> set[str]:
+        raw = os.getenv("DOBBY_ALLOWED_SIGNAL_TARGETS") or os.getenv("SIGNAL_ALLOWED_USERS", "")
+        allowed = {item.strip() for item in raw.split(",") if item.strip() and item.strip() != "*"}
+        home = os.getenv("SIGNAL_HOME_CHANNEL", "").strip()
+        if home and home != "*":
+            allowed.add(home)
+        return allowed
+
+    def _dobby_signal_only_allows(self, chat_id: str) -> bool:
+        if os.getenv("DOBBY_SIGNAL_ONLY", "").lower() not in ("1", "true", "yes"):
+            return True
+        allowed = self._dobby_allowed_signal_targets()
+        return bool(chat_id and chat_id in allowed)
+
     async def send(
         self,
         chat_id: str,
@@ -974,6 +988,10 @@ class SignalAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a text message with native Signal formatting."""
+        if not self._dobby_signal_only_allows(chat_id):
+            logger.warning("Signal send blocked by Dobby owner-only guard")
+            return SendResult(success=False, error="Dobby can only send Signal messages to the configured owner account")
+
         await self._stop_typing_indicator(chat_id)
 
         plain_text, text_styles = self._markdown_to_signal(content)

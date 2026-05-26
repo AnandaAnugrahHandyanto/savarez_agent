@@ -156,7 +156,11 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     """
     stored_prompt = None
     stored_state = "missing"
-    if conversation_history and agent._session_db:
+    if (
+        conversation_history
+        and agent._session_db
+        and not getattr(agent, "_pre_model_route_switched_this_turn", False)
+    ):
         try:
             session_row = agent._session_db.get_session(agent.session_id)
             if session_row is not None:
@@ -202,16 +206,17 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # Plugin hook: on_session_start — fired once when a brand-new
     # session is created (not on continuation).  Plugins can use this
     # to initialise session-scoped state (e.g. warm a memory cache).
-    try:
-        from hermes_cli.plugins import invoke_hook as _invoke_hook
-        _invoke_hook(
-            "on_session_start",
-            session_id=agent.session_id,
-            model=agent.model,
-            platform=getattr(agent, "platform", None) or "",
-        )
-    except Exception as exc:
-        logger.warning("on_session_start hook failed: %s", exc)
+    if not conversation_history:
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "on_session_start",
+                session_id=agent.session_id,
+                model=agent.model,
+                platform=getattr(agent, "platform", None) or "",
+            )
+        except Exception as exc:
+            logger.warning("on_session_start hook failed: %s", exc)
 
     # Persist the system prompt snapshot in SQLite.  Failure here used
     # to log at DEBUG, which silently broke prefix-cache reuse on the
@@ -478,6 +483,12 @@ def run_conversation(
     if not agent.quiet_mode:
         _print_preview = _summarize_user_message_for_log(user_message)
         agent._safe_print(f"💬 Starting conversation: '{_print_preview[:60]}{'...' if len(_print_preview) > 60 else ''}'")
+
+    agent._apply_pre_model_route_hook(
+        original_user_message,
+        messages,
+        is_first_turn=(not bool(conversation_history)),
+    )
     
     # ── System prompt (cached per session for prefix caching) ──
     # Built once on first call, reused for all subsequent calls.

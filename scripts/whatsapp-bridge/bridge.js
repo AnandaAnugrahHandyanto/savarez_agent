@@ -24,11 +24,11 @@ import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
-import { randomBytes } from 'crypto';
+import { randomBytes, createHash } from 'crypto';
 import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
-import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { expandWhatsAppIdentifiers, matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -62,6 +62,30 @@ const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10
 // which pins the bridge's HTTP handler until the upstream aiohttp timeout
 // fires. Fail fast instead so the gateway can surface a real error and retry.
 const SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_SEND_TIMEOUT_MS || '60000', 10);
+
+function redactIdentifier(value) {
+  const text = String(value || '');
+  return text.replace(/\d{4,}/g, (digits) => `<digits:${digits.length}>`);
+}
+
+
+function identifierFingerprint(value) {
+  const normalized = String(value || '')
+    .trim()
+    .replace(/:.*@/, '@')
+    .replace(/@.*/, '')
+    .replace(/^\+/, '')
+    .replace(/\D/g, '');
+  return {
+    len: normalized.length,
+    last4: normalized.slice(-4),
+    sha8: createHash('sha256').update(normalized).digest('hex').slice(0, 8),
+  };
+}
+
+function identifierFingerprints(values) {
+  return Array.from(values || []).map(identifierFingerprint);
+}
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -164,7 +188,7 @@ function buildLidMap() {
 }
 let lidToPhone = buildLidMap();
 
-const logger = pino({ level: 'warn' });
+const logger = pino({ level: process.env.WHATSAPP_LOG_LEVEL || 'silent' });
 
 // Message queue for polling
 const messageQueue = [];
@@ -188,6 +212,13 @@ async function startSocket() {
     printQRInTerminal: false,
     browser: ['Hermes Agent', 'Chrome', '120.0'],
     syncFullHistory: false,
+    // Baileys 7.x needs non-full history sync messages to finish linked-device
+    // bootstrap and receive new DMs. Keep full history disabled to avoid a large
+    // backlog, but allow recent/bootstrap/LID state sync.
+    shouldSyncHistoryMessage: (msg) => {
+      const syncType = msg?.syncType;
+      return syncType !== 2 && syncType !== 'FULL';
+    },
     markOnlineOnConnect: false,
     // Required for Baileys 7.x: without this, incoming messages that need
     // E2EE session re-establishment are silently dropped (msg.message === null)
@@ -295,8 +326,12 @@ async function startSocket() {
             console.log(JSON.stringify({
               event: 'ignored',
               reason: 'self_chat_mode_rejects_non_self',
-              chatId,
-              senderId,
+              chatId: redactIdentifier(chatId),
+              senderId: redactIdentifier(senderId),
+              chat: identifierFingerprint(chatId),
+              sender: identifierFingerprint(senderId),
+              senderAliases: identifierFingerprints(expandWhatsAppIdentifiers(senderId, SESSION_DIR)),
+              allowed: identifierFingerprints(ALLOWED_USERS),
             }));
           } catch {}
           continue;
@@ -306,8 +341,12 @@ async function startSocket() {
             console.log(JSON.stringify({
               event: 'ignored',
               reason: 'allowlist_mismatch',
-              chatId,
-              senderId,
+              chatId: redactIdentifier(chatId),
+              senderId: redactIdentifier(senderId),
+              chat: identifierFingerprint(chatId),
+              sender: identifierFingerprint(senderId),
+              senderAliases: identifierFingerprints(expandWhatsAppIdentifiers(senderId, SESSION_DIR)),
+              allowed: identifierFingerprints(ALLOWED_USERS),
             }));
           } catch {}
           continue;
@@ -500,6 +539,9 @@ app.post('/send', async (req, res) => {
     return res.status(400).json({ error: 'chatId and message are required' });
   }
 
+  const outboundError = requireAllowedOutboundTarget(chatId, res);
+  if (outboundError) return outboundError;
+
   try {
     const chunks = splitLongMessage(formatOutgoingMessage(message));
     const messageIds = [];
@@ -532,6 +574,9 @@ app.post('/edit', async (req, res) => {
   if (!chatId || !messageId || !message) {
     return res.status(400).json({ error: 'chatId, messageId, and message are required' });
   }
+
+  const outboundError = requireAllowedOutboundTarget(chatId, res);
+  if (outboundError) return outboundError;
 
   try {
     const key = { id: messageId, fromMe: true, remoteJid: chatId };
@@ -575,6 +620,14 @@ function inferMediaType(ext) {
   return 'document';
 }
 
+function requireAllowedOutboundTarget(chatId, res) {
+  if (!matchesAllowedUser(chatId, ALLOWED_USERS, SESSION_DIR)) {
+    return res.status(403).json({ error: 'Outbound WhatsApp target is not allowed' });
+  }
+  return null;
+}
+
+
 // Send media (image, video, document) natively
 app.post('/send-media', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
@@ -585,6 +638,9 @@ app.post('/send-media', async (req, res) => {
   if (!chatId || !filePath) {
     return res.status(400).json({ error: 'chatId and filePath are required' });
   }
+
+  const outboundError = requireAllowedOutboundTarget(chatId, res);
+  if (outboundError) return outboundError;
 
   try {
     if (!existsSync(filePath)) {
@@ -661,6 +717,9 @@ app.post('/typing', async (req, res) => {
   const { chatId } = req.body;
   if (!chatId) return res.status(400).json({ error: 'chatId required' });
 
+  const outboundError = requireAllowedOutboundTarget(chatId, res);
+  if (outboundError) return outboundError;
+
   try {
     await sock.sendPresenceUpdate('composing', chatId);
     res.json({ success: true });
@@ -673,6 +732,9 @@ app.post('/typing', async (req, res) => {
 app.get('/chat/:id', async (req, res) => {
   const chatId = req.params.id;
   const isGroup = chatId.endsWith('@g.us');
+
+  const outboundError = requireAllowedOutboundTarget(chatId, res);
+  if (outboundError) return outboundError;
 
   if (isGroup && sock) {
     try {
@@ -715,7 +777,7 @@ if (PAIR_ONLY) {
     console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
     console.log(`📁 Session stored in: ${SESSION_DIR}`);
     if (ALLOWED_USERS.size > 0) {
-      console.log(`🔒 Allowed users: ${Array.from(ALLOWED_USERS).join(', ')}`);
+      console.log(`🔒 Allowed users configured: ${ALLOWED_USERS.size}`);
     } else if (WHATSAPP_MODE === 'self-chat') {
       console.log(`🔒 Self-chat mode — only your own messages to yourself are processed.`);
     } else {

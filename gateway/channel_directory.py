@@ -80,19 +80,25 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
     # discovery automatically.  Skip infrastructure entries that aren't messaging
     # platforms — everything else falls through to _build_from_sessions().
     _SKIP_SESSION_DISCOVERY = frozenset({"local", "api_server", "webhook"})
+    active_platform_names = {getattr(platform, "value", str(platform)) for platform in adapters.keys()}
     for plat in Platform:
         plat_name = plat.value
         if plat_name in _SKIP_SESSION_DISCOVERY or plat_name in platforms:
             continue
-        platforms[plat_name] = _build_from_sessions(plat_name)
+        session_targets = _build_from_sessions(plat_name)
+        if plat_name in active_platform_names or session_targets:
+            platforms[plat_name] = session_targets
 
     # Include plugin-registered platforms (dynamic enum members aren't in
     # Platform.__members__, so the loop above misses them).
     try:
         from gateway.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():
-            if entry.name not in _SKIP_SESSION_DISCOVERY and entry.name not in platforms:
-                platforms[entry.name] = _build_from_sessions(entry.name)
+            if entry.name in _SKIP_SESSION_DISCOVERY or entry.name in platforms:
+                continue
+            session_targets = _build_from_sessions(entry.name)
+            if entry.name in active_platform_names or session_targets:
+                platforms[entry.name] = session_targets
     except Exception:
         pass
 

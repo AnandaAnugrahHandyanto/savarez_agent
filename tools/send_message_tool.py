@@ -59,6 +59,38 @@ _GENERIC_SECRET_ASSIGN_RE = re.compile(
 )
 
 
+def _dobby_signal_only_enabled() -> bool:
+    return os.getenv("DOBBY_SIGNAL_ONLY", "").lower() in ("1", "true", "yes")
+
+
+def _dobby_allowed_signal_targets() -> set[str]:
+    raw = os.getenv("DOBBY_ALLOWED_SIGNAL_TARGETS") or os.getenv("SIGNAL_ALLOWED_USERS", "")
+    allowed = {item.strip() for item in raw.split(",") if item.strip() and item.strip() != "*"}
+    home = os.getenv("SIGNAL_HOME_CHANNEL", "").strip()
+    if home and home != "*":
+        allowed.add(home)
+    return allowed
+
+
+def _dobby_signal_only_platform_guard(platform_name: str):
+    if not _dobby_signal_only_enabled():
+        return None
+    if platform_name != "signal":
+        return tool_error("Dobby is Signal-only. Outbound messages to other platforms are blocked.")
+    return None
+
+
+def _dobby_signal_only_target_guard(platform_name: str, chat_id: str | None):
+    if not _dobby_signal_only_enabled() or platform_name != "signal":
+        return None
+    allowed = _dobby_allowed_signal_targets()
+    if not allowed:
+        return tool_error("Dobby Signal guard is enabled but no allowed recipient is configured.")
+    if not chat_id or chat_id not in allowed:
+        return tool_error("Dobby can only send Signal messages to the configured owner account.")
+    return None
+
+
 def _sanitize_error_text(text) -> str:
     """Redact secrets from error text before surfacing it to users/models."""
     redacted = redact_sensitive_text(text)
@@ -175,6 +207,9 @@ def _handle_send(args):
 
     parts = target.split(":", 1)
     platform_name = parts[0].strip().lower()
+    platform_guard = _dobby_signal_only_platform_guard(platform_name)
+    if platform_guard:
+        return platform_guard
     target_ref = parts[1].strip() if len(parts) > 1 else None
     chat_id = None
     thread_id = None
@@ -271,6 +306,10 @@ def _handle_send(args):
                 f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
                 f"or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"
             })
+
+    target_guard = _dobby_signal_only_target_guard(platform_name, chat_id)
+    if target_guard:
+        return target_guard
 
     duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)
     if duplicate_skip:
