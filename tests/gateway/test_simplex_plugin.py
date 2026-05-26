@@ -367,6 +367,101 @@ async def test_send_streaming_uses_live_flag_and_returns_item_id(monkeypatch):
     )
 
 
+# ---------------------------------------------------------------------------
+# 8. Native call signaling commands
+# ---------------------------------------------------------------------------
+
+def test_native_call_offer_command_uses_compact_json():
+    cmd = _simplex._native_call_offer_command(
+        "42",
+        {"rtcSession": "offer-b64", "rtcIceCandidates": "ice-b64"},
+    )
+
+    assert cmd == (
+        '/_call offer @42 {"callType":{"media":"audio","capabilities":{"encryption":false}},'
+        '"rtcSession":{"rtcSession":"offer-b64","rtcIceCandidates":"ice-b64"}}'
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_native_call_offer_sends_exact_command():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    sent = []
+
+    async def fake_send_command(cmd):
+        sent.append(cmd)
+        return {"type": "ok"}
+
+    adapter._send_command = fake_send_command  # type: ignore[method-assign]
+
+    ok = await adapter.send_native_call_offer(
+        "42",
+        {"rtcSession": "offer-b64", "rtcIceCandidates": "ice-b64"},
+    )
+
+    assert ok is True
+    assert sent == [
+        '/_call offer @42 {"callType":{"media":"audio","capabilities":{"encryption":false}},'
+        '"rtcSession":{"rtcSession":"offer-b64","rtcIceCandidates":"ice-b64"}}'
+    ]
+
+
+@pytest.mark.asyncio
+async def test_native_call_status_end_and_reject_use_chat_refs():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    sent = []
+
+    async def fake_send_command(cmd):
+        sent.append(cmd)
+        return {"type": "ok"}
+
+    adapter._send_command = fake_send_command  # type: ignore[method-assign]
+
+    assert await adapter.send_native_call_status("42", "connecting") is True
+    assert await adapter.end_native_call("group:99") is True
+    assert await adapter.reject_native_call("42", reason_code="busy") is True
+
+    assert sent == [
+        "/_call status @42 connecting",
+        "/_call end #99",
+        "/_call reject @42",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reject_native_call_logs_and_returns_false(caplog):
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+
+    async def fake_send_command(cmd):
+        raise RuntimeError(f"boom: {cmd}")
+
+    adapter._send_command = fake_send_command  # type: ignore[method-assign]
+    caplog.set_level("ERROR")
+
+    ok = await adapter.reject_native_call("42")
+
+    assert ok is False
+    assert "failed to reject native call" in caplog.text
+    assert "Traceback" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_private_reject_native_call_delegates_to_public_method():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    adapter.reject_native_call = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+    assert await adapter._reject_native_call("42") is True
+    adapter.reject_native_call.assert_awaited_once_with("42")
+
+
 @pytest.mark.asyncio
 async def test_edit_message_live_update_uses_live_on(monkeypatch):
     _install_fake_websockets(monkeypatch)
@@ -413,7 +508,7 @@ def test_format_message_converts_markdown_to_simplex():
 
 
 # ---------------------------------------------------------------------------
-# 8. Inbound: filter own-echo by corrId prefix
+# 9. Inbound: filter own-echo by corrId prefix
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -851,7 +946,7 @@ async def test_send_voice_uses_simplex_voice_file_message(monkeypatch, tmp_path)
 
 
 # ---------------------------------------------------------------------------
-# 9. Standalone (out-of-process) send for cron
+# 10. Standalone (out-of-process) send for cron
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -962,7 +1057,7 @@ async def test_standalone_send_uses_api_send_command(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 10. register() — plugin-side metadata
+# 11. register() — plugin-side metadata
 # ---------------------------------------------------------------------------
 
 def test_register_calls_register_platform():

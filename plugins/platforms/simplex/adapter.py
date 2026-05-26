@@ -147,6 +147,21 @@ def _voice_send_command(
     return f"/_send {_chat_ref_for_chat_id(chat_id)} json {payload}"
 
 
+def _native_call_offer_command(chat_id: str, offer: dict, *, media: str = "audio") -> str:
+    payload = {
+        "callType": {
+            "media": media,
+            "capabilities": {"encryption": False},
+        },
+        "rtcSession": {
+            "rtcSession": offer.get("rtcSession", ""),
+            "rtcIceCandidates": offer.get("rtcIceCandidates", ""),
+        },
+    }
+    encoded = json.dumps(payload, separators=(",", ":"))
+    return f"/_call offer {_chat_ref_for_chat_id(chat_id)} {encoded}"
+
+
 def _extract_chat_item_id(resp: dict) -> Optional[str]:
     """Extract SimpleX chatItem.meta.itemId from command response shapes."""
     if not isinstance(resp, dict):
@@ -815,11 +830,33 @@ class SimplexAdapter(BasePlatformAdapter):
         if item_id is not None:
             await self._mark_chat_items_read(chat_id, [item_id])
 
-    async def _reject_native_call(self, chat_id: str) -> bool:
+    async def send_native_call_offer(
+        self,
+        chat_id: str,
+        offer: dict,
+        *,
+        media: str = "audio",
+    ) -> bool:
+        """Send a SimpleX native-call offer command."""
+        await self._send_command(_native_call_offer_command(chat_id, offer, media=media))
+        return True
+
+    async def send_native_call_status(self, chat_id: str, status: str) -> bool:
+        """Send a SimpleX native-call status command."""
+        await self._send_command(
+            f"/_call status {_chat_ref_for_chat_id(chat_id)} {status}"
+        )
+        return True
+
+    async def end_native_call(self, chat_id: str) -> bool:
+        """End an active SimpleX native call."""
+        await self._send_command(f"/_call end {_chat_ref_for_chat_id(chat_id)}")
+        return True
+
+    async def reject_native_call(self, chat_id: str, reason_code: str = "") -> bool:
         """Tell SimpleX to reject a pending native call."""
-        cmd = f"/_call reject {_chat_ref_for_chat_id(chat_id)}"
         try:
-            await self._send_command(cmd)
+            await self._send_command(f"/_call reject {_chat_ref_for_chat_id(chat_id)}")
             return True
         except Exception as exc:
             logger.error(
@@ -829,6 +866,10 @@ class SimplexAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
             return False
+
+    async def _reject_native_call(self, chat_id: str) -> bool:
+        """Backward-compatible private alias for native call rejection."""
+        return await self.reject_native_call(chat_id)
 
     async def _fetch_file(self, file_id: Any, file_name: str) -> Optional[str]:
         """Ask the daemon to receive and return a file attachment."""
