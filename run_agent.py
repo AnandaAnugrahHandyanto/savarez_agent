@@ -4151,6 +4151,35 @@ class AIAgent:
         from agent.chat_completion_helpers import handle_max_iterations
         return handle_max_iterations(self, messages, api_call_count)
 
+    def _decay_loaded_skills(self, messages: List[Dict[str, Any]]) -> None:
+        """Proactively decay old <hermes-skill> blocks in tool messages.
+
+        Replaces the full skill payload with a short placeholder when the
+        message is older than ``skill_decay_distance`` messages from the
+        end of the history.  Preserves any text appended after the closing
+        </hermes-skill> tag (e.g. steer injections).
+        """
+        SKILL_DECAY_DISTANCE = getattr(self, "skill_decay_distance", 6)
+        total = len(messages)
+        pattern = re.compile(r'<hermes-skill name="([^"]+)">.*?</hermes-skill>', re.DOTALL)
+        for idx, msg in enumerate(messages):
+            if msg.get("role") != "tool":
+                continue
+            content = msg.get("content", "")
+            if not isinstance(content, str):
+                continue
+            match = pattern.search(content)
+            if not match:
+                continue
+            skill_name = match.group(1)
+            distance = total - idx - 1
+            if distance > SKILL_DECAY_DISTANCE:
+                placeholder = (
+                    f'[Skill "{skill_name}" content decayed after {distance} messages. '
+                    f'Reload with skill_view("{skill_name}").]'
+                )
+                msg["content"] = pattern.sub(placeholder, content)
+
     def run_conversation(
         self,
         user_message: str,
