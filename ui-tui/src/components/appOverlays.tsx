@@ -182,16 +182,29 @@ export function FloatingOverlays({
 
               return (
                 <Box
-                  backgroundColor={active ? theme.color.completionCurrentBg : undefined}
+                  backgroundColor={active ? theme.color.completionCurrentBg : theme.color.completionBg}
                   flexDirection="row"
                   key={`${start + i}:${item.text}:${item.display}:${item.meta ?? ''}`}
                   width="100%"
                 >
-                  <Text bold color={theme.color.label}>
-                    {' '}
-                    {item.display}
-                  </Text>
-                  {item.meta ? <Text color={theme.color.muted}> {item.meta}</Text> : null}
+                  {/* flexShrink=0 — when meta overflows the row, Ink/Yoga
+                      otherwise shaves the last char off the display column
+                      (e.g. /goal renders as /goa). */}
+                  <Box flexShrink={0}>
+                    <Text bold color={theme.color.label}>
+                      {' '}
+                      {item.display}
+                    </Text>
+                  </Box>
+                  {item.meta ? (
+                    <Text
+                      backgroundColor={active ? theme.color.completionMetaCurrentBg : theme.color.completionMetaBg}
+                      color={theme.color.muted}
+                    >
+                      {' '}
+                      {item.meta}
+                    </Text>
+                  ) : null}
                 </Box>
               )
             })}
