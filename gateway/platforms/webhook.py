@@ -68,6 +68,21 @@ DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 
+# Strip prior Grant verdict marker blocks from rendered prompts so re-reviews
+# do not regurgitate stale verdicts. Matches a marker comment + body up to the
+# next marker or end of string. See card kn7d6xch.
+_GRANT_VERDICT_MARKER_RE = re.compile(
+    r"<!--\s*grant-verdict:[^>]+-->.*?(?=<!--\s*grant-verdict:|\Z)",
+    re.DOTALL,
+)
+_GRANT_FRESH_AUDIT_INSTRUCTION = (
+    "NOTE: Card has been re-submitted after one or more prior "
+    "CHANGES_REQUIRED verdicts. You MUST re-audit current code/test/file "
+    "state from scratch and produce a fresh independent verdict. The prior "
+    "verdicts have been stripped from notes for you. Do not produce a "
+    "verdict that mirrors prior text.\n\n"
+)
+
 # Hostnames/IP literals that only serve connections originating on the same
 # machine. Anything else is treated as a public bind for safety-rail purposes.
 _LOOPBACK_HOSTS = frozenset({
@@ -779,7 +794,21 @@ class WebhookAdapter(BasePlatformAdapter):
                 return json.dumps(value, indent=2)[:2000]
             return str(value)
 
-        return re.sub(r"\{([a-zA-Z0-9_.]+)\}", _resolve, template)
+        rendered = re.sub(r"\{([a-zA-Z0-9_.]+)\}", _resolve, template)
+
+        # Grant re-review staleness fix (card kn7d6xch): strip prior
+        # grant-verdict marker blocks. If any were present, prepend a
+        # fresh-audit instruction so the agent does not regurgitate.
+        if route_name == "grant-auto-review":
+            stripped, count = _GRANT_VERDICT_MARKER_RE.subn("", rendered)
+            if count > 0:
+                rendered = _GRANT_FRESH_AUDIT_INSTRUCTION + stripped
+                logger.info(
+                    "[webhook] grant-auto-review: stripped %d prior "
+                    "verdict marker block(s) from prompt",
+                    count,
+                )
+        return rendered
 
     def _render_delivery_extra(
         self, extra: dict, payload: dict
