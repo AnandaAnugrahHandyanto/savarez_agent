@@ -54,6 +54,7 @@ def _build_agent(monkeypatch):
     agent._cleanup_task_resources = lambda task_id: None
     agent._persist_session = lambda messages, history=None: None
     agent._save_trajectory = lambda messages, user_message, completed: None
+    agent._save_session_log = lambda messages: None
     return agent
 
 
@@ -74,6 +75,7 @@ def _build_copilot_agent(monkeypatch, *, model="gpt-5.4"):
     agent._cleanup_task_resources = lambda task_id: None
     agent._persist_session = lambda messages, history=None: None
     agent._save_trajectory = lambda messages, user_message, completed: None
+    agent._save_session_log = lambda messages: None
     return agent
 
 
@@ -306,10 +308,7 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert kwargs["parallel_tool_calls"] is True
     assert isinstance(kwargs["prompt_cache_key"], str)
     assert len(kwargs["prompt_cache_key"]) > 0
-    # ``timeout`` is now wired from ``_resolved_api_call_timeout`` (default 1800s)
-    # so per-provider ``request_timeout_seconds`` actually reaches the SDK.
-    assert isinstance(kwargs.get("timeout"), float)
-    assert kwargs["timeout"] > 0
+    assert "timeout" not in kwargs
     assert "max_tokens" not in kwargs
     assert "extra_body" not in kwargs
 
@@ -336,6 +335,7 @@ def test_build_api_kwargs_codex_clamps_minimal_effort(monkeypatch):
     agent._cleanup_task_resources = lambda task_id: None
     agent._persist_session = lambda messages, history=None: None
     agent._save_trajectory = lambda messages, user_message, completed: None
+    agent._save_session_log = lambda messages: None
 
     kwargs = agent._build_api_kwargs(
         [
@@ -365,6 +365,7 @@ def test_build_api_kwargs_codex_preserves_supported_efforts(monkeypatch):
         agent._cleanup_task_resources = lambda task_id: None
         agent._persist_session = lambda messages, history=None: None
         agent._save_trajectory = lambda messages, user_message, completed: None
+        agent._save_session_log = lambda messages: None
 
         kwargs = agent._build_api_kwargs(
             [
@@ -593,6 +594,7 @@ def _build_xai_oauth_agent(monkeypatch):
     agent._cleanup_task_resources = lambda task_id: None
     agent._persist_session = lambda messages, history=None: None
     agent._save_trajectory = lambda messages, user_message, completed: None
+    agent._save_session_log = lambda messages: None
     return agent
 
 
@@ -1054,29 +1056,6 @@ def test_preflight_codex_api_kwargs_allows_service_tier(monkeypatch):
     from agent.codex_responses_adapter import _preflight_codex_api_kwargs
     result = _preflight_codex_api_kwargs(kwargs)
     assert result["service_tier"] == "priority"
-
-
-def test_preflight_codex_api_kwargs_preserves_positive_timeout(monkeypatch):
-    """Positive numeric timeouts survive preflight so the SDK honors them."""
-    agent = _build_agent(monkeypatch)
-    kwargs = _codex_request_kwargs()
-    kwargs["timeout"] = 600.0
-
-    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
-    result = _preflight_codex_api_kwargs(kwargs)
-    assert result["timeout"] == 600.0
-
-
-def test_preflight_codex_api_kwargs_drops_invalid_timeout(monkeypatch):
-    """Zero, negative, inf, and booleans are all dropped — not passed to SDK."""
-    agent = _build_agent(monkeypatch)
-    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
-
-    for bad in (0, -1, float("inf"), True, False, "300", None):
-        kwargs = _codex_request_kwargs()
-        kwargs["timeout"] = bad
-        result = _preflight_codex_api_kwargs(kwargs)
-        assert "timeout" not in result, f"timeout={bad!r} should be dropped"
 
 
 def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):
@@ -1619,6 +1598,157 @@ def test_dump_api_request_debug_uses_chat_completions_url(monkeypatch, tmp_path)
 
     payload = json.loads(dump_file.read_text())
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/chat/completions"
+
+
+
+
+# ---------------------------------------------------------------------------
+# Credential redaction in request dumps (#18707) — security/P1
+#
+# request_dump_*.json files are written under ~/.hermes/sessions/ and are the
+# most likely files an operator will share when reporting a bug. Any path that
+# can carry a key — Authorization header, body messages, error.body,
+# error.response_text — must be scrubbed before write so the file is safe to
+# attach to a GitHub issue or paste into a support thread.
+# ---------------------------------------------------------------------------
+
+
+def _build_dump_agent(monkeypatch, tmp_path, *, api_key="sk-proj-FAKEABCDEFGHIJKLMNOPQRSTUVWXYZ012345"):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-4o",
+        base_url="https://api.openai.com/v1",
+        api_key=api_key,
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent.logs_dir = tmp_path
+    return agent
+
+
+def test_dump_redacts_sk_proj_key_in_authorization_header(monkeypatch, tmp_path):
+    """The Authorization header must not expose any portion of an sk-... key."""
+    import json
+    fake_key = "sk-proj-FAKEABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
+    agent = _build_dump_agent(monkeypatch, tmp_path, api_key=fake_key)
+    agent.client.api_key = fake_key
+
+    dump_file = agent._dump_api_request_debug(
+        {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]},
+        reason="preflight",
+    )
+
+    raw = dump_file.read_text()
+    # No prefix, suffix, or contiguous middle of the key may appear.
+    assert "sk-proj-FAKE" not in raw
+    assert fake_key[-8:] not in raw
+    payload = json.loads(raw)
+    auth_header = payload["request"]["headers"].get("Authorization", "")
+    assert "sk-proj" not in auth_header
+
+
+def test_dump_redacts_keys_embedded_in_request_body(monkeypatch, tmp_path):
+    """A user message that contains a leaked key must be scrubbed before write."""
+    leaked = "sk-proj-LEAKEDXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+    agent = _build_dump_agent(monkeypatch, tmp_path)
+    agent.client.api_key = "sk-test-CLIENTKEYABCDEFGHIJKLMNOPQ"
+
+    api_kwargs = {
+        "model": "gpt-4o",
+        "messages": [
+            {"role": "user", "content": f"please debug this: OPENAI_API_KEY={leaked}"},
+        ],
+    }
+    dump_file = agent._dump_api_request_debug(api_kwargs, reason="preflight")
+
+    raw = dump_file.read_text()
+    assert leaked not in raw
+    assert "sk-proj-LEAKED" not in raw
+
+
+def test_dump_remains_valid_json_after_redaction(monkeypatch, tmp_path):
+    """The dump file must always parse as JSON.
+
+    Regression: applying the text-level redactor to already-serialised JSON
+    let the env-assignment regex (\\S+ value group) consume past the JSON
+    string's closing quote, producing files that crashed json.loads. Redact
+    string values before serialisation so the JSON structure is never
+    touched by regex substitution.
+    """
+    import json as _json
+    leaked = "sk-proj-LEAKEDXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+    agent = _build_dump_agent(monkeypatch, tmp_path)
+    agent.client.api_key = "sk-test-CLIENTKEYABCDEFGHIJKLMNOPQ"
+
+    api_kwargs = {
+        "model": "gpt-4o",
+        "messages": [
+            {"role": "user", "content": f"please debug this: OPENAI_API_KEY={leaked}"},
+            {"role": "assistant", "content": "ok"},
+        ],
+        "tools": [{"type": "function", "function": {"name": "x"}}],
+    }
+    dump_file = agent._dump_api_request_debug(api_kwargs, reason="preflight")
+
+    raw = dump_file.read_text()
+    parsed = _json.loads(raw)  # must not raise
+    # Structure must be preserved after redaction.
+    assert parsed["request"]["body"]["model"] == "gpt-4o"
+    assert len(parsed["request"]["body"]["messages"]) == 2
+    assert parsed["request"]["body"]["messages"][1]["content"] == "ok"
+    # Secret still scrubbed.
+    assert leaked not in raw
+
+
+def test_dump_redacts_keys_in_error_response_text(monkeypatch, tmp_path):
+    """Error responses can echo back keys; the dump must scrub error.response_text."""
+    leaked = "sk-proj-ECHOEDBACKABCDEFGHIJKLMNOPQRSTUVWX"
+    agent = _build_dump_agent(monkeypatch, tmp_path)
+    agent.client.api_key = "sk-test-CLIENTKEYABCDEFGHIJKLMNOPQ"
+
+    response_obj = SimpleNamespace(
+        status_code=401,
+        text=f'{{"error": {{"message": "Invalid API key sk-proj-ECHOEDBACKABCDEFGHIJKLMNOPQRSTUVWX"}}}}',
+    )
+    err = RuntimeError("auth failure")
+    err.status_code = 401
+    err.body = {"raw_authorization": leaked}
+    err.response = response_obj
+
+    dump_file = agent._dump_api_request_debug(
+        {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]},
+        reason="bad-key",
+        error=err,
+    )
+
+    raw = dump_file.read_text()
+    assert leaked not in raw
+
+
+def test_dump_preserves_non_secret_metadata(monkeypatch, tmp_path):
+    """Redaction must not strip benign fields needed for debugging."""
+    import json
+    agent = _build_dump_agent(monkeypatch, tmp_path)
+    agent.client.api_key = "sk-test-CLIENTKEYABCDEFGHIJKLMNOPQ"
+
+    err = RuntimeError("provider is down")
+    err.status_code = 503
+
+    dump_file = agent._dump_api_request_debug(
+        {"model": "gpt-4o", "messages": [{"role": "user", "content": "hello"}]},
+        reason="server-error",
+        error=err,
+    )
+
+    payload = json.loads(dump_file.read_text())
+    assert payload["reason"] == "server-error"
+    assert payload["request"]["method"] == "POST"
+    assert payload["request"]["url"].startswith("https://api.openai.com/v1/")
+    assert payload["error"]["type"] == "RuntimeError"
+    assert payload["error"]["status_code"] == 503
+
 
 
 # --- Reasoning-only response tests (fix for empty content retry loop) ---
