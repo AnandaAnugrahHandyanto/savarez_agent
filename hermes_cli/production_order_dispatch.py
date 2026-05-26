@@ -8,7 +8,9 @@ to Kanban.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import hashlib
 import json
+import re
 import sqlite3
 from typing import Any, Iterable
 
@@ -66,6 +68,8 @@ class DispatchManifest:
     production_order_id: str
     current_state: str
     current_owner_profile: str
+    dispatch_attempt: int
+    idempotency_key: str
     target_profile: str
     target_child_card_id: str
     task_type: str
@@ -85,6 +89,8 @@ class DispatchManifest:
 @dataclass(frozen=True)
 class ProfileTaskEnvelope:
     production_order_id: str
+    dispatch_attempt: int
+    idempotency_key: str
     parent_kanban_card_id: str
     child_kanban_card_id: str
     target_profile: str
@@ -114,6 +120,8 @@ class ProfileTaskEnvelope:
 @dataclass(frozen=True)
 class ManualFallbackHandoff:
     production_order_id: str
+    dispatch_attempt: int
+    idempotency_key: str
     source_state: str
     expected_next_state: str
     target_profile: str
@@ -141,6 +149,8 @@ class ManualFallbackHandoff:
 class ResultPacketIngestion:
     accepted: bool
     production_order_id: str
+    dispatch_attempt: int
+    idempotency_key: str
     source_state: str
     owner_profile: str
     target_profile: str
@@ -188,6 +198,244 @@ _SUPPORTED_ENVELOPE_ROUTES: dict[tuple[str, str], str] = {
 }
 
 
+_RESULT_PACKET_SECTION_RE = re.compile(
+    r"--- RESULT PACKET ---\n(.*?)\n--- END RESULT PACKET ---",
+    re.DOTALL,
+)
+
+_EVENT_HASH_RE = re.compile(r"\bpayload_hash=([0-9a-f]{64})\b")
+
+
+def _event_payload_hash(result: str | None) -> str | None:
+    if not result:
+        return None
+    match = _EVENT_HASH_RE.search(str(result))
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _dispatch_attempt_for_state(po: ProductionOrder) -> int:
+    attempts = sum(1 for entry in po.stage_history if entry.to_state == po.current_state)
+    return max(1, attempts)
+
+
+
+def _dispatch_idempotency_key(
+    *,
+    production_order_id: str,
+    source_state: str,
+    target_profile: str,
+    target_child_card_id: str,
+    task_type: str,
+    dispatch_attempt: int,
+) -> str:
+    return (
+        f"dispatch:{production_order_id}:{source_state}:{target_profile}:"
+        f"{target_child_card_id}:{task_type}:attempt-{dispatch_attempt}"
+    )
+
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+
+def _payload_hash(value: Any) -> str:
+    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+
+def _dispatch_slot_key(
+    *,
+    production_order_id: str,
+    source_state: str,
+    dispatch_attempt: int,
+) -> str:
+    return f"slot:{production_order_id}:{source_state}:attempt-{dispatch_attempt}"
+
+
+def _load_task_body(conn: sqlite3.Connection, card_id: str) -> str:
+    row = conn.execute("SELECT body FROM tasks WHERE id = ?", (card_id,)).fetchone()
+    if row is None:
+        raise DispatchManifestError(f"Kanban card {card_id!r} not found")
+    return str(row[0] or "")
+
+
+def _frozen_result_packets(conn: sqlite3.Connection, card_id: str) -> list[dict[str, Any]]:
+    packets: list[dict[str, Any]] = []
+    body = _load_task_body(conn, card_id)
+    for match in _RESULT_PACKET_SECTION_RE.finditer(body):
+        raw_packet = match.group(1).strip()
+        if not raw_packet:
+            continue
+        try:
+            packet = json.loads(raw_packet)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(packet, dict):
+            packets.append(packet)
+    return packets
+
+
+def _find_dispatch_event(
+    conn: sqlite3.Connection,
+    *,
+    production_order_id: str,
+    event_type: str,
+    from_state: str,
+    target_profile: str,
+    kanban_card_id: str,
+    packet_id: str | None = None,
+) -> dict[str, Any] | None:
+    for event in list_dispatch_events(conn, production_order_id):
+        if event["event_type"] != event_type:
+            continue
+        if event["from_state"] != from_state:
+            continue
+        if event["target_profile"] != target_profile:
+            continue
+        if event["kanban_card_id"] != kanban_card_id:
+            continue
+        if packet_id is not None and event["packet_id"] != packet_id:
+            continue
+        return event
+    return None
+
+
+def _ensure_dispatch_planned_event(
+    conn: sqlite3.Connection,
+    manifest: DispatchManifest,
+    *,
+    envelope: ProfileTaskEnvelope | None = None,
+) -> dict[str, Any]:
+    payload = envelope.to_dict() if envelope is not None else manifest.to_dict()
+    payload_hash = _payload_hash(payload)
+    manifest_hash = _payload_hash(manifest.to_dict())
+    existing = _find_dispatch_event(
+        conn,
+        production_order_id=manifest.production_order_id,
+        event_type="dispatch_planned",
+        from_state=manifest.current_state,
+        target_profile=manifest.target_profile,
+        kanban_card_id=manifest.target_child_card_id,
+        packet_id=manifest.idempotency_key,
+    )
+    if existing is not None:
+        existing_hash = _event_payload_hash(existing.get("result"))
+        if existing_hash and existing_hash not in {payload_hash, manifest_hash}:
+            raise DispatchManifestError(
+                "Conflicting duplicate dispatch_planned attempt for "
+                f"{manifest.idempotency_key!r}: payload hash mismatch"
+            )
+        return existing
+
+    to_state = _SUPPORTED_ENVELOPE_ROUTES.get((manifest.current_state, manifest.task_type))
+    log_dispatch_event(
+        conn,
+        production_order_id=manifest.production_order_id,
+        event_type="dispatch_planned",
+        from_state=manifest.current_state,
+        to_state=to_state,
+        owner_profile=manifest.current_owner_profile,
+        target_profile=manifest.target_profile,
+        kanban_card_id=manifest.target_child_card_id,
+        packet_id=manifest.idempotency_key,
+        result=f"dispatch_planned payload_hash={manifest_hash}",
+        next_action="manual_dispatch_ready",
+    )
+    created = _find_dispatch_event(
+        conn,
+        production_order_id=manifest.production_order_id,
+        event_type="dispatch_planned",
+        from_state=manifest.current_state,
+        target_profile=manifest.target_profile,
+        kanban_card_id=manifest.target_child_card_id,
+        packet_id=manifest.idempotency_key,
+    )
+    assert created is not None
+    return created
+
+
+def _ensure_dispatch_handoff_event(
+    conn: sqlite3.Connection,
+    handoff: ManualFallbackHandoff,
+) -> dict[str, Any]:
+    payload_hash = _payload_hash(handoff.to_dict())
+    existing = _find_dispatch_event(
+        conn,
+        production_order_id=handoff.production_order_id,
+        event_type="dispatch_handoff_created",
+        from_state=handoff.source_state,
+        target_profile=handoff.target_profile,
+        kanban_card_id=handoff.target_child_card_id,
+        packet_id=handoff.idempotency_key,
+    )
+    if existing is not None:
+        existing_hash = _event_payload_hash(existing.get("result"))
+        if existing_hash and existing_hash != payload_hash:
+            raise DispatchManifestError(
+                "Conflicting duplicate dispatch_handoff_created attempt for "
+                f"{handoff.idempotency_key!r}: payload hash mismatch"
+            )
+        return existing
+
+    log_dispatch_event(
+        conn,
+        production_order_id=handoff.production_order_id,
+        event_type="dispatch_handoff_created",
+        from_state=handoff.source_state,
+        to_state=handoff.expected_next_state,
+        owner_profile=handoff.target_profile,
+        target_profile=handoff.target_profile,
+        kanban_card_id=handoff.target_child_card_id,
+        packet_id=handoff.idempotency_key,
+        result=f"manual_fallback_created payload_hash={payload_hash}",
+        next_action="copy_prompt_to_profile",
+    )
+    created = _find_dispatch_event(
+        conn,
+        production_order_id=handoff.production_order_id,
+        event_type="dispatch_handoff_created",
+        from_state=handoff.source_state,
+        target_profile=handoff.target_profile,
+        kanban_card_id=handoff.target_child_card_id,
+        packet_id=handoff.idempotency_key,
+    )
+    assert created is not None
+    return created
+
+
+def _accepted_result_conflict(
+    conn: sqlite3.Connection,
+    envelope: ProfileTaskEnvelope,
+    validated_packet: dict[str, Any],
+) -> dict[str, Any] | None:
+    packet_hash = _payload_hash(validated_packet)
+    packet_id = _packet_id(validated_packet)
+    for frozen in _frozen_result_packets(conn, envelope.child_kanban_card_id):
+        if frozen.get("production_order_id") != envelope.production_order_id:
+            continue
+        if frozen.get("owner_profile") != envelope.target_profile:
+            continue
+        if frozen.get("source_state") != envelope.source_state:
+            continue
+        if _payload_hash(frozen) == packet_hash:
+            return frozen
+        frozen_packet_id = _packet_id(frozen)
+        if packet_id and frozen_packet_id and frozen_packet_id != packet_id:
+            raise DispatchManifestError(
+                "Conflicting accepted result packet already exists for dispatch route "
+                f"{envelope.idempotency_key!r}"
+            )
+        raise DispatchManifestError(
+            "Conflicting accepted result packet payload already exists for dispatch route "
+            f"{envelope.idempotency_key!r}"
+        )
+    return None
+
+
 def build_dispatch_manifest(
     conn: sqlite3.Connection,
     production_order_id: str,
@@ -195,7 +443,9 @@ def build_dispatch_manifest(
     """Load a production order from SQLite and build its dispatch manifest."""
     po = _load_production_order(conn, production_order_id)
     _validate_child_graph(conn, po)
-    return dispatch_manifest_for_order(po)
+    manifest = dispatch_manifest_for_order(po)
+    _ensure_dispatch_planned_event(conn, manifest)
+    return manifest
 
 
 def build_profile_task_envelope(
@@ -206,7 +456,9 @@ def build_profile_task_envelope(
     po = _load_production_order(conn, production_order_id)
     _validate_child_graph(conn, po)
     manifest = dispatch_manifest_for_order(po)
-    return profile_task_envelope_for_order(po, manifest)
+    envelope = profile_task_envelope_for_order(po, manifest)
+    _ensure_dispatch_planned_event(conn, manifest, envelope=envelope)
+    return envelope
 
 
 def build_manual_fallback_handoff(
@@ -215,7 +467,9 @@ def build_manual_fallback_handoff(
 ) -> ManualFallbackHandoff:
     """Load a production order from SQLite and build its manual fallback handoff."""
     envelope = build_profile_task_envelope(conn, production_order_id)
-    return manual_fallback_handoff_for_envelope(envelope)
+    handoff = manual_fallback_handoff_for_envelope(envelope)
+    _ensure_dispatch_handoff_event(conn, handoff)
+    return handoff
 
 
 def ingest_profile_result_packet(
@@ -249,6 +503,8 @@ def ingest_profile_result_packet(
         return ResultPacketIngestion(
             accepted=False,
             production_order_id=production_order_id,
+            dispatch_attempt=envelope.dispatch_attempt,
+            idempotency_key=envelope.idempotency_key,
             source_state=envelope.source_state,
             owner_profile=envelope.target_profile,
             target_profile=envelope.target_profile,
@@ -260,24 +516,28 @@ def ingest_profile_result_packet(
             next_action="manual_review_rejected_packet",
         ).to_dict()
 
-    freeze_result_on_card(conn, envelope.child_kanban_card_id, validated_packet)
+    existing_packet = _accepted_result_conflict(conn, envelope, validated_packet)
     packet_id = _packet_id(validated_packet)
-    log_dispatch_event(
-        conn,
-        production_order_id=production_order_id,
-        event_type="packet_validated",
-        from_state=envelope.source_state,
-        to_state=envelope.expected_next_state,
-        owner_profile=envelope.target_profile,
-        target_profile=envelope.target_profile,
-        kanban_card_id=envelope.child_kanban_card_id,
-        packet_id=packet_id,
-        result="accepted",
-        next_action=runtime_action,
-    )
+    if existing_packet is None:
+        freeze_result_on_card(conn, envelope.child_kanban_card_id, validated_packet)
+        log_dispatch_event(
+            conn,
+            production_order_id=production_order_id,
+            event_type="packet_validated",
+            from_state=envelope.source_state,
+            to_state=envelope.expected_next_state,
+            owner_profile=envelope.target_profile,
+            target_profile=envelope.target_profile,
+            kanban_card_id=envelope.child_kanban_card_id,
+            packet_id=packet_id,
+            result="accepted",
+            next_action=runtime_action,
+        )
     return ResultPacketIngestion(
         accepted=True,
         production_order_id=production_order_id,
+        dispatch_attempt=envelope.dispatch_attempt,
+        idempotency_key=envelope.idempotency_key,
         source_state=envelope.source_state,
         owner_profile=envelope.target_profile,
         target_profile=envelope.target_profile,
@@ -542,6 +802,8 @@ def manual_fallback_handoff_for_envelope(
     result_return_action = _manual_fallback_result_return_action(envelope, bridge_function)
     handoff = ManualFallbackHandoff(
         production_order_id=envelope.production_order_id,
+        dispatch_attempt=envelope.dispatch_attempt,
+        idempotency_key=envelope.idempotency_key,
         source_state=envelope.source_state,
         expected_next_state=envelope.expected_next_state,
         target_profile=envelope.target_profile,
@@ -600,6 +862,8 @@ def profile_task_envelope_for_order(
 
     envelope = ProfileTaskEnvelope(
         production_order_id=po.production_order_id,
+        dispatch_attempt=manifest.dispatch_attempt,
+        idempotency_key=manifest.idempotency_key,
         parent_kanban_card_id=po.parent_kanban_card_id,
         child_kanban_card_id=manifest.target_child_card_id,
         target_profile=manifest.target_profile,
@@ -797,10 +1061,21 @@ def _make_manifest(
     stop_conditions: tuple[str, ...],
 ) -> DispatchManifest:
     target_child_card_id = _child_card_id(po, target_child_index)
+    dispatch_attempt = _dispatch_attempt_for_state(po)
+    idempotency_key = _dispatch_idempotency_key(
+        production_order_id=po.production_order_id,
+        source_state=po.current_state,
+        target_profile=target_profile,
+        target_child_card_id=target_child_card_id,
+        task_type=task_type,
+        dispatch_attempt=dispatch_attempt,
+    )
     return DispatchManifest(
         production_order_id=po.production_order_id,
         current_state=po.current_state,
         current_owner_profile=po.current_owner_profile,
+        dispatch_attempt=dispatch_attempt,
+        idempotency_key=idempotency_key,
         target_profile=target_profile,
         target_child_card_id=target_child_card_id,
         task_type=task_type,

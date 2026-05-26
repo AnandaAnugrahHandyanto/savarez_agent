@@ -1839,7 +1839,7 @@ def test_dispatch_manifest_covers_supported_states_and_routes(conn, sample_brief
     )
 
 
-def test_build_dispatch_manifest_is_read_only_and_rejects_unsupported_states(conn, sample_brief):
+def test_build_dispatch_manifest_logs_once_without_mutating_cards_and_rejects_unsupported_states(conn, sample_brief):
     po = create_default_final_review_order(conn, sample_brief)
     before_total_changes = conn.total_changes
     before_tasks = conn.execute(
@@ -1863,12 +1863,25 @@ def test_build_dispatch_manifest_is_read_only_and_rejects_unsupported_states(con
         (po.production_order_id,),
     ).fetchone()["n"]
 
-    assert after_total_changes == before_total_changes
+    assert after_total_changes == before_total_changes + 1
     assert after_tasks == before_tasks
-    assert after_events == before_events
+    assert after_events == before_events + 1
     assert manifest.production_order_id == po.production_order_id
+    assert manifest.dispatch_attempt >= 1
+    assert manifest.idempotency_key == (
+        f"dispatch:{po.production_order_id}:{po.current_state}:{manifest.target_profile}:"
+        f"{manifest.target_child_card_id}:{manifest.task_type}:attempt-{manifest.dispatch_attempt}"
+    )
     assert manifest.manual_fallback["task_prompt_template"] is None
     assert manifest.to_dict()["stop_conditions"] == list(manifest.stop_conditions)
+
+    repeat_manifest = build_dispatch_manifest(conn, po.production_order_id)
+    repeated_events = conn.execute(
+        "SELECT COUNT(*) AS n FROM production_order_events WHERE production_order_id = ?",
+        (po.production_order_id,),
+    ).fetchone()["n"]
+    assert repeat_manifest == manifest
+    assert repeated_events == after_events
 
     with pytest.raises(DispatchManifestError, match="SPEC_REWORK"):
         dispatch_manifest_for_order(
@@ -1931,7 +1944,7 @@ def test_build_profile_task_envelope_rejects_multi_outcome_and_deferred_states(c
         )
 
 
-def test_build_profile_task_envelope_is_read_only(conn, sample_brief):
+def test_build_profile_task_envelope_is_idempotent_and_does_not_mutate_cards(conn, sample_brief):
     po = create_ready_for_dev_order(conn, sample_brief)
     before_total_changes = conn.total_changes
     before_tasks = conn.execute(
@@ -1955,10 +1968,18 @@ def test_build_profile_task_envelope_is_read_only(conn, sample_brief):
         (po.production_order_id,),
     ).fetchone()["n"]
 
-    assert after_total_changes == before_total_changes
+    assert after_total_changes == before_total_changes + 1
     assert after_tasks == before_tasks
-    assert after_events == before_events
+    assert after_events == before_events + 1
     assert envelope.production_order_id == po.production_order_id
+
+    repeat_envelope = build_profile_task_envelope(conn, po.production_order_id)
+    repeated_events = conn.execute(
+        "SELECT COUNT(*) AS n FROM production_order_events WHERE production_order_id = ?",
+        (po.production_order_id,),
+    ).fetchone()["n"]
+    assert repeat_envelope == envelope
+    assert repeated_events == after_events
 
 
 @pytest.mark.parametrize(
@@ -2064,7 +2085,7 @@ def test_build_manual_fallback_handoff_rejects_unsupported_or_deferred_states(co
 
 
 
-def test_build_manual_fallback_handoff_is_read_only(conn, sample_brief):
+def test_build_manual_fallback_handoff_is_idempotent_and_does_not_mutate_cards(conn, sample_brief):
     po = create_ready_for_dev_order(conn, sample_brief)
     before_total_changes = conn.total_changes
     before_tasks = conn.execute(
@@ -2088,10 +2109,18 @@ def test_build_manual_fallback_handoff_is_read_only(conn, sample_brief):
         (po.production_order_id,),
     ).fetchone()["n"]
 
-    assert after_total_changes == before_total_changes
+    assert after_total_changes == before_total_changes + 2
     assert after_tasks == before_tasks
-    assert after_events == before_events
+    assert after_events == before_events + 2
     assert handoff.production_order_id == po.production_order_id
+
+    repeat_handoff = build_manual_fallback_handoff(conn, po.production_order_id)
+    repeated_events = conn.execute(
+        "SELECT COUNT(*) AS n FROM production_order_events WHERE production_order_id = ?",
+        (po.production_order_id,),
+    ).fetchone()["n"]
+    assert repeat_handoff == handoff
+    assert repeated_events == after_events
 
 
 @pytest.mark.parametrize(
@@ -2174,7 +2203,7 @@ def test_ingest_profile_result_packet_accepts_freezes_and_logs_dispatch_event(
         "SELECT event_type, from_state, to_state, owner_profile FROM production_order_events WHERE production_order_id = ? ORDER BY id",
         (po.production_order_id,),
     ).fetchall()
-    assert len(after_event_rows) == len(before_event_rows) + 1
+    assert len(after_event_rows) == len(before_event_rows) + 2
     assert after_event_rows[-1]["event_type"] == "packet_validated"
     assert after.current_state == before.current_state
     assert after.current_owner_profile == before.current_owner_profile
@@ -2322,6 +2351,106 @@ def test_manual_fallback_dispatch_events_can_be_logged_without_mutating_cards(co
     assert after_card.body == before_card.body
     assert after_card.status == before_card.status
     assert after_card.current_state == before_card.current_state
+
+
+def test_profile_task_envelope_conflicting_duplicate_fails_loudly(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    envelope = build_profile_task_envelope(conn, po.production_order_id)
+    conn.execute(
+        """
+        UPDATE production_order_events
+        SET result = ?
+        WHERE production_order_id = ? AND event_type = 'dispatch_planned' AND packet_id = ?
+        """,
+        (
+            "dispatch_planned payload_hash=" + ("0" * 64),
+            po.production_order_id,
+            envelope.idempotency_key,
+        ),
+    )
+    conn.commit()
+
+    with pytest.raises(DispatchManifestError, match="payload hash mismatch"):
+        build_profile_task_envelope(conn, po.production_order_id)
+
+
+def test_manual_fallback_conflicting_duplicate_fails_loudly(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    handoff = build_manual_fallback_handoff(conn, po.production_order_id)
+    conn.execute(
+        """
+        UPDATE production_order_events
+        SET result = ?
+        WHERE production_order_id = ? AND event_type = 'dispatch_handoff_created' AND packet_id = ?
+        """,
+        (
+            "manual_fallback_created payload_hash=" + ("1" * 64),
+            po.production_order_id,
+            handoff.idempotency_key,
+        ),
+    )
+    conn.commit()
+
+    with pytest.raises(DispatchManifestError, match="payload hash mismatch"):
+        build_manual_fallback_handoff(conn, po.production_order_id)
+
+
+def test_ingest_profile_result_packet_is_idempotent_for_same_packet(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    packet = devos_build_packet(po.production_order_id)
+    packet["packet_id"] = "pkt-idempotent"
+
+    first = ingest_profile_result_packet(conn, po.production_order_id, packet)
+    events_after_first = list_dispatch_events(conn, po.production_order_id)
+    card_after_first = kb.get_task(conn, po.child_kanban_card_ids[2])
+    assert card_after_first is not None
+
+    second = ingest_profile_result_packet(conn, po.production_order_id, dict(packet))
+    events_after_second = list_dispatch_events(conn, po.production_order_id)
+    card_after_second = kb.get_task(conn, po.child_kanban_card_ids[2])
+    assert card_after_second is not None
+
+    assert second == first
+    assert len(events_after_second) == len(events_after_first)
+    assert card_after_second.body == card_after_first.body
+    assert card_after_second.body is not None
+    assert card_after_second.body.count("--- RESULT PACKET ---") == 1
+
+
+def test_ingest_profile_result_packet_rejects_conflicting_accepted_duplicate(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    packet = devos_build_packet(po.production_order_id)
+    packet["packet_id"] = "pkt-original"
+    ingest_profile_result_packet(conn, po.production_order_id, packet)
+
+    conflicting = devos_build_packet(po.production_order_id)
+    conflicting["packet_id"] = "pkt-conflict"
+    conflicting["summary"] = "Different accepted payload"
+
+    with pytest.raises(DispatchManifestError, match="Conflicting accepted result packet"):
+        ingest_profile_result_packet(conn, po.production_order_id, conflicting)
+
+
+def test_dispatch_lifecycle_restart_safety_reuses_existing_records(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    manifest = build_dispatch_manifest(conn, po.production_order_id)
+    envelope = build_profile_task_envelope(conn, po.production_order_id)
+    handoff = build_manual_fallback_handoff(conn, po.production_order_id)
+    before_events = list_dispatch_events(conn, po.production_order_id)
+
+    restarted = kb.connect()
+    try:
+        manifest_after_restart = build_dispatch_manifest(restarted, po.production_order_id)
+        envelope_after_restart = build_profile_task_envelope(restarted, po.production_order_id)
+        handoff_after_restart = build_manual_fallback_handoff(restarted, po.production_order_id)
+        after_events = list_dispatch_events(restarted, po.production_order_id)
+    finally:
+        restarted.close()
+
+    assert manifest_after_restart == manifest
+    assert envelope_after_restart == envelope
+    assert handoff_after_restart == handoff
+    assert after_events == before_events
 
 
 
