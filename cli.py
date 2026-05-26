@@ -8097,13 +8097,27 @@ class HermesCLI:
             self._force_full_redraw()
             _cprint(f"  {_DIM}✓ UI redrawn{_RST}")
         elif canonical == "clear":
-            if self._confirm_destructive_slash(
+            confirm_result = self._confirm_destructive_slash(
                 "clear",
                 "This clears the screen and starts a new session.\n"
                 "The current conversation history will be discarded.",
-            ) is None:
+            )
+            if confirm_result is None:
                 return
-            self.new_session(silent=True)
+            # Wrap new_session with timeout protection (Issue #32383)
+            import concurrent.futures
+            _executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            try:
+                future = _executor.submit(self.new_session, silent=True)
+                future.result(timeout=10)
+            except concurrent.futures.TimeoutError:
+                _cprint(f"  ⚠️ new_session timed out - forcing session reset")
+                self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+                self.conversation_history = []
+            except Exception as e:
+                _cprint(f"  ⚠️ new_session error: {e}")
+            finally:
+                _executor.shutdown(wait=False)
             _clear_output_history()
             # Clear terminal screen.  Inside the TUI, Rich's console.clear()
             # goes through patch_stdout's StdoutProxy which swallows the
@@ -8227,13 +8241,31 @@ class HermesCLI:
         elif canonical == "new":
             parts = cmd_original.split(maxsplit=1)
             title = parts[1].strip() if len(parts) > 1 else None
-            if self._confirm_destructive_slash(
+            confirm_result = self._confirm_destructive_slash(
                 "new",
                 "This starts a fresh session.\n"
                 "The current conversation history will be discarded.",
-            ) is None:
+            )
+            if confirm_result is None:
                 return
-            self.new_session(title=title)
+            # Wrap new_session with timeout protection to prevent hangs
+            # Issue #32383: /new freezes permanently on Linux
+            import concurrent.futures
+            _executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            try:
+                future = _executor.submit(self.new_session, silent=False, title=title)
+                future.result(timeout=10)
+            except concurrent.futures.TimeoutError:
+                _cprint(f"  ⚠️ new_session timed out after 10s - forcing session reset")
+                # Force immediate session state reset without waiting
+                self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+                self.conversation_history = []
+                # Don't wait for hung thread - let it die with the process
+            except Exception as e:
+                _cprint(f"  ⚠️ new_session error: {e}")
+            finally:
+                # shutdown without waiting to avoid blocking
+                _executor.shutdown(wait=False)
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
         elif canonical == "sessions":
