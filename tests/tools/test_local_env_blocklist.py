@@ -111,6 +111,30 @@ class TestProviderEnvBlocklist:
         for var in extra_provider_vars:
             assert var not in result_env, f"{var} leaked into subprocess env"
 
+    def test_aws_credential_vars_are_stripped(self):
+        """AWS SDK credentials must be stripped from subprocess env.
+
+        Regression for #32314: bedrock uses ``auth_type='aws_sdk'`` so its
+        credentials live in standard AWS env vars (``AWS_ACCESS_KEY_ID`` etc.)
+        rather than a Hermes-style ``*_API_KEY`` variable. Before #32314 the
+        ``bedrock`` ``ProviderConfig`` had an empty ``api_key_env_vars`` tuple
+        and these variables leaked into terminal/execute_code subprocesses.
+        """
+        aws_vars = {
+            "AWS_BEARER_TOKEN_BEDROCK": "bedrock-bearer-secret",
+            "AWS_ACCESS_KEY_ID": "AKIA-fake",
+            "AWS_SECRET_ACCESS_KEY": "fake-secret",
+            "AWS_SESSION_TOKEN": "fake-session",
+            "AWS_PROFILE": "prod",
+            "AWS_ROLE_ARN": "arn:aws:iam::123:role/x",
+            "AWS_WEB_IDENTITY_TOKEN_FILE": "/tmp/token",
+            "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI": "/v2/credentials/abc",
+        }
+        result_env = _run_with_env(extra_os_env=aws_vars)
+
+        for var in aws_vars:
+            assert var not in result_env, f"{var} leaked into subprocess env"
+
     def test_tool_and_gateway_vars_are_stripped(self):
         """Tool and gateway secrets/config must not leak into subprocess env."""
         leaked_vars = {
@@ -212,6 +236,21 @@ class TestBlocklistCoverage:
                     f"Registry base_url_env_var {pconfig.base_url_env_var} "
                     f"(provider={pconfig.id}) missing from blocklist"
                 )
+
+    def test_aws_sdk_provider_vars_covered(self):
+        """Bedrock (``auth_type='aws_sdk'``) must contribute AWS env vars to
+        the blocklist. Regression for #32314 — empty tuple let creds leak."""
+        aws_must_block = {
+            "AWS_BEARER_TOKEN_BEDROCK",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "AWS_PROFILE",
+            "AWS_ROLE_ARN",
+            "AWS_WEB_IDENTITY_TOKEN_FILE",
+            "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        }
+        assert aws_must_block.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
 
     def test_extra_auth_vars_covered(self):
         """Non-registry auth vars (ANTHROPIC_TOKEN, CLAUDE_CODE_OAUTH_TOKEN)

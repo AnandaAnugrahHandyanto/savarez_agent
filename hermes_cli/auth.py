@@ -444,7 +444,22 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="AWS Bedrock",
         auth_type="aws_sdk",
         inference_base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
-        api_key_env_vars=(),
+        # Listed here so tools/environments/local.py's subprocess blocklist
+        # strips them — otherwise AWS creds leak into terminal/execute_code.
+        # Mirrors agent/bedrock_adapter.py::_AWS_CREDENTIAL_ENV_VARS plus the
+        # paired secret/session vars boto3 also reads via its default chain.
+        api_key_env_vars=(
+            "AWS_BEARER_TOKEN_BEDROCK",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "AWS_PROFILE",
+            "AWS_ROLE_ARN",
+            "AWS_WEB_IDENTITY_TOKEN_FILE",
+            "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+            "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+        ),
         base_url_env_var="BEDROCK_BASE_URL",
     ),
     "azure-foundry": ProviderConfig(
