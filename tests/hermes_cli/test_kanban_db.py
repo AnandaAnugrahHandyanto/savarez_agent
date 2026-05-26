@@ -2796,6 +2796,49 @@ def test_dispatch_max_in_progress_none_is_unlimited(kanban_home, all_assignees_s
 
     assert len(spawns) == 4, f"expected 4 spawns (unlimited), got {len(spawns)}"
 
+
+def test_dispatch_max_and_max_in_progress_with_running_uses_remaining_slots(
+    kanban_home, all_assignees_spawnable
+):
+    """A per-pass cap must not double-count existing running tasks."""
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        running = kb.create_task(conn, title="already running", assignee="alice")
+        kb.claim_task(conn, running)
+        kb.create_task(conn, title="ready a", assignee="bob")
+        kb.create_task(conn, title="ready b", assignee="bob")
+
+        kb.dispatch_once(conn, spawn_fn=fake_spawn, max_spawn=3, max_in_progress=2)
+
+    assert len(spawns) == 1, f"expected 1 remaining slot, got {len(spawns)}"
+
+
+def test_dispatch_max_in_progress_applies_to_review_only_queue(
+    kanban_home, all_assignees_spawnable
+):
+    """Review workers count against max_in_progress even with no ready tasks."""
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        running = kb.create_task(conn, title="already running", assignee="alice")
+        kb.claim_task(conn, running)
+        r1 = kb.create_task(conn, title="review a", assignee="pr-reviewer")
+        r2 = kb.create_task(conn, title="review b", assignee="pr-reviewer")
+        _set_task_status(conn, r1, "review")
+        _set_task_status(conn, r2, "review")
+
+        kb.dispatch_once(conn, spawn_fn=fake_spawn, max_in_progress=1)
+
+    assert spawns == []
+
+
 # Review column dispatch
 # ---------------------------------------------------------------------------
 

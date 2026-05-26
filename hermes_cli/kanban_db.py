@@ -5183,7 +5183,7 @@ def dispatch_once(
     # they sit in status='running' until the worker calls
     # kanban_complete/kanban_block (or the dispatcher TTL-reclaims them).
     running_count = 0
-    if max_spawn is not None:
+    if max_spawn is not None or max_in_progress is not None:
         running_count = int(
             conn.execute(
                 "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
@@ -5199,16 +5199,17 @@ def dispatch_once(
     # tasks, skip spawning this tick so slow workers (local LLMs,
     # resource-constrained hosts) can finish what they have before more tasks
     # pile up and time out.
-    if max_in_progress is not None and ready_rows:
-        in_progress = conn.execute(
-            "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
-        ).fetchone()[0]
+    if max_in_progress is not None:
+        in_progress = running_count
         if in_progress >= max_in_progress:
             return result
-        # Only spawn enough to reach the cap, respecting max_spawn too.
+        # Only spawn enough to reach the cap, respecting max_spawn too. After
+        # this point max_spawn means remaining spawn slots for this pass, so do
+        # not add the already-running count again in the loop guard.
         remaining = max_in_progress - in_progress
         if max_spawn is None or max_spawn > remaining:
             max_spawn = remaining
+        running_count = 0
     spawned = 0
     for row in ready_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
@@ -5262,6 +5263,7 @@ def dispatch_once(
             continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
+            spawned += 1
             continue
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
@@ -5341,6 +5343,7 @@ def dispatch_once(
             continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
+            spawned += 1
             continue
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:

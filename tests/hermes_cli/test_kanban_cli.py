@@ -173,6 +173,52 @@ def test_run_slash_dispatch_dry_run_counts(kanban_home):
     assert "Spawned:" in out
 
 
+def test_run_slash_dispatch_dry_run_respects_max_in_progress(kanban_home, all_assignees_spawnable):
+    """CLI dispatch can test concurrency caps without mutating config."""
+    kc.run_slash("create 'already running' --assignee alice")
+    with kb.connect() as conn:
+        running = kb.list_tasks(conn)[0]
+        kb.claim_task(conn, running.id, claimer="test-worker")
+
+    kc.run_slash("create 'ready a' --assignee alice")
+    kc.run_slash("create 'ready b' --assignee bob")
+
+    capped = json.loads(kc.run_slash("dispatch --dry-run --max-in-progress 1 --json"))
+    assert capped["spawned"] == []
+
+    one_slot = json.loads(kc.run_slash("dispatch --dry-run --max-in-progress 2 --json"))
+    assert len(one_slot["spawned"]) == 1
+
+
+def test_run_slash_dispatch_max_and_max_in_progress_use_tighter_cap(kanban_home, all_assignees_spawnable):
+    """Per-pass and total-running caps compose deterministically."""
+    for title in ["ready a", "ready b", "ready c"]:
+        kc.run_slash(f"create '{title}' --assignee alice")
+
+    capped = json.loads(kc.run_slash("dispatch --dry-run --max 3 --max-in-progress 2 --json"))
+    assert len(capped["spawned"]) == 2
+
+    with kb.connect() as conn:
+        running = kb.list_tasks(conn)[0]
+        kb.claim_task(conn, running.id, claimer="test-worker")
+
+    one_slot = json.loads(kc.run_slash("dispatch --dry-run --max 3 --max-in-progress 2 --json"))
+    assert len(one_slot["spawned"]) == 1
+
+
+def test_run_slash_dispatch_max_in_progress_blocks_review_only_queue(kanban_home, all_assignees_spawnable):
+    kc.run_slash("create 'already running' --assignee alice")
+    with kb.connect() as conn:
+        running = kb.list_tasks(conn)[0]
+        kb.claim_task(conn, running.id, claimer="test-worker")
+        r1 = kb.create_task(conn, title="review a", assignee="pr-reviewer")
+        r2 = kb.create_task(conn, title="review b", assignee="pr-reviewer")
+        conn.execute("UPDATE tasks SET status = 'review' WHERE id IN (?, ?)", (r1, r2))
+
+    capped = json.loads(kc.run_slash("dispatch --dry-run --max-in-progress 1 --json"))
+    assert capped["spawned"] == []
+
+
 def test_run_slash_context_output_format(kanban_home):
     out = kc.run_slash("create 'tech spec' --assignee alice --body 'write an RFC'")
     import re
