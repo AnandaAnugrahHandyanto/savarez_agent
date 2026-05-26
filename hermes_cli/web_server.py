@@ -11,6 +11,7 @@ Usage:
 
 import asyncio
 import hmac
+import ipaddress
 import importlib.util
 import json
 import logging
@@ -82,10 +83,12 @@ app = FastAPI(title="Hermes Agent", version=__version__)
 
 # ---------------------------------------------------------------------------
 # Session token for protecting sensitive endpoints (reveal).
-# Generated fresh on every server start — dies when the process exits.
-# Injected into the SPA HTML so only the legitimate web UI can use it.
+# By default this is generated fresh on every server start. Local container
+# deployments may set HERMES_DASHBOARD_SESSION_TOKEN so a browser tab can
+# reconnect after a supervised dashboard restart without receiving a stale
+# WebSocket token.
 # ---------------------------------------------------------------------------
-_SESSION_TOKEN = secrets.token_urlsafe(32)
+_SESSION_TOKEN = os.getenv("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 
 # In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
@@ -3393,7 +3396,15 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     client_host = ws.client.host if ws.client else ""
     if not client_host:
         return True
-    return client_host in _LOOPBACK_HOSTS
+    if client_host in _LOOPBACK_HOSTS:
+        return True
+    if env_var_enabled("HERMES_DASHBOARD_ALLOW_DOCKER_BRIDGE", False):
+        try:
+            client_ip = ipaddress.ip_address(client_host)
+        except ValueError:
+            return False
+        return client_ip.is_private or client_ip.is_loopback
+    return False
 
 
 def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:
