@@ -191,6 +191,16 @@ class TestWebServerEndpoints:
         assert resp.json()["gateway_state"] == "startup_failed"
         assert resp.json()["gateway_platforms"] == {}
 
+    def test_get_ops_social_platform_status_defaults(self):
+        resp = self.client.get("/api/ops/social-platform-status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["mode"] == "local_read_only"
+        platforms = {item["platform"]: item for item in data["platforms"]}
+        assert platforms["YouTube"]["published"] == "Needs sync"
+        assert platforms["TikTok"]["status"] == "blocked"
+
     def test_get_config_schema(self):
         resp = self.client.get("/api/config/schema")
         assert resp.status_code == 200

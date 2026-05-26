@@ -32,7 +32,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { H2, Typography } from "@/components/NouiTypography";
 import { Card, CardContent } from "@/components/ui/card";
 import { api } from "@/lib/api";
-import type { CronJob, OpsApprovalSummary, SessionInfo, StatusResponse } from "@/lib/api";
+import type { CronJob, OpsApprovalSummary, OpsSocialPlatformStatus, OpsSocialPlatformStatusItem, SessionInfo, StatusResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { usePageHeader } from "@/contexts/usePageHeader";
 
@@ -289,42 +289,42 @@ const OPS_BOUNDARY_STEPS = [
   { label: "Stop", detail: "Restarts/sends/deletes/cron/payment gated" },
 ];
 
-const SOCIAL_PLATFORM_STATUS = [
+const SOCIAL_PLATFORM_STATUS: OpsSocialPlatformStatusItem[] = [
   {
     platform: "YouTube",
     published: "Needs sync",
     scheduled: "Needs sync",
-    issuesPrivate: "Queue reset / private check needed",
-    readiness: "Canonical upload engine, but live counts require YouTube API sync.",
-    source: "AI Ops Brain notes show old queue reset; do not trust stale 2026-05-23 counts.",
-    tone: "border-red-400/30 bg-red-500/10 text-red-100",
+    issues_private: "Queue reset / private check needed",
+    readiness: "Canonical upload engine, but live counts require a read-only sync.",
+    source: "Default dashboard status; no local sync file found.",
+    status: "needs_sync",
   },
   {
     platform: "Facebook",
     published: "Needs sync",
     scheduled: "Needs sync",
-    issuesPrivate: "Legacy old-style queue blocked",
+    issues_private: "Legacy old-style queue blocked",
     readiness: "Native Reels path exists; use only approved current-quality packages.",
-    source: "Local status notes; live Graph count should be a separate gated sync.",
-    tone: "border-blue-400/30 bg-blue-500/10 text-blue-100",
+    source: "Default dashboard status; no local sync file found.",
+    status: "needs_sync",
   },
   {
     platform: "Instagram",
     published: "Needs sync",
     scheduled: "0 known scheduler",
-    issuesPrivate: "Immediate publish only / API readiness check",
-    readiness: "Do not call scheduling ready until real scheduler and token check exist.",
-    source: "Ops notes: IG publishing path was separate from future scheduling support.",
-    tone: "border-pink-400/30 bg-pink-500/10 text-pink-100",
+    issues_private: "Immediate publish only / API readiness check",
+    readiness: "Do not call scheduling ready until a real scheduler and token check exist.",
+    source: "Default dashboard status; no local sync file found.",
+    status: "needs_sync",
   },
   {
     platform: "TikTok",
-    published: "0 verified",
-    scheduled: "0 verified",
-    issuesPrivate: "Onboarding/API not ready",
-    readiness: "Format support is not posting readiness; OAuth/app review still gated.",
-    source: "Guardrail status from social-video ops notes.",
-    tone: "border-slate-400/30 bg-slate-500/10 text-slate-100",
+    published: "0",
+    scheduled: "0",
+    issues_private: "Onboarding/API not ready",
+    readiness: "Format support is not posting readiness; OAuth/app review remains gated.",
+    source: "Default dashboard status; no local sync file found.",
+    status: "blocked",
   },
 ];
 
@@ -347,6 +347,17 @@ function projectHealthTone(health?: string): string {
   if (value.includes("gate") || value.includes("review")) return "border-amber-400/40 text-amber-200";
   if (value.includes("dormant")) return "border-slate-400/40 text-slate-200";
   return "border-cyan-400/30 text-cyan-200";
+}
+
+function socialPlatformTone(item: OpsSocialPlatformStatusItem): string {
+  const platform = item.platform.toLowerCase();
+  const status = item.status.toLowerCase();
+  if (status.includes("blocked")) return "border-slate-400/30 bg-slate-500/10 text-slate-100";
+  if (platform.includes("youtube")) return "border-red-400/30 bg-red-500/10 text-red-100";
+  if (platform.includes("facebook")) return "border-blue-400/30 bg-blue-500/10 text-blue-100";
+  if (platform.includes("instagram")) return "border-pink-400/30 bg-pink-500/10 text-pink-100";
+  if (platform.includes("tiktok")) return "border-slate-400/30 bg-slate-500/10 text-slate-100";
+  return "border-cyan-400/30 bg-cyan-500/10 text-cyan-100";
 }
 
 function getJobTitle(job: CronJob): string {
@@ -722,6 +733,7 @@ export default function MissionControlPage() {
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [approvalSummary, setApprovalSummary] = useState<OpsApprovalSummary | null>(null);
+  const [socialStatus, setSocialStatus] = useState<OpsSocialPlatformStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { setEnd } = usePageHeader();
 
@@ -732,11 +744,13 @@ export default function MissionControlPage() {
       api.getCronJobs("all"),
       api.getSessions(8),
       api.getOpsApprovalSummary(),
-    ]).then(([statusResult, jobsResult, sessionsResult, approvalSummaryResult]) => {
+      api.getOpsSocialPlatformStatus(),
+    ]).then(([statusResult, jobsResult, sessionsResult, approvalSummaryResult, socialStatusResult]) => {
       if (statusResult.status === "fulfilled") setStatus(statusResult.value);
       if (jobsResult.status === "fulfilled") setJobs(jobsResult.value);
       if (sessionsResult.status === "fulfilled") setSessions(sessionsResult.value.sessions);
       if (approvalSummaryResult.status === "fulfilled") setApprovalSummary(approvalSummaryResult.value);
+      if (socialStatusResult.status === "fulfilled") setSocialStatus(socialStatusResult.value);
       const failures = [statusResult, jobsResult, sessionsResult, approvalSummaryResult].filter((r) => r.status === "rejected");
       setError(failures.length ? "Some live status panels could not refresh." : null);
     });
@@ -766,6 +780,7 @@ export default function MissionControlPage() {
     [jobs],
   );
   const recentSessions = useMemo(() => sessions.slice(0, 5), [sessions]);
+  const socialPlatforms = socialStatus?.platforms?.length ? socialStatus.platforms : SOCIAL_PLATFORM_STATUS;
 
   return (
     <main className="h-full overflow-auto bg-[radial-gradient(circle_at_50%_-10%,rgba(16,185,129,0.18),transparent_34%),linear-gradient(180deg,#031111_0%,#061616_55%,#030808_100%)] px-4 py-5 lg:px-6">
@@ -930,11 +945,19 @@ export default function MissionControlPage() {
                 </Badge>
               </div>
               <Typography className="text-sm leading-6 text-text-secondary">
-                Recommended shape: show counts here, but source them from a separate read-only sync. Until that exists, unknown counts stay labeled instead of guessed.
+                Counts come from a local read-only dashboard status snapshot. Until a sync writes that snapshot, unknown counts stay labeled instead of guessed.
               </Typography>
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                {SOCIAL_PLATFORM_STATUS.map((item) => (
-                  <div key={item.platform} className={cn("rounded-xl border p-4", item.tone)}>
+              {socialStatus?.warning && (
+                <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 p-3 text-sm leading-6 text-amber-100">
+                  {socialStatus.warning}
+                </div>
+              )}
+              <div
+                className="grid gap-3"
+                style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 14rem), 1fr))" }}
+              >
+                {socialPlatforms.map((item) => (
+                  <div key={item.platform} className={cn("rounded-xl border p-4", socialPlatformTone(item))}>
                     <div className="text-base font-semibold text-text-primary">{item.platform}</div>
                     <div className="mt-3 grid gap-2 text-sm">
                       <div className="flex items-center justify-between gap-3">
@@ -947,7 +970,7 @@ export default function MissionControlPage() {
                       </div>
                       <div className="border-t border-white/10 pt-2">
                         <div className="text-xs uppercase tracking-[0.08em] text-text-secondary">Issues / private</div>
-                        <div className="mt-1 text-sm leading-5 text-text-primary">{item.issuesPrivate}</div>
+                        <div className="mt-1 text-sm leading-5 text-text-primary">{item.issues_private}</div>
                       </div>
                     </div>
                     <div className="mt-3 text-xs leading-5 text-text-secondary">{item.readiness}</div>

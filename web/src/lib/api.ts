@@ -168,6 +168,7 @@ export const api = {
   },
   getOpsApprovalSummary: () => fetchJSON<OpsApprovalSummary>("/api/ops/approvals/summary"),
   getOpsActionRegistryStatus: () => fetchJSON<OpsActionRegistryStatus>("/api/ops/actions"),
+  getOpsSocialPlatformStatus: () => fetchJSON<OpsSocialPlatformStatus>("/api/ops/social-platform-status"),
   dryRunOpsApprovalAction: (id: string, actionName: string) =>
     fetchJSON<OpsActionDryRun>(`/api/ops/approvals/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionName)}/dry-run`, {
       method: "POST",
@@ -697,6 +698,27 @@ export interface OpsActionRegistryStatus {
   }>;
   blocked_action_classes: string[];
   message: string;
+}
+
+export interface OpsSocialPlatformStatusItem {
+  platform: string;
+  published: string;
+  scheduled: string;
+  issues_private: string;
+  readiness: string;
+  source: string;
+  status: string;
+  last_checked_at?: string | null;
+}
+
+export interface OpsSocialPlatformStatus {
+  ok: boolean;
+  mode: "local_read_only";
+  path: string;
+  updated_at?: string | null;
+  warning?: string | null;
+  source?: string | null;
+  platforms: OpsSocialPlatformStatusItem[];
 }
 
 export interface OpsActionExecute {

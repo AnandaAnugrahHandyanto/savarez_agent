@@ -2671,6 +2671,16 @@ async def get_ops_action_registry_status():
         raise _approval_error(exc) from exc
 
 
+@app.get("/api/ops/social-platform-status")
+async def get_ops_social_platform_status():
+    try:
+        from hermes_cli.ops_social_status import read_social_platform_status
+
+        return read_social_platform_status()
+    except Exception as exc:
+        raise _approval_error(exc) from exc
+
+
 @app.post("/api/ops/approvals/{approval_id}/actions/{action_name}/dry-run")
 async def dry_run_ops_approval_action(approval_id: str, action_name: str):
     try:
