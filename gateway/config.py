@@ -792,9 +792,13 @@ def load_gateway_config() -> GatewayConfig:
                         **existing.get("extra", {}),
                         **plat_block.get("extra", {}),
                     }
-                    merged_extra.update(
-                        _dingtalk_extra_from_platform_block(plat_name, plat_block)
-                    )
+                    # Backfill DingTalk compatibility keys from the platform
+                    # block without overriding explicitly configured
+                    # platforms.<name>.extra values.
+                    for key, value in _dingtalk_extra_from_platform_block(
+                        plat_name, plat_block
+                    ).items():
+                        merged_extra.setdefault(key, value)
                     if plat_name == Platform.SLACK.value and "enabled" in plat_block:
                         merged_extra["_enabled_explicit"] = True
                     merged = {**existing, **plat_block}
