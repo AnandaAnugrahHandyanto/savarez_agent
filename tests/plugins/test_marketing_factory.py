@@ -1953,3 +1953,319 @@ def test_publish_scheduled_audit_falls_back_when_xconnector_missing_creds(isolat
 
     final_draft = store.load()["drafts"][draft["id"]]
     assert final_draft["status"] == "dry_run_posted"
+
+
+# ---------------------------------------------------------------------------
+# InstagramConnector tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def ig_creds(monkeypatch):
+    monkeypatch.setenv("IG_USER_ID", "ig_user_xyz")
+    monkeypatch.setenv("IG_ACCESS_TOKEN", "ig_token_xyz")
+
+
+def test_ig_connector_missing_creds_raises(isolate_home, monkeypatch):
+    from plugins.marketing_factory.connectors.base import ConnectorError
+    from plugins.marketing_factory.connectors.instagram_stub import InstagramConnector
+
+    for var in ("IG_USER_ID", "IG_ACCESS_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    with pytest.raises(ConnectorError) as exc_info:
+        InstagramConnector().publish({
+            "id": "d", "body": "hi", "channel": "instagram",
+            "images": [{"url": "https://example.com/pet.jpg"}],
+        })
+    assert "missing env vars" in str(exc_info.value)
+
+
+def test_ig_connector_rejects_text_only_draft(isolate_home, ig_creds):
+    """IG publishing is image-required. A draft with no images must raise so
+    PublisherAgent audit-falls-back rather than calling the API with nothing
+    to attach."""
+    from plugins.marketing_factory.connectors.base import ConnectorError
+    from plugins.marketing_factory.connectors.instagram_stub import InstagramConnector
+
+    with pytest.raises(ConnectorError) as exc_info:
+        InstagramConnector().publish({"id": "d", "body": "caption", "channel": "instagram", "images": []})
+    assert "image" in str(exc_info.value).lower()
+
+
+def test_ig_connector_two_step_publish_succeeds(isolate_home, ig_creds, monkeypatch):
+    """Successful container creation → media_publish returns posted=True with
+    the IG media id in the payload."""
+    import requests as _real_requests
+    from plugins.marketing_factory.connectors.instagram_stub import InstagramConnector
+
+    call_log = []
+
+    def fake_post(url, **kwargs):
+        call_log.append(url)
+        if url.endswith("/media"):
+            return _FakeResponse(status_code=200, json_data={"id": "container_id_1"})
+        if url.endswith("/media_publish"):
+            return _FakeResponse(status_code=200, json_data={"id": "ig_media_42"})
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    monkeypatch.setattr(_real_requests, "post", fake_post)
+
+    result = InstagramConnector().publish({
+        "id": "d", "body": "look at this pup",
+        "channel": "instagram",
+        "images": [{"url": "https://example.com/pet.jpg"}],
+    })
+
+    assert result["posted"] is True
+    assert result["payload"]["media_id"] == "ig_media_42"
+    assert result["payload"]["container_id"] == "container_id_1"
+    assert len(call_log) == 2
+    assert call_log[0].endswith("/media")
+    assert call_log[1].endswith("/media_publish")
+
+
+def test_ig_connector_container_failure_raises(isolate_home, ig_creds, monkeypatch):
+    import requests as _real_requests
+    from plugins.marketing_factory.connectors.base import ConnectorError
+    from plugins.marketing_factory.connectors.instagram_stub import InstagramConnector
+
+    def fake_post(url, **kwargs):
+        return _FakeResponse(status_code=400, text='{"error":"image fetch failed"}')
+
+    monkeypatch.setattr(_real_requests, "post", fake_post)
+
+    with pytest.raises(ConnectorError) as exc_info:
+        InstagramConnector().publish({
+            "id": "d", "body": "hi", "channel": "instagram",
+            "images": [{"url": "https://example.com/pet.jpg"}],
+        })
+    assert "container creation returned 400" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# LinkedInConnector tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def linkedin_creds(monkeypatch):
+    monkeypatch.setenv("LINKEDIN_ACCESS_TOKEN", "li_token_xyz")
+    monkeypatch.setenv("LINKEDIN_AUTHOR_URN", "urn:li:organization:1234567")
+
+
+def test_linkedin_connector_missing_creds_raises(isolate_home, monkeypatch):
+    from plugins.marketing_factory.connectors.base import ConnectorError
+    from plugins.marketing_factory.connectors.linkedin_stub import LinkedInConnector
+
+    for var in ("LINKEDIN_ACCESS_TOKEN", "LINKEDIN_AUTHOR_URN"):
+        monkeypatch.delenv(var, raising=False)
+    with pytest.raises(ConnectorError) as exc_info:
+        LinkedInConnector().publish({"id": "d", "body": "hi", "channel": "linkedin"})
+    assert "missing env vars" in str(exc_info.value)
+
+
+def test_linkedin_text_only_post_succeeds(isolate_home, linkedin_creds, monkeypatch):
+    """No images → shareMediaCategory=NONE, single ugcPosts call."""
+    import requests as _real_requests
+    from plugins.marketing_factory.connectors.linkedin_stub import LinkedInConnector
+
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        captured["json"] = kwargs.get("json")
+        return _FakeResponse(status_code=201, json_data={"id": "urn:li:share:7239"})
+
+    monkeypatch.setattr(_real_requests, "post", fake_post)
+
+    result = LinkedInConnector().publish({
+        "id": "d", "body": "great post about pupular",
+        "channel": "linkedin", "images": [],
+    })
+
+    assert result["posted"] is True
+    assert result["payload"]["post_urn"] == "urn:li:share:7239"
+    assert captured["url"] == "https://api.linkedin.com/v2/ugcPosts"
+    content = captured["json"]["specificContent"]["com.linkedin.ugc.ShareContent"]
+    assert content["shareMediaCategory"] == "NONE"
+    assert content["media"] == []
+    assert content["shareCommentary"]["text"] == "great post about pupular"
+
+
+def test_linkedin_image_upload_three_step_succeeds(isolate_home, linkedin_creds, monkeypatch):
+    """Image path: registerUpload → PUT binary → POST ugcPosts with IMAGE category."""
+    import requests as _real_requests
+    from plugins.marketing_factory.connectors.linkedin_stub import LinkedInConnector
+
+    asset_urn = "urn:li:digitalmediaAsset:fake42"
+    upload_url = "https://upload.linkedin.example/abc"
+    call_log = []
+
+    def fake_get(url, **kwargs):
+        call_log.append(("GET", url))
+        return _FakeResponse(status_code=200, content=b"fake-binary")
+
+    def fake_post(url, **kwargs):
+        call_log.append(("POST", url))
+        if "registerUpload" in url:
+            return _FakeResponse(status_code=200, json_data={
+                "value": {
+                    "asset": asset_urn,
+                    "uploadMechanism": {
+                        "com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest": {
+                            "uploadUrl": upload_url
+                        }
+                    }
+                }
+            })
+        # /v2/ugcPosts call — verify media block attached
+        json_payload = kwargs.get("json") or {}
+        share = json_payload["specificContent"]["com.linkedin.ugc.ShareContent"]
+        assert share["shareMediaCategory"] == "IMAGE"
+        assert share["media"] == [{"status": "READY", "media": asset_urn}]
+        return _FakeResponse(status_code=201, json_data={"id": "urn:li:share:99"})
+
+    def fake_put(url, **kwargs):
+        call_log.append(("PUT", url))
+        return _FakeResponse(status_code=201)
+
+    monkeypatch.setattr(_real_requests, "get", fake_get)
+    monkeypatch.setattr(_real_requests, "post", fake_post)
+    monkeypatch.setattr(_real_requests, "put", fake_put)
+
+    result = LinkedInConnector().publish({
+        "id": "d", "body": "with image",
+        "channel": "linkedin",
+        "images": [{"url": "https://example.com/img.jpg"}],
+    })
+
+    assert result["posted"] is True
+    assert result["payload"]["media_assets"] == [asset_urn]
+    # Order should be: GET image, POST registerUpload, PUT binary, POST ugcPosts
+    assert call_log[0][0] == "GET"
+    assert "registerUpload" in call_log[1][1]
+    assert call_log[2] == ("PUT", upload_url)
+    assert call_log[3][1] == "https://api.linkedin.com/v2/ugcPosts"
+
+
+# ---------------------------------------------------------------------------
+# TikTokConnector tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def tiktok_creds(monkeypatch):
+    monkeypatch.setenv("TIKTOK_ACCESS_TOKEN", "tt_token_xyz")
+
+
+def test_tiktok_connector_missing_creds_raises(isolate_home, monkeypatch):
+    from plugins.marketing_factory.connectors.base import ConnectorError
+    from plugins.marketing_factory.connectors.tiktok_stub import TikTokConnector
+
+    monkeypatch.delenv("TIKTOK_ACCESS_TOKEN", raising=False)
+    with pytest.raises(ConnectorError) as exc_info:
+        TikTokConnector().publish({
+            "id": "d", "body": "hi", "channel": "tiktok",
+            "images": [{"url": "https://example.com/pet.jpg"}],
+        })
+    assert "missing env vars" in str(exc_info.value)
+
+
+def test_tiktok_connector_rejects_imageless_draft(isolate_home, tiktok_creds):
+    from plugins.marketing_factory.connectors.base import ConnectorError
+    from plugins.marketing_factory.connectors.tiktok_stub import TikTokConnector
+
+    with pytest.raises(ConnectorError) as exc_info:
+        TikTokConnector().publish({"id": "d", "body": "caption", "channel": "tiktok", "images": []})
+    assert "image" in str(exc_info.value).lower()
+
+
+def test_tiktok_connector_inbox_mode_returns_publish_id(isolate_home, tiktok_creds, monkeypatch):
+    """Successful publish/init returns publish_id but posted=False because the
+    user must finalize the post manually in the TikTok app (MEDIA_UPLOAD mode)."""
+    import requests as _real_requests
+    from plugins.marketing_factory.connectors.tiktok_stub import TikTokConnector
+
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        captured["json"] = kwargs.get("json")
+        captured["headers"] = kwargs.get("headers")
+        return _FakeResponse(status_code=200, json_data={
+            "data": {"publish_id": "pub_77"},
+            "error": {"code": "ok", "message": ""},
+        })
+
+    monkeypatch.setattr(_real_requests, "post", fake_post)
+
+    result = TikTokConnector().publish({
+        "id": "d", "body": "look at this pup",
+        "channel": "tiktok",
+        "images": [{"url": "https://example.com/pet.jpg"}],
+    })
+
+    assert result["mode"] == "live"
+    assert result["posted"] is False  # MEDIA_UPLOAD = inbox; user finalizes manually
+    assert result["payload"]["publish_id"] == "pub_77"
+    assert result["payload"]["post_mode"] == "MEDIA_UPLOAD"
+    assert captured["url"] == "https://open.tiktokapis.com/v2/post/publish/content/init/"
+    assert captured["json"]["media_type"] == "PHOTO"
+    assert captured["json"]["source_info"]["photo_images"] == ["https://example.com/pet.jpg"]
+    assert "Bearer tt_token_xyz" in captured["headers"]["Authorization"]
+
+
+def test_tiktok_connector_surfaces_api_error_code(isolate_home, tiktok_creds, monkeypatch):
+    """TikTok returns 200 with error.code != 'ok' on auth/scope problems; the
+    connector must catch this and raise ConnectorError (PublisherAgent then
+    falls back to dry_run with a meaningful audit reason)."""
+    import requests as _real_requests
+    from plugins.marketing_factory.connectors.base import ConnectorError
+    from plugins.marketing_factory.connectors.tiktok_stub import TikTokConnector
+
+    def fake_post(url, **kwargs):
+        return _FakeResponse(status_code=200, json_data={
+            "data": {},
+            "error": {"code": "scope_not_authorized", "message": "missing video.upload scope"},
+        })
+
+    monkeypatch.setattr(_real_requests, "post", fake_post)
+
+    with pytest.raises(ConnectorError) as exc_info:
+        TikTokConnector().publish({
+            "id": "d", "body": "x", "channel": "tiktok",
+            "images": [{"url": "https://example.com/pet.jpg"}],
+        })
+    assert "scope_not_authorized" in str(exc_info.value)
+
+
+def test_all_connectors_registered_and_advisor_reports_readiness(isolate_home, monkeypatch):
+    """Integration check: with all 4 channels in live mode but no creds present,
+    the advisor must emit a 'not ready' warning for each registered connector
+    rather than silently allowing publish_scheduled to fall back."""
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    for var in (
+        "X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET",
+        "IG_USER_ID", "IG_ACCESS_TOKEN",
+        "LINKEDIN_ACCESS_TOKEN", "LINKEDIN_AUTHOR_URN",
+        "TIKTOK_ACCESS_TOKEN",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    for channel in ("x", "instagram", "tiktok"):
+        store.set_channel_mode("pupular", channel, "live", reviewer="tester")
+
+    result = pipe.advise()
+    not_ready_warnings = [
+        item for item in result["items"]
+        if item["severity"] == "warning" and "not ready" in item["message"]
+    ]
+    channels_warned = {item["message"].split(".")[1].split(" ")[0] for item in not_ready_warnings}
+    assert {"x", "instagram", "tiktok"}.issubset(channels_warned), (
+        f"Expected not-ready warnings for x/instagram/tiktok; got channels={channels_warned}"
+    )

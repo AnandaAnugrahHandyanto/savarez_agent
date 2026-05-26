@@ -22,6 +22,9 @@ from typing import Dict, Optional, Type
 
 from plugins.marketing_factory.connectors.base import BaseChannelConnector
 from plugins.marketing_factory.connectors.dry_run import DryRunConnector
+from plugins.marketing_factory.connectors.instagram_stub import InstagramConnector
+from plugins.marketing_factory.connectors.linkedin_stub import LinkedInConnector
+from plugins.marketing_factory.connectors.tiktok_stub import TikTokConnector
 from plugins.marketing_factory.connectors.x_stub import XConnector
 
 _REGISTRY: Dict[str, BaseChannelConnector] = {}
@@ -37,10 +40,15 @@ def register(channel: str, connector: BaseChannelConnector) -> None:
     _REGISTRY[channel] = connector
 
 
-# Auto-register the X connector. Cred validation happens lazily inside
-# XConnector.publish(); missing env vars raise ConnectorError → PublisherAgent
-# audit-falls-back to dry_run. So this is safe to enable unconditionally.
+# Auto-register all live connectors. Cred validation happens lazily inside
+# each connector's publish(); missing env vars raise ConnectorError →
+# PublisherAgent audit-falls-back to dry_run. So this is safe to enable
+# unconditionally — the advisor surfaces "registered but not ready" warnings
+# via each connector's can_publish() health check.
 register("x", XConnector())
+register("instagram", InstagramConnector())
+register("linkedin", LinkedInConnector())
+register("tiktok", TikTokConnector())
 
 
 def get_live_connector(channel: str) -> Optional[BaseChannelConnector]:
