@@ -1805,7 +1805,8 @@ class BasePlatformAdapter(ABC):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        reply_markup: Optional[Any] = None,
     ) -> SendResult:
         """
         Send a message to a chat.
@@ -1815,6 +1816,9 @@ class BasePlatformAdapter(ABC):
             content: Message content (may be markdown)
             reply_to: Optional message ID to reply to
             metadata: Additional platform-specific options
+            reply_markup: Optional inline keyboard markup (platform-native type).
+                         Telegram adapters use this directly; others can read
+                         it from metadata under the "reply_markup" key.
         
         Returns:
             SendResult with success status and message ID
@@ -2778,6 +2782,7 @@ class BasePlatformAdapter(ABC):
         content: str,
         reply_to: Optional[str] = None,
         metadata: Any = None,
+        reply_markup: Optional[Any] = None,
         max_retries: int = 2,
         base_delay: float = 2.0,
     ) -> "SendResult":
@@ -2790,12 +2795,10 @@ class BasePlatformAdapter(ABC):
         know to retry rather than waiting indefinitely.
         """
 
-        result = await self.send(
-            chat_id=chat_id,
-            content=content,
-            reply_to=reply_to,
-            metadata=metadata,
-        )
+        send_kwargs = dict(chat_id=chat_id, content=content, reply_to=reply_to, metadata=metadata)
+        if reply_markup is not None:
+            send_kwargs["reply_markup"] = reply_markup
+        result = await self.send(**send_kwargs)
 
         if result.success:
             return result

@@ -466,6 +466,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # Clarify button state: clarify_id → session_key (for the clarify tool's
         # multiple-choice prompts; see GatewayRunner clarify_callback wiring).
         self._clarify_state: Dict[str, str] = {}
+        # Busy-ack button state: message_id → session_key (for bi: callbacks)
+        self._busy_state: Dict[int, str] = {}
         # Notification mode for message sends.
         # "important" — only final responses, approvals, and slash confirmations
         #               trigger notifications; tool progress, streaming, status
@@ -1795,7 +1797,8 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        reply_markup: Optional[Any] = None,
     ) -> SendResult:
         """Send a message to a Telegram chat."""
         if not self._bot:
@@ -1897,6 +1900,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
+                                reply_markup=reply_markup,
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
@@ -1911,6 +1915,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     text=plain_chunk,
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
+                                    reply_markup=reply_markup,
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
@@ -3388,6 +3393,81 @@ class TelegramAdapter(BasePlatformAdapter):
                         "Telegram clarify button: resolve_gateway_clarify returned False (id=%s)",
                         clarify_id,
                     )
+            return
+
+        # --- Busy-input callbacks (bi:interrupt|steer|queue|cancel) ---
+        if data.startswith("bi:"):
+            choice = data.split(":", 1)[1]  # interrupt, steer, queue, cancel
+            session_key = None
+
+            # First try: look up by the message_id this callback is responding to.
+            query_msg_id = getattr(query_message, "message_id", None)
+            if query_msg_id is not None:
+                session_key = self._busy_state.get(int(query_msg_id))
+
+            # Fall back: construct session key from chat/thread info.
+            if not session_key and query_chat_id:
+                platform_val = "telegram"
+                thread_part = f":{query_thread_id}" if query_thread_id else ""
+                session_key = f"{platform_val}:{query_chat_id}{thread_part}"
+
+            label_map = {
+                "interrupt": "⚡ Interrupting current task",
+                "steer": "⏩ Steered into current run",
+                "queue": "⏳ Queued for next turn",
+                "cancel": "❌ Cancelled",
+            }
+            label = label_map.get(choice, f"Choice: {choice}")
+            await query.answer(text=label)
+
+            try:
+                await query.edit_message_text(
+                    text=f"{label} by {query_user_name or 'you'}",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass  # non-fatal if edit fails
+
+            # Clean up the busy state entry for this message.
+            if query_msg_id is not None:
+                self._busy_state.pop(int(query_msg_id), None)
+
+            # Perform the chosen action on the session.
+            if not session_key:
+                logger.debug("[%s] bi:%s callback: could not resolve session_key", self.name, choice)
+                return
+
+            from gateway.run import _gateway_runner_ref
+            runner = _gateway_runner_ref()
+            if not runner:
+                logger.debug("[%s] bi:%s callback: no gateway_runner reference", self.name, choice)
+                return
+
+            if choice == "cancel":
+                pending = getattr(runner, "_pending_messages", {})
+                if session_key in pending:
+                    del pending[session_key]
+                return
+
+            running_agent = runner._running_agents.get(session_key)
+            sentinel = getattr(runner, "_AGENT_PENDING_SENTINEL", None)
+            if not running_agent or running_agent is sentinel:
+                logger.debug("[%s] bi:%s callback: no active agent for session %s", self.name, choice, session_key)
+                return
+
+            if choice == "interrupt":
+                running_agent.interrupt(None)
+            elif choice == "steer":
+                pending = getattr(runner, "_pending_messages", {})
+                evt = pending.get(session_key)
+                if evt and hasattr(evt, "text") and evt.text:
+                    try:
+                        running_agent.steer(evt.text)
+                    except Exception as exc:
+                        logger.warning("steer failed for session %s: %s", session_key, exc)
+            # queue: message already queued — do nothing.
+
             return
 
         # --- Update prompt callbacks ---

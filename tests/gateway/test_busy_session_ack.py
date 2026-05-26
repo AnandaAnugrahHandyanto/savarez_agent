@@ -190,8 +190,8 @@ class TestBusySessionAck:
         assert "Interrupting" not in content
 
     @pytest.mark.asyncio
-    async def test_busy_text_mode_queue_delegates_to_adapter_handle_message(self):
-        """busy_text_mode=queue lets the adapter debounce text silently."""
+    async def test_busy_text_mode_queue_sends_ack_and_queues(self):
+        """busy_text_mode=queue queues the message and sends busy-ack with buttons (no interrupt)."""
         runner, sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
         runner._busy_text_mode = "queue"
@@ -209,11 +209,15 @@ class TestBusySessionAck:
         result1 = await runner._handle_active_session_busy_message(first, sk)
         result2 = await runner._handle_active_session_busy_message(second, sk)
 
-        assert result1 is False
-        assert result2 is False
-        assert sk not in adapter._pending_messages
+        # Handler now handles queue-text messages, does NOT bail out silently
+        assert result1 is True
+        assert result2 is True
+        # Message was queued (not steered)
+        assert sk in adapter._pending_messages
+        # Agent was NOT interrupted (effective_mode demoted to queue for text)
         agent.interrupt.assert_not_called()
-        adapter._send_with_retry.assert_not_called()
+        # Ack WAS sent — at least once (first message sends ack, second may be debounced)
+        assert adapter._send_with_retry.call_count >= 1
 
     @pytest.mark.asyncio
     async def test_steer_mode_calls_agent_steer_no_interrupt_no_queue(self):

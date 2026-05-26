@@ -3131,13 +3131,32 @@ class GatewayRunner:
         running_agent = self._running_agents.get(session_key)
 
         effective_mode = self._busy_input_mode
+        logger.debug(
+            "[%s] Busy handler: session=%s message_type=%s "
+            "busy_input_mode=%s busy_text_mode=%s",
+            adapter.name if adapter else "?",
+            session_key,
+            event.message_type.value if event.message_type else "?",
+            effective_mode,
+            getattr(self, "_busy_text_mode", "queue"),
+        )
+
+        # bus_text_mode="queue" overrides effective_mode to prevent interrupt
+        # for TEXT messages, but the busy-ack and inline keyboard are still sent.
+        # See May 26 fix: removed early return that caused silent queue w/o ack.
         busy_text_mode = getattr(self, "_busy_text_mode", "queue")
         if (
             event.message_type == MessageType.TEXT
             and busy_text_mode == "queue"
             and effective_mode != "steer"
         ):
-            return False
+            logger.debug(
+                "[%s] bus_text_mode=queue: demoting effective_mode to 'queue' "
+                "for TEXT message — message will be queued without interrupt, "
+                "but busy-ack with buttons is still sent",
+                adapter.name if adapter else "?",
+            )
+            effective_mode = "queue"
 
         # Steer mode: inject mid-run via running_agent.steer() instead of
         # queueing + interrupting.  If the agent isn't running yet
@@ -3297,8 +3316,25 @@ class GatewayRunner:
 
         reply_anchor = self._reply_anchor_for_event(event)
         thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
+
+        # Build inline keyboard for busy-input options on Telegram.
+        # Import here to avoid importing telegram at module level (gateway may
+        # not have telegram installed on all backends).
+        reply_markup = None
+        if event.source.platform == Platform.TELEGRAM:
+            try:
+                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                reply_markup = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("interrupt", callback_data="bi:interrupt"),
+                    InlineKeyboardButton("steer", callback_data="bi:steer"),
+                    InlineKeyboardButton("queue", callback_data="bi:queue"),
+                    InlineKeyboardButton("cancel", callback_data="bi:cancel"),
+                ]])
+            except Exception:
+                pass  # telegram not installed or wrong version — skip keyboard
+
         try:
-            await adapter._send_with_retry(
+            result = await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
                 content=message,
                 reply_to=(
@@ -3309,7 +3345,15 @@ class GatewayRunner:
                     else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
                 ),
                 metadata=thread_meta,
+                reply_markup=reply_markup,
             )
+            # Store the busy ack message_id → session_key mapping on the
+            # Telegram adapter so the callback handler can look it up.
+            if (
+                result and result.success and result.message_id
+                and event.source.platform == Platform.TELEGRAM
+            ):
+                adapter._busy_state[int(result.message_id)] = session_key
         except Exception as e:
             logger.debug("Failed to send busy-ack: %s", e)
 
