@@ -30,3 +30,7 @@
 - 🏷️ **WMS worktree path prefix mismatch** — The WMS worktree helper creates `/tmp/hermes-worktrees/...`; do not substitute `/tmp/openclaw-worktrees/...`. If a command fails from the wrong prefix, re-run against the printed helper path and continue.
 - 🏷️ **Gateway process grep can exit nonzero on macOS** — `pgrep -fl 'hermes.*gateway|gateway.run|hermes gateway'` returned exit 1 because the pattern did not match the actual launch command. Fix: use `ps auxww | grep -E '[h]ermes.*gateway|[g]ateway.run'` or inspect `ps eww -p <pid>` with redaction.
 - 🏷️ **Telegram forum reaction gating must include normalized `forum` chat type** — A first fix only blocked `group`, but Hermes normalizes supergroup topics to `forum`; disable reactions for `group`, `supergroup`, and `forum`, and test all three.
+
+- 🏷️ **printf percent gotcha** — `printf` failed while WAL-appending text containing `%` (`100%`, `-41.2%`). Use Python append or `printf %s` with quoted payload for user text containing percent signs.
+
+- 🏷️ **Evening brief here.now timeout local-link leak** — `daily-evening-report` delivered `local file: /Users/.../davie-evening-brief.html` because the 183-file/62MB here.now publish exceeded the sender’s 120s timeout. Fix: retry publish from the persistent here.now state dir, update `brief-state.json` with returned URL/slug, raise recurring publish timeout to 360s, and never use local file paths as Telegram brief links.
