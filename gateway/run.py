@@ -10233,10 +10233,24 @@ class GatewayRunner:
             result = await manager.end(event.source)
             return result.message
         if args == "native":
-            platform = getattr(event.source.platform, "value", event.source.platform)
+            source_platform = event.source.platform
+            platform = getattr(source_platform, "value", source_platform)
             if str(platform) != "simplex":
                 return "SimpleX-native calls are only available from an authorized SimpleX DM."
-            return "SimpleX-native calls are unavailable: native WebRTC bridge is not enabled."
+            adapters = getattr(self, "adapters", {}) or {}
+            try:
+                adapter = adapters.get(source_platform)
+            except TypeError:
+                adapter = None
+            if adapter is None:
+                adapter = adapters.get(str(platform))
+            if adapter is None:
+                return "SimpleX-native calls are unavailable: SimpleX adapter not connected."
+            if not bool(getattr(adapter, "native_calls_enabled", False)):
+                return "SimpleX-native calls are unavailable: native WebRTC bridge is not enabled."
+            return (
+                "SimpleX-native calls are enabled for incoming SimpleX app calls."
+            )
         return "Usage: /call [browser|native|status|end]"
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:

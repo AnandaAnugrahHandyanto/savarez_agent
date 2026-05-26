@@ -4,6 +4,7 @@ from enum import Enum
 
 
 class CallState(str, Enum):
+    CONNECTING = "connecting"
     WAITING = "waiting"
     ACTIVE = "active"
     ENDED = "ended"

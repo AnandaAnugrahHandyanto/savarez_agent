@@ -99,10 +99,45 @@ class CallManager:
             ),
         )
 
+    def record_native_call(
+        self,
+        source,
+        call_id: str,
+        state: str = CallState.CONNECTING.value,
+    ) -> CallSession:
+        key = _session_key(source)
+        created_at = self.now()
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        expires_at = created_at + timedelta(seconds=self.ttl_seconds)
+        try:
+            call_state = CallState(state)
+        except ValueError:
+            call_state = CallState.CONNECTING
+        session = CallSession(
+            call_id=call_id,
+            platform=key[0],
+            chat_id=key[1],
+            user_id=key[2],
+            mode="simplex_native",
+            state=call_state,
+            room_url=None,
+            created_at=created_at,
+            expires_at=expires_at,
+        )
+        self._sessions[key] = session
+        return session
+
     async def status(self, source) -> CallCommandResult:
         session = self._sessions.get(_session_key(source))
         if not session or session.state in {CallState.ENDED, CallState.FAILED}:
             return CallCommandResult(ok=True, message="No active call.")
+        if session.room_url is None:
+            return CallCommandResult(
+                ok=True,
+                session=session,
+                message=f"Call {session.call_id} is {session.state.value}.",
+            )
         return CallCommandResult(
             ok=True,
             session=session,

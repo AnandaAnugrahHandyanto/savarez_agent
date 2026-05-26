@@ -9,8 +9,8 @@ from gateway.calls.models import CallState
 from gateway.calls.tokens import CallTokenService
 
 
-def _source(chat_type="dm"):
-    platform = SimpleNamespace(value="telegram")
+def _source(chat_type="dm", platform="telegram"):
+    platform = SimpleNamespace(value=platform)
     return SimpleNamespace(platform=platform, chat_id="123", user_id="456", chat_type=chat_type)
 
 
@@ -56,6 +56,26 @@ async def test_status_reports_idle_without_session():
 
     assert result.ok is True
     assert "No active call" in result.message
+
+
+@pytest.mark.asyncio
+async def test_native_session_status_reports_connecting():
+    manager = CallManager(
+        browser_provider=BrowserRoomProvider(BrowserRoomConfig(base_url="https://host.ts.net/call")),
+        token_service=CallTokenService("secret"),
+        now=lambda: datetime(2026, 5, 26, tzinfo=timezone.utc),
+    )
+    source = _source(platform="simplex")
+
+    session = manager.record_native_call(source, "native-call-1")
+    result = await manager.status(source)
+
+    assert session.mode == "simplex_native"
+    assert session.state == CallState.CONNECTING
+    assert session.room_url is None
+    assert result.ok is True
+    assert "native-call-1" in result.message
+    assert "connecting" in result.message
 
 
 @pytest.mark.asyncio

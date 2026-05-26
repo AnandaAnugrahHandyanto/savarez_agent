@@ -27,6 +27,7 @@ def _runner():
     runner = object.__new__(GatewayRunner)
     runner.config = SimpleNamespace(extra={})
     runner._call_manager = None
+    runner.adapters = {}
     return runner
 
 
@@ -53,6 +54,34 @@ async def test_handle_call_native_is_loudly_unavailable_for_telegram():
 
     assert "SimpleX-native" in result
     assert "SimpleX" in result
+
+
+@pytest.mark.asyncio
+async def test_handle_call_native_reports_missing_simplex_adapter():
+    result = await _runner()._handle_call_command(_event("/call native", platform="simplex"))
+
+    assert "SimpleX adapter not connected" in result
+
+
+@pytest.mark.asyncio
+async def test_handle_call_native_reports_native_disabled():
+    runner = _runner()
+    runner.adapters["simplex"] = SimpleNamespace(native_calls_enabled=False)
+
+    result = await runner._handle_call_command(_event("/call native", platform="simplex"))
+
+    assert "native WebRTC bridge is not enabled" in result
+
+
+@pytest.mark.asyncio
+async def test_handle_call_native_reports_native_enabled():
+    runner = _runner()
+    runner.adapters["simplex"] = SimpleNamespace(native_calls_enabled=True)
+
+    result = await runner._handle_call_command(_event("/call native", platform="simplex"))
+
+    assert "SimpleX-native calls are enabled" in result
+    assert "incoming SimpleX app calls" in result
 
 
 @pytest.mark.asyncio
