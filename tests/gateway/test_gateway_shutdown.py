@@ -6,7 +6,11 @@ import pytest
 from gateway.platforms.base import MessageEvent
 from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
 from gateway.session import build_session_key
-from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
+from tests.gateway.restart_test_helpers import (
+    RestartTestAdapter,
+    make_restart_runner,
+    make_restart_source,
+)
 
 
 @pytest.mark.asyncio
@@ -140,6 +144,33 @@ async def test_gateway_stop_service_restart_sets_named_exit_code():
         await runner.stop(restart=True, service_restart=True)
 
     assert runner._exit_code == GATEWAY_SERVICE_RESTART_EXIT_CODE
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_uses_i18n(monkeypatch):
+    from agent import i18n
+
+    monkeypatch.setenv("HERMES_LANGUAGE", "zh")
+    i18n.reset_language_cache()
+    try:
+        runner, adapter = make_restart_runner()
+        source = make_restart_source(chat_id="789")
+        session_key = build_session_key(source)
+        runner._running_agents = {session_key: MagicMock()}
+        runner._restart_requested = True
+        runner._cache_session_source(session_key, source)
+
+        await runner._notify_active_sessions_of_shutdown()
+
+        assert isinstance(adapter, RestartTestAdapter)
+        assert adapter.sent
+        message = adapter.sent[-1]
+        assert "网关" in message
+        assert "当前任务将被中断" in message
+        assert "Your current task" not in message
+        assert "Gateway restarting" not in message
+    finally:
+        i18n.reset_language_cache()
 
 
 @pytest.mark.asyncio

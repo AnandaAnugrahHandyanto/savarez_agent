@@ -347,6 +347,60 @@ gateway:
     disabled:                   "⚠️ 本工作階段 YOLO 模式 **已關閉** — 危險指令將需要批准。"
     enabled:                    "⚡ 本工作階段 YOLO 模式 **已開啟** — 所有指令自動批准。請謹慎使用。"
 
+  queue:
+    usage:                 "用法：/queue <提示>"
+    queued:                "已排入下一輪。"
+    queued_with_depth:     "已排入下一輪。（目前 {depth} 則排隊）"
+
+  steer:
+    usage:                 "用法：/steer <提示>"
+    agent_starting_queued: "Agent 仍在啟動 — /steer 已排入下一輪。"
+    failed:                "⚠️ Steer 失敗：{error}"
+    queued_after_tool:     "⏩ Steer 已排队 — 将在下一次工具呼叫后送达：'{preview}'"
+    rejected_empty:        "Steer 被拒绝（內容為空）。"
+    no_active_queued:      "没有活動中的 Agent — /steer 已排入下一輪。"
+    usage_no_agent:        "用法：/steer <提示>  （目前没有 Agent 執行；将作为普通訊息发送）"
+
+  busy:
+    action_restarting:          "重啟中"
+    action_shutting_down:       "關閉中"
+    draining_queued:            "⏳ 閘道正在{action} — 已排队，等它恢復后进入下一轮。"
+    draining_reject:            "⏳ 閘道正在{action}，目前不接受新的輪次。"
+    draining_new_work_reject:   "⏳ 閘道正在{action}，目前不接受新任務。"
+    status_elapsed_min:         "已執行 {minutes} 分鐘"
+    status_iteration:           "第 {iteration}/{max} 轮"
+    status_running_tool:        "正在執行：{tool}"
+    steer_ack:                  "⏩ 已注入目前執行{status}。你的訊息会在下一次工具呼叫后送达。"
+    subagent_queue_ack:         "⏳ 子代理正在工作{status} — 你的訊息已排队，等它完成后处理（可用 /stop 取消全部）。"
+    queue_ack:                  "⏳ 已排入下一輪{status}。目前任务完成后我会回复。"
+    interrupt_ack:              "⚡ 正在中斷目前任务{status}。我会儘快回复你的訊息。"
+    wait_stop_switch_model:     "Agent 正在執行 — 請等待或先 /stop，然后再切換模型。"
+    wait_stop_change_runtime:   "Agent 正在執行 — 請等待或先 /stop，然后再修改執行时。"
+    goal_mid_run:               "Agent 正在執行 — 執行中可使用 /goal status / pause / clear；若要設定新目標请先 /stop。"
+    command_mid_turn:           "⏳ Agent 正在執行 — `/{command}` 不能在目前輪次中执行。請等待目前回覆完成，或先 `/stop`。"
+
+  error_hints:
+    usage_limit_resets:     " 你的方案使用額度已达上限，約 {hours} 小時后重設。"
+    usage_limit:            " 你的方案使用額度已达上限，請等待重設。"
+    rate_limited:           " 目前被限流，请稍候片刻后重试。"
+    api_overloaded:         " API 暫時過載，请稍后重试。"
+    request_rejected:       " API 拒绝了本次请求。"
+
+  session_too_large:        "⚠️ 會話已超出模型上下文視窗。\n請使用 /compact 壓縮對話，或使用 /reset 重新開始。"
+  request_failed:           "抱歉，我遇到錯誤。\n{error}\n請重試，或使用 /reset 開始新的會話。"
+  request_failed_detail:    "請求失敗：{detail}"
+  processing_stopped:       "⚠️ 處理已停止：{error}。請重試。"
+  processing_no_response:   "⚠️ 處理已完成，但沒有產生回覆。這可能是暫時性錯誤 — 請重新傳送你的訊息。"
+  unknown_command:          "未知命令 `/{command}`。输入 /commands 查看可用命令，或移除開頭的斜杠后重新傳送为普通訊息。"
+
+
+  shutdown:
+    notice:                "⚠️ 閘道正在{action} — {hint}"
+    interrupt:             "目前任務將被中斷。"
+    interrupt_resume:      "目前任務將被中斷。重啟後傳送任意訊息，我會盡量從上次位置繼續。"
+    restart_success:       "♻ 閘道已成功重啟。你的工作階段會繼續。"
+    online_ready:          "♻️ 閘道已上線 — Hermes 已恢復就緒。"
+
   shared:
     session_db_unavailable:      "工作階段資料庫無法使用。"
     session_db_unavailable_prefix: "工作階段資料庫無法使用"

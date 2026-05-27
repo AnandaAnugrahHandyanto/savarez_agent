@@ -347,6 +347,60 @@ gateway:
     disabled:                   "⚠️ 本会话 YOLO 模式 **已关闭** — 危险命令将需要批准。"
     enabled:                    "⚡ 本会话 YOLO 模式 **已开启** — 所有命令自动批准。请谨慎使用。"
 
+  queue:
+    usage:                 "用法：/queue <提示>"
+    queued:                "已排入下一轮。"
+    queued_with_depth:     "已排入下一轮。（当前 {depth} 条排队）"
+
+  steer:
+    usage:                 "用法：/steer <提示>"
+    agent_starting_queued: "Agent 仍在启动 — /steer 已排入下一轮。"
+    failed:                "⚠️ Steer 失败：{error}"
+    queued_after_tool:     "⏩ Steer 已排队 — 将在下一次工具调用后送达：'{preview}'"
+    rejected_empty:        "Steer 被拒绝（内容为空）。"
+    no_active_queued:      "没有活动中的 Agent — /steer 已排入下一轮。"
+    usage_no_agent:        "用法：/steer <提示>  （当前没有 Agent 运行；将作为普通消息发送）"
+
+  busy:
+    action_restarting:          "重启中"
+    action_shutting_down:       "关闭中"
+    draining_queued:            "⏳ 网关正在{action} — 已排队，等它恢复后进入下一轮。"
+    draining_reject:            "⏳ 网关正在{action}，当前不接受新的轮次。"
+    draining_new_work_reject:   "⏳ 网关正在{action}，当前不接受新任务。"
+    status_elapsed_min:         "已运行 {minutes} 分钟"
+    status_iteration:           "第 {iteration}/{max} 轮"
+    status_running_tool:        "正在运行：{tool}"
+    steer_ack:                  "⏩ 已注入当前运行{status}。你的消息会在下一次工具调用后送达。"
+    subagent_queue_ack:         "⏳ 子代理正在工作{status} — 你的消息已排队，等它完成后处理（可用 /stop 取消全部）。"
+    queue_ack:                  "⏳ 已排入下一轮{status}。当前任务完成后我会回复。"
+    interrupt_ack:              "⚡ 正在中断当前任务{status}。我会尽快回复你的消息。"
+    wait_stop_switch_model:     "Agent 正在运行 — 请等待或先 /stop，然后再切换模型。"
+    wait_stop_change_runtime:   "Agent 正在运行 — 请等待或先 /stop，然后再修改运行时。"
+    goal_mid_run:               "Agent 正在运行 — 运行中可使用 /goal status / pause / clear；若要设置新目标请先 /stop。"
+    command_mid_turn:           "⏳ Agent 正在运行 — `/{command}` 不能在当前轮次中执行。请等待当前回复完成，或先 `/stop`。"
+
+  error_hints:
+    usage_limit_resets:     " 你的套餐使用额度已达上限，约 {hours} 小时后重置。"
+    usage_limit:            " 你的套餐使用额度已达上限，请等待重置。"
+    rate_limited:           " 当前被限流，请稍等片刻后重试。"
+    api_overloaded:         " API 暂时过载，请稍后重试。"
+    request_rejected:       " API 拒绝了本次请求。"
+
+  session_too_large:        "⚠️ 会话已超出模型上下文窗口。\n请使用 /compact 压缩对话，或使用 /reset 重新开始。"
+  request_failed:           "抱歉，我遇到了错误。\n{error}\n请重试，或使用 /reset 开始新的会话。"
+  request_failed_detail:    "请求失败：{detail}"
+  processing_stopped:       "⚠️ 处理已停止：{error}。请重试。"
+  processing_no_response:   "⚠️ 处理已完成，但没有生成回复。这可能是临时错误 — 请重新发送你的消息。"
+  unknown_command:          "未知命令 `/{command}`。输入 /commands 查看可用命令，或去掉开头的斜杠后重新发送为普通消息。"
+
+
+  shutdown:
+    notice:                "⚠️ 网关正在{action} — {hint}"
+    interrupt:             "当前任务将被中断。"
+    interrupt_resume:      "当前任务将被中断。重启后发送任意消息，我会尽量从上次位置继续。"
+    restart_success:       "♻ 网关已重启成功。你的会话会继续。"
+    online_ready:          "♻️ 网关已上线 — Hermes 已恢复就绪。"
+
   shared:
     session_db_unavailable:      "会话数据库不可用。"
     session_db_unavailable_prefix: "会话数据库不可用"
