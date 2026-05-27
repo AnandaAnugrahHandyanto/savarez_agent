@@ -571,10 +571,39 @@ def _parse_markdown_table(table_text: str) -> dict:
     return {"headers": headers, "rows": rows}
 
 
+def _strip_cell_md(text: str) -> str:
+    """Strip markdown formatting that Feishu table cells cannot render.
+
+    Table ``data_type: "text"`` cells do not render **bold**, ``code``,
+    ``# headings``, or ``[text](url)`` links.  Keep the plain text content.
+    """
+    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"`(.+?)`", r"\1", text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    return text
+
+
+def _headings_to_bold(text: str) -> str:
+    """Convert ``# heading`` lines to **bold** for Feishu card markdown elements.
+
+    Feishu card markdown does not support ``#``/``##``/``###`` heading syntax;
+    they render as literal text.  Convert to bold standalone lines instead.
+    """
+    return re.sub(
+        r"^(#{1,6})\s+(.+)$",
+        lambda m: f"**{m.group(2).strip()}**",
+        text,
+        flags=re.MULTILINE,
+    )
+
+
 def _build_table_card_payload(content: str) -> str:
     """Convert markdown content with tables into a Feishu interactive card JSON.
 
     Non-table text becomes markdown elements; each table becomes a table element.
+    Headings are converted to bold (card markdown has no heading support).
+    Formatting is stripped from table cells (``data_type: "text"`` is plain text).
     """
     elements: list[dict] = []
     last_end = 0
@@ -583,28 +612,28 @@ def _build_table_card_payload(content: str) -> str:
         # Add any text before this table as a markdown element
         pre_text = content[last_end:match.start()].strip()
         if pre_text:
+            pre_text = _headings_to_bold(pre_text)
             elements.append({"tag": "markdown", "content": pre_text})
 
         # Parse and add the table
         table = _parse_markdown_table(match.group(0))
         if table["headers"] and table["rows"]:
             col_count = len(table["headers"])
-            # Build columns — use text data_type, auto width
+            # Build columns — strip ** from headers since they render as literal chars
             columns = [
                 {
                     "name": f"c{i}",
-                    "display_name": h,
+                    "display_name": re.sub(r"\*\*(.+?)\*\*", r"\1", h),
                     "data_type": "text",
                     "width": "auto",
                 }
                 for i, h in enumerate(table["headers"])
             ]
-            # Build rows
+            # Build rows — strip markdown formatting from cells
             rows = []
             for row in table["rows"]:
-                # Pad or trim to match header count
                 padded = (row + [""] * col_count)[:col_count]
-                rows.append({f"c{i}": cell for i, cell in enumerate(padded)})
+                rows.append({f"c{i}": _strip_cell_md(cell) for i, cell in enumerate(padded)})
 
             elements.append({
                 "tag": "table",
@@ -625,16 +654,14 @@ def _build_table_card_payload(content: str) -> str:
     # Add any trailing text after the last table
     trailing = content[last_end:].strip()
     if trailing:
+        trailing = _headings_to_bold(trailing)
         elements.append({"tag": "markdown", "content": trailing})
 
     # If no tables were found (shouldn't happen), fall back to single markdown
     if not elements:
-        elements.append({"tag": "markdown", "content": content})
+        elements.append({"tag": "markdown", "content": _headings_to_bold(content)})
 
-    card = {
-        "config": {"wide_screen_mode": True},
-        "elements": elements,
-    }
+    card: dict = {"config": {"wide_screen_mode": True}, "elements": elements}
     return json.dumps(card, ensure_ascii=False)
 
 
