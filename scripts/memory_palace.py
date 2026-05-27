@@ -247,28 +247,33 @@ def prune_expired():
 
 
 def _enforce_size_limit():
-    """Hard-cap DB size by pruning oldest low-importance episodes."""
+    """Hard-cap DB size by repeatedly pruning oldest low-importance episodes."""
     if not os.path.exists(DB_PATH):
         return
     if os.path.getsize(DB_PATH) <= MAX_DB_SIZE_BYTES:
         return
     conn = get_db()
-    # Delete oldest low-importance episodes first (batch of 100)
-    conn.execute(
-        "DELETE FROM episodic_memory WHERE importance < 5 "
-        "AND rowid IN (SELECT rowid FROM episodic_memory "
-        "WHERE importance < 5 ORDER BY timestamp ASC LIMIT 100)"
-    )
+    # Loop: delete batches until under cap or no more deletable rows
+    for _ in range(20):  # safety cap on iterations
+        if os.path.getsize(DB_PATH) <= MAX_DB_SIZE_BYTES:
+            break
+        conn.execute(
+            "DELETE FROM episodic_memory WHERE importance < 5 "
+            "AND rowid IN (SELECT rowid FROM episodic_memory "
+            "WHERE importance < 5 ORDER BY timestamp ASC LIMIT 200)"
+        )
+        conn.commit()
+        if conn.total_changes == 0:
+            break  # nothing left to delete
     # If still over, clear working memory non-essentials
     if os.path.getsize(DB_PATH) > MAX_DB_SIZE_BYTES:
         conn.execute("DELETE FROM working_memory WHERE expires_at IS NOT NULL")
-    conn.commit()
-    # If STILL over, VACUUM to reclaim freed pages — use dedicated connection
-    # outside any transaction since VACUUM cannot run inside one.
+        conn.commit()
+    # If STILL over, VACUUM to reclaim freed pages
     if os.path.getsize(DB_PATH) > MAX_DB_SIZE_BYTES:
         conn.close()
         vac = sqlite3.connect(DB_PATH)
-        vac.isolation_level = None  # disable auto-transaction for VACUUM
+        vac.isolation_level = None
         vac.execute("VACUUM")
         vac.close()
         return
