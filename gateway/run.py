@@ -8026,6 +8026,7 @@ class GatewayRunner:
             task_category="gateway",
             gateway_session_id=session_key,
             orchestrator_session_key=session_key,
+            platform=source.platform.value if source.platform else None,
         )
         _orch_result = {
             "session_id": _orch_start["session_id"],
@@ -8167,6 +8168,7 @@ class GatewayRunner:
                 target_model=_resolve_gateway_model(),
                 gateway_session_id=session_key,
                 orchestrator_session_key=session_key,
+                platform=source.platform.value if source.platform else None,
             )
             if _orch_trim.get("trimmed_blocks"):
                 logger.info(
@@ -18353,8 +18355,9 @@ def main():
     config = None
     if args.config:
         import yaml
+        from hermes_cli.config import _expand_env_vars
         with open(args.config, encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
+            data = _expand_env_vars(yaml.safe_load(f) or {})
             config = GatewayConfig.from_dict(data)
     
     # Run the gateway - exit with code 1 if no platforms connected,
