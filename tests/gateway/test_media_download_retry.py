@@ -12,6 +12,7 @@ in this environment.
 """
 
 import asyncio
+import io
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -53,6 +54,19 @@ class TestCacheImageFromBytes:
         from gateway.platforms.base import cache_image_from_bytes
         path = cache_image_from_bytes(b"\x89PNG\r\n\x1a\n fake png data", ".png")
         assert path.endswith(".png")
+
+    def test_converts_bmp_when_cached_as_jpeg(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        from PIL import Image
+        from gateway.platforms.base import cache_image_from_bytes
+
+        bmp = io.BytesIO()
+        Image.new("RGB", (4, 4), (255, 255, 255)).save(bmp, format="BMP")
+        path = cache_image_from_bytes(bmp.getvalue(), ".jpg")
+
+        assert path.endswith(".jpg")
+        with open(path, "rb") as fh:
+            assert fh.read(3) == b"\xff\xd8\xff"
 
     def test_rejects_html_content(self, tmp_path, monkeypatch):
         monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")

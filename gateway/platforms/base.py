@@ -582,6 +582,31 @@ def _looks_like_image(data: bytes) -> bool:
     return False
 
 
+def _convert_bmp_to_jpeg(data: bytes) -> bytes:
+    """Convert BMP bytes to provider-friendly JPEG bytes."""
+    import io
+
+    try:
+        from PIL import Image
+    except ImportError as exc:  # pragma: no cover - Pillow is a runtime dep in releases
+        raise ValueError(
+            "BMP image attachments require Pillow to convert them before model upload"
+        ) from exc
+
+    with Image.open(io.BytesIO(data)) as image:
+        image.load()
+        if image.mode in {"RGBA", "LA", "P"}:
+            rgba = image.convert("RGBA")
+            background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+            background.alpha_composite(rgba)
+            image = background.convert("RGB")
+        elif image.mode != "RGB":
+            image = image.convert("RGB")
+        out = io.BytesIO()
+        image.save(out, format="JPEG", quality=92, optimize=True)
+        return out.getvalue()
+
+
 def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
     """
     Save raw image bytes to the cache and return the absolute file path.
@@ -603,8 +628,12 @@ def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
             f"Refusing to cache non-image data as {ext} "
             f"(starts with: {snippet!r})"
         )
+    normalized_ext = ext.lower() if ext.startswith(".") else f".{ext.lower()}"
+    if data[:2] == b"BM" and normalized_ext in {".jpg", ".jpeg"}:
+        data = _convert_bmp_to_jpeg(data)
+        normalized_ext = ".jpg"
     cache_dir = get_image_cache_dir()
-    filename = f"img_{uuid.uuid4().hex[:12]}{ext}"
+    filename = f"img_{uuid.uuid4().hex[:12]}{normalized_ext}"
     filepath = cache_dir / filename
     filepath.write_bytes(data)
     return str(filepath)

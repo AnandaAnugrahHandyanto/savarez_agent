@@ -2074,12 +2074,16 @@ class SlackAdapter(BasePlatformAdapter):
             if mimetype.startswith("image/") and url:
                 try:
                     ext = "." + mimetype.split("/")[-1].split(";")[0]
+                    outbound_mimetype = mimetype
                     if ext not in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
+                        # Provider image blocks do not accept BMP/TIFF/etc. Cache helper
+                        # converts BMP bytes to real JPEG when we request a .jpg path.
                         ext = ".jpg"
+                        outbound_mimetype = "image/jpeg"
                     # Slack private URLs require the bot token as auth header
                     cached = await self._download_slack_file(url, ext, team_id=team_id)
                     media_urls.append(cached)
-                    media_types.append(mimetype)
+                    media_types.append(outbound_mimetype)
                 except Exception as e:  # pragma: no cover - defensive logging
                     detail = self._describe_slack_download_failure(e, file_obj=f)
                     if detail:
