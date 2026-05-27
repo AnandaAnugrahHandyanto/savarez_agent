@@ -2044,6 +2044,88 @@ class TestVisionAutoSkipsKimiCoding:
         })
 
 
+class TestCodexAuxiliaryAdapterOutputNone:
+    def test_synthesizes_text_deltas_when_final_output_is_none(self):
+        class FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                return iter((
+                    SimpleNamespace(type="response.output_text.delta", delta="Short"),
+                    SimpleNamespace(type="response.output_text.delta", delta=" title"),
+                ))
+
+            def get_final_response(self):
+                return SimpleNamespace(output=None, usage=None)
+
+        class FakeResponses:
+            def stream(self, **kwargs):
+                return FakeStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "title"}])
+
+        assert response.choices[0].message.content == "Short title"
+
+    def test_recovers_text_deltas_when_sdk_raises_on_final_output_none(self):
+        class BuggyStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                yield SimpleNamespace(type="response.output_text.delta", delta="Recovered")
+                yield SimpleNamespace(type="response.output_text.delta", delta=" title")
+                raise TypeError("'NoneType' object is not iterable")
+
+            def get_final_response(self):  # pragma: no cover - SDK raises before this
+                raise AssertionError("should not be reached")
+
+        class FakeResponses:
+            def stream(self, **kwargs):
+                return BuggyStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "title"}])
+
+        assert response.choices[0].message.content == "Recovered title"
+
+    def test_final_output_none_without_deltas_does_not_crash(self):
+        class FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                return iter(())
+
+            def get_final_response(self):
+                return SimpleNamespace(output=None, usage=None)
+
+        class FakeResponses:
+            def stream(self, **kwargs):
+                return FakeStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "title"}])
+
+        assert response.choices[0].message.content is None
+
+
 class TestCodexAuxiliaryAdapterTimeout:
     def test_forwards_timeout_to_responses_stream(self):
         class FakeStream:

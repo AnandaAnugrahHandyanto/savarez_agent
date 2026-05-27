@@ -6613,11 +6613,46 @@ class AIAgent:
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
         self._close_openai_client(client, reason=reason, shared=False)
 
+    @staticmethod
+    def _is_codex_stream_protocol_type_error(exc: BaseException) -> bool:
+        msg = str(exc)
+        return isinstance(exc, TypeError) and "NoneType" in msg and "iterable" in msg
+
+    @staticmethod
+    def _codex_stream_protocol_error() -> RuntimeError:
+        return RuntimeError(
+            "Codex Responses stream protocol error: upstream returned an empty "
+            "or malformed stream before a terminal response"
+        )
+
+    @staticmethod
+    def _to_namespace_tree(value: Any) -> Any:
+        if isinstance(value, dict):
+            return SimpleNamespace(**{
+                str(k): AIAgent._to_namespace_tree(v)
+                for k, v in value.items()
+            })
+        if isinstance(value, list):
+            return [AIAgent._to_namespace_tree(v) for v in value]
+        return value
+
+    def _should_use_raw_codex_responses_stream(self, active_client: Any) -> bool:
+        if self.api_mode != "codex_responses" or self.provider != "openai-codex":
+            return False
+        if not base_url_host_matches(str(getattr(self, "base_url", "")), "chatgpt.com"):
+            return False
+        # Unit tests often install SimpleNamespace fake clients around
+        # responses.stream(); keep those on the SDK-compatible path.
+        return type(active_client).__module__.startswith("openai")
+
     def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
         """Execute one streaming Responses API request and return the final response."""
         import httpx as _httpx
 
         active_client = client or self._ensure_primary_openai_client(reason="codex_stream_direct")
+        if self._should_use_raw_codex_responses_stream(active_client):
+            return self._run_codex_raw_responses_stream(api_kwargs, on_first_delta=on_first_delta)
+
         max_stream_retries = 1
         has_tool_calls = False
         first_delta_fired = False
@@ -6719,6 +6754,10 @@ class AIAgent:
                     exc,
                 )
                 return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+            except TypeError as exc:
+                if self._is_codex_stream_protocol_type_error(exc):
+                    raise self._codex_stream_protocol_error() from exc
+                raise
             except RuntimeError as exc:
                 err_text = str(exc)
                 missing_completed = "response.completed" in err_text
@@ -6744,7 +6783,12 @@ class AIAgent:
         fallback_kwargs = dict(api_kwargs)
         fallback_kwargs["stream"] = True
         fallback_kwargs = self._get_transport().preflight_kwargs(fallback_kwargs, allow_stream=True)
-        stream_or_response = active_client.responses.create(**fallback_kwargs)
+        try:
+            stream_or_response = active_client.responses.create(**fallback_kwargs)
+        except TypeError as exc:
+            if self._is_codex_stream_protocol_type_error(exc):
+                raise self._codex_stream_protocol_error() from exc
+            raise
 
         # Compatibility shim for mocks or providers that still return a concrete response.
         if hasattr(stream_or_response, "output"):
@@ -6804,6 +6848,10 @@ class AIAgent:
                                 len(collected_text_deltas), len(assembled),
                             )
                     return terminal_response
+        except TypeError as exc:
+            if self._is_codex_stream_protocol_type_error(exc):
+                raise self._codex_stream_protocol_error() from exc
+            raise
         finally:
             close_fn = getattr(stream_or_response, "close", None)
             if callable(close_fn):
@@ -6815,6 +6863,165 @@ class AIAgent:
         if terminal_response is not None:
             return terminal_response
         raise RuntimeError("Responses create(stream=True) fallback did not emit a terminal response.")
+
+    def _run_codex_raw_responses_stream(self, api_kwargs: dict, *, on_first_delta: callable = None):
+        """Stream chatgpt.com Codex Responses with httpx directly.
+
+        The ChatGPT Codex backend returns valid SSE but currently omits the
+        Content-Type header. The OpenAI SDK stream parser treats that missing
+        header as a TypeError before yielding events, so this path parses the
+        SSE envelope directly for the browser-backed Codex endpoint.
+        """
+        import httpx as _httpx
+
+        payload = dict(api_kwargs)
+        payload["stream"] = True
+        payload = self._get_transport().preflight_kwargs(payload, allow_stream=True)
+        extra_headers = payload.pop("extra_headers", None) or {}
+        self._codex_streamed_text_parts = []
+
+        with self._openai_client_lock():
+            request_kwargs = dict(self._client_kwargs)
+
+        api_key = str(request_kwargs.get("api_key") or self.api_key or "").strip()
+        base_url = str(request_kwargs.get("base_url") or self.base_url or "").rstrip("/")
+        if not api_key or not base_url:
+            raise RuntimeError("Codex raw Responses stream missing api_key or base_url")
+
+        headers = dict(request_kwargs.get("default_headers") or {})
+        if isinstance(extra_headers, dict):
+            headers.update({str(k): str(v) for k, v in extra_headers.items() if v is not None})
+        headers["Authorization"] = f"Bearer {api_key}"
+        headers["Content-Type"] = "application/json"
+        headers.setdefault("Accept", "text/event-stream")
+
+        timeout_value = request_kwargs.get("timeout")
+        if timeout_value is None:
+            timeout_value = self._resolved_api_call_timeout()
+        if isinstance(timeout_value, (int, float)):
+            timeout = _httpx.Timeout(float(timeout_value), read=float(timeout_value))
+        else:
+            timeout = timeout_value
+
+        url = f"{base_url}/responses"
+        has_tool_calls = False
+        first_delta_fired = False
+        collected_output_items: list = []
+        collected_text_deltas: list = []
+        final_response_data: Optional[dict] = None
+        current_event_type: Optional[str] = None
+
+        with _httpx.Client(timeout=timeout, follow_redirects=False) as raw_client:
+            with raw_client.stream("POST", url, headers=headers, json=payload) as response:
+                if response.status_code >= 400:
+                    body = response.read()
+                    body_text = body.decode("utf-8", errors="replace")
+                    err = RuntimeError(f"Codex Responses HTTP {response.status_code}: {body_text[:500]}")
+                    setattr(err, "status_code", response.status_code)
+                    try:
+                        setattr(err, "body", json.loads(body_text))
+                    except Exception:
+                        setattr(err, "body", {"message": body_text[:500]})
+                    raise err
+
+                for line in response.iter_lines():
+                    self._touch_activity("receiving stream response")
+                    if self._interrupt_requested:
+                        break
+                    if not line:
+                        continue
+                    if line.startswith("event:"):
+                        current_event_type = line.split(":", 1)[1].strip()
+                        continue
+                    if not line.startswith("data:"):
+                        continue
+
+                    data = line.split(":", 1)[1].strip()
+                    if not data or data == "[DONE]":
+                        continue
+                    try:
+                        event = json.loads(data)
+                    except json.JSONDecodeError:
+                        logger.debug("Codex raw stream skipped non-JSON SSE data: %r", data[:200])
+                        continue
+                    if not isinstance(event, dict):
+                        continue
+
+                    event_type = str(event.get("type") or current_event_type or "")
+                    if "output_text.delta" in event_type or event_type == "response.output_text.delta":
+                        delta_text = event.get("delta") or ""
+                        if isinstance(delta_text, str) and delta_text:
+                            collected_text_deltas.append(delta_text)
+                            self._codex_streamed_text_parts.append(delta_text)
+                            if not has_tool_calls:
+                                if not first_delta_fired:
+                                    first_delta_fired = True
+                                    if on_first_delta:
+                                        try:
+                                            on_first_delta()
+                                        except Exception:
+                                            pass
+                                self._fire_stream_delta(delta_text)
+                    elif "function_call" in event_type:
+                        has_tool_calls = True
+                    elif "reasoning" in event_type and "delta" in event_type:
+                        reasoning_text = event.get("delta") or ""
+                        if isinstance(reasoning_text, str) and reasoning_text:
+                            self._fire_reasoning_delta(reasoning_text)
+                    elif event_type == "response.output_item.added":
+                        item = event.get("item")
+                        if isinstance(item, dict) and item.get("type") in {"function_call", "custom_tool_call"}:
+                            has_tool_calls = True
+                    elif event_type == "response.output_item.done":
+                        item = event.get("item")
+                        if isinstance(item, dict):
+                            if item.get("type") in {"function_call", "custom_tool_call"}:
+                                has_tool_calls = True
+                            collected_output_items.append(item)
+                    elif event_type in ("response.incomplete", "response.failed"):
+                        resp_obj = event.get("response")
+                        status = resp_obj.get("status") if isinstance(resp_obj, dict) else None
+                        incomplete_details = (
+                            resp_obj.get("incomplete_details") if isinstance(resp_obj, dict) else None
+                        )
+                        logger.warning(
+                            "Codex raw Responses stream received terminal event %s "
+                            "(status=%s, incomplete_details=%s, streamed_chars=%d). %s",
+                            event_type, status, incomplete_details,
+                            sum(len(p) for p in collected_text_deltas),
+                            self._client_log_context(),
+                        )
+                        if isinstance(resp_obj, dict):
+                            final_response_data = resp_obj
+                    elif event_type == "response.completed":
+                        resp_obj = event.get("response")
+                        if isinstance(resp_obj, dict):
+                            final_response_data = resp_obj
+
+        if final_response_data is None:
+            raise RuntimeError("Codex raw Responses stream did not emit response.completed.")
+
+        output = final_response_data.get("output")
+        if not isinstance(output, list) or not output:
+            if collected_output_items:
+                final_response_data["output"] = collected_output_items
+                logger.debug(
+                    "Codex raw stream: backfilled %d output items from stream events",
+                    len(collected_output_items),
+                )
+            elif collected_text_deltas and not has_tool_calls:
+                final_response_data["output"] = [{
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "".join(collected_text_deltas)}],
+                }]
+                logger.debug(
+                    "Codex raw stream: synthesized output from %d text deltas (%d chars)",
+                    len(collected_text_deltas), sum(len(p) for p in collected_text_deltas),
+                )
+
+        return self._to_namespace_tree(final_response_data)
 
     def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
         if self.api_mode != "codex_responses" or self.provider != "openai-codex":
@@ -13154,6 +13361,8 @@ class AIAgent:
                         classified.retryable, classified.should_compress,
                         classified.should_rotate_credential, classified.should_fallback,
                     )
+                    if status_code is None:
+                        status_code = classified.status_code
 
                     recovered_with_pool, has_retried_429 = self._recover_with_credential_pool(
                         status_code=status_code,
@@ -13221,12 +13430,13 @@ class AIAgent:
                     if (
                         self.api_mode == "codex_responses"
                         and self.provider == "openai-codex"
-                        and status_code == 401
+                        and classified.reason == FailoverReason.auth
                         and not codex_auth_retry_attempted
                     ):
                         codex_auth_retry_attempted = True
                         if self._try_refresh_codex_client_credentials(force=True):
-                            self._vprint(f"{self.log_prefix}🔐 Codex auth refreshed after 401. Retrying request...")
+                            _auth_label = f"HTTP {status_code}" if status_code else "auth failure"
+                            self._vprint(f"{self.log_prefix}🔐 Codex auth refreshed after {_auth_label}. Retrying request...")
                             continue
                     if (
                         self.api_mode == "chat_completions"

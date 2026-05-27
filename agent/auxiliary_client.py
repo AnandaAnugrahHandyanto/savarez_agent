@@ -751,9 +751,12 @@ class _CodexCompletionsAdapter:
                 _check_cancelled()
                 final = stream.get_final_response()
 
-            # Backfill empty output from collected stream events
+            # Backfill missing/empty output from collected stream events.
+            # The Codex backend can return output=None from get_final_response()
+            # even when the stream yielded output_text deltas; do not iterate
+            # None below (regression: "'NoneType' object is not iterable").
             _output = getattr(final, "output", None)
-            if isinstance(_output, list) and not _output:
+            if _output is None or (isinstance(_output, list) and not _output):
                 if collected_output_items:
                     final.output = list(collected_output_items)
                     logger.debug(
@@ -773,6 +776,8 @@ class _CodexCompletionsAdapter:
                         "Codex auxiliary: synthesized from %d deltas (%d chars)",
                         len(collected_text_deltas), len(assembled),
                     )
+                else:
+                    final.output = []
 
             # Extract text and tool calls from the Responses output.
             # Items may be SDK objects (attrs) or dicts (raw/fallback paths),
@@ -783,7 +788,7 @@ class _CodexCompletionsAdapter:
                     val = obj.get(key, default)
                 return val if val is not None else default
 
-            for item in getattr(final, "output", []):
+            for item in (getattr(final, "output", None) or []):
                 item_type = _item_get(item, "type")
                 if item_type == "message":
                     for part in (_item_get(item, "content") or []):
@@ -810,8 +815,32 @@ class _CodexCompletionsAdapter:
         except Exception as exc:
             if timed_out.is_set():
                 raise TimeoutError(_timeout_message()) from exc
-            logger.debug("Codex auxiliary Responses API call failed: %s", exc)
-            raise
+            # The ChatGPT/Codex backend can emit a final Responses event with
+            # output=null.  The OpenAI SDK's stream parser then raises before
+            # stream.get_final_response() is reachable, even though useful
+            # output_text.delta events may already have been yielded.  Preserve
+            # those deltas instead of surfacing a misleading TypeError.
+            if "'NoneType' object is not iterable" in str(exc):
+                _deltas = locals().get("collected_text_deltas") or []
+                _items = locals().get("collected_output_items") or []
+                _has_calls = bool(locals().get("has_function_calls", False))
+                if _deltas and not _has_calls:
+                    text_parts.append("".join(_deltas))
+                    logger.debug(
+                        "Codex auxiliary: recovered %d text deltas after SDK output=None stream parse failure",
+                        len(_deltas),
+                    )
+                elif _items:
+                    logger.debug(
+                        "Codex auxiliary: SDK output=None stream parse failure after %d output items; continuing",
+                        len(_items),
+                    )
+                else:
+                    logger.debug("Codex auxiliary Responses API call failed: %s", exc)
+                    raise
+            else:
+                logger.debug("Codex auxiliary Responses API call failed: %s", exc)
+                raise
         finally:
             if timeout_timer is not None:
                 timeout_timer.cancel()

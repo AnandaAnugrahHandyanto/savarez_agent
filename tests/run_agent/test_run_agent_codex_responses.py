@@ -485,6 +485,87 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert response.output[0].content[0].text == "streamed create ok"
 
 
+def test_run_codex_stream_wraps_none_iterable_typeerror(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    def _fake_stream(**kwargs):
+        raise TypeError("'NoneType' object is not iterable")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=lambda **kwargs: _codex_message_response("fallback"),
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="Codex Responses stream protocol error") as excinfo:
+        agent._run_codex_stream(_codex_request_kwargs())
+
+    assert isinstance(excinfo.value.__cause__, TypeError)
+
+
+def test_run_codex_raw_responses_stream_parses_sse_without_content_type(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    captured = {}
+
+    class _FakeRawResponse:
+        status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def iter_lines(self):
+            return iter([
+                "event: response.output_text.delta",
+                'data: {"type":"response.output_text.delta","delta":"RAW"}',
+                "",
+                "event: response.output_text.delta",
+                'data: {"type":"response.output_text.delta","delta":"_OK"}',
+                "",
+                "event: response.output_item.done",
+                'data: {"type":"response.output_item.done","item":{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"RAW_OK"}]}}',
+                "",
+                "event: response.completed",
+                'data: {"type":"response.completed","response":{"status":"completed","model":"gpt-5.5","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}',
+                "",
+            ])
+
+    class _FakeRawClient:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def stream(self, method, url, headers, json):
+            captured["method"] = method
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["json"] = json
+            return _FakeRawResponse()
+
+    import httpx
+    monkeypatch.setattr(httpx, "Client", _FakeRawClient)
+
+    kwargs = _codex_request_kwargs()
+    kwargs["extra_headers"] = {"X-Test": "yes"}
+    response = agent._run_codex_raw_responses_stream(kwargs)
+
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://chatgpt.com/backend-api/codex/responses"
+    assert captured["headers"]["Accept"] == "text/event-stream"
+    assert captured["headers"]["X-Test"] == "yes"
+    assert "extra_headers" not in captured["json"]
+    assert captured["json"]["stream"] is True
+    assert response.output[0].content[0].text == "RAW_OK"
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))
@@ -576,6 +657,39 @@ def test_run_conversation_codex_refreshes_after_401_and_retries(monkeypatch):
     assert calls["refresh"] == 1
     assert result["completed"] is True
     assert result["final_response"] == "Recovered after refresh"
+
+
+def test_run_conversation_codex_refreshes_after_cloudflare_challenge_and_retries(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    calls = {"api": 0, "refresh": 0}
+
+    class _CloudflareChallenge(RuntimeError):
+        def __init__(self):
+            super().__init__(
+                "<!DOCTYPE html><html><title>Just a moment...</title>"
+                "Enable JavaScript and cookies to continue __cf_chl</html>"
+            )
+
+    def _fake_api_call(api_kwargs):
+        calls["api"] += 1
+        if calls["api"] == 1:
+            raise _CloudflareChallenge()
+        return _codex_message_response("Recovered after challenge refresh")
+
+    def _fake_refresh(*, force=True):
+        calls["refresh"] += 1
+        assert force is True
+        return True
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+    monkeypatch.setattr(agent, "_try_refresh_codex_client_credentials", _fake_refresh)
+
+    result = agent.run_conversation("Say OK")
+
+    assert calls["api"] == 2
+    assert calls["refresh"] == 1
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered after challenge refresh"
 
 
 def test_run_conversation_copilot_refreshes_after_401_and_retries(monkeypatch):

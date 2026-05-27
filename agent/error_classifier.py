@@ -249,6 +249,19 @@ _AUTH_PATTERNS = [
     "access denied",
 ]
 
+# Cloudflare challenge pages from browser-backed APIs, notably
+# chatgpt.com/backend-api/codex, are not ordinary 5xx proxy pages. The
+# request needs fresh/browser-valid auth or provider fallback; retrying the
+# exact same challenged request just loops.
+_CLOUDFLARE_CHALLENGE_PATTERNS = [
+    "enable javascript and cookies to continue",
+    "cf-mitigated",
+    "cf_chl",
+    "__cf_chl",
+    "challenge-platform",
+    "/cdn-cgi/challenge-platform",
+]
+
 # Anthropic thinking block signature patterns
 _THINKING_SIG_PATTERNS = [
     "signature",  # Combined with "thinking" check
@@ -438,6 +451,14 @@ def classify_api_error(
         return ClassifiedError(**defaults)
 
     # ── 1. Provider-specific patterns (highest priority) ────────────
+
+    if any(p in error_msg for p in _CLOUDFLARE_CHALLENGE_PATTERNS):
+        return _result(
+            FailoverReason.auth,
+            retryable=False,
+            should_rotate_credential=True,
+            should_fallback=True,
+        )
 
     # Anthropic thinking block signature invalid (400).
     # Don't gate on provider — OpenRouter proxies Anthropic errors, so the

@@ -231,6 +231,17 @@ class TestClassifyApiError:
         result = classify_api_error(e, provider="openrouter")
         assert result.reason == FailoverReason.billing
 
+    def test_cloudflare_challenge_without_status_classified_as_auth(self):
+        e = MockAPIError(
+            "<!DOCTYPE html><html><title>Just a moment...</title>"
+            "Enable JavaScript and cookies to continue __cf_chl</html>"
+        )
+        result = classify_api_error(e, provider="openai-codex")
+        assert result.reason == FailoverReason.auth
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
     # ── Billing ──
 
     def test_402_plain_billing(self):
