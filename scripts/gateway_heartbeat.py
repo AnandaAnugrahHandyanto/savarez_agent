@@ -152,10 +152,19 @@ def fix_all_databases():
 # ── Fix 2: Heartbeat monitor ──────────────────────────────────────────
 
 def get_gateway_pid() -> int | None:
-    """Read PID from pidfile."""
+    """Read PID from pidfile. Handles both plain-integer and JSON formats."""
+    import json
+
     if GATEWAY_PID_FILE.exists():
         try:
-            return int(GATEWAY_PID_FILE.read_text().strip())
+            raw = GATEWAY_PID_FILE.read_text().strip()
+            # Try JSON format first (hermes-cli writes {"pid": N, ...})
+            try:
+                return int(json.loads(raw)["pid"])
+            except (json.JSONDecodeError, KeyError, TypeError):
+                pass
+            # Fall back to plain integer
+            return int(raw)
         except (ValueError, OSError):
             pass
     return None
