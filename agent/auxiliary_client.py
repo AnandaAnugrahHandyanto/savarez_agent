@@ -3750,7 +3750,10 @@ def get_text_auxiliary_client(
     Callers may override the returned model via config.yaml
     (e.g. auxiliary.compression.model, auxiliary.web_extract.model).
     """
-    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
+    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+        task or None,
+        main_runtime=main_runtime,
+    )
     return resolve_provider_client(
         provider,
         model=model,
@@ -3768,7 +3771,10 @@ def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Di
     (AsyncCodexAuxiliaryClient, model) which wraps the Responses API.
     Returns (None, None) when no provider is available.
     """
-    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
+    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+        task or None,
+        main_runtime=main_runtime,
+    )
     return resolve_provider_client(
         provider,
         model=model,
@@ -3880,6 +3886,7 @@ def resolve_vision_provider_client(
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
     async_mode: bool = False,
+    main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
     """Resolve the client actually used for vision tasks.
 
@@ -3889,7 +3896,7 @@ def resolve_vision_provider_client(
     stays conservative and only tries vision backends known to work today.
     """
     requested, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
-        "vision", provider, model, base_url, api_key
+        "vision", provider, model, base_url, api_key, main_runtime=main_runtime
     )
     requested = _normalize_vision_provider(requested)
 
@@ -4420,6 +4427,7 @@ def _resolve_task_provider_model(
     model: str = None,
     base_url: str = None,
     api_key: str = None,
+    main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
     """Determine provider + model for a call.
 
@@ -4432,6 +4440,11 @@ def _resolve_task_provider_model(
     be None (use provider default). When base_url is set, provider is forced
     to "custom" and the task uses that direct endpoint. api_mode is one of
     "chat_completions", "codex_responses", or None (auto-detect).
+
+    ``provider: main`` is resolved here instead of leaving the literal
+    sentinel for the client builder. That lets background auxiliary tasks
+    inherit the live custom endpoint and credentials from the active agent
+    instead of trying to find a nonexistent ``MAIN_API_KEY``.
     """
     cfg_provider = None
     cfg_model = None
@@ -4469,9 +4482,30 @@ def _resolve_task_provider_model(
     if cfg_provider:
         cfg_provider, cfg_base_url = _expand_direct_api_alias(cfg_provider, cfg_base_url)
 
+    def _resolve_main_alias(
+        selected_model: Optional[str],
+        selected_base_url: Optional[str] = None,
+        selected_api_key: Optional[str] = None,
+        selected_api_mode: Optional[str] = None,
+    ) -> Tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
+        runtime = _normalize_main_runtime(main_runtime)
+        runtime_provider = runtime.get("provider") or _read_main_provider()
+        return (
+            runtime_provider or "custom",
+            selected_model or runtime.get("model") or _read_main_model() or None,
+            selected_base_url or runtime.get("base_url") or None,
+            selected_api_key or runtime.get("api_key") or None,
+            selected_api_mode or runtime.get("api_mode") or None,
+        )
+
+    def _is_main_alias(value: Optional[str]) -> bool:
+        return isinstance(value, str) and value.strip().lower() == "main"
+
     if base_url:
         return "custom", resolved_model, base_url, api_key, resolved_api_mode
     if provider:
+        if _is_main_alias(provider):
+            return _resolve_main_alias(resolved_model, base_url, api_key, resolved_api_mode)
         return provider, resolved_model, base_url, api_key, resolved_api_mode
 
     if task:
@@ -4483,8 +4517,22 @@ def _resolve_task_provider_model(
             # base_url set without api_key but with a known provider — use
             # the provider so it can resolve credentials from env vars
             # (e.g. OPENROUTER_API_KEY) instead of locking into "custom".
+            if _is_main_alias(cfg_provider):
+                return _resolve_main_alias(
+                    resolved_model,
+                    cfg_base_url,
+                    cfg_api_key,
+                    resolved_api_mode,
+                )
             return cfg_provider, resolved_model, cfg_base_url, None, resolved_api_mode
         if cfg_provider and cfg_provider != "auto":
+            if _is_main_alias(cfg_provider):
+                return _resolve_main_alias(
+                    resolved_model,
+                    cfg_base_url,
+                    cfg_api_key,
+                    resolved_api_mode,
+                )
             return cfg_provider, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
 
         return "auto", resolved_model, None, None, resolved_api_mode
@@ -4791,7 +4839,7 @@ def call_llm(
         RuntimeError: If no provider is configured.
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
-        task, provider, model, base_url, api_key)
+        task, provider, model, base_url, api_key, main_runtime=main_runtime)
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
 
@@ -4802,6 +4850,7 @@ def call_llm(
             base_url=resolved_base_url or base_url,
             api_key=resolved_api_key or api_key,
             async_mode=False,
+            main_runtime=main_runtime,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
             logger.warning(
@@ -4812,6 +4861,7 @@ def call_llm(
                 provider="auto",
                 model=resolved_model,
                 async_mode=False,
+                main_runtime=main_runtime,
             )
         if client is None:
             raise RuntimeError(
@@ -5214,7 +5264,7 @@ async def async_call_llm(
     Same as call_llm() but async. See call_llm() for full documentation.
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
-        task, provider, model, base_url, api_key)
+        task, provider, model, base_url, api_key, main_runtime=main_runtime)
     effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
 
@@ -5225,6 +5275,7 @@ async def async_call_llm(
             base_url=resolved_base_url or base_url,
             api_key=resolved_api_key or api_key,
             async_mode=True,
+            main_runtime=main_runtime,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
             logger.warning(
@@ -5235,6 +5286,7 @@ async def async_call_llm(
                 provider="auto",
                 model=resolved_model,
                 async_mode=True,
+                main_runtime=main_runtime,
             )
         if client is None:
             raise RuntimeError(
@@ -5250,6 +5302,7 @@ async def async_call_llm(
             base_url=resolved_base_url,
             api_key=resolved_api_key,
             api_mode=resolved_api_mode,
+            main_runtime=main_runtime,
         )
         if client is None:
             _explicit = (resolved_provider or "").strip().lower()
@@ -5262,7 +5315,11 @@ async def async_call_llm(
             if not resolved_base_url:
                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
                             task or "call", resolved_provider)
-                client, final_model = _get_cached_client("auto", async_mode=True)
+                client, final_model = _get_cached_client(
+                    "auto",
+                    async_mode=True,
+                    main_runtime=main_runtime,
+                )
         if client is None:
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "

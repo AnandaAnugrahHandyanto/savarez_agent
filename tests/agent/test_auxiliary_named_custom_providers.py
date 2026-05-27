@@ -1,6 +1,7 @@
 """Tests for named custom provider and 'main' alias resolution in auxiliary_client."""
 
 import os
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -119,6 +120,63 @@ class TestResolveProviderClientMainAlias:
         assert client is not None
         assert model == "gpt-5.4"
         assert mock_openai.called
+
+    def test_title_generation_main_uses_live_runtime_before_client_lookup(self, tmp_path):
+        """Task-level provider=main should not reach client lookup literally.
+
+        Auto-title runs in a background thread after the main response. When
+        the main provider is a named custom endpoint flattened to ``custom`` at
+        runtime, the title-generation resolver must carry the live endpoint
+        details forward instead of looking for a nonexistent MAIN_API_KEY.
+        """
+        _write_config(tmp_path, {
+            "model": {"default": "config-model", "provider": "custom:guardian"},
+            "auxiliary": {
+                "title_generation": {"provider": "main", "model": ""},
+            },
+            "custom_providers": [
+                {"name": "Guardian", "base_url": "http://guardian.local/v1", "key_env": "GUARDIAN_API_KEY"},
+            ],
+        })
+
+        captured = {}
+        fake_response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Short Title"))]
+        )
+        fake_client = SimpleNamespace(
+            base_url="http://guardian.local/v1",
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=MagicMock(return_value=fake_response))
+            ),
+        )
+
+        def _fake_get_cached_client(provider, model=None, **kwargs):
+            captured["provider"] = provider
+            captured["model"] = model
+            captured.update(kwargs)
+            return fake_client, model
+
+        from agent.auxiliary_client import call_llm
+
+        with patch("agent.auxiliary_client._get_cached_client", side_effect=_fake_get_cached_client):
+            response = call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "hello"}],
+                main_runtime={
+                    "provider": "custom",
+                    "model": "runtime-model",
+                    "base_url": "http://guardian.local/v1",
+                    "api_key": "runtime-key",
+                    "api_mode": "chat_completions",
+                },
+            )
+
+        assert response.choices[0].message.content == "Short Title"
+        assert captured["provider"] == "custom"
+        assert captured["model"] == "runtime-model"
+        assert captured["base_url"] == "http://guardian.local/v1"
+        assert captured["api_key"] == "runtime-key"
+        assert captured["api_mode"] == "chat_completions"
 
 
 class TestResolveProviderClientNamedCustom:
