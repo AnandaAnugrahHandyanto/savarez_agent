@@ -140,18 +140,38 @@ def _build_message_raw(to, subject, body, cc="", from_header="", html=False) -> 
     """
     message = MIMEText(body, "html" if html else "plain")
     if to:
-        message["to"] = to
+        message["To"] = to
     if subject:
-        message["subject"] = subject
+        message["Subject"] = subject
     if cc:
-        message["cc"] = cc
+        message["Cc"] = cc
     if from_header:
-        message["from"] = from_header
+        message["From"] = from_header
     return base64.urlsafe_b64encode(message.as_bytes()).decode()
 
 
-def _headers_dict(msg: dict) -> dict[str, str]:
-    return {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
+class _Headers(dict):
+    """Case-insensitive view of message headers.
+
+    RFC 5322 field names are case-insensitive, and Gmail returns each header
+    with whatever case the message used (e.g. a draft we built with a lowercase
+    'to' header comes back as 'to', not 'To'). Keys are stored lowercased and
+    lookups lowercase the key, so headers.get("To")/["Message-ID"] resolve
+    regardless of the on-the-wire casing.
+    """
+
+    def get(self, key, default=None):
+        return super().get(key.lower(), default)
+
+    def __getitem__(self, key):
+        return super().__getitem__(key.lower())
+
+    def __contains__(self, key):
+        return super().__contains__(key.lower())
+
+
+def _headers_dict(msg: dict) -> "_Headers":
+    return _Headers((h["name"].lower(), h["value"]) for h in msg.get("payload", {}).get("headers", []))
 
 
 def _extract_message_body(msg: dict) -> str:
@@ -543,7 +563,10 @@ def gmail_draft_list(args):
                     userId="me", id=row["messageId"], format="metadata",
                     metadataHeaders=["To", "Subject", "Date"],
                 ).execute()
-        except Exception:
+        except Exception as exc:
+            # Degrade to an id-only row rather than sinking the whole listing,
+            # but don't swallow silently — surface why a draft came back bare.
+            print(f"WARNING: metadata fetch failed for draft {row['draftId']}: {exc}", file=sys.stderr)
             return row
         headers = _headers_dict(msg)
         row["to"] = headers.get("To", "")

@@ -367,6 +367,46 @@ def test_api_gmail_draft_list_skips_enrichment_when_no_message_id(api_module, ca
     }]
 
 
+def test_api_headers_dict_is_case_insensitive(api_module):
+    """Gmail returns headers with whatever case the message used; lookups must
+    be case-insensitive (drafts we build carry lowercase to/subject)."""
+    msg = {"payload": {"headers": [
+        {"name": "to", "value": "a@b.com"},
+        {"name": "subject", "value": "Hi"},
+        {"name": "Message-Id", "value": "<x@mail>"},
+    ]}}
+    headers = api_module._headers_dict(msg)
+    assert headers.get("To") == "a@b.com"
+    assert headers.get("Subject") == "Hi"
+    assert headers.get("Message-ID") == "<x@mail>"   # all-caps lookup, mixed-case header
+    assert headers["Message-ID"] == "<x@mail>"        # subscript path (reply threading)
+    assert "To" in headers
+
+
+def test_api_gmail_draft_list_populates_to_subject_from_lowercase_headers(api_module, capsys):
+    """Regression: a draft whose metadata returns lowercase 'to'/'subject'
+    headers (as Gmail does for tool-created drafts) must still populate the
+    to/subject fields in the listing."""
+    def capture_run(cmd, **kwargs):
+        if "drafts" in cmd and "list" in cmd:
+            stdout = '{"drafts": [{"id": "d1", "message": {"id": "m1", "threadId": "t1"}}]}'
+        else:  # messages.get enrichment — headers come back lowercase
+            stdout = ('{"snippet": "hello", "payload": {"headers": ['
+                      '{"name": "to", "value": "a@b.com"},'
+                      '{"name": "subject", "value": "Hi there"},'
+                      '{"name": "Date", "value": "Mon, 1 Jan 2026"}]}}')
+        return MagicMock(returncode=0, stdout=stdout, stderr="")
+
+    args = api_module.argparse.Namespace(max=10, func=api_module.gmail_draft_list)
+    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+        api_module.gmail_draft_list(args)
+
+    rows = json.loads(capsys.readouterr().out)
+    assert rows[0]["to"] == "a@b.com"
+    assert rows[0]["subject"] == "Hi there"
+    assert rows[0]["date"] == "Mon, 1 Jan 2026"
+
+
 def test_api_gmail_draft_list_tolerates_enrichment_failure(api_module, monkeypatch, capsys):
     """On the Python-client path, a per-draft metadata fetch that raises falls
     back to an id-only row instead of sinking the whole listing."""
