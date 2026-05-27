@@ -8172,6 +8172,116 @@ class HermesCLI:
         except Exception as exc:
             print(f"(._.) curator: {exc}")
 
+    def _handle_incidents_command(self, cmd: str):
+        """Handle /incidents slash command — inspect operational incidents.
+
+        Subcommands:
+          recent       — show most recent incidents
+          search <q>   — search past incidents by text
+          check        — run health checks and record results
+          stats        — incident counts by check_name
+          unresolved   — show unresolved incidents
+        """
+        import shlex
+
+        tokens = shlex.split(cmd)[1:] if cmd else []
+        if not tokens:
+            tokens = ["recent"]
+
+        sub = tokens[0].lower()
+        args = tokens[1:]
+
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+        except Exception as exc:
+            print(f"(._.) incidents: cannot open state.db — {exc}")
+            return
+
+        if sub == "recent":
+            limit = int(args[0]) if args and args[0].isdigit() else 10
+            incidents = db.get_recent_incidents(limit=min(limit, 50))
+            if not incidents:
+                print("  No incidents recorded.")
+                return
+            from datetime import datetime
+            for inc in incidents:
+                ts = datetime.fromtimestamp(inc["timestamp"]).strftime("%m-%d %H:%M")
+                fix_mark = " ✓" if inc.get("fix") else ""
+                resolved_mark = " ✨" if inc.get("resolved_at") else ""
+                print(
+                    f"  [{inc['id']}] {ts} {inc['status']:>8}  "
+                    f"{inc['check_name']}{fix_mark}{resolved_mark}"
+                )
+                msg = (inc.get("message") or "")[:120]
+                if msg:
+                    print(f"         {msg}")
+
+        elif sub == "search":
+            if not args:
+                print("  Usage: /incidents search <query>")
+                return
+            query = " ".join(args)
+            results = db.search_incidents(query, limit=10)
+            if not results:
+                print(f"  No incidents matching: {query}")
+                return
+            from datetime import datetime
+            for inc in results:
+                ts = datetime.fromtimestamp(inc["timestamp"]).strftime("%m-%d %H:%M")
+                score = inc.get("rank", "?")
+                fix = f" — fix: {inc['fix'][:80]}" if inc.get("fix") else ""
+                print(f"  [{inc['id']}] {ts} {inc['status']:>8}  {inc['check_name']}  (score={score}){fix}")
+                msg = (inc.get("message") or "")[:120]
+                if msg:
+                    print(f"         {msg}")
+
+        elif sub == "check":
+            from cron.health import run_all
+            from datetime import datetime
+            results = run_all()
+            for r in results:
+                inc_id = db.record_incident(
+                    check_name=r["name"],
+                    status=r["status"],
+                    message=r["message"],
+                    detail=r.get("detail"),
+                )
+                icon = {"ok": "✓", "degraded": "⚠", "failed": "✗"}.get(r["status"], "?")
+                print(f"  {icon} [{inc_id}] {r['name']}: {r['message']}")
+            print(f"  ({len(results)} check(s) run)")
+
+        elif sub == "stats":
+            counts = db.get_incident_counts()
+            if not counts:
+                print("  No incidents recorded.")
+                return
+            print(f"  {'Check':<30} {'Status':>10} {'Count':>6}  {'Latest':>16}")
+            print(f"  {'─' * 30} {'─' * 10} {'─' * 6}  {'─' * 16}")
+            from datetime import datetime
+            for c in counts:
+                ts = datetime.fromtimestamp(c["latest_timestamp"]).strftime("%m-%d %H:%M")
+                print(f"  {c['check_name']:<30} {c['status']:>10} {c['count']:>6}  {ts:>16}")
+
+        elif sub == "unresolved":
+            limit = int(args[0]) if args and args[0].isdigit() else 10
+            incidents = db.get_unresolved_incidents(limit=min(limit, 50))
+            if not incidents:
+                print("  No unresolved incidents. (◕‿◕)")
+                return
+            from datetime import datetime
+            print(f"  {len(incidents)} unresolved incident(s):")
+            for inc in incidents:
+                ts = datetime.fromtimestamp(inc["timestamp"]).strftime("%m-%d %H:%M")
+                print(f"  [{inc['id']}] {ts} {inc['status']:>8}  {inc['check_name']}")
+                msg = (inc.get("message") or "")[:120]
+                if msg:
+                    print(f"         {msg}")
+
+        else:
+            print(f"  Unknown subcommand: {sub}")
+            print("  Try: recent, search <query>, check, stats, unresolved")
+
     def _handle_kanban_command(self, cmd: str):
         """Handle the /kanban command — delegate to the shared kanban CLI.
 
@@ -8482,6 +8592,8 @@ class HermesCLI:
             self._handle_cron_command(cmd_original)
         elif canonical == "curator":
             self._handle_curator_command(cmd_original)
+        elif canonical == "incidents":
+            self._handle_incidents_command(cmd_original)
         elif canonical == "kanban":
             self._handle_kanban_command(cmd_original)
         elif canonical == "skills":
