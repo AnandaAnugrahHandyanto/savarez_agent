@@ -186,6 +186,27 @@ class _FakeCreateStream:
         self.closed = True
 
 
+class _IteratorTypeErrorStream:
+    """Mimic the SDK raising while parsing response.completed.output=None."""
+
+    def __init__(self, events_before_error):
+        self._events_before_error = list(events_before_error)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def __iter__(self):
+        for event in self._events_before_error:
+            yield event
+        raise TypeError("'NoneType' object is not iterable")
+
+    def get_final_response(self):  # pragma: no cover - iterator fails first
+        raise AssertionError("get_final_response should not be reached")
+
+
 def _codex_request_kwargs():
     return {
         "model": "gpt-5-codex",
@@ -482,6 +503,71 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert calls["create"] == 1
     assert create_stream.closed is True
     assert response.output[0].content[0].text == "streamed create ok"
+
+
+def test_run_codex_stream_falls_back_when_stream_iteration_parses_null_output(monkeypatch):
+    """Regression for #11179: the SDK can raise while iterating response.completed.
+
+    The failure happens before get_final_response(), so post-loop backfill alone is
+    not enough. Preserve already streamed output_item.done events.
+    """
+    agent = _build_agent(monkeypatch)
+    output_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="stream item survived")],
+    )
+    calls = {"stream": 0}
+
+    def _fake_stream(**kwargs):
+        calls["stream"] += 1
+        return _IteratorTypeErrorStream([
+            SimpleNamespace(type="response.output_item.done", item=output_item),
+        ])
+
+    def _unexpected_create(**kwargs):  # pragma: no cover - recovery should avoid fallback call
+        raise AssertionError("create fallback should not be needed when output items were collected")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(stream=_fake_stream, create=_unexpected_create),
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert calls["stream"] == 1
+    assert response.output == [output_item]
+    assert response.status == "completed"
+
+
+def test_codex_create_stream_fallback_does_not_synthesize_text_for_tool_call(monkeypatch):
+    """Fallback must not collapse tool-call streams with incidental text into a plain message."""
+    agent = _build_agent(monkeypatch)
+    terminal_response = SimpleNamespace(
+        output=None,
+        usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+        status="completed",
+        model="gpt-5-codex",
+    )
+    create_stream = _FakeCreateStream([
+        SimpleNamespace(type="response.output_text.delta", delta="thinking text"),
+        SimpleNamespace(type="response.function_call_arguments.delta", delta="{}"),
+        SimpleNamespace(type="response.completed", response=terminal_response),
+    ])
+    calls = {"create": 0}
+
+    def _fake_create(**kwargs):
+        calls["create"] += 1
+        assert kwargs.get("stream") is True
+        return create_stream
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+
+    response = agent._run_codex_create_stream_fallback(_codex_request_kwargs())
+
+    assert calls["create"] == 1
+    assert create_stream.closed is True
+    assert response is terminal_response
+    assert response.output is None
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):

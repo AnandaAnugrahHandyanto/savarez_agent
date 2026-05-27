@@ -14,6 +14,18 @@ import yaml
 from .models import Contract, ContractLock, LedgerGateRecord, LedgerSeed, LedgerSprintRecord, WorkerPacket
 from .validation import validate_contract
 
+DETERMINISTIC_LOCK_TIME = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def parse_iso_datetime(value: str) -> datetime:
+    """Parse an ISO-8601 datetime string, accepting trailing Z."""
+
+    normalized = value.replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
 
 def load_contract(path: str | Path) -> Contract:
     """Load and validate a YAML or JSON executable contract."""
@@ -64,12 +76,18 @@ def create_contract_lock(contract: Contract | dict[str, Any], approved_by: str, 
     )
 
 
-def compile_ledger_seed(contract: Contract | dict[str, Any], *, approved_by: str | None = None) -> LedgerSeed:
+def compile_ledger_seed(
+    contract: Contract | dict[str, Any],
+    *,
+    approved_by: str | None = None,
+    approved_at: datetime | None = None,
+) -> LedgerSeed:
     """Compile deterministic initial ledger state from a validated contract."""
 
     validated = validate_contract(contract)
     contract_hash = compute_contract_sha256(validated)
-    lock = create_contract_lock(validated, approved_by) if approved_by else None
+    lock_time = approved_at or DETERMINISTIC_LOCK_TIME
+    lock = create_contract_lock(validated, approved_by, approved_at=lock_time) if approved_by else None
     records = [
         LedgerSprintRecord(
             sprintId=sprint.id,

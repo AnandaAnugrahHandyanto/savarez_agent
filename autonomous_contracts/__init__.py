@@ -8,6 +8,18 @@ from .compiler import (
     load_contract,
 )
 from .schema import schema_map, write_schema_files
+from .ledger import (
+    LedgerError,
+    export_state,
+    initialize_ledger,
+    ready_sprints,
+    record_cleanup_entry,
+    resolve_gate,
+    transition_sprint,
+    update_cleanup_state,
+    verify_contract_lock,
+    write_projection_files,
+)
 from .models import (
     AcceptanceCriterion,
     AuthorityPolicy,
@@ -54,6 +66,7 @@ __all__ = [
     "Section",
     "Sprint",
     "WorkerPacket",
+    "LedgerError",
     "schema_map",
     "write_schema_files",
     "compile_ledger_seed",
@@ -62,4 +75,13 @@ __all__ = [
     "generate_worker_packet",
     "load_contract",
     "validate_contract",
+    "initialize_ledger",
+    "transition_sprint",
+    "record_cleanup_entry",
+    "update_cleanup_state",
+    "resolve_gate",
+    "ready_sprints",
+    "export_state",
+    "write_projection_files",
+    "verify_contract_lock",
 ]

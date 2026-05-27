@@ -8,11 +8,11 @@ but small enough to stabilize before adding CLI/profile-factory code.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-NonEmptyStr = str
+NonEmptyStr = Annotated[str, Field(min_length=1)]
 ContractStatus = Literal["draft", "approved", "executing", "superseded", "archived"]
 GateType = Literal["human_approval", "ci_check", "ledger_condition", "external_service", "credential", "combined"]
 GateOwner = Literal["galt", "benjamin", "pm_profile", "worker", "external"]
