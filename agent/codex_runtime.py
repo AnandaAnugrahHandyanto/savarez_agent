@@ -287,6 +287,53 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 exc,
             )
             return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+        except TypeError as exc:
+            # The chatgpt.com/backend-api/codex backend intermittently
+            # sends ``response.completed`` SSE events whose ``response.output``
+            # field is ``null``.  The OpenAI SDK's ``parse_response()``
+            # then does ``for output in response.output:`` and raises
+            # ``TypeError: 'NoneType' object is not iterable``, which the
+            # outer conversation loop classifies as a non-retryable local
+            # validation error and aborts the turn.  We've already
+            # collected the streamed deltas / output items, so synthesize
+            # a response from them — the same recovery the post-stream
+            # backfill below performs when ``get_final_response()`` returns
+            # an empty output list.
+            err_text = str(exc)
+            if "NoneType" in err_text and "iterable" in err_text:
+                if collected_output_items or agent._codex_streamed_text_parts:
+                    synth_output: list = list(collected_output_items)
+                    assembled = "".join(agent._codex_streamed_text_parts)
+                    if not synth_output and assembled and not has_tool_calls:
+                        synth_output = [SimpleNamespace(
+                            type="message",
+                            role="assistant",
+                            status="completed",
+                            content=[SimpleNamespace(type="output_text", text=assembled)],
+                        )]
+                    logger.warning(
+                        "Codex response.completed had output=null; recovered from "
+                        "%d collected items / %d text deltas (%d chars). %s",
+                        len(collected_output_items),
+                        len(agent._codex_streamed_text_parts),
+                        len(assembled),
+                        agent._client_log_context(),
+                    )
+                    return SimpleNamespace(
+                        output=synth_output,
+                        output_text=assembled,
+                        usage=None,
+                        model=api_kwargs.get("model", ""),
+                        status="completed",
+                        incomplete_details=None,
+                    )
+                logger.debug(
+                    "Codex response.completed had output=null and no stream "
+                    "content was collected; falling back to create(stream=True). %s",
+                    agent._client_log_context(),
+                )
+                return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+            raise
         except RuntimeError as exc:
             err_text = str(exc)
             missing_completed = "response.completed" in err_text

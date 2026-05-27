@@ -2348,6 +2348,14 @@ def run_conversation(
                 error_type = type(api_error).__name__
                 error_msg = str(api_error).lower()
                 _error_summary = agent._summarize_api_error(api_error)
+                # Local-validation errors (TypeError, ValueError) typically
+                # indicate a bug in our request building or in the upstream
+                # SDK's response parsing — keep the full traceback so we can
+                # actually fix them instead of just seeing the summary line.
+                _emit_tb = (
+                    isinstance(api_error, (TypeError, ValueError))
+                    and not isinstance(api_error, (UnicodeEncodeError, json.JSONDecodeError))
+                )
                 logger.warning(
                     "API call failed (attempt %s/%s) error_type=%s %s summary=%s",
                     retry_count,
@@ -2355,6 +2363,7 @@ def run_conversation(
                     error_type,
                     agent._client_log_context(),
                     _error_summary,
+                    exc_info=api_error if _emit_tb else False,
                 )
 
                 _provider = getattr(agent, "provider", "unknown")
