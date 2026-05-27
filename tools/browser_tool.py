@@ -1615,6 +1615,42 @@ BROWSER_TOOL_SCHEMAS = [
             "required": []
         }
     },
+    {
+        "name": "browser_session",
+        "description": "Inspect or change browser session consent. Use action='status' to inspect whether browser.write is allowed for the current session, action='grant' to allow browser.write actions after the user has consented, or action='revoke' to remove that consent.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["status", "grant", "revoke"], "description": "Consent operation to perform."},
+                "reason": {"type": "string", "description": "Optional user-visible reason recorded when granting write consent."}
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "browser_read",
+        "description": "Read from the active browser session through the browser ActionBroker. Read actions do not mutate the page and do not require browser session write consent. Actions: snapshot, console, images. Requires browser_navigate or browser.write(action='navigate') first for page-specific reads.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["snapshot", "console", "images"], "description": "Read action to execute."},
+                "parameters": {"type": "object", "description": "Action-specific parameters. Supported: {'full': true} for snapshot; {'clear': true} for console log retrieval. JavaScript expressions are not allowed in browser_read because they can mutate page state."}
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "browser_write",
+        "description": "Mutate the active browser session through the browser ActionBroker after browser_session(action='grant') has granted write consent for this session. Actions: navigate, click, type, scroll, back, press.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["navigate", "click", "type", "scroll", "back", "press"], "description": "Write action to execute."},
+                "parameters": {"type": "object", "description": "Action-specific parameters, e.g. {'url': 'https://example.com'}, {'ref': '@e1'}, {'ref': '@e2', 'text': 'hello'}, {'direction': 'down'}, or {'key': 'Enter'}."}
+            },
+            "required": ["action"]
+        }
+    },
 ]
 
 
@@ -3484,6 +3520,61 @@ def cleanup_all_browsers() -> None:
     _cached_browser_engine = None
     _browser_engine_resolved = False
 
+def browser_session(action: str = "status", reason: str = "", task_id: Optional[str] = None) -> str:
+    """Inspect/grant/revoke browser write consent for a browser session."""
+    from tools.browser_runtime import BrowserSessionConsentStore
+
+    store = BrowserSessionConsentStore()
+    normalized = (action or "status").strip().lower()
+    try:
+        if normalized == "status":
+            consent = store.status(task_id)
+        elif normalized == "grant":
+            consent = store.grant(task_id, reason=reason or "")
+        elif normalized == "revoke":
+            consent = store.revoke(task_id)
+        else:
+            return json.dumps({"success": False, "error": f"Unsupported browser_session action: {action}"})
+        return json.dumps({"success": True, "consent": consent})
+    except Exception as exc:
+        logger.warning("browser_session failed: %s", exc, exc_info=True)
+        return json.dumps({"success": False, "error": str(exc)})
+
+
+def browser_read(action: str, parameters: Optional[Dict[str, Any]] = None, task_id: Optional[str] = None) -> str:
+    """Execute a read-only browser action through the ActionBroker."""
+    from tools.browser_runtime import execute_browser_action
+
+    try:
+        result = execute_browser_action(
+            kind="read",
+            action=(action or "").strip().lower(),
+            parameters=parameters or {},
+            task_id=task_id,
+        )
+        return json.dumps(result)
+    except Exception as exc:
+        logger.warning("browser_read failed: %s", exc, exc_info=True)
+        return json.dumps({"success": False, "error": str(exc)})
+
+
+def browser_write(action: str, parameters: Optional[Dict[str, Any]] = None, task_id: Optional[str] = None) -> str:
+    """Execute a mutating browser action through consent + ActionBroker."""
+    from tools.browser_runtime import execute_browser_action
+
+    try:
+        result = execute_browser_action(
+            kind="write",
+            action=(action or "").strip().lower(),
+            parameters=parameters or {},
+            task_id=task_id,
+        )
+        return json.dumps(result)
+    except Exception as exc:
+        logger.warning("browser_write failed: %s", exc, exc_info=True)
+        return json.dumps({"success": False, "error": str(exc)})
+
+
 # ============================================================================
 # Requirements Check
 # ============================================================================
@@ -3814,4 +3905,40 @@ registry.register(
     handler=lambda args, **kw: browser_console(clear=args.get("clear", False), expression=args.get("expression"), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="🖥️",
+)
+registry.register(
+    name="browser_session",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_session"],
+    handler=lambda args, **kw: browser_session(
+        action=args.get("action", "status"),
+        reason=args.get("reason", ""),
+        task_id=kw.get("task_id"),
+    ),
+    check_fn=check_browser_requirements,
+    emoji="🔐",
+)
+registry.register(
+    name="browser_read",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_read"],
+    handler=lambda args, **kw: browser_read(
+        action=args.get("action", ""),
+        parameters=args.get("parameters") or {},
+        task_id=kw.get("task_id"),
+    ),
+    check_fn=check_browser_requirements,
+    emoji="📖",
+)
+registry.register(
+    name="browser_write",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_write"],
+    handler=lambda args, **kw: browser_write(
+        action=args.get("action", ""),
+        parameters=args.get("parameters") or {},
+        task_id=kw.get("task_id"),
+    ),
+    check_fn=check_browser_requirements,
+    emoji="✍️",
 )

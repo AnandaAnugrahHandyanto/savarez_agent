@@ -44,6 +44,7 @@ JOBS_FILE = CRON_DIR / "jobs.json"
 _jobs_file_lock = threading.Lock()
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
+CLAIM_LEASE_SECONDS = 300
 
 # Fields on a cron job that must never change after creation. ``id`` is used
 # as a filesystem path component under ``OUTPUT_DIR``; allowing it to be
@@ -889,7 +890,9 @@ def remove_job(job_id: str) -> bool:
 
 
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
-                 delivery_error: Optional[str] = None):
+                 delivery_error: Optional[str] = None,
+                 claim_owner_id: Optional[str] = None,
+                 claimed_run_at: Optional[str] = None):
     """
     Mark a job as having been run.
     
@@ -904,6 +907,30 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
         for i, job in enumerate(jobs):
             if job["id"] == job_id:
                 now = _hermes_now().isoformat()
+                kind = job.get("schedule", {}).get("kind")
+                stored_claim = job.get("claim")
+                had_claim = bool(stored_claim)
+                if claim_owner_id is not None or claimed_run_at is not None:
+                    if not isinstance(stored_claim, dict):
+                        logger.warning(
+                            "mark_job_run: stale completion for job %s ignored; no active claim remains",
+                            job_id,
+                        )
+                        return
+                    if (
+                        stored_claim.get("owner_id") != claim_owner_id
+                        or stored_claim.get("run_at") != claimed_run_at
+                    ):
+                        logger.warning(
+                            "mark_job_run: stale completion for job %s ignored; stored claim belongs to %s/%s, runner had %s/%s",
+                            job_id,
+                            stored_claim.get("owner_id"),
+                            stored_claim.get("run_at"),
+                            claim_owner_id,
+                            claimed_run_at,
+                        )
+                        return
+
                 job["last_run_at"] = now
                 job["last_status"] = "ok" if success else "error"
                 job["last_error"] = error if not success else None
@@ -922,9 +949,16 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                         jobs.pop(i)
                         save_jobs(jobs)
                         return
-                
-                # Compute next run
-                job["next_run_at"] = compute_next_run(job["schedule"], now)
+
+                job.pop("claim", None)
+
+                # Due-claim ticks advance recurring next_run_at before execution.
+                # Keep that durable recovery point instead of recomputing from
+                # completion time, which drifts cron semantics and can double-skip
+                # after long runs. Legacy/manual run paths with no claim retain the
+                # previous completion-anchored calculation.
+                if not had_claim:
+                    job["next_run_at"] = compute_next_run(job["schedule"], now)
 
                 # If no next run, decide whether this is terminal completion
                 # (one-shot) or a transient failure (recurring schedule couldn't
@@ -932,8 +966,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 # Recurring jobs must NEVER be silently disabled: that turns a
                 # missing runtime dep into "job completed" and the user's
                 # schedule quietly goes off. See issue #16265.
-                if job["next_run_at"] is None:
-                    kind = job.get("schedule", {}).get("kind")
+                if not job.get("next_run_at"):
                     if kind in {"cron", "interval"}:
                         job["state"] = "error"
                         if not job.get("last_error"):
@@ -988,6 +1021,142 @@ def advance_next_run(job_id: str) -> bool:
                     return True
                 return False
         return False
+
+
+def _claim_is_live(claim: Any, now: datetime) -> bool:
+    """Return True when a stored durable cron claim is still within its lease."""
+    if not isinstance(claim, dict):
+        return False
+    expires_at = claim.get("expires_at")
+    if not expires_at:
+        return False
+    try:
+        return _ensure_aware(datetime.fromisoformat(expires_at)) > now
+    except (TypeError, ValueError):
+        return False
+
+
+def _next_after_claimed_run(job: Dict[str, Any], claimed_run_at: str) -> Optional[str]:
+    """Compute the next stored run after the schedule occurrence being claimed."""
+    kind = job.get("schedule", {}).get("kind")
+    if kind in {"cron", "interval"}:
+        return compute_next_run(job["schedule"], claimed_run_at)
+    if kind == "once":
+        return None
+    return job.get("next_run_at")
+
+
+def claim_due_jobs(owner_id: Optional[str] = None, *, lease_seconds: int = CLAIM_LEASE_SECONDS) -> List[Dict[str, Any]]:
+    """Atomically claim jobs due for the live scheduler tick.
+
+    The claim is persisted in ``jobs.json`` before execution starts. Recurring
+    jobs also have ``next_run_at`` advanced from the scheduled occurrence being
+    claimed, not from completion time. If Hermes crashes mid-run, restart
+    recovery sees either the advanced ``next_run_at`` (live claim) or reclaims
+    the original ``claim.run_at`` after the lease expires without double
+    advancing the schedule.
+    """
+    owner = owner_id or f"pid:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+    with _jobs_file_lock:
+        now = _hermes_now()
+        raw_jobs = load_jobs()
+        jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]
+        claimed: List[Dict[str, Any]] = []
+        changed = False
+
+        for job in jobs:
+            if not job.get("enabled", True):
+                continue
+
+            existing_claim = job.get("claim")
+            recovering_claim = isinstance(existing_claim, dict) and not _claim_is_live(existing_claim, now)
+            if existing_claim and not recovering_claim:
+                continue
+
+            next_run = job.get("next_run_at")
+            claimed_run_at: Optional[str] = None
+
+            if recovering_claim:
+                claimed_run_at = existing_claim.get("run_at") or next_run
+            else:
+                if not next_run:
+                    schedule = job.get("schedule", {})
+                    kind = schedule.get("kind")
+                    recovered_next = _recoverable_oneshot_run_at(
+                        schedule,
+                        now,
+                        last_run_at=job.get("last_run_at"),
+                    )
+                    if not recovered_next and kind in {"cron", "interval"}:
+                        recovered_next = compute_next_run(schedule, now.isoformat())
+                    if not recovered_next:
+                        continue
+                    next_run = recovered_next
+                    for rj in raw_jobs:
+                        if rj["id"] == job["id"]:
+                            rj["next_run_at"] = recovered_next
+                            changed = True
+                            break
+                try:
+                    next_run_dt = _ensure_aware(datetime.fromisoformat(next_run))
+                except (TypeError, ValueError):
+                    continue
+                if next_run_dt > now:
+                    continue
+                schedule = job.get("schedule", {})
+                kind = schedule.get("kind")
+                grace = _compute_grace_seconds(schedule)
+                if kind in {"cron", "interval"} and (now - next_run_dt).total_seconds() > grace:
+                    new_next = compute_next_run(schedule, now.isoformat())
+                    if new_next:
+                        for rj in raw_jobs:
+                            if rj["id"] == job["id"]:
+                                rj["next_run_at"] = new_next
+                                changed = True
+                                break
+                    continue
+                claimed_run_at = next_run
+
+            if not claimed_run_at:
+                continue
+
+            claim = {
+                "owner_id": owner,
+                "claimed_at": now.isoformat(),
+                "expires_at": (now + timedelta(seconds=max(int(lease_seconds), 1))).isoformat(),
+                "run_at": claimed_run_at,
+            }
+            next_after = _next_after_claimed_run(job, claimed_run_at)
+            if job.get("schedule", {}).get("kind") in {"cron", "interval"} and next_after is None:
+                for rj in raw_jobs:
+                    if rj["id"] == job["id"]:
+                        rj["state"] = "error"
+                        rj["last_error"] = (
+                            "Failed to compute next run for recurring schedule "
+                            "while claiming due cron job."
+                        )
+                        changed = True
+                        break
+                continue
+
+            for rj in raw_jobs:
+                if rj["id"] == job["id"]:
+                    rj["claim"] = claim
+                    if next_after is not None:
+                        rj["next_run_at"] = next_after
+                    changed = True
+                    break
+
+            claimed_job = copy.deepcopy(job)
+            claimed_job["claim"] = claim
+            claimed_job["claimed_run_at"] = claimed_run_at
+            if next_after is not None:
+                claimed_job["next_run_at"] = next_after
+            claimed.append(claimed_job)
+
+        if changed:
+            save_jobs(raw_jobs)
+        return claimed
 
 
 def get_due_jobs() -> List[Dict[str, Any]]:

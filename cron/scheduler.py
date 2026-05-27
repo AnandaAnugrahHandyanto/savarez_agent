@@ -147,7 +147,14 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.jobs import (
+    advance_next_run,
+    claim_due_jobs,
+    get_due_jobs,
+    mark_job_run,
+    save_job_output,
+)
+_DEFAULT_GET_DUE_JOBS = get_due_jobs
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -1887,7 +1894,14 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         return 0
 
     try:
-        due_jobs = get_due_jobs()
+        if get_due_jobs is not _DEFAULT_GET_DUE_JOBS:
+            # Back-compat for tests/emergency monkeypatches that patch
+            # scheduler.get_due_jobs directly. Production uses claim_due_jobs().
+            due_jobs = get_due_jobs()
+            for job in due_jobs:
+                advance_next_run(job["id"])
+        else:
+            due_jobs = claim_due_jobs()
 
         if verbose and not due_jobs:
             logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
@@ -1895,11 +1909,6 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
         if verbose:
             logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
-
-        # Advance next_run_at for all recurring jobs FIRST, under the file lock,
-        # before any execution begins.  This preserves at-most-once semantics.
-        for job in due_jobs:
-            advance_next_run(job["id"])
 
         # Resolve max parallel workers: env var > config.yaml > unbounded.
         # Set HERMES_CRON_MAX_PARALLEL=1 to restore old serial behaviour.
@@ -1964,12 +1973,24 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     success = False
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+                mark_kwargs = {"delivery_error": delivery_error}
+                if job.get("claim") or job.get("claimed_run_at"):
+                    mark_kwargs.update({
+                        "claim_owner_id": (job.get("claim") or {}).get("owner_id"),
+                        "claimed_run_at": job.get("claimed_run_at"),
+                    })
+                mark_job_run(job["id"], success, error, **mark_kwargs)
                 return True
 
             except Exception as e:
                 logger.error("Error processing job %s: %s", job['id'], e)
-                mark_job_run(job["id"], False, str(e))
+                mark_kwargs = {}
+                if job.get("claim") or job.get("claimed_run_at"):
+                    mark_kwargs.update({
+                        "claim_owner_id": (job.get("claim") or {}).get("owner_id"),
+                        "claimed_run_at": job.get("claimed_run_at"),
+                    })
+                mark_job_run(job["id"], False, str(e), **mark_kwargs)
                 return False
 
         # Partition due jobs: jobs with a per-job workdir and/or profile touch
