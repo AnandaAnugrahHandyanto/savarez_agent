@@ -160,3 +160,19 @@ class TestToolsLintRegression:
         assert result.returncode == 0, (
             f"tools/ has F821 violation(s):\n{result.stdout}"
         )
+
+    def test_skill_usage_py_has_zero_f401_violations(self):
+        """tools/skill_usage.py must have zero F401 (unused import) violations."""
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F401",
+             "--output-format=concise", "tools/skill_usage.py"],
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
+        )
+
+        assert result.returncode == 0, (
+            f"tools/skill_usage.py has F401 violation(s):\n{result.stdout}"
+        )
+
