@@ -896,6 +896,47 @@ class TestCodexStreamCallbacks:
         assert response is fallback_response
         mock_fallback.assert_called_once_with({}, client=mock_client)
 
+    def test_codex_stream_recovers_when_sdk_terminal_response_output_is_none(self):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://chatgpt.com/backend-api/codex",
+            model="gpt-5.5",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "codex_responses"
+        agent._interrupt_requested = False
+
+        output_item = SimpleNamespace(
+            type="message",
+            role="assistant",
+            status="completed",
+            content=[SimpleNamespace(type="output_text", text="OK")],
+        )
+
+        class _BrokenTerminalSnapshotStream:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, exc_type, exc, tb):
+                return False
+
+            def __iter__(self_inner):
+                yield SimpleNamespace(type="response.output_text.delta", delta="OK")
+                yield SimpleNamespace(type="response.output_item.done", item=output_item)
+                raise TypeError("'NoneType' object is not iterable")
+
+        mock_client = MagicMock()
+        mock_client.responses.stream.return_value = _BrokenTerminalSnapshotStream()
+
+        response = agent._run_codex_stream({}, client=mock_client)
+
+        assert response.status == "completed"
+        assert response.output == [output_item]
+
     def test_codex_create_stream_fallback_refreshes_activity_on_every_event(self):
         from run_agent import AIAgent
 
