@@ -31,7 +31,7 @@ This checkout (`hermes-agent-upstream-sync`) is not generic upstream marketing �
 
 Upstream Hermes still provides the core agent loop, TUI, toolsets, skills hub, memory providers, delegation, and cron. This fork adds the **operations layer** that makes those features survive on native Windows without WSL.
 
-Current baseline: merged `upstream/main` through `2517917de` on 2026-05-26, then applied fork-side Windows reliability fixes. For future updates, compare against `upstream/main` via `git fetch upstream main` and `py -3 scripts/sync_upstream.py`.
+Current baseline: merged `upstream/main` through `9eadb6805` on 2026-05-27, then kept the fork-side Windows reliability and operations layer. This sync includes upstream Docker ownership/env fixes, Docker voice-mode runtime handling, the Nous-approved MCP catalog/picker, TUI session orchestration, Codex Responses recovery fixes, `/reload-mcp` cached-agent refresh, and `hermes update --branch` support. For future updates, compare against `upstream/main` via `git fetch upstream main` and the Python sync helpers under `scripts/`.
 
 ---
 
@@ -246,11 +246,13 @@ Set `HERMES_WEBUI_ROOT` if not using `~/Desktop/hermes-webui`.
 
 | Area | Highlights |
 |---|---|
-| TUI / CLI | Ink TUI (`hermes --tui`), slash commands, session resume, tool streaming |
-| Messaging gateway | Telegram, Discord, Slack, WhatsApp, Signal, Email, Matrix, … |
+| TUI / CLI | Ink TUI (`hermes --tui`), slash commands, session resume, tool streaming, active-session switching, and update branch selection |
+| Messaging gateway | Telegram, Discord, Slack, WhatsApp, Signal, Email, Matrix, cached-agent MCP refresh, … |
 | Learning loop | Memory providers, session search, skill creation, curator |
 | Cron | Natural-language scheduled jobs with multi-platform delivery |
 | Delegation | Subagents with isolated terminal sessions |
+| MCP | Optional MCP catalog manifests, interactive picker, and tools config integration |
+| Docker / voice | Windows Docker Desktop compose support, container env propagation, Docker HOME ownership protection, and Pulse/PipeWire voice-mode passthrough |
 | Terminal backends | local, Docker, SSH, Modal, Daytona, … |
 
 Official docs: [Quickstart](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart) · [Gateway](https://hermes-agent.nousresearch.com/docs/user-guide/messaging) · [Skills](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills) · [Cron](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron)

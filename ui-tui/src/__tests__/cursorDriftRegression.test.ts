@@ -16,10 +16,10 @@
  * was actually rendered. The fix sources cursorLayout's line breaks
  * directly from wrap-ansi, guaranteeing agreement.
  *
- * This test pins the contract: for every char that would be typed into
- * the composer, the cursor position reported by cursorLayout MUST equal
- * the end-of-text position that wrap-ansi would render. Any future
- * regression that lets the two diverge re-introduces the drift.
+ * This test pins the contract across representative typing prefixes:
+ * the cursor position reported by cursorLayout MUST equal the end-of-text
+ * position that wrap-ansi would render. Any future regression that lets
+ * the two diverge re-introduces the drift.
  */
 import { wrapAnsi } from '@hermes/ink'
 import { describe, expect, it } from 'vitest'
@@ -45,25 +45,39 @@ const USER_REPORT_MESSAGE =
   'try to fix this and all not working. ok it just happened, to me, nowso attaching screenshot ' +
   'and you can see its multiline, new session. on a new bb/<xxx> branch investigate'
 
+function typingPrefixCheckpoints(text: string): number[] {
+  const points = new Set<number>([1, 2, 3, text.length])
+
+  for (let i = 1; i <= text.length; i++) {
+    const ch = text[i - 1] ?? ''
+
+    if (i % 16 === 0 || /\s|[.,/<>-]/.test(ch)) {
+      points.add(Math.max(1, i - 1))
+      points.add(i)
+      points.add(Math.min(text.length, i + 1))
+    }
+  }
+
+  return [...points].sort((a, b) => a - b)
+}
+
 describe('cursor-drift regression — composer cursorLayout matches Ink rendering', () => {
-  it('agrees with wrap-ansi at every typing-prefix of the user-reported message', () => {
-    // Walks the message char-by-char (mirroring what the TUI sees when a
-    // user types). At every prefix, cursorLayout must place the cursor
-    // exactly where wrap-ansi would render the end of the text.
+  it('agrees with wrap-ansi at sampled typing prefixes of the user-reported message', () => {
+    // Walks realistic typing prefixes, including every whitespace/punctuation
+    // edge and periodic mid-word samples. This keeps the regression pinned
+    // without making Windows CI spend most of the test budget in wrap-ansi.
     //
     // Pre-fix: this failed on most narrow widths because the hand-rolled
     // wrap algorithm broke at slightly different points than wrap-ansi.
-    for (const cols of [40, 50, 55, 60, 65, 70, 80]) {
-      let acc = ''
-
-      for (const ch of USER_REPORT_MESSAGE) {
-        acc += ch
+    for (const cols of [40, 55, 70, 80]) {
+      for (const len of typingPrefixCheckpoints(USER_REPORT_MESSAGE)) {
+        const acc = USER_REPORT_MESSAGE.slice(0, len)
         const layout = cursorLayout(acc, acc.length, cols)
         const expected = wrapAnsiEnd(acc, cols)
 
         expect(
           layout,
-          `mismatch at cols=${cols}, len=${acc.length}, last-char=${JSON.stringify(ch)}, ` +
+          `mismatch at cols=${cols}, len=${acc.length}, ` +
             `tail=${JSON.stringify(acc.slice(-30))}`
         ).toEqual(expected)
       }

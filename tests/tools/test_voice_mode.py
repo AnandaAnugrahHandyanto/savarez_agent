@@ -934,12 +934,15 @@ class TestSilenceDetection:
         silent_frame = np.zeros((1600, 1), dtype="int16")
         callback(silent_frame, 1600, None, None)
 
-        # Wait a bit past the silence duration, then send another silent frame
-        time.sleep(0.06)
-        callback(silent_frame, 1600, None, None)
+        # Keep feeding silent frames until the detector observes enough quiet
+        # time. This avoids depending on one short sleep matching the host's
+        # timer granularity under Windows/CI load.
+        deadline = time.monotonic() + 1.0
+        while not fired.is_set() and time.monotonic() < deadline:
+            time.sleep(0.02)
+            callback(silent_frame, 1600, None, None)
 
-        # The callback should have been fired
-        assert fired.wait(timeout=1.0) is True
+        assert fired.wait(timeout=0.2) is True
 
         recorder.cancel()
 
@@ -1282,8 +1285,13 @@ class TestSubprocessTimeoutKill:
     """Bug: proc.wait(timeout) raised TimeoutExpired but process was not killed."""
 
     def test_timeout_kills_process(self):
-        import subprocess, os
-        proc = subprocess.Popen(["sleep", "600"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        import subprocess, sys
+
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(600)"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         pid = proc.pid
         assert proc.poll() is None
 
