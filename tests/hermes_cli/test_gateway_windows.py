@@ -9,6 +9,26 @@ import hermes_cli.gateway_windows as gateway_windows
 import hermes_cli.setup as setup
 
 
+def test_windows_pid_scan_detects_legacy_cli_gateway(monkeypatch):
+    """Status/restart scans should still see older cli.py --gateway watchdog launches."""
+    class Result:
+        returncode = 0
+        stdout = (
+            "CommandLine=C:\\Projects\\Hermes\\.venv\\Scripts\\pythonw.exe "
+            "\"C:\\Projects\\Hermes\\cli.py\" --gateway\n"
+            "ProcessId=1234\n\n"
+        )
+
+    monkeypatch.setattr(gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway, "_get_ancestor_pids", lambda: set())
+    monkeypatch.setattr(gateway, "_filter_venv_launcher_stubs", lambda pids: pids)
+    monkeypatch.setattr(gateway, "_profile_arg", lambda *args, **kwargs: "")
+    monkeypatch.setattr(gateway.shutil, "which", lambda name: "wmic" if name == "wmic" else None)
+    monkeypatch.setattr(gateway.subprocess, "run", lambda *args, **kwargs: Result())
+
+    assert gateway._scan_gateway_pids(set()) == [1234]
+
+
 @pytest.mark.parametrize(
     "detail",
     [
@@ -61,6 +81,10 @@ def test_build_gateway_argv_uses_base_pythonw_for_uv_venv_launcher(monkeypatch, 
     argv, cwd, env_overlay = gateway_windows._build_gateway_argv()
 
     assert argv[:3] == [str(base_pythonw), "-m", "hermes_cli.main"]
+    assert argv[-2:] == ["gateway", "run"]
+    joined = " ".join(argv)
+    assert "cli.py" not in joined
+    assert "--gateway" not in argv
     assert cwd == str(project)
     assert env_overlay["VIRTUAL_ENV"] == str(project / "venv")
     assert str(project) in env_overlay["PYTHONPATH"].split(gateway_windows.os.pathsep)
