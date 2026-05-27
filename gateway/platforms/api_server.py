@@ -8,6 +8,12 @@ Exposes an HTTP server with endpoints:
 - DELETE /v1/responses/{response_id} — Delete a stored response
 - GET  /v1/models                  — lists hermes-agent as an available model
 - GET  /v1/capabilities            — machine-readable API capabilities for external UIs
+- GET  /api/sessions               — list client-visible Hermes sessions
+- POST /api/sessions               — create an empty Hermes session
+- GET/PATCH/DELETE /api/sessions/{session_id} — read/update/delete a session
+- GET  /api/sessions/{session_id}/messages — read session message history
+- POST /api/sessions/{session_id}/fork — branch a session using SessionDB lineage
+- POST /api/sessions/{session_id}/chat[/stream] — chat with a persisted session
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}           — retrieve current run status
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
@@ -25,18 +31,14 @@ Requires:
 """
 
 import asyncio
-import base64
 import hashlib
 import hmac
 import json
 import logging
-import mimetypes
 import os
-from pathlib import Path
 import socket as _socket
 import re
 import sqlite3
-import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -66,51 +68,6 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
-MAX_AUDIO_REQUEST_BYTES = 25 * 1024 * 1024
-MAX_ARTIFACT_ITEMS = 250
-MAX_ARTIFACT_PREVIEW_BYTES = 4096
-SECRET_ARTIFACT_NAMES = frozenset({
-    ".aws",
-    ".azure",
-    ".config",
-    ".env",
-    ".git",
-    ".gnupg",
-    ".infisical",
-    ".kube",
-    ".npmrc",
-    ".ssh",
-    "__pycache__",
-    "auth",
-    "credentials",
-    "keys",
-    "node_modules",
-    "secrets",
-    "venv",
-    ".venv",
-})
-SECRET_ARTIFACT_SUFFIXES = (
-    ".env",
-    ".key",
-    ".pem",
-    ".p12",
-    ".pfx",
-    ".crt",
-    ".cer",
-    ".kubeconfig",
-)
-PREVIEWABLE_TEXT_SUFFIXES = frozenset({
-    ".csv",
-    ".htm",
-    ".html",
-    ".json",
-    ".log",
-    ".md",
-    ".txt",
-    ".xml",
-    ".yaml",
-    ".yml",
-})
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -362,6 +319,20 @@ def _multimodal_validation_error(exc: ValueError, *, param: str) -> "web.Respons
     )
 
 
+def _session_chat_user_message(body: Dict[str, Any], *, param: str = "message") -> tuple[Any, Optional["web.Response"]]:
+    """Parse and normalize session chat ``message`` / ``input`` like chat completions."""
+    user_message = body.get("message") or body.get("input")
+    if not _content_has_visible_payload(user_message):
+        return None, web.json_response(
+            _openai_error("Missing 'message' field", code="missing_message"),
+            status=400,
+        )
+    try:
+        return _normalize_multimodal_content(user_message), None
+    except ValueError as exc:
+        return None, _multimodal_validation_error(exc, param=param)
+
+
 def check_api_server_requirements() -> bool:
     """Check if API server dependencies are available."""
     return AIOHTTP_AVAILABLE
@@ -570,96 +541,6 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
     }
 
 
-def _safe_artifact_label(label: str) -> str:
-    """Normalize a configured artifact root label for use in logical paths."""
-    clean = re.sub(r"[^A-Za-z0-9_.-]+", "-", label.strip().lower()).strip(".-")
-    if clean in {"", ".", ".."} or _is_secret_artifact_name(clean):
-        return ""
-    return clean[:64]
-
-
-def _humanize_artifact_label(label: str) -> str:
-    words = re.sub(r"[_-]+", " ", label).strip()
-    return words[:1].upper() + words[1:] if words else "Entregables"
-
-
-def _is_secret_artifact_name(name: str) -> bool:
-    normalized = name.strip().lower()
-    stem = Path(normalized).stem
-    if normalized in SECRET_ARTIFACT_NAMES or stem in SECRET_ARTIFACT_NAMES:
-        return True
-    if normalized.startswith(".env."):
-        return True
-    return normalized.endswith(SECRET_ARTIFACT_SUFFIXES)
-
-
-def _mtime_iso(timestamp: float) -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(timestamp))
-
-
-def _artifact_type_for_path(path: Path, *, is_dir: bool, mime_type: Optional[str]) -> str:
-    if is_dir:
-        return "folder"
-
-    suffix = path.suffix.lower()
-    name = path.name.lower()
-    if mime_type:
-        if mime_type.startswith("image/"):
-            return "image"
-        if mime_type.startswith("video/"):
-            return "video"
-        if mime_type.startswith("audio/"):
-            return "audio"
-        if mime_type in {"application/json", "text/csv"}:
-            return "data"
-        if mime_type.startswith("text/"):
-            return "document"
-
-    if suffix in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".svg"}:
-        return "image"
-    if suffix in {".mp4", ".mov", ".webm", ".mkv", ".avi"}:
-        return "video"
-    if suffix in {".mp3", ".m4a", ".wav", ".ogg", ".aac", ".flac"}:
-        return "audio"
-    if suffix in {".csv", ".json", ".xlsx", ".xls", ".parquet", ".sqlite", ".db"}:
-        return "data"
-    if suffix in {".pdf", ".doc", ".docx", ".md", ".txt", ".rtf", ".html", ".htm"}:
-        return "document"
-    if suffix in {".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java", ".css", ".sh"}:
-        return "code"
-    if suffix in {".zip", ".gz", ".bz2", ".xz", ".rar", ".7z"} or name.endswith((".tar.gz", ".tar.bz2", ".tar.xz")):
-        return "archive"
-    return "file"
-
-
-def _artifact_preview(path: Path, *, mime_type: Optional[str], is_dir: bool) -> Optional[str]:
-    if is_dir:
-        return None
-    try:
-        if path.stat().st_size > MAX_ARTIFACT_PREVIEW_BYTES:
-            return None
-    except OSError:
-        return None
-
-    suffix = path.suffix.lower()
-    is_text = (
-        suffix in PREVIEWABLE_TEXT_SUFFIXES
-        or bool(mime_type and (mime_type.startswith("text/") or mime_type in {"application/json", "application/xml"}))
-    )
-    if not is_text:
-        return None
-
-    try:
-        raw = path.read_bytes()[:MAX_ARTIFACT_PREVIEW_BYTES]
-    except OSError:
-        return None
-    if b"\x00" in raw:
-        return None
-    text = raw.decode("utf-8", errors="replace")
-    text = re.sub(r"\s+", " ", text).strip()
-    return text[:320] if text else None
-
-
 if AIOHTTP_AVAILABLE:
     @web.middleware
     async def body_limit_middleware(request, handler):
@@ -814,22 +695,6 @@ class APIServerAdapter(BasePlatformAdapter):
         self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
-        )
-        self._artifact_root_config: str = str(
-            extra.get(
-                "artifact_roots",
-                extra.get(
-                    "artifact_root",
-                    os.getenv(
-                        "API_SERVER_ARTIFACT_ROOTS",
-                        os.getenv(
-                            "API_SERVER_ARTIFACT_ROOT",
-                            os.getenv("HERMES_ARTIFACT_ROOT", ""),
-                        ),
-                    ),
-                ),
-            )
-            or ""
         )
         self._model_name: str = self._resolve_model_name(
             extra.get("model_name", os.getenv("API_SERVER_MODEL_NAME", "")),
@@ -1230,9 +1095,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 ),
             },
             "features": {
-                "artifacts": True,
-                "audio_speech": True,
-                "audio_transcriptions": True,
                 "chat_completions": True,
                 "chat_completions_streaming": True,
                 "responses_api": True,
@@ -1244,6 +1106,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_approval_response": True,
                 "tool_progress_events": True,
                 "approval_events": True,
+                "session_resources": True,
+                "session_chat": True,
+                "session_chat_streaming": True,
+                "session_fork": True,
+                "admin_config_rw": False,
+                "jobs_admin": False,
+                "memory_write_api": False,
+                "skills_api": True,
+                "audio_api": False,
+                "realtime_voice": False,
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
                 "cors": bool(self._cors_origins),
@@ -1252,10 +1124,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 "health": {"method": "GET", "path": "/health"},
                 "health_detailed": {"method": "GET", "path": "/health/detailed"},
                 "models": {"method": "GET", "path": "/v1/models"},
-                "artifacts": {"method": "GET", "path": "/api/artifacts"},
-                "artifact_file": {"method": "GET", "path": "/api/artifacts/{relative_path}"},
-                "audio_speech": {"method": "POST", "path": "/v1/audio/speech"},
-                "audio_transcriptions": {"method": "POST", "path": "/v1/audio/transcriptions"},
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
                 "runs": {"method": "POST", "path": "/v1/runs"},
@@ -1263,339 +1131,539 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
                 "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
+                "skills": {"method": "GET", "path": "/v1/skills"},
+                "toolsets": {"method": "GET", "path": "/v1/toolsets"},
+                "sessions": {"method": "GET", "path": "/api/sessions"},
+                "session_create": {"method": "POST", "path": "/api/sessions"},
+                "session": {"method": "GET", "path": "/api/sessions/{session_id}"},
+                "session_update": {"method": "PATCH", "path": "/api/sessions/{session_id}"},
+                "session_delete": {"method": "DELETE", "path": "/api/sessions/{session_id}"},
+                "session_messages": {"method": "GET", "path": "/api/sessions/{session_id}/messages"},
+                "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
+                "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
+                "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
             },
         })
 
-    def _artifact_sources(self) -> tuple[tuple[str, Path], ...]:
-        """Return safe physical roots exposed through the virtual artifacts API."""
-        configured = self._artifact_root_config.strip()
-        sources: list[tuple[str, Path]] = []
+    async def _handle_skills(self, request: "web.Request") -> "web.Response":
+        """GET /v1/skills — list installed skills visible to the API-server agent.
 
-        if configured:
-            for index, item in enumerate(part.strip() for part in configured.split(",") if part.strip()):
-                if "=" in item:
-                    label, raw_path = item.split("=", 1)
-                    label = _safe_artifact_label(label.strip()) or f"root-{index + 1}"
-                else:
-                    raw_path = item
-                    label = _safe_artifact_label(Path(raw_path).name) or f"root-{index + 1}"
+        Read-only listing intended for external clients that need to know
+        which skills are available without sending a chat message and asking
+        the model. Mirrors what the gateway/CLI surfaces through
+        ``/skills list``, but as a deterministic JSON payload.
 
-                path = Path(os.path.expandvars(os.path.expanduser(raw_path))).resolve()
-                if path.is_dir():
-                    sources.append((label, path))
-        else:
-            candidates: list[tuple[str, Path]] = []
-            base_paths = [Path.cwd(), Path.home() / "paimon"]
-            for base in base_paths:
-                candidates.extend([
-                    ("outputs", base / "data" / "outputs"),
-                    ("cron-output", base / "home" / "cron" / "output"),
-                ])
+        Returns the same skill metadata (name, description, category) the
+        skills hub uses internally. Disabled skills are excluded so the
+        listing matches what the agent actually loads.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
 
-            seen: set[Path] = set()
-            for label, path in candidates:
+        try:
+            from tools.skills_tool import _find_all_skills, _sort_skills
+            skills = _sort_skills(_find_all_skills(skip_disabled=False))
+        except Exception:
+            logger.exception("GET /v1/skills failed")
+            return web.json_response(
+                _openai_error("Failed to enumerate skills", err_type="server_error"),
+                status=500,
+            )
+
+        return web.json_response({
+            "object": "list",
+            "data": skills,
+        })
+
+    async def _handle_toolsets(self, request: "web.Request") -> "web.Response":
+        """GET /v1/toolsets — list toolsets and their resolved tools.
+
+        Returns the toolset surface the api_server platform actually exposes
+        to its agent: each toolset's enabled/configured state plus the
+        concrete tool names it expands to. This is the deterministic
+        equivalent of what a client would otherwise have to recover by
+        asking the model what tools it can call.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.tools_config import (
+                _get_effective_configurable_toolsets,
+                _get_platform_tools,
+                _toolset_has_keys,
+            )
+            from toolsets import resolve_toolset
+
+            config = load_config()
+            enabled_toolsets = _get_platform_tools(
+                config,
+                "api_server",
+                include_default_mcp_servers=False,
+            )
+            data: List[Dict[str, Any]] = []
+            for name, label, desc in _get_effective_configurable_toolsets():
                 try:
-                    resolved = path.resolve()
-                except OSError:
-                    continue
-                if resolved in seen or not resolved.is_dir():
-                    continue
-                seen.add(resolved)
-                sources.append((label, resolved))
+                    tools = sorted(set(resolve_toolset(name)))
+                except Exception:
+                    tools = []
+                is_enabled = name in enabled_toolsets
+                data.append({
+                    "name": name,
+                    "label": label,
+                    "description": desc,
+                    "enabled": is_enabled,
+                    "configured": _toolset_has_keys(name, config),
+                    "tools": tools,
+                })
+        except Exception:
+            logger.exception("GET /v1/toolsets failed")
+            return web.json_response(
+                _openai_error("Failed to enumerate toolsets", err_type="server_error"),
+                status=500,
+            )
 
-        return tuple(sources)
+        return web.json_response({
+            "object": "list",
+            "platform": "api_server",
+            "data": data,
+        })
+
+    # ------------------------------------------------------------------
+    # /api/sessions — thin client/session resource API
+    # ------------------------------------------------------------------
 
     @staticmethod
-    def _artifact_path_parts(raw_path: str) -> tuple[str, ...]:
-        raw_path = (raw_path or "").strip().replace("\\", "/")
-        if not raw_path:
-            return ()
-        if raw_path.startswith("/") or re.search(r"[\x00-\x1f]", raw_path):
-            raise ValueError("Invalid artifact path")
-
-        parts = tuple(part for part in raw_path.split("/") if part and part != ".")
-        if any(part == ".." for part in parts):
-            raise ValueError("Invalid artifact path")
-        if any(_is_secret_artifact_name(part) for part in parts):
-            raise ValueError("Artifact path is not allowed")
-        return parts
-
-    def _resolve_artifact_target(self, raw_path: str) -> tuple[str, Path, Path, tuple[str, ...]]:
-        """Resolve a logical artifact path to a physical path inside an allowed root."""
-        sources = self._artifact_sources()
-        if not sources:
-            raise FileNotFoundError("No artifact root is configured")
-
-        parts = self._artifact_path_parts(raw_path)
-        if len(sources) > 1:
-            if not parts:
-                raise IsADirectoryError("Virtual artifact root")
-            labels = {label: root for label, root in sources}
-            label = parts[0]
-            root = labels.get(label)
-            if root is None:
-                raise FileNotFoundError("Artifact root not found")
-            remainder = parts[1:]
-        else:
-            label, root = sources[0]
-            remainder = parts
-
-        target = root.joinpath(*remainder).resolve()
+    def _parse_nonnegative_int(value: Any, default: int, maximum: int) -> int:
         try:
-            target.relative_to(root)
-        except ValueError:
-            raise ValueError("Artifact path escapes root")
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return default
+        if parsed < 0:
+            return default
+        return min(parsed, maximum)
 
-        return label, root, target, remainder
+    @staticmethod
+    def _session_response(session: Dict[str, Any]) -> Dict[str, Any]:
+        """Return a stable, client-safe session representation."""
+        safe_keys = (
+            "id", "source", "user_id", "model", "title", "started_at", "ended_at",
+            "end_reason", "message_count", "tool_call_count", "input_tokens",
+            "output_tokens", "cache_read_tokens", "cache_write_tokens",
+            "reasoning_tokens", "estimated_cost_usd", "actual_cost_usd",
+            "api_call_count", "parent_session_id", "last_active", "preview",
+            "_lineage_root_id",
+        )
+        payload = {key: session.get(key) for key in safe_keys if key in session}
+        # Avoid exposing full system prompts/model_config through the client API;
+        # callers only need to know whether those snapshots exist.
+        payload["has_system_prompt"] = bool(session.get("system_prompt"))
+        payload["has_model_config"] = bool(session.get("model_config"))
+        return payload
 
-    def _artifact_item(self, path: Path, logical_path: str) -> Optional[Dict[str, Any]]:
-        try:
-            if _is_secret_artifact_name(path.name):
-                return None
+    @staticmethod
+    def _message_response(message: Dict[str, Any]) -> Dict[str, Any]:
+        safe_keys = (
+            "id", "session_id", "role", "content", "tool_call_id", "tool_calls",
+            "tool_name", "timestamp", "token_count", "finish_reason", "reasoning",
+            "reasoning_content",
+        )
+        return {key: message.get(key) for key in safe_keys if key in message}
 
-            resolved = path.resolve()
-            label, root, _, _ = self._resolve_artifact_target(logical_path)
-            try:
-                resolved.relative_to(root)
-            except ValueError:
-                logger.warning("Skipping artifact outside root %s: %s", label, path)
-                return None
-
-            stat = resolved.stat()
-            is_dir = resolved.is_dir()
-            mime_type, _encoding = mimetypes.guess_type(str(resolved))
-            artifact_type = _artifact_type_for_path(resolved, is_dir=is_dir, mime_type=mime_type)
-            item: Dict[str, Any] = {
-                "artifactType": artifact_type,
-                "kind": "folder" if is_dir else "file",
-                "mimeType": mime_type,
-                "modifiedAt": _mtime_iso(stat.st_mtime),
-                "name": path.name,
-                "path": logical_path,
-                "size": 0 if is_dir else stat.st_size,
-            }
-            preview = _artifact_preview(resolved, mime_type=mime_type, is_dir=is_dir)
-            if preview:
-                item["preview"] = preview
-            return item
-        except (FileNotFoundError, PermissionError, OSError, ValueError):
-            return None
-
-    def _virtual_artifact_root_items(self, sources: tuple[tuple[str, Path], ...]) -> list[Dict[str, Any]]:
-        items: list[Dict[str, Any]] = []
-        for label, root in sources:
-            try:
-                stat = root.stat()
-            except OSError:
-                continue
-            items.append({
-                "artifactType": "folder",
-                "kind": "folder",
-                "mimeType": None,
-                "modifiedAt": _mtime_iso(stat.st_mtime),
-                "name": _humanize_artifact_label(label),
-                "path": label,
-                "size": 0,
-            })
-        return items
-
-    def _list_artifacts_payload(self, raw_path: str = "") -> Dict[str, Any]:
-        sources = self._artifact_sources()
-        clean_path = "/".join(self._artifact_path_parts(raw_path))
-        if not sources:
-            return {
-                "object": "hermes.artifacts.list",
-                "root": "paimon-artifacts",
-                "path": clean_path,
-                "counts": {"files": 0, "folders": 0},
-                "items": [],
-                "truncated": False,
-            }
-
-        if len(sources) > 1 and not clean_path:
-            items = self._virtual_artifact_root_items(sources)
-        else:
-            label, root, target, remainder = self._resolve_artifact_target(clean_path)
-            if not target.exists():
-                raise FileNotFoundError("Artifact path not found")
-            if not target.is_dir():
-                item = self._artifact_item(target, clean_path)
-                items = [item] if item else []
-            else:
-                items = []
-                for child in target.iterdir():
-                    child_relative = "/".join((*remainder, child.name))
-                    logical_path = f"{label}/{child_relative}" if len(sources) > 1 else child_relative
-                    item = self._artifact_item(child, logical_path)
-                    if item:
-                        items.append(item)
-
-        items.sort(key=lambda item: (item["kind"] != "folder", item["name"].lower()))
-        truncated = len(items) > MAX_ARTIFACT_ITEMS
-        if truncated:
-            items = items[:MAX_ARTIFACT_ITEMS]
-
-        return {
-            "object": "hermes.artifacts.list",
-            "root": "paimon-artifacts",
-            "path": clean_path,
-            "counts": {
-                "files": sum(1 for item in items if item["kind"] == "file"),
-                "folders": sum(1 for item in items if item["kind"] == "folder"),
-            },
-            "items": items,
-            "truncated": truncated,
-        }
-
-    async def _handle_list_artifacts(self, request: "web.Request") -> "web.Response":
-        """GET /api/artifacts — list safe deliverables from the agent workshop."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
-
-        raw_path = request.query.get("path", "")
-        try:
-            return web.json_response(self._list_artifacts_payload(raw_path))
-        except ValueError as exc:
-            return web.json_response(_openai_error(str(exc)), status=400)
-        except FileNotFoundError as exc:
-            return web.json_response(_openai_error(str(exc)), status=404)
-
-    async def _handle_get_artifact(self, request: "web.Request") -> "web.StreamResponse":
-        """GET /api/artifacts/{path} — return metadata, directory listing, or file bytes."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
-
-        raw_path = request.match_info.get("artifact_path", "")
-        try:
-            _label, _root, target, _remainder = self._resolve_artifact_target(raw_path)
-            if not target.exists():
-                raise FileNotFoundError("Artifact path not found")
-            if target.is_dir():
-                return web.json_response(self._list_artifacts_payload(raw_path))
-            if request.query.get("metadata") in {"1", "true", "yes"}:
-                item = self._artifact_item(target, "/".join(self._artifact_path_parts(raw_path)))
-                return web.json_response(item or {})
-            return web.FileResponse(
-                target,
-                headers={
-                    "Content-Disposition": f'inline; filename="{target.name}"',
-                    "X-Content-Type-Options": "nosniff",
-                },
-            )
-        except ValueError as exc:
-            return web.json_response(_openai_error(str(exc)), status=400)
-        except FileNotFoundError as exc:
-            return web.json_response(_openai_error(str(exc)), status=404)
-
-    async def _handle_audio_transcriptions(self, request: "web.Request") -> "web.Response":
-        """POST /v1/audio/transcriptions — transcribe base64 audio with configured STT."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
-
+    async def _read_json_body(self, request: "web.Request") -> tuple[Dict[str, Any], Optional["web.Response"]]:
         try:
             body = await request.json()
-        except (json.JSONDecodeError, Exception):
-            return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
-
-        audio = body.get("audio") if isinstance(body, dict) else None
-        if not isinstance(audio, dict):
-            return web.json_response(_openai_error("Missing 'audio' object"), status=400)
-
-        raw_data = audio.get("data")
-        if not isinstance(raw_data, str) or not raw_data.strip():
-            return web.json_response(_openai_error("Missing base64 audio data"), status=400)
-
-        mime_type = str(audio.get("mime_type") or audio.get("mimeType") or "audio/m4a")
-        extension = mimetypes.guess_extension(mime_type) or ".m4a"
-
-        try:
-            audio_bytes = base64.b64decode(raw_data, validate=True)
         except Exception:
-            return web.json_response(_openai_error("Invalid base64 audio data"), status=400)
+            return {}, web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+        if not isinstance(body, dict):
+            return {}, web.json_response(_openai_error("Request body must be a JSON object"), status=400)
+        return body, None
 
-        if len(audio_bytes) > MAX_AUDIO_REQUEST_BYTES:
-            return web.json_response(_openai_error("Audio file is too large"), status=413)
+    def _get_existing_session_or_404(self, session_id: str) -> tuple[Optional[Dict[str, Any]], Optional["web.Response"]]:
+        db = self._ensure_session_db()
+        if db is None:
+            return None, web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
+        session = db.get_session(session_id)
+        if not session:
+            return None, web.json_response(_openai_error(f"Session not found: {session_id}", code="session_not_found"), status=404)
+        return session, None
 
-        fd, temp_path = tempfile.mkstemp(prefix="bael-stt-", suffix=extension)
+    def _conversation_history_for_session(self, session_id: str) -> List[Dict[str, Any]]:
+        db = self._ensure_session_db()
+        if db is None:
+            return []
         try:
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(audio_bytes)
+            return db.get_messages_as_conversation(session_id)
+        except Exception as exc:
+            logger.warning("Failed to load session history for %s: %s", session_id, exc)
+            return []
 
-            loop = asyncio.get_running_loop()
-
-            def _transcribe():
-                from tools.transcription_tools import transcribe_audio
-
-                return transcribe_audio(temp_path, model=body.get("model"))
-
-            result = await loop.run_in_executor(None, _transcribe)
-            if not isinstance(result, dict) or not result.get("success"):
-                message = result.get("error") if isinstance(result, dict) else "STT failed"
-                return web.json_response(_openai_error(str(message)), status=500)
-
-            return web.json_response({
-                "object": "audio.transcription",
-                "text": result.get("transcript") or result.get("text") or "",
-                "provider": result.get("provider"),
-            })
-        finally:
-            try:
-                os.unlink(temp_path)
-            except OSError:
-                pass
-
-    async def _handle_audio_speech(self, request: "web.Request") -> "web.Response":
-        """POST /v1/audio/speech — synthesize speech with configured TTS."""
+    async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions — list persisted Hermes sessions."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
 
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, Exception):
-            return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
 
-        text = body.get("text") if isinstance(body, dict) else None
-        if not isinstance(text, str) or not text.strip():
-            return web.json_response(_openai_error("Missing text"), status=400)
+        limit = self._parse_nonnegative_int(request.query.get("limit"), default=50, maximum=200)
+        offset = self._parse_nonnegative_int(request.query.get("offset"), default=0, maximum=1_000_000)
+        source = request.query.get("source") or None
+        include_children = _coerce_request_bool(request.query.get("include_children"), default=False)
+        sessions = db.list_sessions_rich(
+            source=source,
+            limit=limit,
+            offset=offset,
+            include_children=include_children,
+            order_by_last_active=True,
+        )
+        return web.json_response({
+            "object": "list",
+            "data": [self._session_response(s) for s in sessions],
+            "limit": limit,
+            "offset": offset,
+            "has_more": len(sessions) == limit,
+        })
+
+    async def _handle_create_session(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions — create an empty Hermes session row."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
+
+        raw_id = body.get("id") or body.get("session_id")
+        session_id = str(raw_id).strip() if raw_id else f"api_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+        if not session_id or re.search(r'[\r\n\x00]', session_id):
+            return web.json_response(_openai_error("Invalid session ID", code="invalid_session_id"), status=400)
+        if len(session_id) > self._MAX_SESSION_HEADER_LEN:
+            return web.json_response(_openai_error("Session ID too long", code="invalid_session_id"), status=400)
+        if db.get_session(session_id):
+            return web.json_response(_openai_error(f"Session already exists: {session_id}", code="session_exists"), status=409)
+
+        model = body.get("model") or self._model_name
+        system_prompt = body.get("system_prompt")
+        if system_prompt is not None and not isinstance(system_prompt, str):
+            return web.json_response(_openai_error("system_prompt must be a string", code="invalid_system_prompt"), status=400)
+        db.create_session(session_id, "api_server", model=str(model) if model else None, system_prompt=system_prompt)
+        title = body.get("title")
+        if title is not None:
+            try:
+                db.set_session_title(session_id, str(title))
+            except ValueError as exc:
+                db.delete_session(session_id)
+                return web.json_response(_openai_error(str(exc), code="invalid_title"), status=400)
+        session = db.get_session(session_id) or {"id": session_id, "source": "api_server", "model": model, "title": title}
+        return web.json_response({"object": "hermes.session", "session": self._session_response(session)}, status=201)
+
+    async def _handle_get_session(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/{session_id}."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session, err = self._get_existing_session_or_404(request.match_info["session_id"])
+        if err:
+            return err
+        return web.json_response({"object": "hermes.session", "session": self._session_response(session)})
+
+    async def _handle_patch_session(self, request: "web.Request") -> "web.Response":
+        """PATCH /api/sessions/{session_id} — update client-safe session metadata."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        session, err = self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        allowed = {"title", "end_reason"}
+        unknown = sorted(set(body) - allowed)
+        if unknown:
+            return web.json_response(_openai_error(f"Unsupported session fields: {', '.join(unknown)}", code="unsupported_session_field"), status=400)
+
+        db = self._ensure_session_db()
+        if "title" in body:
+            try:
+                db.set_session_title(session_id, "" if body["title"] is None else str(body["title"]))
+            except ValueError as exc:
+                return web.json_response(_openai_error(str(exc), code="invalid_title"), status=400)
+        if body.get("end_reason"):
+            db.end_session(session_id, str(body["end_reason"]))
+        session = db.get_session(session_id) or session
+        return web.json_response({"object": "hermes.session", "session": self._session_response(session)})
+
+    async def _handle_delete_session(self, request: "web.Request") -> "web.Response":
+        """DELETE /api/sessions/{session_id}."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        session, err = self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        db = self._ensure_session_db()
+        deleted = db.delete_session(session_id)
+        return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
+
+    async def _handle_session_messages(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/{session_id}/messages."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        _, err = self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        db = self._ensure_session_db()
+        messages = db.get_messages(session_id)
+        return web.json_response({
+            "object": "list",
+            "session_id": session_id,
+            "data": [self._message_response(m) for m in messages],
+        })
+
+    async def _handle_fork_session(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions/{session_id}/fork — branch via current SessionDB primitives."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        source_id = request.match_info["session_id"]
+        source, err = self._get_existing_session_or_404(source_id)
+        if err:
+            return err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        db = self._ensure_session_db()
+        fork_id = str(body.get("id") or body.get("session_id") or f"api_{int(time.time())}_{uuid.uuid4().hex[:8]}").strip()
+        if not fork_id or re.search(r'[\r\n\x00]', fork_id):
+            return web.json_response(_openai_error("Invalid session ID", code="invalid_session_id"), status=400)
+        if db.get_session(fork_id):
+            return web.json_response(_openai_error(f"Session already exists: {fork_id}", code="session_exists"), status=409)
+
+        # Match the CLI /branch semantics: mark the original as branched, then
+        # create a child session that carries the transcript forward. This uses
+        # SessionDB's native parent_session_id/end_reason visibility model rather
+        # than inventing a parallel fork store.
+        db.end_session(source_id, "branched")
+        db.create_session(
+            fork_id,
+            "api_server",
+            model=source.get("model"),
+            system_prompt=source.get("system_prompt"),
+            parent_session_id=source_id,
+        )
+        messages = db.get_messages(source_id)
+        db.replace_messages(fork_id, messages)
+        title = body.get("title")
+        if title is None:
+            base = source.get("title") or "fork"
+            try:
+                title = db.get_next_title_in_lineage(base)
+            except Exception:
+                title = f"{base} fork"
+        try:
+            db.set_session_title(fork_id, str(title))
+        except ValueError as exc:
+            return web.json_response(_openai_error(str(exc), code="invalid_title"), status=400)
+        fork = db.get_session(fork_id) or {"id": fork_id, "parent_session_id": source_id}
+        return web.json_response({"object": "hermes.session", "session": self._session_response(fork)}, status=201)
+
+    async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions/{session_id}/chat — one synchronous agent turn."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        gateway_session_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return key_err
+        session_id = request.match_info["session_id"]
+        _, err = self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        user_message, err = _session_chat_user_message(body)
+        if err is not None:
+            return err
+        system_prompt = body.get("system_message") or body.get("instructions")
+        if system_prompt is not None and not isinstance(system_prompt, str):
+            return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
+        history = self._conversation_history_for_session(session_id)
+        result, usage = await self._run_agent(
+            user_message=user_message,
+            conversation_history=history,
+            ephemeral_system_prompt=system_prompt,
+            session_id=session_id,
+            gateway_session_key=gateway_session_key,
+        )
+        effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
+        final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+        headers = {"X-Hermes-Session-Id": effective_session_id or session_id}
+        if gateway_session_key:
+            headers["X-Hermes-Session-Key"] = gateway_session_key
+        return web.json_response(
+            {
+                "object": "hermes.session.chat.completion",
+                "session_id": effective_session_id or session_id,
+                "message": {"role": "assistant", "content": final_response},
+                "usage": usage,
+            },
+            headers=headers,
+        )
+
+    async def _handle_session_chat_stream(self, request: "web.Request") -> "web.StreamResponse":
+        """POST /api/sessions/{session_id}/chat/stream — SSE wrapper over _run_agent."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        gateway_session_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return key_err
+        session_id = request.match_info["session_id"]
+        _, err = self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        user_message, err = _session_chat_user_message(body)
+        if err is not None:
+            return err
+        system_prompt = body.get("system_message") or body.get("instructions")
+        if system_prompt is not None and not isinstance(system_prompt, str):
+            return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
 
         loop = asyncio.get_running_loop()
+        queue: "asyncio.Queue[Optional[tuple[str, Dict[str, Any]]]]" = asyncio.Queue()
+        message_id = f"msg_{uuid.uuid4().hex}"
+        run_id = f"run_{uuid.uuid4().hex}"
+        seq = 0
 
-        def _synthesize():
-            from tools.tts_tool import text_to_speech_tool
+        def _event_payload(name: str, payload: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
+            nonlocal seq
+            seq += 1
+            payload.setdefault("session_id", session_id)
+            payload.setdefault("run_id", run_id)
+            payload.setdefault("seq", seq)
+            payload.setdefault("ts", time.time())
+            return name, payload
 
-            return text_to_speech_tool(text=text)
+        def _enqueue(name: str, payload: Dict[str, Any]) -> None:
+            event = _event_payload(name, payload)
+            try:
+                running_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                running_loop = None
+            try:
+                if running_loop is loop:
+                    queue.put_nowait(event)
+                else:
+                    loop.call_soon_threadsafe(queue.put_nowait, event)
+            except RuntimeError:
+                pass
 
-        raw_result = await loop.run_in_executor(None, _synthesize)
+        def _delta(delta: str) -> None:
+            if delta:
+                _enqueue("assistant.delta", {"message_id": message_id, "delta": delta})
+
+        def _tool_progress(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs) -> None:
+            if event_type == "reasoning.available":
+                _enqueue("tool.progress", {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""})
+            elif event_type in {"tool.started", "tool.completed", "tool.failed"}:
+                event_name = event_type.replace("tool.", "tool.")
+                _enqueue(event_name, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
+
+        async def _run_and_signal() -> None:
+            try:
+                await queue.put(_event_payload("run.started", {"user_message": {"role": "user", "content": user_message}}))
+                await queue.put(_event_payload("message.started", {"message": {"id": message_id, "role": "assistant"}}))
+                history = self._conversation_history_for_session(session_id)
+                result, usage = await self._run_agent(
+                    user_message=user_message,
+                    conversation_history=history,
+                    ephemeral_system_prompt=system_prompt,
+                    session_id=session_id,
+                    stream_delta_callback=_delta,
+                    tool_progress_callback=_tool_progress,
+                    gateway_session_key=gateway_session_key,
+                )
+                final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
+                await queue.put(_event_payload("assistant.completed", {
+                    "session_id": effective_session_id,
+                    "message_id": message_id,
+                    "content": final_response,
+                    "completed": True,
+                    "partial": False,
+                    "interrupted": False,
+                }))
+                await queue.put(_event_payload("run.completed", {
+                    "session_id": effective_session_id,
+                    "message_id": message_id,
+                    "completed": True,
+                    "usage": usage,
+                }))
+            except Exception as exc:
+                logger.exception("[api_server] session chat stream failed")
+                await queue.put(_event_payload("error", {"message": str(exc)}))
+            finally:
+                await queue.put(_event_payload("done", {}))
+                await queue.put(None)
+
+        task = asyncio.create_task(_run_and_signal())
         try:
-            result = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
-        except Exception:
-            result = {"success": False, "error": "Invalid TTS result"}
+            self._background_tasks.add(task)
+        except TypeError:
+            pass
+        if hasattr(task, "add_done_callback"):
+            task.add_done_callback(self._background_tasks.discard)
 
-        if not isinstance(result, dict) or not result.get("success"):
-            message = result.get("error") if isinstance(result, dict) else "TTS failed"
-            return web.json_response(_openai_error(str(message)), status=500)
-
-        file_path = result.get("file_path")
-        if not isinstance(file_path, str) or not os.path.exists(file_path):
-            return web.json_response(_openai_error("TTS audio file was not created"), status=500)
-
-        with open(file_path, "rb") as handle:
-            audio_data = base64.b64encode(handle.read()).decode("ascii")
-
-        mime_type = mimetypes.guess_type(file_path)[0] or "audio/mpeg"
-        return web.json_response({
-            "object": "audio.speech",
-            "audio": {
-                "data": audio_data,
-                "mime_type": mime_type,
-            },
-            "provider": result.get("provider"),
-            "voice_compatible": bool(result.get("voice_compatible")),
-        })
+        headers = {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "X-Hermes-Session-Id": session_id,
+        }
+        if gateway_session_key:
+            headers["X-Hermes-Session-Key"] = gateway_session_key
+        response = web.StreamResponse(status=200, headers=headers)
+        await response.prepare(request)
+        last_write = time.monotonic()
+        try:
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS)
+                except asyncio.TimeoutError:
+                    await response.write(b": keepalive\n\n")
+                    last_write = time.monotonic()
+                    continue
+                if item is None:
+                    break
+                name, payload = item
+                data = json.dumps(payload, ensure_ascii=False)
+                await response.write(f"event: {name}\ndata: {data}\n\n".encode("utf-8"))
+                last_write = time.monotonic()
+        except (asyncio.CancelledError, ConnectionResetError):
+            task.cancel()
+            raise
+        except Exception as exc:
+            logger.debug("[api_server] session SSE stream error: %s", exc)
+        return response
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
@@ -3979,16 +4047,24 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
             self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
-            self._app["api_server_adapter"] = self
+            assert self._app is not None
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
-            self._app.router.add_get("/api/artifacts", self._handle_list_artifacts)
-            self._app.router.add_get("/api/artifacts/{artifact_path:.+}", self._handle_get_artifact)
-            self._app.router.add_post("/v1/audio/transcriptions", self._handle_audio_transcriptions)
-            self._app.router.add_post("/v1/audio/speech", self._handle_audio_speech)
+            self._app.router.add_get("/v1/skills", self._handle_skills)
+            self._app.router.add_get("/v1/toolsets", self._handle_toolsets)
+            # Session/client control surface (thin wrappers over SessionDB + _run_agent)
+            self._app.router.add_get("/api/sessions", self._handle_list_sessions)
+            self._app.router.add_post("/api/sessions", self._handle_create_session)
+            self._app.router.add_get("/api/sessions/{session_id}", self._handle_get_session)
+            self._app.router.add_patch("/api/sessions/{session_id}", self._handle_patch_session)
+            self._app.router.add_delete("/api/sessions/{session_id}", self._handle_delete_session)
+            self._app.router.add_get("/api/sessions/{session_id}/messages", self._handle_session_messages)
+            self._app.router.add_post("/api/sessions/{session_id}/fork", self._handle_fork_session)
+            self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
+            self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
@@ -4008,6 +4084,12 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
             self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
+            # Store the adapter after native routes are registered. Local Hermes-Relay
+            # bootstrap shims use this key as a feature-detection hook; registering
+            # native routes first lets those shims no-op instead of shadowing the
+            # upstream session-control handlers.
+            self._app["api_server_adapter"] = self
+
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:
