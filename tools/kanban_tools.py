@@ -267,63 +267,60 @@ def _handle_show(args: dict, **kw) -> str:
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
-        try:
-            task = kb.get_task(conn, tid)
-            if task is None:
-                return tool_error(f"task {tid} not found")
-            comments = kb.list_comments(conn, tid)
-            events = kb.list_events(conn, tid)
-            runs = kb.list_runs(conn, tid)
-            parents = kb.parent_ids(conn, tid)
-            children = kb.child_ids(conn, tid)
+        task = kb.get_task(conn, tid)
+        if task is None:
+            return tool_error(f"task {tid} not found")
+        comments = kb.list_comments(conn, tid)
+        events = kb.list_events(conn, tid)
+        runs = kb.list_runs(conn, tid)
+        parents = kb.parent_ids(conn, tid)
+        children = kb.child_ids(conn, tid)
 
-            def _task_dict(t):
-                return {
-                    "id": t.id, "title": t.title, "body": t.body,
-                    "assignee": t.assignee, "status": t.status,
-                    "tenant": t.tenant, "priority": t.priority,
-                    "workspace_kind": t.workspace_kind,
-                    "workspace_path": t.workspace_path,
-                    "created_by": t.created_by, "created_at": t.created_at,
-                    "started_at": t.started_at,
-                    "completed_at": t.completed_at,
-                    "result": t.result,
-                    "current_run_id": t.current_run_id,
-                    "model_override": t.model_override,
-                }
+        def _task_dict(t):
+            return {
+                "id": t.id, "title": t.title, "body": t.body,
+                "assignee": t.assignee, "status": t.status,
+                "tenant": t.tenant, "priority": t.priority,
+                "workspace_kind": t.workspace_kind,
+                "workspace_path": t.workspace_path,
+                "created_by": t.created_by, "created_at": t.created_at,
+                "started_at": t.started_at,
+                "completed_at": t.completed_at,
+                "result": t.result,
+                "current_run_id": t.current_run_id,
+                "model_override": t.model_override,
+            }
 
-            def _run_dict(r):
-                return {
-                    "id": r.id, "profile": r.profile,
-                    "status": r.status, "outcome": r.outcome,
-                    "summary": r.summary, "error": r.error,
-                    "metadata": r.metadata,
-                    "started_at": r.started_at, "ended_at": r.ended_at,
-                }
+        def _run_dict(r):
+            return {
+                "id": r.id, "profile": r.profile,
+                "status": r.status, "outcome": r.outcome,
+                "summary": r.summary, "error": r.error,
+                "metadata": r.metadata,
+                "started_at": r.started_at, "ended_at": r.ended_at,
+            }
 
-            return json.dumps({
-                "task": _task_dict(task),
-                "parents": parents,
-                "children": children,
-                "comments": [
-                    {"author": c.author, "body": c.body,
-                     "created_at": c.created_at}
-                    for c in comments
-                ],
-                "events": [
-                    {"kind": e.kind, "payload": e.payload,
-                     "created_at": e.created_at, "run_id": e.run_id}
-                    for e in events[-50:]   # cap; full log via CLI
-                ],
-                "runs": [_run_dict(r) for r in runs],
-                # Also surface the worker's own context block so the
-                # agent can include it directly if it wants. This is
-                # the same string build_worker_context returns to the
-                # dispatcher at spawn time.
-                "worker_context": kb.build_worker_context(conn, tid),
-            })
-        finally:
-            pass  # pooled connection — lives for process lifetime
+        return json.dumps({
+            "task": _task_dict(task),
+            "parents": parents,
+            "children": children,
+            "comments": [
+                {"author": c.author, "body": c.body,
+                 "created_at": c.created_at}
+                for c in comments
+            ],
+            "events": [
+                {"kind": e.kind, "payload": e.payload,
+                 "created_at": e.created_at, "run_id": e.run_id}
+                for e in events[-50:]   # cap; full log via CLI
+            ],
+            "runs": [_run_dict(r) for r in runs],
+            # Also surface the worker's own context block so the
+            # agent can include it directly if it wants. This is
+            # the same string build_worker_context returns to the
+            # dispatcher at spawn time.
+            "worker_context": kb.build_worker_context(conn, tid),
+        })
     except ValueError as e:
         # Invalid board slug surfaces as ValueError from _normalize_board_slug.
         return tool_error(f"kanban_show: {e}")
@@ -357,35 +354,30 @@ def _handle_list(args: dict, **kw) -> str:
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
-        try:
-            # Match CLI list: dependencies that cleared since the last
-            # dispatcher tick should be visible to orchestrators immediately.
-            promoted = kb.recompute_ready(conn)
-            # Fetch one extra row so model-facing output can report that
-            # a bounded listing was truncated without dumping the board.
-            rows = kb.list_tasks(
-                conn,
-                assignee=assignee,
-                status=status,
-                tenant=tenant,
-                include_archived=include_archived,
-                limit=limit + 1,
-            )
-            truncated = len(rows) > limit
-            tasks = rows[:limit]
-            return json.dumps({
-                "tasks": [_task_summary_dict(kb, conn, t) for t in tasks],
-                "count": len(tasks),
-                "limit": limit,
-                "truncated": truncated,
-                "next_limit": (
-                    min(limit * 2, KANBAN_LIST_MAX_LIMIT)
-                    if truncated and limit < KANBAN_LIST_MAX_LIMIT else None
-                ),
-                "promoted": promoted,
-            })
-        finally:
-            pass  # pooled connection — lives for process lifetime
+        promoted = kb.recompute_ready(conn)
+        # Fetch one extra row so model-facing output can report that
+        # a bounded listing was truncated without dumping the board.
+        rows = kb.list_tasks(
+            conn,
+            assignee=assignee,
+            status=status,
+            tenant=tenant,
+            include_archived=include_archived,
+            limit=limit + 1,
+        )
+        truncated = len(rows) > limit
+        tasks = rows[:limit]
+        return json.dumps({
+            "tasks": [_task_summary_dict(kb, conn, t) for t in tasks],
+            "count": len(tasks),
+            "limit": limit,
+            "truncated": truncated,
+            "next_limit": (
+                min(limit * 2, KANBAN_LIST_MAX_LIMIT)
+                if truncated and limit < KANBAN_LIST_MAX_LIMIT else None
+            ),
+            "promoted": promoted,
+        })
     except ValueError as e:
         return tool_error(f"kanban_list: {e}")
     except Exception as e:
@@ -473,41 +465,38 @@ def _handle_complete(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
-            try:
-                ok = kb.complete_task(
-                    conn, tid,
-                    result=result, summary=summary, metadata=metadata,
-                    created_cards=created_cards,
-                    expected_run_id=_worker_run_id(tid),
-                )
-            except kb.HallucinatedCardsError as hall_err:
-                # Structured rejection — surface the phantom ids so the
-                # worker can retry with a corrected list or drop the
-                # field. Audit event already landed in the DB.
-                #
-                # The task itself was NOT mutated (the gate runs before
-                # the write txn), so the worker can simply call
-                # kanban_complete again. Spell that out — without it the
-                # model often interprets a tool_error as a terminal
-                # failure and either blocks or crashes the run instead
-                # of retrying. See #22923.
-                return tool_error(
-                    f"kanban_complete blocked: the following created_cards "
-                    f"do not exist or were not created by this worker: "
-                    f"{', '.join(hall_err.phantom)}. "
-                    f"Your task is still in-flight (no state change). "
-                    f"Retry kanban_complete with the same summary/metadata "
-                    f"and either drop these ids from created_cards, or pass "
-                    f"created_cards=[] to skip the card-claim check entirely."
-                )
-            if not ok:
-                return tool_error(
-                    f"could not complete {tid} (unknown id or already terminal)"
-                )
-            run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
-        finally:
-            pass  # pooled connection — lives for process lifetime
+            ok = kb.complete_task(
+                conn, tid,
+                result=result, summary=summary, metadata=metadata,
+                created_cards=created_cards,
+                expected_run_id=_worker_run_id(tid),
+            )
+        except kb.HallucinatedCardsError as hall_err:
+            # Structured rejection — surface the phantom ids so the
+            # worker can retry with a corrected list or drop the
+            # field. Audit event already landed in the DB.
+            #
+            # The task itself was NOT mutated (the gate runs before
+            # the write txn), so the worker can simply call
+            # kanban_complete again. Spell that out — without it the
+            # model often interprets a tool_error as a terminal
+            # failure and either blocks or crashes the run instead
+            # of retrying. See #22923.
+            return tool_error(
+                f"kanban_complete blocked: the following created_cards "
+                f"do not exist or were not created by this worker: "
+                f"{', '.join(hall_err.phantom)}. "
+                f"Your task is still in-flight (no state change). "
+                f"Retry kanban_complete with the same summary/metadata "
+                f"and either drop these ids from created_cards, or pass "
+                f"created_cards=[] to skip the card-claim check entirely."
+            )
+        if not ok:
+            return tool_error(
+                f"could not complete {tid} (unknown id or already terminal)"
+            )
+        run = kb.latest_run(conn, tid)
+        return _ok(task_id=tid, run_id=run.id if run else None)
     except ValueError as e:
         return tool_error(f"kanban_complete: {e}")
     except Exception as e:
@@ -531,21 +520,18 @@ def _handle_block(args: dict, **kw) -> str:
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
-        try:
-            ok = kb.block_task(
-                conn, tid,
-                reason=reason,
-                expected_run_id=_worker_run_id(tid),
+        ok = kb.block_task(
+            conn, tid,
+            reason=reason,
+            expected_run_id=_worker_run_id(tid),
+        )
+        if not ok:
+            return tool_error(
+                f"could not block {tid} (unknown id or not in "
+                f"running/ready)"
             )
-            if not ok:
-                return tool_error(
-                    f"could not block {tid} (unknown id or not in "
-                    f"running/ready)"
-                )
-            run = kb.latest_run(conn, tid)
-            return _ok(task_id=tid, run_id=run.id if run else None)
-        finally:
-            pass  # pooled connection — lives for process lifetime
+        run = kb.latest_run(conn, tid)
+        return _ok(task_id=tid, run_id=run.id if run else None)
     except ValueError as e:
         return tool_error(f"kanban_block: {e}")
     except Exception as e:
@@ -575,28 +561,20 @@ def _handle_heartbeat(args: dict, **kw) -> str:
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
-        try:
-            # Extend the claim TTL first. The dispatcher pins
-            # HERMES_KANBAN_CLAIM_LOCK in the worker env at spawn time
-            # (see _default_spawn in kanban_db.py); falling back to the
-            # default _claimer_id() covers locally-driven workers that
-            # never went through the dispatcher path.
-            claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
-            kb.heartbeat_claim(conn, tid, claimer=claim_lock)
+        claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
+        kb.heartbeat_claim(conn, tid, claimer=claim_lock)
 
-            ok = kb.heartbeat_worker(
-                conn,
-                tid,
-                note=note,
-                expected_run_id=_worker_run_id(tid),
+        ok = kb.heartbeat_worker(
+            conn,
+            tid,
+            note=note,
+            expected_run_id=_worker_run_id(tid),
+        )
+        if not ok:
+            return tool_error(
+                f"could not heartbeat {tid} (unknown id or not running)"
             )
-            if not ok:
-                return tool_error(
-                    f"could not heartbeat {tid} (unknown id or not running)"
-                )
-            return _ok(task_id=tid)
-        finally:
-            pass  # pooled connection — lives for process lifetime
+        return _ok(task_id=tid)
     except ValueError as e:
         return tool_error(f"kanban_heartbeat: {e}")
     except Exception as e:
@@ -628,11 +606,8 @@ def _handle_comment(args: dict, **kw) -> str:
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
-        try:
-            cid = kb.add_comment(conn, tid, author=author, body=str(body))
-            return _ok(task_id=tid, comment_id=cid)
-        finally:
-            pass  # pooled connection — lives for process lifetime
+        cid = kb.add_comment(conn, tid, author=author, body=str(body))
+        return _ok(task_id=tid, comment_id=cid)
     except ValueError as e:
         return tool_error(f"kanban_comment: {e}")
     except Exception as e:
@@ -688,35 +663,32 @@ def _handle_create(args: dict, **kw) -> str:
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
-        try:
-            new_tid = kb.create_task(
-                conn,
-                title=str(title).strip(),
-                body=body,
-                assignee=str(assignee),
-                parents=tuple(parents),
-                tenant=tenant,
-                priority=int(priority) if priority is not None else 0,
-                workspace_kind=str(workspace_kind),
-                workspace_path=workspace_path,
-                triage=triage,
-                idempotency_key=idempotency_key,
-                max_runtime_seconds=(
-                    int(max_runtime_seconds)
-                    if max_runtime_seconds is not None else None
-                ),
-                skills=skills,
-                initial_status=str(initial_status),
-                created_by=os.environ.get("HERMES_PROFILE") or "worker",
-                session_id=session_id,
-            )
-            new_task = kb.get_task(conn, new_tid)
-            return _ok(
-                task_id=new_tid,
-                status=new_task.status if new_task else None,
-            )
-        finally:
-            pass  # pooled connection — lives for process lifetime
+        new_tid = kb.create_task(
+            conn,
+            title=str(title).strip(),
+            body=body,
+            assignee=str(assignee),
+            parents=tuple(parents),
+            tenant=tenant,
+            priority=int(priority) if priority is not None else 0,
+            workspace_kind=str(workspace_kind),
+            workspace_path=workspace_path,
+            triage=triage,
+            idempotency_key=idempotency_key,
+            max_runtime_seconds=(
+                int(max_runtime_seconds)
+                if max_runtime_seconds is not None else None
+            ),
+            skills=skills,
+            initial_status=str(initial_status),
+            created_by=os.environ.get("HERMES_PROFILE") or "worker",
+            session_id=session_id,
+        )
+        new_task = kb.get_task(conn, new_tid)
+        return _ok(
+            task_id=new_tid,
+            status=new_task.status if new_task else None,
+        )
     except ValueError as e:
         return tool_error(f"kanban_create: {e}")
     except Exception as e:
@@ -738,13 +710,10 @@ def _handle_unblock(args: dict, **kw) -> str:
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
-        try:
-            ok = kb.unblock_task(conn, str(tid))
-            if not ok:
-                return tool_error(f"could not unblock {tid} (not blocked or unknown)")
-            return _ok(task_id=str(tid), status="ready")
-        finally:
-            pass  # pooled connection — lives for process lifetime
+        ok = kb.unblock_task(conn, str(tid))
+        if not ok:
+            return tool_error(f"could not unblock {tid} (not blocked or unknown)")
+        return _ok(task_id=str(tid), status="ready")
     except ValueError as e:
         return tool_error(f"kanban_unblock: {e}")
     except Exception as e:
@@ -761,11 +730,8 @@ def _handle_link(args: dict, **kw) -> str:
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
-        try:
-            kb.link_tasks(conn, parent_id=parent_id, child_id=child_id)
-            return _ok(parent_id=parent_id, child_id=child_id)
-        finally:
-            pass  # pooled connection — lives for process lifetime
+        kb.link_tasks(conn, parent_id=parent_id, child_id=child_id)
+        return _ok(parent_id=parent_id, child_id=child_id)
     except ValueError as e:
         # Covers cycle + self-parent rejections
         return tool_error(f"kanban_link: {e}")
