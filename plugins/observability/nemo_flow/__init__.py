@@ -24,8 +24,6 @@ _RUNTIME: "_Runtime | object | None" = None
 class _SessionState:
     session_id: str
     handle: Any = None
-    atif_exporter: Any = None
-    atif_subscriber_name: str = ""
     llm_spans: dict[str, Any] = field(default_factory=dict)
     tool_spans: dict[str, Any] = field(default_factory=dict)
 
@@ -33,16 +31,7 @@ class _SessionState:
 @dataclass
 class _Settings:
     plugins_toml_path: str = ""
-    atof_enabled: bool = False
-    atof_output_directory: str = ""
-    atof_filename: str = "hermes-atof.jsonl"
-    atof_mode: str = "append"
-    atif_enabled: bool = False
-    atif_output_directory: str = ""
-    atif_filename_template: str = "hermes-atif-{session_id}.json"
-    atif_agent_name: str = "Hermes Agent"
-    atif_agent_version: str = "unknown"
-    atif_model_name: str = "unknown"
+    plugins_config: dict[str, Any] | None = None
     adaptive_enabled: bool = False
     adaptive_mode: str = "observe"
 
@@ -52,22 +41,18 @@ class _Runtime:
         self.nemo_flow = nemo_flow
         self.settings = settings
         self.sessions: dict[str, _SessionState] = {}
-        self.atof_exporter: Any = None
+        self.subagent_parents: dict[str, str] = {}
         self._plugin_config_initialized = self._configure_plugins_toml()
-        if not self._plugin_config_initialized:
-            self._configure_atof()
 
     def _configure_plugins_toml(self) -> bool:
-        if not self.settings.plugins_toml_path:
+        if not self.settings.plugins_config:
             return False
         plugin_mod = getattr(self.nemo_flow, "plugin", None)
         initialize = getattr(plugin_mod, "initialize", None)
         if not callable(initialize):
             return False
-        config_path = Path(self.settings.plugins_toml_path)
         try:
-            config = tomllib.loads(config_path.read_text(encoding="utf-8"))
-            result = initialize(config)
+            result = initialize(self.settings.plugins_config)
             if inspect.isawaitable(result):
                 asyncio.run(result)
             return True
@@ -78,21 +63,6 @@ class _Runtime:
             logger.debug("NeMo Relay plugins.toml init failed: %s", exc, exc_info=True)
             return False
 
-    def _configure_atof(self) -> None:
-        if not self.settings.atof_enabled:
-            return
-        config = self.nemo_flow.AtofExporterConfig()
-        if self.settings.atof_output_directory:
-            Path(self.settings.atof_output_directory).mkdir(parents=True, exist_ok=True)
-            config.output_directory = self.settings.atof_output_directory
-        config.filename = self.settings.atof_filename
-        if self.settings.atof_mode.lower() == "overwrite":
-            config.mode = self.nemo_flow.AtofExporterMode.Overwrite
-        else:
-            config.mode = self.nemo_flow.AtofExporterMode.Append
-        self.atof_exporter = self.nemo_flow.AtofExporter(config)
-        self.atof_exporter.register("hermes.nemo_flow.atof")
-
     def ensure_session(self, kwargs: dict[str, Any]) -> _SessionState:
         session_id = _session_id(kwargs)
         state = self.sessions.get(session_id)
@@ -100,35 +70,26 @@ class _Runtime:
             return state
 
         state = _SessionState(session_id=session_id)
-        if self.settings.atif_enabled:
-            state.atif_exporter = self.nemo_flow.AtifExporter(
-                session_id,
-                self.settings.atif_agent_name,
-                self.settings.atif_agent_version,
-                model_name=str(kwargs.get("model") or self.settings.atif_model_name),
-                extra={"source": "hermes-agent", "plugin": "observability/nemo_flow"},
-            )
-            state.atif_subscriber_name = f"hermes.nemo_flow.atif.{session_id}"
-            state.atif_exporter.register(state.atif_subscriber_name)
-
+        scope_payload = dict(kwargs)
+        parent_session_id = str(
+            scope_payload.get("parent_session_id") or self.subagent_parents.get(session_id) or ""
+        )
+        if parent_session_id:
+            scope_payload.setdefault("parent_session_id", parent_session_id)
+        scope_kwargs: dict[str, Any] = {
+            "data": {"session_id": session_id},
+            "metadata": _metadata(scope_payload),
+        }
+        parent_state = self.sessions.get(parent_session_id)
+        if parent_state is not None and parent_state.handle is not None:
+            scope_kwargs["handle"] = parent_state.handle
         state.handle = self.nemo_flow.scope.push(
             f"hermes-session-{session_id}",
             self.nemo_flow.ScopeType.Agent,
-            data={"session_id": session_id},
-            metadata=_metadata(kwargs),
+            **scope_kwargs,
         )
         self.sessions[session_id] = state
         return state
-
-    def export_atif(self, state: _SessionState) -> None:
-        if not self.settings.atif_enabled or state.atif_exporter is None:
-            return
-        output_dir = self.settings.atif_output_directory
-        if not output_dir:
-            return
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-        filename = self.settings.atif_filename_template.format(session_id=state.session_id)
-        Path(output_dir, filename).write_text(state.atif_exporter.export_json(), encoding="utf-8")
 
     def close_session(self, kwargs: dict[str, Any]) -> None:
         session_id = _session_id(kwargs)
@@ -140,12 +101,13 @@ class _Runtime:
                 self.nemo_flow.scope.pop(state.handle, output=_jsonable(kwargs))
             except Exception:
                 logger.debug("NeMo Relay session pop failed", exc_info=True)
-        self.export_atif(state)
-        if state.atif_exporter is not None and state.atif_subscriber_name:
-            try:
-                state.atif_exporter.deregister(state.atif_subscriber_name)
-            except Exception:
-                logger.debug("NeMo Relay ATIF deregister failed", exc_info=True)
+        self.subagent_parents.pop(session_id, None)
+
+    def note_subagent_start(self, kwargs: dict[str, Any]) -> None:
+        child_session_id = kwargs.get("child_session_id")
+        parent_session_id = kwargs.get("parent_session_id") or kwargs.get("session_id")
+        if child_session_id and parent_session_id:
+            self.subagent_parents[str(child_session_id)] = str(parent_session_id)
 
     def mark(self, name: str, kwargs: dict[str, Any]) -> None:
         state = self.ensure_session(kwargs)
@@ -264,7 +226,7 @@ def on_session_start(**kwargs: Any) -> None:
 def on_session_end(**kwargs: Any) -> None:
     runtime = _get_runtime()
     if runtime is not None:
-        _safe(lambda: (runtime.mark("hermes.session.end", kwargs), runtime.export_atif(runtime.ensure_session(kwargs))))
+        _safe(lambda: runtime.mark("hermes.session.end", kwargs))
 
 
 def on_session_finalize(**kwargs: Any) -> None:
@@ -423,7 +385,11 @@ def on_post_approval_response(**kwargs: Any) -> None:
 def on_subagent_start(**kwargs: Any) -> None:
     runtime = _get_runtime()
     if runtime is not None:
-        _safe(lambda: runtime.mark("hermes.subagent.start", kwargs))
+        def _emit() -> None:
+            runtime.note_subagent_start(kwargs)
+            runtime.mark("hermes.subagent.start", kwargs)
+
+        _safe(_emit)
 
 
 def on_subagent_stop(**kwargs: Any) -> None:
@@ -471,20 +437,13 @@ def _get_runtime() -> Optional[_Runtime]:
 
 
 def _load_settings() -> _Settings:
+    plugins_toml_path, plugins_config = _load_plugins_toml()
+    adaptive_config = _enabled_component_config(plugins_config, "adaptive")
     return _Settings(
-        plugins_toml_path=_env("HERMES_NEMO_FLOW_PLUGINS_TOML"),
-        atof_enabled=_env_bool("HERMES_NEMO_FLOW_ATOF_ENABLED"),
-        atof_output_directory=_env("HERMES_NEMO_FLOW_ATOF_OUTPUT_DIRECTORY"),
-        atof_filename=_env("HERMES_NEMO_FLOW_ATOF_FILENAME") or "hermes-atof.jsonl",
-        atof_mode=_env("HERMES_NEMO_FLOW_ATOF_MODE") or "append",
-        atif_enabled=_env_bool("HERMES_NEMO_FLOW_ATIF_ENABLED"),
-        atif_output_directory=_env("HERMES_NEMO_FLOW_ATIF_OUTPUT_DIRECTORY"),
-        atif_filename_template=_env("HERMES_NEMO_FLOW_ATIF_FILENAME_TEMPLATE") or "hermes-atif-{session_id}.json",
-        atif_agent_name=_env("HERMES_NEMO_FLOW_ATIF_AGENT_NAME") or "Hermes Agent",
-        atif_agent_version=_env("HERMES_NEMO_FLOW_ATIF_AGENT_VERSION") or "unknown",
-        atif_model_name=_env("HERMES_NEMO_FLOW_ATIF_MODEL_NAME") or "unknown",
-        adaptive_enabled=_env_bool("HERMES_NEMO_FLOW_ADAPTIVE_ENABLED"),
-        adaptive_mode=_env("HERMES_NEMO_FLOW_ADAPTIVE_MODE") or "observe",
+        plugins_toml_path=plugins_toml_path,
+        plugins_config=plugins_config,
+        adaptive_enabled=adaptive_config is not None,
+        adaptive_mode=_adaptive_mode(adaptive_config),
     )
 
 
@@ -492,8 +451,45 @@ def _env(name: str) -> str:
     return os.environ.get(name, "").strip()
 
 
-def _env_bool(name: str) -> bool:
-    return _env(name).lower() in {"1", "true", "yes", "on"}
+def _load_plugins_toml() -> tuple[str, dict[str, Any] | None]:
+    explicit_path = _env("NEMO_RELAY_PLUGINS_TOML")
+    candidates = [Path(explicit_path)] if explicit_path else [Path(".nemo-relay/plugins.toml")]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            return str(path), tomllib.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.debug("NeMo Relay plugins.toml load failed for %s: %s", path, exc, exc_info=True)
+            return str(path), None
+    return "", None
+
+
+def _enabled_component_config(config: dict[str, Any] | None, kind: str) -> dict[str, Any] | None:
+    if not isinstance(config, dict):
+        return None
+    components = config.get("components")
+    if not isinstance(components, list):
+        return None
+    for component in components:
+        if not isinstance(component, dict):
+            continue
+        if component.get("kind") != kind or component.get("enabled") is not True:
+            continue
+        component_config = component.get("config")
+        return component_config if isinstance(component_config, dict) else {}
+    return None
+
+
+def _adaptive_mode(config: dict[str, Any] | None) -> str:
+    if not isinstance(config, dict):
+        return "observe"
+    tool_parallelism = config.get("tool_parallelism")
+    if isinstance(tool_parallelism, dict):
+        mode = tool_parallelism.get("mode")
+        if isinstance(mode, str) and mode:
+            return mode
+    return "observe"
 
 
 def _session_id(kwargs: dict[str, Any]) -> str:

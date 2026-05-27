@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import builtins
 import importlib
-import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,10 +36,6 @@ class _FakeNemoFlow:
         )
         self.plugin = SimpleNamespace(initialize=self._plugin_initialize)
         self.LLMRequest = _FakeLLMRequest
-        self.AtofExporterConfig = _FakeAtofExporterConfig
-        self.AtofExporterMode = SimpleNamespace(Append="append", Overwrite="overwrite")
-        self.AtofExporter = self._make_atof_exporter
-        self.AtifExporter = self._make_atif_exporter
 
     def _scope_push(self, name, scope_type, **kwargs):
         handle = ("scope", name)
@@ -81,12 +76,6 @@ class _FakeNemoFlow:
         self.events.append(("tool.execute.end", name, result, kwargs))
         return result
 
-    def _make_atof_exporter(self, config):
-        return _FakeAtofExporter(self.events, config)
-
-    def _make_atif_exporter(self, session_id, agent_name, agent_version, **kwargs):
-        return _FakeAtifExporter(self.events, session_id, agent_name, agent_version, kwargs)
-
     async def _plugin_initialize(self, config):
         self.events.append(("plugin.initialize", config))
         return {"diagnostics": []}
@@ -98,47 +87,38 @@ class _FakeLLMRequest:
         self.content = content
 
 
-class _FakeAtofExporterConfig:
-    def __init__(self):
-        self.output_directory = ""
-        self.filename = "events.jsonl"
-        self.mode = "append"
-
-
-class _FakeAtofExporter:
-    def __init__(self, events, config):
-        self.events = events
-        self.config = config
-
-    def register(self, name):
-        self.events.append(("atof.register", name, self.config.output_directory, self.config.filename))
-
-
-class _FakeAtifExporter:
-    def __init__(self, events, session_id, agent_name, agent_version, kwargs):
-        self.events = events
-        self.session_id = session_id
-        self.agent_name = agent_name
-        self.agent_version = agent_version
-        self.kwargs = kwargs
-
-    def register(self, name):
-        self.events.append(("atif.register", name, self.session_id))
-
-    def deregister(self, name):
-        self.events.append(("atif.deregister", name, self.session_id))
-        return True
-
-    def export_json(self):
-        return json.dumps({"session_id": self.session_id, "agent_name": self.agent_name})
-
-
 def _fresh_plugin(monkeypatch, fake):
     monkeypatch.setitem(sys.modules, "nemo_relay", fake)
     sys.modules.pop("plugins.observability.nemo_flow", None)
     plugin = importlib.import_module("plugins.observability.nemo_flow")
     plugin.reset_for_tests()
     return plugin
+
+
+def _write_plugins_toml(tmp_path, text: str) -> Path:
+    plugins_toml = tmp_path / "plugins.toml"
+    plugins_toml.write_text(text, encoding="utf-8")
+    return plugins_toml
+
+
+def _enable_adaptive(tmp_path, monkeypatch) -> None:
+    plugins_toml = _write_plugins_toml(
+        tmp_path,
+        """
+version = 1
+
+[[components]]
+kind = "adaptive"
+enabled = true
+
+[components.config]
+version = 1
+
+[components.config.tool_parallelism]
+mode = "observe_only"
+""",
+    )
+    monkeypatch.setenv("NEMO_RELAY_PLUGINS_TOML", str(plugins_toml))
 
 
 def test_manifest_fields():
@@ -174,13 +154,28 @@ def test_register_adds_observer_hooks_and_adaptive_middleware(monkeypatch):
     assert middleware_names == ["tool_execution", "api_execution"]
 
 
-def test_nemo_flow_plugin_emits_llm_tool_and_exports_atif(tmp_path, monkeypatch):
+def test_nemo_flow_plugin_emits_llm_tool_and_initializes_plugin_config(tmp_path, monkeypatch):
     fake = _FakeNemoFlow()
     plugin = _fresh_plugin(monkeypatch, fake)
-    monkeypatch.setenv("HERMES_NEMO_FLOW_ATOF_ENABLED", "1")
-    monkeypatch.setenv("HERMES_NEMO_FLOW_ATOF_OUTPUT_DIRECTORY", str(tmp_path / "atof"))
-    monkeypatch.setenv("HERMES_NEMO_FLOW_ATIF_ENABLED", "1")
-    monkeypatch.setenv("HERMES_NEMO_FLOW_ATIF_OUTPUT_DIRECTORY", str(tmp_path / "atif"))
+    plugins_toml = _write_plugins_toml(
+        tmp_path,
+        """
+version = 1
+
+[[components]]
+kind = "observability"
+enabled = true
+
+[components.config.atof]
+enabled = true
+output_directory = "events"
+
+[components.config.atif]
+enabled = true
+output_directory = "trajectories"
+""",
+    )
+    monkeypatch.setenv("NEMO_RELAY_PLUGINS_TOML", str(plugins_toml))
 
     base = {
         "session_id": "s1",
@@ -207,14 +202,12 @@ def test_nemo_flow_plugin_emits_llm_tool_and_exports_atif(tmp_path, monkeypatch)
     plugin.on_session_finalize(**base, reason="shutdown")
 
     event_names = [event[0] for event in fake.events]
-    assert "atof.register" in event_names
-    assert "atif.register" in event_names
+    assert "plugin.initialize" in event_names
     assert "llm.call" in event_names
     assert "llm.call_end" in event_names
     assert "tool.call" in event_names
     assert "tool.call_end" in event_names
     assert "scope.pop" in event_names
-    assert (tmp_path / "atif" / "hermes-atif-s1.json").exists()
 
 
 def test_nemo_flow_plugin_metadata_promotes_trajectory_and_subagent_ids(monkeypatch):
@@ -263,11 +256,50 @@ def test_nemo_flow_plugin_metadata_promotes_trajectory_and_subagent_ids(monkeypa
     assert stop_mark[2]["metadata"]["child_status"] == "completed"
 
 
+def test_nemo_flow_plugin_pushes_child_agent_scope_under_parent(monkeypatch):
+    fake = _FakeNemoFlow()
+    plugin = _fresh_plugin(monkeypatch, fake)
+
+    parent = {
+        "session_id": "parent-session",
+        "task_id": "task-1",
+        "turn_id": "turn-1",
+        "telemetry_schema_version": "hermes.observer.v1",
+    }
+    child = {
+        "session_id": "child-session",
+        "task_id": "child-task",
+        "turn_id": "child-turn",
+        "telemetry_schema_version": "hermes.observer.v1",
+    }
+
+    plugin.on_session_start(**parent, model="demo-model", platform="cli")
+    plugin.on_subagent_start(
+        parent_session_id="parent-session",
+        parent_turn_id="turn-1",
+        child_session_id="child-session",
+        child_subagent_id="child-sa",
+        child_role="leaf",
+        telemetry_schema_version="hermes.observer.v1",
+    )
+    plugin.on_session_start(**child, model="demo-model", platform="cli")
+    plugin.on_session_end(**child, completed=True, interrupted=False)
+    plugin.on_session_end(**parent, completed=True, interrupted=False)
+
+    child_scope_push = next(
+        event
+        for event in fake.events
+        if event[0] == "scope.push" and event[1] == "hermes-session-child-session"
+    )
+    assert child_scope_push[3]["handle"] == ("scope", "hermes-session-parent-session")
+    assert child_scope_push[3]["metadata"]["parent_session_id"] == "parent-session"
+
+
 def test_nemo_flow_plugin_can_initialize_plugins_toml(tmp_path, monkeypatch):
     fake = _FakeNemoFlow()
     plugin = _fresh_plugin(monkeypatch, fake)
-    plugins_toml = tmp_path / "plugins.toml"
-    plugins_toml.write_text(
+    plugins_toml = _write_plugins_toml(
+        tmp_path,
         """
 version = 1
 
@@ -279,14 +311,34 @@ enabled = true
 enabled = true
 output_directory = "events"
 """,
-        encoding="utf-8",
     )
-    monkeypatch.setenv("HERMES_NEMO_FLOW_PLUGINS_TOML", str(plugins_toml))
+    monkeypatch.setenv("NEMO_RELAY_PLUGINS_TOML", str(plugins_toml))
 
     plugin.on_session_start(session_id="s1")
 
     assert any(event[0] == "plugin.initialize" for event in fake.events)
-    assert not any(event[0] == "atof.register" for event in fake.events)
+
+
+def test_nemo_flow_plugin_reads_project_plugins_toml_by_default(tmp_path, monkeypatch):
+    fake = _FakeNemoFlow()
+    plugin = _fresh_plugin(monkeypatch, fake)
+    config_dir = tmp_path / ".nemo-relay"
+    config_dir.mkdir()
+    (config_dir / "plugins.toml").write_text(
+        """
+version = 1
+
+[[components]]
+kind = "observability"
+enabled = true
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    plugin.on_session_start(session_id="s1")
+
+    assert any(event[0] == "plugin.initialize" for event in fake.events)
 
 
 def test_nemo_flow_plugin_noops_without_dependency(monkeypatch):
@@ -308,10 +360,10 @@ def test_nemo_flow_plugin_noops_without_dependency(monkeypatch):
     plugin.on_post_api_request(session_id="s1", api_request_id="api-1")
 
 
-def test_adaptive_tool_execution_middleware_uses_managed_execute(monkeypatch):
+def test_adaptive_tool_execution_middleware_uses_managed_execute(tmp_path, monkeypatch):
     fake = _FakeNemoFlow()
     plugin = _fresh_plugin(monkeypatch, fake)
-    monkeypatch.setenv("HERMES_NEMO_FLOW_ADAPTIVE_ENABLED", "1")
+    _enable_adaptive(tmp_path, monkeypatch)
 
     result = plugin.on_tool_execution_middleware(
         session_id="s1",
@@ -327,14 +379,15 @@ def test_adaptive_tool_execution_middleware_uses_managed_execute(monkeypatch):
     )
 
     assert result == {"result": {"intercepted": True, "path": "demo.txt"}}
+    assert any(event[0] == "plugin.initialize" for event in fake.events)
     assert any(event[0] == "tool.execute.start" for event in fake.events)
     assert not any(event[0] == "tool.call" for event in fake.events)
 
 
-def test_adaptive_llm_execution_middleware_preserves_raw_response(monkeypatch):
+def test_adaptive_llm_execution_middleware_preserves_raw_response(tmp_path, monkeypatch):
     fake = _FakeNemoFlow()
     plugin = _fresh_plugin(monkeypatch, fake)
-    monkeypatch.setenv("HERMES_NEMO_FLOW_ADAPTIVE_ENABLED", "1")
+    _enable_adaptive(tmp_path, monkeypatch)
     raw_response = object()
     seen_request = {}
 
@@ -359,10 +412,10 @@ def test_adaptive_llm_execution_middleware_preserves_raw_response(monkeypatch):
     assert execute_start[2]["messages"] == [{"role": "user", "content": "hi"}]
 
 
-def test_adaptive_observer_hooks_do_not_duplicate_managed_tool_spans(monkeypatch):
+def test_adaptive_observer_hooks_do_not_duplicate_managed_tool_spans(tmp_path, monkeypatch):
     fake = _FakeNemoFlow()
     plugin = _fresh_plugin(monkeypatch, fake)
-    monkeypatch.setenv("HERMES_NEMO_FLOW_ADAPTIVE_ENABLED", "1")
+    _enable_adaptive(tmp_path, monkeypatch)
 
     base = {
         "session_id": "s1",
