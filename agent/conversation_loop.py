@@ -32,6 +32,7 @@ from agent.auxiliary_client import set_runtime_main
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.i18n import t
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.message_sanitization import (
@@ -1391,7 +1392,12 @@ def run_conversation(
                             agent._persist_session(messages, conversation_history)
                             agent.clear_interrupt()
                             return {
-                                "final_response": f"Operation interrupted during retry ({_failure_hint}, attempt {retry_count}/{max_retries}).",
+                                "final_response": t(
+                                    "agent.interrupted.during_retry",
+                                    failure_hint=_failure_hint,
+                                    retry_count=retry_count,
+                                    max_retries=max_retries,
+                                ),
                                 "messages": messages,
                                 "api_calls": api_call_count,
                                 "completed": False,
@@ -1811,7 +1817,7 @@ def run_conversation(
                 agent._vprint(f"{agent.log_prefix}⚡ Interrupted during API call.", force=True)
                 agent._persist_session(messages, conversation_history)
                 interrupted = True
-                final_response = f"Operation interrupted: waiting for model response ({api_elapsed:.1f}s elapsed)."
+                final_response = t("agent.interrupted.waiting_for_model_response", elapsed=f"{api_elapsed:.1f}")
                 break
 
             except Exception as api_error:
@@ -2448,7 +2454,11 @@ def run_conversation(
                     agent._persist_session(messages, conversation_history)
                     agent.clear_interrupt()
                     return {
-                        "final_response": f"Operation interrupted: handling API error ({error_type}: {agent._clean_error_message(str(api_error))}).",
+                        "final_response": t(
+                            "agent.interrupted.handling_api_error",
+                            error_type=error_type,
+                            error=agent._clean_error_message(str(api_error)),
+                        ),
                         "messages": messages,
                         "api_calls": api_call_count,
                         "completed": False,
@@ -3101,7 +3111,11 @@ def run_conversation(
                         agent._persist_session(messages, conversation_history)
                         agent.clear_interrupt()
                         return {
-                            "final_response": f"Operation interrupted: retrying API call after error (retry {retry_count}/{max_retries}).",
+                            "final_response": t(
+                                "agent.interrupted.retrying_api_call_after_error",
+                                retry_count=retry_count,
+                                max_retries=max_retries,
+                            ),
                             "messages": messages,
                             "api_calls": api_call_count,
                             "completed": False,

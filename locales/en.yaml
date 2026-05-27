@@ -25,6 +25,13 @@ approval:
   cancelled:       "      ✗ Cancelled"
   blocklist_message: "This command is on the unconditional blocklist and cannot be approved."
 
+agent:
+  interrupted:
+    during_retry: "Operation interrupted during retry ({failure_hint}, attempt {retry_count}/{max_retries})."
+    waiting_for_model_response: "Operation interrupted: waiting for model response ({elapsed}s elapsed)."
+    handling_api_error: "Operation interrupted: handling API error ({error_type}: {error})."
+    retrying_api_call_after_error: "Operation interrupted: retrying API call after error (retry {retry_count}/{max_retries})."
+
 gateway:
   # Messenger replies to slash commands and implicit state changes.
   approval_expired: "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."

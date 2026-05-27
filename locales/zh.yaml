@@ -15,6 +15,13 @@ approval:
   cancelled:       "      ✗ 已取消"
   blocklist_message: "此命令位于无条件拦截列表中，无法被批准。"
 
+agent:
+  interrupted:
+    during_retry: "操作已中断：正在等待重试（{failure_hint}，第 {retry_count}/{max_retries} 次尝试）。"
+    waiting_for_model_response: "操作已中断：正在等待模型响应（已等待 {elapsed} 秒）。"
+    handling_api_error: "操作已中断：正在处理 API 错误（{error_type}：{error}）。"
+    retrying_api_call_after_error: "操作已中断：API 调用出错后正在等待重试（第 {retry_count}/{max_retries} 次）。"
+
 gateway:
   approval_expired: "⚠️ 批准已过期（代理不再等待）。请让代理重试。"
   draining:         "⏳ 正在等待 {count} 个活跃代理结束后重启..."

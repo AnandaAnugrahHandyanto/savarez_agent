@@ -15,6 +15,13 @@ approval:
   cancelled:       "      ✗ Megszakítva"
   blocklist_message: "Ez a parancs a feltétel nélküli tiltólistán van, és nem hagyható jóvá."
 
+agent:
+  interrupted:
+    during_retry: "Operation interrupted during retry ({failure_hint}, attempt {retry_count}/{max_retries})."
+    waiting_for_model_response: "Operation interrupted: waiting for model response ({elapsed}s elapsed)."
+    handling_api_error: "Operation interrupted: handling API error ({error_type}: {error})."
+    retrying_api_call_after_error: "Operation interrupted: retrying API call after error (retry {retry_count}/{max_retries})."
+
 gateway:
   approval_expired: "⚠️ A jóváhagyás lejárt (az ügynök már nem vár). Kérd meg az ügynököt, hogy próbálja újra."
   draining:         "⏳ {count} aktív ügynök befejezésére várunk az újraindítás előtt..."

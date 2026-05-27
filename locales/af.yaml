@@ -15,6 +15,13 @@ approval:
   cancelled:       "      ✗ Gekanselleer"
   blocklist_message: "Hierdie opdrag is op die onvoorwaardelike blokkeerlys en kan nie goedgekeur word nie."
 
+agent:
+  interrupted:
+    during_retry: "Operation interrupted during retry ({failure_hint}, attempt {retry_count}/{max_retries})."
+    waiting_for_model_response: "Operation interrupted: waiting for model response ({elapsed}s elapsed)."
+    handling_api_error: "Operation interrupted: handling API error ({error_type}: {error})."
+    retrying_api_call_after_error: "Operation interrupted: retrying API call after error (retry {retry_count}/{max_retries})."
+
 gateway:
   approval_expired: "⚠️ Goedkeuring het verval (die agent wag nie meer nie). Vra die agent om weer te probeer."
   draining:         "⏳ Wag vir {count} aktiewe agent(e) voor herbegin..."

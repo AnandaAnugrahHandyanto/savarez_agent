@@ -15,6 +15,13 @@ approval:
   cancelled:       "      ✗ 취소됨"
   blocklist_message: "이 명령은 무조건 차단 목록에 있으며 승인할 수 없습니다."
 
+agent:
+  interrupted:
+    during_retry: "Operation interrupted during retry ({failure_hint}, attempt {retry_count}/{max_retries})."
+    waiting_for_model_response: "Operation interrupted: waiting for model response ({elapsed}s elapsed)."
+    handling_api_error: "Operation interrupted: handling API error ({error_type}: {error})."
+    retrying_api_call_after_error: "Operation interrupted: retrying API call after error (retry {retry_count}/{max_retries})."
+
 gateway:
   approval_expired: "⚠️ 승인이 만료되었습니다 (에이전트가 더 이상 대기하지 않습니다). 에이전트에게 다시 시도하도록 요청하세요."
   draining:         "⏳ 재시작 전에 활성 에이전트 {count}명을 정리하는 중..."

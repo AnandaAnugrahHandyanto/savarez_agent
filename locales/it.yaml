@@ -15,6 +15,13 @@ approval:
   cancelled:       "      ✗ Annullato"
   blocklist_message: "Questo comando è nella lista di blocco incondizionata e non può essere approvato."
 
+agent:
+  interrupted:
+    during_retry: "Operation interrupted during retry ({failure_hint}, attempt {retry_count}/{max_retries})."
+    waiting_for_model_response: "Operation interrupted: waiting for model response ({elapsed}s elapsed)."
+    handling_api_error: "Operation interrupted: handling API error ({error_type}: {error})."
+    retrying_api_call_after_error: "Operation interrupted: retrying API call after error (retry {retry_count}/{max_retries})."
+
 gateway:
   approval_expired: "⚠️ Approvazione scaduta (l'agente non è più in attesa). Chiedi all'agente di riprovare."
   draining:         "⏳ Attendo il completamento di {count} agente/i attivo/i prima di riavviare..."

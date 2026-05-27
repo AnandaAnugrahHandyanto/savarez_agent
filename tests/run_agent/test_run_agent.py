@@ -20,6 +20,7 @@ from agent.codex_responses_adapter import _chat_messages_to_responses_input, _no
 
 import run_agent
 from run_agent import AIAgent
+from agent import i18n
 from agent.error_classifier import FailoverReason
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
@@ -2825,6 +2826,34 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("hello")
         assert result["interrupted"] is True
+
+    def test_interrupt_during_model_response_is_localized(self, agent, monkeypatch):
+        self._setup_agent(agent)
+        monkeypatch.setenv("HERMES_LANGUAGE", "zh")
+        i18n.reset_language_cache()
+
+        def interrupt_side_effect(api_kwargs):
+            agent._interrupt_requested = True
+            raise InterruptedError("Agent interrupted during API call")
+
+        try:
+            with (
+                patch.object(agent, "_persist_session"),
+                patch.object(agent, "_save_trajectory"),
+                patch.object(agent, "_cleanup_task_resources"),
+                patch("run_agent._set_interrupt"),
+                patch.object(
+                    agent, "_interruptible_api_call", side_effect=interrupt_side_effect
+                ),
+            ):
+                result = agent.run_conversation("hello")
+        finally:
+            i18n.reset_language_cache()
+
+        assert result["interrupted"] is True
+        assert "操作已中断：正在等待模型响应" in result["final_response"]
+        assert "Operation interrupted" not in result["final_response"]
+        assert "waiting for model response" not in result["final_response"]
 
     def test_invalid_tool_name_retry(self, agent):
         """Model hallucinates an invalid tool name, agent retries and succeeds."""
