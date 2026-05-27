@@ -1481,6 +1481,19 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except UnicodeDecodeError:
             load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="latin-1")
 
+        # Pull Bitwarden Secrets Manager secrets into os.environ so cron jobs
+        # resolve BSM-managed credentials the same way the gateway and CLI do.
+        # Without this, jobs see the .env placeholder string and fail with
+        # HTTP 401. The _APPLIED_HOMES process-level dedup added in #32271
+        # (de76f4d) makes calling this on every tick effectively free after the
+        # first successful pull. Any failure is logged and swallowed — BSM
+        # must never block job execution.
+        try:
+            from hermes_cli.env_loader import _apply_external_secret_sources
+            _apply_external_secret_sources(_get_hermes_home())
+        except Exception:
+            logger.debug("BSM secret apply failed", exc_info=True)
+
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:
             _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].set(delivery_target["platform"])

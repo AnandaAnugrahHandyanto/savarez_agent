@@ -2597,3 +2597,154 @@ class TestSendMediaTimeoutCancelsFuture:
         # 2. Second file still got dispatched — one timeout doesn't abort the batch
         adapter.send_video.assert_called_once()
         assert adapter.send_video.call_args[1]["video_path"] == str(fast.resolve())
+
+
+class TestRunJobBSMSecretResolution:
+    """run_job must pull Bitwarden Secrets Manager secrets into os.environ.
+
+    Regression for #33465: the cron scheduler previously called bare
+    ``dotenv.load_dotenv()`` and never invoked the BSM apply path. Any
+    cron job that needed a BSM-managed credential saw the .env placeholder
+    instead of the real value and failed with HTTP 401. The gateway
+    resolved BSM secrets fine because it goes through ``load_hermes_dotenv()``;
+    cron must do equivalent work.
+    """
+
+    _RUNTIME = {
+        "api_key": "test-key",
+        "base_url": "https://example.invalid/v1",
+        "provider": "openrouter",
+        "api_mode": "chat_completions",
+    }
+
+    @pytest.fixture(autouse=True)
+    def _import_run_agent_eagerly(self):
+        """Import run_agent before the test sets HERMES_HOME=tmp_path.
+
+        run_agent.py runs ``load_hermes_dotenv()`` at module-import time. If we
+        let ``patch("run_agent.AIAgent")`` trigger that import inside the test
+        body, the module-level dotenv load picks up our tmp_path-rooted
+        HERMES_HOME and calls _apply_external_secret_sources for us — masking
+        whether the scheduler itself is doing the work. Force run_agent to
+        load once, with the ambient HERMES_HOME, before the test starts."""
+        import run_agent  # noqa: F401
+
+    def test_run_job_applies_bitwarden_secrets(self, tmp_path, monkeypatch):
+        """BSM apply must run during run_job so the secret lands in os.environ
+        before AIAgent is constructed."""
+        from agent.secret_sources.bitwarden import FetchResult
+        from hermes_cli import env_loader
+
+        # Clean per-process dedup state so the apply path actually runs.
+        env_loader._SECRET_SOURCES.clear()
+        env_loader.reset_secret_source_cache()
+
+        (tmp_path / "config.yaml").write_text(
+            "secrets:\n"
+            "  bitwarden:\n"
+            "    enabled: true\n"
+            "    project_id: test-project\n"
+            "    access_token_env: BWS_ACCESS_TOKEN\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        api_key_during_init: dict = {}
+
+        class _FakeAgent:
+            def __init__(self, **_kw):
+                # Snapshot the env at the moment AIAgent is constructed —
+                # this is when the agent reads credentials.
+                api_key_during_init["value"] = os.environ.get("ANTHROPIC_API_KEY")
+
+            def run_conversation(self, *_a, **_kw):
+                return {"final_response": "ok", "messages": []}
+
+            def close(self):
+                pass
+
+            def get_activity_summary(self):
+                return {"seconds_since_activity": 0.0}
+
+        def _fake_apply(**_kwargs):
+            # Mirror the real apply_bitwarden_secrets contract: secrets that
+            # land in `applied` must also be written to os.environ. The
+            # callers (env_loader, our cron fix) rely on this.
+            os.environ["ANTHROPIC_API_KEY"] = "sk-ant-from-bitwarden"
+            return FetchResult(
+                secrets={"ANTHROPIC_API_KEY": "sk-ant-from-bitwarden"},
+                applied=["ANTHROPIC_API_KEY"],
+            )
+
+        import agent.secret_sources.bitwarden as bw_module
+        monkeypatch.setattr(bw_module, "apply_bitwarden_secrets", _fake_apply)
+
+        job = {"id": "bsm-job", "name": "bsm", "prompt": "hi"}
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent", _FakeAgent):
+            success, _output, _response, error = run_job(job)
+
+        assert success is True, f"run_job failed: {error!r}"
+        # The BSM value must be visible in os.environ by the time AIAgent
+        # is constructed. Before #33465 this was None because cron never
+        # ran the BSM apply step.
+        assert api_key_during_init["value"] == "sk-ant-from-bitwarden", (
+            "ANTHROPIC_API_KEY was not populated from Bitwarden during "
+            "run_job; the BSM apply step is missing from the scheduler."
+        )
+        # Origin tracking must still record where the value came from.
+        assert env_loader.get_secret_source("ANTHROPIC_API_KEY") == "bitwarden"
+
+        env_loader._SECRET_SOURCES.clear()
+        env_loader.reset_secret_source_cache()
+
+    def test_run_job_does_not_crash_when_bsm_apply_raises(self, tmp_path, monkeypatch):
+        """A failure in the BSM apply path must never block job execution —
+        the cron scheduler swallows the error and continues."""
+        from hermes_cli import env_loader
+
+        env_loader._SECRET_SOURCES.clear()
+        env_loader.reset_secret_source_cache()
+
+        (tmp_path / "config.yaml").write_text(
+            "secrets:\n"
+            "  bitwarden:\n"
+            "    enabled: true\n"
+            "    project_id: test-project\n"
+            "    access_token_env: BWS_ACCESS_TOKEN\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        def _boom(**_kwargs):
+            raise RuntimeError("simulated BSM backend failure")
+
+        import agent.secret_sources.bitwarden as bw_module
+        monkeypatch.setattr(bw_module, "apply_bitwarden_secrets", _boom)
+
+        job = {"id": "bsm-fail-job", "name": "bsm-fail", "prompt": "hi"}
+
+        fake_db = MagicMock()
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _output, _response, error = run_job(job)
+
+        # Job must still succeed — BSM failures cannot block cron execution.
+        assert success is True, f"run_job failed when BSM raised: {error!r}"
+
+        env_loader._SECRET_SOURCES.clear()
+        env_loader.reset_secret_source_cache()
