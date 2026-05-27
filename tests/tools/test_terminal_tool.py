@@ -160,6 +160,57 @@ def test_validate_workdir_allows_windows_drive_paths():
     assert terminal_tool._validate_workdir("C:/Users/Alice/project") is None
 
 
+def test_get_env_config_survives_deleted_process_cwd(monkeypatch, tmp_path):
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    def _missing_cwd():
+        raise FileNotFoundError("cwd was deleted")
+
+    monkeypatch.setattr(terminal_tool.os, "getcwd", _missing_cwd)
+
+    config = terminal_tool._get_env_config()
+
+    assert config["cwd"] == str(tmp_path)
+
+
+def test_get_env_config_survives_deleted_cwd_for_docker_mount(monkeypatch, tmp_path):
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    def _missing_cwd():
+        raise FileNotFoundError("cwd was deleted")
+
+    monkeypatch.setattr(terminal_tool.os, "getcwd", _missing_cwd)
+
+    config = terminal_tool._get_env_config()
+
+    assert config["cwd"] == "/workspace"
+    assert config["host_cwd"] == str(tmp_path)
+
+
+def test_get_env_config_survives_deleted_cwd_for_relative_docker_mount(monkeypatch, tmp_path):
+    relative_dir = tmp_path / "project"
+    relative_dir.mkdir()
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
+    monkeypatch.setenv("TERMINAL_CWD", "project")
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    def _missing_cwd():
+        raise FileNotFoundError("cwd was deleted")
+
+    monkeypatch.setattr(terminal_tool.os, "getcwd", _missing_cwd)
+
+    config = terminal_tool._get_env_config()
+
+    assert config["cwd"] == "/workspace"
+    assert config["host_cwd"] == str(relative_dir)
+
+
 def test_validate_workdir_allows_windows_unc_paths():
     assert terminal_tool._validate_workdir(r"\\server\share\project") is None
 

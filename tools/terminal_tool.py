@@ -941,6 +941,32 @@ def _parse_env_var(name: str, default: str, converter=int, type_label: str = "in
         )
 
 
+def _safe_getcwd() -> str:
+    """Return a usable cwd even if the process cwd was deleted.
+
+    os.getcwd() raises FileNotFoundError when the directory the Hermes process
+    started in has been removed. Terminal tool config is resolved lazily, so a
+    deleted launch/worktree directory must not crash every terminal call.
+    """
+    try:
+        return os.getcwd()
+    except FileNotFoundError:
+        fallback = os.path.expanduser("~")
+        if fallback and os.path.isdir(fallback):
+            logger.warning("Current working directory no longer exists; using %s", fallback)
+            return fallback
+        logger.warning("Current working directory no longer exists; using /")
+        return "/"
+
+
+def _safe_abspath(path: str) -> str:
+    """Resolve path to an absolute path without trusting process cwd."""
+    expanded = os.path.expanduser(path)
+    if os.path.isabs(expanded) or (len(expanded) >= 3 and expanded[1:3] in {":/", ":\\"}):
+        return os.path.normpath(expanded)
+    return os.path.normpath(os.path.join(_safe_getcwd(), expanded))
+
+
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     # Default image with Python and Node.js for maximum compatibility
@@ -953,7 +979,7 @@ def _get_env_config() -> Dict[str, Any]:
     # remote home, and everything else starts in the backend's default
     # root-like cwd.
     if env_type == "local":
-        default_cwd = os.getcwd()
+        default_cwd = _safe_getcwd()
     elif env_type == "ssh":
         default_cwd = "~"
     else:
@@ -969,8 +995,8 @@ def _get_env_config() -> Dict[str, Any]:
     host_cwd = None
     host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
     if env_type == "docker" and mount_docker_cwd:
-        docker_cwd_source = os.getenv("TERMINAL_CWD") or os.getcwd()
-        candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
+        docker_cwd_source = os.getenv("TERMINAL_CWD") or _safe_getcwd()
+        candidate = _safe_abspath(docker_cwd_source)
         if (
             any(candidate.startswith(p) for p in host_prefixes)
             or (os.path.isabs(candidate) and os.path.isdir(candidate) and not candidate.startswith(("/workspace", "/root")))
