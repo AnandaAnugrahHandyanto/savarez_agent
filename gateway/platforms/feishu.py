@@ -215,6 +215,15 @@ _FEISHU_WEBHOOK_BODY_TIMEOUT_SECONDS = 30          # max seconds to read request
 _FEISHU_WEBHOOK_ANOMALY_THRESHOLD = 25             # consecutive error responses before WARNING log
 _FEISHU_WEBHOOK_ANOMALY_TTL_SECONDS = 6 * 60 * 60  # anomaly tracker TTL (6 hours) — matches openclaw
 _FEISHU_CARD_ACTION_DEDUP_TTL_SECONDS = 15 * 60    # card action token dedup window (15 min)
+# -- Feishu card building helpers (stream_card / form_action / json_input) --
+
+_FEISHU_CARD_INPUT_MAX_LENGTH = 2000       # plain_text max_chars for inputs
+_FEISHU_CARD_BUTTON_PRIMARY_COLOR = "blue" # default button color
+_FEISHU_CARD_FILE_SIZE_LIMITS = {
+    "image": 30 * 1024 * 1024,   # 30MB
+    "file":  30 * 1024 * 1024,   # 30MB
+}
+
 
 _APPROVAL_CHOICE_MAP: Dict[str, str] = {
     "approve_once": "once",
@@ -704,7 +713,7 @@ def _parse_markdown_inline(text: str) -> List[Dict[str, Any]]:
 
 # Maximum GFM tables allowed in a single Schema 2.0 card.  Exceeding this
 # limit triggers 230099 / 11310 (verified 2026-03 by openclaw + cc-haha).
-_FEISHU_CARD_TABLE_LIMIT = 3
+_FEISHU_CARD_TABLE_LIMIT = 5
 
 # Regex to find GFM tables *outside* fenced code blocks (code-block tables
 # are skipped because the Feishu markdown renderer treats them as code,
@@ -754,7 +763,7 @@ def _build_table_card_payload(content: str) -> str:
                 "elements": [
                     {
                         "tag": "markdown",
-                        "content": escaped or " ",
+                        "content": optimised or " ",
                         "text_align": "left",
                     }
                 ],
@@ -1679,6 +1688,86 @@ def check_feishu_requirements() -> bool:
 
     from tools.lazy_deps import ensure_and_bind
     return ensure_and_bind("platform.feishu", _import, globals(), prompt=False)
+
+
+
+# -- Card building helpers (module-level) --
+
+def _make_card_element(tag: str, **kwargs) -> dict:
+    """Build a single card element dict."""
+    return {k: v for k, v in {"tag": tag, **kwargs}.items() if v is not None}
+
+
+def _make_card_form(form_id: str, elements: list) -> dict:
+    """Wrap elements in a form container."""
+    return {"tag": "form", "name": form_id, "elements": elements}
+
+
+def _make_card_button(text: str, action_type: str = "button",
+                      button_type: str = "primary", value: dict = None,
+                      form_action_type: str = None, width: str = None) -> dict:
+    """Build a button element."""
+    btn = {
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": text},
+        "type": button_type,
+        "value": value or {},
+    }
+    if action_type:
+        btn["action_type"] = action_type
+    if form_action_type:
+        btn["form_action_type"] = form_action_type
+    if width:
+        btn["width"] = width
+    return btn
+
+
+def _make_card_json_input(name: str, placeholder: str = "",
+                          max_length: int = _FEISHU_CARD_INPUT_MAX_LENGTH,
+                          width: str = "fill", required: bool = False,
+                          label: str = None) -> dict:
+    """Build a JSON input element."""
+    inp = {
+        "tag": "input",
+        "name": name,
+        "placeholder": {"tag": "plain_text", "content": placeholder},
+        "max_length": max_length,
+        "width": width,
+    }
+    if required:
+        inp["required"] = required
+    if label:
+        inp["label"] = {"tag": "plain_text", "content": label}
+    return inp
+
+
+def _make_card_divider() -> dict:
+    return {"tag": "hr"}
+
+
+def _make_card_markdown(content: str) -> dict:
+    return {"tag": "markdown", "content": content}
+
+
+def _make_card_column_set(columns: list, flex_mode: str = "none",
+                          background_style: str = "default") -> dict:
+    return {
+        "tag": "column_set",
+        "flex_mode": flex_mode,
+        "background_style": background_style,
+        "columns": columns,
+    }
+
+
+def _make_card_column(elements: list, width: str = "weighted",
+                      weight: int = 1, vertical_align: str = "top") -> dict:
+    return {
+        "tag": "column",
+        "width": width,
+        "weight": weight,
+        "vertical_align": vertical_align,
+        "elements": elements,
+    }
 
 
 class FeishuAdapter(BasePlatformAdapter):
@@ -4561,14 +4650,16 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
+        logger.warning("[Feishu DEBUG] _build_outbound_payload called, content[:100]=%r", content[:100])
         # GFM tables / fenced code blocks → interactive Card 2.0 (Schema 2.0
         # markdown element renders both natively — matches OpenClaw shouldUseCard).
         if _MARKDOWN_TABLE_RE.search(content) or _MARKDOWN_CODE_BLOCK_RE.search(content):
             try:
                 card_json = _build_table_card_payload(content)
+                logger.warning("[Feishu DEBUG] table card built OK, payload len=%d", len(card_json))
                 return "interactive", card_json
-            except Exception:
-                logger.debug("[Feishu] Card build failed, falling back to post")
+            except Exception as exc:
+                logger.warning("[Feishu DEBUG] Card build FAILED: %s", exc, exc_info=True)
         if _MARKDOWN_HINT_RE.search(content) or _MARKDOWN_TABLE_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
@@ -4589,6 +4680,19 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         if not os.path.exists(file_path):
             return SendResult(success=False, error=f"File not found: {file_path}")
+
+        # Pre-check file size (Feishu limit: 30MB for images, 30MB for files)
+        file_size = os.path.getsize(file_path)
+        size_limit = _FEISHU_CARD_FILE_SIZE_LIMITS.get(
+            "image" if outbound_message_type == "image" else "file", 30 * 1024 * 1024
+        )
+        if file_size > size_limit:
+            size_mb = file_size / (1024 * 1024)
+            limit_mb = size_limit / (1024 * 1024)
+            return SendResult(
+                success=False,
+                error=f"File too large: {size_mb:.1f}MB exceeds {limit_mb:.0f}MB limit",
+            )
 
         display_name = file_name or os.path.basename(file_path)
         upload_file_type, resolved_message_type = self._resolve_outbound_file_routing(
