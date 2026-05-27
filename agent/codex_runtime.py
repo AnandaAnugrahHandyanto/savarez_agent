@@ -188,10 +188,55 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     # returns empty output (e.g. chatgpt.com backend-api sends
     # response.incomplete instead of response.completed).
     agent._codex_streamed_text_parts: list = []
+
+    def _synthesize_response_from_stream(
+        collected_output_items: list,
+        *,
+        allow_text: bool,
+    ):
+        output = None
+        if collected_output_items:
+            output = list(collected_output_items)
+            logger.debug(
+                "Codex stream: recovered %d output items after SDK terminal-response parse failure",
+                len(collected_output_items),
+            )
+        elif allow_text and agent._codex_streamed_text_parts:
+            assembled = "".join(agent._codex_streamed_text_parts)
+            output = [SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text=assembled)],
+            )]
+            logger.debug(
+                "Codex stream: synthesized output after SDK terminal-response parse failure "
+                "from %d text deltas (%d chars)",
+                len(agent._codex_streamed_text_parts), len(assembled),
+            )
+        if not output:
+            return None
+        return SimpleNamespace(
+            id=None,
+            object="response",
+            status="completed",
+            model=api_kwargs.get("model"),
+            output=output,
+            output_text=None,
+            usage=None,
+            incomplete_details=None,
+            error=None,
+        )
+
     for attempt in range(max_stream_retries + 1):
         if agent._interrupt_requested:
             raise InterruptedError("Agent interrupted before Codex stream retry")
         collected_output_items: list = []
+        # Recovery synthesis must only use bytes/items from the active
+        # attempt. A failed first stream can emit partial text before the SDK
+        # raises; do not prepend that stale text to a later retry's response.
+        agent._codex_streamed_text_parts = []
+        has_tool_calls = False
         try:
             with active_client.responses.stream(**api_kwargs) as stream:
                 for event in stream:
@@ -248,10 +293,10 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                         )
                 final_response = stream.get_final_response()
                 # PATCH: ChatGPT Codex backend streams valid output items
-                # but get_final_response() can return an empty output list.
+                # but get_final_response() can return an empty or null output.
                 # Backfill from collected items or synthesize from deltas.
                 _out = getattr(final_response, "output", None)
-                if isinstance(_out, list) and not _out:
+                if _out is None or (isinstance(_out, list) and not _out):
                     if collected_output_items:
                         final_response.output = list(collected_output_items)
                         logger.debug(
@@ -330,6 +375,28 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 logger.debug(
                     "Responses stream %s; falling back to create(stream=True). %s err=%s",
                     "rejected before response.created" if prelude_error else "did not emit response.completed",
+                    agent._client_log_context(),
+                    err_text,
+                )
+                return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+            raise
+        except TypeError as exc:
+            # The ChatGPT Codex backend may emit a terminal response with
+            # ``output: null``. Some OpenAI SDK versions try to iterate that
+            # field while handling the SSE terminal event, raising before
+            # ``get_final_response()`` can return. Recover from the items/text
+            # already streamed, matching the empty-output backfill above.
+            err_text = str(exc)
+            if "NoneType" in err_text and "iterable" in err_text:
+                recovered = _synthesize_response_from_stream(
+                    collected_output_items,
+                    allow_text=not has_tool_calls,
+                )
+                if recovered is not None:
+                    return recovered
+                logger.debug(
+                    "Responses stream terminal response had output=None and no collected output; "
+                    "falling back to create(stream=True). %s err=%s",
                     agent._client_log_context(),
                     err_text,
                 )
@@ -414,7 +481,7 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
             if terminal_response is not None:
                 # Backfill empty output from collected stream events
                 _out = getattr(terminal_response, "output", None)
-                if isinstance(_out, list) and not _out:
+                if _out is None or (isinstance(_out, list) and not _out):
                     if collected_output_items:
                         terminal_response.output = list(collected_output_items)
                         logger.debug(

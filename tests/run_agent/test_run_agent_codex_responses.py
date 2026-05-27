@@ -186,6 +186,35 @@ class _FakeCreateStream:
         self.closed = True
 
 
+class _FakeStreamRaisesAfterEvents:
+    def __init__(self, events, error):
+        self._events = list(events)
+        self._error = error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def __iter__(self):
+        for event in self._events:
+            yield event
+        raise self._error
+
+    def get_final_response(self):
+        raise AssertionError("get_final_response should not be reached")
+
+
+class _FakeResponsesStreamWithEvents(_FakeResponsesStream):
+    def __init__(self, events, *, final_response=None, final_error=None):
+        super().__init__(final_response=final_response, final_error=final_error)
+        self._events = list(events)
+
+    def __iter__(self):
+        return iter(self._events)
+
+
 def _codex_request_kwargs():
     return {
         "model": "gpt-5-codex",
@@ -421,6 +450,36 @@ def test_run_codex_stream_retries_when_completed_event_missing(monkeypatch):
     assert response.output[0].content[0].text == "stream ok"
 
 
+def test_run_codex_stream_retry_synthesizes_only_current_attempt_text(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    calls = {"stream": 0}
+
+    def _fake_stream(**kwargs):
+        calls["stream"] += 1
+        if calls["stream"] == 1:
+            return _FakeResponsesStreamWithEvents(
+                [SimpleNamespace(type="response.output_text.delta", delta="stale")],
+                final_error=RuntimeError("Didn't receive a `response.completed` event."),
+            )
+        return _FakeResponsesStreamWithEvents(
+            [SimpleNamespace(type="response.output_text.delta", delta="fresh")],
+            final_response=SimpleNamespace(output=None, status="completed"),
+        )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=lambda **kwargs: _codex_message_response("fallback"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert calls["stream"] == 2
+    assert response is not None
+    assert response.output[0].content[0].text == "fresh"
+
+
 def test_run_codex_stream_falls_back_to_create_after_stream_completion_error(monkeypatch):
     agent = _build_agent(monkeypatch)
     calls = {"stream": 0, "create": 0}
@@ -482,6 +541,54 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert calls["create"] == 1
     assert create_stream.closed is True
     assert response.output[0].content[0].text == "streamed create ok"
+
+
+def test_run_codex_stream_recovers_when_sdk_rejects_null_terminal_output(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    def _fake_stream(**kwargs):
+        return _FakeStreamRaisesAfterEvents(
+            [
+                SimpleNamespace(type="response.output_text.delta", delta="ok"),
+            ],
+            TypeError("'NoneType' object is not iterable"),
+        )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=lambda **kwargs: _codex_message_response("fallback"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.status == "completed"
+    assert response.output[0].content[0].text == "ok"
+
+
+def test_codex_create_stream_fallback_backfills_null_terminal_output(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    create_stream = _FakeCreateStream(
+        [
+            SimpleNamespace(type="response.output_text.delta", delta="fallback ok"),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(output=None, status="completed"),
+            ),
+        ]
+    )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            create=lambda **kwargs: create_stream,
+        )
+    )
+
+    response = agent._run_codex_create_stream_fallback(_codex_request_kwargs())
+
+    assert create_stream.closed is True
+    assert response.output[0].content[0].text == "fallback ok"
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):
