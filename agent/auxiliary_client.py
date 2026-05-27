@@ -784,6 +784,30 @@ class _CodexCompletionsAdapter:
                 # new failure mode for auxiliary calls.
                 pass
 
+        def _item_get(obj: Any, key: str, default: Any = None) -> Any:
+            val = getattr(obj, key, None)
+            if val is None and isinstance(obj, dict):
+                val = obj.get(key, default)
+            return val if val is not None else default
+
+        def _collect_final_output(final_response: Any) -> None:
+            for item in getattr(final_response, "output", []):
+                item_type = _item_get(item, "type")
+                if item_type == "message":
+                    for part in (_item_get(item, "content") or []):
+                        ptype = _item_get(part, "type")
+                        if ptype in {"output_text", "text"}:
+                            text_parts.append(_item_get(part, "text", ""))
+                elif item_type == "function_call":
+                    tool_calls_raw.append(SimpleNamespace(
+                        id=_item_get(item, "call_id", ""),
+                        type="function",
+                        function=SimpleNamespace(
+                            name=_item_get(item, "name", ""),
+                            arguments=_item_get(item, "arguments", "{}"),
+                        ),
+                    ))
+
         try:
             # Collect output items and text deltas during streaming —
             # the Codex backend can return empty response.output from
@@ -811,7 +835,20 @@ class _CodexCompletionsAdapter:
                     elif "function_call" in _etype:
                         has_function_calls = True
                 _check_cancelled()
-                final = stream.get_final_response()
+                try:
+                    final = stream.get_final_response()
+                except TypeError as exc:
+                    from agent.codex_runtime import recover_responses_stream_output
+
+                    final = recover_responses_stream_output(
+                        exc,
+                        output_items=collected_output_items,
+                        text_parts=collected_text_deltas,
+                        has_tool_calls=has_function_calls,
+                        log_prefix="Codex auxiliary",
+                    )
+                    if final is None:
+                        raise
 
             # Backfill empty output from collected stream events
             _output = getattr(final, "output", None)
@@ -837,30 +874,8 @@ class _CodexCompletionsAdapter:
                     )
 
             # Extract text and tool calls from the Responses output.
-            # Items may be SDK objects (attrs) or dicts (raw/fallback paths),
-            # so use a helper that handles both shapes.
-            def _item_get(obj: Any, key: str, default: Any = None) -> Any:
-                val = getattr(obj, key, None)
-                if val is None and isinstance(obj, dict):
-                    val = obj.get(key, default)
-                return val if val is not None else default
-
-            for item in getattr(final, "output", []):
-                item_type = _item_get(item, "type")
-                if item_type == "message":
-                    for part in (_item_get(item, "content") or []):
-                        ptype = _item_get(part, "type")
-                        if ptype in {"output_text", "text"}:
-                            text_parts.append(_item_get(part, "text", ""))
-                elif item_type == "function_call":
-                    tool_calls_raw.append(SimpleNamespace(
-                        id=_item_get(item, "call_id", ""),
-                        type="function",
-                        function=SimpleNamespace(
-                            name=_item_get(item, "name", ""),
-                            arguments=_item_get(item, "arguments", "{}"),
-                        ),
-                    ))
+            # Items may be SDK objects (attrs) or dicts (raw/fallback paths).
+            _collect_final_output(final)
 
             resp_usage = getattr(final, "usage", None)
             if resp_usage:
@@ -872,8 +887,19 @@ class _CodexCompletionsAdapter:
         except Exception as exc:
             if timed_out.is_set():
                 raise TimeoutError(_timeout_message()) from exc
-            logger.debug("Codex auxiliary Responses API call failed: %s", exc)
-            raise
+            from agent.codex_runtime import recover_responses_stream_output
+
+            final = recover_responses_stream_output(
+                exc,
+                output_items=collected_output_items,
+                text_parts=collected_text_deltas,
+                has_tool_calls=has_function_calls,
+                log_prefix="Codex auxiliary",
+            )
+            if final is None:
+                logger.debug("Codex auxiliary Responses API call failed: %s", exc)
+                raise
+            _collect_final_output(final)
         finally:
             if timeout_timer is not None:
                 timeout_timer.cancel()

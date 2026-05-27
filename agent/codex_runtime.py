@@ -26,6 +26,59 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def recover_responses_stream_output(
+    exc: BaseException,
+    *,
+    output_items: List[Any],
+    text_parts: List[str],
+    has_tool_calls: bool,
+    log_prefix: str,
+    log_context: str = "",
+) -> Any | None:
+    """Recover a Responses result when the SDK rejects a malformed terminal event.
+
+    Some OpenAI-compatible Responses streams emit valid incremental events
+    (``response.output_item.done`` / text deltas) but omit ``response.output``
+    from the terminal ``response.completed`` event.  The OpenAI SDK parses that
+    final event while iterating the stream and raises ``TypeError: 'NoneType'
+    object is not iterable`` before callers can use ``get_final_response()``.
+    When prior streamed content is complete enough, synthesize the minimal
+    response object Hermes already expects.
+    """
+    if not isinstance(exc, TypeError):
+        return None
+    if "NoneType" not in str(exc) or "iterable" not in str(exc):
+        return None
+    if output_items:
+        logger.warning(
+            "%s: recovered from malformed terminal event with missing output "
+            "using %d streamed output item(s)%s",
+            log_prefix,
+            len(output_items),
+            f". {log_context}" if log_context else "",
+        )
+        return SimpleNamespace(output=list(output_items), usage=None)
+    if text_parts and not has_tool_calls:
+        assembled = "".join(text_parts)
+        logger.warning(
+            "%s: recovered from malformed terminal event with missing output "
+            "using %d streamed text chars%s",
+            log_prefix,
+            len(assembled),
+            f". {log_context}" if log_context else "",
+        )
+        return SimpleNamespace(
+            output=[SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text=assembled)],
+            )],
+            usage=None,
+        )
+    return None
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -246,7 +299,19 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                             sum(len(p) for p in agent._codex_streamed_text_parts),
                             agent._client_log_context(),
                         )
-                final_response = stream.get_final_response()
+                try:
+                    final_response = stream.get_final_response()
+                except TypeError as exc:
+                    final_response = recover_responses_stream_output(
+                        exc,
+                        output_items=collected_output_items,
+                        text_parts=agent._codex_streamed_text_parts,
+                        has_tool_calls=has_tool_calls,
+                        log_prefix="Codex stream",
+                        log_context=agent._client_log_context(),
+                    )
+                    if final_response is None:
+                        raise
                 # PATCH: ChatGPT Codex backend streams valid output items
                 # but get_final_response() can return an empty output list.
                 # Backfill from collected items or synthesize from deltas.
@@ -271,6 +336,18 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                             len(agent._codex_streamed_text_parts), len(assembled),
                         )
                 return final_response
+        except TypeError as exc:
+            recovered = recover_responses_stream_output(
+                exc,
+                output_items=collected_output_items,
+                text_parts=agent._codex_streamed_text_parts,
+                has_tool_calls=has_tool_calls,
+                log_prefix="Codex stream",
+                log_context=agent._client_log_context(),
+            )
+            if recovered is not None:
+                return recovered
+            raise
         except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
             if attempt < max_stream_retries:
                 logger.debug(
