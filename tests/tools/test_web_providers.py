@@ -343,3 +343,91 @@ class TestUnconfiguredErrorEnvelopeParity:
         assert "web_crawl requires Firecrawl" in result["error"]
         # Crucially: no per-page burying
         assert "results" not in result
+
+
+
+# ---------------------------------------------------------------------------
+# check_web_api_key — plugin-registered provider support
+# ---------------------------------------------------------------------------
+
+
+class TestCheckWebApiKeyPluginProviders:
+    """check_web_api_key() must honour plugin-registered web search providers.
+
+    Issue #31873: third-party plugins (e.g. Kagi) that register via
+    ``ctx.register_web_search_provider()`` are silently dropped because
+    ``check_web_api_key()`` only knows about hardcoded backend names.
+    """
+
+    def test_returns_true_for_registered_plugin_provider(self, monkeypatch):
+        """A configured backend matching a registered plugin provider should
+        return True even if it is not in the hardcoded list."""
+        from tools import web_tools
+        from agent.web_search_provider import WebSearchProvider
+        from agent.web_search_registry import register_provider, _reset_for_tests
+
+        class FakeKagiProvider(WebSearchProvider):
+            @property
+            def name(self) -> str:
+                return "kagi"
+
+            def is_available(self) -> bool:
+                return True
+
+            async def search(self, query, limit=5, **kw):
+                return {"success": True, "data": {"web": []}}
+
+        _reset_for_tests()
+        register_provider(FakeKagiProvider())
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "kagi"})
+
+        try:
+            assert web_tools.check_web_api_key() is True
+        finally:
+            _reset_for_tests()
+
+    def test_returns_false_for_unavailable_plugin_provider(self, monkeypatch):
+        """A configured backend matching a registered but unavailable plugin
+        provider should return False."""
+        from tools import web_tools
+        from agent.web_search_provider import WebSearchProvider
+        from agent.web_search_registry import register_provider, _reset_for_tests
+
+        class FakeKagiProvider(WebSearchProvider):
+            @property
+            def name(self) -> str:
+                return "kagi"
+
+            def is_available(self) -> bool:
+                return False  # no API key set
+
+            async def search(self, query, limit=5, **kw):
+                return {"success": False, "error": "no key"}
+
+        _reset_for_tests()
+        register_provider(FakeKagiProvider())
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "kagi"})
+
+        try:
+            assert web_tools.check_web_api_key() is False
+        finally:
+            _reset_for_tests()
+
+    def test_returns_false_for_unknown_backend_no_providers(self, monkeypatch):
+        """An unknown backend with no registered providers and no hardcoded
+        keys should return False."""
+        from tools import web_tools
+        from agent.web_search_registry import _reset_for_tests
+
+        _reset_for_tests()
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "nonexistent"})
+
+        # Clear all hardcoded backend env vars
+        for key in ("EXA_API_KEY", "PARALLEL_API_KEY", "FIRECRAWL_API_KEY",
+                     "TAVILY_API_KEY", "SEARXNG_URL", "BRAVE_SEARCH_API_KEY"):
+            monkeypatch.delenv(key, raising=False)
+
+        try:
+            assert web_tools.check_web_api_key() is False
+        finally:
+            _reset_for_tests()
