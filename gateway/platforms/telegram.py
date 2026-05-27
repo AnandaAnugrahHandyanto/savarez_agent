@@ -694,6 +694,15 @@ class TelegramAdapter(BasePlatformAdapter):
         return "thread not found" in str(error).lower()
 
     @staticmethod
+    def _is_reply_anchor_not_found_error(error: Exception) -> bool:
+        err_lower = str(error).lower()
+        return (
+            "message to be replied not found" in err_lower
+            or "reply message not found" in err_lower
+            or "replied message not found" in err_lower
+        )
+
+    @staticmethod
     def _is_bad_request_error(error: Exception) -> bool:
         name = error.__class__.__name__.lower()
         if name == "badrequest" or name.endswith("badrequest"):
@@ -2262,8 +2271,9 @@ class TelegramAdapter(BasePlatformAdapter):
         and the gateway has full visibility into every message id we put on
         screen.
 
-        Falls back to ``SendResult(success=False)`` only if even the first-
-        chunk edit fails — that's a real adapter problem, not an overflow.
+        Falls back to ``SendResult(success=False)`` if the first chunk or any
+        continuation cannot be delivered.  The stream consumer can then switch
+        to its final-send fallback instead of silently losing the tail.
         """
         chunks = self.truncate_message(
             content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
@@ -2345,7 +2355,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                     break
                 except Exception as send_err:
-                    if "reply message not found" in str(send_err).lower():
+                    if self._is_reply_anchor_not_found_error(send_err):
                         # Drop the reply anchor and try again.  Private DM
                         # topic fallback needs the anchor and topic id together;
                         # forum topics can still safely keep message_thread_id.
@@ -2382,16 +2392,16 @@ class TelegramAdapter(BasePlatformAdapter):
                     sent_msg = None
                     break
             if sent_msg is None:
-                # Continuation failed — the user has chunk 1 + however many
-                # continuations succeeded.  Report success with what we got
-                # so the stream consumer knows the edit landed; the
-                # remaining tail is lost on this attempt and the next
-                # streaming tick may retry.
                 logger.warning(
                     "[%s] Overflow split: stopped at %d/%d chunks delivered",
                     self.name, 1 + len(continuation_ids), len(chunks),
                 )
-                break
+                return SendResult(
+                    success=False,
+                    message_id=continuation_ids[-1] if continuation_ids else message_id,
+                    error="overflow_continuation_failed",
+                    continuation_message_ids=tuple(continuation_ids),
+                )
             new_id = str(getattr(sent_msg, "message_id", "")) or prev_id
             continuation_ids.append(new_id)
             prev_id = new_id
@@ -2516,24 +2526,52 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             raise RuntimeError("Not connected")
 
-        message_thread_id = kwargs.get("message_thread_id")
+        async def _send_once(send_kwargs: Dict[str, Any]):
+            message_thread_id = send_kwargs.get("message_thread_id")
+            try:
+                return await self._bot.send_message(**send_kwargs)
+            except Exception as send_err:
+                if (
+                    message_thread_id is not None
+                    and self._is_bad_request_error(send_err)
+                    and self._is_thread_not_found_error(send_err)
+                ):
+                    logger.warning(
+                        "[%s] Thread %s not found for control message, retrying without message_thread_id",
+                        self.name,
+                        message_thread_id,
+                    )
+                    retry_kwargs = dict(send_kwargs)
+                    retry_kwargs.pop("message_thread_id", None)
+                    return await self._bot.send_message(**retry_kwargs)
+                raise
+
         try:
-            return await self._bot.send_message(**kwargs)
+            return await _send_once(kwargs)
         except Exception as send_err:
-            if (
-                message_thread_id is not None
-                and self._is_bad_request_error(send_err)
-                and self._is_thread_not_found_error(send_err)
-            ):
-                logger.warning(
-                    "[%s] Thread %s not found for control message, retrying without message_thread_id",
-                    self.name,
-                    message_thread_id,
+            parse_mode = kwargs.get("parse_mode")
+            parse_mode_text = str(parse_mode or "").lower()
+            err_text = str(send_err).lower()
+            is_markdown_parse_error = (
+                "markdown" in parse_mode_text
+                and (
+                    "parse" in err_text
+                    or "entities" in err_text
+                    or "markdown" in err_text
                 )
-                retry_kwargs = dict(kwargs)
-                retry_kwargs.pop("message_thread_id", None)
-                return await self._bot.send_message(**retry_kwargs)
-            raise
+            )
+            if not is_markdown_parse_error:
+                raise
+
+            logger.warning(
+                "[%s] MarkdownV2 control message parse failed, retrying plain text: %s",
+                self.name,
+                send_err,
+            )
+            plain_kwargs = dict(kwargs)
+            plain_kwargs["parse_mode"] = None
+            plain_kwargs["text"] = _strip_mdv2(str(kwargs.get("text", "")))
+            return await _send_once(plain_kwargs)
 
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "",

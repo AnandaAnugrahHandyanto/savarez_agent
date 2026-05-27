@@ -470,6 +470,27 @@ class TestBusySessionAck:
         assert "restarting" in content
 
     @pytest.mark.asyncio
+    async def test_draining_queue_ack_does_not_claim_restart_durability(self):
+        runner, sentinel = _make_runner()
+        runner._draining = True
+        runner._busy_input_mode = "queue"
+        runner._restart_requested = True
+        adapter = _make_adapter()
+
+        event = _make_event(text="queue during drain")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+        runner._status_action_gerund = lambda: "restarting"
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+
+        assert result is True
+        assert "current drain window" in content
+        assert "send it again after restart" in content
+        assert "after it comes back" not in content
+
+    @pytest.mark.asyncio
     async def test_pending_sentinel_no_interrupt(self):
         """When agent is PENDING_SENTINEL, don't call interrupt (it has no method)."""
         runner, sentinel = _make_runner()

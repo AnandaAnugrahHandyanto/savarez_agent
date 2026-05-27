@@ -902,6 +902,41 @@ class TestEditMessageStreamingSafety:
         assert all(kwargs.get("message_thread_id") == 17585 for kwargs in sent_kwargs)
         assert sent_kwargs[0]["reply_to_message_id"] == 456
 
+    @pytest.mark.asyncio
+    async def test_overflow_continuation_retries_without_stale_reply_anchor(self):
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock()
+        sent_kwargs = []
+
+        async def _fake_send(**kwargs):
+            sent_kwargs.append(kwargs)
+            if len(sent_kwargs) == 1:
+                raise Exception("Message to be replied not found")
+            return SimpleNamespace(message_id=1001)
+
+        adapter._bot.send_message = AsyncMock(side_effect=_fake_send)
+
+        result = await adapter.edit_message("123", "456", "x" * 6000, finalize=False)
+
+        assert result.success is True
+        assert sent_kwargs[0]["reply_to_message_id"] == 456
+        assert "reply_to_message_id" not in sent_kwargs[1]
+        assert result.message_id == "1001"
+
+    @pytest.mark.asyncio
+    async def test_overflow_continuation_failure_is_not_reported_success(self):
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock()
+        adapter._bot.send_message = AsyncMock(side_effect=Exception("network down"))
+
+        result = await adapter.edit_message("123", "456", "x" * 6000, finalize=False)
+
+        assert result.success is False
+        assert result.error == "overflow_continuation_failed"
+        assert result.message_id == "456"
+
 # =========================================================================
 # Telegram guest mention gating
 # =========================================================================

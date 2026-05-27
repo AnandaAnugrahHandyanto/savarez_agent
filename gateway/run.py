@@ -125,6 +125,14 @@ _GATEWAY_RATE_LIMIT_RE = re.compile(
     re.IGNORECASE,
 )
 
+_GATEWAY_MEDIA_TAG_RE = re.compile(
+    r'MEDIA:((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
+    r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
+    r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
+    r'txt|csv|apk|ipa))',
+    re.IGNORECASE,
+)
+
 _GATEWAY_SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_\-]{12,}\b"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
@@ -227,6 +235,54 @@ def _redact_gateway_user_facing_secrets(text: str) -> str:
     return redacted
 
 
+def _extract_gateway_media_paths(text: str) -> list[str]:
+    """Return MEDIA paths embedded in gateway-visible text."""
+    if "MEDIA:" not in str(text or ""):
+        return []
+    paths: list[str] = []
+    for match in _GATEWAY_MEDIA_TAG_RE.finditer(str(text)):
+        path = match.group(1).strip().rstrip('",}')
+        if path:
+            paths.append(path)
+    return paths
+
+
+def _append_new_tool_media_tags(
+    final_response: str,
+    messages: list[dict],
+    history_media_paths: set[str],
+) -> str:
+    """Append new MEDIA tags from current-turn tool results without duplicates."""
+    if not final_response:
+        return final_response
+
+    existing_paths = set(_extract_gateway_media_paths(final_response))
+    seen_tags: set[str] = set()
+    media_tags: list[str] = []
+    has_voice_directive = "[[audio_as_voice]]" in final_response
+
+    for msg in messages or []:
+        if msg.get("role") not in {"tool", "function"}:
+            continue
+        content = str(msg.get("content", ""))
+        if "[[audio_as_voice]]" in content:
+            has_voice_directive = True
+        for path in _extract_gateway_media_paths(content):
+            if path in history_media_paths or path in existing_paths:
+                continue
+            tag = f"MEDIA:{path}"
+            if tag in seen_tags:
+                continue
+            seen_tags.add(tag)
+            media_tags.append(tag)
+
+    if not media_tags:
+        return final_response
+    if has_voice_directive and "[[audio_as_voice]]" not in final_response:
+        media_tags.insert(0, "[[audio_as_voice]]")
+    return final_response + "\n" + "\n".join(media_tags)
+
+
 def _gateway_provider_error_reply(text: str) -> str:
     """Map raw provider/API errors to a short user-safe Telegram reply."""
     if _GATEWAY_AUTH_ERROR_RE.search(text):
@@ -301,6 +357,25 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
     return redacted
+
+
+def _sanitize_gateway_reasoning_for_display(platform: Any, text: str) -> str:
+    """Sanitize optional reasoning text before it is prepended to chat replies."""
+    if not text:
+        return text
+    if _gateway_platform_value(platform) != "telegram":
+        return text
+
+    redacted = _redact_gateway_user_facing_secrets(str(text))
+    safe_lines: list[str] = []
+    for line in redacted.splitlines():
+        stripped = line.strip()
+        safe_lines.append(
+            _gateway_provider_error_reply(stripped)
+            if _looks_like_gateway_provider_error(stripped)
+            else line
+        )
+    return "\n".join(safe_lines)
 
 
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
@@ -2557,8 +2632,10 @@ class GatewayRunner:
 
     def _queue_during_drain_enabled(self) -> bool:
         # Both "queue" and "steer" modes imply the user doesn't want messages
-        # to be lost during restart — queue them for the newly-spawned gateway
-        # process to pick up.  "interrupt" mode drops them (current behaviour).
+        # to be lost during restart — queue them in the current process while
+        # the graceful drain is still running.  Durable post-restart recovery is
+        # handled by the session resume marker, not by this in-memory queue.
+        # "interrupt" mode drops them (current behaviour).
         return self._restart_requested and self._busy_input_mode in {"queue", "steer"}
 
     # -------- /queue FIFO helpers --------------------------------------
@@ -3114,7 +3191,10 @@ class GatewayRunner:
             thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
             if self._queue_during_drain_enabled():
                 self._queue_or_replace_pending_event(session_key, event)
-                message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+                message = (
+                    f"⏳ Gateway {self._status_action_gerund()} — queued for the current drain window. "
+                    "If the process exits first, send it again after restart."
+                )
             else:
                 message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
 
@@ -8951,6 +9031,10 @@ class GatewayRunner:
                         display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
                     else:
                         display_reasoning = last_reasoning.strip()
+                    display_reasoning = _sanitize_gateway_reasoning_for_display(
+                        source.platform,
+                        display_reasoning,
+                    )
                     response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
 
             # Runtime-metadata footer — only on the FINAL message of the turn.
@@ -16986,18 +17070,8 @@ class GatewayRunner:
             for _hm in agent_history:
                 if _hm.get("role") in {"tool", "function"}:
                     _hc = _hm.get("content", "")
-                    if "MEDIA:" in _hc:
-                        _TOOL_MEDIA_RE = re.compile(
-                            r'MEDIA:((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
-                            r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
-                            r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
-                            r'txt|csv|apk|ipa))',
-                            re.IGNORECASE
-                        )
-                        for _match in _TOOL_MEDIA_RE.finditer(_hc):
-                            _p = _match.group(1).strip().rstrip('",}')
-                            if _p:
-                                _history_media_paths.add(_p)
+                    for _p in _extract_gateway_media_paths(str(_hc)):
+                        _history_media_paths.add(_p)
             
             # Register per-session gateway approval callback so dangerous
             # command approval blocks the agent thread (mirrors CLI input()).
@@ -17286,37 +17360,11 @@ class GatewayRunner:
             # Uses path-based deduplication against _history_media_paths (collected
             # before run_conversation) instead of index slicing. This is safe even
             # when context compression shrinks the message list. (Fixes #160)
-            if "MEDIA:" not in final_response:
-                media_tags = []
-                has_voice_directive = False
-                for msg in result.get("messages", []):
-                    if msg.get("role") in {"tool", "function"}:
-                        content = msg.get("content", "")
-                        if "MEDIA:" in content:
-                            _TOOL_MEDIA_RE = re.compile(
-                                r'MEDIA:((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
-                                r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
-                                r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
-                                r'txt|csv|apk|ipa))',
-                                re.IGNORECASE
-                            )
-                            for match in _TOOL_MEDIA_RE.finditer(content):
-                                path = match.group(1).strip().rstrip('",}')
-                                if path and path not in _history_media_paths:
-                                    media_tags.append(f"MEDIA:{path}")
-                            if "[[audio_as_voice]]" in content:
-                                has_voice_directive = True
-                
-                if media_tags:
-                    seen = set()
-                    unique_tags = []
-                    for tag in media_tags:
-                        if tag not in seen:
-                            seen.add(tag)
-                            unique_tags.append(tag)
-                    if has_voice_directive:
-                        unique_tags.insert(0, "[[audio_as_voice]]")
-                    final_response = final_response + "\n" + "\n".join(unique_tags)
+            final_response = _append_new_tool_media_tags(
+                final_response,
+                result.get("messages", []),
+                _history_media_paths,
+            )
             
             # Sync session_id: the agent may have created a new session during
             # mid-run context compression (_compress_context splits sessions).

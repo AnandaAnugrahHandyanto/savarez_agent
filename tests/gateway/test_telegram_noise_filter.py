@@ -2,8 +2,10 @@
 
 from gateway.config import Platform
 from gateway.run import (
+    _append_new_tool_media_tags,
     _prepare_gateway_status_message,
     _sanitize_gateway_final_response,
+    _sanitize_gateway_reasoning_for_display,
 )
 
 
@@ -81,3 +83,49 @@ def test_telegram_final_response_keeps_normal_answers():
     answer = "Here is the clean summary you asked for."
 
     assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer
+
+
+def test_telegram_reasoning_display_redacts_secrets_and_provider_errors():
+    raw = (
+        "HTTP 401: Incorrect API key provided: Bearer sk-live_abcdefghijklmnopqrstuvwxyz1234567890\n"
+        "normal planning line"
+    )
+
+    sanitized = _sanitize_gateway_reasoning_for_display(Platform.TELEGRAM, raw)
+
+    assert "provider authentication failed" in sanitized.lower()
+    assert "normal planning line" in sanitized
+    assert "sk-live" not in sanitized
+    assert "Bearer" not in sanitized
+
+
+def test_non_telegram_reasoning_display_is_unchanged():
+    raw = "HTTP 401: Bearer sk-live_abcdefghijklmnopqrstuvwxyz1234567890"
+
+    assert _sanitize_gateway_reasoning_for_display(Platform.DISCORD, raw) == raw
+
+
+def test_tool_media_tags_append_even_when_final_response_has_media():
+    final_response = "Done\nMEDIA:/tmp/existing.png"
+    messages = [
+        {"role": "tool", "content": "{\"audio\": \"MEDIA:/tmp/new.wav\"}"},
+        {"role": "tool", "content": "MEDIA:/tmp/existing.png"},
+    ]
+
+    updated = _append_new_tool_media_tags(final_response, messages, set())
+
+    assert "MEDIA:/tmp/existing.png" in updated
+    assert "MEDIA:/tmp/new.wav" in updated
+    assert updated.count("MEDIA:/tmp/existing.png") == 1
+
+
+def test_tool_media_tags_skip_history_paths():
+    final_response = "Done"
+    messages = [
+        {"role": "tool", "content": "MEDIA:/tmp/old.wav\nMEDIA:/tmp/new.wav"},
+    ]
+
+    updated = _append_new_tool_media_tags(final_response, messages, {"/tmp/old.wav"})
+
+    assert "MEDIA:/tmp/old.wav" not in updated
+    assert "MEDIA:/tmp/new.wav" in updated

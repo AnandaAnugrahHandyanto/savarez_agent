@@ -77,6 +77,37 @@ class TestSendSlashConfirm:
         assert "\\." in sent["text"]
 
     @pytest.mark.asyncio
+    async def test_markdown_parse_failure_retries_plain_text(self):
+        adapter = _make_adapter()
+        calls = []
+
+        class FakeBadRequest(Exception):
+            pass
+
+        async def mock_send(**kwargs):
+            calls.append(dict(kwargs))
+            if len(calls) == 1:
+                raise FakeBadRequest("Can't parse entities: MarkdownV2")
+            return SimpleNamespace(message_id=9)
+
+        adapter._bot.send_message = AsyncMock(side_effect=mock_send)
+
+        result = await adapter.send_slash_confirm(
+            chat_id="100",
+            title="Confirm",
+            message="/run [bad]_markdown",
+            session_key="sk",
+            confirm_id="cid-plain",
+        )
+
+        assert result.success is True
+        assert len(calls) == 2
+        assert "MARKDOWN_V2" in repr(calls[0]["parse_mode"])
+        assert calls[1]["parse_mode"] is None
+        assert "\\_" not in calls[1]["text"]
+        assert "/run [bad]_markdown" in calls[1]["text"]
+
+    @pytest.mark.asyncio
     async def test_stores_slash_confirm_state(self):
         adapter = _make_adapter()
         adapter._bot.send_message = AsyncMock(
