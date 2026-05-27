@@ -388,3 +388,58 @@ def list_logs() -> None:
 
     if not found:
         print("  (no log files yet — run 'hermes chat' to generate logs)")
+
+
+def get_latest_errors(num_errors: int = 50) -> list[dict]:
+    """Read latest error messages from logs and profiles/coder logs.
+
+    Searches errors.log, agent.log, and ~/.hermes/profiles/coder/logs/ for
+    ERROR or CRITICAL level entries. Returns a compact list including
+    timestamp, file path, and error message.
+
+    Returns a list of dicts with keys: timestamp, file, message
+    """
+    errors: list[dict] = []
+    hermes_home = get_hermes_home()
+
+    # Collect log paths to scan
+    log_dir = hermes_home / "logs"
+    coder_logs_dir = hermes_home / "profiles" / "coder" / "logs"
+
+    paths_to_scan: list[tuple[str, Path]] = []
+
+    if log_dir.exists():
+        for log_file in ["errors.log", "gateway.log", "agent.log"]:
+            p = log_dir / log_file
+            if p.exists():
+                paths_to_scan.append((str(p), p))
+
+    if coder_logs_dir.exists():
+        for p in coder_logs_dir.glob("*.log"):
+            if p.exists():
+                paths_to_scan.append((str(p), p))
+
+    for display_path, log_path in paths_to_scan:
+        try:
+            raw_lines = _read_last_n_lines(log_path, 1000)
+            for line in raw_lines:
+                level = _extract_level(line)
+                if level in ("ERROR", "CRITICAL"):
+                    ts = _parse_line_timestamp(line)
+                    timestamp = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else ""
+                    # Truncate message for compact display
+                    msg = line.strip()
+                    if len(msg) > 200:
+                        msg = msg[:200] + "..."
+                    errors.append({
+                        "timestamp": timestamp,
+                        "file": display_path,
+                        "message": msg,
+                    })
+        except Exception:
+            continue
+
+    # Sort by timestamp descending (most recent first), limit to num_errors
+    errors.sort(key=lambda x: x["timestamp"] or "", reverse=True)
+    return errors[:num_errors]
+
