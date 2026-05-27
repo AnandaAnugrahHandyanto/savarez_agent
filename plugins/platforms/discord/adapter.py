@@ -3070,8 +3070,8 @@ class DiscordAdapter(BasePlatformAdapter):
             # so a rejected invoker can receive an ephemeral rejection.
             await self._handle_thread_create_slash(interaction, name, message, auto_archive_duration)
 
-        @tree.command(name="close-thread", description="Archive and lock the current thread")
-        @discord.app_commands.describe(reason="Optional reason shown in Discord audit logs")
+        @tree.command(name="close-thread", description="Write a durable close-thread packet for review")
+        @discord.app_commands.describe(reason="Reason to include in the closeout packet")
         async def slash_close_thread(interaction: discord.Interaction, reason: str = ""):
             # defer() is performed inside the handler *after* the auth gate
             # so a rejected invoker can receive an ephemeral rejection.
@@ -3595,28 +3595,16 @@ class DiscordAdapter(BasePlatformAdapter):
 
         if "Status: BLOCKED" in closeout_text:
             await interaction.followup.send(
-                f"Closeout is BLOCKED; thread was not closed.\n\n{closeout_text}",
-                ephemeral=True,
-            )
-            return
-
-        audit_reason = (reason or "").strip() or f"Requested by {requested_by} via /close-thread"
-        try:
-            await channel.edit(
-                archived=True,
-                locked=True,
-                reason=audit_reason,
-            )
-        except Exception as exc:
-            logger.error("[%s] Failed to close Discord thread %s: %s", self.name, getattr(channel, "id", "?"), exc)
-            await interaction.followup.send(
-                f"Closeout written, but failed to close thread: {exc}\n\n{closeout_text}",
+                f"Closeout is BLOCKED; live thread mutation was not attempted.\n\n{closeout_text}",
                 ephemeral=True,
             )
             return
 
         link = f"<#{thread_id}>" if thread_id else f"**{getattr(channel, 'name', 'thread')}**"
-        await interaction.followup.send(f"{closeout_text}\n\nClosed thread {link}", ephemeral=True)
+        await interaction.followup.send(
+            f"{closeout_text}\n\nCloseout packet written for {link}. Live archive/lock was not attempted; route any actual thread mutation through the approval-gated ops path.",
+            ephemeral=True,
+        )
 
     async def _dispatch_thread_session(
         self,
