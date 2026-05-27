@@ -39,6 +39,7 @@ HERMES_LANGFUSE_ENV=production       # environment tag
 HERMES_LANGFUSE_RELEASE=v1.0.0       # release tag
 HERMES_LANGFUSE_SAMPLE_RATE=0.5      # sample 50% of traces
 HERMES_LANGFUSE_MAX_CHARS=12000      # max chars per field (default: 12000)
+HERMES_LANGFUSE_HOST_HEADER=langfuse.example.com  # optional local vhost routing
 HERMES_LANGFUSE_DEBUG=true           # verbose plugin logging
 ```
 
