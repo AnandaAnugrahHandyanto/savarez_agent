@@ -99,38 +99,13 @@ class _OpenAIProxy:
 
 OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 
+from agent.codex_stream_recovery import get_field, run_responses_stream_with_recovery
 from agent.credential_pool import load_pool
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
 
 logger = logging.getLogger(__name__)
-
-
-def _responses_null_output_iterable_error(exc: BaseException) -> bool:
-    """True when the OpenAI SDK trips over terminal response.output=None."""
-    text = str(exc)
-    return isinstance(exc, TypeError) and "NoneType" in text and "not iterable" in text
-
-
-def _responses_backfilled_response(output_items: List[Any], text_parts: List[str], *, has_function_calls: bool, model: str = None) -> Optional[Any]:
-    """Build a minimal Responses-like object from already streamed events."""
-    if output_items:
-        return SimpleNamespace(output=list(output_items), usage=None, status="completed", model=model)
-    if text_parts and not has_function_calls:
-        assembled = "".join(text_parts)
-        return SimpleNamespace(
-            output=[SimpleNamespace(
-                type="message",
-                role="assistant",
-                status="completed",
-                content=[SimpleNamespace(type="output_text", text=assembled)],
-            )],
-            usage=None,
-            status="completed",
-            model=model,
-        )
-    return None
 
 
 def _safe_isinstance(obj: Any, maybe_type: Any) -> bool:
@@ -811,101 +786,41 @@ class _CodexCompletionsAdapter:
                 pass
 
         try:
-            # Collect output items and text deltas during streaming —
-            # the Codex backend can return empty response.output from
-            # get_final_response() even when items were streamed.
-            collected_output_items: List[Any] = []
-            collected_text_deltas: List[str] = []
-            has_function_calls = False
             if total_timeout:
                 timeout_timer = threading.Timer(float(total_timeout), _close_client_on_timeout)
                 timeout_timer.daemon = True
                 timeout_timer.start()
             _check_cancelled()
-            final = None
-            with self._client.responses.stream(**resp_kwargs) as stream:
-                try:
-                    for _event in stream:
-                        _check_cancelled()
-                        _etype = getattr(_event, "type", "")
-                        if _etype == "response.output_item.done":
-                            _done = getattr(_event, "item", None)
-                            if _done is not None:
-                                collected_output_items.append(_done)
-                        elif "output_text.delta" in _etype:
-                            _delta = getattr(_event, "delta", "")
-                            if _delta:
-                                collected_text_deltas.append(_delta)
-                        elif "function_call" in _etype:
-                            has_function_calls = True
-                    _check_cancelled()
-                    final = stream.get_final_response()
-                except TypeError as exc:
-                    if not _responses_null_output_iterable_error(exc):
-                        raise
-                    final = _responses_backfilled_response(
-                        collected_output_items,
-                        collected_text_deltas,
-                        has_function_calls=has_function_calls,
-                        model=resp_kwargs.get("model"),
-                    )
-                    if final is None:
-                        raise
-                    logger.debug(
-                        "Codex auxiliary Responses stream parser hit response.output=None; "
-                        "recovered from streamed events (items=%d, text_parts=%d)",
-                        len(collected_output_items),
-                        len(collected_text_deltas),
-                    )
+            final, _state = run_responses_stream_with_recovery(
+                lambda: self._client.responses.stream(**resp_kwargs),
+                on_event=lambda _event, _state: _check_cancelled(),
+                model=resp_kwargs.get("model"),
+                logger=logger,
+                operation="Codex auxiliary Responses stream",
+            )
+            _check_cancelled()
 
             if final is None:
                 raise RuntimeError("Codex auxiliary Responses stream did not return a final response")
 
-            # Backfill empty output from collected stream events
-            _output = getattr(final, "output", None)
-            if _output is None or (isinstance(_output, list) and not _output):
-                recovered = _responses_backfilled_response(
-                    collected_output_items,
-                    collected_text_deltas,
-                    has_function_calls=has_function_calls,
-                    model=resp_kwargs.get("model"),
-                )
-                if recovered is not None:
-                    final.output = recovered.output
-                    logger.debug(
-                        "Codex auxiliary: backfilled missing output from stream events "
-                        "(items=%d, text_parts=%d)",
-                        len(collected_output_items),
-                        len(collected_text_deltas),
-                    )
-
-            # Extract text and tool calls from the Responses output.
-            # Items may be SDK objects (attrs) or dicts (raw/fallback paths),
-            # so use a helper that handles both shapes.
-            def _item_get(obj: Any, key: str, default: Any = None) -> Any:
-                val = getattr(obj, key, None)
-                if val is None and isinstance(obj, dict):
-                    val = obj.get(key, default)
-                return val if val is not None else default
-
-            for item in getattr(final, "output", []):
-                item_type = _item_get(item, "type")
+            for item in get_field(final, "output", []) or []:
+                item_type = get_field(item, "type")
                 if item_type == "message":
-                    for part in (_item_get(item, "content") or []):
-                        ptype = _item_get(part, "type")
+                    for part in (get_field(item, "content") or []):
+                        ptype = get_field(part, "type")
                         if ptype in {"output_text", "text"}:
-                            text_parts.append(_item_get(part, "text", ""))
+                            text_parts.append(get_field(part, "text", ""))
                 elif item_type == "function_call":
                     tool_calls_raw.append(SimpleNamespace(
-                        id=_item_get(item, "call_id", ""),
+                        id=get_field(item, "call_id", ""),
                         type="function",
                         function=SimpleNamespace(
-                            name=_item_get(item, "name", ""),
-                            arguments=_item_get(item, "arguments", "{}"),
+                            name=get_field(item, "name", ""),
+                            arguments=get_field(item, "arguments", "{}"),
                         ),
                     ))
 
-            resp_usage = getattr(final, "usage", None)
+            resp_usage = get_field(final, "usage")
             if resp_usage:
                 usage = SimpleNamespace(
                     prompt_tokens=getattr(resp_usage, "input_tokens", 0),

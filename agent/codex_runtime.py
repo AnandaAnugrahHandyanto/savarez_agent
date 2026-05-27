@@ -23,6 +23,14 @@ import time
 from types import SimpleNamespace
 from typing import Any, Dict, List
 
+from agent.codex_stream_recovery import (
+    ResponsesStreamState,
+    build_recovered_response,
+    get_field,
+    run_responses_stream_with_recovery,
+    set_field,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -173,150 +181,71 @@ def run_codex_app_server_turn(
         "codex_turn_id": turn.turn_id,
     }
 
-
-
-
-def _responses_null_output_iterable_error(exc: BaseException) -> bool:
-    """True when the OpenAI SDK trips over terminal response.output=None."""
-    text = str(exc)
-    return isinstance(exc, TypeError) and "NoneType" in text and "not iterable" in text
-
-
-def _codex_output_text_from_items(output_items: list) -> str:
-    text_parts: list[str] = []
-    for item in output_items:
-        if getattr(item, "type", None) != "message":
-            continue
-        content = getattr(item, "content", None)
-        if not isinstance(content, list):
-            continue
-        for part in content:
-            if getattr(part, "type", None) not in {"output_text", "text"}:
-                continue
-            text = getattr(part, "text", None)
-            if isinstance(text, str) and text:
-                text_parts.append(text)
-    return "".join(text_parts)
-
-
-def _codex_backfilled_response(output_items: list, text_parts: list, *, has_tool_calls: bool, model: str = None):
-    """Build a minimal Responses-like object from events already streamed."""
-    if output_items:
-        return SimpleNamespace(
-            output=list(output_items),
-            output_text=_codex_output_text_from_items(output_items),
-            usage=None,
-            status="completed",
-            model=model,
-        )
-    if text_parts and not has_tool_calls:
-        assembled = "".join(text_parts)
-        return SimpleNamespace(
-            output=[SimpleNamespace(
-                type="message",
-                role="assistant",
-                status="completed",
-                content=[SimpleNamespace(type="output_text", text=assembled)],
-            )],
-            output_text=assembled,
-            usage=None,
-            status="completed",
-            model=model,
-        )
-    return None
-
-
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
     """Execute one streaming Responses API request and return the final response."""
     import httpx as _httpx
 
     active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
     max_stream_retries = 1
-    has_tool_calls = False
     first_delta_fired = False
-    # Accumulate streamed text so we can recover if get_final_response()
-    # returns empty output (e.g. chatgpt.com backend-api sends
-    # response.incomplete instead of response.completed).
-    agent._codex_streamed_text_parts: list = []
+
     for attempt in range(max_stream_retries + 1):
         if agent._interrupt_requested:
             raise InterruptedError("Agent interrupted before Codex stream retry")
-        collected_output_items: list = []
+
+        def _handle_event(event, state) -> None:
+            nonlocal first_delta_fired
+
+            # Mark stream activity for the TTFB watchdog in
+            # interruptible_api_call. The Codex backend can accept the
+            # connection but never emit a single event; this timestamp
+            # staying None tells the watchdog no bytes are flowing.
+            agent._codex_stream_last_event_ts = time.time()
+            agent._touch_activity("receiving stream response")
+            if agent._interrupt_requested:
+                raise InterruptedError("Agent interrupted during Codex stream")
+
+            event_type = get_field(event, "type", "") or ""
+            # Fire callbacks on text content deltas (suppress during tool calls)
+            if "output_text.delta" in event_type or event_type == "response.output_text.delta":
+                delta_text = get_field(event, "delta", "")
+                if delta_text and not state.has_function_calls:
+                    if not first_delta_fired:
+                        first_delta_fired = True
+                        if on_first_delta:
+                            try:
+                                on_first_delta()
+                            except Exception:
+                                pass
+                    agent._fire_stream_delta(delta_text)
+            # Fire reasoning callbacks
+            elif "reasoning" in event_type and "delta" in event_type:
+                reasoning_text = get_field(event, "delta", "")
+                if reasoning_text:
+                    agent._fire_reasoning_delta(reasoning_text)
+            # Log non-completed terminal events for diagnostics
+            elif event_type in {"response.incomplete", "response.failed"}:
+                resp_obj = get_field(event, "response")
+                status = get_field(resp_obj, "status") if resp_obj else None
+                incomplete_details = get_field(resp_obj, "incomplete_details") if resp_obj else None
+                logger.warning(
+                    "Codex Responses stream received terminal event %s "
+                    "(status=%s, incomplete_details=%s, streamed_chars=%d). %s",
+                    event_type, status, incomplete_details,
+                    state.streamed_chars,
+                    agent._client_log_context(),
+                )
+
         try:
-            with active_client.responses.stream(**api_kwargs) as stream:
-                for event in stream:
-                    # Mark stream activity for the TTFB watchdog in
-                    # interruptible_api_call. The Codex backend can accept the
-                    # connection but never emit a single event; this timestamp
-                    # staying None tells the watchdog no bytes are flowing.
-                    agent._codex_stream_last_event_ts = time.time()
-                    agent._touch_activity("receiving stream response")
-                    if agent._interrupt_requested:
-                        break
-                    event_type = getattr(event, "type", "")
-                    # Fire callbacks on text content deltas (suppress during tool calls)
-                    if "output_text.delta" in event_type or event_type == "response.output_text.delta":
-                        delta_text = getattr(event, "delta", "")
-                        if delta_text:
-                            agent._codex_streamed_text_parts.append(delta_text)
-                        if delta_text and not has_tool_calls:
-                            if not first_delta_fired:
-                                first_delta_fired = True
-                                if on_first_delta:
-                                    try:
-                                        on_first_delta()
-                                    except Exception:
-                                        pass
-                            agent._fire_stream_delta(delta_text)
-                    # Track tool calls to suppress text streaming
-                    elif "function_call" in event_type:
-                        has_tool_calls = True
-                    # Fire reasoning callbacks
-                    elif "reasoning" in event_type and "delta" in event_type:
-                        reasoning_text = getattr(event, "delta", "")
-                        if reasoning_text:
-                            agent._fire_reasoning_delta(reasoning_text)
-                    # Collect completed output items — some backends
-                    # (chatgpt.com/backend-api/codex) stream valid items
-                    # via response.output_item.done but the SDK's
-                    # get_final_response() returns an empty output list.
-                    elif event_type == "response.output_item.done":
-                        done_item = getattr(event, "item", None)
-                        if done_item is not None:
-                            collected_output_items.append(done_item)
-                    # Log non-completed terminal events for diagnostics
-                    elif event_type in {"response.incomplete", "response.failed"}:
-                        resp_obj = getattr(event, "response", None)
-                        status = getattr(resp_obj, "status", None) if resp_obj else None
-                        incomplete_details = getattr(resp_obj, "incomplete_details", None) if resp_obj else None
-                        logger.warning(
-                            "Codex Responses stream received terminal event %s "
-                            "(status=%s, incomplete_details=%s, streamed_chars=%d). %s",
-                            event_type, status, incomplete_details,
-                            sum(len(p) for p in agent._codex_streamed_text_parts),
-                            agent._client_log_context(),
-                        )
-                final_response = stream.get_final_response()
-                # PATCH: ChatGPT Codex backend streams valid output items
-                # but get_final_response() can return an empty output list.
-                # Backfill from collected items or synthesize from deltas.
-                _out = getattr(final_response, "output", None)
-                if _out is None or (isinstance(_out, list) and not _out):
-                    recovered = _codex_backfilled_response(
-                        collected_output_items,
-                        agent._codex_streamed_text_parts,
-                        has_tool_calls=has_tool_calls,
-                        model=api_kwargs.get("model"),
-                    )
-                    if recovered is not None:
-                        final_response.output = recovered.output
-                        logger.debug(
-                            "Codex stream: backfilled missing output from stream events "
-                            "(items=%d, text_parts=%d)",
-                            len(collected_output_items),
-                            len(agent._codex_streamed_text_parts),
-                        )
-                return final_response
+            final_response, _state = run_responses_stream_with_recovery(
+                lambda: active_client.responses.stream(**api_kwargs),
+                on_event=_handle_event,
+                model=api_kwargs.get("model"),
+                logger=logger,
+                operation="Codex Responses stream",
+                log_context=agent._client_log_context(),
+            )
+            return final_response
         except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
             if attempt < max_stream_retries:
                 logger.debug(
@@ -333,30 +262,6 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 exc,
             )
             return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
-        except TypeError as exc:
-            if _responses_null_output_iterable_error(exc):
-                recovered = _codex_backfilled_response(
-                    collected_output_items,
-                    agent._codex_streamed_text_parts,
-                    has_tool_calls=has_tool_calls,
-                    model=api_kwargs.get("model"),
-                )
-                if recovered is not None:
-                    logger.debug(
-                        "Codex Responses stream parser hit response.output=None; "
-                        "recovered from streamed events (items=%d, text_parts=%d). %s",
-                        len(collected_output_items),
-                        len(agent._codex_streamed_text_parts),
-                        agent._client_log_context(),
-                    )
-                    return recovered
-                logger.debug(
-                    "Codex Responses stream parser hit response.output=None without "
-                    "recoverable events; falling back to create(stream=True). %s",
-                    agent._client_log_context(),
-                )
-                return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
-            raise
         except RuntimeError as exc:
             err_text = str(exc)
             missing_completed = "response.completed" in err_text
@@ -486,16 +391,20 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
                 terminal_response = event.get("response")
             if terminal_response is not None:
                 # Backfill empty output from collected stream events
-                _out = getattr(terminal_response, "output", None)
+                _out = get_field(terminal_response, "output")
                 if _out is None or (isinstance(_out, list) and not _out):
-                    recovered = _codex_backfilled_response(
-                        collected_output_items,
-                        collected_text_deltas,
-                        has_tool_calls=has_tool_calls,
+                    recovered = build_recovered_response(
+                        ResponsesStreamState(
+                            output_items=list(collected_output_items),
+                            text_deltas=list(collected_text_deltas),
+                            has_function_calls=has_tool_calls,
+                        ),
                         model=fallback_kwargs.get("model"),
                     )
                     if recovered is not None:
-                        terminal_response.output = recovered.output
+                        set_field(terminal_response, "output", recovered.output)
+                        if not get_field(terminal_response, "output_text"):
+                            set_field(terminal_response, "output_text", recovered.output_text)
                         logger.debug(
                             "Codex fallback stream: backfilled missing output "
                             "(items=%d, text_parts=%d)",
