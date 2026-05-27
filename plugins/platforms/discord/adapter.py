@@ -20,7 +20,7 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
-from typing import Callable, Dict, List, Optional, Any, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 logger = logging.getLogger(__name__)
 
@@ -4398,12 +4398,25 @@ class DiscordAdapter(BasePlatformAdapter):
         expose a callable ``read()`` or the read itself fails. Callers
         should treat ``None`` as a signal to fall back to the URL-based
         downloaders.
+
+        A 15-second timeout prevents indefinite hangs on slow or unreachable
+        CDNs (e.g. corporate proxies blocking ``cdn.discordapp.com``).  The
+        timeout is intentionally shorter than Discord's signed-URL expiry
+        window (~30-60 s) so the fallback URL path still has a valid link
+        when the authenticated read gives up.
         """
         reader = getattr(att, "read", None)
         if reader is None or not callable(reader):
             return None
         try:
-            return await reader()
+            return await asyncio.wait_for(cast(Any, reader)(), timeout=15.0)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[Discord] Authenticated attachment read timed out (15s) for %s; "
+                "falling back to URL download",
+                getattr(att, "filename", None) or getattr(att, "url", "<unknown>"),
+            )
+            return None
         except Exception as e:
             logger.warning(
                 "[Discord] Authenticated attachment read failed for %s: %s",
