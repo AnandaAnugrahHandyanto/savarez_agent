@@ -176,6 +176,8 @@ export const MessageLine = memo(function MessageLine({
   // against the prose around it.
   const isDiffSegment = msg.kind === 'diff'
 
+  const userBackground = msg.role === 'user' ? t.color.completionBg : undefined
+
   return (
     <Box
       flexDirection="column"
@@ -208,7 +210,7 @@ export const MessageLine = memo(function MessageLine({
         </Box>
       )}
 
-      <Box>
+      <Box backgroundColor={userBackground} paddingX={msg.role === 'user' ? 1 : 0}>
         <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
           <Text bold={msg.role === 'user'} color={prefix}>
             {glyph}{' '}

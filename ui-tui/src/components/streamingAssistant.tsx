@@ -1,9 +1,11 @@
 import { useStore } from '@nanostores/react'
-import { memo } from 'react'
+import { Box, Text } from '@hermes/ink'
+import { memo, useEffect, useState } from 'react'
 
 import type { AppLayoutProgressProps } from '../app/interfaces.js'
 import { toggleTodoCollapsed, useTurnSelector } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
+import { fmtDuration } from '../domain/messages.js'
 import { appendToolShelfMessage } from '../lib/liveProgress.js'
 import type { DetailsMode, Msg, SectionVisibility } from '../types.js'
 
@@ -12,6 +14,33 @@ import { TodoPanel } from './todoPanel.js'
 
 const groupedSegments = (segments: Msg[]): Msg[] =>
   segments.reduce<Msg[]>((acc, msg) => appendToolShelfMessage(acc, msg), [])
+
+const InlineProgress = memo(function InlineProgress({ progress }: { progress: AppLayoutProgressProps }) {
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (!progress.busy) {
+      return
+    }
+
+    setNow(Date.now())
+    const id = setInterval(() => setNow(Date.now()), 1000)
+
+    return () => clearInterval(id)
+  }, [progress.busy, progress.turnStartedAt])
+
+  if (!progress.busy) {
+    return null
+  }
+
+  const elapsed = progress.turnStartedAt ? fmtDuration(now - progress.turnStartedAt) : '…'
+
+  return (
+    <Box marginBottom={1} marginTop={1}>
+      <Text color={progress.statusColor}>• Working ({elapsed} · Ctrl+C to interrupt)</Text>
+    </Box>
+  )
+})
 
 export const StreamingAssistant = memo(function StreamingAssistant({
   cols,
@@ -28,12 +57,14 @@ export const StreamingAssistant = memo(function StreamingAssistant({
   const activeTools = useTurnSelector(state => state.tools)
   const showStreamingArea = Boolean(streaming)
 
-  if (!progress.showProgressArea && !showStreamingArea && !activeTools.length) {
+  if (!progress.busy && !progress.showProgressArea && !showStreamingArea && !activeTools.length) {
     return null
   }
 
   return (
     <>
+      <InlineProgress progress={progress} />
+
       {groupedSegments(streamSegments).map((msg, i) => (
         <MessageLine
           cols={cols}

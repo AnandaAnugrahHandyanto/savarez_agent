@@ -57,54 +57,46 @@ const findClickableWithText = (node: ReactNodeLike, needle: string): React.React
   return findClickableWithText(node.props.children, needle)
 }
 
-describe('StatusRule session count click target', () => {
-  it('makes the live session count itself clickable', () => {
+describe('StatusRule compact footer', () => {
+  it('keeps the footer to model, context, and session time only', () => {
     const openSwitcher = vi.fn()
     const element = StatusRule({
-      bgCount: 0,
-      busy: false,
-      cols: 100,
-      cwdLabel: '~/repo',
-      liveSessionCount: 1,
-      model: 'kimi-k2.6',
-      onSessionCountClick: openSwitcher,
-      sessionStartedAt: null,
-      showCost: false,
-      status: 'ready',
-      statusColor: DEFAULT_THEME.color.ok,
-      t: DEFAULT_THEME,
-      turnStartedAt: null,
-      usage: emptyUsage,
-      voiceLabel: ''
-    })
-
-    const clickableSessionCount = findClickableWithText(element, '1 session')
-
-    expect(clickableSessionCount).not.toBeNull()
-    clickableSessionCount!.props.onClick({ stopImmediatePropagation: vi.fn() })
-    expect(openSwitcher).toHaveBeenCalledOnce()
-  })
-})
-
-describe('StatusRule status hints', () => {
-  it('shows a compact interrupt hint while the agent is busy', () => {
-    const element = StatusRule({
-      bgCount: 0,
+      bgCount: 7,
       busy: true,
       cols: 120,
-      cwdLabel: '',
-      liveSessionCount: 0,
+      cwdLabel: '~/repo',
+      liveSessionCount: 2,
       model: 'openai/gpt-5.5',
-      sessionStartedAt: null,
-      showCost: false,
+      modelReasoningEffort: 'xhigh',
+      onSessionCountClick: openSwitcher,
+      sessionStartedAt: Date.now(),
+      showCost: true,
       status: 'running',
       statusColor: DEFAULT_THEME.color.warn,
       t: DEFAULT_THEME,
-      turnStartedAt: null,
-      usage: emptyUsage,
-      voiceLabel: ''
+      turnStartedAt: Date.now(),
+      usage: {
+        ...emptyUsage,
+        context_max: 272000,
+        context_percent: 28,
+        context_used: 74900,
+        cost_usd: 1.23,
+        compressions: 3
+      },
+      voiceLabel: 'voice on'
     })
 
-    expect(textContent(element)).toContain('Ctrl+C interrupt')
+    const text = textContent(element)
+
+    expect(text).toContain('gpt 5.5 xhigh')
+    expect(text).toContain('Context 74.9k/272k 28%')
+    expect(text).not.toContain('Ctrl+C interrupt')
+    expect(text).not.toContain('voice')
+    expect(text).not.toContain('sessions')
+    expect(text).not.toContain('bg')
+    expect(text).not.toContain('cmp')
+    expect(text).not.toContain('$')
+    expect(findClickableWithText(element, '2 sessions')).toBeNull()
+    expect(openSwitcher).not.toHaveBeenCalled()
   })
 })
