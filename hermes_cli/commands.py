@@ -730,7 +730,48 @@ def _collect_gateway_skill_entries(
             str(d).rstrip("/") + "/" for d in get_external_skills_dirs()
         )
         skill_cmds = get_skill_commands()
-        for cmd_key in sorted(skill_cmds):
+        # Skill ordering: read optional priority list from
+        # ``skills.platform_menu_priority.<platform>`` in config.yaml. Skills
+        # listed there appear first in the menu in the listed order; the
+        # remainder fall back to alphabetical. Names in the priority list are
+        # matched against the raw skill key after leading-slash stripping but
+        # before platform-specific sanitization, so config can use natural names.
+        # Combine priority + promote_to_top into one sort key. promote_to_top
+        # names need to survive the slot cap (alphabetical position can push
+        # them out when total skill count exceeds remaining_slots), so they
+        # get the highest priority rank. The post-collection extractor in
+        # telegram_menu_commands moves them to the top of the menu.
+        _priority_list: list[str] = []
+        _promote_list: list[str] = []
+        try:
+            from hermes_cli.config import read_raw_config
+            _cfg = read_raw_config()
+            _skills_cfg = _cfg.get("skills") or {}
+            _priority_list = list(
+                (_skills_cfg.get("platform_menu_priority") or {})
+                .get(platform) or []
+            )
+            _promote_list = list(
+                (_skills_cfg.get("platform_menu_promote_to_top") or {})
+                .get(platform) or []
+            )
+        except Exception:
+            _priority_list = []
+            _promote_list = []
+        # promote first (rank 0..M-1), then priority (rank M..M+N-1), then alpha.
+        # Dedupe in case the same name appears in both lists.
+        _combined: list[str] = list(_promote_list)
+        for _n in _priority_list:
+            if _n not in _combined:
+                _combined.append(_n)
+        _priority_index = {n: i for i, n in enumerate(_combined)}
+        _priority_cap = len(_priority_index)
+
+        def _skill_sort_key(cmd_key: str) -> tuple[int, str]:
+            raw = cmd_key.lstrip("/")
+            return (_priority_index.get(raw, _priority_cap), raw)
+
+        for cmd_key in sorted(skill_cmds, key=_skill_sort_key):
             info = skill_cmds[cmd_key]
             skill_path = info.get("skill_md_path", "")
             if not skill_path:
@@ -789,10 +830,34 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
     """
     core_commands = _prioritize_telegram_menu_commands(list(telegram_bot_commands()))
     reserved_names = {n for n, _ in core_commands}
+
+    # Read promote_to_top BEFORE the collector so we can reserve slots for the
+    # promoted skills even when core_commands alone exceed max_commands (the
+    # Telegram BotCommand menu is hard-capped at 30 by current bot policy, and
+    # core_commands can exceed that). Without this reservation, max_slots=0
+    # and the promote logic never sees its targets.
+    _promote_order: dict[str, int] = {}
+    try:
+        from hermes_cli.config import read_raw_config
+        _cfg = read_raw_config()
+        _promote_list = list(
+            ((_cfg.get("skills") or {})
+             .get("platform_menu_promote_to_top") or {})
+            .get("telegram") or []
+        )
+        _promote_order = {
+            _sanitize_telegram_name(n): i for i, n in enumerate(_promote_list)
+        }
+    except Exception:
+        _promote_order = {}
+
     all_commands = list(core_commands)
     hidden_core_count = max(0, len(all_commands) - max_commands)
 
-    remaining_slots = max(0, max_commands - len(all_commands))
+    # Reserve at least len(_promote_order) slots so promoted skills survive the
+    # collector cap. Without this, when core_commands >= max_commands,
+    # remaining_slots = 0 and the configured pinned skills never reach entries.
+    remaining_slots = max(len(_promote_order), max_commands - len(all_commands))
     entries, hidden_count = _collect_gateway_skill_entries(
         platform="telegram",
         max_slots=remaining_slots,
@@ -800,8 +865,17 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
         desc_limit=40,
         sanitize_name=_sanitize_telegram_name,
     )
-    # Drop the cmd_key — Telegram only needs (name, desc) pairs.
-    all_commands.extend((n, d) for n, d, _k in entries)
+
+    promoted: list[tuple[str, str]] = []
+    rest: list[tuple[str, str]] = []
+    for n, d, _k in entries:
+        if n in _promote_order:
+            promoted.append((n, d))
+        else:
+            rest.append((n, d))
+    promoted.sort(key=lambda nd: _promote_order.get(nd[0], len(_promote_order)))
+
+    all_commands = list(promoted) + list(core_commands) + list(rest)
     return all_commands[:max_commands], hidden_count + hidden_core_count
 
 

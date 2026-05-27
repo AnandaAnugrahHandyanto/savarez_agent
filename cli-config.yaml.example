@@ -555,6 +555,29 @@ skills:
   #   - ~/.agents/skills
   #   - /home/shared/team-skills
 
+  # Telegram bot menu ordering (optional). Telegram's BotCommand menu is
+  # capped (~30 entries), so with many skills these knobs control which appear
+  # and in what order. Both default off (skills sort alphabetically after the
+  # core commands), so omitting them keeps current behavior.
+  #
+  # platform_menu_promote_to_top: skills listed here jump ABOVE the core
+  #   commands to the very top of the menu, and reserve slots so they survive
+  #   the cap. Use for your most-tapped skills. Names match the skill key
+  #   (e.g. "file", "partnership-radar").
+  # platform_menu_priority: orders the remaining skill tier (listed skills
+  #   first in order; the rest fall back to alphabetical). Handy for clustering
+  #   cron/scheduled skills.
+  #
+  # platform_menu_promote_to_top:
+  #   telegram:
+  #     - file
+  #     - remember
+  #     - pdf
+  # platform_menu_priority:
+  #   telegram:
+  #     - daily-briefing
+  #     - weekly-review
+
 # =============================================================================
 # Agent Behavior
 # =============================================================================
