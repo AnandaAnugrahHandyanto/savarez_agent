@@ -155,9 +155,11 @@ def _codex_ack_message_response(text: str):
 
 
 class _FakeResponsesStream:
-    def __init__(self, *, final_response=None, final_error=None):
+    def __init__(self, *, final_response=None, final_error=None, events=None, iter_error=None):
         self._final_response = final_response
         self._final_error = final_error
+        self._events = list(events or [])
+        self._iter_error = iter_error
 
     def __enter__(self):
         return self
@@ -166,7 +168,10 @@ class _FakeResponsesStream:
         return False
 
     def __iter__(self):
-        return iter(())
+        for event in self._events:
+            yield event
+        if self._iter_error is not None:
+            raise self._iter_error
 
     def get_final_response(self):
         if self._final_error is not None:
@@ -482,6 +487,109 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert calls["create"] == 1
     assert create_stream.closed is True
     assert response.output[0].content[0].text == "streamed create ok"
+
+
+def test_run_codex_stream_recovers_collected_items_after_null_output_typeerror(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    calls = {"stream": 0, "create": 0}
+    streamed_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="recovered from item")],
+    )
+
+    def _fake_stream(**kwargs):
+        calls["stream"] += 1
+        return _FakeResponsesStream(
+            events=[SimpleNamespace(type="response.output_item.done", item=streamed_item)],
+            final_error=TypeError("'NoneType' object is not iterable"),
+        )
+
+    def _fake_create(**kwargs):
+        calls["create"] += 1
+        return _codex_message_response("should not use fallback")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(stream=_fake_stream, create=_fake_create)
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response is not None
+    assert calls == {"stream": 1, "create": 0}
+    assert response.output == [streamed_item]
+    assert response.output[0].content[0].text == "recovered from item"
+
+
+def test_run_codex_stream_recovers_text_deltas_after_null_output_typeerror(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    calls = {"stream": 0, "create": 0}
+
+    def _fake_stream(**kwargs):
+        calls["stream"] += 1
+        return _FakeResponsesStream(
+            events=[
+                SimpleNamespace(type="response.output_text.delta", delta="hello "),
+                SimpleNamespace(type="response.output_text.delta", delta="world"),
+            ],
+            final_error=TypeError("'NoneType' object is not iterable"),
+        )
+
+    def _fake_create(**kwargs):
+        calls["create"] += 1
+        return _codex_message_response("should not use fallback")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(stream=_fake_stream, create=_fake_create)
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response is not None
+    assert calls == {"stream": 1, "create": 0}
+    assert response.output[0].content[0].text == "hello world"
+
+
+def test_run_codex_stream_falls_back_after_null_output_typeerror_without_recovery_payload(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    calls = {"stream": 0, "create": 0}
+
+    def _fake_stream(**kwargs):
+        calls["stream"] += 1
+        return _FakeResponsesStream(
+            final_error=TypeError("'NoneType' object is not iterable")
+        )
+
+    def _fake_create(**kwargs):
+        calls["create"] += 1
+        return _codex_message_response("create fallback after null output")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(stream=_fake_stream, create=_fake_create)
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response is not None
+    assert calls == {"stream": 2, "create": 1}
+    assert response.output[0].content[0].text == "create fallback after null output"
+
+
+def test_run_codex_stream_reraises_unrelated_typeerror(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    def _fake_stream(**kwargs):
+        return _FakeResponsesStream(final_error=TypeError("different local bug"))
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=lambda **kwargs: _codex_message_response("fallback"),
+        )
+    )
+
+    with pytest.raises(TypeError, match="different local bug"):
+        agent._run_codex_stream(_codex_request_kwargs())
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):
