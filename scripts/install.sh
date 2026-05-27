@@ -391,6 +391,52 @@ install_uv() {
         return 0
     fi
 
+    # FreeBSD: astral.sh ships no FreeBSD binary — use pkg or pip instead.
+    if [ "$OS" = "freebsd" ]; then
+        log_info "Installing uv (fast Python package manager)..."
+        local _uv_pkg_cmd=""
+        if [ "$(id -u)" -eq 0 ]; then
+            _uv_pkg_cmd="pkg install -y uv"
+        elif command -v sudo &>/dev/null && sudo -n true 2>/dev/null; then
+            _uv_pkg_cmd="sudo pkg install -y uv"
+        fi
+        if [ -n "$_uv_pkg_cmd" ]; then
+            log_info "Trying pkg install uv..."
+            if $_uv_pkg_cmd >/dev/null 2>&1 && command -v uv &>/dev/null; then
+                UV_CMD="uv"
+                UV_VERSION=$(uv --version 2>/dev/null)
+                log_success "uv installed via pkg ($UV_VERSION)"
+                return 0
+            fi
+        fi
+        # pkg not available or failed — try pip install --user uv
+        local _pip=""
+        for _candidate in pip3.11 pip3 pip; do
+            if command -v "$_candidate" &>/dev/null; then
+                _pip="$_candidate"
+                break
+            fi
+        done
+        if [ -n "$_pip" ]; then
+            log_info "Trying $_pip install --user uv..."
+            if "$_pip" install --user uv >/dev/null 2>&1; then
+                if [ -x "$HOME/.local/bin/uv" ]; then
+                    UV_CMD="$HOME/.local/bin/uv"
+                    UV_VERSION=$($UV_CMD --version 2>/dev/null)
+                    log_success "uv installed via pip ($UV_VERSION)"
+                    return 0
+                fi
+            fi
+        fi
+        log_error "Could not install uv on FreeBSD."
+        log_info "Install it manually with one of:"
+        log_info "  sudo pkg install uv          # recommended"
+        log_info "  pip3 install --user uv       # if Python 3 is already installed"
+        log_info "  cargo install uv             # if Rust is installed"
+        log_info "Then re-run this installer."
+        exit 1
+    fi
+
     # Install uv
     log_info "Installing uv (fast Python package manager)..."
     # Capture installer output so a failure shows the user WHY (network,
