@@ -32,6 +32,24 @@ logger = logging.getLogger(__name__)
 HOST = "hermes"
 
 
+def profile_host_key(profile: str | None) -> str:
+    """Return the safe Honcho host key for a Hermes profile."""
+    if not profile or profile in {"default", "custom"}:
+        return HOST
+    sanitized = "".join(c if c.isalnum() or c in "_-" else "_" for c in profile).strip("_")
+    return f"{HOST}_{sanitized or 'profile'}"
+
+
+def _host_block(raw: dict, host: str) -> dict:
+    """Return host config, accepting legacy dot-form profile host keys."""
+    hosts = raw.get("hosts") or {}
+    block = hosts.get(host, {})
+    if block or not host.startswith(f"{HOST}_"):
+        return block
+    legacy = f"{HOST}.{host[len(HOST) + 1:]}"
+    return hosts.get(legacy, {})
+
+
 def resolve_active_host() -> str:
     """Derive the Honcho host key from the active Hermes profile.
 
@@ -47,8 +65,7 @@ def resolve_active_host() -> str:
     try:
         from hermes_cli.profiles import get_active_profile_name
         profile = get_active_profile_name()
-        if profile and profile not in {"default", "custom"}:
-            return f"{HOST}.{profile}"
+        return profile_host_key(profile)
     except Exception:
         pass
     return HOST
@@ -406,7 +423,7 @@ class HonchoClientConfig:
             logger.warning("Failed to read %s: %s, falling back to env", path, e)
             return cls.from_env(host=resolved_host)
 
-        host_block = (raw.get("hosts") or {}).get(resolved_host, {})
+        host_block = _host_block(raw, resolved_host)
         # A hosts.hermes block or explicit enabled flag means the user
         # intentionally configured Honcho for this host.
         _explicitly_configured = bool(host_block) or raw.get("enabled") is True

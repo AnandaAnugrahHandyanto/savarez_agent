@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
-from plugins.memory.honcho.client import resolve_active_host, resolve_config_path, HOST
+from plugins.memory.honcho.client import _host_block, profile_host_key, resolve_active_host, resolve_config_path, HOST
 from hermes_cli.config import cfg_get
 
 
@@ -36,7 +36,7 @@ def clone_honcho_for_profile(profile_name: str) -> bool:
     if not default_block and not has_key:
         return False
 
-    new_host = f"{HOST}.{profile_name}"
+    new_host = profile_host_key(profile_name)
     if new_host in hosts:
         return False  # already exists
 
@@ -192,7 +192,7 @@ def cmd_sync(args) -> None:
         if p.name == "default":
             continue
         if clone_honcho_for_profile(p.name):
-            print(f"  + {p.name} -> hermes.{p.name}")
+            print(f"  + {p.name} -> {profile_host_key(p.name)}")
             created += 1
         else:
             skipped += 1
@@ -243,7 +243,7 @@ def _host_key() -> str:
     if _profile_override:
         if _profile_override in {"default", "custom"}:
             return HOST
-        return f"{HOST}.{_profile_override}"
+        return profile_host_key(_profile_override)
     return resolve_active_host()
 
 
@@ -292,7 +292,7 @@ def _resolve_api_key(cfg: dict) -> str:
     config shapes, e.g. ``localhost:8000``) still pass — the Honcho SDK
     will reject them itself with a clearer error than ours.
     """
-    host_key = ((cfg.get("hosts") or {}).get(_host_key()) or {}).get("apiKey")
+    host_key = _host_block(cfg, _host_key()).get("apiKey")
     key = host_key or cfg.get("apiKey", "") or os.environ.get("HONCHO_API_KEY", "")
     if not key:
         base_url = cfg.get("baseUrl") or cfg.get("base_url") or os.environ.get("HONCHO_BASE_URL", "")
