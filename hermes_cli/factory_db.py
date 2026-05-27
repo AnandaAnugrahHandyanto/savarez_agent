@@ -436,3 +436,279 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         if key.endswith("_json"):
             data[key] = _loads(data[key], [] if key.endswith("s_json") else {})
     return data
+
+
+# ──────────────────────────────────────────────
+# Deterministic job query helpers (Fase 4)
+# ──────────────────────────────────────────────
+
+
+def update_task_status(
+    task_id: str,
+    status: str,
+    *,
+    evidence_status: Optional[str] = None,
+    result_summary: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> dict[str, Any]:
+    """Update a task's status and optional fields. Returns the task dict."""
+    own_conn = conn is None
+    conn = conn or ensure_db()
+    now = utc_now()
+    updates = ["status=?", "updated_at=?"]
+    params: list[Any] = [status, now]
+    if evidence_status is not None:
+        updates.append("evidence_status=?")
+        params.append(evidence_status)
+    if result_summary is not None:
+        updates.append("result_summary=?")
+        params.append(result_summary)
+    params.append(task_id)
+    conn.execute(
+        f"UPDATE factory_tasks SET {', '.join(updates)} WHERE task_id=?",
+        params,
+    )
+    if status == "in_progress" and conn.execute(
+        "SELECT 1 FROM factory_tasks WHERE task_id=? AND started_at IS NULL",
+        (task_id,),
+    ).fetchone():
+        conn.execute(
+            "UPDATE factory_tasks SET started_at=? WHERE task_id=?",
+            (now, task_id),
+        )
+    if status in ("done", "cancelled", "blocked", "rework"):
+        conn.execute(
+            "UPDATE factory_tasks SET finished_at=? WHERE task_id=? AND finished_at IS NULL",
+            (now, task_id),
+        )
+    if own_conn:
+        conn.commit()
+        conn.close()
+    return {"task_id": task_id, "status": status}
+
+
+def list_stale_tasks(
+    *,
+    max_age_minutes: int = 30,
+    project_id: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> list[dict[str, Any]]:
+    """Find tasks stuck 'in_progress' beyond max_age_minutes."""
+    own_conn = conn is None
+    conn = conn or ensure_db()
+    where = "WHERE status='in_progress' AND started_at IS NOT NULL"
+    params: list[Any] = []
+    if project_id:
+        where += " AND project_id=?"
+        params.append(project_id)
+    where += f" AND (julianday('now') - julianday(started_at)) * 1440 > ?"
+    params.append(max_age_minutes)
+    rows = conn.execute(
+        f"SELECT * FROM factory_tasks {where} ORDER BY started_at",
+        params,
+    ).fetchall()
+    result = [_row_to_dict(row) for row in rows]
+    if own_conn:
+        conn.close()
+    return result
+
+
+def list_tasks_ready_for_review(
+    *,
+    project_id: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> list[dict[str, Any]]:
+    """Find tasks with status='in_progress' or 'review' that have passed
+    the implementation phase and need review assignment."""
+    own_conn = conn is None
+    conn = conn or ensure_db()
+    where = "WHERE status IN ('in_progress', 'review') AND phase IN ('implementation', 'qa', 'review')"
+    params: list[Any] = []
+    if project_id:
+        where += " AND project_id=?"
+        params.append(project_id)
+    rows = conn.execute(
+        f"SELECT * FROM factory_tasks {where} ORDER BY priority",
+        params,
+    ).fetchall()
+    result = [_row_to_dict(row) for row in rows]
+    if own_conn:
+        conn.close()
+    return result
+
+
+def list_pending_gates(
+    *,
+    project_id: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> list[dict[str, Any]]:
+    """Find tasks that are 'done' but lack passed gates for required gate types."""
+    own_conn = conn is None
+    conn = conn or ensure_db()
+    where = "WHERE t.status='done' AND NOT EXISTS (SELECT 1 FROM factory_gates g WHERE g.task_id=t.task_id AND g.status='passed')"
+    params: list[Any] = []
+    if project_id:
+        where += " AND t.project_id=?"
+        params.append(project_id)
+    rows = conn.execute(
+        f"SELECT t.* FROM factory_tasks t {where} LIMIT 50",
+        params,
+    ).fetchall()
+    result = [_row_to_dict(row) for row in rows]
+    if own_conn:
+        conn.close()
+    return result
+
+
+def list_blocked_tasks(
+    *,
+    project_id: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> list[dict[str, Any]]:
+    """Find tasks explicitly blocked for more than 15 minutes."""
+    own_conn = conn is None
+    conn = conn or ensure_db()
+    where = "WHERE status='blocked'"
+    params: list[Any] = []
+    if project_id:
+        where += " AND project_id=?"
+        params.append(project_id)
+    rows = conn.execute(
+        f"SELECT * FROM factory_tasks {where} ORDER BY updated_at",
+        params,
+    ).fetchall()
+    result = [_row_to_dict(row) for row in rows]
+    if own_conn:
+        conn.close()
+    return result
+
+
+def list_tasks_without_evidence(
+    *,
+    project_id: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> list[dict[str, Any]]:
+    """Find completed tasks that still lack evidence."""
+    own_conn = conn is None
+    conn = conn or ensure_db()
+    where = "WHERE status='done' AND evidence_status='missing' AND evidence_required=1"
+    params: list[Any] = []
+    if project_id:
+        where += " AND project_id=?"
+        params.append(project_id)
+    rows = conn.execute(
+        f"SELECT * FROM factory_tasks {where} ORDER BY finished_at",
+        params,
+    ).fetchall()
+    result = [_row_to_dict(row) for row in rows]
+    if own_conn:
+        conn.close()
+    return result
+
+
+def list_tasks_dependency_ready(
+    *,
+    project_id: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> list[dict[str, Any]]:
+    """Find tasks with status='todo' whose dependencies are all done."""
+    own_conn = conn is None
+    conn = conn or ensure_db()
+    where = "WHERE t.status='todo' AND t.dependencies_json != '[]'"
+    params: list[Any] = []
+    if project_id:
+        where += " AND t.project_id=?"
+        params.append(project_id)
+    rows = conn.execute(
+        f"SELECT t.* FROM factory_tasks t {where}",
+        params,
+    ).fetchall()
+    unblocked: list[dict[str, Any]] = []
+    for row in rows:
+        task = _row_to_dict(row)
+        deps: list[str] = task.get("dependencies") or []
+        if not deps:
+            continue
+        placeholders = ",".join("?" for _ in deps)
+        done = conn.execute(
+            f"SELECT COUNT(*) FROM factory_tasks WHERE task_id IN ({placeholders}) AND status='done'",
+            deps,
+        ).fetchone()[0]
+        if done == len(deps):
+            unblocked.append(task)
+    if own_conn:
+        conn.close()
+    return unblocked
+
+
+def list_project_summary(
+    project_id: str,
+    conn: Optional[sqlite3.Connection] = None,
+) -> dict[str, Any]:
+    """Aggregate summary for a single project: counts per status, engine, gate."""
+    own_conn = conn is None
+    conn = conn or ensure_db()
+    project = conn.execute(
+        "SELECT * FROM factory_projects WHERE project_id=?", (project_id,)
+    ).fetchone()
+    if not project:
+        if own_conn:
+            conn.close()
+        return {"error": f"project {project_id} not found"}
+    project_data = _row_to_dict(project)
+    total_tasks = conn.execute(
+        "SELECT COUNT(*) FROM factory_tasks WHERE project_id=?", (project_id,)
+    ).fetchone()[0]
+    by_status = {
+        row["status"]: row["cnt"]
+        for row in conn.execute(
+            "SELECT status, COUNT(*) AS cnt FROM factory_tasks WHERE project_id=? GROUP BY status",
+            (project_id,),
+        ).fetchall()
+    }
+    by_engine = {
+        row["engine"]: row["cnt"]
+        for row in conn.execute(
+            "SELECT engine, COUNT(*) AS cnt FROM factory_tasks WHERE project_id=? GROUP BY engine",
+            (project_id,),
+        ).fetchall()
+    }
+    gates_by_type = {
+        row["gate_type"]: row["cnt"]
+        for row in conn.execute(
+            "SELECT gate_type, COUNT(*) AS cnt FROM factory_gates WHERE project_id=? GROUP BY gate_type",
+            (project_id,),
+        ).fetchall()
+    }
+    recent_events = [
+        _row_to_dict(row)
+        for row in conn.execute(
+            "SELECT * FROM factory_events WHERE project_id=? ORDER BY created_at DESC LIMIT 10",
+            (project_id,),
+        ).fetchall()
+    ]
+    if own_conn:
+        conn.close()
+    return {
+        **project_data,
+        "total_tasks": total_tasks,
+        "by_status": by_status,
+        "by_engine": by_engine,
+        "gates_by_type": gates_by_type,
+        "recent_events": recent_events,
+    }
+
+
+def list_all_projects_summary(
+    conn: Optional[sqlite3.Connection] = None,
+) -> list[dict[str, Any]]:
+    """Return summary for every project in the DB."""
+    own_conn = conn is None
+    conn = conn or ensure_db()
+    projects = conn.execute(
+        "SELECT project_id FROM factory_projects ORDER BY updated_at DESC"
+    ).fetchall()
+    result = [list_project_summary(row["project_id"], conn=conn) for row in projects]
+    if own_conn:
+        conn.close()
+    return result
