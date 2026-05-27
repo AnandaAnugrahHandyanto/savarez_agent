@@ -315,3 +315,16 @@ class TestToolsF541:
             f"tools/ has F541 violation(s):\n"
             f"{result.stdout}\n{result.stderr}\n"
         )
+
+
+def test_cronjob_tools_has_zero_f401() -> None:
+    """tools/cronjob_tools.py must have zero F401 (unused-import) violations."""
+    import subprocess, sys
+    result = subprocess.run(
+        [sys.executable, "-m", "ruff", "check", "--select=F401",
+         "--output-format=concise", "tools/cronjob_tools.py"],
+        capture_output=True, text=True, cwd=REPO_ROOT,
+    )
+    assert result.returncode == 0, (
+        f"tools/cronjob_tools.py has F401 violations:\n{result.stdout}"
+    )
