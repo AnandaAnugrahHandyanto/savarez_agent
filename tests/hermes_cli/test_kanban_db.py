@@ -1986,7 +1986,19 @@ class TestSharedBoardPaths:
 
         monkeypatch.setattr("subprocess.Popen", _FakePopen)
 
-        task = kb.Task(
+        task = self._spawn_task(tmp_path)
+        kb._default_spawn(task, str(tmp_path / "ws"))
+
+        env = captured["env"]
+        assert env["HERMES_KANBAN_DB"] == str(default_home / "kanban.db")
+        assert env["HERMES_KANBAN_WORKSPACES_ROOT"] == str(
+            default_home / "kanban" / "workspaces"
+        )
+        assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
+        assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"
+
+    def _spawn_task(self, tmp_path):
+        return kb.Task(
             id="t_dispatch_env",
             title="x",
             body=None,
@@ -2004,15 +2016,160 @@ class TestSharedBoardPaths:
             tenant=None,
             branch_name="wt/t_dispatch_env",
         )
-        kb._default_spawn(task, str(tmp_path / "ws"))
 
-        env = captured["env"]
-        assert env["HERMES_KANBAN_DB"] == str(default_home / "kanban.db")
-        assert env["HERMES_KANBAN_WORKSPACES_ROOT"] == str(
-            default_home / "kanban" / "workspaces"
+    def _write_skill(self, root, rel="devops/kanban-worker", frontmatter_extra=""):
+        skill_dir = root / rel
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: kanban-worker\n"
+            "description: worker\n"
+            f"{frontmatter_extra}"
+            "---\n"
+            "# Worker\n",
+            encoding="utf-8",
         )
-        assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
-        assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"
+        return skill_dir
+
+    def test_kanban_worker_preload_true_when_unambiguous_local_skill(
+        self, tmp_path, monkeypatch
+    ):
+        profile_home = tmp_path / ".hermes" / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        self._write_skill(profile_home / "skills")
+        self._set_home(monkeypatch, tmp_path, profile_home)
+
+        assert kb._kanban_worker_skill_available(str(profile_home)) is True
+
+    def test_kanban_worker_preload_true_when_unambiguous_external_skill(
+        self, tmp_path, monkeypatch
+    ):
+        profile_home = tmp_path / ".hermes" / "profiles" / "coder"
+        external = tmp_path / "external-skills"
+        profile_home.mkdir(parents=True)
+        self._write_skill(external)
+        (profile_home / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {external}\n",
+            encoding="utf-8",
+        )
+        self._set_home(monkeypatch, tmp_path, profile_home)
+
+        assert kb._kanban_worker_skill_available(str(profile_home)) is True
+
+    def test_kanban_worker_preload_false_when_missing(self, tmp_path, monkeypatch):
+        profile_home = tmp_path / ".hermes" / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        self._set_home(monkeypatch, tmp_path, profile_home)
+
+        assert kb._kanban_worker_skill_available(str(profile_home)) is False
+
+    def test_kanban_worker_preload_false_when_disabled(self, tmp_path, monkeypatch):
+        profile_home = tmp_path / ".hermes" / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        self._write_skill(profile_home / "skills")
+        (profile_home / "config.yaml").write_text(
+            "skills:\n  disabled:\n    - kanban-worker\n",
+            encoding="utf-8",
+        )
+        self._set_home(monkeypatch, tmp_path, profile_home)
+
+        assert kb._kanban_worker_skill_available(str(profile_home)) is False
+
+    def test_kanban_worker_preload_false_when_disabled_for_worker_platform(
+        self, tmp_path, monkeypatch
+    ):
+        profile_home = tmp_path / ".hermes" / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        self._write_skill(profile_home / "skills")
+        (profile_home / "config.yaml").write_text(
+            "skills:\n"
+            "  platform_disabled:\n"
+            "    cli:\n"
+            "      - kanban-worker\n",
+            encoding="utf-8",
+        )
+        self._set_home(monkeypatch, tmp_path, profile_home)
+        monkeypatch.setenv("HERMES_PLATFORM", "cli")
+
+        assert kb._kanban_worker_skill_available(str(profile_home)) is False
+
+    def test_kanban_worker_preload_false_when_platform_incompatible(
+        self, tmp_path, monkeypatch
+    ):
+        profile_home = tmp_path / ".hermes" / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        self._write_skill(
+            profile_home / "skills",
+            frontmatter_extra="platforms:\n  - not-a-real-platform\n",
+        )
+        self._set_home(monkeypatch, tmp_path, profile_home)
+
+        assert kb._kanban_worker_skill_available(str(profile_home)) is False
+
+    def test_kanban_worker_preload_false_when_frontmatter_name_mismatches(
+        self, tmp_path, monkeypatch
+    ):
+        profile_home = tmp_path / ".hermes" / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        skill_dir = self._write_skill(profile_home / "skills")
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: other-worker\ndescription: worker\n---\n# Worker\n",
+            encoding="utf-8",
+        )
+        self._set_home(monkeypatch, tmp_path, profile_home)
+
+        assert kb._kanban_worker_skill_available(str(profile_home)) is False
+
+    def test_kanban_worker_preload_false_when_ambiguous_with_external_dir(
+        self, tmp_path, monkeypatch
+    ):
+        profile_home = tmp_path / ".hermes" / "profiles" / "coder"
+        external = tmp_path / "external-skills"
+        profile_home.mkdir(parents=True)
+        self._write_skill(profile_home / "skills")
+        self._write_skill(external, rel="kanban-worker")
+        (profile_home / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {external}\n",
+            encoding="utf-8",
+        )
+        self._set_home(monkeypatch, tmp_path, profile_home)
+
+        assert kb._kanban_worker_skill_available(str(profile_home)) is False
+
+    def test_dispatcher_skips_optional_kanban_worker_skill_when_ambiguous(
+        self, tmp_path, monkeypatch
+    ):
+        default_home = tmp_path / ".hermes"
+        profile_home = default_home / "profiles" / "coder"
+        external = tmp_path / "external-skills"
+        profile_home.mkdir(parents=True)
+        self._write_skill(profile_home / "skills")
+        self._write_skill(external, rel="kanban-worker")
+        (profile_home / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {external}\n",
+            encoding="utf-8",
+        )
+        self._set_home(monkeypatch, tmp_path, default_home)
+
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["cmd"] = cmd
+                captured["env"] = kwargs.get("env", {})
+                self.pid = 4242
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.resolve_profile_env",
+            lambda profile: str(profile_home),
+        )
+
+        kb._default_spawn(self._spawn_task(tmp_path), str(tmp_path / "ws"))
+
+        cmd = captured["cmd"]
+        assert "--skills" not in cmd or "kanban-worker" not in cmd
+        assert captured["env"]["HERMES_HOME"] == str(profile_home)
 
 
 # ---------------------------------------------------------------------------

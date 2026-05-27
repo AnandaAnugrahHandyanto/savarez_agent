@@ -5588,38 +5588,102 @@ def _resolve_hermes_argv() -> list[str]:
 
 
 def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
-    """True if the bundled ``kanban-worker`` skill resolves for the home the
-    spawned worker will run under.
+    """True if ``--skills kanban-worker`` is safe for the spawned worker.
 
-    The dispatcher injects ``--skills kanban-worker`` into every worker. When
-    the worker activates a profile (``hermes -p <name>``), its ``SKILLS_DIR``
-    becomes ``<profile_home>/skills`` — which on many profiles does NOT contain
-    the bundled skill (it ships in the *default* root home, not every
-    profile-scoped skills dir). Preloading a missing skill is fatal at CLI
-    startup (``ValueError: Unknown skill(s): kanban-worker``), aborting the
-    worker before the agent loop runs. Gate the flag on actual resolvability;
-    the kanban lifecycle contract is still injected via ``KANBAN_GUIDANCE``, so
-    omitting the flag only drops the supplementary pattern library.
+    The dispatcher *optionally* injects ``--skills kanban-worker`` so workers
+    get the supplementary pattern library. The mandatory lifecycle contract is
+    already injected via ``KANBAN_GUIDANCE`` in the system prompt, so workers
+    must still start when this reference skill is missing or ambiguous.
+
+    The child process resolves skills after profile activation, against that
+    profile's ``skills/`` directory plus its configured ``skills.external_dirs``.
+    Preloading a missing, ambiguous, disabled, or platform-incompatible skill is
+    fatal at CLI startup, so mirror those resolver gates here and only add the
+    flag when the worker profile can actually load the skill.
     """
     from pathlib import Path as _Path
 
-    # An unset HERMES_HOME means the worker falls back to the default root
-    # home (``~/.hermes``), which ships the bundled skill.
+    from agent.skill_utils import (
+        get_disabled_skill_names,
+        get_external_skills_dirs,
+        iter_skill_index_files,
+        parse_frontmatter,
+        skill_matches_platform,
+    )
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
     base = _Path(hermes_home) if hermes_home else (_Path.home() / ".hermes")
-    skills_root = base / "skills"
-    if not skills_root.is_dir():
-        return False
-    # Canonical bundled location first (cheap), then a bounded scan for
-    # profiles that have it nested elsewhere.
-    if (skills_root / "devops" / "kanban-worker" / "SKILL.md").is_file():
-        return True
+    token = set_hermes_home_override(base)
     try:
-        for skill_md in skills_root.rglob("kanban-worker/SKILL.md"):
-            if skill_md.is_file():
-                return True
-    except OSError:
-        pass
-    return False
+        all_dirs = []
+        skills_root = base / "skills"
+        if skills_root.exists():
+            all_dirs.append(skills_root)
+        all_dirs.extend(get_external_skills_dirs())
+
+        candidates: set[_Path] = set()
+        for search_dir in all_dirs:
+            direct_path = search_dir / "kanban-worker"
+            if direct_path.is_dir() and (direct_path / "SKILL.md").is_file():
+                candidates.add((direct_path / "SKILL.md").resolve())
+            elif direct_path.with_suffix(".md").is_file():
+                candidates.add(direct_path.with_suffix(".md").resolve())
+
+            try:
+                for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
+                    if found_skill_md.parent.name == "kanban-worker" and found_skill_md.is_file():
+                        candidates.add(found_skill_md.resolve())
+            except OSError:
+                continue
+
+            try:
+                for found_md in search_dir.rglob("kanban-worker.md"):
+                    if found_md.name != "SKILL.md" and found_md.is_file():
+                        candidates.add(found_md.resolve())
+            except OSError:
+                continue
+
+        if len(candidates) > 1:
+            _log.warning(
+                "Skipping optional kanban-worker preload for %s: bare name is ambiguous across %d skills: %s",
+                base,
+                len(candidates),
+                "; ".join(str(p) for p in sorted(candidates)),
+            )
+            return False
+
+        if not candidates:
+            return False
+
+        skill_md = next(iter(candidates))
+        try:
+            content = skill_md.read_text(encoding="utf-8")
+            frontmatter, _ = parse_frontmatter(content)
+        except Exception as exc:
+            _log.warning(
+                "Skipping optional kanban-worker preload for %s: failed to inspect %s: %s",
+                base,
+                skill_md,
+                exc,
+            )
+            return False
+
+        resolved_name = str(frontmatter.get("name") or skill_md.parent.name)
+        if resolved_name != "kanban-worker":
+            _log.warning(
+                "Skipping optional kanban-worker preload for %s: %s resolves to skill name %r",
+                base,
+                skill_md,
+                resolved_name,
+            )
+            return False
+        if resolved_name in get_disabled_skill_names():
+            return False
+        if not skill_matches_platform(frontmatter):
+            return False
+        return True
+    finally:
+        reset_hermes_home_override(token)
 
 
 def _worker_terminal_timeout_env(
