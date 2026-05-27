@@ -117,6 +117,21 @@ class TestLintWorkflow:
 class TestToolsLintRegression:
     """Guards against new lint violations in tools/."""
 
+    def test_tools_dir_has_zero_e741_violations(self):
+        """tools/ must have zero E741 (ambiguous variable name) violations."""
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=E741",
+             "--output-format=concise", "tools/"],
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
+        )
+
+        assert result.returncode == 0, (
+            f"tools/ has E741 violation(s):\n{result.stdout}"
+        )
+
     def test_tools_dir_has_zero_f541_violations(self):
         """tools/ must have zero F541 (unnecessary f-string) violations."""
         import subprocess
