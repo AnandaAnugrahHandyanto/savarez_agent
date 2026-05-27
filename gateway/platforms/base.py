@@ -476,7 +476,7 @@ import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple, Union
 from enum import Enum
 
 from pathlib import Path as _Path
@@ -838,17 +838,43 @@ MEDIA_DELIVERY_TRUST_RECENT_SECONDS_ENV = "HERMES_MEDIA_TRUST_RECENT_SECONDS"
 # user should set this to true.
 MEDIA_DELIVERY_STRICT_ENV = "HERMES_MEDIA_DELIVERY_STRICT"
 MEDIA_DELIVERY_SAFE_ROOTS = (
+    # ``*_CACHE_DIR`` resolves to legacy-or-canonical via ``get_hermes_dir``
+    # (returns the legacy path when it exists on disk, otherwise the canonical
+    # one). The explicit legacy + canonical entries below ensure BOTH layouts
+    # are always deliverable regardless of which one ``get_hermes_dir`` picks
+    # — without them, generated artifacts under ``~/.hermes/cache/images/``
+    # fail MEDIA delivery on hosts that still have the legacy
+    # ``~/.hermes/image_cache/`` directory from older installs (#31733).
     IMAGE_CACHE_DIR,
     AUDIO_CACHE_DIR,
     VIDEO_CACHE_DIR,
     DOCUMENT_CACHE_DIR,
     SCREENSHOT_CACHE_DIR,
+    # Legacy paths (preserved for backward compat with existing installs).
     _HERMES_HOME / "image_cache",
     _HERMES_HOME / "audio_cache",
     _HERMES_HOME / "video_cache",
     _HERMES_HOME / "document_cache",
     _HERMES_HOME / "browser_screenshots",
+    # Canonical new paths — where ``image_generate`` / document tools write by
+    # default when the legacy dirs are absent. Listed explicitly so co-existing
+    # legacy installs do not silently drop these files (#31733).
+    _HERMES_HOME / "cache" / "images",
+    _HERMES_HOME / "cache" / "audio",
+    _HERMES_HOME / "cache" / "videos",
+    _HERMES_HOME / "cache" / "documents",
+    _HERMES_HOME / "cache" / "screenshots",
 )
+
+
+# Final-response dispatch extension partitions, hoisted to module scope so the
+# regression test in ``tests/gateway/test_platform_base.py`` can import them
+# instead of snapshotting the values locally (which would silently drift if
+# the production sets gain a new extension). ``send_message`` tool and the
+# scheduler keep their own local copies for now; unifying all dispatch sites
+# is tracked as follow-up.
+_FINAL_RESPONSE_IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png", ".webp", ".gif"})
+_FINAL_RESPONSE_VIDEO_EXTS = frozenset({".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"})
 
 # Default recency window for trusting freshly-produced files (seconds).
 # The agent's actual work generally completes well inside 10 minutes; legitimate
@@ -992,47 +1018,88 @@ def _path_is_within(path: Path, root: Path) -> bool:
         return False
 
 
-def validate_media_delivery_path(path: str) -> Optional[str]:
-    """Return a safe absolute file path for native media delivery, else None.
+_REDACT_PATH_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
-    Default mode (single-user / private gateway): accept any existing regular
-    file that isn't under the credential / system-path denylist
-    (``_MEDIA_DELIVERY_DENIED_PREFIXES`` + ``~/.ssh``, ``~/.aws``, etc.).
-    This matches the symmetry of inbound delivery — Telegram/Discord/Slack
-    will hand the agent any file the user uploads, and the agent can hand
-    back any file that isn't a credential.
 
-    Strict mode (opt-in via ``gateway.strict`` in ``config.yaml`` or
-    ``HERMES_MEDIA_DELIVERY_STRICT=1``): the file MUST live under a
-    Hermes-managed cache, under an operator-allowlisted root
-    (``HERMES_MEDIA_ALLOW_DIRS``), or be freshly produced inside the
-    configured recency window. Suitable for public-facing bots where
-    prompt injection from one user shouldn't be able to exfiltrate the
-    host's secrets to that same user.
+def _redact_path_for_log(path: str) -> str:
+    """Return a path representation safe for shared logs.
 
-    Symlinks are resolved before any containment / denylist check.
+    Shows the topmost directory and the filename, eliding intermediate
+    components so operators have enough context to diagnose a "MEDIA
+    didn't attach" report without the full filesystem path leaking into
+    log storage. Example::
+
+        /tmp/pool_evidence/Quote_PFA30971.pdf  ->  /tmp/.../Quote_PFA30971.pdf
+        ~/.hermes/cache/images/foo.png         ->  ~/.hermes/.../foo.png
+
+    Short absolute paths (3 or fewer ``parts`` -- e.g. ``/etc/passwd``,
+    ``/tmp/leaked.pdf``) have no intermediate components to elide and are
+    returned with only the control-character pass applied. Control
+    characters (newline, carriage return, NUL, etc.) are replaced with
+    ``?`` regardless of length, so a model-emitted path containing
+    embedded newlines cannot forge a fake second log line.
     """
     if not path:
-        return None
+        return ""
+    try:
+        raw_parts = Path(path).parts
+    except (TypeError, ValueError):
+        return "<unprintable>"
+    if len(raw_parts) <= 3:
+        rendered = path
+    else:
+        rendered = str(Path(raw_parts[0], raw_parts[1], "...", raw_parts[-1]))
+    return _REDACT_PATH_CONTROL_CHARS.sub("?", rendered)
+
+
+# Reason tags returned by ``_validate_media_delivery_path_with_reason``.
+# Kebab-string form is intentional: keeps grep / log-aggregator queries
+# unambiguous and avoids enum import cycles in callers.
+_MEDIA_REASON_EMPTY = "empty"
+_MEDIA_REASON_NOT_ABSOLUTE = "not-absolute"
+_MEDIA_REASON_DOES_NOT_RESOLVE = "does-not-resolve"
+_MEDIA_REASON_NOT_A_FILE = "not-a-file"
+_MEDIA_REASON_OUTSIDE_NO_RECENCY = "outside-allowlist-no-recency"
+_MEDIA_REASON_OUTSIDE_DENIED_PREFIX = "outside-allowlist-denied-prefix"
+_MEDIA_REASON_OUTSIDE_STALE_MTIME = "outside-allowlist-stale-mtime"
+_MEDIA_REASON_ALLOWLISTED = "allowlisted"
+_MEDIA_REASON_RECENCY_TRUSTED = "recency-trusted"
+# Non-strict (default) accept: file resolved, is a regular file, and is not
+# under the credential / system-path denylist.
+_MEDIA_REASON_DENYLIST_CLEARED = "denylist-cleared"
+
+
+def _validate_media_delivery_path_with_reason(path: str) -> Tuple[Optional[str], str]:
+    """Validate a candidate media path, returning ``(resolved, reason)``.
+
+    The reason is a short kebab-string suitable for log fields. Callers that
+    just need the resolved-or-``None`` result should use
+    :func:`validate_media_delivery_path`. Callers that need diagnosability
+    (e.g. ``filter_media_delivery_paths``) use this directly so they can
+    log *why* a path was rejected — silent failures here have historically
+    been very hard to diagnose from production logs (#31733).
+    """
+    if not path:
+        return None, _MEDIA_REASON_EMPTY
 
     candidate = str(path).strip()
     if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in "`\"'":
         candidate = candidate[1:-1].strip()
     candidate = candidate.lstrip("`\"'").rstrip("`\"',.;:)}]")
     if not candidate:
-        return None
+        return None, _MEDIA_REASON_EMPTY
 
     expanded = Path(os.path.expanduser(candidate))
     if not expanded.is_absolute():
-        return None
+        return None, _MEDIA_REASON_NOT_ABSOLUTE
 
     try:
         resolved = expanded.resolve(strict=True)
     except (OSError, RuntimeError, ValueError):
-        return None
+        return None, _MEDIA_REASON_DOES_NOT_RESOLVE
 
     if not resolved.is_file():
-        return None
+        return None, _MEDIA_REASON_NOT_A_FILE
 
     # Cache / operator allowlist is always honored — these are unconditionally
     # trusted regardless of mode.
@@ -1042,7 +1109,7 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
         except (OSError, RuntimeError, ValueError):
             continue
         if _path_is_within(resolved, resolved_root):
-            return str(resolved)
+            return str(resolved), _MEDIA_REASON_ALLOWLISTED
 
     # Non-strict mode (default): accept anything not on the denylist.
     # The denylist still blocks /etc, /proc, ~/.ssh, ~/.aws, ~/.hermes/.env,
@@ -1050,8 +1117,8 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     # (``MEDIA:/etc/passwd``, ``MEDIA:~/.ssh/id_rsa``) remain rejected.
     if not _media_delivery_strict_mode():
         if _path_under_denied_prefix(resolved):
-            return None
-        return str(resolved)
+            return None, _MEDIA_REASON_OUTSIDE_DENIED_PREFIX
+        return str(resolved), _MEDIA_REASON_DENYLIST_CLEARED
 
     # Strict mode: fall back to recency-based trust for freshly-produced
     # files (e.g. ``pandoc -o /tmp/report.pdf`` or
@@ -1059,11 +1126,39 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     # credential locations remain blocked even when "recent" — see
     # ``_MEDIA_DELIVERY_DENIED_PREFIXES`` for the denylist.
     window = _media_delivery_recency_seconds()
-    if window > 0 and not _path_under_denied_prefix(resolved):
-        if _file_is_recently_produced(resolved, window):
-            return str(resolved)
+    if window <= 0:
+        return None, _MEDIA_REASON_OUTSIDE_NO_RECENCY
+    if _path_under_denied_prefix(resolved):
+        return None, _MEDIA_REASON_OUTSIDE_DENIED_PREFIX
+    if _file_is_recently_produced(resolved, window):
+        return str(resolved), _MEDIA_REASON_RECENCY_TRUSTED
+    return None, _MEDIA_REASON_OUTSIDE_STALE_MTIME
 
-    return None
+
+def validate_media_delivery_path(path: str) -> Optional[str]:
+    """Return a safe absolute file path for native media delivery, else None.
+
+    Default mode (single-user / private gateway): accept any existing regular
+    file that is not under the credential / system-path denylist
+    (``_MEDIA_DELIVERY_DENIED_PREFIXES`` plus ``~/.ssh``, ``~/.aws``, etc.).
+    This matches the symmetry of inbound delivery: the chat platform hands the
+    agent any file the user uploads, and the agent can hand back any file that
+    is not a credential.
+
+    Strict mode (opt-in via ``gateway.strict`` in ``config.yaml`` or
+    ``HERMES_MEDIA_DELIVERY_STRICT=1``): the file MUST live under a
+    Hermes-managed cache, under an operator-allowlisted root
+    (``HERMES_MEDIA_ALLOW_DIRS``), or be freshly produced inside the configured
+    recency window. Suitable for public-facing bots where prompt injection from
+    one user should not be able to exfiltrate the host's secrets to that user.
+
+    Symlinks are resolved before any containment / denylist check. Diagnosable
+    rejection reasons are surfaced through the internal
+    :func:`_validate_media_delivery_path_with_reason` helper, which the filter
+    functions use for log output.
+    """
+    resolved, _reason = _validate_media_delivery_path_with_reason(path)
+    return resolved
 
 
 SUPPORTED_DOCUMENT_TYPES = {
@@ -2434,27 +2529,48 @@ class BasePlatformAdapter(ABC):
         return validate_media_delivery_path(path)
 
     @staticmethod
-    def filter_media_delivery_paths(media_files) -> List[Tuple[str, bool]]:
-        """Drop unsafe MEDIA paths and normalize accepted paths."""
+    def filter_media_delivery_paths(
+        media_files: Optional[Iterable[Tuple[Any, Any]]],
+    ) -> List[Tuple[str, bool]]:
+        """Drop unsafe MEDIA paths and normalize accepted paths.
+
+        Each rejection logs the redacted path plus a kebab-string reason
+        (e.g. ``outside-allowlist-stale-mtime``) so "MEDIA didn't attach"
+        operator reports are diagnosable without source-diving (#31733).
+        """
         safe_media: List[Tuple[str, bool]] = []
         for media_path, is_voice in media_files or []:
-            safe_path = validate_media_delivery_path(str(media_path))
-            if safe_path:
-                safe_media.append((safe_path, bool(is_voice)))
+            raw = str(media_path)
+            resolved, reason = _validate_media_delivery_path_with_reason(raw)
+            if resolved:
+                safe_media.append((resolved, bool(is_voice)))
             else:
-                logger.warning("Skipping unsafe MEDIA directive path outside allowed roots")
+                logger.warning(
+                    "Skipping unsafe MEDIA directive path %s, reason=%s",
+                    _redact_path_for_log(raw),
+                    reason,
+                )
         return safe_media
 
     @staticmethod
-    def filter_local_delivery_paths(file_paths) -> List[str]:
-        """Drop unsafe bare local file paths and normalize accepted paths."""
+    def filter_local_delivery_paths(file_paths: Optional[Iterable[Any]]) -> List[str]:
+        """Drop unsafe bare local file paths and normalize accepted paths.
+
+        Same diagnosable-rejection contract as
+        :py:meth:`filter_media_delivery_paths`.
+        """
         safe_paths: List[str] = []
         for file_path in file_paths or []:
-            safe_path = validate_media_delivery_path(str(file_path))
-            if safe_path:
-                safe_paths.append(safe_path)
+            raw = str(file_path)
+            resolved, reason = _validate_media_delivery_path_with_reason(raw)
+            if resolved:
+                safe_paths.append(resolved)
             else:
-                logger.warning("Skipping unsafe local file path outside allowed roots")
+                logger.warning(
+                    "Skipping unsafe local file path %s, reason=%s",
+                    _redact_path_for_log(raw),
+                    reason,
+                )
         return safe_paths
 
     @staticmethod
@@ -3794,9 +3910,12 @@ class BasePlatformAdapter(ABC):
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
 
 
-                # Send extracted media files — route by file type
-                _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
-                _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+                # Send extracted media files — route by file type. Use the
+                # module-scope partitions so the regression tests in
+                # ``tests/gateway/test_platform_base.py`` stay in sync with
+                # what production actually dispatches.
+                _VIDEO_EXTS = _FINAL_RESPONSE_VIDEO_EXTS
+                _IMAGE_EXTS = _FINAL_RESPONSE_IMAGE_EXTS
 
                 # Partition images out of media_files + local_files so they
                 # can be sent as a single batch (Signal RPC). When

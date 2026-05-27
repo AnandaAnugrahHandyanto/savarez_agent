@@ -2,6 +2,7 @@
 
 import os
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -12,7 +13,14 @@ from gateway.platforms.base import (
     MessageEvent,
     safe_url_for_log,
     utf16_len,
+    _FINAL_RESPONSE_IMAGE_EXTS,
+    _FINAL_RESPONSE_VIDEO_EXTS,
+    _MEDIA_REASON_OUTSIDE_DENIED_PREFIX,
+    _MEDIA_REASON_OUTSIDE_NO_RECENCY,
+    _MEDIA_REASON_OUTSIDE_STALE_MTIME,
+    _MEDIA_REASON_DOES_NOT_RESOLVE,
     _prefix_within_utf16_limit,
+    _validate_media_delivery_path_with_reason,
 )
 
 
@@ -681,6 +689,383 @@ class TestMediaDeliveryDefaultMode:
 
         out = BasePlatformAdapter.filter_local_delivery_paths([str(notes)])
         assert out == [str(notes.resolve())]
+
+
+# ---------------------------------------------------------------------------
+# MEDIA delivery — broader-than-images regression coverage (#31733 follow-up)
+#
+# These tests complement #31764 by covering:
+#   - The actual ``MEDIA_DELIVERY_SAFE_ROOTS`` constant (no monkeypatch),
+#     so canonical+legacy regressions surface against the real config.
+#   - The legacy-and-canonical-co-exist failure shape the original bug
+#     report calls out (legacy dir exists on disk; ``get_hermes_dir`` picks
+#     legacy via *_CACHE_DIR; canonical files would otherwise be dropped).
+#   - PDF / document attachments (the existing recency-trust tests cover
+#     bare ``/tmp/report.pdf`` flow; these add explicit cache-root coverage).
+#   - Diagnosable rejection reasons in logs — the previous generic
+#     "Skipping unsafe MEDIA directive path outside allowed roots" warning
+#     gave operators no way to tell allowlist-miss apart from stale-mtime
+#     apart from denied-prefix.
+#   - Final-response vs ``send_message`` extraction parity, since both
+#     paths share ``extract_media`` + ``filter_media_delivery_paths`` by
+#     design — a regression here silently splits behaviour.
+# ---------------------------------------------------------------------------
+
+
+class TestSafeRootsCoverage:
+    """Assertions against the actual ``MEDIA_DELIVERY_SAFE_ROOTS`` constant."""
+
+    def test_default_safe_roots_include_legacy_and_canonical_subdirs(self):
+        """Both legacy ``image_cache`` and canonical ``cache/images`` are listed.
+
+        Without explicit entries for both, the ``get_hermes_dir`` resolution
+        (returns the legacy path when it exists on disk) silently drops the
+        canonical one, which is exactly the failure shape reported in
+        #31733 when ``image_generate`` writes to ``cache/images`` on a host
+        that still has ``image_cache``.
+        """
+        from gateway.platforms.base import MEDIA_DELIVERY_SAFE_ROOTS
+
+        # Compare on the last 2 parts (legacy) or last 3 parts (canonical)
+        # of each Path. Direct tuple comparison reads more clearly than
+        # string suffix matching and is host-path agnostic.
+        legacy_tails = {tuple(p.parts[-2:]) for p in MEDIA_DELIVERY_SAFE_ROOTS if len(p.parts) >= 2}
+        canonical_tails = {tuple(p.parts[-3:]) for p in MEDIA_DELIVERY_SAFE_ROOTS if len(p.parts) >= 3}
+
+        expected_legacy = {
+            (".hermes", "image_cache"),
+            (".hermes", "audio_cache"),
+            (".hermes", "video_cache"),
+            (".hermes", "document_cache"),
+            (".hermes", "browser_screenshots"),
+        }
+        expected_canonical = {
+            (".hermes", "cache", "images"),
+            (".hermes", "cache", "audio"),
+            (".hermes", "cache", "videos"),
+            (".hermes", "cache", "documents"),
+            (".hermes", "cache", "screenshots"),
+        }
+        missing_legacy = expected_legacy - legacy_tails
+        missing_canonical = expected_canonical - canonical_tails
+        assert not missing_legacy, f"Missing legacy roots: {sorted(missing_legacy)}"
+        assert not missing_canonical, f"Missing canonical roots: {sorted(missing_canonical)}"
+
+    def test_legacy_and_canonical_image_caches_coexist(self, tmp_path, monkeypatch):
+        """Files under canonical ``cache/images`` are deliverable when the legacy
+        ``image_cache`` dir also exists on disk.
+
+        This is the exact failure shape from #31733: with the legacy dir
+        present, ``get_hermes_dir`` resolves ``IMAGE_CACHE_DIR`` to the legacy
+        path, and the canonical path used to fall out of the safe roots tuple.
+        The fix is to always list the canonical paths explicitly.
+        """
+        fake_home = tmp_path / "fake_home"
+        legacy_dir = fake_home / ".hermes" / "image_cache"
+        canonical_dir = fake_home / ".hermes" / "cache" / "images"
+        legacy_dir.mkdir(parents=True)
+        canonical_dir.mkdir(parents=True)
+
+        legacy_file = legacy_dir / "legacy.png"
+        canonical_file = canonical_dir / "generated.png"
+        legacy_file.write_bytes(b"\x89PNG\r\n\x1a\n")
+        canonical_file.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        # Point MEDIA_DELIVERY_SAFE_ROOTS at both, exactly the way main does
+        # for ``_HERMES_HOME / "image_cache"`` and ``_HERMES_HOME / "cache" / "images"``.
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            (legacy_dir, canonical_dir),
+        )
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(canonical_file)) == str(canonical_file.resolve())
+        assert BasePlatformAdapter.validate_media_delivery_path(str(legacy_file)) == str(legacy_file.resolve())
+
+    def test_pdf_under_canonical_documents_dir_is_accepted(self, tmp_path, monkeypatch):
+        """A PDF in ``~/.hermes/cache/documents`` is deliverable.
+
+        Document delivery has been less covered than image delivery; this
+        guards against future "canonical roots for images but not documents"
+        regressions.
+        """
+        canonical_docs = tmp_path / ".hermes" / "cache" / "documents"
+        canonical_docs.mkdir(parents=True)
+        pdf = canonical_docs / "report.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n%mock")
+
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            (canonical_docs,),
+        )
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(pdf)) == str(pdf.resolve())
+
+    def test_pdf_under_legacy_document_cache_is_accepted(self, tmp_path, monkeypatch):
+        """A PDF in the legacy ``~/.hermes/document_cache`` is deliverable.
+
+        Mirrors the canonical-documents test for hosts running older installs.
+        """
+        legacy_docs = tmp_path / ".hermes" / "document_cache"
+        legacy_docs.mkdir(parents=True)
+        pdf = legacy_docs / "report.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n%mock")
+
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            (legacy_docs,),
+        )
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(pdf)) == str(pdf.resolve())
+
+
+class TestMediaDeliveryRejectionLogging:
+    """``filter_*`` callers should log *why* a path was rejected.
+
+    Before this work the warning was just ``"Skipping unsafe MEDIA directive
+    path outside allowed roots"``, so operators chasing "the MEDIA tag didn't
+    attach" had no way to tell allowlist-miss from stale-mtime from
+    denied-prefix without rebuilding the bot with debug logging.
+
+    Reason-tag assertions import the production constants rather than raw
+    strings so a future rename of ``_MEDIA_REASON_*`` cannot silently drift
+    these tests out of sync with what production actually emits.
+    """
+
+    def _patch_roots_empty(self, monkeypatch):
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            tuple(),
+        )
+
+    def test_filter_media_logs_redacted_path_and_reason_on_stale_mtime(self, tmp_path, monkeypatch, caplog):
+        self._patch_roots_empty(monkeypatch)
+        monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "1")
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_SECONDS", "60")
+
+        stale = tmp_path / "nested" / "subdir" / "report.pdf"
+        stale.parent.mkdir(parents=True)
+        stale.write_bytes(b"%PDF-1.4")
+        old_mtime = time.time() - 7200
+        os.utime(stale, (old_mtime, old_mtime))
+
+        with caplog.at_level("WARNING", logger="gateway.platforms.base"):
+            out = BasePlatformAdapter.filter_media_delivery_paths([(str(stale), False)])
+
+        assert out == []
+        joined = "\n".join(r.getMessage() for r in caplog.records)
+        # Reason tag is present (imported constant, not raw string).
+        assert _MEDIA_REASON_OUTSIDE_STALE_MTIME in joined, joined
+        # Redacted path keeps filename so operator can map back to the artifact.
+        assert "report.pdf" in joined, joined
+        # Intermediate "nested" / "subdir" path components are elided.
+        assert "nested" not in joined, joined
+        assert "subdir" not in joined, joined
+
+    def test_filter_local_logs_reason_no_recency(self, tmp_path, monkeypatch, caplog):
+        self._patch_roots_empty(monkeypatch)
+        monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+
+        fresh = tmp_path / "report.pdf"
+        fresh.write_bytes(b"%PDF-1.4")
+
+        with caplog.at_level("WARNING", logger="gateway.platforms.base"):
+            out = BasePlatformAdapter.filter_local_delivery_paths([str(fresh)])
+
+        assert out == []
+        joined = "\n".join(r.getMessage() for r in caplog.records)
+        assert _MEDIA_REASON_OUTSIDE_NO_RECENCY in joined, joined
+        assert "report.pdf" in joined, joined
+
+    def test_filter_media_logs_reason_does_not_resolve(self, tmp_path, monkeypatch, caplog):
+        """A nonexistent path is the most common false report. Log it usefully."""
+        self._patch_roots_empty(monkeypatch)
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "1")
+
+        ghost = tmp_path / "this-was-never-written.pdf"
+
+        with caplog.at_level("WARNING", logger="gateway.platforms.base"):
+            out = BasePlatformAdapter.filter_media_delivery_paths([(str(ghost), False)])
+
+        assert out == []
+        joined = "\n".join(r.getMessage() for r in caplog.records)
+        assert _MEDIA_REASON_DOES_NOT_RESOLVE in joined, joined
+
+    def test_filter_media_logs_reason_under_denied_prefix(self, tmp_path, monkeypatch, caplog):
+        """A freshly-touched file under a denied prefix logs the denylist reason.
+
+        Belt-and-braces with ``test_recency_trust_denies_system_paths_even_when_fresh``:
+        that test asserts the *return value* is None; this asserts the
+        *log message* carries the specific reason tag so operators can grep
+        for denylist-rejected attempts.
+        """
+        self._patch_roots_empty(monkeypatch)
+        monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "1")
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_SECONDS", "600")
+
+        fake_home = tmp_path / "home"
+        ssh_dir = fake_home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        secret = ssh_dir / "id_rsa.txt"
+        secret.write_bytes(b"-----BEGIN ...")
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        with caplog.at_level("WARNING", logger="gateway.platforms.base"):
+            out = BasePlatformAdapter.filter_media_delivery_paths([(str(secret), False)])
+
+        assert out == []
+        joined = "\n".join(r.getMessage() for r in caplog.records)
+        assert _MEDIA_REASON_OUTSIDE_DENIED_PREFIX in joined, joined
+
+    def test_filter_media_log_neutralises_newlines_in_path(self, tmp_path, monkeypatch, caplog):
+        """A path containing a newline must not produce two log records.
+
+        Without sanitisation an attacker emitting ``MEDIA:/tmp/foo\\nFAKE``
+        could forge a second log line that looks operator-emitted.
+        """
+        self._patch_roots_empty(monkeypatch)
+        monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+
+        evil = "/tmp/foo\nFAKE LOG ENTRY: granted access"
+
+        with caplog.at_level("WARNING", logger="gateway.platforms.base"):
+            out = BasePlatformAdapter.filter_media_delivery_paths([(evil, False)])
+
+        assert out == []
+        # Exactly one record was produced.
+        assert len(caplog.records) == 1
+        # The newline is replaced with a placeholder so the message stays
+        # on a single physical line in the operator log.
+        rendered = caplog.records[0].getMessage()
+        assert "\n" not in rendered, rendered
+        assert "FAKE LOG ENTRY" in rendered  # body still visible, just neutralised
+
+
+class TestValidateMediaDeliveryPathDelegation:
+    """``validate_media_delivery_path`` must agree with the reason-bearing helper.
+
+    The public ``validate_media_delivery_path`` discards the reason and
+    returns just the resolved path. If those two surfaces ever diverge,
+    callers seeing ``None`` would log one reason while callers seeing the
+    resolved path would assume a different one.
+    """
+
+    def _patch_roots(self, monkeypatch, *roots):
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            tuple(roots),
+        )
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+
+    def test_public_and_reason_helper_agree_on_resolved_path(self, tmp_path, monkeypatch):
+        root = tmp_path / "cache"
+        root.mkdir()
+        accepted = root / "ok.pdf"
+        accepted.write_bytes(b"%PDF-1.4")
+        rejected = tmp_path / "outside.pdf"
+        rejected.write_bytes(b"%PDF-1.4")
+        self._patch_roots(monkeypatch, root)
+
+        for candidate in (str(accepted), str(rejected), "", "relative.pdf", "/does/not/exist.pdf"):
+            public = BasePlatformAdapter.validate_media_delivery_path(candidate)
+            internal_resolved, _reason = _validate_media_delivery_path_with_reason(candidate)
+            assert public == internal_resolved, (
+                f"Public API drifted from reason-bearing helper for input {candidate!r}: "
+                f"public={public!r} internal={internal_resolved!r}"
+            )
+
+
+class TestFinalResponseSendMessageParity:
+    """Final-response and ``send_message`` tool paths share extraction/validation.
+
+    Both call ``extract_media`` + ``filter_media_delivery_paths`` on the
+    response body, by design, so a MEDIA tag that survives one path must
+    survive the other. A regression here would silently split behaviour
+    (e.g. final response stops attaching while send_message keeps working,
+    which is exactly the operator pain reported alongside #31733).
+    """
+
+    def test_send_message_tool_imports_the_same_extraction_surface(self):
+        """``send_message`` tool must reach for ``BasePlatformAdapter`` and the
+        same ``extract_media`` / ``filter_media_delivery_paths`` staticmethods.
+
+        If a future refactor splits the tool onto a separate extraction chain,
+        this test catches it at import time before behaviour can drift.
+        """
+        from tools import send_message_tool
+        import inspect
+
+        src = inspect.getsource(send_message_tool)
+        assert "from gateway.platforms.base import BasePlatformAdapter" in src
+        assert "BasePlatformAdapter.extract_media" in src
+        assert "BasePlatformAdapter.filter_media_delivery_paths" in src
+
+    def test_pdf_media_tag_extracted_identically_for_both_paths(self, tmp_path, monkeypatch):
+        """Same input -> same extracted media_files whether the caller comes
+        through the final-response dispatch or the ``send_message`` tool.
+
+        Parity is structural (both sites call ``BasePlatformAdapter.extract_media``
+        + ``filter_media_delivery_paths`` on the response body, asserted by
+        ``test_send_message_tool_imports_the_same_extraction_surface`` above).
+        This test then drives that shared extraction with a representative
+        PDF MEDIA tag and confirms a clean resolve, ensuring the staticmethod
+        surface still produces what both callers expect.
+        """
+        canonical_docs = tmp_path / ".hermes" / "cache" / "documents"
+        canonical_docs.mkdir(parents=True)
+        pdf = canonical_docs / "quote.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            (canonical_docs,),
+        )
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+
+        body = f"Here is your quote.\n\nMEDIA:{pdf}\n"
+
+        media, cleaned = BasePlatformAdapter.extract_media(body)
+        filtered = BasePlatformAdapter.filter_media_delivery_paths(media)
+
+        assert filtered == [(str(pdf.resolve()), False)]
+        assert "MEDIA:" not in cleaned
+
+    def test_pdf_extension_routes_to_document_not_image_or_video(self, tmp_path, monkeypatch):
+        """A PDF must land on the document/send_document branch, not image or video.
+
+        Guards against future regressions in the dispatch partition in
+        ``_process_message_background``, which uses
+        ``_FINAL_RESPONSE_IMAGE_EXTS`` / ``_FINAL_RESPONSE_VIDEO_EXTS``
+        (imported from production) to decide between ``send_multiple_images`` /
+        ``send_video`` / ``send_document``.
+        """
+        canonical_docs = tmp_path / ".hermes" / "cache" / "documents"
+        canonical_docs.mkdir(parents=True)
+        pdf = canonical_docs / "report.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            (canonical_docs,),
+        )
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+
+        media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{pdf}")
+        filtered = BasePlatformAdapter.filter_media_delivery_paths(media)
+        assert filtered == [(str(pdf.resolve()), False)]
+
+        ext = Path(filtered[0][0]).suffix.lower()
+        assert ext == ".pdf"
+        # Use the production constants so a future addition like ``.heic``
+        # to the image set would surface here instead of drifting silently.
+        assert ext not in _FINAL_RESPONSE_IMAGE_EXTS, "PDF must NOT route through send_multiple_images"
+        assert ext not in _FINAL_RESPONSE_VIDEO_EXTS, "PDF must NOT route through send_video"
 
 
 # ---------------------------------------------------------------------------
