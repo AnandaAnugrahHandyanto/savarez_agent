@@ -496,7 +496,15 @@ def load_cli_config() -> Dict[str, Any]:
     effective_backend = terminal_config.get("env_type", "local")
 
     if effective_backend == "local":
-        terminal_config["cwd"] = os.getcwd()
+        try:
+            terminal_config["cwd"] = os.getcwd()
+        except FileNotFoundError:
+            fallback_cwd = os.path.expanduser("~")
+            logger.warning(
+                "Current working directory no longer exists; falling back to %s",
+                fallback_cwd,
+            )
+            terminal_config["cwd"] = fallback_cwd
         defaults["terminal"]["cwd"] = terminal_config["cwd"]
     elif terminal_config.get("cwd") in _CWD_PLACEHOLDERS:
         terminal_config.pop("cwd", None)

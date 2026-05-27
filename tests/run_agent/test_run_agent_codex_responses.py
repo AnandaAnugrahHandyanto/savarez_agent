@@ -481,6 +481,32 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert response.output[0].content[0].text == "streamed create ok"
 
 
+def test_run_codex_stream_falls_back_on_none_iterable_typeerror(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    calls = {"stream": 0, "create": 0}
+
+    def _fake_stream(**kwargs):
+        calls["stream"] += 1
+        raise TypeError("'NoneType' object is not iterable")
+
+    def _fake_create(**kwargs):
+        calls["create"] += 1
+        assert kwargs.get("stream") is True
+        return _codex_message_response("typeerror fallback ok")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=_fake_create,
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert calls["stream"] == 1
+    assert calls["create"] == 1
+    assert response.output[0].content[0].text == "typeerror fallback ok"
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))
@@ -541,6 +567,38 @@ def test_run_conversation_codex_empty_output_no_output_text_retries(monkeypatch)
     assert calls["api"] >= 2
     assert result["completed"] is True
     assert result["final_response"] == "Recovered"
+
+
+def test_run_conversation_codex_none_output_text_property_retries(monkeypatch):
+    """OpenAI's Response.output_text property raises when response.output is None."""
+    agent = _build_agent(monkeypatch)
+    calls = {"api": 0}
+
+    class _NoneOutputResponse:
+        output = None
+        usage = SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8)
+        status = "completed"
+        model = "gpt-5-codex"
+
+        @property
+        def output_text(self):
+            for _item in self.output:
+                pass
+            return ""
+
+    def _fake_api_call(api_kwargs):
+        calls["api"] += 1
+        if calls["api"] == 1:
+            return _NoneOutputResponse()
+        return _codex_message_response("Recovered after None output")
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("Say hello")
+
+    assert calls["api"] >= 2
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered after None output"
 
 
 def test_run_conversation_codex_refreshes_after_401_and_retries(monkeypatch):
