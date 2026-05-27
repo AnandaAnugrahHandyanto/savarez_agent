@@ -26,20 +26,25 @@ PRs #9850, #9934, #7536):
 """
 
 import asyncio
+import sqlite3
 import time
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import gateway.run as gateway_run
 from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.run import (
     _auto_continue_freshness_window,
+    _build_telegram_dm_read_chat_context,
     _coerce_gateway_timestamp,
     _is_fresh_gateway_interruption,
     _last_transcript_timestamp,
+    _persist_user_message_override_for_api_only_context,
     _should_clear_resume_pending_after_turn,
+    _should_skip_startup_auto_resume,
 )
 from gateway.session import SessionEntry, SessionSource, SessionStore
 from tests.gateway.restart_test_helpers import (
@@ -1292,3 +1297,81 @@ class TestStuckLoopEscalation:
                 {"indent": None},
             )
         ]
+
+# ---------------------------------------------------------------------------
+# Telegram DM resume/read-chat guards
+# ---------------------------------------------------------------------------
+
+
+class TestTelegramDmResumeGuards:
+    def test_startup_auto_resume_skips_telegram_dm(self):
+        dm_source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="5801636051",
+            chat_type="dm",
+            user_id="5801636051",
+        )
+        assert _should_skip_startup_auto_resume(dm_source) is True
+
+    def test_startup_auto_resume_still_allows_telegram_group(self):
+        group_source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1003772049875",
+            chat_type="group",
+            user_id="5801636051",
+        )
+        assert _should_skip_startup_auto_resume(group_source) is False
+
+    def test_api_only_prefix_persists_clean_user_message(self):
+        clean = "What the fuck Enoch read the chat"
+        api = "[Recent Telegram DM history]\n\n" + clean
+        assert _persist_user_message_override_for_api_only_context(clean, api) == clean
+        assert _persist_user_message_override_for_api_only_context(clean, clean) is None
+        assert _persist_user_message_override_for_api_only_context("", api) is None
+
+    def test_read_chat_context_loads_recent_dm_history(self, tmp_path, monkeypatch):
+        db_dir = tmp_path / "data"
+        db_dir.mkdir()
+        db_path = db_dir / "telegram-transcript.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            """
+            CREATE TABLE telegram_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                reply_to_message_id TEXT,
+                thread_id TEXT,
+                timestamp TEXT NOT NULL,
+                sender_id TEXT,
+                sender_name TEXT,
+                role TEXT NOT NULL,
+                text TEXT NOT NULL
+            )
+            """
+        )
+        conn.executemany(
+            "INSERT INTO telegram_messages(chat_id, message_id, timestamp, sender_name, role, text) VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                ("telegram:5801636051", "1", "2026-05-27T21:44:03+00:00", "Deacon", "user", "Slack is currently not functional please address"),
+                ("telegram:5801636051", "2", "2026-05-27T22:43:19+00:00", "Enoch", "assistant", "No unfinished tool results are visible"),
+                ("telegram:999", "3", "2026-05-27T22:50:00+00:00", "Other", "user", "wrong chat"),
+            ],
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="5801636051",
+            chat_type="dm",
+            user_id="5801636051",
+        )
+        context = _build_telegram_dm_read_chat_context(source, "read the chat", limit=10)
+        assert context is not None
+        assert "Slack is currently not functional" in context
+        assert "No unfinished tool results" in context
+        assert "wrong chat" not in context
+
+        assert _build_telegram_dm_read_chat_context(source, "normal message", limit=10) is None

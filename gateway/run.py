@@ -644,6 +644,103 @@ def _wrap_current_message_with_observed_context(message: Any, observed_context: 
     return message
 
 
+def _source_platform_value(source: Any) -> str:
+    platform = getattr(source, "platform", "")
+    return str(getattr(platform, "value", platform) or "").lower()
+
+
+def _is_telegram_dm_source(source: Any) -> bool:
+    if _source_platform_value(source) != "telegram":
+        return False
+    if str(getattr(source, "chat_type", "") or "").lower() != "dm":
+        return False
+    if getattr(source, "thread_id", None):
+        return False
+    chat_id = str(getattr(source, "chat_id", "") or "").strip()
+    return bool(chat_id and not chat_id.startswith("-") and chat_id.isdigit())
+
+
+def _should_skip_startup_auto_resume(source: Any) -> bool:
+    """Return True when startup must not synthesize an empty resume turn.
+
+    Telegram DMs are command-center conversations. If we auto-resume them with
+    an empty internal event, the model can only see a synthetic restart note and
+    may reply with useless boilerplate instead of waiting for the real user DM.
+    Keep the resume marker for the next real message instead.
+    """
+
+    return _is_telegram_dm_source(source)
+
+
+def _is_read_chat_request(text: Any) -> bool:
+    lowered = str(text or "").lower()
+    return "read the chat" in lowered or "read chat" in lowered
+
+
+def _build_telegram_dm_read_chat_context(source: Any, text: Any, *, limit: int = 20) -> Optional[str]:
+    """Return recent local Telegram DM transcript for explicit read-chat asks."""
+
+    if not (_is_telegram_dm_source(source) and _is_read_chat_request(text)):
+        return None
+    chat_id = str(getattr(source, "chat_id", "") or "").strip()
+    if not chat_id:
+        return None
+    db_path = _hermes_home / "data" / "telegram-transcript.db"
+    if not db_path.exists():
+        return None
+    rows: list[tuple[str, str, str, str]] = []
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            cur = conn.execute(
+                """
+                SELECT timestamp, role, COALESCE(sender_name, ''), text
+                  FROM telegram_messages
+                 WHERE chat_id = ? AND TRIM(COALESCE(text, '')) != ''
+                 ORDER BY timestamp DESC
+                 LIMIT ?
+                """,
+                (f"telegram:{chat_id}", int(limit)),
+            )
+            rows = [(str(ts), str(role), str(sender), str(body)) for ts, role, sender, body in cur.fetchall()]
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.debug("telegram DM read-chat context lookup failed: %s", exc)
+        return None
+    if not rows:
+        return None
+    rows.reverse()
+    lines = [
+        "[Recent Telegram DM history - context only; use it to answer the current request]"
+    ]
+    for ts, role, sender, body in rows:
+        speaker = sender.strip() or ("User" if role == "user" else "Enoch" if role == "assistant" else role)
+        clean = " ".join(body.split())
+        if len(clean) > 1200:
+            clean = clean[:1197] + "..."
+        lines.append(f"- {ts} {speaker}: {clean}")
+    return "\\n".join(lines)
+
+
+def _persist_user_message_override_for_api_only_context(
+    clean_message: Any,
+    api_message: Any,
+    observed_context: Optional[str] = None,
+) -> Optional[str]:
+    """Return clean text to persist when the API saw synthetic context."""
+
+    if not isinstance(clean_message, str) or not clean_message.strip():
+        return None
+    if observed_context:
+        return clean_message
+    if isinstance(api_message, str) and api_message != clean_message:
+        return clean_message
+    if isinstance(api_message, list):
+        return clean_message
+    return None
+
+
 def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
     """Return the ``timestamp`` of the last usable transcript row, if any.
 
@@ -3846,6 +3943,13 @@ class GatewayRunner:
                     "Skipping auto-resume for %s: adapter not ready for %s",
                     entry.session_key,
                     getattr(source.platform, "value", source.platform),
+                )
+                continue
+
+            if _should_skip_startup_auto_resume(source):
+                logger.info(
+                    "Skipping startup auto-resume for %s: waiting for real DM text",
+                    entry.session_key,
                 )
                 continue
 
@@ -8764,6 +8868,16 @@ class GatewayRunner:
         if message_text is None:
             return
 
+        persist_user_message_override = None
+        dm_history_context = _build_telegram_dm_read_chat_context(source, message_text)
+        if dm_history_context:
+            persist_user_message_override = message_text
+            message_text = (
+                f"{dm_history_context}\\n\\n"
+                f"[Current user message - answer this using the DM history above]\\n"
+                f"{message_text}"
+            )
+
         # Bind this gateway run generation to the adapter's active-session
         # event so deferred post-delivery callbacks can be released by the
         # same run that registered them.
@@ -8795,6 +8909,7 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                persist_user_message_override=persist_user_message_override,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -15893,6 +16008,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        persist_user_message_override: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -16580,6 +16696,11 @@ class GatewayRunner:
             # triggering an UnboundLocalError on the earlier read at
             # `_resolve_turn_agent_config(message, …)`.
             nonlocal message
+            clean_user_message_for_persistence = (
+                persist_user_message_override
+                if isinstance(persist_user_message_override, str)
+                else message
+            )
 
             # session_key is now set via contextvars in _set_session_env()
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
@@ -17208,8 +17329,13 @@ class GatewayRunner:
                     "conversation_history": agent_history,
                     "task_id": session_id,
                 }
-                if observed_group_context:
-                    _conversation_kwargs["persist_user_message"] = message
+                _persist_override = _persist_user_message_override_for_api_only_context(
+                    clean_user_message_for_persistence,
+                    message,
+                    observed_group_context,
+                )
+                if _persist_override is not None:
+                    _conversation_kwargs["persist_user_message"] = _persist_override
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
             finally:
                 unregister_gateway_notify(_approval_session_key)
