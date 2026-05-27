@@ -113,3 +113,19 @@ class TestLintWorkflow:
             pytest.fail(f"lint.yml is not valid YAML: {exc}")
         assert isinstance(parsed, dict)
         assert "jobs" in parsed
+
+class TestToolsEnvironmentLocalF401:
+    """tools/environments/local.py must have zero F401 violations."""
+
+    def test_local_py_has_zero_f401_violations(self):
+        """tools/environments/local.py must have zero unused-import violations."""
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F401",
+             "--output-format=concise", "tools/environments/local.py"],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, (
+            "tools/environments/local.py has F401 violation(s):\n"
+            f"{result.stdout}"
+        )
