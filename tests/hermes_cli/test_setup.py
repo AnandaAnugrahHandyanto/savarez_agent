@@ -204,6 +204,22 @@ def test_setup_gateway_reports_when_selected_platform_did_not_configure(monkeypa
     assert "Messaging platforms configured!" not in out
 
 
+def test_setup_gateway_returns_false_when_no_platform_selected(monkeypatch, capsys):
+    """Selecting nothing should not be treated as a completed setup section."""
+    import hermes_cli.gateway as gateway_mod
+
+    platform = {"key": "canon", "emoji": "✉️", "label": "Canon"}
+    monkeypatch.setattr(gateway_mod, "_all_platforms", lambda: [platform])
+    monkeypatch.setattr(gateway_mod, "_platform_status", lambda _platform: "not configured")
+    monkeypatch.setattr(setup_mod, "prompt_checklist", lambda *args, **kwargs: [])
+
+    result = setup_mod.setup_gateway({})
+
+    out = capsys.readouterr().out
+    assert result is False
+    assert "No platforms selected." in out
+
+
 def test_setup_gateway_in_container_shows_docker_guidance(monkeypatch, capsys):
     """setup_gateway() in a Docker container shows Docker-specific restart instructions."""
     env = {

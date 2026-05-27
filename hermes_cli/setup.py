@@ -2268,7 +2268,7 @@ def setup_gateway(config: dict):
 
     if not selected:
         print_info("No platforms selected. Run 'hermes setup gateway' later to configure.")
-        return
+        return False
 
     for idx in selected:
         _configure_platform(platforms[idx])
