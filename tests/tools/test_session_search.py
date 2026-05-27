@@ -129,11 +129,12 @@ class TestBrowseShape:
         assert result["mode"] == "browse"
         assert result["count"] >= 3
 
-    def test_browse_excludes_current_session(self, db):
+    def test_browse_includes_current_session_at_top(self, db):
         _seed_modpack_sessions(db)
         result = json.loads(session_search(db=db, current_session_id="s_newest"))
         sids = [r["session_id"] for r in result["results"]]
-        assert "s_newest" not in sids
+        assert "s_newest" in sids
+        assert sids[0] == "s_newest"
 
     def test_browse_returns_titles(self, db):
         _seed_modpack_sessions(db)
@@ -198,11 +199,11 @@ class TestDiscoveryShape:
         result = json.loads(session_search(query="modpack", limit="bogus", db=db))
         assert result["success"] is True
 
-    def test_current_session_filtered_out(self, db):
+    def test_current_session_included_in_discovery(self, db):
         _seed_modpack_sessions(db)
         result = json.loads(session_search(query="modpack", db=db, current_session_id="s_newest"))
         sids = [r["session_id"] for r in result["results"]]
-        assert "s_newest" not in sids
+        assert "s_newest" in sids
 
 
 class TestDiscoverySort:
