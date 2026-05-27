@@ -1957,6 +1957,29 @@ class AIAgent:
             pass
         return True  # safe default: verifier on
 
+    def _suppress_platform_notifications(self) -> bool:
+        """True when the active platform drops gateway notices.
+
+        Reads ``<platform>.suppress_notifications`` from config.yaml (e.g.
+        WhatsApp shared with a human contact).  Interrupt / API-error status
+        strings are assigned to ``final_response`` and so ride the genuine
+        agent-reply path — they bypass the adapter notice chokepoint, which
+        only catches separate ``send()`` notices.  Gate them on this so they
+        stay silent on suppressed platforms; CLI/TUI and every other platform
+        are unaffected.  Fail-open (return False) on any error so a config
+        glitch can never swallow a normal reply.
+        """
+        try:
+            from hermes_cli.config import load_config as _load_config
+            _cfg = _load_config() or {}
+            _plat = (getattr(self, "platform", None) or "").lower().strip()
+            _plat_cfg = _cfg.get(_plat) if (_plat and isinstance(_cfg, dict)) else None
+            if isinstance(_plat_cfg, dict) and _plat_cfg.get("suppress_notifications"):
+                return True
+        except Exception:
+            pass
+        return False
+
     @staticmethod
     def _format_file_mutation_failure_footer(failed: Dict[str, Dict[str, Any]]) -> str:
         """Render the per-turn failed-mutation dict as a user-facing footer.
