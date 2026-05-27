@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.anthropic_adapter import _is_oauth_token
 from agent.auxiliary_client import set_runtime_main
-from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.codex_responses_adapter import _summarize_user_message_for_log, safe_output_text
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
@@ -1224,7 +1224,7 @@ def run_conversation(
                             else:
                                 # output_text fallback: stream backfill may have failed
                                 # but normalize can still recover from output_text
-                                _out_text = getattr(response, "output_text", None)
+                                _out_text = safe_output_text(response, None)
                                 _out_text_stripped = _out_text.strip() if isinstance(_out_text, str) else ""
                                 if _out_text_stripped:
                                     logger.debug(

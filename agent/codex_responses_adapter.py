@@ -23,6 +23,27 @@ from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 logger = logging.getLogger(__name__)
 
 
+def safe_output_text(response: Any, default: str | None = "") -> str | None:
+    """Safely extract output_text from a Responses API object.
+
+    The SDK's ``output_text`` property iterates ``self.output`` — when the
+    Codex backend returns ``output=None`` (known intermittent bug), the
+    property raises ``TypeError: 'NoneType' object is not iterable``.
+    ``getattr(obj, 'output_text', default)`` does NOT catch this because
+    ``getattr`` only suppresses ``AttributeError``, not ``TypeError`` raised
+    *inside* a property getter.
+
+    This wrapper catches the TypeError so callers get *default* instead of
+    an unhandled crash.
+    """
+    try:
+        val = getattr(response, "output_text", default)
+    except TypeError:
+        # SDK property crashed iterating response.output=None
+        return default
+    return val if isinstance(val, str) else default
+
+
 # Matches Codex/Harmony tool-call serialization that occasionally leaks into
 # assistant-message content when the model fails to emit a structured
 # ``function_call`` item.  Accepts the common forms:
@@ -883,7 +904,7 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
         # The Codex backend can return empty output when the answer was
         # delivered entirely via stream events. Check output_text as a
         # last-resort fallback before raising.
-        out_text = getattr(response, "output_text", None)
+        out_text = safe_output_text(response, None)
         if isinstance(out_text, str) and out_text.strip():
             logger.debug(
                 "Codex response has empty output but output_text is present (%d chars); "
@@ -1025,7 +1046,7 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
 
     final_text = "\n".join([p for p in content_parts if p]).strip()
     if not final_text and hasattr(response, "output_text"):
-        out_text = getattr(response, "output_text", "")
+        out_text = safe_output_text(response)
         if isinstance(out_text, str):
             final_text = out_text.strip()
 
