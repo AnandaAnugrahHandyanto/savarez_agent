@@ -1369,6 +1369,10 @@ class PluginManager:
                 )
         return results
 
+    def has_hook(self, hook_name: str) -> bool:
+        """Return True when at least one callback is registered for a hook."""
+        return bool(self._hooks.get(hook_name))
+
     def invoke_middleware(self, kind: str, **kwargs: Any) -> List[Any]:
         """Call registered middleware callbacks for *kind*.
 
@@ -1391,6 +1395,10 @@ class PluginManager:
                     exc,
                 )
         return results
+
+    def has_middleware(self, kind: str) -> bool:
+        """Return True when at least one callback is registered for middleware."""
+        return bool(self._middleware.get(kind))
 
     # -----------------------------------------------------------------------
     # Introspection
@@ -1473,6 +1481,11 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     return get_plugin_manager().invoke_hook(hook_name, **kwargs)
 
 
+def has_hook(hook_name: str) -> bool:
+    """Return True when a hook has registered callbacks."""
+    return get_plugin_manager().has_hook(hook_name)
+
+
 def invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:
     """Invoke registered middleware callbacks.
 
@@ -1480,6 +1493,10 @@ def invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:
     """
     return get_plugin_manager().invoke_middleware(kind, **kwargs)
 
+
+def has_middleware(kind: str) -> bool:
+    """Return True when middleware has registered callbacks."""
+    return get_plugin_manager().has_middleware(kind)
 
 
 _thread_tool_whitelist = threading.local()

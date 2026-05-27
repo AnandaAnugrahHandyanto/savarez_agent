@@ -2782,6 +2782,10 @@ class TestRunConversation:
 
         with (
             patch("run_agent.handle_function_call", return_value="search result"),
+            patch(
+                "hermes_cli.plugins.has_hook",
+                side_effect=lambda name: name in {"pre_api_request", "post_api_request"},
+            ),
             patch("hermes_cli.plugins.invoke_hook", side_effect=_record_hook),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -2808,6 +2812,76 @@ class TestRunConversation:
         assert any(msg.get("role") == "user" and msg.get("content") == "search something" for msg in pre_request_calls[0]["request_messages"])
         assert all("usage" in c and "response" in c for c in post_request_calls)
         assert all("assistant_message" in c["response"] for c in post_request_calls)
+
+    def test_api_request_error_hook_skips_payload_work_without_listener(self, agent, monkeypatch):
+        payload_built = False
+        hook_called = False
+
+        def _payload_for_hook(_api_kwargs):
+            nonlocal payload_built
+            payload_built = True
+            return {}
+
+        def _invoke_hook(_name, **_kwargs):
+            nonlocal hook_called
+            hook_called = True
+            return []
+
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: False)
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _invoke_hook)
+        monkeypatch.setattr(agent, "_api_request_payload_for_hook", _payload_for_hook)
+
+        agent._invoke_api_request_error_hook(
+            task_id="task-1",
+            turn_id="turn-1",
+            api_request_id="api-1",
+            api_call_count=1,
+            api_start_time=0.0,
+            api_kwargs={"messages": [{"role": "user", "content": "hi"}]},
+            error_type="RuntimeError",
+            error_message="boom",
+        )
+
+        assert payload_built is False
+        assert hook_called is False
+
+    def test_request_scoped_api_hooks_skip_payload_work_without_listeners(self, agent, monkeypatch):
+        self._setup_agent(agent)
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="No listeners",
+            finish_reason="stop",
+        )
+        hook_checks = {"pre_api_request": 0, "post_api_request": 0}
+        payload_counts = {"request": 0, "response": 0}
+
+        def _has_hook(name):
+            if name in hook_checks:
+                hook_checks[name] += 1
+            return False
+
+        def _request_payload(_api_kwargs):
+            payload_counts["request"] += 1
+            return {}
+
+        def _response_payload(_response, _assistant_message, *, finish_reason):
+            payload_counts["response"] += 1
+            return {}
+
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", _has_hook)
+        monkeypatch.setattr(agent, "_api_request_payload_for_hook", _request_payload)
+        monkeypatch.setattr(agent, "_api_response_payload_for_hook", _response_payload)
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "No listeners"
+        assert hook_checks == {"pre_api_request": 1, "post_api_request": 1}
+        assert payload_counts == {"request": 0, "response": 0}
 
     def test_content_with_tool_calls_stays_silent_for_non_cli_quiet_mode(self, agent):
         self._setup_agent(agent)

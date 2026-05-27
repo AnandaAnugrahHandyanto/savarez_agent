@@ -1021,44 +1021,57 @@ def run_conversation(
                     pass
 
                 try:
-                    from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook as _invoke_hook
-                    request_messages = api_kwargs.get("messages")
-                    if not isinstance(request_messages, list):
-                        request_messages = api_kwargs.get("input")
-                    if not isinstance(request_messages, list):
-                        request_messages = api_messages
-                    # Shallow-copy the outer list so plugins that retain the
-                    # reference for async snapshotting don't observe later
-                    # mutations of api_messages.  The inner dicts are not
-                    # mutated by the agent loop, so a shallow copy is
-                    # sufficient; a deepcopy would walk every tool result
-                    # and base64 image on every API call.
-                    _invoke_hook(
-                        "pre_api_request",
-                        task_id=effective_task_id,
-                        turn_id=turn_id,
-                        api_request_id=api_request_id,
-                        session_id=agent.session_id or "",
-                        user_message=original_user_message,
-                        conversation_history=list(messages),
-                        platform=agent.platform or "",
-                        model=agent.model,
-                        provider=agent.provider,
-                        base_url=agent.base_url,
-                        api_mode=agent.api_mode,
-                        api_call_count=api_call_count,
-                        request_messages=list(request_messages) if isinstance(request_messages, list) else [],
-                        message_count=len(api_messages),
-                        tool_count=len(agent.tools or []),
-                        approx_input_tokens=approx_tokens,
-                        request_char_count=total_chars,
-                        max_tokens=agent.max_tokens,
-                        started_at=api_start_time,
-                        request=agent._api_request_payload_for_hook(api_kwargs),
-                        original_request=agent._api_request_payload_for_hook(_original_api_kwargs),
-                        middleware_trace=_api_middleware_trace,
-                        telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
+                    from hermes_cli.plugins import (
+                        OBSERVER_SCHEMA_VERSION,
+                        has_hook,
+                        invoke_hook as _invoke_hook,
                     )
+                    if has_hook("pre_api_request"):
+                        request_messages = api_kwargs.get("messages")
+                        if not isinstance(request_messages, list):
+                            request_messages = api_kwargs.get("input")
+                        if not isinstance(request_messages, list):
+                            request_messages = api_messages
+                        # Shallow-copy the outer list so plugins that retain the
+                        # reference for async snapshotting don't observe later
+                        # mutations of api_messages.  The inner dicts are not
+                        # mutated by the agent loop, so a shallow copy is
+                        # sufficient; a deepcopy would walk every tool result
+                        # and base64 image on every API call.
+                        _request_payload = agent._api_request_payload_for_hook(api_kwargs)
+                        _original_request_payload = (
+                            agent._api_request_payload_for_hook(_original_api_kwargs)
+                            if _api_middleware_trace
+                            else _request_payload
+                        )
+                        _invoke_hook(
+                            "pre_api_request",
+                            task_id=effective_task_id,
+                            turn_id=turn_id,
+                            api_request_id=api_request_id,
+                            session_id=agent.session_id or "",
+                            user_message=original_user_message,
+                            conversation_history=list(messages),
+                            platform=agent.platform or "",
+                            model=agent.model,
+                            provider=agent.provider,
+                            base_url=agent.base_url,
+                            api_mode=agent.api_mode,
+                            api_call_count=api_call_count,
+                            request_messages=list(request_messages)
+                            if isinstance(request_messages, list)
+                            else [],
+                            message_count=len(api_messages),
+                            tool_count=len(agent.tools or []),
+                            approx_input_tokens=approx_tokens,
+                            request_char_count=total_chars,
+                            max_tokens=agent.max_tokens,
+                            started_at=api_start_time,
+                            request=_request_payload,
+                            original_request=_original_request_payload,
+                            middleware_trace=_api_middleware_trace,
+                            telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
+                        )
                 except Exception:
                     pass
 
@@ -3040,41 +3053,50 @@ def run_conversation(
                     assistant_message.content = str(raw)
 
             try:
-                from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook as _invoke_hook
-                _assistant_tool_calls = getattr(assistant_message, "tool_calls", None) or []
-                _assistant_text = assistant_message.content or ""
-                _api_ended_at = api_start_time + api_duration
-                _invoke_hook(
-                    "post_api_request",
-                    task_id=effective_task_id,
-                    turn_id=turn_id,
-                    api_request_id=api_request_id,
-                    session_id=agent.session_id or "",
-                    platform=agent.platform or "",
-                    model=agent.model,
-                    provider=agent.provider,
-                    base_url=agent.base_url,
-                    api_mode=agent.api_mode,
-                    api_call_count=api_call_count,
-                    api_duration=api_duration,
-                    started_at=api_start_time,
-                    ended_at=_api_ended_at,
-                    finish_reason=finish_reason,
-                    message_count=len(api_messages),
-                    response_model=getattr(response, "model", None),
-                    response=agent._api_response_payload_for_hook(
-                        response,
-                        assistant_message,
-                        finish_reason=finish_reason,
-                    ),
-                    original_request=agent._api_request_payload_for_hook(_original_api_kwargs),
-                    middleware_trace=_api_middleware_trace,
-                    usage=agent._usage_summary_for_api_request_hook(response),
-                    assistant_message=assistant_message,
-                    assistant_content_chars=len(_assistant_text),
-                    assistant_tool_call_count=len(_assistant_tool_calls),
-                    telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
+                from hermes_cli.plugins import (
+                    OBSERVER_SCHEMA_VERSION,
+                    has_hook,
+                    invoke_hook as _invoke_hook,
                 )
+                if has_hook("post_api_request"):
+                    _assistant_tool_calls = (
+                        getattr(assistant_message, "tool_calls", None) or []
+                    )
+                    _assistant_text = assistant_message.content or ""
+                    _api_ended_at = api_start_time + api_duration
+                    _invoke_hook(
+                        "post_api_request",
+                        task_id=effective_task_id,
+                        turn_id=turn_id,
+                        api_request_id=api_request_id,
+                        session_id=agent.session_id or "",
+                        platform=agent.platform or "",
+                        model=agent.model,
+                        provider=agent.provider,
+                        base_url=agent.base_url,
+                        api_mode=agent.api_mode,
+                        api_call_count=api_call_count,
+                        api_duration=api_duration,
+                        started_at=api_start_time,
+                        ended_at=_api_ended_at,
+                        finish_reason=finish_reason,
+                        message_count=len(api_messages),
+                        response_model=getattr(response, "model", None),
+                        response=agent._api_response_payload_for_hook(
+                            response,
+                            assistant_message,
+                            finish_reason=finish_reason,
+                        ),
+                        original_request=agent._api_request_payload_for_hook(
+                            _original_api_kwargs
+                        ),
+                        middleware_trace=_api_middleware_trace,
+                        usage=agent._usage_summary_for_api_request_hook(response),
+                        assistant_message=assistant_message,
+                        assistant_content_chars=len(_assistant_text),
+                        assistant_tool_call_count=len(_assistant_tool_calls),
+                        telemetry_schema_version=OBSERVER_SCHEMA_VERSION,
+                    )
             except Exception:
                 pass
 

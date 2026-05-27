@@ -1647,9 +1647,11 @@ class AIAgent:
         }
 
     def _api_request_payload_for_hook(self, api_kwargs: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        body = copy.deepcopy(api_kwargs or {})
-        for key in ("timeout", "http_client"):
-            body.pop(key, None)
+        body = {
+            key: value
+            for key, value in (api_kwargs or {}).items()
+            if key not in {"timeout", "http_client"}
+        }
         return self._sanitize_hook_payload(
             {
                 "method": "POST",
@@ -1675,7 +1677,6 @@ class AIAgent:
                     "tool_calls": tool_calls,
                 },
                 "usage": self._usage_summary_for_api_request_hook(response),
-                "raw_response": response,
             }
         )
 
@@ -1697,7 +1698,14 @@ class AIAgent:
         reason: Optional[str] = None,
     ) -> None:
         try:
-            from hermes_cli.plugins import OBSERVER_SCHEMA_VERSION, invoke_hook as _invoke_hook
+            from hermes_cli.plugins import (
+                OBSERVER_SCHEMA_VERSION,
+                has_hook,
+                invoke_hook as _invoke_hook,
+            )
+
+            if not has_hook("api_request_error"):
+                return
             ended_at = time.time()
             _invoke_hook(
                 "api_request_error",

@@ -19,6 +19,7 @@ def test_tool_request_middleware_preserves_original_nested_payload(monkeypatch):
         return [{"args": next_args, "source": "test"}]
 
     monkeypatch.setattr("hermes_cli.plugins.invoke_middleware", fake_invoke_middleware)
+    monkeypatch.setattr("hermes_cli.plugins.has_middleware", lambda kind: True)
 
     result = apply_tool_request_middleware(
         "demo_tool",
@@ -40,6 +41,7 @@ def test_api_request_middleware_preserves_original_nested_payload(monkeypatch):
         return [{"request": next_request, "source": "api-test"}]
 
     monkeypatch.setattr("hermes_cli.plugins.invoke_middleware", fake_invoke_middleware)
+    monkeypatch.setattr("hermes_cli.plugins.has_middleware", lambda kind: True)
 
     result = apply_api_request_middleware({"body": {"messages": []}}, task_id="task-1")
 
@@ -47,6 +49,24 @@ def test_api_request_middleware_preserves_original_nested_payload(monkeypatch):
     assert result.original_payload == {"body": {"messages": []}}
     assert result.changed is True
     assert result.trace == [{"source": "api-test"}]
+
+
+def test_request_middleware_no_callbacks_returns_payload_by_reference(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.has_middleware", lambda kind: False)
+
+    tool_args = {"nested": {"value": "original"}}
+    tool_result = apply_tool_request_middleware("demo_tool", tool_args)
+    assert tool_result.payload is tool_args
+    assert tool_result.original_payload is tool_args
+    assert tool_result.changed is False
+    assert tool_result.trace == []
+
+    request = {"body": {"messages": []}}
+    api_result = apply_api_request_middleware(request)
+    assert api_result.payload is request
+    assert api_result.original_payload is request
+    assert api_result.changed is False
+    assert api_result.trace == []
 
 
 def test_tool_execution_middleware_chains_in_order(monkeypatch):

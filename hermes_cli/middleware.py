@@ -73,6 +73,14 @@ def apply_tool_request_middleware(
     arguments. Invalid return values are ignored and middleware exceptions are
     fail-open.
     """
+    if not _has_middleware(TOOL_REQUEST_MIDDLEWARE):
+        payload = args if args is not None else {}
+        return RequestMiddlewareResult(
+            payload=payload,
+            original_payload=payload,
+            changed=False,
+        )
+
     original_args = deepcopy(args or {})
     current_args = deepcopy(original_args)
     trace: List[Dict[str, Any]] = []
@@ -95,7 +103,7 @@ def apply_tool_request_middleware(
     return RequestMiddlewareResult(
         payload=current_args,
         original_payload=original_args,
-        changed=current_args != original_args,
+        changed=bool(trace),
         trace=trace,
     )
 
@@ -109,6 +117,13 @@ def apply_api_request_middleware(
     Middleware may return ``{"request": {...}}`` to replace the effective API
     kwargs before Hermes sends them to the provider.
     """
+    if not _has_middleware(API_REQUEST_MIDDLEWARE):
+        return RequestMiddlewareResult(
+            payload=request,
+            original_payload=request,
+            changed=False,
+        )
+
     original_request = deepcopy(request)
     current_request = deepcopy(original_request)
     trace: List[Dict[str, Any]] = []
@@ -130,7 +145,7 @@ def apply_api_request_middleware(
     return RequestMiddlewareResult(
         payload=current_request,
         original_payload=original_request,
-        changed=current_request != original_request,
+        changed=bool(trace),
         trace=trace,
     )
 
@@ -175,6 +190,12 @@ def _invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:
     from hermes_cli.plugins import invoke_middleware
 
     return invoke_middleware(kind, **middleware_payload(**kwargs))
+
+
+def _has_middleware(kind: str) -> bool:
+    from hermes_cli.plugins import has_middleware
+
+    return has_middleware(kind)
 
 
 def _get_middleware_callbacks(kind: str) -> List[Callable]:

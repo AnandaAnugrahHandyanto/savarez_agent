@@ -154,6 +154,7 @@ class TestHandleFunctionCall:
             return json.dumps({"ok": True, "args": args})
 
         monkeypatch.setattr("hermes_cli.plugins.invoke_middleware", fake_invoke_middleware)
+        monkeypatch.setattr("hermes_cli.plugins.has_middleware", lambda kind: kind == "tool_request")
         monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
         monkeypatch.setattr("model_tools.registry.dispatch", fake_dispatch)
 
@@ -180,6 +181,9 @@ class TestHandleFunctionCall:
 
         class Manager:
             _middleware = {"tool_execution": [around_tool]}
+
+            def has_middleware(self, kind):
+                return bool(self._middleware.get(kind))
 
         def fake_dispatch(tool_name, args, **kwargs):
             dispatched["tool_name"] = tool_name
