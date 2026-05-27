@@ -335,6 +335,25 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 )
                 return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
             raise
+        except TypeError as exc:
+            err_text = str(exc)
+            sdk_none_iterable = "'NoneType' object is not iterable" in err_text
+            if sdk_none_iterable and attempt < max_stream_retries:
+                logger.debug(
+                    "Responses stream parser hit None output shape (attempt %s/%s); retrying. %s",
+                    attempt + 1,
+                    max_stream_retries + 1,
+                    agent._client_log_context(),
+                )
+                continue
+            if sdk_none_iterable:
+                logger.debug(
+                    "Responses stream parser hit None output shape; falling back to create(stream=True). %s err=%s",
+                    agent._client_log_context(),
+                    err_text,
+                )
+                return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+            raise
 
 
 
@@ -344,7 +363,22 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
     fallback_kwargs = dict(api_kwargs)
     fallback_kwargs["stream"] = True
     fallback_kwargs = agent._get_transport().preflight_kwargs(fallback_kwargs, allow_stream=True)
-    stream_or_response = active_client.responses.create(**fallback_kwargs)
+    try:
+        stream_or_response = active_client.responses.create(**fallback_kwargs)
+    except TypeError as exc:
+        if "'NoneType' object is not iterable" not in str(exc):
+            raise
+        logger.debug(
+            "Codex fallback stream parser hit None output shape; retrying with non-stream create. %s err=%s",
+            agent._client_log_context(),
+            exc,
+        )
+        non_stream_kwargs = dict(api_kwargs)
+        non_stream_kwargs.pop("stream", None)
+        non_stream_kwargs = agent._get_transport().preflight_kwargs(
+            non_stream_kwargs, allow_stream=False
+        )
+        return active_client.responses.create(**non_stream_kwargs)
 
     # Compatibility shim for mocks or providers that still return a concrete response.
     if hasattr(stream_or_response, "output"):
@@ -356,7 +390,43 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
     collected_output_items: list = []
     collected_text_deltas: list = []
     try:
-        for event in stream_or_response:
+        try:
+            event_iter = iter(stream_or_response)
+        except TypeError as exc:
+            if "'NoneType' object is not iterable" not in str(exc):
+                raise
+            logger.debug(
+                "Codex fallback stream iterator hit None output shape; retrying with non-stream create. %s err=%s",
+                agent._client_log_context(),
+                exc,
+            )
+            non_stream_kwargs = dict(api_kwargs)
+            non_stream_kwargs.pop("stream", None)
+            non_stream_kwargs = agent._get_transport().preflight_kwargs(
+                non_stream_kwargs, allow_stream=False
+            )
+            return active_client.responses.create(**non_stream_kwargs)
+
+        while True:
+            try:
+                event = next(event_iter)
+            except StopIteration:
+                break
+            except TypeError as exc:
+                if "'NoneType' object is not iterable" not in str(exc):
+                    raise
+                logger.debug(
+                    "Codex fallback stream parser hit None output shape mid-iteration; retrying with non-stream create. %s err=%s",
+                    agent._client_log_context(),
+                    exc,
+                )
+                non_stream_kwargs = dict(api_kwargs)
+                non_stream_kwargs.pop("stream", None)
+                non_stream_kwargs = agent._get_transport().preflight_kwargs(
+                    non_stream_kwargs, allow_stream=False
+                )
+                return active_client.responses.create(**non_stream_kwargs)
+
             agent._touch_activity("receiving stream response")
             event_type = getattr(event, "type", None)
             if not event_type and isinstance(event, dict):
