@@ -74,6 +74,17 @@ from utils import base_url_host_matches, env_var_enabled
 logger = logging.getLogger(__name__)
 
 
+def _interactive_wall_clock_guard_message(platform: str | None = None) -> str:
+    label = (platform or "gateway").strip().lower()
+    display_platform = "Telegram" if label == "telegram" else "This interactive"
+    return (
+        f"{display_platform} turn hit Hermes' 5-minute interactive safety guard. "
+        "Background jobs, if any, were not intentionally stopped by this message. "
+        "I saved the turn state; ask for status and I will verify the live state "
+        "before continuing."
+    )
+
+
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
     if not getattr(agent, "tools", None):
@@ -782,6 +793,25 @@ def run_conversation(
             _turn_exit_reason = "interrupted_by_user"
             if not agent.quiet_mode:
                 agent._safe_print("\n⚡ Breaking out of tool loop due to interrupt...")
+            break
+        if (
+            _interactive_turn_guard
+            and time.monotonic() - _turn_started_at > _INTERACTIVE_TURN_WALL_SECONDS
+        ):
+            _turn_exit_reason = "interactive_wall_clock_guard"
+            final_response = _interactive_wall_clock_guard_message(
+                getattr(agent, "platform", "") or None
+            )
+            logger.warning(
+                "Interactive %s turn stopped by wall-clock guard after %.1fs "
+                "(api_calls=%d/%d session=%s)",
+                getattr(agent, "platform", "") or "gateway",
+                time.monotonic() - _turn_started_at,
+                api_call_count,
+                agent.max_iterations,
+                agent.session_id or "none",
+            )
+            messages.append({"role": "assistant", "content": final_response})
             break
         
         api_call_count += 1

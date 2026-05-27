@@ -38,8 +38,10 @@ Exit code: 0 if every file's pytest exited 0; 1 otherwise.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -81,6 +83,54 @@ _DEFAULT_FILE_TIMEOUT_SECONDS = 600.0  # 10 minutes
 # wall-clock seconds. Used by ``--slice`` to distribute files across
 # CI jobs by estimated total time, so no one job gets all the slow files.
 _DURATIONS_FILE = "test_durations.json"
+
+_PYTEST_TIMEOUT_ADDOPTS_FALLBACK = "-m 'not integration'"
+_PYTEST_TIMEOUT_FLAGS_WITH_VALUES = {"--timeout", "--timeout-method"}
+_PYTEST_TIMEOUT_FLAG_PREFIXES = ("--timeout=", "--timeout-method=")
+
+
+def _pytest_timeout_plugin_available() -> bool:
+    return importlib.util.find_spec("pytest_timeout") is not None
+
+
+def _strip_pytest_timeout_args(args: List[str]) -> List[str]:
+    """Remove pytest-timeout CLI flags when the plugin is unavailable."""
+    stripped: List[str] = []
+    skip_next = False
+    for arg in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in _PYTEST_TIMEOUT_FLAGS_WITH_VALUES:
+            skip_next = True
+            continue
+        if any(arg.startswith(prefix) for prefix in _PYTEST_TIMEOUT_FLAG_PREFIXES):
+            continue
+        stripped.append(arg)
+    return stripped
+
+
+def _pytest_args_for_available_plugins(pytest_passthrough: List[str]) -> List[str]:
+    """Return pytest args that won't fail before collection locally.
+
+    The repo's pyproject.toml uses pytest-timeout addopts in CI/dev
+    environments. Some local venvs intentionally omit that optional plugin;
+    without this override, pytest exits with "unrecognized arguments" before
+    collecting even one test. Preserve the integration marker filter and the
+    outer per-file watchdog, but drop per-test timeout flags when the plugin is
+    not importable.
+    """
+    if _pytest_timeout_plugin_available():
+        return list(pytest_passthrough)
+    return [
+        "-o",
+        f"addopts={_PYTEST_TIMEOUT_ADDOPTS_FALLBACK}",
+        *_strip_pytest_timeout_args(pytest_passthrough),
+    ]
+
+
+def _format_pytest_args(args: List[str]) -> str:
+    return " ".join(shlex.quote(arg) for arg in args)
 
 
 def _count_tests(
@@ -477,7 +527,7 @@ def _print_inline_failure(
     """
     rel = _format_file(file, repo_root)
     # Build a repro command the developer can copy-paste.
-    passthrough_str = " ".join(pytest_passthrough) if pytest_passthrough else ""
+    passthrough_str = _format_pytest_args(pytest_passthrough) if pytest_passthrough else ""
     repro = f"python -m pytest {rel}"
     if passthrough_str:
         repro += f" {passthrough_str}"
@@ -664,6 +714,13 @@ def main() -> int:
     else:
         our_args, pytest_passthrough = argv, []
     args = parser.parse_args(our_args)
+    pytest_runtime_args = _pytest_args_for_available_plugins(pytest_passthrough)
+    if pytest_runtime_args != pytest_passthrough:
+        print(
+            "pytest-timeout plugin is not importable; running without "
+            "pyproject timeout addopts and relying on the per-file watchdog.",
+            flush=True,
+        )
 
     # Parse --slice (or HERMES_TEST_SLICE) early so we can exit on bad input
     # before doing any expensive discovery.
@@ -702,7 +759,7 @@ def main() -> int:
         return 1
 
     # Count individual tests per file via a single pytest --co pass.
-    test_counts = _count_tests(files, repo_root, pytest_passthrough)
+    test_counts = _count_tests(files, repo_root, pytest_runtime_args)
     total_tests = sum(test_counts.values())
 
     # Apply slicing if requested — distribute files across CI jobs by
@@ -774,14 +831,14 @@ def main() -> int:
                 subproc_wall=subproc_wall,
             )
             if rc != 0:
-                _print_inline_failure(fpath, output, repo_root, pytest_passthrough)
+                _print_inline_failure(fpath, output, repo_root, pytest_runtime_args)
 
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         futures: List[Future] = []
         for file in files:
             t0 = time.monotonic()
             fut = pool.submit(
-                _run_one_file, file, pytest_passthrough, repo_root, args.file_timeout
+                _run_one_file, file, pytest_runtime_args, repo_root, args.file_timeout
             )
             fut.add_done_callback(lambda f, file=file, t0=t0: _on_done(file, t0, f))
             futures.append(fut)

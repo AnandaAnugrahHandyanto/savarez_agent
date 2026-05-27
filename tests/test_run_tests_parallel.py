@@ -30,12 +30,62 @@ from pathlib import Path
 
 import pytest
 
+from scripts.run_tests_parallel import (
+    _pytest_args_for_available_plugins,
+    _strip_pytest_timeout_args,
+)
+
 
 # Both tests share the same handoff file: the leaker writes here, the
 # verifier reads here. We park it in $TMPDIR with a unique-per-run name
 # so concurrent invocations of the suite don't clobber each other.
 _HANDOFF_DIR = Path(os.environ.get("TMPDIR", "/tmp")) / "hermes-isolation-probe"
 _HANDOFF_DIR.mkdir(exist_ok=True)
+
+
+def test_strips_pytest_timeout_args_when_plugin_missing() -> None:
+    assert _strip_pytest_timeout_args(
+        [
+            "-v",
+            "--timeout=30",
+            "--timeout-method=signal",
+            "--tb=short",
+            "--timeout",
+            "45",
+            "--timeout-method",
+            "thread",
+            "-k",
+            "smoke",
+        ]
+    ) == ["-v", "--tb=short", "-k", "smoke"]
+
+
+def test_runtime_pytest_args_override_timeout_addopts_when_plugin_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "scripts.run_tests_parallel._pytest_timeout_plugin_available",
+        lambda: False,
+    )
+
+    args = _pytest_args_for_available_plugins(["-v", "--timeout=10"])
+
+    assert args[:2] == ["-o", "addopts=-m 'not integration'"]
+    assert "--timeout=10" not in args
+    assert "-v" in args
+
+
+def test_runtime_pytest_args_preserve_timeout_args_when_plugin_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "scripts.run_tests_parallel._pytest_timeout_plugin_available",
+        lambda: True,
+    )
+
+    args = ["-v", "--timeout=10"]
+
+    assert _pytest_args_for_available_plugins(args) == args
 
 
 def _handoff_path_for(nonce: str) -> Path:
