@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 """Tool result persistence -- preserves large outputs instead of truncating.
 
 Defense against context-window overflow operates at three levels:
@@ -166,6 +168,25 @@ def maybe_persist_tool_result(
                 return _build_persisted_message(preview, has_more, len(content), remote_path)
         except Exception as exc:
             logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)
+    else:
+        # Local filesystem fallback for tools without a terminal env
+        # (e.g. MCP tools dispatched without an active BaseEnvironment).
+        # Safe here because env=None means the local backend; remote
+        # backends always supply env.
+        try:
+            os.makedirs(storage_dir, exist_ok=True)
+            with open(remote_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            logger.info(
+                "Persisted large tool result (local fallback): %s (%s, %d chars -> %s)",
+                tool_name, tool_use_id, len(content), remote_path,
+            )
+            return _build_persisted_message(preview, has_more, len(content), remote_path)
+        except Exception as exc:
+            logger.warning(
+                "Sandbox write failed (local fallback) for %s: %s",
+                tool_use_id, exc,
+            )
 
     logger.info(
         "Inline-truncating large tool result: %s (%d chars, no sandbox write)",

@@ -1,5 +1,6 @@
 """Tests for tools/tool_result_storage.py -- 3-layer tool result persistence."""
 
+import os
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -254,7 +255,8 @@ class TestMaybePersistToolResult:
         # command string — see test_large_content_via_stdin for why).
         assert env.execute.call_args[1]["stdin_data"] == content
 
-    def test_above_threshold_no_env_truncates_inline(self):
+    def test_above_threshold_no_env_falls_back_to_local_write(self):
+        """With env=None (e.g. MCP tools), should write via local open()."""
         content = "x" * 60_000
         result = maybe_persist_tool_result(
             content=content,
@@ -263,8 +265,14 @@ class TestMaybePersistToolResult:
             env=None,
             threshold=30_000,
         )
-        assert PERSISTED_OUTPUT_TAG not in result
-        assert "Truncated" in result
+        assert PERSISTED_OUTPUT_TAG in result
+        assert "60,000 characters" in result
+        assert "/tmp/hermes-results/tc_789.txt" in result
+        # Verify the file was actually written to disk
+        file_path = "/tmp/hermes-results/tc_789.txt"
+        assert os.path.exists(file_path)
+        assert os.path.getsize(file_path) == len(content)
+        os.remove(file_path)
         assert len(result) < len(content)
 
     def test_env_write_failure_falls_back_to_truncation(self):
