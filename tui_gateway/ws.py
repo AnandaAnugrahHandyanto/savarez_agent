@@ -26,11 +26,39 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import re
 from typing import Any
 
 from tui_gateway import server
 
 _log = logging.getLogger(__name__)
+
+# WebSocket origin allowlist — comma-separated list of permitted Origin
+# values (exact match after stripping trailing slash).  When the server is
+# bound to localhost the default was intentionally kept narrow to block
+# any cross-site WebSocket attempt.  Configure via HERMES_WS_ALLOWED_ORIGINS.
+__allowed_origin_patterns: tuple[str, ...] = tuple(
+    s.strip()
+    for s in os.environ.get("HERMES_WS_ALLOWED_ORIGINS", "http://localhost,https://localhost,http://127.0.0.1,https://127.0.0.1").split(",")
+    if s.strip()
+)
+
+
+def _origin_allowed(origin: str | None) -> bool:
+    """Return True when *origin* matches the configured allowlist."""
+    if not origin:
+        return False
+    origin = origin.rstrip("/")
+    for pat in __allowed_origin_patterns:
+        pat = pat.rstrip("/")
+        if origin == pat:
+            return True
+        if pat.endswith("*"):
+            regex = re.compile(r"^" + re.escape(pat[:-1]) + r".*")
+            if regex.match(origin):
+                return True
+    return False
 
 # Max seconds a pool-dispatched handler will block waiting for the event loop
 # to flush a WS frame before we mark the transport dead. Protects handler
@@ -115,6 +143,11 @@ class WSTransport:
 
 async def handle_ws(ws: Any) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``."""
+    origin = getattr(ws, "headers", None) and ws.headers.get("origin")
+    if not _origin_allowed(origin):
+        _log.warning("rejected WS from disallowed origin: %s", origin)
+        await ws.close(code=1008)
+        return
     await ws.accept()
 
     transport = WSTransport(ws, asyncio.get_running_loop())

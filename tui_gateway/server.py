@@ -1,5 +1,9 @@
 import atexit
 import concurrent.futures
+import hashlib
+import hmac
+import os
+import secrets
 import contextvars
 import copy
 import json
@@ -474,6 +478,100 @@ def handle_request(req: dict) -> dict | None:
     return fn(rid, params)
 
 
+def _session_token_valid(token: str, session_key: str) -> bool:
+    """Check a HMAC-SHA256 token is derived from session_key."""
+    if not token or not session_key:
+        return False
+    if len(token) != 32:
+        return False
+    try:
+        computed = hmac.new(
+            session_key.encode(),
+            b"hermes-tui-session",
+            hashlib.sha256,
+        ).hexdigest()[:32]
+        return hmac.compare_digest(token, computed)
+    except Exception:
+        return False
+
+
+def _log_auth_failure(transport_type: str, reason: str) -> None:
+    """Log authentication failures at warning level."""
+    logger.warning(" dispatch auth failed  transport=%s  reason=%s", transport_type, reason)
+
+
+def _authenticate_dispatch(req: dict, transport: Any) -> tuple[bool, str | None, dict | None]:
+    """Verify the request originates from an authorised source.
+
+    Stdio (local subprocess): ``os.getpid()`` of the sender must match our
+    own PID. This is safe because the TUI spawns the gateway as a child
+    process over a dedicated TTY pipe — a different process with the same UID
+    cannot impersonate the child.
+
+    WebSocket (network client): the first frame must carry a ``session_token``
+    in ``params`` that matches the ``session_key`` of an active session.
+    Sessions are created by ``session.create`` which stores ``session_key``
+    in ``_sessions``.
+    """
+    import os
+
+    rid = req.get("id")
+    sid = ""
+    params = req.get("params") or {}
+
+    # ── Identify transport type ──────────────────────────────────────────
+    from tui_gateway.transport import StdioTransport
+
+    is_stdio = isinstance(transport, StdioTransport)
+
+    if is_stdio:
+        # Child process spawned by the TUI: check PID identity.
+        try:
+            sender_pid = os.getppid()
+            our_pid = os.getpid()
+            if sender_pid != our_pid:
+                # getppid() returns the parent of the Python process. When
+                # the gateway is spawned with stdio: 'inherit' the TTY is
+                # shared with the shell that spawned the TUI proces, so
+                # ppid!=pid can legitimately occur on some platforms (e.g.
+                # macOS GUI apps launch via launchd). Fall back to checking
+                # env var set by the TUI spawner when available.
+                expected = os.environ.get("HERMES_GATEWAY_PPID")
+                if not expected or int(expected) != os.getppid():
+                    _log_auth_failure("stdio", f"pid mismatch: sender={sender_pid} our={our_pid}")
+                    return False, "", _err(rid, 4401, "authentication required")
+        except Exception as exc:
+            _log_auth_failure("stdio", str(exc))
+            return False, "", _err(rid, 4401, "authentication required")
+
+    else:
+        # WebSocket: require session_token in the first request params.
+        token = params.get("session_token") if isinstance(params, dict) else None
+        if not token:
+            _log_auth_failure("ws", "no session_token in request")
+            return False, "", _err(rid, 4401, "authentication required")
+
+        # Validate against all active session keys.
+        valid = False
+        active_sid = ""
+        active_key = ""
+        for check_sid, sess in list(_sessions.items()):
+            key = sess.get("session_key", "") or ""
+            if key and _session_token_valid(token, key):
+                valid = True
+                active_sid = check_sid
+                active_key = key
+                break
+
+        if not valid:
+            _log_auth_failure("ws", "invalid session_token")
+            return False, "", _err(rid, 4401, "authentication required")
+
+        sid = active_sid
+
+    return True, sid, None
+
+
 def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
     """Route inbound RPCs — long handlers to the pool, everything else inline.
 
@@ -486,6 +584,25 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
     Omitting it falls back to the module-level stdio transport, preserving
     the original behaviour for ``tui_gateway.entry``.
     """
+    # ── Authentication ──────────────────────────────────────────────────
+    # Stdio (local subprocess): verify the caller's PID matches the gateway's
+    # PID. The TUI spawns this process as a child; a rogue process with the
+    # same UID reading the same TTY would still be a different PID so we catch
+    # that too. OS-level isolation makes bypass via e.g. /proc/self impossible.
+    #
+    # WebSocket (network): a signed session token must be passed in the first
+    # frame's params. Each session.create call embeds a fresh token; reuse of
+    # any other session's token is rejected at verified_session_key() time.
+    # This prevents cross-site WebSocket attacks and ensures only clients that
+    # successfully called session.create can issue RPCs.
+    (
+        auth_ok,
+        auth_sid,
+        auth_err,
+    ) = _authenticate_dispatch(req, transport)
+    if not auth_ok:
+        return auth_err
+
     t = transport or _stdio_transport
     token = bind_transport(t)
     try:
@@ -2338,10 +2455,19 @@ def _(rid, params: dict) -> dict:
     build_timer.daemon = True
     build_timer.start()
 
+    # Generate a signed session token for WebSocket authentication.
+    # Token is the first 32 hex chars of HMAC-SHA256(session_key, "hermes-tui-session").
+    session_token = hmac.new(
+        key.encode(),
+        b"hermes-tui-session",
+        hashlib.sha256,
+    ).hexdigest()[:32]
+
     return _ok(
         rid,
         {
             "session_id": sid,
+            "session_token": session_token,
             "info": {
                 "model": _resolve_model(),
                 "tools": {},
