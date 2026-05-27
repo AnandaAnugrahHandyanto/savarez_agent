@@ -2515,6 +2515,38 @@ class TestCodexAuxiliaryAdapterTimeout:
         assert fake_client.responses.kwargs["timeout"] == 12.5
         assert response.choices[0].message.content == "summary"
 
+    def test_recovers_text_delta_when_final_response_output_none_crashes(self):
+        class FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                return iter([
+                    SimpleNamespace(type="response.created"),
+                    SimpleNamespace(type="response.output_text.delta", delta="O"),
+                    SimpleNamespace(type="response.output_text.delta", delta="K"),
+                ])
+
+            def get_final_response(self):
+                raise TypeError("'NoneType' object is not iterable")
+
+        class FakeResponses:
+            def stream(self, **kwargs):
+                return FakeStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(
+            messages=[{"role": "user", "content": "say ok"}],
+            timeout=12.5,
+        )
+
+        assert response.choices[0].message.content == "OK"
+
     def test_enforces_total_timeout_while_stream_keeps_emitting_events(self):
         class SlowAliveStream:
             def __enter__(self):

@@ -155,9 +155,10 @@ def _codex_ack_message_response(text: str):
 
 
 class _FakeResponsesStream:
-    def __init__(self, *, final_response=None, final_error=None):
+    def __init__(self, *, final_response=None, final_error=None, events=None):
         self._final_response = final_response
         self._final_error = final_error
+        self._events = list(events or [])
 
     def __enter__(self):
         return self
@@ -166,7 +167,7 @@ class _FakeResponsesStream:
         return False
 
     def __iter__(self):
-        return iter(())
+        return iter(self._events)
 
     def get_final_response(self):
         if self._final_error is not None:
@@ -448,6 +449,34 @@ def test_run_codex_stream_falls_back_to_create_after_stream_completion_error(mon
     assert response.output[0].content[0].text == "create fallback ok"
 
 
+def test_run_codex_stream_synthesizes_text_when_final_response_output_none_crashes(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    calls = {"stream": 0}
+
+    def _fake_stream(**kwargs):
+        calls["stream"] += 1
+        return _FakeResponsesStream(
+            events=[
+                SimpleNamespace(type="response.created"),
+                SimpleNamespace(type="response.output_text.delta", delta="O"),
+                SimpleNamespace(type="response.output_text.delta", delta="K"),
+            ],
+            final_error=TypeError("'NoneType' object is not iterable"),
+        )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=lambda **kwargs: _codex_message_response("fallback"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert calls["stream"] == 1
+    assert response.output[0].content[0].text == "OK"
+
+
 def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     agent = _build_agent(monkeypatch)
     calls = {"stream": 0, "create": 0}
@@ -517,6 +546,36 @@ def test_run_conversation_codex_empty_output_with_output_text(monkeypatch):
 
     assert result["completed"] is True
     assert result["final_response"] == "Hello from Codex"
+
+
+def test_normalize_codex_response_ignores_broken_output_text_property(monkeypatch):
+    """Some SDK response objects raise while computing output_text."""
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    class BrokenOutputTextResponse:
+        status = "completed"
+        model = "gpt-5-codex"
+
+        def __init__(self):
+            self.output = [
+                SimpleNamespace(
+                    type="message",
+                    status="completed",
+                    content=None,
+                )
+            ]
+
+        @property
+        def output_text(self):
+            for item in self.output:
+                for part in item.content:
+                    return getattr(part, "text", "")
+            return ""
+
+    assistant_message, finish_reason = _normalize_codex_response(BrokenOutputTextResponse())
+
+    assert assistant_message.content == ""
+    assert finish_reason == "incomplete"
 
 
 def test_run_conversation_codex_empty_output_no_output_text_retries(monkeypatch):

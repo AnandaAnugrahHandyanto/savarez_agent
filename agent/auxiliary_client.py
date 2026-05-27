@@ -115,6 +115,10 @@ def _safe_isinstance(obj: Any, maybe_type: Any) -> bool:
         return False
 
 
+def _is_response_output_none_iterable_error(exc: BaseException) -> bool:
+    return isinstance(exc, TypeError) and "'NoneType' object is not iterable" in str(exc)
+
+
 def _extract_url_query_params(url: str):
     """Extract query params from URL, return (clean_url, default_query dict or None)."""
     parsed = urlparse(url)
@@ -872,6 +876,65 @@ class _CodexCompletionsAdapter:
         except Exception as exc:
             if timed_out.is_set():
                 raise TimeoutError(_timeout_message()) from exc
+            if _is_response_output_none_iterable_error(exc):
+                if collected_output_items:
+                    def _recovered_get(obj: Any, key: str, default: Any = None) -> Any:
+                        val = getattr(obj, key, None)
+                        if val is None and isinstance(obj, dict):
+                            val = obj.get(key, default)
+                        return val if val is not None else default
+
+                    recovered_text_parts: List[str] = []
+                    recovered_tool_calls: List[Any] = []
+                    for item in collected_output_items:
+                        item_type = _recovered_get(item, "type")
+                        if item_type == "message":
+                            for part in (_recovered_get(item, "content") or []):
+                                ptype = _recovered_get(part, "type")
+                                if ptype in {"output_text", "text"}:
+                                    recovered_text_parts.append(_recovered_get(part, "text", ""))
+                        elif item_type == "function_call":
+                            recovered_tool_calls.append(SimpleNamespace(
+                                id=_recovered_get(item, "call_id", ""),
+                                type="function",
+                                function=SimpleNamespace(
+                                    name=_recovered_get(item, "name", ""),
+                                    arguments=_recovered_get(item, "arguments", "{}"),
+                                ),
+                            ))
+                    message = SimpleNamespace(
+                        role="assistant",
+                        content="".join(recovered_text_parts).strip() or None,
+                        tool_calls=recovered_tool_calls or None,
+                    )
+                    return SimpleNamespace(
+                        choices=[SimpleNamespace(
+                            index=0,
+                            message=message,
+                            finish_reason="tool_calls" if recovered_tool_calls else "stop",
+                        )],
+                        model=model,
+                        usage=None,
+                    )
+                elif collected_text_deltas and not has_function_calls:
+                    assembled = "".join(collected_text_deltas)
+                    logger.warning(
+                        "Codex auxiliary Responses stream final parse failed with output=None; "
+                        "recovering from %d text delta(s).",
+                        len(collected_text_deltas),
+                    )
+                    message = SimpleNamespace(
+                        role="assistant",
+                        content=assembled.strip() or None,
+                        tool_calls=None,
+                    )
+                    return SimpleNamespace(
+                        choices=[SimpleNamespace(index=0, message=message, finish_reason="stop")],
+                        model=model,
+                        usage=None,
+                    )
+                else:
+                    raise
             logger.debug("Codex auxiliary Responses API call failed: %s", exc)
             raise
         finally:

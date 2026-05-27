@@ -26,6 +26,25 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _is_response_output_none_iterable_error(exc: BaseException) -> bool:
+    return isinstance(exc, TypeError) and "'NoneType' object is not iterable" in str(exc)
+
+
+def _synthesize_text_response_from_deltas(text_parts: list, *, model: Any = None) -> Any:
+    assembled = "".join(text_parts)
+    return SimpleNamespace(
+        output=[SimpleNamespace(
+            type="message",
+            role="assistant",
+            status="completed",
+            content=[SimpleNamespace(type="output_text", text=assembled)],
+        )],
+        usage=None,
+        status="completed",
+        model=model,
+    )
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -271,6 +290,33 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                             len(agent._codex_streamed_text_parts), len(assembled),
                         )
                 return final_response
+        except TypeError as exc:
+            if _is_response_output_none_iterable_error(exc):
+                if collected_output_items:
+                    logger.warning(
+                        "Codex Responses stream final parse failed with output=None; "
+                        "recovering from %d collected output item(s). %s",
+                        len(collected_output_items),
+                        agent._client_log_context(),
+                    )
+                    return SimpleNamespace(
+                        output=list(collected_output_items),
+                        usage=None,
+                        status="completed",
+                        model=api_kwargs.get("model"),
+                    )
+                if agent._codex_streamed_text_parts and not has_tool_calls:
+                    logger.warning(
+                        "Codex Responses stream final parse failed with output=None; "
+                        "recovering from %d text delta(s). %s",
+                        len(agent._codex_streamed_text_parts),
+                        agent._client_log_context(),
+                    )
+                    return _synthesize_text_response_from_deltas(
+                        agent._codex_streamed_text_parts,
+                        model=api_kwargs.get("model"),
+                    )
+            raise
         except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
             if attempt < max_stream_retries:
                 logger.debug(
