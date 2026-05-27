@@ -2592,6 +2592,37 @@ class TestCodexAuxiliaryAdapterNullOutputRecovery:
         assert response.choices[0].message.content == "aux survived"
         fake_client.responses.create.assert_not_called()
 
+    def test_uses_output_text_when_final_output_is_none(self):
+        """Regression for Codex responses that complete with output=None."""
+
+        class NullOutputFinalStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                return iter(())
+
+            def get_final_response(self):
+                return SimpleNamespace(
+                    output=None,
+                    output_text="aux fallback text",
+                    usage=None,
+                )
+
+        class FakeResponses:
+            def stream(self, **kwargs):
+                return NullOutputFinalStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "summarize"}])
+
+        assert response.choices[0].message.content == "aux fallback text"
+
 
 # ---------------------------------------------------------------------------
 # Issue #23432 — auxiliary timeout poisons cached client; later aux calls fail

@@ -888,7 +888,11 @@ class _CodexCompletionsAdapter:
                     val = obj.get(key, default)
                 return val if val is not None else default
 
-            for item in getattr(final, "output", []):
+            output_items = getattr(final, "output", None)
+            if not isinstance(output_items, list):
+                output_items = []
+
+            for item in output_items:
                 item_type = _item_get(item, "type")
                 if item_type == "message":
                     for part in (_item_get(item, "content") or []):
@@ -922,6 +926,10 @@ class _CodexCompletionsAdapter:
                 timeout_timer.cancel()
 
         content = "".join(text_parts).strip() or None
+        if not content:
+            final_output_text = getattr(final, "output_text", None)
+            if isinstance(final_output_text, str) and final_output_text.strip():
+                content = final_output_text.strip()
 
         # Build a response that looks like chat.completions
         message = SimpleNamespace(
