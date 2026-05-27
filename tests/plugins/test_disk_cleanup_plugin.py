@@ -300,6 +300,8 @@ class TestPostToolCallHook:
 
     def test_terminal_permission_denied_path_is_ignored(self, _isolate_env, monkeypatch):
         pi = _load_plugin_init()
+        unreadable = _isolate_env / "test_unreadable.py"
+        unreadable.write_text("x")
 
         def raise_permission(_path):
             raise PermissionError("permission denied")
@@ -308,7 +310,7 @@ class TestPostToolCallHook:
         pi._on_post_tool_call(
             tool_name="terminal",
             args={"command": "true"},
-            result=f"artifact {_isolate_env / 'test_unreadable.py'}\n",
+            result=f"artifact {unreadable}\n",
             task_id="tperm", session_id="sperm",
         )
         tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
