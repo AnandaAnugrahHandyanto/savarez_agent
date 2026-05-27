@@ -608,6 +608,15 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                         help="Don't actually spawn processes; just print what would happen")
     p_disp.add_argument("--max", type=int, default=None,
                         help="Cap number of spawns this pass")
+    p_disp.add_argument(
+        "--max-in-progress",
+        type=int,
+        default=None,
+        help=(
+            "Cap total running tasks after this pass. Mirrors "
+            "kanban.max_in_progress without mutating config."
+        ),
+    )
     p_disp.add_argument("--failure-limit", type=int,
                         default=kb.DEFAULT_SPAWN_FAILURE_LIMIT,
                         help=f"Auto-block a task after this many consecutive non-success attempts "
@@ -2092,6 +2101,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             conn,
             dry_run=args.dry_run,
             max_spawn=args.max,
+            max_in_progress=getattr(args, "max_in_progress", None),
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
         )
     if getattr(args, "json", False):

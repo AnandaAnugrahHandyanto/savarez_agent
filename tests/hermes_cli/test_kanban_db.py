@@ -173,6 +173,47 @@ def test_create_task_with_parent_is_todo_until_parent_done(kanban_home):
         assert kb.get_task(conn, c).status == "ready"
 
 
+def test_two_card_review_pipeline_completion_promotes_reviewer(kanban_home):
+    with kb.connect() as conn:
+        implementation = kb.create_task(
+            conn,
+            title="implementation",
+            assignee="factory",
+        )
+        reviewer = kb.create_task(
+            conn,
+            title="review implementation",
+            assignee="pr-reviewer",
+            parents=[implementation],
+        )
+
+        implementation_task = kb.get_task(conn, implementation)
+        reviewer_task = kb.get_task(conn, reviewer)
+        assert implementation_task is not None
+        assert reviewer_task is not None
+        assert implementation_task.status == "ready"
+        assert reviewer_task.status == "todo"
+
+        kb.claim_task(conn, implementation, claimer="factory:test")
+        kb.complete_task(
+            conn,
+            implementation,
+            summary="local commit and tests complete; reviewer owns approval",
+            metadata={"review_gate": "dependent-reviewer", "tests_passed": True},
+        )
+
+        implementation_task = kb.get_task(conn, implementation)
+        reviewer_task = kb.get_task(conn, reviewer)
+        assert implementation_task is not None
+        assert reviewer_task is not None
+        assert implementation_task.status == "done"
+        assert reviewer_task.status == "ready"
+
+        claimed = kb.claim_task(conn, reviewer, claimer="pr-reviewer:test")
+        assert claimed is not None
+        assert claimed.assignee == "pr-reviewer"
+
+
 def test_create_task_unknown_parent_errors(kanban_home):
     with kb.connect() as conn, pytest.raises(ValueError, match="unknown parent"):
         kb.create_task(conn, title="orphan", parents=["t_ghost"])
@@ -210,6 +251,50 @@ def test_branch_name_requires_worktree_workspace(kanban_home):
             workspace_kind="scratch",
             branch_name="wt/bad",
         )
+
+
+# ---------------------------------------------------------------------------
+# Stats
+# ---------------------------------------------------------------------------
+
+def test_board_stats_includes_total_counts(kanban_home):
+    with kb.connect() as conn:
+        kb.create_task(conn, title="ready", assignee="alice")
+        parent = kb.create_task(conn, title="parent", assignee="bob")
+        kb.create_task(conn, title="todo", assignee="carol", parents=[parent])
+        done = kb.create_task(conn, title="done", assignee="dora")
+        archived = kb.create_task(conn, title="archived", assignee="erin")
+        scheduled = kb.create_task(conn, title="scheduled", assignee="fran")
+        blocked = kb.create_task(conn, title="blocked", assignee="gina")
+
+        kb.complete_task(conn, done)
+        kb.archive_task(conn, archived)
+        assert kb.schedule_task(conn, scheduled, reason="later") is True
+        assert kb.block_task(conn, blocked, reason="waiting") is True
+
+        stats = kb.board_stats(conn)
+
+    assert blocked.startswith("t_")
+    assert stats["total"] == 6
+    assert stats["open_total"] == 5
+    assert stats["done_total"] == 1
+    assert stats["archived_total"] == 1
+    assert stats["scheduled_total"] == 1
+    assert stats["ready_total"] == 2
+    assert stats["blocked_total"] == 1
+    assert stats["by_status"] == {
+        "ready": 2,
+        "todo": 1,
+        "done": 1,
+        "scheduled": 1,
+        "blocked": 1,
+    }
+    assert stats["by_assignee"]["alice"]["ready"] == 1
+    assert stats["by_assignee"]["bob"]["ready"] == 1
+    assert stats["by_assignee"]["carol"]["todo"] == 1
+    assert stats["by_assignee"]["dora"]["done"] == 1
+    assert stats["by_assignee"]["fran"]["scheduled"] == 1
+    assert "erin" not in stats["by_assignee"]
 
 
 # ---------------------------------------------------------------------------
@@ -2710,6 +2795,49 @@ def test_dispatch_max_in_progress_none_is_unlimited(kanban_home, all_assignees_s
         kb.dispatch_once(conn, spawn_fn=fake_spawn, max_in_progress=None)
 
     assert len(spawns) == 4, f"expected 4 spawns (unlimited), got {len(spawns)}"
+
+
+def test_dispatch_max_and_max_in_progress_with_running_uses_remaining_slots(
+    kanban_home, all_assignees_spawnable
+):
+    """A per-pass cap must not double-count existing running tasks."""
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        running = kb.create_task(conn, title="already running", assignee="alice")
+        kb.claim_task(conn, running)
+        kb.create_task(conn, title="ready a", assignee="bob")
+        kb.create_task(conn, title="ready b", assignee="bob")
+
+        kb.dispatch_once(conn, spawn_fn=fake_spawn, max_spawn=3, max_in_progress=2)
+
+    assert len(spawns) == 1, f"expected 1 remaining slot, got {len(spawns)}"
+
+
+def test_dispatch_max_in_progress_applies_to_review_only_queue(
+    kanban_home, all_assignees_spawnable
+):
+    """Review workers count against max_in_progress even with no ready tasks."""
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        running = kb.create_task(conn, title="already running", assignee="alice")
+        kb.claim_task(conn, running)
+        r1 = kb.create_task(conn, title="review a", assignee="pr-reviewer")
+        r2 = kb.create_task(conn, title="review b", assignee="pr-reviewer")
+        _set_task_status(conn, r1, "review")
+        _set_task_status(conn, r2, "review")
+
+        kb.dispatch_once(conn, spawn_fn=fake_spawn, max_in_progress=1)
+
+    assert spawns == []
+
 
 # Review column dispatch
 # ---------------------------------------------------------------------------
