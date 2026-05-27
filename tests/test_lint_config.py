@@ -113,3 +113,85 @@ class TestLintWorkflow:
             pytest.fail(f"lint.yml is not valid YAML: {exc}")
         assert isinstance(parsed, dict)
         assert "jobs" in parsed
+
+
+class TestToolsF541Regression:
+    """tools/ must have zero F541 violations."""
+
+    TOOLS_DIR = REPO_ROOT / "tools"
+
+    def test_tools_dir_has_zero_f541_violations(self) -> None:
+        """tools/ should have no f-strings without placeholders."""
+        import subprocess, sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F541",
+             "--output-format=concise", str(self.TOOLS_DIR)],
+            capture_output=True, text=True, check=False,
+        )
+
+        count = result.stdout.count("error[F541]")
+        assert result.returncode == 0, (
+            f"tools/ has {count} F541 violation(s)\n{result.stdout}"
+        )
+
+class TestGatewayPlatformsF541Regression:
+    """gateway/platforms/feishu_comment_rules.py must have zero F541 violations."""
+
+    TARGET = REPO_ROOT / "gateway" / "platforms" / "feishu_comment_rules.py"
+
+    def test_feishu_comment_rules_has_zero_f541_violations(self) -> None:
+        """feishu_comment_rules.py should have no f-strings without placeholders."""
+        import subprocess, sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F541",
+             "--output-format=concise", str(self.TARGET)],
+            capture_output=True, text=True, check=False,
+        )
+
+        count = result.stdout.count("error[F541]")
+        assert result.returncode == 0, (
+            f"{self.TARGET.name} has {count} F541 violation(s)\n{result.stdout}"
+        )
+
+
+class TestAcpAdapterF541Regression:
+    """acp_adapter/tools.py must have zero F541 violations."""
+
+    TARGET = REPO_ROOT / "acp_adapter" / "tools.py"
+
+    def test_acp_adapter_tools_has_zero_f541_violations(self) -> None:
+        """acp_adapter/tools.py should have no f-strings without placeholders."""
+        import subprocess, sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F541",
+             "--output-format=concise", str(self.TARGET)],
+            capture_output=True, text=True, check=False,
+        )
+
+        count = result.stdout.count("error[F541]")
+        assert result.returncode == 0, (
+            f"{self.TARGET.name} has {count} F541 violation(s)\n{result.stdout}"
+        )
+
+class TestScriptsF541Regression:
+    """scripts/ must have zero F541 violations."""
+
+    SCRIPTS_DIR = REPO_ROOT / "scripts"
+
+    def test_scripts_dir_has_zero_f541_violations(self) -> None:
+        """scripts/ should have no f-strings without placeholders."""
+        import subprocess, sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F541",
+             "--output-format=concise", str(self.SCRIPTS_DIR)],
+            capture_output=True, text=True, check=False,
+        )
+
+        count = result.stdout.count("error[F541]")
+        assert result.returncode == 0, (
+            f"scripts/ has {count} F541 violation(s)\n{result.stdout}"
+        )
