@@ -1504,6 +1504,10 @@ _LIGHT_MODE_CACHE: bool | None = None
 _TRUE_RE = re.compile(r"^(1|true|on|yes|y)$")
 _FALSE_RE = re.compile(r"^(0|false|off|no|n)$")
 _LIGHT_DEFAULT_TERM_PROGRAMS = frozenset()  # Apple_Terminal doesn't reliably indicate; require explicit
+# Terminals whose OSC 11 response handling is unreliable — the reply
+# leaks into the visible CLI stream instead of being consumed silently.
+# Skip the probe for these and fall through to the dark default.
+_SKIP_OSC11_TERM_PROGRAMS = frozenset({"vscode", "cursor"})
 
 
 def _luminance_from_hex(hex_str: str) -> float | None:
@@ -1627,8 +1631,10 @@ def _detect_light_mode() -> bool:
                 if 0 <= bg < 16:
                     _LIGHT_MODE_CACHE = result
                     return result
-        # 5. OSC 11 query (best-effort, only when stdin/stdout are TTY)
-        bg_color = _query_osc11_background()
+        # 5. OSC 11 query (best-effort, skip for terminals that leak the reply)
+        tp_osc = (os.environ.get("TERM_PROGRAM") or "").strip()
+        if tp_osc not in _SKIP_OSC11_TERM_PROGRAMS:
+            bg_color = _query_osc11_background()
         if bg_color:
             lum = _luminance_from_hex(bg_color)
             if lum is not None:

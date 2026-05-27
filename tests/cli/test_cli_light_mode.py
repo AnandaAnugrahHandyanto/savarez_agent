@@ -76,6 +76,25 @@ class TestLightModeDetection:
         assert cli_mod._detect_light_mode() is True
 
 
+
+    def test_osc11_skipped_for_vscode(self, cli_mod, monkeypatch):
+        """OSC 11 probe must be skipped for VSCode/Cursor terminals to
+        prevent the reply from leaking into the CLI stream (#33203)."""
+        monkeypatch.delenv("HERMES_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_LIGHT", raising=False)
+        monkeypatch.delenv("HERMES_TUI_THEME", raising=False)
+        monkeypatch.delenv("HERMES_TUI_BACKGROUND", raising=False)
+        monkeypatch.delenv("COLORFGBG", raising=False)
+        monkeypatch.setenv("TERM_PROGRAM", "vscode")
+
+        called = []
+        monkeypatch.setattr(cli_mod, "_query_osc11_background", lambda: (called.append(1) or None))
+
+        # Should fall through to dark default without calling the probe
+        assert cli_mod._detect_light_mode() is False
+        assert called == [], "OSC 11 probe should be skipped for vscode terminals"
+
+
 class TestLightModeRemap:
     def test_remap_no_op_in_dark_mode(self, cli_mod, monkeypatch):
         monkeypatch.setenv("HERMES_LIGHT", "0")
