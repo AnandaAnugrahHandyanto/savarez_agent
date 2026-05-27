@@ -684,6 +684,13 @@ def _resolve_context_templates(value: str) -> str:
     Unset names resolve to ``""``.  Mixed literal text + templates is fine
     (e.g. ``"Bearer ${context:JWT}"``).  Non-template input is returned
     unchanged.
+
+    The final substituted string is stripped of leading/trailing
+    whitespace.  An all-whitespace resolved value (``"   "`` from a
+    paste artifact, env-injection mishap, etc.) is therefore equivalent
+    to empty — which downstream call sites treat as "drop this header"
+    rather than send ``X-Foo:`` with whitespace.  Intentional inner
+    whitespace ("Bearer abc 123") is preserved.
     """
     if not isinstance(value, str):
         return value
@@ -700,7 +707,7 @@ def _resolve_context_templates(value: str) -> str:
         # convention.
         return str(get_session_env(name, ""))
 
-    return _CONTEXT_TEMPLATE_RE.sub(_replace, value)
+    return _CONTEXT_TEMPLATE_RE.sub(_replace, value).strip()
 
 
 def _split_static_and_templated_headers(
@@ -721,6 +728,28 @@ def _split_static_and_templated_headers(
         else:
             static[key] = value
     return static, templated
+
+
+def _resolve_frozen_headers(
+    static_headers: Dict[str, Any],
+    templated_headers: Dict[str, str],
+) -> Dict[str, Any]:
+    """Resolve templated headers ONCE (for SSE / legacy-HTTP transports
+    that don't support per-request injection) and merge with statics.
+
+    Templated entries whose resolution is empty after stripping are
+    dropped (don't emit ``X-Foo:`` with blank content for the
+    connection's lifetime).  Used by both the SSE and the legacy HTTP
+    branches; extracted as a helper so the freeze-time semantics are
+    testable without spinning up a real ``sse_client`` /
+    ``streamablehttp_client`` instance.
+    """
+    resolved_templated = {
+        key: resolved
+        for key, template in templated_headers.items()
+        if (resolved := _resolve_context_templates(template))
+    }
+    return {**static_headers, **resolved_templated}
 
 
 class SamplingHandler:
@@ -1503,19 +1532,12 @@ class MCPServerTask:
                     "(transport: http) if you need per-request values.",
                     self.name, sorted(templated_headers.keys()),
                 )
-            # Drop templated headers whose resolved value is empty —
-            # matches the HTTP path's per-request behavior (don't send
-            # ``X-Foo:`` with an empty value).  Without this, an SSE
-            # stream opened before any session context var is set would
-            # send an empty identity header for the connection's entire
-            # lifetime (CodeRabbit MAJOR; same fix mirrored to the
-            # legacy HTTP branch below).
-            sse_resolved_templated = {
-                k: resolved
-                for k, v in templated_headers.items()
-                if (resolved := _resolve_context_templates(v))
-            }
-            sse_headers = {**static_headers, **sse_resolved_templated}
+            # Resolve+merge with empty-drop discipline — see
+            # ``_resolve_frozen_headers`` doc for why this matters on SSE
+            # (a stream opened before any context var is set would
+            # otherwise send ``X-Foo:`` with blank content for the
+            # connection's lifetime).
+            sse_headers = _resolve_frozen_headers(static_headers, templated_headers)
             _sse_kwargs: dict = {
                 "url": url,
                 "headers": sse_headers or None,
@@ -1666,15 +1688,9 @@ class MCPServerTask:
                     "Upgrade the mcp package if you need per-request values.",
                     self.name, sorted(templated_headers.keys()),
                 )
-            # Same empty-drop discipline as the SSE branch above —
-            # avoid sending blank identity headers for the connection's
-            # entire lifetime when the context var is unset at startup.
-            legacy_resolved_templated = {
-                k: resolved
-                for k, v in templated_headers.items()
-                if (resolved := _resolve_context_templates(v))
-            }
-            legacy_headers = {**static_headers, **legacy_resolved_templated}
+            # Same resolve-and-merge with empty-drop discipline as the
+            # SSE branch above — see ``_resolve_frozen_headers``.
+            legacy_headers = _resolve_frozen_headers(static_headers, templated_headers)
             _http_kwargs: dict = {
                 "headers": legacy_headers,
                 "timeout": float(connect_timeout),

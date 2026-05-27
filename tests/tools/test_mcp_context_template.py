@@ -23,6 +23,7 @@ from gateway.session_context import (
 from tools.mcp_tool import (
     _has_context_template,
     _resolve_context_templates,
+    _resolve_frozen_headers,
     _split_static_and_templated_headers,
 )
 
@@ -111,6 +112,28 @@ class TestResolveContextTemplates:
         # which is unset in tests, so empty string.
         assert _resolve_context_templates("${context:NEVER_REGISTERED}") == ""
 
+    def test_whitespace_only_resolved_value_is_stripped_to_empty(self, custom_var):
+        """A context-var holding only whitespace must NOT produce a
+        header sent as ``X-Foo:    `` (HTTP-spec-violating, useless to
+        the recipient).  The resolver strips leading/trailing whitespace
+        so all three transports treat ``"   "`` the same as ``""`` —
+        i.e. "drop this header" at the call site."""
+        custom_var.set("   ")
+        assert _resolve_context_templates("${context:TEST_PRINCIPAL}") == ""
+
+    def test_leading_trailing_whitespace_stripped(self, custom_var):
+        custom_var.set("  alice@example.com\t")
+        assert _resolve_context_templates("${context:TEST_PRINCIPAL}") == "alice@example.com"
+
+    def test_inner_whitespace_preserved(self, custom_var):
+        """Strip only touches the outer edges — inner whitespace
+        (e.g. ``"Bearer abc 123"``) is intentional and preserved."""
+        custom_var.set("abc 123")
+        assert (
+            _resolve_context_templates("Bearer ${context:TEST_PRINCIPAL}")
+            == "Bearer abc 123"
+        )
+
     @pytest.mark.parametrize(
         "raw_value,expected",
         [
@@ -138,6 +161,59 @@ class TestResolveContextTemplates:
         finally:
             weird.set(_UNSET)
             _VAR_MAP.pop("WEIRD_VAL", None)
+
+
+class TestResolveFrozenHeaders:
+    """Freeze-time merge for SSE / legacy-HTTP transports — drops empty
+    templated entries so an at-init resolution of an unset context var
+    doesn't ship a blank header for the connection's lifetime.
+    """
+
+    def test_set_value_resolves_into_merged_dict(self, custom_var):
+        custom_var.set("thomas@verdigris.co")
+        merged = _resolve_frozen_headers(
+            {"Authorization": "Bearer static"},
+            {"X-Delegated-Principal": "${context:TEST_PRINCIPAL}"},
+        )
+        assert merged == {
+            "Authorization": "Bearer static",
+            "X-Delegated-Principal": "thomas@verdigris.co",
+        }
+
+    def test_empty_resolved_value_drops_header(self, custom_var):
+        """The key fix: a templated header whose context var is unset
+        at freeze time must be ABSENT from the result, not present with
+        an empty value. Same drop-on-empty discipline as the HTTP
+        per-request hook."""
+        # custom_var default is _UNSET → resolves to ""
+        merged = _resolve_frozen_headers(
+            {"Authorization": "Bearer static"},
+            {"X-Delegated-Principal": "${context:TEST_PRINCIPAL}"},
+        )
+        assert merged == {"Authorization": "Bearer static"}
+        assert "X-Delegated-Principal" not in merged
+
+    def test_whitespace_only_resolved_value_drops_header(self, custom_var):
+        """Whitespace-only resolution is equivalent to empty — same drop
+        behavior (avoids sending ``X-Foo:    `` which is HTTP-spec
+        violating and useless to the recipient)."""
+        custom_var.set("   \t")
+        merged = _resolve_frozen_headers(
+            {},
+            {"X-Delegated-Principal": "${context:TEST_PRINCIPAL}"},
+        )
+        assert merged == {}
+
+    def test_static_only(self):
+        """Pure static headers pass through unchanged."""
+        merged = _resolve_frozen_headers(
+            {"Authorization": "Bearer x", "X-Trace-Id": "abc"},
+            {},
+        )
+        assert merged == {"Authorization": "Bearer x", "X-Trace-Id": "abc"}
+
+    def test_empty_input(self):
+        assert _resolve_frozen_headers({}, {}) == {}
 
 
 class TestSplitStaticAndTemplatedHeaders:
