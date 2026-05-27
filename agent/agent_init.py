@@ -1045,6 +1045,9 @@ def init_agent(
                         _init_kwargs["agent_workspace"] = "hermes"
                     except Exception:
                         pass
+                    _provider_config = mem_config.get(_mem_provider_name, {})
+                    if isinstance(_provider_config, dict):
+                        _init_kwargs["runtime_config"] = dict(_provider_config)
                     agent._memory_manager.initialize_all(**_init_kwargs)
                     _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
                 else:
