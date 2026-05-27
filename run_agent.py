@@ -4104,6 +4104,7 @@ class AIAgent:
 
         # Allow _vprint during tool execution even with stream consumers
         self._executing_tools = True
+        _tool_batch_start = time.perf_counter()
         try:
             if not _should_parallelize_tool_batch(tool_calls):
                 return self._execute_tool_calls_sequential(
@@ -4114,6 +4115,17 @@ class AIAgent:
                 assistant_message, messages, effective_task_id, api_call_count
             )
         finally:
+            request_budget = getattr(self, "_request_budget", None)
+            if request_budget is not None:
+                tool_names = [
+                    getattr(getattr(tc, "function", None), "name", "")
+                    for tc in (tool_calls or [])
+                ]
+                request_budget.add_tool_execution(
+                    ",".join(name for name in tool_names if name),
+                    time.perf_counter() - _tool_batch_start,
+                    count=len(tool_calls or []),
+                )
             self._executing_tools = False
 
     def _dispatch_delegate_task(self, function_args: dict) -> str:
