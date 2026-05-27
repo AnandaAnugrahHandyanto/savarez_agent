@@ -26,6 +26,7 @@ from tui_gateway.transport import (
     current_transport,
     reset_transport,
 )
+from tui_gateway.ws import WSTransport
 
 logger = logging.getLogger(__name__)
 
@@ -444,6 +445,45 @@ def method(name: str):
     return dec
 
 
+def _authenticate_ws(ws_transport: "WSTransport") -> bool:
+    """Verify the peer of a WebSocket connection is the local process owner.
+
+    A remote WebSocket client cannot be trusted without a signed token, but
+    we must also not block legitimate local use (e.g. a local HTTP server
+    serving the TUI dashboard).  The stdio path (entry.py) is a pipe owned
+    by the same process, so it skips auth entirely.
+
+    For WebSocket we check the connecting process uid matches this process's
+    euid.  A more complete solution (signed session tokens) can be layered
+    on top of this guard later.
+    """
+    import socket  # lazy — avoids circular import with ws.py
+    import struct
+
+    try:
+        # Get the underlying socket from the starlette WebSocket.
+        # The starlette WebSocket wraps an ASGI scope; the actual transport
+        # socket lives at _ws._socket.  Fall back gracefully if unavailable.
+        ws = ws_transport._ws
+        raw_socket = getattr(ws, "_socket", None)
+        if raw_socket is None:
+            return False
+        fd = raw_socket.fileno()
+        if fd < 0:
+            return False
+
+        # SO_PEERCRED returns struct ucred { pid_t, uid_t, gid_t } on Linux.
+        SOL_SOCKET = 1
+        SO_PEERCRED = 17
+        creds = raw_socket.getsockopt(
+            SOL_SOCKET, SO_PEERCRED, struct.calcsize("iii")
+        )
+        pid, uid, gid = struct.unpack("iii", creds)
+        return pid == os.getpid() and uid == os.geteuid()
+    except Exception:
+        return False
+
+
 def _normalize_request(req: Any) -> tuple[Any, str, dict] | dict:
     """Validate a JSON-RPC request enough for safe local dispatch."""
     if not isinstance(req, dict):
@@ -488,6 +528,12 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
     the original behaviour for ``tui_gateway.entry``.
     """
     t = transport or _stdio_transport
+
+    # WebSocket connections require authentication; local stdio does not.
+    if isinstance(t, WSTransport):
+        if not _authenticate_ws(t):
+            return _err(req.get("id"), -32001, "unauthorized")
+
     token = bind_transport(t)
     try:
         normalized = _normalize_request(req)
