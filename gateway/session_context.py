@@ -36,6 +36,7 @@ needs to replace the import + call site:
     platform = get_session_env("HERMES_SESSION_PLATFORM", "")
 """
 
+import threading
 from contextvars import ContextVar
 from typing import Any
 
@@ -81,6 +82,13 @@ _VAR_MAP = {
     "HERMES_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
     "HERMES_CRON_AUTO_DELIVER_THREAD_ID": _CRON_AUTO_DELIVER_THREAD_ID,
 }
+
+# Guards _VAR_MAP mutation + iteration. Plugin ``register(ctx)`` typically
+# runs at startup, but ``get_registered_var_names()`` may be called from a
+# different thread (diagnostics, test introspection). Without the lock,
+# concurrent registration + iteration can raise ``RuntimeError: dictionary
+# changed size during iteration``.
+_VAR_MAP_LOCK = threading.Lock()
 
 
 def set_session_vars(
@@ -183,15 +191,13 @@ def register_session_context_var(name: str, var: ContextVar) -> None:
         from contextvars import ContextVar
         from gateway.session_context import register_session_context_var
 
-        DELEGATED_PRINCIPAL_EMAIL: ContextVar = ContextVar(
-            "DELEGATED_PRINCIPAL_EMAIL", default="",
+        PRINCIPAL_EMAIL: ContextVar = ContextVar(
+            "PRINCIPAL_EMAIL", default="",
         )
 
         def register(ctx):
-            register_session_context_var(
-                "DELEGATED_PRINCIPAL_EMAIL", DELEGATED_PRINCIPAL_EMAIL,
-            )
-            # ... plugin sets DELEGATED_PRINCIPAL_EMAIL.set(email) per turn
+            register_session_context_var("PRINCIPAL_EMAIL", PRINCIPAL_EMAIL)
+            # ... plugin sets PRINCIPAL_EMAIL.set(email) per turn
 
     The config-side consumer (``tools/mcp_tool.py`` ``${context:NAME}``
     expansion) reads via :func:`get_session_env`, so a registered name
@@ -200,7 +206,7 @@ def register_session_context_var(name: str, var: ContextVar) -> None:
         mcp_servers:
           my_server:
             headers:
-              X-Delegated-Principal: "${context:DELEGATED_PRINCIPAL_EMAIL}"
+              X-Principal-Email: "${context:PRINCIPAL_EMAIL}"
 
     Registration is idempotent — repeated calls with the same name replace
     the prior binding (last-writer-wins). Built-in names (``HERMES_SESSION_*``,
@@ -219,13 +225,17 @@ def register_session_context_var(name: str, var: ContextVar) -> None:
         )
     if not isinstance(var, ContextVar):
         raise TypeError("register_session_context_var: var must be a ContextVar")
-    _VAR_MAP[name] = var
+    with _VAR_MAP_LOCK:
+        _VAR_MAP[name] = var
 
 
 def get_registered_var_names() -> tuple[str, ...]:
     """Return the set of names currently resolvable via :func:`get_session_env`.
 
     Useful for diagnostics and tests. Includes both built-in and
-    plugin-registered names.
+    plugin-registered names. Snapshot under the registry lock so concurrent
+    plugin registration cannot raise ``RuntimeError: dictionary changed
+    size during iteration``.
     """
-    return tuple(_VAR_MAP.keys())
+    with _VAR_MAP_LOCK:
+        return tuple(_VAR_MAP.keys())

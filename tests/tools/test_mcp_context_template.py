@@ -48,6 +48,8 @@ def custom_var():
 # ---------------------------------------------------------------------------
 
 class TestHasContextTemplate:
+    """Detection helper — recognizes ``${context:NAME}`` in header values."""
+
     def test_detects_simple_template(self):
         assert _has_context_template("${context:FOO}")
 
@@ -68,6 +70,8 @@ class TestHasContextTemplate:
 
 
 class TestResolveContextTemplates:
+    """Resolution helper — substitutes ``${context:NAME}`` against session_context."""
+
     def test_resolves_set_value(self, custom_var):
         custom_var.set("alice@example.com")
         assert _resolve_context_templates("${context:TEST_PRINCIPAL}") == "alice@example.com"
@@ -107,23 +111,38 @@ class TestResolveContextTemplates:
         # which is unset in tests, so empty string.
         assert _resolve_context_templates("${context:NEVER_REGISTERED}") == ""
 
-    def test_non_string_contextvar_value_coerces_to_str(self):
-        """A plugin-registered ContextVar holding a non-string value must
-        not crash the regex substitution — str()-coerce on resolve so
-        re.sub never sees a non-string replacement."""
-        # Register a contextvar typed as Any so we can hold an int.
+    @pytest.mark.parametrize(
+        "raw_value,expected",
+        [
+            (42, "42"),
+            (0, "0"),
+            (None, "None"),
+            (False, "False"),
+            (True, "True"),
+            ([], "[]"),
+            ({"k": "v"}, "{'k': 'v'}"),
+        ],
+    )
+    def test_non_string_contextvar_value_coerces_to_str(self, raw_value, expected):
+        """A plugin-registered ContextVar holding any non-string value must
+        not crash the regex substitution. ``str()`` is the documented
+        coercion path; future refactors that change this (e.g. drop-header-
+        when-None) must update both this test and the docstring deliberately.
+        """
         from contextvars import ContextVar as _ContextVar
-        weird: _ContextVar = _ContextVar("WEIRD_INT", default=_UNSET)
-        register_session_context_var("WEIRD_INT", weird)
+        weird: _ContextVar = _ContextVar("WEIRD_VAL", default=_UNSET)
+        register_session_context_var("WEIRD_VAL", weird)
         try:
-            weird.set(42)
-            assert _resolve_context_templates("${context:WEIRD_INT}") == "42"
+            weird.set(raw_value)
+            assert _resolve_context_templates("${context:WEIRD_VAL}") == expected
         finally:
             weird.set(_UNSET)
-            _VAR_MAP.pop("WEIRD_INT", None)
+            _VAR_MAP.pop("WEIRD_VAL", None)
 
 
 class TestSplitStaticAndTemplatedHeaders:
+    """Header partition helper — separates client-default-safe from per-request."""
+
     def test_partitions_correctly(self):
         headers = {
             "Authorization": "Bearer static-token",
@@ -203,6 +222,120 @@ async def test_per_request_header_injection_via_event_hook(custom_var):
         custom_var.set("")
         await client.get("http://example.invalid/mcp")
         assert "x-delegated-principal" not in captured_headers
+
+
+@pytest.mark.asyncio
+async def test_principal_mutated_between_requests_in_same_task(custom_var):
+    """Within a single task, mutating the ContextVar between requests must
+    cause each request to carry the *current* value — not the value at
+    hook-install time.
+
+    Catches the latent bug class where the resolution would be cached at
+    ``_run_http`` invocation time (e.g. ``resolved = _resolve_context_templates(template)``
+    lifted out of the inner hook).  The
+    ``test_asyncio_task_isolation_for_per_request_headers`` test below
+    would silently miss this because each task only sets the var once.
+    """
+    seen: list[str] = []
+
+    async def _capture(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("x-delegated-principal", "<missing>"))
+        return httpx.Response(200)
+
+    async def _inject(request: httpx.Request) -> None:
+        resolved = _resolve_context_templates("${context:TEST_PRINCIPAL}")
+        if resolved:
+            request.headers["X-Delegated-Principal"] = resolved
+        elif "x-delegated-principal" in request.headers:
+            del request.headers["x-delegated-principal"]
+
+    transport = httpx.MockTransport(_capture)
+    async with httpx.AsyncClient(
+        transport=transport, event_hooks={"request": [_inject]},
+    ) as client:
+        for value in ("alice@example.com", "bob@example.com", "carol@example.com"):
+            custom_var.set(value)
+            await client.get("http://example.invalid/mcp")
+
+    assert seen == [
+        "alice@example.com",
+        "bob@example.com",
+        "carol@example.com",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_templated_header_dropped_on_cross_origin_redirect(custom_var):
+    """Identity-carrying templated headers must NOT follow a cross-origin
+    redirect. Same threat model as ``Authorization``-stripping: if a
+    redirect target is attacker-controlled, leaking ``X-Delegated-Principal``
+    would let the attacker harvest user attribution claims.
+    """
+    # Two responses: the first redirects (302) to a different origin; the
+    # second is captured so we can inspect the headers that actually crossed.
+    captured_on_redirect_target: dict[str, str] = {}
+
+    async def _handler(request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        if host == "original.invalid":
+            return httpx.Response(
+                302,
+                headers={"location": "http://attacker.invalid/harvest"},
+            )
+        captured_on_redirect_target.clear()
+        captured_on_redirect_target.update(dict(request.headers))
+        return httpx.Response(200)
+
+    # Replicate the production response hook *and* request hook patterns,
+    # including the origin guard inside the request hook (the response-side
+    # strip alone is insufficient — the request hook fires again on the
+    # redirected request).
+    _original_url = httpx.URL("http://original.invalid/mcp")
+    templated = {"X-Delegated-Principal": "${context:TEST_PRINCIPAL}"}
+
+    async def _strip_identity_on_redirect(response: httpx.Response) -> None:
+        if response.is_redirect and response.next_request:
+            target = response.next_request.url
+            if (target.scheme, target.host, target.port) != (
+                _original_url.scheme, _original_url.host, _original_url.port,
+            ):
+                response.next_request.headers.pop("Authorization", None)
+                response.next_request.headers.pop("authorization", None)
+                for name in templated:
+                    response.next_request.headers.pop(name, None)
+
+    async def _inject(request: httpx.Request) -> None:
+        target = request.url
+        same_origin = (target.scheme, target.host, target.port) == (
+            _original_url.scheme, _original_url.host, _original_url.port,
+        )
+        for name in templated:
+            if not same_origin:
+                request.headers.pop(name, None)
+                continue
+            resolved = _resolve_context_templates(templated[name])
+            if resolved:
+                request.headers[name] = resolved
+            elif name in request.headers:
+                del request.headers[name]
+
+    transport = httpx.MockTransport(_handler)
+    async with httpx.AsyncClient(
+        transport=transport,
+        follow_redirects=True,
+        event_hooks={
+            "request": [_inject],
+            "response": [_strip_identity_on_redirect],
+        },
+        headers={"Authorization": "Bearer static-token"},
+    ) as client:
+        custom_var.set("thomas@verdigris.co")
+        await client.get("http://original.invalid/mcp")
+
+    # The redirect target should have neither the static Authorization
+    # header nor the templated delegated-principal header.
+    assert "authorization" not in captured_on_redirect_target
+    assert "x-delegated-principal" not in captured_on_redirect_target
 
 
 @pytest.mark.asyncio

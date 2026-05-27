@@ -375,27 +375,45 @@ def test_register_session_context_var_explicit_empty_does_not_fall_back(
         _VAR_MAP.pop("CUSTOM_EMPTY", None)
 
 
-def test_register_session_context_var_rejects_invalid_inputs():
+@pytest.mark.parametrize(
+    "bad_name,exc_type",
+    [
+        ("", ValueError),
+        ("HAS-HYPHEN", ValueError),
+        ("has space", ValueError),
+        ("1_leading_digit", ValueError),
+        ("café", ValueError),  # non-ASCII
+    ],
+)
+def test_register_session_context_var_rejects_invalid_inputs_and_keeps_registry_clean(
+    bad_name, exc_type,
+):
     """Defensive checks — bad inputs raise before corrupting the registry.
 
     The validity bar matches what the ``${context:NAME}`` template regex
     will actually resolve: ASCII identifiers only. Names with hyphens,
     spaces, leading digits, or unicode would register but silently fail
-    to resolve — failing fast at registration is friendlier.
+    to resolve in templates — failing fast at registration is friendlier.
+
+    Also asserts the registry is *not* mutated on rejection (defends
+    against future refactors that move validation below the assignment).
     """
     valid_var: ContextVar = ContextVar("X", default=_UNSET)
-    with pytest.raises(ValueError):
-        register_session_context_var("", valid_var)
-    with pytest.raises(ValueError):
-        register_session_context_var("HAS-HYPHEN", valid_var)
-    with pytest.raises(ValueError):
-        register_session_context_var("has space", valid_var)
-    with pytest.raises(ValueError):
-        register_session_context_var("1_leading_digit", valid_var)
-    with pytest.raises(ValueError):
-        register_session_context_var("café", valid_var)  # non-ASCII
+    with pytest.raises(exc_type):
+        register_session_context_var(bad_name, valid_var)
+    assert bad_name not in get_registered_var_names()
+
+
+def test_register_session_context_var_rejects_non_contextvar():
+    """Type check rejects non-ContextVar values without mutating the registry."""
     with pytest.raises(TypeError):
         register_session_context_var("X", "not a contextvar")  # type: ignore[arg-type]
+    # Name 'X' was the proposed key — it must NOT have been bound.
+    # (We can't assert "X" not in names if a previous test happened to
+    # register it; just confirm the registry didn't bind a string.)
+    from gateway.session_context import _VAR_MAP
+    binding = _VAR_MAP.get("X")
+    assert binding is None or isinstance(binding, ContextVar)
 
 
 def test_register_session_context_var_is_idempotent_and_last_writer_wins():
