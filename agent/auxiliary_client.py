@@ -42,6 +42,7 @@ Payment / credit exhaustion fallback:
 
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -105,6 +106,16 @@ from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
 
 logger = logging.getLogger(__name__)
+
+
+def _should_forward_request_timeout(timeout: Any) -> bool:
+    """Return True when a per-request timeout should be sent to provider SDKs."""
+    if timeout is None or isinstance(timeout, bool):
+        return False
+    if isinstance(timeout, (int, float)):
+        value = float(timeout)
+        return math.isfinite(value) and value > 0
+    return True
 
 
 def _safe_isinstance(obj: Any, maybe_type: Any) -> bool:
@@ -656,7 +667,7 @@ class _CodexCompletionsAdapter:
         # forwarded and enforced, a Codex Responses stream can sit behind a
         # dead-looking CLI until the user force-interrupts the whole session.
         timeout = kwargs.get("timeout")
-        if timeout is not None:
+        if _should_forward_request_timeout(timeout):
             resp_kwargs["timeout"] = timeout
 
         # Note: the Codex endpoint (chatgpt.com/backend-api/codex) does NOT
@@ -4641,8 +4652,9 @@ def _build_call_kwargs(
     kwargs: Dict[str, Any] = {
         "model": model,
         "messages": messages,
-        "timeout": timeout,
     }
+    if _should_forward_request_timeout(timeout):
+        kwargs["timeout"] = timeout
 
     fixed_temperature = _fixed_temperature_for_model(model, base_url)
     if fixed_temperature is OMIT_TEMPERATURE:

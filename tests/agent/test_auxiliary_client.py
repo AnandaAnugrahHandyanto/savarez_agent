@@ -2523,6 +2523,42 @@ class TestCodexAuxiliaryAdapterTimeout:
         assert fake_client.responses.kwargs["stream"] is True
         assert response.choices[0].message.content == "summary"
 
+    def test_zero_timeout_is_omitted_from_responses_create(self):
+        message_item = SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text="summary")],
+        )
+        events = [
+            SimpleNamespace(type="response.output_item.done", item=message_item),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(
+                status="completed", id="r1", usage=None,
+            )),
+        ]
+
+        class _FakeCreateStream:
+            def __iter__(self): return iter(events)
+            def close(self): pass
+
+        class FakeResponses:
+            def __init__(self):
+                self.kwargs = None
+
+            def create(self, **kwargs):
+                self.kwargs = kwargs
+                return _FakeCreateStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(
+            messages=[{"role": "user", "content": "summarize this"}],
+            timeout=0,
+        )
+
+        assert "timeout" not in fake_client.responses.kwargs
+        assert fake_client.responses.kwargs["stream"] is True
+        assert response.choices[0].message.content == "summary"
+
     def test_enforces_total_timeout_while_stream_keeps_emitting_events(self):
         class _SlowAliveCreateStream:
             def __iter__(self):
@@ -2878,6 +2914,52 @@ class TestBuildCallKwargsToolDedup:
             provider="openai", model="gpt-4o", messages=[], tools=None,
         )
         assert "tools" not in kwargs
+
+
+class TestAuxiliaryTimeoutKwargs:
+    @pytest.mark.parametrize("timeout", [None, 0, 0.0, -1, -2.5])
+    def test_non_positive_timeouts_are_omitted(self, timeout):
+        kwargs = _build_call_kwargs(
+            provider="openai",
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "hello"}],
+            timeout=timeout,
+        )
+        assert "timeout" not in kwargs
+
+    def test_positive_timeout_is_preserved(self):
+        kwargs = _build_call_kwargs(
+            provider="openai",
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "hello"}],
+            timeout=12.5,
+        )
+        assert kwargs["timeout"] == 12.5
+
+    def test_configured_zero_timeout_is_not_forwarded(self):
+        client = MagicMock()
+        client.base_url = "https://example.test/v1"
+        client.chat.completions.create.return_value = {"ok": True}
+
+        with (
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"auxiliary": {"compression": {"timeout": 0}}},
+            ),
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("custom", "gpt-4o", None, None, None),
+            ),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(client, "gpt-4o")),
+            patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task: resp),
+        ):
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result == {"ok": True}
+        assert "timeout" not in client.chat.completions.create.call_args.kwargs
 
 
 @pytest.fixture(autouse=True)
