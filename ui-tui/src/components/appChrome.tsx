@@ -322,6 +322,7 @@ export function StatusRule({
   const bar = usage.context_max ? ctxBar(pct) : ''
   const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, cwdLabel)
   const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
+  const busyHint = busy ? 'Ctrl+C interrupt' : ''
   const handleSessionCountClick = (event: { stopImmediatePropagation?: () => void }) => {
     event.stopImmediatePropagation?.()
     onSessionCountClick?.()
@@ -399,6 +400,12 @@ export function StatusRule({
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
             {bgCount} bg
+          </Text>
+        ) : null}
+        {busyHint ? (
+          <Text color={t.color.warn} wrap="truncate-end">
+            {' │ '}
+            {busyHint}
           </Text>
         ) : null}
         {showCost && typeof usage.cost_usd === 'number' ? (

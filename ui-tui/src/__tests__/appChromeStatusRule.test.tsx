@@ -3,8 +3,11 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { StatusRule } from '../components/appChrome.js'
 import { DEFAULT_THEME } from '../theme.js'
+import type { Usage } from '../types.js'
 
 type ReactNodeLike = React.ReactNode
+
+const emptyUsage: Usage = { calls: 0, input: 0, output: 0, total: 0 }
 
 const textContent = (node: ReactNodeLike): string => {
   if (node === null || node === undefined || typeof node === 'boolean') {
@@ -71,7 +74,7 @@ describe('StatusRule session count click target', () => {
       statusColor: DEFAULT_THEME.color.ok,
       t: DEFAULT_THEME,
       turnStartedAt: null,
-      usage: { total: 0 },
+      usage: emptyUsage,
       voiceLabel: ''
     })
 
@@ -80,5 +83,28 @@ describe('StatusRule session count click target', () => {
     expect(clickableSessionCount).not.toBeNull()
     clickableSessionCount!.props.onClick({ stopImmediatePropagation: vi.fn() })
     expect(openSwitcher).toHaveBeenCalledOnce()
+  })
+})
+
+describe('StatusRule status hints', () => {
+  it('shows a compact interrupt hint while the agent is busy', () => {
+    const element = StatusRule({
+      bgCount: 0,
+      busy: true,
+      cols: 120,
+      cwdLabel: '',
+      liveSessionCount: 0,
+      model: 'openai/gpt-5.5',
+      sessionStartedAt: null,
+      showCost: false,
+      status: 'running',
+      statusColor: DEFAULT_THEME.color.warn,
+      t: DEFAULT_THEME,
+      turnStartedAt: null,
+      usage: emptyUsage,
+      voiceLabel: ''
+    })
+
+    expect(textContent(element)).toContain('Ctrl+C interrupt')
   })
 })
