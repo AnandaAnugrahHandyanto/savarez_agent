@@ -509,6 +509,74 @@ class TestWebSearchSchema:
         fake_search.assert_called_once_with("docs", 100)
 
 
+class TestWebCrawlSchema:
+    """Test suite for web_crawl tool schema and handler wiring."""
+
+    def test_schema_requires_url_and_makes_instructions_optional(self):
+        import tools.web_tools
+
+        schema = tools.web_tools.WEB_CRAWL_SCHEMA
+        properties = schema["parameters"]["properties"]
+
+        assert schema["name"] == "web_crawl"
+        assert "url" in properties
+        assert properties["url"]["type"] == "string"
+        assert "instructions" in properties
+        assert properties["instructions"]["type"] == "string"
+        assert schema["parameters"]["required"] == ["url"]
+        assert "instructions" not in schema["parameters"]["required"]
+
+    def test_tool_is_registered(self):
+        import tools.web_tools
+
+        entry = tools.web_tools.registry.get_entry("web_crawl")
+
+        assert entry is not None
+        assert entry.toolset == "web"
+        assert entry.is_async is True
+
+    def test_registered_handler_forwards_url_and_instructions(self):
+        import tools.web_tools
+
+        entry = tools.web_tools.registry.get_entry("web_crawl")
+        # web_crawl_tool is async; the real dispatcher awaits the coroutine
+        # via is_async=True. Here we only inspect arg forwarding, so close
+        # the returned coroutine to suppress the unawaited-coroutine warning.
+        with patch("tools.web_tools.web_crawl_tool") as mock_crawl:
+            entry.handler({
+                "url": "https://example.com",
+                "instructions": "list product pages",
+            }).close()
+
+        mock_crawl.assert_called_once_with(
+            "https://example.com", instructions="list product pages",
+        )
+
+    def test_registered_handler_passes_none_instructions_when_absent(self):
+        import tools.web_tools
+
+        entry = tools.web_tools.registry.get_entry("web_crawl")
+        with patch("tools.web_tools.web_crawl_tool") as mock_crawl:
+            entry.handler({"url": "https://example.com"}).close()
+
+        mock_crawl.assert_called_once_with("https://example.com", instructions=None)
+
+    def test_web_crawl_in_expected_toolsets(self):
+        from toolsets import _HERMES_CORE_TOOLS, TOOLSETS
+
+        assert "web_crawl" in _HERMES_CORE_TOOLS
+        assert "web_crawl" in TOOLSETS["web"]["tools"]
+        assert "web_crawl" in TOOLSETS["hermes-acp"]["tools"]
+        assert "web_crawl" in TOOLSETS["hermes-api-server"]["tools"]
+
+    def test_web_crawl_excluded_from_webhook_safe_tools(self):
+        """Webhook content is untrusted; crawl widens the prompt-injection
+        attack surface, so it must stay out of the webhook default."""
+        from toolsets import _HERMES_WEBHOOK_SAFE_TOOLS
+
+        assert "web_crawl" not in _HERMES_WEBHOOK_SAFE_TOOLS
+
+
 class TestWebSearchErrorHandling:
     """Test suite for web_search_tool() error responses."""
 
