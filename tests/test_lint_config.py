@@ -134,3 +134,23 @@ class TestToolsF541Regression:
         assert result.returncode == 0, (
             f"tools/ has {count} F541 violation(s)\n{result.stdout}"
         )
+
+class TestGatewayPlatformsF541Regression:
+    """gateway/platforms/feishu_comment_rules.py must have zero F541 violations."""
+
+    TARGET = REPO_ROOT / "gateway" / "platforms" / "feishu_comment_rules.py"
+
+    def test_feishu_comment_rules_has_zero_f541_violations(self) -> None:
+        """feishu_comment_rules.py should have no f-strings without placeholders."""
+        import subprocess, sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F541",
+             "--output-format=concise", str(self.TARGET)],
+            capture_output=True, text=True, check=False,
+        )
+
+        count = result.stdout.count("error[F541]")
+        assert result.returncode == 0, (
+            f"{self.TARGET.name} has {count} F541 violation(s)\n{result.stdout}"
+        )
