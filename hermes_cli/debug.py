@@ -44,6 +44,34 @@ _EMAIL_ADDRESS_RE = re.compile(
     r"(?![A-Za-z0-9._%+-])"
 )
 
+# Structured-PII patterns for upload-bound log content (debug share). These
+# catch PII that regex can mask reliably without shredding ordinary log noise
+# (timestamps, ids, counts). NOTE: bare personal NAMES are deliberately NOT
+# covered — they are not reliably regex-detectable, so the real protection for
+# names is HERMES_DEBUG_LOCAL_DEFAULT=1 (no upload by default). E.164 phones are
+# already handled upstream by agent.redact.redact_sensitive_text.
+_PII_PATTERNS = [
+    (re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "[REDACTED_SSN]"),
+    (re.compile(r"(?<!\d)(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}(?!\d)"),
+     "[REDACTED_PHONE]"),
+    (re.compile(
+        r"\b\d{1,6}\s+(?:[NSEW]\.?\s+)?[A-Za-z0-9.'\-]+(?:\s+[A-Za-z0-9.'\-]+){0,4}\s+"
+        r"(?:St|Street|Ave|Avenue|Rd|Road|Dr|Drive|Ln|Lane|Blvd|Boulevard|Way|Ct|Court|"
+        r"Cir|Circle|Pl|Place|Pkwy|Parkway|Hwy|Highway|Ter|Terrace|Trail|Loop)\b\.?",
+        re.I), "[REDACTED_ADDRESS]"),
+    (re.compile(r"\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b"), "[REDACTED_ZIP]"),
+]
+
+
+def _redact_pii_text(text: str) -> str:
+    """Mask structured PII (SSN, US/NA phones, street addresses, ZIP) in
+    upload-bound text. Over-redaction is the safe failure mode here."""
+    if not text:
+        return text
+    for rx, repl in _PII_PATTERNS:
+        text = rx.sub(repl, text)
+    return text
+
 
 # ---------------------------------------------------------------------------
 # Paste services — try paste.rs first, dpaste.com as fallback.
@@ -556,7 +584,8 @@ def _redact_log_text(text: str) -> str:
     from agent.redact import redact_sensitive_text
 
     text = redact_sensitive_text(text, force=True)
-    return _EMAIL_ADDRESS_RE.sub("[REDACTED_EMAIL]", text)
+    text = _EMAIL_ADDRESS_RE.sub("[REDACTED_EMAIL]", text)
+    return _redact_pii_text(text)
 
 
 def _capture_log_snapshot(

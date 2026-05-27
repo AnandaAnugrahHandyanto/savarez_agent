@@ -1557,3 +1557,43 @@ class TestUploadToGist:
         with patch("hermes_cli.debug.urllib.request.urlopen", return_value=resp):
             with pytest.raises(ValueError, match="no file URLs"):
                 upload_to_gist({"report.txt": "hi"})
+
+
+# ---------------------------------------------------------------------------
+# PII redaction for upload-bound log content: masks structured PII (SSN,
+# US/NA phones, street addresses, ZIP) while leaving ordinary log noise alone.
+# ---------------------------------------------------------------------------
+class TestRedactPiiText:
+    def test_masks_ssn_phone_address_zip(self):
+        from hermes_cli.debug import _redact_pii_text
+        s = ("Customer 602-834-5366 at 14892 E Summit Dr, Mesa AZ 85207; "
+             "ssn 602-83-4536; call (480) 266-6672 or 480.560.4318")
+        out = _redact_pii_text(s)
+        assert "602-834-5366" not in out
+        assert "480.560.4318" not in out
+        assert "602-83-4536" not in out
+        assert "14892 E Summit Dr" not in out
+        assert "AZ 85207" not in out
+        assert "[REDACTED_PHONE]" in out
+        assert "[REDACTED_SSN]" in out
+        assert "[REDACTED_ADDRESS]" in out
+        assert "[REDACTED_ZIP]" in out
+
+    def test_does_not_redact_log_noise(self):
+        from hermes_cli.debug import _redact_pii_text
+        for noise in (
+            "2026-05-26 12:28:16,049 INFO latency=30.0s in=19474 out=194 total=19668",
+            "session=20260526_122736_a64039a9 uptime=2401s rss=251MB",
+            "commit 003db3244 4 files changed, 507 insertions",
+        ):
+            assert _redact_pii_text(noise) == noise
+
+    def test_empty_is_noop(self):
+        from hermes_cli.debug import _redact_pii_text
+        assert _redact_pii_text("") == ""
+
+    def test_redact_log_text_runs_pii_pass(self):
+        from hermes_cli.debug import _redact_log_text
+        out = _redact_log_text("reach me at 602-834-5366")
+        assert "602-834-5366" not in out
+        assert "[REDACTED_PHONE]" in out
