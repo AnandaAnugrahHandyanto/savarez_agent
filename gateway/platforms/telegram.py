@@ -3839,7 +3839,10 @@ class TelegramAdapter(BasePlatformAdapter):
             opened_files: List[Any] = []
             try:
                 for image_url, alt_text in chunk:
-                    caption = alt_text[:1024] if alt_text else None
+                    # Match the markdown-aware caption handling that
+                    # _send_media_with_caption_fallback applies to single
+                    # photos so album members render the same way (#32839).
+                    caption_kwargs = self._caption_send_kwargs(alt_text)
                     if image_url.startswith("file://"):
                         local_path = _unquote(image_url[7:])
                         if not os.path.exists(local_path):
@@ -3850,9 +3853,9 @@ class TelegramAdapter(BasePlatformAdapter):
                             continue
                         fh = open(local_path, "rb")
                         opened_files.append(fh)
-                        media.append(InputMediaPhoto(media=fh, caption=caption))
+                        media.append(InputMediaPhoto(media=fh, **caption_kwargs))
                     else:
-                        media.append(InputMediaPhoto(media=image_url, caption=caption))
+                        media.append(InputMediaPhoto(media=image_url, **caption_kwargs))
 
                 if not media:
                     continue
