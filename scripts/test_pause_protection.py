@@ -27,15 +27,17 @@ sys.path.insert(0, PIPELINE_ROOT)
 sys.path.insert(0, MAC_SCRIPTS)
 sys.path.insert(0, str(Path(os.path.expanduser("~/.hermes/scripts")).resolve()))
 
-# Resolve AUTO_TRIM_LOC cross-platform: prefer Linux pipeline, then Linux
-# prod mirrors under ~/.hermes/, fall back to Mac git-repo scripts.
-_linux_autotrim   = Path(PIPELINE_ROOT) / "auto_trim.py"
+# Resolve AUTO_TRIM_LOC cross-platform: prefer Mac git-repo scripts,
+# then Linux pipeline, then Linux prod mirrors, and fall back.
 _mac_autotrim     = Path(MAC_SCRIPTS) / "auto_trim.py"
+_linux_autotrim   = Path(PIPELINE_ROOT) / "auto_trim.py"
 _linux_prod_auto  = Path(MAC_HERMES) / "linux_prod" / "auto_trim.py"
 _linux_prod_auto2 = Path(MAC_HERMES) / "linux_production" / "auto_trim.py"
 
 if os.environ.get("AUTO_TRIM_PATH"):
     AUTO_TRIM_LOC = os.environ["AUTO_TRIM_PATH"]
+elif _mac_autotrim.exists():
+    AUTO_TRIM_LOC = str(_mac_autotrim)
 elif _linux_autotrim.exists():
     AUTO_TRIM_LOC = str(_linux_autotrim)
 elif _linux_prod_auto.exists():
