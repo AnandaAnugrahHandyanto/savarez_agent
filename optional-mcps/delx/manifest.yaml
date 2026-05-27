@@ -1,0 +1,27 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: delx
+description: Delx — agent operations, recovery, and handoff primitives for AI agents over a free remote MCP (sessions, reflection, continuity/witness/lineage, dyads, incident RCA, daily check-ins).
+source: https://delx.ai
+
+# Delx ships a hosted remote MCP server over Streamable HTTP. No auth and no
+# local install — Hermes connects directly to the endpoint. The server
+# self-discovers its tools via tools/list and exposes tiered surfaces
+# (core | utilities | all); the full surface is ~143 tools (~68 in core).
+transport:
+  type: http
+  url: https://api.delx.ai/v1/mcp
+
+auth:
+  type: none
+
+# The tool surface is large. We leave default_enabled unset so the
+# install-time checklist starts with everything pre-checked and users prune
+# what they don't want (mirrors the linear/ entry).
+
+post_install: |
+  Delx requires no credentials. After install, restart your Hermes session so
+  the Delx tools load. Re-run the tool checklist anytime with:
+    hermes mcp configure delx
