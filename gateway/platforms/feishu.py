@@ -542,6 +542,103 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Markdown table → Feishu interactive card conversion
+# ---------------------------------------------------------------------------
+
+# Match a complete markdown table: header row + separator + data rows
+_TABLE_BLOCK_RE = re.compile(
+    r"(\|[^\n]+\|\n\|[-|: ]+\|\n(?:\|[^\n]+\|\n?)+)", re.MULTILINE
+)
+
+
+def _parse_markdown_table(table_text: str) -> dict:
+    """Parse a markdown table string into headers and rows.
+
+    Returns ``{"headers": [...], "rows": [[...], ...]}``.
+    """
+    lines = [line.strip() for line in table_text.strip().splitlines() if line.strip()]
+    if len(lines) < 3:
+        return {"headers": [], "rows": []}
+
+    def _split_cells(line: str) -> list[str]:
+        # Strip leading/trailing |, then split
+        inner = line.strip("|")
+        return [cell.strip() for cell in inner.split("|")]
+
+    headers = _split_cells(lines[0])
+    # lines[1] is the separator (|---|---|), skip it
+    rows = [_split_cells(line) for line in lines[2:]]
+    return {"headers": headers, "rows": rows}
+
+
+def _build_table_card_payload(content: str) -> str:
+    """Convert markdown content with tables into a Feishu interactive card JSON.
+
+    Non-table text becomes markdown elements; each table becomes a table element.
+    """
+    elements: list[dict] = []
+    last_end = 0
+
+    for match in _TABLE_BLOCK_RE.finditer(content):
+        # Add any text before this table as a markdown element
+        pre_text = content[last_end:match.start()].strip()
+        if pre_text:
+            elements.append({"tag": "markdown", "content": pre_text})
+
+        # Parse and add the table
+        table = _parse_markdown_table(match.group(0))
+        if table["headers"] and table["rows"]:
+            col_count = len(table["headers"])
+            # Build columns — use text data_type, auto width
+            columns = [
+                {
+                    "name": f"c{i}",
+                    "display_name": h,
+                    "data_type": "text",
+                    "width": "auto",
+                }
+                for i, h in enumerate(table["headers"])
+            ]
+            # Build rows
+            rows = []
+            for row in table["rows"]:
+                # Pad or trim to match header count
+                padded = (row + [""] * col_count)[:col_count]
+                rows.append({f"c{i}": cell for i, cell in enumerate(padded)})
+
+            elements.append({
+                "tag": "table",
+                "page_size": min(len(rows), 20),
+                "row_height": "low",
+                "header_style": {
+                    "text_align": "center",
+                    "text_size": "normal",
+                    "background_style": "grey",
+                    "bold": True,
+                },
+                "columns": columns,
+                "rows": rows,
+            })
+
+        last_end = match.end()
+
+    # Add any trailing text after the last table
+    trailing = content[last_end:].strip()
+    if trailing:
+        elements.append({"tag": "markdown", "content": trailing})
+
+    # If no tables were found (shouldn't happen), fall back to single markdown
+    if not elements:
+        elements.append({"tag": "markdown", "content": content})
+
+    card = {
+        "config": {"wide_screen_mode": True},
+        "elements": elements,
+    }
+    return json.dumps(card, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
 # Post payload builders and parsers
 # ---------------------------------------------------------------------------
 
@@ -4286,10 +4383,9 @@ class FeishuAdapter(BasePlatformAdapter):
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
         # Feishu post-type 'md' elements do not render markdown tables; sending
         # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+        # Convert tables to interactive card with structured table elements.
         if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+            return "interactive", _build_table_card_payload(content)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
