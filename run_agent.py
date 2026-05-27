@@ -7627,6 +7627,22 @@ class AIAgent:
         if pool is None:
             return False, has_retried_429
 
+        # Defensive guard: if a fallback provider is active and its
+        # provider name doesn't match the pool's provider, the pool
+        # belongs to the PRIMARY provider.  Mutating it based on fallback
+        # errors would corrupt the primary's credential state (see
+        # GH #33088) and, via _swap_credential, overwrite the base_url
+        # back to the primary's endpoint (see GH #33163).
+        current_provider = (getattr(self, "provider", "") or "").strip().lower()
+        pool_provider = getattr(pool, "provider", "") or ""
+        if current_provider and pool_provider and current_provider != pool_provider:
+            logger.warning(
+                "Credential pool provider mismatch: pool=%s, agent=%s — "
+                "skipping pool mutation to avoid cross-provider contamination",
+                pool_provider, current_provider,
+            )
+            return False, has_retried_429
+
         effective_reason = classified_reason
         if effective_reason is None:
             if status_code == 402:
@@ -9115,6 +9131,28 @@ class AIAgent:
             if hasattr(self, "_transport_cache"):
                 self._transport_cache.clear()
             self._fallback_activated = True
+
+            # Isolate the credential pool from the primary provider.
+            # Without this, _recover_with_credential_pool continues to
+            # operate on the PRIMARY's pool during fallback calls, causing
+            # two bugs:
+            #   1. _swap_credential overwrites self._client_kwargs["base_url"]
+            #      back to the primary's URL (e.g. chatgpt.com), so the
+            #      fallback provider's requests go to the wrong endpoint
+            #      (GH #33163).
+            #   2. Fallback-provider 429/billing errors are recorded against
+            #      the primary provider's pool entries, exhausting valid
+            #      primary credentials (GH #33088).
+            pool = getattr(self, "_credential_pool", None)
+            if pool is not None:
+                pool_provider = getattr(pool, "provider", "") or ""
+                if pool_provider.lower() != fb_provider:
+                    logger.info(
+                        "Fallback credential isolation: clearing %s pool "
+                        "(now on %s/%s)",
+                        pool_provider, fb_provider, fb_model,
+                    )
+                    self._credential_pool = None
 
             # Honor per-provider / per-model request_timeout_seconds for the
             # fallback target (same knob the primary client uses).  None = use
