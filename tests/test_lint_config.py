@@ -142,3 +142,32 @@ class TestGatewayLintRegression:
                 f"\n{result.stderr}" if result.stderr else ""
             )
         )
+
+
+class TestToolsLintRegression:
+    """Tools-level lint regression guards.
+
+    Each test asserts zero violations of a *specific* rule in a *specific*
+    tools file.  See test-driven-development skill for the pattern.
+    """
+
+    TARGET = REPO_ROOT / "tools" / "memory_tool.py"
+
+    def test_memory_tool_zero_f401_violations(self):
+        """tools/memory_tool.py must have zero F401 (unused-import) violations."""
+        import subprocess
+        import sys
+
+        assert self.TARGET.exists(), f"Target file not found: {self.TARGET}"
+
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F401",
+             "--output-format=concise", str(self.TARGET)],
+            capture_output=True, text=True, check=False,
+        )
+
+        assert result.returncode == 0, (
+            f"{self.TARGET} has F401 violation(s):\n{result.stdout}" + (
+                f"\n{result.stderr}" if result.stderr else ""
+            )
+        )
