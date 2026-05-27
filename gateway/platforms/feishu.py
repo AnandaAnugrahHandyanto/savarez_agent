@@ -2515,6 +2515,10 @@ class FeishuAdapter(BasePlatformAdapter):
         event = getattr(data, "event", None)
         action = getattr(event, "action", None)
         action_value = getattr(action, "value", {}) or {}
+        # _namespace_from_mapping converts dicts to SimpleNamespace in webhook
+        # mode; normalise back to dict so .get() routing works.
+        if isinstance(action_value, SimpleNamespace):
+            action_value = vars(action_value)
         hermes_action = action_value.get("hermes_action") if isinstance(action_value, dict) else None
         update_prompt_action = (
             action_value.get("hermes_update_prompt_action")
@@ -2799,6 +2803,14 @@ class FeishuAdapter(BasePlatformAdapter):
         action = getattr(event, "action", None)
         action_tag = str(getattr(action, "tag", "") or "button")
         action_value = getattr(action, "value", {}) or {}
+        # Normalise SimpleNamespace back to dict for JSON serialisation.
+        if isinstance(action_value, SimpleNamespace):
+            action_value = vars(action_value)
+        elif isinstance(action_value, str):
+            try:
+                action_value = json.loads(action_value)
+            except (json.JSONDecodeError, ValueError):
+                action_value = {}
 
         synthetic_text = f"/card {action_tag}"
         if action_value:
@@ -3331,7 +3343,32 @@ class FeishuAdapter(BasePlatformAdapter):
         elif event_type in {"im.message.reaction.created_v1", "im.message.reaction.deleted_v1"}:
             self._on_reaction_event(event_type, data)
         elif event_type == "card.action.trigger":
-            self._on_card_action_trigger(data)
+            card_response = self._on_card_action_trigger(data)
+            if card_response is not None and P2CardActionTriggerResponse is not None and isinstance(card_response, P2CardActionTriggerResponse):
+                resp_body: dict = {"code": 0, "msg": "ok"}
+                cb_card = getattr(card_response, "card", None)
+                if cb_card is not None:
+                    card_dict: dict = {}
+                    card_type = getattr(cb_card, "type", None)
+                    if card_type is not None:
+                        card_dict["type"] = card_type
+                    card_data = getattr(cb_card, "data", None)
+                    if card_data is not None:
+                        card_dict["data"] = card_data
+                    if card_dict:
+                        resp_body["card"] = card_dict
+                toast = getattr(card_response, "toast", None)
+                if toast is not None:
+                    toast_dict: dict = {}
+                    toast_type = getattr(toast, "type", None)
+                    if toast_type is not None:
+                        toast_dict["type"] = toast_type
+                    toast_content = getattr(toast, "content", None)
+                    if toast_content is not None:
+                        toast_dict["content"] = toast_content
+                    if toast_dict:
+                        resp_body["toast"] = toast_dict
+                return web.json_response(resp_body)
         elif event_type == "drive.notice.comment_add_v1":
             self._on_drive_comment_event(data)
         else:
