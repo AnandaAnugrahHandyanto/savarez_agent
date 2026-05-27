@@ -345,6 +345,71 @@ class TestWebServerEndpoints:
         if resp.status_code == 200:
             assert "FastAPI" not in resp.text  # Should not serve the actual source
 
+    def test_get_sessions_handles_null_timestamps(self):
+        """GET /api/sessions must not crash when started_at or last_active is None.
+
+        Regression test for TypeError: unsupported operand type(s) for -:
+        'float' and 'NoneType' in get_sessions active-check.
+        """
+        from hermes_state import SessionDB
+        import hermes_cli.web_server as web_server
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="null-ts-test-1",
+                source="cli",
+                model="test-model",
+            )
+        finally:
+            db.close()
+
+        sessions_with_none_ts = [{
+            "id": "null-ts-test-1",
+            "ended_at": None,
+            "last_active": None,
+            "started_at": None,
+        }]
+        now = 1000000.0
+        active = sum(
+            1 for s in sessions_with_none_ts
+            if s.get("ended_at") is None
+            and (now - (s.get("last_active") or s.get("started_at") or 0)) < 300
+        )
+        assert active == 0
+
+        sessions_with_real_ts = [{
+            "id": "null-ts-test-2",
+            "ended_at": None,
+            "last_active": None,
+            "started_at": 999900.0,
+        }]
+        active2 = sum(
+            1 for s in sessions_with_real_ts
+            if s.get("ended_at") is None
+            and (now - (s.get("last_active") or s.get("started_at") or 0)) < 300
+        )
+        assert active2 == 1
+
+    def test_get_status_handles_null_timestamps_in_active_count(self):
+        """GET /api/status active_sessions count must not crash on null timestamps.
+
+        Regression test for the same TypeError in the status endpoint's
+        active_sessions calculation.
+        """
+        now = 1000000.0
+        sessions = [
+            {"ended_at": None, "last_active": None, "started_at": None},
+            {"ended_at": None, "last_active": None, "started_at": 999900.0},
+            {"ended_at": 999950.0, "last_active": None, "started_at": 999800.0},
+        ]
+        active = sum(
+            1 for s in sessions
+            if s.get("ended_at") is None
+            and (now - (s.get("last_active") or s.get("started_at") or 0)) < 300
+        )
+        assert active == 1
+
 
 # ---------------------------------------------------------------------------
 # _build_schema_from_config tests

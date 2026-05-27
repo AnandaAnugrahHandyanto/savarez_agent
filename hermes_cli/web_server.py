@@ -614,7 +614,7 @@ async def get_status():
             active_sessions = sum(
                 1 for s in sessions
                 if s.get("ended_at") is None
-                and (now - s.get("last_active", s.get("started_at", 0))) < 300
+                and (now - (s.get("last_active") or s.get("started_at") or 0)) < 300
             )
         finally:
             db.close()
@@ -784,7 +784,7 @@ async def get_sessions(limit: int = 20, offset: int = 0):
             for s in sessions:
                 s["is_active"] = (
                     s.get("ended_at") is None
-                    and (now - s.get("last_active", s.get("started_at", 0))) < 300
+                    and (now - (s.get("last_active") or s.get("started_at") or 0)) < 300
                 )
             return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
         finally:
