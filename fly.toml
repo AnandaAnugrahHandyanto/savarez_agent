@@ -1,8 +1,7 @@
 app = "hermes-agent-rnadwa"
 primary_region = "syd"
 
-[experimental]
-cmd = [ "/opt/hermes/docker/main-wrapper.sh" ]
+
 
 [build]
 
