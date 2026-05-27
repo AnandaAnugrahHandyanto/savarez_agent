@@ -441,6 +441,23 @@ _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
 _CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 
 
+def _is_none_iterable_type_error(exc: TypeError) -> bool:
+    msg = str(exc)
+    return "NoneType" in msg and "not iterable" in msg
+
+
+class _NullResponsesStreamError(RuntimeError):
+    """The SDK/provider returned no iterable stream object."""
+
+
+def _ensure_responses_stream(stream: Any, *, path: str) -> Any:
+    if stream is None:
+        raise _NullResponsesStreamError(
+            f"{path} returned None instead of an iterable Responses stream."
+        )
+    return stream
+
+
 def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
     """Headers required to avoid Cloudflare 403s on chatgpt.com/backend-api/codex.
 
@@ -791,31 +808,101 @@ class _CodexCompletionsAdapter:
             collected_output_items: List[Any] = []
             collected_text_deltas: List[str] = []
             has_function_calls = False
+
+            def _collect_stream_event(_event: Any) -> Optional[Any]:
+                nonlocal has_function_calls
+                _check_cancelled()
+                _etype = getattr(_event, "type", "")
+                if _etype == "response.output_item.done":
+                    _done = getattr(_event, "item", None)
+                    if _done is not None:
+                        collected_output_items.append(_done)
+                elif "output_text.delta" in _etype:
+                    _delta = getattr(_event, "delta", "")
+                    if _delta:
+                        collected_text_deltas.append(_delta)
+                elif "function_call" in _etype:
+                    has_function_calls = True
+
+                if _etype not in {"response.completed", "response.incomplete", "response.failed"}:
+                    return None
+                return getattr(_event, "response", None)
+
+            def _consume_create_stream() -> Any:
+                create_kwargs = dict(resp_kwargs)
+                create_kwargs["stream"] = True
+                stream_or_response = self._client.responses.create(**create_kwargs)
+                if stream_or_response is None:
+                    raise RuntimeError(
+                        "Codex auxiliary Responses create(stream=True) returned "
+                        "None instead of a response stream."
+                    )
+                if hasattr(stream_or_response, "output"):
+                    return stream_or_response
+                terminal_response = None
+                try:
+                    for _event in stream_or_response:
+                        maybe_terminal = _collect_stream_event(_event)
+                        if maybe_terminal is not None:
+                            terminal_response = maybe_terminal
+                            return terminal_response
+                finally:
+                    close_fn = getattr(stream_or_response, "close", None)
+                    if callable(close_fn):
+                        try:
+                            close_fn()
+                        except Exception:
+                            pass
+                if terminal_response is not None:
+                    return terminal_response
+                raise RuntimeError(
+                    "Codex auxiliary Responses create(stream=True) did not emit "
+                    "a terminal response."
+                )
+
             if total_timeout:
                 timeout_timer = threading.Timer(float(total_timeout), _close_client_on_timeout)
                 timeout_timer.daemon = True
                 timeout_timer.start()
             _check_cancelled()
-            with self._client.responses.stream(**resp_kwargs) as stream:
-                for _event in stream:
+            try:
+                stream_cm = _ensure_responses_stream(
+                    self._client.responses.stream(**resp_kwargs),
+                    path="Codex auxiliary Responses stream",
+                )
+                with stream_cm as stream:
+                    stream = _ensure_responses_stream(
+                        stream,
+                        path="Codex auxiliary Responses stream.__enter__()",
+                    )
+                    for _event in stream:
+                        _collect_stream_event(_event)
                     _check_cancelled()
-                    _etype = getattr(_event, "type", "")
-                    if _etype == "response.output_item.done":
-                        _done = getattr(_event, "item", None)
-                        if _done is not None:
-                            collected_output_items.append(_done)
-                    elif "output_text.delta" in _etype:
-                        _delta = getattr(_event, "delta", "")
-                        if _delta:
-                            collected_text_deltas.append(_delta)
-                    elif "function_call" in _etype:
-                        has_function_calls = True
-                _check_cancelled()
-                final = stream.get_final_response()
+                    final = stream.get_final_response()
+            except _NullResponsesStreamError:
+                logger.debug(
+                    "Codex auxiliary Responses stream returned no iterable; "
+                    "falling back to create(stream=True)."
+                )
+                final = _consume_create_stream()
+            except TypeError as exc:
+                if not _is_none_iterable_type_error(exc):
+                    raise
+                logger.debug(
+                    "Codex auxiliary Responses stream had no iterable; "
+                    "falling back to create(stream=True)."
+                )
+                final = _consume_create_stream()
+
+            if final is None:
+                raise RuntimeError(
+                    "Codex auxiliary Responses stream returned None instead "
+                    "of a final response."
+                )
 
             # Backfill empty output from collected stream events
             _output = getattr(final, "output", None)
-            if isinstance(_output, list) and not _output:
+            if not _output:
                 if collected_output_items:
                     final.output = list(collected_output_items)
                     logger.debug(

@@ -25,6 +25,52 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+class _NullResponsesStreamError(RuntimeError):
+    """The SDK/provider returned no iterable stream object."""
+
+
+def _is_none_iterable_type_error(exc: TypeError) -> bool:
+    """Return True for SDK stream internals failing on a missing iterator."""
+    msg = str(exc)
+    return "NoneType" in msg and "not iterable" in msg
+
+
+def _ensure_responses_stream(stream: Any, *, path: str) -> Any:
+    if stream is None:
+        raise _NullResponsesStreamError(
+            f"{path} returned None instead of an iterable Responses stream."
+        )
+    return stream
+
+
+def _run_codex_non_stream_create_fallback(
+    agent,
+    api_kwargs: dict,
+    active_client: Any,
+    *,
+    reason: str,
+):
+    """Final recovery path when both SDK streaming surfaces are unusable."""
+    logger.debug(
+        "Codex Responses stream fallback failed (%s); trying non-stream create(). %s",
+        reason,
+        agent._client_log_context(),
+    )
+    non_stream_kwargs = dict(api_kwargs)
+    non_stream_kwargs.pop("stream", None)
+    non_stream_kwargs = agent._get_transport().preflight_kwargs(
+        non_stream_kwargs,
+        allow_stream=False,
+    )
+    response = active_client.responses.create(**non_stream_kwargs)
+    if response is None:
+        raise RuntimeError(
+            "Responses create() non-stream fallback returned None instead of "
+            "a response."
+        )
+    return response
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -192,7 +238,15 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             raise InterruptedError("Agent interrupted before Codex stream retry")
         collected_output_items: list = []
         try:
-            with active_client.responses.stream(**api_kwargs) as stream:
+            stream_cm = _ensure_responses_stream(
+                active_client.responses.stream(**api_kwargs),
+                path="Responses.stream()",
+            )
+            with stream_cm as stream:
+                stream = _ensure_responses_stream(
+                    stream,
+                    path="Responses.stream().__enter__()",
+                )
                 for event in stream:
                     agent._touch_activity("receiving stream response")
                     if agent._interrupt_requested:
@@ -245,7 +299,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 # but get_final_response() can return an empty output list.
                 # Backfill from collected items or synthesize from deltas.
                 _out = getattr(final_response, "output", None)
-                if isinstance(_out, list) and not _out:
+                if not _out:
                     if collected_output_items:
                         final_response.output = list(collected_output_items)
                         logger.debug(
@@ -277,6 +331,42 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 continue
             logger.debug(
                 "Codex Responses stream transport failed; falling back to create(stream=True). %s error=%s",
+                agent._client_log_context(),
+                exc,
+            )
+            return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+        except _NullResponsesStreamError as exc:
+            if attempt < max_stream_retries:
+                logger.debug(
+                    "Codex Responses stream returned no iterable stream (attempt %s/%s); retrying. %s error=%s",
+                    attempt + 1,
+                    max_stream_retries + 1,
+                    agent._client_log_context(),
+                    exc,
+                )
+                continue
+            logger.debug(
+                "Codex Responses stream returned no iterable stream; falling back to create(stream=True). %s error=%s",
+                agent._client_log_context(),
+                exc,
+            )
+            return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+        except TypeError as exc:
+            if not _is_none_iterable_type_error(exc):
+                raise
+            if attempt < max_stream_retries:
+                logger.debug(
+                    "Codex Responses stream failed with a missing internal iterator "
+                    "(attempt %s/%s); retrying. %s error=%s",
+                    attempt + 1,
+                    max_stream_retries + 1,
+                    agent._client_log_context(),
+                    exc,
+                )
+                continue
+            logger.debug(
+                "Codex Responses stream failed with a missing internal iterator; "
+                "falling back to create(stream=True). %s error=%s",
                 agent._client_log_context(),
                 exc,
             )
@@ -339,6 +429,13 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
     fallback_kwargs["stream"] = True
     fallback_kwargs = agent._get_transport().preflight_kwargs(fallback_kwargs, allow_stream=True)
     stream_or_response = active_client.responses.create(**fallback_kwargs)
+    if stream_or_response is None:
+        return _run_codex_non_stream_create_fallback(
+            agent,
+            api_kwargs,
+            active_client,
+            reason="create(stream=True) returned None",
+        )
 
     # Compatibility shim for mocks or providers that still return a concrete response.
     if hasattr(stream_or_response, "output"):
@@ -408,7 +505,7 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
             if terminal_response is not None:
                 # Backfill empty output from collected stream events
                 _out = getattr(terminal_response, "output", None)
-                if isinstance(_out, list) and not _out:
+                if not _out:
                     if collected_output_items:
                         terminal_response.output = list(collected_output_items)
                         logger.debug(
@@ -427,6 +524,15 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
                             len(collected_text_deltas), len(assembled),
                         )
                 return terminal_response
+    except TypeError as exc:
+        if not _is_none_iterable_type_error(exc):
+            raise
+        return _run_codex_non_stream_create_fallback(
+            agent,
+            api_kwargs,
+            active_client,
+            reason="create(stream=True) iterator was missing",
+        )
     finally:
         close_fn = getattr(stream_or_response, "close", None)
         if callable(close_fn):
@@ -437,7 +543,12 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
 
     if terminal_response is not None:
         return terminal_response
-    raise RuntimeError("Responses create(stream=True) fallback did not emit a terminal response.")
+    return _run_codex_non_stream_create_fallback(
+        agent,
+        api_kwargs,
+        active_client,
+        reason="create(stream=True) did not emit a terminal response",
+    )
 
 
 

@@ -2404,6 +2404,126 @@ class TestCodexAuxiliaryAdapterTimeout:
 
         assert time.monotonic() - started < 0.14
 
+    def test_stream_context_returning_none_falls_back_to_create_stream(self):
+        class NullEnteringStream:
+            def __enter__(self):
+                return None
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeResponses:
+            def __init__(self):
+                self.calls = {"stream": 0, "create": 0}
+
+            def stream(self, **kwargs):
+                self.calls["stream"] += 1
+                return NullEnteringStream()
+
+            def create(self, **kwargs):
+                self.calls["create"] += 1
+                assert kwargs.get("stream") is True
+                return SimpleNamespace(
+                    output=[SimpleNamespace(
+                        type="message",
+                        content=[SimpleNamespace(type="output_text", text="fallback summary")],
+                    )],
+                    usage=None,
+                )
+
+        fake_responses = FakeResponses()
+        fake_client = SimpleNamespace(responses=fake_responses)
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "summarize this"}])
+
+        assert fake_responses.calls == {"stream": 1, "create": 1}
+        assert response.choices[0].message.content == "fallback summary"
+
+    def test_gpt55_chatgpt_auxiliary_uses_sdk_stream_when_stream_succeeds(self):
+        class WorkingStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                return iter(())
+
+            def get_final_response(self):
+                return SimpleNamespace(
+                    output=[SimpleNamespace(
+                        type="message",
+                        content=[SimpleNamespace(type="output_text", text="Hermes status check")],
+                    )],
+                    usage=None,
+                )
+
+        class FakeResponses:
+            def __init__(self):
+                self.calls = {"stream": 0, "create": 0}
+
+            def stream(self, **kwargs):
+                self.calls["stream"] += 1
+                assert kwargs["model"] == "gpt-5.5"
+                return WorkingStream()
+
+            def create(self, **kwargs):
+                self.calls["create"] += 1
+                raise AssertionError("responses.create(stream=True) should only run after stream failure")
+
+        fake_responses = FakeResponses()
+        fake_client = SimpleNamespace(
+            responses=fake_responses,
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "summarize this"}])
+
+        assert fake_responses.calls == {"stream": 1, "create": 0}
+        assert response.choices[0].message.content == "Hermes status check"
+
+    def test_stream_none_iterable_falls_back_to_create_stream(self):
+        class BrokenStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                raise TypeError("'NoneType' object is not iterable")
+
+        class FakeResponses:
+            def __init__(self):
+                self.calls = {"stream": 0, "create": 0}
+
+            def stream(self, **kwargs):
+                self.calls["stream"] += 1
+                return BrokenStream()
+
+            def create(self, **kwargs):
+                self.calls["create"] += 1
+                assert kwargs.get("stream") is True
+                return SimpleNamespace(
+                    output=[SimpleNamespace(
+                        type="message",
+                        content=[SimpleNamespace(type="output_text", text="fallback title")],
+                    )],
+                    usage=None,
+                )
+
+        fake_responses = FakeResponses()
+        fake_client = SimpleNamespace(responses=fake_responses)
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5-codex")
+
+        response = adapter.create(messages=[{"role": "user", "content": "summarize this"}])
+
+        assert fake_responses.calls == {"stream": 1, "create": 1}
+        assert response.choices[0].message.content == "fallback title"
+
 
 # ---------------------------------------------------------------------------
 # Issue #23432 — auxiliary timeout poisons cached client; later aux calls fail
