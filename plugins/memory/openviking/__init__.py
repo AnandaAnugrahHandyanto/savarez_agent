@@ -328,10 +328,6 @@ ADD_RESOURCE_SCHEMA = {
 }
 
 
-<<<<<<< HEAD
-=======
-
->>>>>>> origin/main
 def _is_windows_absolute_path(value: str) -> bool:
     return (
         len(value) >= 3
@@ -878,26 +874,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
         parsed_url = urlparse(url)
         if parsed_url.scheme == "file":
             return tool_error(local_path_error)
-<<<<<<< HEAD
-        if _is_local_path_reference(url):
-            return tool_error(local_path_error)
-
-        if parsed_url.scheme and not _is_windows_absolute_path(url):
-            payload["path"] = url
-        elif _is_remote_resource_source(url):
-            payload["path"] = url
-        else:
-            return tool_error(
-                "Unsupported resource source. Provide a remote URL reachable by OpenViking."
-            )
-
-=======
         if parsed_url.scheme and not _is_windows_absolute_path(url) and not _is_remote_resource_source(url):
             return tool_error(f"Unsupported resource URL scheme: {parsed_url.scheme}")
         if _is_local_path_reference(url):
             return tool_error(local_path_error)
         payload["path"] = url
->>>>>>> origin/main
         resp = self._client.post("/api/v1/resources", payload)
         result = resp.get("result", {})
 
