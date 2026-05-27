@@ -23,6 +23,7 @@ from hermes_cli.tools_config import (
 )
 
 
+from agent.i18n import t
 def test_agent_disabled_toolsets_suppresses_across_platforms():
     """agent.disabled_toolsets in config.yaml should remove those toolsets
     from the enabled set, regardless of platform defaults or explicit config.

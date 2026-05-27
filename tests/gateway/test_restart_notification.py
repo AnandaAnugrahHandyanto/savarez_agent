@@ -20,6 +20,7 @@ from tests.gateway.restart_test_helpers import (
 # ── restart marker helpers ───────────────────────────────────────────────
 
 
+from agent.i18n import t
 def test_restart_notification_pending_false_without_marker(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 

@@ -14,6 +14,7 @@ To run:
 The pattern mirrors `scripts/parrot_openrouter.py` (the working reference).
 """
 from __future__ import annotations
+from agent.i18n import t
 
 import argparse
 import os

@@ -20,6 +20,7 @@ from tools.environments.local import (
 )
 
 
+from agent.i18n import t
 class TestResolveSafeCwd:
     """Pure-function unit tests for the recovery helper."""
 

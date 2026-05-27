@@ -32,6 +32,7 @@ from tools.file_tools import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+from agent.i18n import t
 class _FakeReadResult:
     """Minimal stand-in for FileOperations.read_file return value."""
     def __init__(self, content="line1\nline2\n", total_lines=2, file_size=100):

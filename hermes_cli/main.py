@@ -56,6 +56,7 @@ Usage:
 # this guard, hermes crashes on import and the user can't run
 # ``hermes update`` to recover.  Missing the bootstrap means UTF-8 stdio
 # setup is skipped on Windows — degraded, not broken.  POSIX is unaffected.
+from agent.i18n import t
 try:
     import hermes_bootstrap  # noqa: F401
 except ModuleNotFoundError:

@@ -30,6 +30,7 @@ from hermes_cli.plugins import (
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 
+from agent.i18n import t
 def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
                      manifest_extra: dict | None = None,
                      auto_enable: bool = True) -> Path:

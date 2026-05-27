@@ -19,6 +19,7 @@ from tools.environments.local import (
 )
 
 
+from agent.i18n import t
 class TestResolveShellInitFiles:
     def test_auto_sources_bashrc_when_present(self, tmp_path, monkeypatch):
         bashrc = tmp_path / ".bashrc"

@@ -1,6 +1,7 @@
 """Helpers for Nous subscription managed-tool capabilities."""
 
 from __future__ import annotations
+from agent.i18n import t
 
 from dataclasses import dataclass
 from pathlib import Path

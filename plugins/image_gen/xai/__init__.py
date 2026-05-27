@@ -16,6 +16,7 @@ Selection precedence (first hit wins):
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 import logging
 import os

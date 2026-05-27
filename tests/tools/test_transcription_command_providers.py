@@ -17,6 +17,7 @@ identically on Linux, macOS, and Windows (with minor quoting differences).
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 import os
 import subprocess

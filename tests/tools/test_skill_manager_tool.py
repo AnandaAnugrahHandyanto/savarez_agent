@@ -27,6 +27,7 @@ from tools.skill_manager_tool import (
 )
 
 
+from agent.i18n import t
 @contextmanager
 def _skill_dir(tmp_path):
     """Patch both SKILLS_DIR and get_all_skills_dirs so _find_skill searches

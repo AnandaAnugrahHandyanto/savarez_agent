@@ -18,6 +18,7 @@ from hermes_cli.auth import (
 # =============================================================================
 
 
+from agent.i18n import t
 class TestXiaomiProviderRegistry:
     """Verify Xiaomi is registered correctly in the PROVIDER_REGISTRY."""
 

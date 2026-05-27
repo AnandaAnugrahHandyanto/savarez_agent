@@ -15,6 +15,7 @@ from gateway.sticker_cache import (
 )
 
 
+from agent.i18n import t
 class TestLoadSaveCache:
     def test_load_missing_file(self, tmp_path):
         with patch("gateway.sticker_cache.CACHE_PATH", tmp_path / "nope.json"):

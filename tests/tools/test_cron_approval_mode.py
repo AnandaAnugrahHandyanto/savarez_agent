@@ -12,6 +12,7 @@ from tools.approval import (
 )
 
 
+from agent.i18n import t
 @pytest.fixture(autouse=True)
 def _clear_approval_state():
     approval_module._permanent_approved.clear()

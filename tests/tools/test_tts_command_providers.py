@@ -49,6 +49,7 @@ from tools.tts_tool import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+from agent.i18n import t
 def _python_copy_command(output_placeholder: str = "{output_path}") -> str:
     """Return a cross-platform shell command that copies {input_path} -> output."""
     interpreter = sys.executable

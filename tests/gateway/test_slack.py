@@ -29,6 +29,7 @@ from gateway.platforms.base import (
 # Mock the slack-bolt package if it's not installed
 # ---------------------------------------------------------------------------
 
+from agent.i18n import t
 def _ensure_slack_mock():
     """Install mock slack modules so SlackAdapter can be imported."""
     if "slack_bolt" in sys.modules and hasattr(sys.modules["slack_bolt"], "__file__"):

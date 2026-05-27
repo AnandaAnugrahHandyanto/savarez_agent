@@ -51,6 +51,7 @@ from gateway.platforms.signal_rate_limit import (
     get_scheduler,
 )
 
+from agent.i18n import t
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------

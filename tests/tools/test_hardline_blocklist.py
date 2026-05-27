@@ -29,6 +29,7 @@ from tools.approval import (
 # -------------------------------------------------------------------------
 
 # Commands that MUST be hardline-blocked.
+from agent.i18n import t
 _HARDLINE_BLOCK = [
     # rm -rf targeting root / system dirs / home
     "rm -rf /",

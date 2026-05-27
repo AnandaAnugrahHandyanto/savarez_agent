@@ -18,6 +18,7 @@ from gateway.stream_consumer import (
 )
 
 
+from agent.i18n import t
 def _make_adapter(send_result=None, edit_result=None, max_length=4096):
     adapter = MagicMock()
     adapter.send = AsyncMock(

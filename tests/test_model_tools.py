@@ -19,6 +19,7 @@ from model_tools import (
 # handle_function_call
 # =========================================================================
 
+from agent.i18n import t
 class TestHandleFunctionCall:
     def test_agent_loop_tool_returns_error(self):
         for tool_name in _AGENT_LOOP_TOOLS:

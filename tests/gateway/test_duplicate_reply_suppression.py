@@ -33,6 +33,7 @@ from gateway.session import SessionSource, build_session_key
 # Helpers
 # ---------------------------------------------------------------------------
 
+from agent.i18n import t
 class StubAdapter(BasePlatformAdapter):
     """Minimal concrete adapter for testing."""
 

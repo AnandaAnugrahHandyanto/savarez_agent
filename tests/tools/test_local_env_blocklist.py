@@ -19,6 +19,7 @@ from tools.environments.local import (
 )
 
 
+from agent.i18n import t
 def _make_fake_popen(captured: dict):
     """Return a fake Popen constructor that records the env kwarg."""
     def fake_popen(cmd, **kwargs):

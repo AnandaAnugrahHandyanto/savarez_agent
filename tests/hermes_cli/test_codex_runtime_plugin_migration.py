@@ -1,6 +1,7 @@
 """Tests for the codex MCP plugin migration helper."""
 
 from __future__ import annotations
+from agent.i18n import t
 
 from pathlib import Path
 

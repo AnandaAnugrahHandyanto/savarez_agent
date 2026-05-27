@@ -39,6 +39,7 @@ from gateway.platforms.webhook import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+from agent.i18n import t
 def _make_config(
     routes=None,
     secret="",

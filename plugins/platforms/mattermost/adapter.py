@@ -12,6 +12,7 @@ Environment variables:
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 import asyncio
 import json

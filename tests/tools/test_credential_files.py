@@ -19,6 +19,7 @@ from tools.credential_files import (
 )
 
 
+from agent.i18n import t
 @pytest.fixture(autouse=True)
 def _clean_state():
     """Reset module state between tests."""

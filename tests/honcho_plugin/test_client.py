@@ -21,6 +21,7 @@ from plugins.memory.honcho.client import (
 )
 
 
+from agent.i18n import t
 class TestHonchoClientConfigDefaults:
     def test_default_values(self):
         config = HonchoClientConfig()

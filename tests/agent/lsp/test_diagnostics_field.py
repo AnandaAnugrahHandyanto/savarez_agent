@@ -5,6 +5,7 @@ semantic errors (``lsp_diagnostics``) as separate signals rather than
 having LSP output prepended to the lint string.
 """
 from __future__ import annotations
+from agent.i18n import t
 
 import os
 import sys

@@ -7,6 +7,7 @@ the pixels directly on its next turn.
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 import asyncio
 import base64

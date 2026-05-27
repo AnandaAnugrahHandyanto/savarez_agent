@@ -16,6 +16,7 @@ from tools.file_tools import (
 )
 
 
+from agent.i18n import t
 class TestReadFileHandler:
     @patch("tools.file_tools._get_file_ops")
     def test_returns_file_content(self, mock_get):

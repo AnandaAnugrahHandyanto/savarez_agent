@@ -6,6 +6,7 @@ Unrecognized schema: "object"`` errors on local inference backends.
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 import copy
 

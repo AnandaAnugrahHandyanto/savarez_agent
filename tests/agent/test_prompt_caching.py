@@ -9,6 +9,7 @@ from agent.prompt_caching import (
 )
 
 
+from agent.i18n import t
 MARKER = {"type": "ephemeral"}
 
 

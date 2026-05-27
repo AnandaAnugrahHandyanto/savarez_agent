@@ -881,6 +881,7 @@ class TestProcessToolHandler:
 from tools.process_registry import format_process_notification
 
 
+from agent.i18n import t
 def test_format_completion_event():
     evt = {
         "type": "completion",

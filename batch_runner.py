@@ -22,6 +22,7 @@ Usage:
 
 # IMPORTANT: hermes_bootstrap must be the very first import — UTF-8 stdio
 # on Windows.  No-op on POSIX.  See hermes_bootstrap.py for full rationale.
+from agent.i18n import t
 try:
     import hermes_bootstrap  # noqa: F401
 except ModuleNotFoundError:

@@ -31,6 +31,7 @@ from tools.mcp_oauth import (
 # HermesTokenStorage
 # ---------------------------------------------------------------------------
 
+from agent.i18n import t
 class TestHermesTokenStorage:
     def test_roundtrip_tokens(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

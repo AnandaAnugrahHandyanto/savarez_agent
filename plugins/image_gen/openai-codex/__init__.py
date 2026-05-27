@@ -18,6 +18,7 @@ Output is saved as PNG under ``$HERMES_HOME/cache/images/``.
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 import logging
 from typing import Any, Dict, List, Optional, Tuple

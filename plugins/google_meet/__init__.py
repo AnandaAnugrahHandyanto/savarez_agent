@@ -14,6 +14,7 @@ passed in. No calendar scanning, no auto-dial, no consent announcement.
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 import logging
 import platform

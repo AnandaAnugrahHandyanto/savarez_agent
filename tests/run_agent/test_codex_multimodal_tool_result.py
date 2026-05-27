@@ -11,6 +11,7 @@ This file verifies the Codex Responses adapter:
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 from agent.codex_responses_adapter import (
     _chat_messages_to_responses_input,

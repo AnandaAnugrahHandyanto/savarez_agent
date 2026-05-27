@@ -22,6 +22,7 @@ from hermes_cli.config import (
 # ---------------------------------------------------------------------------
 
 
+from agent.i18n import t
 class TestReloadEnv:
     """Tests for reload_env() — re-reads .env into os.environ."""
 

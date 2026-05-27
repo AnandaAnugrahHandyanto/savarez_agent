@@ -34,6 +34,7 @@ from agent.transports import get_transport
 # ---------------------------------------------------------------------------
 
 
+from agent.i18n import t
 class TestIsOAuthToken:
     def test_setup_token(self):
         assert _is_oauth_token("sk-ant-oat01-abcdef1234567890") is True

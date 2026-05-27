@@ -14,6 +14,7 @@ sites unchanged.  Symbols that tests patch on ``run_agent`` (e.g.
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 import concurrent.futures
 import contextvars

@@ -1,6 +1,7 @@
 """ACP agent server — exposes Hermes Agent via the Agent Client Protocol."""
 
 from __future__ import annotations
+from agent.i18n import t
 
 import asyncio
 from datetime import datetime, timezone

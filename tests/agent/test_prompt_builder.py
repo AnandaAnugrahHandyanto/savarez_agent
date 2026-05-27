@@ -37,6 +37,7 @@ from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatu
 # =========================================================================
 
 
+from agent.i18n import t
 class TestGuidanceConstants:
     def test_memory_guidance_discourages_task_logs(self):
         assert "durable facts" in MEMORY_GUIDANCE

@@ -1,6 +1,7 @@
 """Adapter-layer tests for Feishu bot-sender admission (``FeishuAdapter._admit``)."""
 
 from __future__ import annotations
+from agent.i18n import t
 
 from types import SimpleNamespace
 from typing import Any

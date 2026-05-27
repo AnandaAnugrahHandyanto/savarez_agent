@@ -30,6 +30,7 @@ from plugins.memory.honcho.session import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+from agent.i18n import t
 def _make_session(**kwargs) -> HonchoSession:
     return HonchoSession(
         key=kwargs.get("key", "cli:test"),

@@ -30,6 +30,7 @@ from hermes_cli.setup import (
     prompt_yes_no,
 )
 
+from agent.i18n import t
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()

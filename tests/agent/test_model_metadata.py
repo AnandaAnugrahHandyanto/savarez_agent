@@ -39,6 +39,7 @@ from agent.model_metadata import (
 # Token estimation
 # =========================================================================
 
+from agent.i18n import t
 class TestEstimateTokensRough:
     def test_empty_string(self):
         assert estimate_tokens_rough("") == 0

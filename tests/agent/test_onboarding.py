@@ -1,6 +1,7 @@
 """Tests for agent/onboarding.py — contextual first-touch hint helpers."""
 
 from __future__ import annotations
+from agent.i18n import t
 
 import yaml
 import pytest

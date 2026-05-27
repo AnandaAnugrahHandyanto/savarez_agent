@@ -16,6 +16,7 @@ VERSION` if you want reproducibility across an OS bump.
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 import asyncio
 import base64

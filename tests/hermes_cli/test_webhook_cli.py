@@ -16,6 +16,7 @@ from hermes_cli.webhook import (
 )
 
 
+from agent.i18n import t
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

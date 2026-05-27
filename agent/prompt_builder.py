@@ -26,6 +26,7 @@ from agent.skill_utils import (
 )
 from utils import atomic_json_write
 
+from agent.i18n import t
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------

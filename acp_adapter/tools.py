@@ -1,6 +1,7 @@
 """ACP tool-call helpers for mapping hermes tools to ACP ToolKind and building content."""
 
 from __future__ import annotations
+from agent.i18n import t
 
 import json
 import uuid

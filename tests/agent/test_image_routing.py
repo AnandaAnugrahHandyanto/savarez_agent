@@ -1,6 +1,7 @@
 """Tests for agent/image_routing.py — the per-turn image input mode decision."""
 
 from __future__ import annotations
+from agent.i18n import t
 
 import base64
 from pathlib import Path

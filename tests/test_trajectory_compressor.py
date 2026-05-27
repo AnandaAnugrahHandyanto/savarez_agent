@@ -17,6 +17,7 @@ from trajectory_compressor import (
 )
 
 
+from agent.i18n import t
 def test_import_loads_env_from_hermes_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()

@@ -17,6 +17,7 @@ from tools.memory_tool import (
 # Tool schema guidance
 # =========================================================================
 
+from agent.i18n import t
 class TestMemorySchema:
     def test_discourages_diary_style_task_logs(self):
         description = MEMORY_SCHEMA["description"]

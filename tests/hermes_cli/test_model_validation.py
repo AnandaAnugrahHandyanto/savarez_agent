@@ -24,6 +24,7 @@ from hermes_cli.models import (
 
 # -- helpers -----------------------------------------------------------------
 
+from agent.i18n import t
 FAKE_API_MODELS = [
     "anthropic/claude-opus-4.6",
     "anthropic/claude-sonnet-4.5",

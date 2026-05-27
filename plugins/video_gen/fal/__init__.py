@@ -31,6 +31,7 @@ gateway downloads and delivers it.
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 import logging
 import os

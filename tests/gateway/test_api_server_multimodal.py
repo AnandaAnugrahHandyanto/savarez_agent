@@ -28,6 +28,7 @@ from gateway.platforms.api_server import (
 # ---------------------------------------------------------------------------
 
 
+from agent.i18n import t
 class TestNormalizeMultimodalContent:
     def test_string_passthrough(self):
         assert _normalize_multimodal_content("hello") == "hello"

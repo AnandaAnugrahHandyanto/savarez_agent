@@ -14,6 +14,7 @@ from toolsets import (
 )
 
 
+from agent.i18n import t
 def _dummy_handler(args, **kwargs):
     return "{}"
 

@@ -17,6 +17,7 @@ from run_agent import (
 )
 
 
+from agent.i18n import t
 class TestSanitizeSurrogates:
     """Test the _sanitize_surrogates() helper."""
 

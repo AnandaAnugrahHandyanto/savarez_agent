@@ -1,6 +1,7 @@
 """Native Spotify tools for Hermes (registered via plugins/spotify)."""
 
 from __future__ import annotations
+from agent.i18n import t
 
 from typing import Any, Dict, List
 

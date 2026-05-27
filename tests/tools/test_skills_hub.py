@@ -34,6 +34,7 @@ from tools.skills_hub import (
 # ---------------------------------------------------------------------------
 
 
+from agent.i18n import t
 class TestParseFrontmatterQuick:
     def test_valid_frontmatter(self):
         content = "---\nname: test-skill\ndescription: A test.\n---\n\n# Body\n"

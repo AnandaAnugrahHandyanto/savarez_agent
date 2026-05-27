@@ -19,6 +19,7 @@ Three independent fixes that were salvaged together:
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 import json
 from pathlib import Path

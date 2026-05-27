@@ -37,6 +37,7 @@ from tools.code_execution_tool import (
 )
 
 
+from agent.i18n import t
 def _no_passthrough(_name):
     return False
 

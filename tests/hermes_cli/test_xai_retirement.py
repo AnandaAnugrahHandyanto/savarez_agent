@@ -1,5 +1,6 @@
 """Unit tests for hermes_cli.xai_retirement (May 15, 2026 model retirement)."""
 from __future__ import annotations
+from agent.i18n import t
 
 import pytest
 

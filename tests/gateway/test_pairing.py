@@ -22,6 +22,7 @@ from gateway.pairing import (
 )
 
 
+from agent.i18n import t
 def _make_store(tmp_path):
     """Create a PairingStore with PAIRING_DIR pointed to tmp_path."""
     with patch("gateway.pairing.PAIRING_DIR", tmp_path):

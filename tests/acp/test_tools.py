@@ -26,6 +26,7 @@ from acp.schema import (
 # ---------------------------------------------------------------------------
 
 
+from agent.i18n import t
 COMMON_HERMES_TOOLS = ["read_file", "search_files", "terminal", "patch", "write_file", "process"]
 
 

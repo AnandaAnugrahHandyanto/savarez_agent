@@ -20,6 +20,7 @@ from agent.skill_bundles import (
 )
 
 
+from agent.i18n import t
 def _make_bundle_yaml(
     bundles_dir: Path, slug: str, skills: list[str],
     description: str = "", instruction: str = "", name: str | None = None,

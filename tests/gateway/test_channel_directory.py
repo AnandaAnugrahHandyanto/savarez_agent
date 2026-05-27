@@ -19,6 +19,7 @@ from gateway.channel_directory import (
 )
 
 
+from agent.i18n import t
 def _write_directory(tmp_path, platforms):
     """Helper to write a fake channel directory."""
     data = {"updated_at": "2026-01-01T00:00:00", "platforms": platforms}

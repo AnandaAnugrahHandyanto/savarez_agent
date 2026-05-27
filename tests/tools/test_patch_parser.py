@@ -9,6 +9,7 @@ from tools.patch_parser import (
 )
 
 
+from agent.i18n import t
 class TestParseUpdateFile:
     def test_basic_update(self):
         patch = """\

@@ -32,6 +32,7 @@ from agent.model_metadata import (
 )
 from agent.redact import redact_sensitive_text
 
+from agent.i18n import t
 logger = logging.getLogger(__name__)
 
 SUMMARY_PREFIX = (

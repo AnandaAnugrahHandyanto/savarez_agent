@@ -41,6 +41,7 @@ from hermes_cli.profiles import (
 # Shared fixture: redirect Path.home() and HERMES_HOME for profile tests
 # ---------------------------------------------------------------------------
 
+from agent.i18n import t
 @pytest.fixture()
 def profile_env(tmp_path, monkeypatch):
     """Set up an isolated environment for profile tests.

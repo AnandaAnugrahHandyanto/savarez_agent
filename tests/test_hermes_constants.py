@@ -16,6 +16,7 @@ from hermes_constants import (
 )
 
 
+from agent.i18n import t
 class TestGetDefaultHermesRoot:
     """Tests for get_default_hermes_root() — Docker/custom deployment awareness."""
 

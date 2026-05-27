@@ -53,6 +53,7 @@ from tests.gateway.restart_test_helpers import (
 # ---------------------------------------------------------------------------
 
 
+from agent.i18n import t
 def test_resume_pending_is_cleared_only_after_successful_turn():
     """Interrupted/failed drain results must keep the restart recovery marker.
 

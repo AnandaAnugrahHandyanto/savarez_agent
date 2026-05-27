@@ -31,6 +31,7 @@ from plugins.memory.hindsight import (
 # ---------------------------------------------------------------------------
 
 
+from agent.i18n import t
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     """Ensure no stale env vars leak between tests."""

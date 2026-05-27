@@ -37,6 +37,7 @@ from tools.checkpoint_manager import (
 # Fixtures
 # =========================================================================
 
+from agent.i18n import t
 @pytest.fixture()
 def work_dir(tmp_path):
     d = tmp_path / "project"

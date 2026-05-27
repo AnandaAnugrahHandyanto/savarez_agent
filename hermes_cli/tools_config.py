@@ -31,6 +31,7 @@ from hermes_cli.nous_subscription import (
 from tools.tool_backend_helpers import fal_key_is_configured, managed_nous_tools_enabled
 from utils import base_url_hostname, is_truthy_value
 
+from agent.i18n import t
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()

@@ -11,6 +11,7 @@ isinstance(BasePlatformAdapter) gate excludes plain MagicMocks.
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 import asyncio
 from types import SimpleNamespace

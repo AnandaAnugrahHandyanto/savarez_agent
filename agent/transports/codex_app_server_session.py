@@ -23,6 +23,7 @@ call is synchronous and behaves like AIAgent's existing chat_completions loop.
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 import logging
 import os

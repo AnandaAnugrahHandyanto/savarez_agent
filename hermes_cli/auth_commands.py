@@ -1,6 +1,7 @@
 """Credential-pool auth subcommands."""
 
 from __future__ import annotations
+from agent.i18n import t
 
 import math
 import sys

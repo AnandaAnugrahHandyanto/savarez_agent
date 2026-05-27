@@ -26,6 +26,7 @@ from tools.tool_result_storage import (
 
 # ── generate_preview ──────────────────────────────────────────────────
 
+from agent.i18n import t
 class TestGeneratePreview:
     def test_short_content_unchanged(self):
         text = "short result"

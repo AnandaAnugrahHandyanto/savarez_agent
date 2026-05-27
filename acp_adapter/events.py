@@ -22,6 +22,7 @@ from .tools import (
     make_tool_call_id,
 )
 
+from agent.i18n import t
 logger = logging.getLogger(__name__)
 
 

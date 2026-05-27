@@ -1,6 +1,7 @@
 """Pipeline orchestration for Microsoft Teams meeting summaries."""
 
 from __future__ import annotations
+from agent.i18n import t
 
 import asyncio
 import json

@@ -17,6 +17,7 @@ entries in one session.
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 import sys
 from dataclasses import dataclass

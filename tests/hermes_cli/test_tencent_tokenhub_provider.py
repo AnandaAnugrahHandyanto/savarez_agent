@@ -15,6 +15,7 @@ from hermes_cli.auth import (
 
 
 # Other provider env vars to clear during auto-detection tests
+from agent.i18n import t
 _OTHER_PROVIDER_KEYS = (
     "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY",
     "GOOGLE_API_KEY", "GEMINI_API_KEY", "DASHSCOPE_API_KEY",

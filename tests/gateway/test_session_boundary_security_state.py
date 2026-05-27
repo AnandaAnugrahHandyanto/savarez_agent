@@ -19,6 +19,7 @@ from tools.approval import (
 )
 
 
+from agent.i18n import t
 @pytest.fixture(autouse=True)
 def _clear_approval_state():
     approval_mod._gateway_queues.clear()

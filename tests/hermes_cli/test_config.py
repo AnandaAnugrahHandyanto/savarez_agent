@@ -24,6 +24,7 @@ from hermes_cli.config import (
 )
 
 
+from agent.i18n import t
 class TestGetHermesHome:
     def test_default_path(self):
         with patch.dict(os.environ, {}, clear=False):

@@ -30,6 +30,7 @@ from tools.tts_tool import (
 # Registry / constants
 # ---------------------------------------------------------------------------
 
+from agent.i18n import t
 class TestPiperRegistration:
     def test_piper_is_a_builtin_provider(self):
         assert "piper" in BUILTIN_TTS_PROVIDERS

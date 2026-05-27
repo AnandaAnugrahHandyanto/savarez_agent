@@ -14,6 +14,7 @@ from agent.error_classifier import (
 
 # ── Helper: mock API errors ────────────────────────────────────────────
 
+from agent.i18n import t
 class MockAPIError(Exception):
     """Simulates an OpenAI SDK APIStatusError."""
     def __init__(self, message, status_code=None, body=None):

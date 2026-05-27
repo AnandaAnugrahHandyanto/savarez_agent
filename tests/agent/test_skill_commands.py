@@ -15,6 +15,7 @@ from agent.skill_commands import (
 )
 
 
+from agent.i18n import t
 def _make_skill(
     skills_dir, name, frontmatter_extra="", body="Do the thing.", category=None
 ):

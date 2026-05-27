@@ -33,6 +33,7 @@ returns False and the file_operations layer falls through to the
 in-process syntax check.
 """
 from __future__ import annotations
+from agent.i18n import t
 
 import asyncio
 import logging

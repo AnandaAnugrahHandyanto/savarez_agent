@@ -33,6 +33,7 @@ from tools.budget_config import (
     DEFAULT_BUDGET,
 )
 
+from agent.i18n import t
 logger = logging.getLogger(__name__)
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
 PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"

@@ -29,6 +29,7 @@ from tools.vision_tools import (
 # ---------------------------------------------------------------------------
 
 
+from agent.i18n import t
 class TestValidateImageUrl:
     """Tests for URL validation, including urlparse-based netloc check."""
 

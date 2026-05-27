@@ -35,6 +35,7 @@ from tools.discord_tool import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+from agent.i18n import t
 def _mock_urlopen(response_data, status=200):
     """Create a mock for urllib.request.urlopen."""
     mock_resp = MagicMock()

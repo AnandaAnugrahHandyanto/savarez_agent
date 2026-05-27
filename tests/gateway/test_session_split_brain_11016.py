@@ -36,6 +36,7 @@ from gateway.session import SessionSource, build_session_key
 # ---------------------------------------------------------------------------
 
 
+from agent.i18n import t
 class _StubAdapter(BasePlatformAdapter):
     async def connect(self):
         pass

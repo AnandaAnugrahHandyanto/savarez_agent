@@ -12,6 +12,7 @@ from agent.models_dev import (
 )
 
 
+from agent.i18n import t
 SAMPLE_REGISTRY = {
     "anthropic": {
         "id": "anthropic",

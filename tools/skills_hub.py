@@ -39,6 +39,7 @@ from tools.skills_guard import (
 from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
 
+from agent.i18n import t
 logger = logging.getLogger(__name__)
 
 

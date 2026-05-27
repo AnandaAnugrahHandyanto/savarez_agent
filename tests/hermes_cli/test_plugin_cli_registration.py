@@ -26,6 +26,7 @@ from hermes_cli.plugins import (
 # ── PluginContext.register_cli_command ─────────────────────────────────────
 
 
+from agent.i18n import t
 class TestRegisterCliCommand:
     def _make_ctx(self):
         mgr = PluginManager()

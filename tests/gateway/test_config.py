@@ -15,6 +15,7 @@ from gateway.config import (
 )
 
 
+from agent.i18n import t
 class TestHomeChannelRoundtrip:
     def test_to_dict_from_dict(self):
         hc = HomeChannel(platform=Platform.DISCORD, chat_id="999", name="general")

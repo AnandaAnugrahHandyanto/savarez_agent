@@ -35,6 +35,7 @@ from tools.delegate_tool import (
 )
 
 
+from agent.i18n import t
 def _make_mock_parent(depth=0):
     """Create a mock parent agent with the fields delegate_task expects."""
     parent = MagicMock()

@@ -15,6 +15,7 @@ from tools.skill_manager_tool import (
 )
 
 
+from agent.i18n import t
 SKILL_CONTENT = """\
 ---
 name: test-skill

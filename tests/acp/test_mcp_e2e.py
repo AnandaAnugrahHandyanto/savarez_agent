@@ -37,6 +37,7 @@ from acp_adapter.tools import build_tool_start
 # ---------------------------------------------------------------------------
 
 
+from agent.i18n import t
 @pytest.fixture()
 def mock_manager():
     return SessionManager(agent_factory=lambda: MagicMock(name="MockAIAgent"))

@@ -21,6 +21,7 @@ from tools.skills_tool import (
 )
 
 
+from agent.i18n import t
 def _make_skill(
     skills_dir, name, frontmatter_extra="", body="Step 1: Do the thing.", category=None
 ):

@@ -7,6 +7,7 @@ compression fires), users see >100% in /stats, gateway status, and
 memory tool output.
 """
 
+from agent.i18n import t
 class TestMemoryToolPercentClamp:
     """tools/memory_tool.py — _success_response and _render_block pct"""
 

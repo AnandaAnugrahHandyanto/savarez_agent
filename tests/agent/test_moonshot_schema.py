@@ -16,6 +16,7 @@ These tests cover the repairs applied by ``agent/moonshot_schema.py``.
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 import pytest
 

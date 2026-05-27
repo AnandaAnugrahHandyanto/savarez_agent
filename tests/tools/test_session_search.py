@@ -21,6 +21,7 @@ from tools.session_search_tool import (
 )
 
 
+from agent.i18n import t
 @pytest.fixture
 def db(tmp_path):
     return SessionDB(tmp_path / "state.db")

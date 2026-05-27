@@ -26,6 +26,7 @@ from tui_gateway.transport import (
     reset_transport,
 )
 
+from agent.i18n import t
 logger = logging.getLogger(__name__)
 
 _hermes_home = get_hermes_home()

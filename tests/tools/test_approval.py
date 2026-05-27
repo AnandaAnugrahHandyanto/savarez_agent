@@ -21,6 +21,7 @@ from tools.approval import (
 )
 
 
+from agent.i18n import t
 class TestApprovalModeParsing:
     def test_unquoted_yaml_off_boolean_false_maps_to_off(self):
         with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {"mode": False}}):

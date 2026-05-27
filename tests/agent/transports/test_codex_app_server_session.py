@@ -6,6 +6,7 @@ deadline timeouts. These tests pin all of that without spawning real codex.
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 import threading
 import time

@@ -14,6 +14,7 @@ Reference: https://bot.q.qq.com/wiki/develop/api-v2/
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 import logging
 import time

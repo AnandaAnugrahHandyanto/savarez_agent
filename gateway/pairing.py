@@ -37,6 +37,7 @@ from utils import atomic_replace
 
 
 # Unambiguous alphabet -- excludes 0/O, 1/I to prevent confusion
+from agent.i18n import t
 ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 CODE_LENGTH = 8
 

@@ -17,6 +17,7 @@ from gateway.session import (
 # Legacy name preserved for these tests; product renamed the function to
 # canonical_whatsapp_identifier.  Keep the tests referencing the old name
 # working without duplicating the suite.
+from agent.i18n import t
 normalize_whatsapp_identifier = canonical_whatsapp_identifier
 
 

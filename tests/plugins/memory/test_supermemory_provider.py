@@ -12,6 +12,7 @@ from plugins.memory.supermemory import (
 )
 
 
+from agent.i18n import t
 class FakeClient:
     def __init__(self, api_key: str, timeout: float, container_tag: str, search_mode: str = "hybrid"):
         self.api_key = api_key

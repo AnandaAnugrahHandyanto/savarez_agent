@@ -6,6 +6,7 @@ delta filter that ``tools/file_operations._check_lint_delta`` relies
 on.
 """
 from __future__ import annotations
+from agent.i18n import t
 
 import os
 import sys

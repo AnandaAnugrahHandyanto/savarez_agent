@@ -22,6 +22,7 @@ import tools.tirith_security
 # Helpers
 # ---------------------------------------------------------------------------
 
+from agent.i18n import t
 def _tirith_result(action="allow", findings=None, summary=""):
     return {"action": action, "findings": findings or [], "summary": summary}
 

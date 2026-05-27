@@ -9,6 +9,7 @@ Covers:
 - resolve_minimax_oauth_runtime_credentials: error when not logged in
 """
 from __future__ import annotations
+from agent.i18n import t
 
 import base64
 import hashlib

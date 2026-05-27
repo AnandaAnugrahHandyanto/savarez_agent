@@ -22,6 +22,7 @@ Pure helpers that read the agent's state.  AIAgent keeps thin forwarders.
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 import json
 import os

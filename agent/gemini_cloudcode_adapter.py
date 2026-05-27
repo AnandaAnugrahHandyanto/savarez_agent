@@ -27,6 +27,7 @@ reverse-engineered from the opencode-gemini-auth and clawdbot implementations.
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 import json
 import logging

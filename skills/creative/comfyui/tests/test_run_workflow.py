@@ -1,6 +1,7 @@
 """Tests for run_workflow.py — focuses on logic that doesn't require a server."""
 
 from __future__ import annotations
+from agent.i18n import t
 
 import copy
 import json

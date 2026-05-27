@@ -13,6 +13,7 @@ from gateway.platforms.feishu_comment import (
 )
 
 
+from agent.i18n import t
 def _make_event(
     comment_id="c1",
     reply_id="r1",

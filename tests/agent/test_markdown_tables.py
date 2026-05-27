@@ -5,6 +5,7 @@ the conservative no-op behaviour on non-table input.
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 from textwrap import dedent
 

@@ -27,6 +27,7 @@ from tools.process_registry import (
 )
 
 
+from agent.i18n import t
 @pytest.fixture()
 def registry():
     """Create a fresh ProcessRegistry."""

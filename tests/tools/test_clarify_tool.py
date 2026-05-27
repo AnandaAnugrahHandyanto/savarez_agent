@@ -13,6 +13,7 @@ from tools.clarify_tool import (
 )
 
 
+from agent.i18n import t
 class TestClarifyToolBasics:
     """Basic functionality tests for clarify_tool."""
 

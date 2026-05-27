@@ -30,6 +30,7 @@ from gateway.session import build_session_key
 #   BadRequest → NetworkError → TelegramError → Exception
 
 
+from agent.i18n import t
 class FakeNetworkError(Exception):
     pass
 

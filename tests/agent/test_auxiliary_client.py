@@ -31,6 +31,7 @@ from agent.auxiliary_client import (
 )
 
 
+from agent.i18n import t
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     """Strip provider env vars so each test starts clean."""

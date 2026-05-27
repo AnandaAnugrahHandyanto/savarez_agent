@@ -26,6 +26,7 @@ from hermes_cli.copilot_auth import _try_gh_cli_token
 # Provider Registry tests
 # =============================================================================
 
+from agent.i18n import t
 class TestProviderRegistry:
     """Test that new providers are correctly registered."""
 

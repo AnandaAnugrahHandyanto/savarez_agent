@@ -32,6 +32,7 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.helpers import strip_markdown
 
+from agent.i18n import t
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------

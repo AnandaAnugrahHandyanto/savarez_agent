@@ -29,6 +29,7 @@ from tools.file_operations import (
 # Write deny list
 # =========================================================================
 
+from agent.i18n import t
 class TestIsWriteDenied:
     def test_ssh_authorized_keys_denied(self):
         path = os.path.join(str(Path.home()), ".ssh", "authorized_keys")

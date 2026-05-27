@@ -31,6 +31,7 @@ from gateway.platforms.api_server import (
 # ---------------------------------------------------------------------------
 
 
+from agent.i18n import t
 def _make_adapter(api_key: str = "") -> APIServerAdapter:
     """Create an adapter with optional API key."""
     extra = {}

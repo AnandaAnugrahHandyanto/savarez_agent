@@ -26,6 +26,7 @@ from tools.budget_config import (
 # ---------------------------------------------------------------------------
 
 
+from agent.i18n import t
 class TestModuleConstants:
     """Verify documented default values haven't drifted."""
 

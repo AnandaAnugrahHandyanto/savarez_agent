@@ -18,6 +18,7 @@ from tools.skills_sync import (
 )
 
 
+from agent.i18n import t
 class TestReadWriteManifest:
     def test_read_missing_manifest(self, tmp_path):
         with patch(

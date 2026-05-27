@@ -16,6 +16,7 @@ from plugins.memory.honcho import HonchoMemoryProvider
 # ---------------------------------------------------------------------------
 
 
+from agent.i18n import t
 class TestHonchoSession:
     def _make_session(self):
         return HonchoSession(

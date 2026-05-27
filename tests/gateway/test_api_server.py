@@ -42,6 +42,7 @@ from gateway.platforms.api_server import (
 # ---------------------------------------------------------------------------
 
 
+from agent.i18n import t
 class TestCheckRequirements:
     def test_returns_true_when_aiohttp_available(self):
         assert check_api_server_requirements() is True

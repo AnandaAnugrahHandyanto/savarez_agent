@@ -18,6 +18,7 @@ from tools.file_operations import (
 from tools import file_state
 from agent.redact import redact_sensitive_text
 
+from agent.i18n import t
 logger = logging.getLogger(__name__)
 
 

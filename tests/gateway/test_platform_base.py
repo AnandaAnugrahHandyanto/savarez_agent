@@ -17,6 +17,7 @@ from gateway.platforms.base import (
 )
 
 
+from agent.i18n import t
 class TestSecretCaptureGuidance:
     def test_gateway_secret_capture_message_points_to_local_setup(self):
         message = GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE

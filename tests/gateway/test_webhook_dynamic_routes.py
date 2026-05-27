@@ -13,6 +13,7 @@ from gateway.platforms.webhook import (
 )
 
 
+from agent.i18n import t
 def _make_adapter(routes=None, extra=None):
     _extra = extra or {}
     if routes:

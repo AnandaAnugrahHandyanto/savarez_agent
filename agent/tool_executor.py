@@ -11,6 +11,7 @@ extracted functions reach back through the ``run_agent`` module via
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 import concurrent.futures
 import contextvars

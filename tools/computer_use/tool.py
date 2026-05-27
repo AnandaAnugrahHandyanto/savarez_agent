@@ -31,6 +31,7 @@ For captures / actions with `capture_after=True`:
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 import json
 import logging

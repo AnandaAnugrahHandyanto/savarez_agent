@@ -7,6 +7,7 @@ creative workflows that iterate on images across many turns.
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 import pytest
 

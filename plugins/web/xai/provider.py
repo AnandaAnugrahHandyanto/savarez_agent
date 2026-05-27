@@ -31,6 +31,7 @@ to ``XAI_API_KEY`` (resolved through ``~/.hermes/.env``, then
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 import json
 import logging

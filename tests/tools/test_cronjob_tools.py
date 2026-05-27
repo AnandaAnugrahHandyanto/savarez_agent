@@ -15,6 +15,7 @@ from tools.cronjob_tools import (
 # Cron prompt scanning
 # =========================================================================
 
+from agent.i18n import t
 class TestScanCronPrompt:
     def test_clean_prompt_passes(self):
         assert _scan_cron_prompt("Check if nginx is running on server 10.0.0.1") == ""

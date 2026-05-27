@@ -27,6 +27,7 @@ from hermes_cli.colors import Colors, color
 from hermes_constants import display_hermes_home
 from tools.mcp_tool import _ENV_VAR_PATTERN
 
+from agent.i18n import t
 logger = logging.getLogger(__name__)
 
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")

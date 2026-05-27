@@ -1,6 +1,7 @@
 """Unit tests for _common.py — pure logic only, no network."""
 
 from __future__ import annotations
+from agent.i18n import t
 
 from pathlib import Path
 

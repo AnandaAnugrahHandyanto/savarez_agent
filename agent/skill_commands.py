@@ -18,6 +18,7 @@ from agent.skill_preprocessing import (
     substitute_template_vars as _substitute_template_vars,
 )
 
+from agent.i18n import t
 logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}

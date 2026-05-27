@@ -6,6 +6,7 @@ covered by a separate live test gated on `codex --version`.
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 import pytest
 

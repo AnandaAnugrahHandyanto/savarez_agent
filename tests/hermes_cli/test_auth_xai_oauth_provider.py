@@ -38,6 +38,7 @@ from hermes_cli.auth import (
 # ---------------------------------------------------------------------------
 
 
+from agent.i18n import t
 def _setup_hermes_auth(
     hermes_home: Path,
     *,

@@ -22,6 +22,7 @@ See references/mcp-catalog.md (this repo's skill) for the manifest schema.
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 import os
 import re

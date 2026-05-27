@@ -43,6 +43,7 @@ from gateway.platforms.base import (
 )
 from gateway.config import Platform, PlatformConfig
 
+from agent.i18n import t
 logger = logging.getLogger(__name__)
 # Automated sender patterns — emails from these are silently ignored
 _NOREPLY_PATTERNS = (

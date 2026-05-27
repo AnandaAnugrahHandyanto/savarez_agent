@@ -1,6 +1,7 @@
 """CLI commands for the Teams meeting pipeline plugin."""
 
 from __future__ import annotations
+from agent.i18n import t
 
 import argparse
 import asyncio

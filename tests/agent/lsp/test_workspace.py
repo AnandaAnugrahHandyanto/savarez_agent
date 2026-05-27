@@ -1,5 +1,6 @@
 """Tests for workspace + project-root resolution."""
 from __future__ import annotations
+from agent.i18n import t
 
 import os
 from pathlib import Path

@@ -21,6 +21,7 @@ from agent.file_safety import (
 # ---------------------------------------------------------------------------
 
 
+from agent.i18n import t
 class TestEnvFileReadBlocking:
     """Secret-bearing .env files must be blocked by get_read_block_error."""
 

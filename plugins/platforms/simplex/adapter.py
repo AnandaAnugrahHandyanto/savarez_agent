@@ -54,6 +54,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
 )
 
+from agent.i18n import t
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
