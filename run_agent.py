@@ -3060,6 +3060,24 @@ class AIAgent:
         message = str(error).strip().lower()
         return "expected ident at line" in message
 
+    def _is_provider_runtime_type_error(self, error: BaseException) -> bool:
+        """Return True for provider-side TypeErrors that should retry.
+
+        The Codex / openai-codex stack sometimes raises ``TypeError:
+        'NoneType' object is not iterable`` during response assembly even when
+        the request itself is valid.  That is provider/runtime failure, not a
+        local programming bug, so it should not be treated as a fatal client
+        error.
+        """
+        if getattr(self, "api_mode", None) != "codex_responses":
+            return False
+        if getattr(self, "provider", None) != "openai-codex":
+            return False
+        if not isinstance(error, TypeError):
+            return False
+        err_text = str(error)
+        return "NoneType" in err_text and "iterable" in err_text
+
     def _log_stream_retry(
         self,
         *,
@@ -7090,6 +7108,42 @@ class AIAgent:
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
         self._close_openai_client(client, reason=reason, shared=False)
 
+    def _synthesize_codex_response_from_stream_events(
+        self,
+        *,
+        api_kwargs: dict,
+        collected_output_items: list,
+        collected_text_parts: list,
+        has_tool_calls: bool,
+    ) -> Any | None:
+        """Build a minimal Responses-like object from already-seen stream events.
+
+        The Codex backend sometimes emits valid stream events but the SDK's final
+        response reconstruction blows up with a TypeError ('NoneType' is not
+        iterable) or returns an empty output container.  When that happens, the
+        stream contents we already collected are enough to hand the caller a
+        usable response object without re-entering the broken parser.
+        """
+        if collected_output_items:
+            return SimpleNamespace(
+                output=list(collected_output_items),
+                status="completed",
+                model=api_kwargs.get("model"),
+            )
+        if collected_text_parts and not has_tool_calls:
+            assembled = "".join(collected_text_parts)
+            return SimpleNamespace(
+                output=[SimpleNamespace(
+                    type="message",
+                    role="assistant",
+                    status="completed",
+                    content=[SimpleNamespace(type="output_text", text=assembled)],
+                )],
+                status="completed",
+                model=api_kwargs.get("model"),
+            )
+        return None
+
     def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
         """Execute one streaming Responses API request and return the final response."""
         import httpx as _httpx
@@ -7155,30 +7209,51 @@ class AIAgent:
                                 sum(len(p) for p in self._codex_streamed_text_parts),
                                 self._client_log_context(),
                             )
-                    final_response = stream.get_final_response()
+                    try:
+                        final_response = stream.get_final_response()
+                    except TypeError as exc:
+                        err_text = str(exc)
+                        if "NoneType" in err_text and "iterable" in err_text:
+                            logger.warning(
+                                "Codex Responses stream finalization hit TypeError (%s); "
+                                "synthesizing from collected stream events. %s",
+                                err_text,
+                                self._client_log_context(),
+                            )
+                            synthesized = self._synthesize_codex_response_from_stream_events(
+                                api_kwargs=api_kwargs,
+                                collected_output_items=collected_output_items,
+                                collected_text_parts=self._codex_streamed_text_parts,
+                                has_tool_calls=has_tool_calls,
+                            )
+                            if synthesized is not None:
+                                return synthesized
+                            return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+                        raise
                     # PATCH: ChatGPT Codex backend streams valid output items
                     # but get_final_response() can return an empty output list.
                     # Backfill from collected items or synthesize from deltas.
                     _out = getattr(final_response, "output", None)
                     if isinstance(_out, list) and not _out:
-                        if collected_output_items:
-                            final_response.output = list(collected_output_items)
-                            logger.debug(
-                                "Codex stream: backfilled %d output items from stream events",
-                                len(collected_output_items),
-                            )
-                        elif self._codex_streamed_text_parts and not has_tool_calls:
-                            assembled = "".join(self._codex_streamed_text_parts)
-                            final_response.output = [SimpleNamespace(
-                                type="message",
-                                role="assistant",
-                                status="completed",
-                                content=[SimpleNamespace(type="output_text", text=assembled)],
-                            )]
-                            logger.debug(
-                                "Codex stream: synthesized output from %d text deltas (%d chars)",
-                                len(self._codex_streamed_text_parts), len(assembled),
-                            )
+                        synthesized = self._synthesize_codex_response_from_stream_events(
+                            api_kwargs=api_kwargs,
+                            collected_output_items=collected_output_items,
+                            collected_text_parts=self._codex_streamed_text_parts,
+                            has_tool_calls=has_tool_calls,
+                        )
+                        if synthesized is not None:
+                            final_response = synthesized
+                            if collected_output_items:
+                                logger.debug(
+                                    "Codex stream: backfilled %d output items from stream events",
+                                    len(collected_output_items),
+                                )
+                            else:
+                                assembled = "".join(self._codex_streamed_text_parts)
+                                logger.debug(
+                                    "Codex stream: synthesized output from %d text deltas (%d chars)",
+                                    len(self._codex_streamed_text_parts), len(assembled),
+                                )
                     return final_response
             except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
                 if attempt < max_stream_retries:
@@ -7293,23 +7368,25 @@ class AIAgent:
                     # Backfill empty output from collected stream events
                     _out = getattr(terminal_response, "output", None)
                     if isinstance(_out, list) and not _out:
-                        if collected_output_items:
-                            terminal_response.output = list(collected_output_items)
-                            logger.debug(
-                                "Codex fallback stream: backfilled %d output items",
-                                len(collected_output_items),
-                            )
-                        elif collected_text_deltas:
-                            assembled = "".join(collected_text_deltas)
-                            terminal_response.output = [SimpleNamespace(
-                                type="message", role="assistant",
-                                status="completed",
-                                content=[SimpleNamespace(type="output_text", text=assembled)],
-                            )]
-                            logger.debug(
-                                "Codex fallback stream: synthesized from %d deltas (%d chars)",
-                                len(collected_text_deltas), len(assembled),
-                            )
+                        synthesized = self._synthesize_codex_response_from_stream_events(
+                            api_kwargs=api_kwargs,
+                            collected_output_items=collected_output_items,
+                            collected_text_parts=collected_text_deltas,
+                            has_tool_calls=False,
+                        )
+                        if synthesized is not None:
+                            terminal_response = synthesized
+                            if collected_output_items:
+                                logger.debug(
+                                    "Codex fallback stream: backfilled %d output items",
+                                    len(collected_output_items),
+                                )
+                            else:
+                                assembled = "".join(collected_text_deltas)
+                                logger.debug(
+                                    "Codex fallback stream: synthesized from %d deltas (%d chars)",
+                                    len(collected_text_deltas), len(assembled),
+                                )
                     return terminal_response
         finally:
             close_fn = getattr(stream_or_response, "close", None)
@@ -7319,6 +7396,14 @@ class AIAgent:
                 except Exception:
                     pass
 
+        synthesized = self._synthesize_codex_response_from_stream_events(
+            api_kwargs=api_kwargs,
+            collected_output_items=collected_output_items,
+            collected_text_parts=collected_text_deltas,
+            has_tool_calls=False,
+        )
+        if synthesized is not None:
+            return synthesized
         if terminal_response is not None:
             return terminal_response
         raise RuntimeError("Responses create(stream=True) fallback did not emit a terminal response.")
@@ -14603,6 +14688,7 @@ class AIAgent:
                             api_error, (UnicodeEncodeError, json.JSONDecodeError)
                         )
                         and not self._is_provider_stream_parse_error(api_error)
+                        and not self._is_provider_runtime_type_error(api_error)
                         # ssl.SSLError (and its subclass SSLCertVerificationError)
                         # inherits from OSError *and* ValueError via Python MRO,
                         # so the isinstance(ValueError) check above would

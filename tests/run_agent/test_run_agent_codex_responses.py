@@ -188,6 +188,27 @@ class _FakeCreateStream:
         self.closed = True
 
 
+class _FakeResponsesStreamWithEvents:
+    def __init__(self, *, events=None, final_response=None, final_error=None):
+        self._events = list(events or [])
+        self._final_response = final_response
+        self._final_error = final_error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def __iter__(self):
+        return iter(self._events)
+
+    def get_final_response(self):
+        if self._final_error is not None:
+            raise self._final_error
+        return self._final_response
+
+
 def _codex_request_kwargs():
     return {
         "model": "gpt-5-codex",
@@ -396,6 +417,63 @@ def test_build_api_kwargs_copilot_responses_omits_reasoning_for_non_reasoning_mo
     assert "reasoning" not in kwargs
     assert "include" not in kwargs
     assert "prompt_cache_key" not in kwargs
+
+
+def test_run_codex_stream_synthesizes_after_typeerror_finalization(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    calls = {"stream": 0, "create": 0}
+    events = [
+        SimpleNamespace(
+            type="response.output_item.done",
+            item=SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text="stream synthesis ok")],
+            ),
+        )
+    ]
+
+    def _fake_stream(**kwargs):
+        calls["stream"] += 1
+        return _FakeResponsesStreamWithEvents(
+            events=events,
+            final_error=TypeError("'NoneType' object is not iterable"),
+        )
+
+    def _fake_create(**kwargs):
+        calls["create"] += 1
+        return _codex_message_response("fallback should not be used")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=_fake_create,
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert calls["stream"] == 1
+    assert calls["create"] == 0
+    assert response is not None
+    assert getattr(response, "output", None)
+    assert response.output[0].content[0].text == "stream synthesis ok"
+
+
+def test_run_codex_provider_runtime_typeerror_is_retryable(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    assert agent.provider == "openai-codex"
+    assert agent._is_provider_runtime_type_error(
+        TypeError("'NoneType' object is not iterable")
+    )
+    assert not agent._is_provider_runtime_type_error(
+        TypeError("unsupported operand type(s) for +: 'NoneType' and 'int'")
+    )
+    assert not agent._is_provider_runtime_type_error(
+        ValueError("'NoneType' object is not iterable")
+    )
 
 
 def test_run_codex_stream_retries_when_completed_event_missing(monkeypatch):
