@@ -26,6 +26,7 @@ import subprocess
 import sys
 import textwrap
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,19 @@ import pytest
 # so concurrent invocations of the suite don't clobber each other.
 _HANDOFF_DIR = Path(os.environ.get("TMPDIR", "/tmp")) / "hermes-isolation-probe"
 _HANDOFF_DIR.mkdir(exist_ok=True)
+
+
+def _load_runner_module():
+    import importlib.util
+
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    spec = importlib.util.spec_from_file_location("run_tests_parallel_test_module", runner)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 def _handoff_path_for(nonce: str) -> Path:
@@ -61,6 +75,55 @@ def _pid_alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def test_bootstrap_installs_missing_test_package_from_dev_extra(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The runner repairs a partial dev venv before pytest sees addopts/imports."""
+    runner = _load_runner_module()
+    (tmp_path / "pyproject.toml").write_text(textwrap.dedent("""
+        [project.optional-dependencies]
+        dev = ["pytest==9.0.2", "pytest-timeout==2.4.0", "pytest-asyncio==1.3.0"]
+    """))
+
+    timeout_checks = 0
+
+    def fake_find_spec(name: str):
+        nonlocal timeout_checks
+        if name == "pytest_timeout":
+            timeout_checks += 1
+            return None if timeout_checks == 1 else object()
+        if name == "pytest_asyncio":
+            return object()
+        return object()
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, cwd):
+        calls.append(list(cmd))
+        assert cwd == tmp_path
+        return types.SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(runner.importlib.util, "find_spec", fake_find_spec)
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+
+    assert runner._ensure_required_test_packages(tmp_path) is True
+    assert calls == [[sys.executable, "-m", "pip", "install", "pytest-timeout==2.4.0"]]
+
+
+def test_bootstrap_can_fail_fast_when_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner = _load_runner_module()
+    monkeypatch.setenv("HERMES_TEST_NO_BOOTSTRAP", "1")
+    monkeypatch.setattr(runner.importlib.util, "find_spec", lambda _name: None)
+
+    assert runner._ensure_required_test_packages(tmp_path) is False
+    assert "missing required test package(s)" in capsys.readouterr().err
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only probe")

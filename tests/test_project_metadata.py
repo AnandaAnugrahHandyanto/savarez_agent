@@ -112,6 +112,14 @@ def test_feishu_extra_includes_qrcode_for_qr_login():
     assert any(dep.startswith("qrcode") for dep in feishu_extra)
 
 
+def test_dev_extra_includes_acp_for_default_acp_tests():
+    """ACP tests are part of the default suite, so [dev] must install ACP."""
+    optional_dependencies = _load_optional_dependencies()
+
+    dev_extra = optional_dependencies["dev"]
+    assert any(dep.startswith("agent-client-protocol==") for dep in dev_extra)
+
+
 def test_dashboard_plugin_manifests_and_assets_are_packaged():
     """Bundled dashboard plugins need their manifests and built assets in
     wheel installs so /api/dashboard/plugins can discover them outside a

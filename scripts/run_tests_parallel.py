@@ -38,12 +38,14 @@ Exit code: 0 if every file's pytest exited 0; 1 otherwise.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import subprocess
 import sys
 import threading
 import time
+import tomllib
 from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -81,6 +83,130 @@ _DEFAULT_FILE_TIMEOUT_SECONDS = 600.0  # 10 minutes
 # wall-clock seconds. Used by ``--slice`` to distribute files across
 # CI jobs by estimated total time, so no one job gets all the slow files.
 _DURATIONS_FILE = "test_durations.json"
+
+# These packages are required by the default test suite. Without the pytest
+# plugins, pytest fails before collection with "unrecognized arguments" for
+# options such as --timeout; without acp, default ACP tests fail at import/use
+# time. The shell wrapper may pick a local .venv that exists but was not
+# installed with the dev extra, so the runner bootstraps the exact dev-extra
+# pins before its first pytest subprocess.
+_REQUIRED_TEST_PACKAGES = {
+    "pytest_timeout": "pytest-timeout",
+    "pytest_asyncio": "pytest-asyncio",
+    "acp": "agent-client-protocol",
+}
+
+
+def _normalize_package_name(name: str) -> str:
+    return name.replace("_", "-").lower()
+
+
+def _requirement_package_name(requirement: str) -> str:
+    """Return the package portion of a requirement string.
+
+    Good enough for the pinned dev-extra requirements in pyproject.toml, while
+    avoiding an extra dependency on packaging just to bootstrap the test env.
+    """
+    head = requirement.split(";", 1)[0].strip()
+    for marker in ("[", "==", ">=", "<=", "~=", "!=", ">", "<"):
+        if marker in head:
+            head = head.split(marker, 1)[0]
+            break
+    return _normalize_package_name(head.strip())
+
+
+def _dev_extra_specs(repo_root: Path) -> dict[str, str]:
+    pyproject = repo_root / "pyproject.toml"
+    try:
+        data = tomllib.loads(pyproject.read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+
+    dev_requirements = (
+        data.get("project", {})
+        .get("optional-dependencies", {})
+        .get("dev", [])
+    )
+    return {
+        _requirement_package_name(requirement): requirement
+        for requirement in dev_requirements
+        if isinstance(requirement, str)
+    }
+
+
+def _ensure_required_test_packages(repo_root: Path) -> bool:
+    """Install missing test packages from the exact pinned dev extra.
+
+    Returns True when all required packages are importable. On install failure,
+    prints a clear setup error and returns False so the runner exits before
+    producing a wall of duplicate pytest usage/import failures.
+    """
+    missing = [
+        (module_name, package_name)
+        for module_name, package_name in _REQUIRED_TEST_PACKAGES.items()
+        if importlib.util.find_spec(module_name) is None
+    ]
+    if not missing:
+        return True
+
+    if os.environ.get("HERMES_TEST_NO_BOOTSTRAP"):
+        missing_names = ", ".join(package for _module, package in missing)
+        print(
+            "error: missing required test package(s): "
+            f"{missing_names}. Install the dev extra with `python -m pip install -e '.[dev]'`.",
+            file=sys.stderr,
+        )
+        return False
+
+    dev_specs = _dev_extra_specs(repo_root)
+    install_specs: List[str] = []
+    missing_specs: List[str] = []
+    for _module_name, package_name in missing:
+        spec = dev_specs.get(_normalize_package_name(package_name))
+        if spec:
+            install_specs.append(spec)
+        else:
+            missing_specs.append(package_name)
+
+    if missing_specs:
+        print(
+            "error: pyproject.toml [project.optional-dependencies].dev does not "
+            f"pin required test package(s): {', '.join(missing_specs)}",
+            file=sys.stderr,
+        )
+        return False
+
+    print(
+        "▶ bootstrapping missing test package(s): " + ", ".join(install_specs),
+        flush=True,
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install", *install_specs],
+        cwd=repo_root,
+    )
+    if result.returncode != 0:
+        print(
+            "error: failed to install required test package(s). "
+            "Run `python -m pip install -e '.[dev]'` and retry.",
+            file=sys.stderr,
+        )
+        return False
+
+    importlib.invalidate_caches()
+    still_missing = [
+        package_name
+        for module_name, package_name in missing
+        if importlib.util.find_spec(module_name) is None
+    ]
+    if still_missing:
+        print(
+            "error: test package bootstrap completed but these package(s) are "
+            f"still not importable: {', '.join(still_missing)}",
+            file=sys.stderr,
+        )
+        return False
+
+    return True
 
 
 def _count_tests(
@@ -680,6 +806,9 @@ def main() -> int:
             sys.exit(2)
 
     repo_root = Path(__file__).resolve().parent.parent
+
+    if not _ensure_required_test_packages(repo_root):
+        return 2
 
     # Resolve discovery roots: positional path args override --paths if any
     # were supplied, otherwise --paths (which itself defaults to 'tests').
