@@ -1180,6 +1180,22 @@ def run_oauth_setup_token() -> Optional[str]:
         subprocess.run([claude_path, "setup-token"])
     except (KeyboardInterrupt, EOFError):
         return None
+    except OSError as _e:
+        import errno as _errno_mod
+        if _e.errno == _errno_mod.ENOEXEC:
+            # The claude binary exists but is not executable on this platform
+            # (e.g. a Linux ELF binary on FreeBSD). Print a clear message and
+            # fall through to the manual paste-token prompt in the caller.
+            print()
+            print(f"  Cannot execute '{claude_path}' on this platform.")
+            print("  The Claude Code binary is built for Linux and cannot run on FreeBSD.")
+            print()
+            print("  To get a setup-token, run this on a machine with a browser:")
+            print("    claude setup-token")
+            print("  Then paste the sk-ant-oat-... token at the prompt below.")
+            print()
+            return None
+        raise
 
     # Check if credentials were saved to Claude Code's config files
     creds = read_claude_code_credentials()
