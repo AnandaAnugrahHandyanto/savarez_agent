@@ -175,3 +175,19 @@ class TestToolsBrowserToolF401:
             "tools/browser_tool.py has F401 violation(s):\n"
             f"{result.stdout}"
         )
+
+class TestToolsCodeExecutionToolF401:
+    """tools/code_execution_tool.py must have zero F401 (unused-import) violations."""
+
+    def test_code_execution_tool_has_zero_f401_violations(self):
+        """tools/code_execution_tool.py must have zero unused-import violations."""
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F401",
+             "--output-format=concise", "tools/code_execution_tool.py"],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, (
+            "tools/code_execution_tool.py has F401 violation(s):\n"
+            f"{result.stdout}"
+        )
