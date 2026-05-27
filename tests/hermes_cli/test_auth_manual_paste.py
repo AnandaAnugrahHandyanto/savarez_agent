@@ -396,7 +396,7 @@ def test_xai_loopback_login_timeout_falls_back_to_manual_paste(monkeypatch):
                 "error": None,
                 "error_description": None,
             },
-            "http://127.0.0.1:56121/callback",
+            f"http://{auth_mod.XAI_OAUTH_REDIRECT_HOST}:{auth_mod.XAI_OAUTH_REDIRECT_PORT}{auth_mod.XAI_OAUTH_REDIRECT_PATH}",
         ),
     )
 
@@ -405,7 +405,7 @@ def test_xai_loopback_login_timeout_falls_back_to_manual_paste(monkeypatch):
 
     def _capture(**kwargs):
         captured["state"] = kwargs["state"]
-        return original_build(**kwargs)
+        return "http://127.0.0.1:56121/callback"  # sentinel; real builder not needed
 
     monkeypatch.setattr(auth_mod, "_xai_oauth_build_authorize_url", _capture)
 
@@ -490,7 +490,7 @@ def test_xai_loopback_login_timeout_noninteractive_reraises(monkeypatch):
                 "error": None,
                 "error_description": None,
             },
-            "http://127.0.0.1:56121/callback",
+            f"http://{auth_mod.XAI_OAUTH_REDIRECT_HOST}:{auth_mod.XAI_OAUTH_REDIRECT_PORT}{auth_mod.XAI_OAUTH_REDIRECT_PATH}",
         ),
     )
 
