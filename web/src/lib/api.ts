@@ -163,6 +163,14 @@ export const api = {
   // Profiles (minimal)
   getProfiles: () =>
     fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
+  getMemories: (params: { profile?: string; target?: "all" | "memory" | "user" } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.profile) qs.set("profile", params.profile);
+    if (params.target) qs.set("target", params.target);
+    const query = qs.toString();
+    const endpoint = "/api/memories";
+    return fetchJSON<MemoriesResponse>(`${endpoint}${query ? `?${query}` : ""}`);
+  },
   createProfile: (body: { name: string; clone_from_default: boolean }) =>
     fetchJSON<{ ok: boolean; name: string; path: string }>("/api/profiles", {
       method: "POST",
@@ -515,6 +523,33 @@ export interface ProfileInfo {
   provider: string | null;
   has_env: boolean;
   skill_count: number;
+}
+
+export type MemoryTarget = "memory" | "user";
+
+export interface MemoryEntryInfo {
+  id: string;
+  profile: string;
+  agent: string;
+  target: MemoryTarget;
+  entry_index: number;
+  content: string;
+  tags: string[];
+}
+
+export interface MemoryProfileSummary {
+  name: string;
+  is_default: boolean;
+  memory_count: number;
+  user_count: number;
+  entry_count: number;
+}
+
+export interface MemoriesResponse {
+  memories: MemoryEntryInfo[];
+  profiles: MemoryProfileSummary[];
+  targets: Record<MemoryTarget, number>;
+  total: number;
 }
 
 export interface ModelsAnalyticsModelEntry {

@@ -2869,6 +2869,119 @@ def _profile_setup_command(name: str) -> str:
     return "hermes setup" if name == "default" else f"{name} setup"
 
 
+_MEMORY_TARGET_FILES: Dict[str, Tuple[str, str]] = {
+    "memory": ("MEMORY.md", "memory"),
+    "user": ("USER.md", "user_profile"),
+}
+
+
+def _resolve_memory_targets(target: str) -> List[str]:
+    target = (target or "all").strip().lower()
+    if target == "all":
+        return ["memory", "user"]
+    if target not in _MEMORY_TARGET_FILES:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid target. Use 'all', 'memory', or 'user'.",
+        )
+    return [target]
+
+
+def _read_memory_entries(path: Path) -> List[str]:
+    """Read Hermes' §-delimited memory file without mutating it."""
+    if not path.exists():
+        return []
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as e:
+        _log.warning("Could not read memory file %s: %s", path, e)
+        raise HTTPException(status_code=500, detail="Could not read memory file")
+    if not raw.strip():
+        return []
+    from tools.memory_tool import ENTRY_DELIMITER
+
+    return [entry.strip() for entry in raw.split(ENTRY_DELIMITER) if entry.strip()]
+
+
+def _memory_tags(profile_name: str, target: str) -> List[str]:
+    _, store_tag = _MEMORY_TARGET_FILES[target]
+    return [
+        f"agent:{profile_name}",
+        f"profile:{profile_name}",
+        f"target:{target}",
+        f"store:{store_tag}",
+    ]
+
+
+def _memory_profile_sources(profile: str) -> List[Dict[str, Any]]:
+    from hermes_cli import profiles as profiles_mod
+
+    profile = (profile or "all").strip()
+    if not profile or profile == "all":
+        return [_profile_to_dict(p) for p in profiles_mod.list_profiles()]
+
+    profile_dir = _resolve_profile_dir(profile)
+    return [{
+        "name": profiles_mod.normalize_profile_name(profile),
+        "path": str(profile_dir),
+        "is_default": profiles_mod.normalize_profile_name(profile) == "default",
+    }]
+
+
+@app.get("/api/memories")
+async def list_memories_endpoint(profile: str = "all", target: str = "all"):
+    """Return built-in Hermes memories across profiles, tagged by agent/profile.
+
+    Hermes' built-in memory is file-backed under each profile's
+    ``memories/MEMORY.md`` and ``memories/USER.md``.  The dashboard treats a
+    profile as an agent identity, so every entry carries both ``agent:<name>``
+    and ``profile:<name>`` tags in addition to target/store tags.
+    """
+    targets = _resolve_memory_targets(target)
+    sources = _memory_profile_sources(profile)
+    memories: List[Dict[str, Any]] = []
+    profile_summaries: List[Dict[str, Any]] = []
+    target_counts = {"memory": 0, "user": 0}
+
+    for source in sources:
+        profile_name = str(source.get("name") or "default")
+        profile_path = Path(str(source.get("path") or ""))
+        memory_dir = profile_path / "memories"
+        counts = {"memory": 0, "user": 0}
+
+        for selected_target in targets:
+            filename, _store_tag = _MEMORY_TARGET_FILES[selected_target]
+            path = memory_dir / filename
+            entries = _read_memory_entries(path)
+            counts[selected_target] = len(entries)
+            target_counts[selected_target] += len(entries)
+            for idx, content in enumerate(entries):
+                memories.append({
+                    "id": f"{profile_name}:{selected_target}:{idx}",
+                    "profile": profile_name,
+                    "agent": profile_name,
+                    "target": selected_target,
+                    "entry_index": idx,
+                    "content": content,
+                    "tags": _memory_tags(profile_name, selected_target),
+                })
+
+        profile_summaries.append({
+            "name": profile_name,
+            "is_default": bool(source.get("is_default", False)),
+            "memory_count": counts["memory"],
+            "user_count": counts["user"],
+            "entry_count": counts["memory"] + counts["user"],
+        })
+
+    return {
+        "memories": memories,
+        "profiles": profile_summaries,
+        "targets": target_counts,
+        "total": len(memories),
+    }
+
+
 @app.get("/api/profiles")
 async def list_profiles_endpoint():
     from hermes_cli import profiles as profiles_mod
