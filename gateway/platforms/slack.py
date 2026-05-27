@@ -630,6 +630,24 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_assistant_thread_context_changed(event, say):
                 await self._handle_assistant_thread_lifecycle_event(event)
 
+            # Reaction lifecycle. Forward to the gateway-supplied reaction
+            # handler which fans-out via HookRegistry as ``reaction:added``
+            # / ``reaction:removed``. We resolve a permalink for message
+            # targets here (one Web API call per reaction) so downstream
+            # hook handlers don't each repeat the lookup.
+            #
+            # Requires the bot OAuth scope ``reactions:read`` plus the
+            # ``reaction_added`` / ``reaction_removed`` bot event
+            # subscriptions in the Slack app config. Bot must be a member
+            # of the channel where the reaction occurs.
+            @self._app.event("reaction_added")
+            async def handle_reaction_added(event, say):
+                await self._forward_reaction_event("reaction:added", event)
+
+            @self._app.event("reaction_removed")
+            async def handle_reaction_removed(event, say):
+                await self._forward_reaction_event("reaction:removed", event)
+
             # Register slash command handler(s)
             #
             # Every gateway command from COMMAND_REGISTRY is a native Slack
@@ -1287,6 +1305,48 @@ class SlackAdapter(BasePlatformAdapter):
         return text
 
     # ----- Reactions -----
+
+    async def _forward_reaction_event(self, hook_event_name: str, event: dict) -> None:
+        """Normalise a Slack reaction event and dispatch to the gateway handler.
+
+        Adapter callers (``reaction_added`` / ``reaction_removed``) feed
+        raw Slack event payloads in here. We resolve a permalink for
+        ``item.type == "message"`` and pass the structured dict to the
+        gateway-supplied reaction handler. Errors are caught — they must
+        never bubble into Slack's event loop.
+        """
+        handler = self._reaction_handler
+        if handler is None:
+            return
+        try:
+            item = event.get("item") or {}
+            channel_id = item.get("channel")
+            message_ts = item.get("ts")
+            permalink: Optional[str] = None
+            if item.get("type") == "message" and channel_id and message_ts:
+                try:
+                    resp = await self._get_client(channel_id).chat_getPermalink(
+                        channel=channel_id, message_ts=message_ts
+                    )
+                    permalink = resp.get("permalink")
+                except Exception as e:
+                    logger.debug("[Slack] chat_getPermalink failed for reaction: %s", e)
+            ctx = {
+                "platform": "slack",
+                "event_name": hook_event_name,
+                "reaction": event.get("reaction"),
+                "user_id": event.get("user"),
+                "item_user_id": event.get("item_user"),
+                "item_type": item.get("type"),
+                "channel_id": channel_id,
+                "message_ts": message_ts,
+                "permalink": permalink,
+                "event_ts": event.get("event_ts"),
+                "raw_event": event,
+            }
+            await handler(ctx)
+        except Exception as e:
+            logger.exception("[Slack] reaction event forwarding failed: %s", e)
 
     async def _add_reaction(
         self, channel: str, timestamp: str, emoji: str
