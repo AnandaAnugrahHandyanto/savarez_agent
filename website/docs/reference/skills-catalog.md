@@ -163,6 +163,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`arxiv`](/user-guide/skills/bundled/research/research-arxiv) | Search arXiv papers by keyword, author, category, or ID. | `research/arxiv` |
 | [`blogwatcher`](/user-guide/skills/bundled/research/research-blogwatcher) | Monitor blogs and RSS/Atom feeds via blogwatcher-cli tool. | `research/blogwatcher` |
 | [`llm-wiki`](/user-guide/skills/bundled/research/research-llm-wiki) | Karpathy's LLM Wiki: build/query interlinked markdown KB. | `research/llm-wiki` |
+| [`onchaindivers-w3e`](/user-guide/skills/bundled/research/research-onchaindivers-w3e) | Use when querying OnchainDivers / W3E hosted warehouse data for Polymarket, Hyperliquid, or Solana research without exposing credentials. | `research/onchaindivers-w3e` |
 | [`polymarket`](/user-guide/skills/bundled/research/research-polymarket) | Query Polymarket: markets, prices, orderbooks, history. | `research/polymarket` |
 | [`research-paper-writing`](/user-guide/skills/bundled/research/research-research-paper-writing) | Write ML papers for NeurIPS/ICML/ICLR: design→submit. | `research/research-paper-writing` |
 
