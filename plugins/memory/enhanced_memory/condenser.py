@@ -1,10 +1,44 @@
-"""
-Enhanced Memory Plugin — Fact Condensation Engine.
+"""Enhanced Memory Plugin — Fact Condensation Engine.
 
-Two-tier architecture: raw_facts are periodically condensed into
+Two-tier architecture: ``raw_facts`` are periodically condensed into
 high-priority summaries grouped by category and topic.  The condenser
 deduplicates, prioritises, and merges entries so that the memory
 injected into the system prompt stays compact and relevant.
+
+Pipeline overview::
+
+    raw_facts (uncondensed=0)
+        │
+        ▼
+    group by category
+        │
+        ▼
+    deduplicate (80% word-overlap threshold)
+        │
+        ▼
+    compute priority (category base + keyword boosts)
+        │
+        ▼
+    upsert into condensed table (create or merge)
+        │
+        ▼
+    mark source raw_facts as condensed=1
+
+Priority calculation:
+    Each category has a ``(lo, hi)`` base range.  Keywords in the text can
+    boost the score by +1 or +2 (e.g. "password" → +2).  The final priority
+    is clamped to ``[lo, 10]``.
+
+Deduplication:
+    Uses Jaccard-style word overlap on the *smaller* set.  Facts with ≥ 80%
+    overlap with an already-accepted fact are discarded (first-in wins).
+
+Usage::
+
+    condenser = FactCondenser(store)
+    results = condenser.condense()              # write results to DB
+    results = condenser.condense(dry_run=True)  # preview without writing
+    memory  = condenser.get_top_for_memory(char_limit=2200)
 """
 
 from __future__ import annotations
@@ -22,7 +56,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger("enhanced-memory.condenser")
 
 # ── Topic display names (bilingual) ──────────────────────────────────────────
-
+# Human-readable topic labels used as the ``condensed.topic`` column value.
+# Keys correspond to valid category labels from :data:`store.VALID_CATEGORIES`.
 TOPIC_NAMES: dict[str, str] = {
     "user_pref": "Пользователь: предпочтения",
     "project": "Проекты и работа",
@@ -34,7 +69,9 @@ TOPIC_NAMES: dict[str, str] = {
 }
 
 # ── Base priority ranges per category ────────────────────────────────────────
-
+# Tuple of (lo, hi) for each category.  ``lo`` is the starting priority;
+# ``hi`` is the theoretical ceiling *before* keyword boosts.  Keyword boosts
+# can push the value above ``hi`` but never above 10.
 _CATEGORY_PRIORITY: dict[str, tuple[int, int]] = {
     "security": (9, 10),
     "user_pref": (8, 9),
@@ -46,61 +83,118 @@ _CATEGORY_PRIORITY: dict[str, tuple[int, int]] = {
 }
 
 # ── Keyword boost tables ────────────────────────────────────────────────────
-
+# If any of these keywords appear (case-insensitive) in the fact text, the
+# priority gets a +1 boost.  Includes both English and Russian equivalents.
 _BOOST_1_KEYWORDS: set[str] = {
     "prefers", "always", "never",
     "предпочитает", "всегда", "никогда",
 }
 
+# +2 boost keywords — security-sensitive terms that should surface higher.
 _BOOST_2_KEYWORDS: set[str] = {
     "password", "key", "secret",
     "пароль", "ключ", "секрет",
 }
 
 # ── Deduplication threshold ─────────────────────────────────────────────────
-
+# Minimum word overlap ratio (Jaccard on the smaller set) to consider two
+# facts as near-duplicates.  0.80 means 80% of the smaller token set must
+# appear in the larger.
 _OVERLAP_THRESHOLD: float = 0.80
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _tokenize(text: str) -> set[str]:
-    """Lowercase word-level tokenisation for overlap comparison."""
+    """Tokenise text into a set of lowercase words.
+
+    Uses a simple ``\\w+`` regex so punctuation and whitespace are stripped.
+
+    Args:
+        text: The input string.
+
+    Returns:
+        set[str]: Unique lowercase word tokens.
+    """
     return set(re.findall(r"[\w]+", text.lower()))
 
 
 def _word_overlap(a: str, b: str) -> float:
-    """Return Jaccard-style word overlap ratio between two strings."""
+    """Compute the word overlap ratio between two strings.
+
+    The ratio is ``|intersection| / min(|A|, |B|)`` — i.e. what fraction
+    of the *smaller* token set is contained in the *larger*.  This is
+    biased toward detecting subsets (a short fact that is fully contained
+    in a longer one scores 1.0).
+
+    Args:
+        a: First string.
+        b: Second string.
+
+    Returns:
+        float: Overlap ratio in ``[0.0, 1.0]``.  Returns ``0.0`` if
+        either string produces no tokens.
+    """
     wa, wb = _tokenize(a), _tokenize(b)
     if not wa or not wb:
         return 0.0
     intersection = wa & wb
     smaller = min(len(wa), len(wb))
+    # Guard against zero-division (shouldn't happen given the check above).
     return len(intersection) / smaller if smaller else 0.0
 
 
 def _compute_priority(category: str, text: str) -> int:
-    """Determine priority score for a fact based on category + keyword boosts."""
+    """Determine priority score for a fact based on category and keyword boosts.
+
+    Algorithm:
+        1. Look up the ``(lo, hi)`` base range for the category (default ``(4, 4)``).
+        2. Start at ``lo``.
+        3. Scan the text for boost keywords: ``+2`` for security-sensitive
+           terms, ``+1`` for preference/absoluteness terms (boosts stack).
+        4. Clamp the result to ``[lo, 10]``.
+
+    Args:
+        category: The fact's category label.
+        text: The fact text to scan for boost keywords.
+
+    Returns:
+        int: Priority score in the range ``[1, 10]``.
+    """
     lo, hi = _CATEGORY_PRIORITY.get(category, (4, 4))
-    base = lo  # start at lower bound
+    base = lo  # start at the category's lower bound
 
     words_lower = text.lower()
 
     boost = 0
-    # +2 boost has precedence but both can stack
+    # +2 boost for security-sensitive keywords (stacks with +1)
     if any(kw in words_lower for kw in _BOOST_2_KEYWORDS):
         boost += 2
+    # +1 boost for preference / absoluteness keywords
     if any(kw in words_lower for kw in _BOOST_1_KEYWORDS):
         boost += 1
 
-    priority = min(base + boost, 10)  # hard cap at 10
-    # Ensure we stay within category ceiling unless boosted
+    priority = min(base + boost, 10)  # hard cap at 10 regardless of boosts
+    # Ensure we never drop below the category floor
     priority = max(priority, lo)
     return priority
 
 
 def _merge_source_ids(existing: list[int] | str | None, new_ids: list[int]) -> str:
-    """Merge two lists of source IDs, deduplicate, return JSON string."""
+    """Merge two lists of source IDs, deduplicate, and return a JSON string.
+
+    Handles multiple input formats for *existing* because the value may
+    come directly from the database (JSON string) or from Python code
+    (list or ``None``).
+
+    Args:
+        existing: The current source IDs — may be a Python list, a JSON
+            string, or ``None``.
+        new_ids: New IDs to merge in.
+
+    Returns:
+        str: JSON-encoded sorted list of unique IDs.
+    """
     if existing is None:
         prev: list[int] = []
     elif isinstance(existing, str):
@@ -121,10 +215,20 @@ def _merge_source_ids(existing: list[int] | str | None, new_ids: list[int]) -> s
 class FactCondenser:
     """Groups, deduplicates, and summarises raw facts into condensed entries.
 
-    Usage::
+    The condenser operates on the :class:`EnhancedMemoryStore` and implements
+    the core condensation pipeline described in the module docstring.
+
+    Attributes:
+        store (EnhancedMemoryStore): The backing store instance used for
+            reading uncondensed facts and writing condensed summaries.
+
+    Args:
+        store: An initialised :class:`EnhancedMemoryStore`.
+
+    Example::
 
         condenser = FactCondenser(store)
-        results = condenser.condense()          # production run
+        results = condenser.condense()              # production run
         results = condenser.condense(dry_run=True)  # preview only
         memory_text = condenser.get_top_for_memory()
     """
@@ -220,19 +324,23 @@ class FactCondenser:
     def get_top_for_memory(self, char_limit: int = 2200) -> str:
         """Return a compact string of the highest-priority condensed entries.
 
-        Entries are sorted by ``priority DESC`` and concatenated with the
-        ``§`` separator until *char_limit* is reached.
+        Entries are sorted by ``priority DESC, updated_at DESC`` and
+        concatenated with the ``§`` separator until *char_limit* is reached.
+        If even the first entry exceeds the limit it is truncated to fit.
 
         Args:
             char_limit: Maximum character count for the returned string.
+                Defaults to 2200 which is roughly the space available in
+                a typical system prompt memory block.
 
         Returns:
-            A ``§``-separated string of condensed summaries.
+            str: A ``§``-separated string of condensed summaries, or an
+            empty string if no condensed entries exist.
         """
         entries = self._load_condensed_sorted()
         parts: list[str] = []
         current_len = 0
-        separator = "§"
+        separator = "§"  # non-ASCII separator unlikely to appear in content
         sep_len = len(separator)
 
         for entry in entries:
@@ -240,10 +348,10 @@ class FactCondenser:
             if not summary:
                 continue
 
-            # Calculate how much space this addition would take
+            # Calculate space needed including separator if not the first part.
             addition_len = len(summary) + (sep_len if parts else 0)
             if current_len + addition_len > char_limit:
-                # Try to fit a truncated version if it's the first entry
+                # If nothing has been added yet, truncate to fit at least something.
                 if not parts:
                     parts.append(summary[: char_limit])
                 break
@@ -256,7 +364,12 @@ class FactCondenser:
     # ── Internal helpers ─────────────────────────────────────────────────
 
     def _load_uncondensed(self) -> list[dict[str, Any]]:
-        """Fetch raw facts that have not yet been condensed."""
+        """Fetch raw facts where ``condensed = 0``, ordered chronologically.
+
+        Returns:
+            list[dict[str, Any]]: Facts with keys ``id``, ``content``,
+            ``category``, ``created_at``.  Returns an empty list on error.
+        """
         try:
             conn = self.store.get_connection()
             cursor = conn.execute(
@@ -272,7 +385,15 @@ class FactCondenser:
     def _group_by_category(
         self, facts: list[dict[str, Any]]
     ) -> dict[str, list[dict[str, Any]]]:
-        """Group a flat list of facts by their ``category`` field."""
+        """Group a flat list of facts by their ``category`` field.
+
+        Args:
+            facts: List of fact dicts, each with a ``category`` key.
+
+        Returns:
+            dict[str, list[dict[str, Any]]]: Category → list of facts.
+            Facts with a missing or empty category default to ``'general'``.
+        """
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for fact in facts:
             cat = fact.get("category", "general") or "general"
@@ -285,17 +406,24 @@ class FactCondenser:
         """Remove near-duplicates using word-overlap threshold.
 
         Keeps the *first* occurrence (oldest by insertion order).  A fact is
-        considered a duplicate if it shares ≥ 80 % word overlap with any
+        considered a duplicate if it shares ≥ 80% word overlap with any
         already-accepted fact.
+
+        Args:
+            facts: Flat list of fact dicts within one category.
+
+        Returns:
+            list[dict[str, Any]]: Deduplicated facts in original order.
         """
         accepted: list[dict[str, Any]] = []
-        accepted_texts: list[str] = []
+        accepted_texts: list[str] = []  # parallel list of texts for O(n²) comparison
 
         for fact in facts:
             text = fact.get("content", fact.get("text", "")).strip()
             if not text:
                 continue
 
+            # Check against every already-accepted text for overlap.
             is_dup = False
             for existing_text in accepted_texts:
                 if _word_overlap(text, existing_text) >= _OVERLAP_THRESHOLD:
@@ -312,8 +440,22 @@ class FactCondenser:
         return accepted
 
     def _upsert_condensed(self, entry: dict[str, Any]) -> str:
-        """Insert or update a condensed entry.  Returns 'created' or 'updated'."""
+        """Insert or update a condensed entry in the database.
+
+        If a row with the same ``(topic, category)`` already exists, the
+        summary text is *appended* (separated by ``"; "``), source IDs are
+        merged, and the higher priority wins.  Otherwise a new row is created.
+
+        Args:
+            entry: Dict with keys ``topic``, ``category``, ``summary``,
+                ``priority``, ``source_ids``.
+
+        Returns:
+            str: ``'created'`` if a new row was inserted, ``'updated'``
+            if an existing row was modified.
+        """
         conn = self.store.get_connection()
+        # Look up existing row by (topic, category) unique index.
         cursor = conn.execute(
             "SELECT id, source_ids FROM condensed "
             "WHERE topic = ? AND category = ?",
@@ -321,12 +463,13 @@ class FactCondenser:
         )
         row = cursor.fetchone()
 
+        # Use Unix timestamp for updated_at/created_at in condensed entries.
         now = int(time.time())
 
         if row:
             existing_id, existing_source_ids = row
             merged_ids = _merge_source_ids(existing_source_ids, entry["source_ids"])
-            # Append new summary text to existing
+            # Append the new summary text to the existing one.
             cursor2 = conn.execute(
                 "SELECT summary FROM condensed WHERE id = ?", (existing_id,)
             )
@@ -334,7 +477,7 @@ class FactCondenser:
             new_summary = (
                 f"{old_summary}; {entry['summary']}" if old_summary else entry["summary"]
             )
-            # Keep the higher priority
+            # Keep whichever priority is higher (existing vs incoming).
             cursor3 = conn.execute(
                 "SELECT priority FROM condensed WHERE id = ?", (existing_id,)
             )
@@ -369,11 +512,20 @@ class FactCondenser:
             return "created"
 
     def _mark_condensed(self, fact_ids: list[int]) -> None:
-        """Set ``condensed = 1`` on the given raw_fact IDs."""
+        """Set ``condensed = 1`` on the given raw_fact IDs.
+
+        Args:
+            fact_ids: List of ``raw_facts.id`` values.  An empty list
+                is a no-op.
+
+        Raises:
+            Exception: Logged and suppressed; the caller is not interrupted.
+        """
         if not fact_ids:
             return
         try:
             conn = self.store.get_connection()
+            # Dynamic IN clause with positional placeholders.
             placeholders = ", ".join("?" for _ in fact_ids)
             conn.execute(
                 f"UPDATE raw_facts SET condensed = 1 WHERE id IN ({placeholders})",
@@ -385,7 +537,15 @@ class FactCondenser:
             logger.exception("Failed to mark facts as condensed.")
 
     def _load_condensed_sorted(self) -> list[dict[str, Any]]:
-        """Load all condensed entries ordered by priority descending."""
+        """Load all condensed entries ordered by priority descending.
+
+        Secondary sort is ``updated_at DESC`` so recently-updated entries
+        of the same priority appear first.
+
+        Returns:
+            list[dict[str, Any]]: All condensed rows as dicts, or an
+            empty list on error.
+        """
         try:
             conn = self.store.get_connection()
             cursor = conn.execute(
