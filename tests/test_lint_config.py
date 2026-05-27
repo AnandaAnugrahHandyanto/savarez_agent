@@ -113,3 +113,24 @@ class TestLintWorkflow:
             pytest.fail(f"lint.yml is not valid YAML: {exc}")
         assert isinstance(parsed, dict)
         assert "jobs" in parsed
+
+
+class TestToolsF541Regression:
+    """tools/ must have zero F541 violations."""
+
+    TOOLS_DIR = REPO_ROOT / "tools"
+
+    def test_tools_dir_has_zero_f541_violations(self) -> None:
+        """tools/ should have no f-strings without placeholders."""
+        import subprocess, sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F541",
+             "--output-format=concise", str(self.TOOLS_DIR)],
+            capture_output=True, text=True, check=False,
+        )
+
+        count = result.stdout.count("error[F541]")
+        assert result.returncode == 0, (
+            f"tools/ has {count} F541 violation(s)\n{result.stdout}"
+        )
