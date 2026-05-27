@@ -5,107 +5,68 @@ from gateway.config import PlatformConfig
 from plugins.platforms.discord.adapter import DiscordAdapter
 
 
+@pytest.fixture
+def adapter_with_alias():
+    """Create adapter with test tag aliases."""
+    config = PlatformConfig(
+        enabled=True,
+        extra={"tag_aliases": {"alice": "111", "bob": "222"}}
+    )
+    return DiscordAdapter(config=config)
+
+
+@pytest.fixture
+def adapter_without_alias():
+    """Create adapter without tag aliases."""
+    config = PlatformConfig(enabled=True, extra={})
+    return DiscordAdapter(config=config)
+
+
 class TestTagAliasCorrection:
     """Test tag alias replacement in Discord adapter."""
 
-    def test_basic_alias_replacement(self):
+    def test_basic_replacement(self, adapter_with_alias):
         """Test basic @name to <@id> conversion."""
-        config = PlatformConfig(
-            enabled=True,
-            extra={"tag_aliases": {"lachlan": "556627489947123749"}}
-        )
-        adapter = DiscordAdapter(config=config)
-        result = adapter.format_message("Hi @lachlan")
-        assert result == "Hi <@556627489947123749>"
+        result = adapter_with_alias.format_message("Hi @alice")
+        assert result == "Hi <@111>"
 
-    def test_case_insensitive(self):
+    def test_case_insensitive(self, adapter_with_alias):
         """Test that matching is case-insensitive."""
-        config = PlatformConfig(
-            enabled=True,
-            extra={"tag_aliases": {"lachlan": "556627489947123749"}}
-        )
-        adapter = DiscordAdapter(config=config)
-        result = adapter.format_message("Hi @Lachlan and @LACHLAN")
-        assert result == "Hi <@556627489947123749> and <@556627489947123749>"
+        result = adapter_with_alias.format_message("Hi @Alice and @ALICE")
+        assert result == "Hi <@111> and <@111>"
 
-    def test_preserve_correct_format(self):
+    def test_preserve_correct_format(self, adapter_with_alias):
         """Test that <@id> format is preserved unchanged."""
-        config = PlatformConfig(
-            enabled=True,
-            extra={"tag_aliases": {"lachlan": "556627489947123749"}}
-        )
-        adapter = DiscordAdapter(config=config)
-        result = adapter.format_message("Hi <@556627489947123749>")
-        assert result == "Hi <@556627489947123749>"
+        result = adapter_with_alias.format_message("Hi <@111>")
+        assert result == "Hi <@111>"
 
-    def test_no_space_before_at_not_matched(self):
+    @pytest.mark.parametrize("prefix", ["test@", "x@"])
+    def test_no_space_before_at_not_matched(self, adapter_with_alias, prefix):
         """Test that @ without space before is NOT matched."""
-        config = PlatformConfig(
-            enabled=True,
-            extra={"tag_aliases": {"lachlan": "556627489947123749"}}
-        )
-        adapter = DiscordAdapter(config=config)
-        result = adapter.format_message("test@lachlan")
-        assert result == "test@lachlan"
+        result = adapter_with_alias.format_message(f"{prefix}alice")
+        assert result == f"{prefix}alice"
 
-    def test_word_before_at_not_matched(self):
-        """Test that word character before @ prevents match."""
-        config = PlatformConfig(
-            enabled=True,
-            extra={"tag_aliases": {"lachlan": "556627489947123749"}}
-        )
-        adapter = DiscordAdapter(config=config)
-        result = adapter.format_message("x@lachlan")
-        assert result == "x@lachlan"
-
-    def test_punctuation_before_at_is_matched(self):
+    def test_punctuation_before_at_is_matched(self, adapter_with_alias):
         """Test that punctuation before @ allows match."""
-        config = PlatformConfig(
-            enabled=True,
-            extra={"tag_aliases": {"lachlan": "556627489947123749"}}
-        )
-        adapter = DiscordAdapter(config=config)
-        result = adapter.format_message("Hi, @lachlan!")
-        assert result == "Hi, <@556627489947123749>!"
+        result = adapter_with_alias.format_message("Hi, @alice!")
+        assert result == "Hi, <@111>!"
 
-    def test_preserve_role_mentions(self):
+    def test_preserve_role_mentions(self, adapter_with_alias):
         """Test that @everyone and @here are preserved."""
-        config = PlatformConfig(
-            enabled=True,
-            extra={"tag_aliases": {"lachlan": "556627489947123749"}}
-        )
-        adapter = DiscordAdapter(config=config)
-        result = adapter.format_message("Hey @everyone, @lachlan is here")
-        assert result == "Hey @everyone, <@556627489947123749> is here"
+        result = adapter_with_alias.format_message("Hey @everyone, @alice is here")
+        assert result == "Hey @everyone, <@111> is here"
 
-    def test_multiple_aliases(self):
+    def test_multiple_aliases(self, adapter_with_alias):
         """Test multiple different aliases in one message."""
-        config = PlatformConfig(
-            enabled=True,
-            extra={
-                "tag_aliases": {
-                    "lachlan": "556627489947123749",
-                    "marvin": "123456789012345678"
-                }
-            }
-        )
-        adapter = DiscordAdapter(config=config)
-        result = adapter.format_message("@lachlan and @marvin")
-        assert result == "<@556627489947123749> and <@123456789012345678>"
+        result = adapter_with_alias.format_message("@alice and @bob")
+        assert result == "<@111> and <@222>"
 
-    def test_no_tag_aliases_config(self):
+    def test_no_tag_aliases_config(self, adapter_without_alias):
         """Test that messages pass through unchanged when no aliases configured."""
-        config = PlatformConfig(enabled=True, extra={})
-        adapter = DiscordAdapter(config=config)
-        result = adapter.format_message("Hi @lachlan")
-        assert result == "Hi @lachlan"
+        result = adapter_without_alias.format_message("Hi @alice")
+        assert result == "Hi @alice"
 
-    def test_tag_alias_not_in_config(self):
+    def test_tag_alias_not_in_config(self, adapter_with_alias):
         """Test that unknown aliases are not replaced."""
-        config = PlatformConfig(
-            enabled=True,
-            extra={"tag_aliases": {"lachlan": "556627489947123749"}}
-        )
-        adapter = DiscordAdapter(config=config)
-        result = adapter.format_message("Hi @unknown")
+        result = adapter_with_alias.format_message("Hi @unknown")
         assert result == "Hi @unknown"
