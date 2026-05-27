@@ -274,7 +274,11 @@ class TestHandleUpdateCommand:
         call_args = mock_popen.call_args[0][0]
         assert call_args[0] == "/usr/bin/setsid"
         assert call_args[1] == "bash"
-        assert ".update_exit_code" in call_args[-1]
+        update_cmd = call_args[-1]
+        assert ".update_exit_code" in update_cmd
+        assert "safe-update-" in update_cmd
+        assert "tee -a" in update_cmd
+        assert "PIPESTATUS[0]" in update_cmd
         assert "Starting Hermes update" in result
 
     @pytest.mark.asyncio
@@ -313,6 +317,8 @@ class TestHandleUpdateCommand:
         assert call_args[0] == "bash"
         assert "nohup" not in call_args[2]
         assert ".update_exit_code" in call_args[2]
+        assert "safe-update-" in call_args[2]
+        assert "tee -a" in call_args[2]
         # start_new_session=True should be in kwargs
         call_kwargs = mock_popen.call_args[1]
         assert call_kwargs.get("start_new_session") is True
@@ -355,6 +361,100 @@ class TestHandleUpdateCommand:
         assert "transcript_path" in json.loads((hermes_home / ".update_pending.json").read_text(encoding="utf-8"))
         assert any("safe-update-" in str(part) for part in argv)
         assert "--gateway" in argv
+
+    @pytest.mark.asyncio
+    async def test_update_already_running_does_not_spawn_second_update(self, tmp_path):
+        """A fresh update sentinel blocks duplicate /update runs from overwriting markers."""
+        runner = _make_runner()
+        event = _make_event()
+
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / ".git").mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / ".update_in_progress").write_text("now", encoding="utf-8")
+        (hermes_home / ".update_pending.json").write_text(json.dumps({
+            "platform": "telegram", "chat_id": "111", "user_id": "222",
+        }), encoding="utf-8")
+
+        mock_popen = MagicMock()
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.__file__", fake_file), \
+             patch("shutil.which", return_value="/usr/bin/hermes"), \
+             patch("subprocess.Popen", mock_popen):
+            result = await runner._handle_update_command(event)
+
+        assert "already in progress" in result
+        mock_popen.assert_not_called()
+        assert (hermes_home / ".update_pending.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_update_completed_sentinel_retries_notification_without_spawning(self, tmp_path):
+        """A completed preserved update is retried instead of overwritten by a new /update."""
+        runner = _make_runner()
+        event = _make_event()
+
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / ".git").mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / ".update_in_progress").write_text("now", encoding="utf-8")
+        (hermes_home / ".update_exit_code").write_text("0", encoding="utf-8")
+        (hermes_home / ".update_output.txt").write_text("done", encoding="utf-8")
+        (hermes_home / ".update_pending.json").write_text(json.dumps({
+            "platform": "telegram", "chat_id": "111", "user_id": "222",
+        }), encoding="utf-8")
+
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+        mock_popen = MagicMock()
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.__file__", fake_file), \
+             patch("shutil.which", side_effect=lambda x: "/usr/bin/hermes" if x == "hermes" else "/usr/bin/setsid"), \
+             patch("subprocess.Popen", mock_popen):
+            result = await runner._handle_update_command(event)
+
+        assert "Previous Hermes update result was delivered" in result
+        mock_adapter.send.assert_called_once()
+        mock_popen.assert_not_called()
+        assert not (hermes_home / ".update_pending.json").exists()
+        assert not (hermes_home / ".update_exit_code").exists()
+        assert not (hermes_home / ".update_in_progress").exists()
+
+    @pytest.mark.asyncio
+    async def test_stale_sentinel_without_markers_is_ignored(self, tmp_path):
+        """A lone stale sentinel should not permanently block future /update runs."""
+        runner = _make_runner()
+        event = _make_event()
+
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / ".git").mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / ".update_in_progress").write_text("stale", encoding="utf-8")
+
+        mock_popen = MagicMock()
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.__file__", fake_file), \
+             patch("shutil.which", side_effect=lambda x: "/usr/bin/hermes" if x == "hermes" else "/usr/bin/setsid"), \
+             patch("subprocess.Popen", mock_popen):
+            result = await runner._handle_update_command(event)
+
+        assert "Starting Hermes update" in result
+        mock_popen.assert_called_once()
+        assert (hermes_home / ".update_pending.json").exists()
 
     @pytest.mark.asyncio
     async def test_popen_failure_cleans_up(self, tmp_path):
@@ -572,7 +672,7 @@ class TestSendUpdateNotification:
         pending = {"platform": "telegram", "chat_id": "111", "user_id": "222"}
         (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
         (hermes_home / ".update_output.txt").write_text(
-            "\x1b[32m✓ Code updated!\x1b[0m\n\x1b[1mDone\x1b[0m"
+            "\x1b[32m✓ Code updated!\x1b[0m\n\x1b[2K\x1b[1mDone\x1b[0m"
         )
         (hermes_home / ".update_exit_code").write_text("0")
 
@@ -718,14 +818,23 @@ class TestSendUpdateNotification:
         hermes_home.mkdir()
 
         pending_path = hermes_home / ".update_pending.json"
-        pending_path.write_text("{corrupt json!!")
+        output_path = hermes_home / ".update_output.txt"
+        exit_code_path = hermes_home / ".update_exit_code"
+        sentinel_path = hermes_home / ".update_in_progress"
+        pending_path.write_text("{corrupt json!!", encoding="utf-8")
+        output_path.write_text("stale output", encoding="utf-8")
+        exit_code_path.write_text("0", encoding="utf-8")
+        sentinel_path.write_text("stale sentinel", encoding="utf-8")
 
         with patch("gateway.run._hermes_home", hermes_home):
             # Should not raise
             await runner._send_update_notification()
 
-        # File should be cleaned up
+        # Corrupt lifecycle files should be cleaned up rather than leaving a stale sentinel.
         assert not pending_path.exists()
+        assert not output_path.exists()
+        assert not exit_code_path.exists()
+        assert not sentinel_path.exists()
 
     @pytest.mark.asyncio
     async def test_no_adapter_for_platform(self, tmp_path):

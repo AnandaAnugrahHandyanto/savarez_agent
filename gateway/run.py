@@ -13956,6 +13956,23 @@ class GatewayRunner:
         logs_dir = _hermes_home / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
         transcript_path = logs_dir / f"safe-update-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
+
+        if sentinel_path.exists():
+            pending_exists = pending_path.exists() or (_hermes_home / ".update_pending.claimed.json").exists()
+            if exit_code_path.exists() and pending_exists:
+                notified = await self._send_update_notification()
+                if notified:
+                    return "⚕ Previous Hermes update result was delivered. Run `/update` again if you want to start another update."
+                self._schedule_update_notification_watch()
+                return "⚕ Previous Hermes update finished, but its notification is still pending retry. I will keep watching it."
+            if not exit_code_path.exists() and pending_exists:
+                self._schedule_update_notification_watch()
+                return "⚕ Hermes update is already in progress. I will keep watching it and report when it finishes."
+            if not pending_exists:
+                sentinel_path.unlink(missing_ok=True)
+                if exit_code_path.exists():
+                    exit_code_path.unlink(missing_ok=True)
+
         session_key = self._session_key_for_source(event.source)
         pending = {
             "platform": event.source.platform.value,
@@ -14044,13 +14061,15 @@ class GatewayRunner:
             else:
                 hermes_cmd_str = " ".join(shlex.quote(part) for part in hermes_cmd)
                 update_cmd = (
-                    f"PYTHONUNBUFFERED=1 {hermes_cmd_str} update --gateway"
-                    f" > {shlex.quote(str(output_path))} 2>&1; "
+                    f"PYTHONUNBUFFERED=1 PYTHONUTF8=1 PYTHONIOENCODING=utf-8 "
+                    f"{hermes_cmd_str} update --gateway 2>&1 "
+                    f"| tee -a {shlex.quote(str(transcript_path))} > {shlex.quote(str(output_path))}; "
                     # Avoid `status=$?`: `status` is a read-only special parameter
                     # in zsh, and this command string is copied/reused in macOS/zsh
                     # operator wrappers. Keep the template zsh-safe even though this
-                    # specific subprocess currently runs under bash.
-                    f"rc=$?; printf '%s' \"$rc\" > {shlex.quote(str(exit_code_path))}"
+                    # specific subprocess currently runs under bash. PIPESTATUS is
+                    # bash-specific, and this command is explicitly run via bash.
+                    f"rc=${{PIPESTATUS[0]}}; printf '%s' \"$rc\" > {shlex.quote(str(exit_code_path))}"
                 )
                 setsid_bin = shutil.which("setsid")
                 if setsid_bin:
@@ -14214,6 +14233,11 @@ class GatewayRunner:
                     logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
                 except Exception as e:
                     logger.warning("Update final notification failed: %s", e)
+                    # Preserve markers/output/exit code and retry while the
+                    # watcher is alive rather than losing the final update
+                    # result on a transient platform send failure.
+                    await asyncio.sleep(poll_interval)
+                    continue
 
                 # Cleanup
                 for p in (pending_path, claimed_path, output_path,
@@ -14348,6 +14372,9 @@ class GatewayRunner:
                 logger.warning("Post-update notification discarded malformed marker: %s", e)
                 claimed_path.unlink(missing_ok=True)
                 pending_path.unlink(missing_ok=True)
+                output_path.unlink(missing_ok=True)
+                exit_code_path.unlink(missing_ok=True)
+                sentinel_path.unlink(missing_ok=True)
                 return True
 
             platform_str = pending.get("platform")
@@ -14390,7 +14417,7 @@ class GatewayRunner:
                 return False
 
             metadata = {"thread_id": thread_id} if thread_id else None
-            output = re.sub(r'\x1b\[[0-9;]*m', '', output).strip()
+            output = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', output).strip()
             transcript_note = f"\n\nTranscript: `{transcript_path}`" if transcript_path else ""
             if output:
                 if len(output) > 3500:
