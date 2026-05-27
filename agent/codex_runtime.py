@@ -335,6 +335,50 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 )
                 return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
             raise
+        except TypeError as exc:
+            # OpenAI/Codex can stream valid output_item.done frames but
+            # omit response.output on response.completed.  openai-python
+            # then crashes parsing the completed frame before
+            # get_final_response() returns.  Recover from the items or
+            # deltas we already collected instead of surfacing a
+            # non-retryable TypeError to the caller.
+            err_text = str(exc)
+            if "'NoneType' object is not iterable" not in err_text:
+                raise
+            if collected_output_items:
+                logger.warning(
+                    "Codex stream completed without response.output; "
+                    "recovering from %d streamed output items. %s",
+                    len(collected_output_items),
+                    agent._client_log_context(),
+                )
+                return SimpleNamespace(
+                    output=list(collected_output_items),
+                    status="completed",
+                    model=api_kwargs.get("model"),
+                    usage=None,
+                )
+            if agent._codex_streamed_text_parts and not has_tool_calls:
+                assembled = "".join(agent._codex_streamed_text_parts)
+                logger.warning(
+                    "Codex stream completed without response.output; "
+                    "recovering from %d text deltas (%d chars). %s",
+                    len(agent._codex_streamed_text_parts),
+                    len(assembled),
+                    agent._client_log_context(),
+                )
+                return SimpleNamespace(
+                    output=[SimpleNamespace(
+                        type="message",
+                        role="assistant",
+                        status="completed",
+                        content=[SimpleNamespace(type="output_text", text=assembled)],
+                    )],
+                    status="completed",
+                    model=api_kwargs.get("model"),
+                    usage=None,
+                )
+            raise
 
 
 
