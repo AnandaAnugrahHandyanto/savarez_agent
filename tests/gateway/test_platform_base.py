@@ -362,6 +362,50 @@ class TestExtractMedia:
         assert "[[as_document]]" not in cleaned
 
 
+    def test_media_tag_recognizes_html_and_data_extensions(self):
+        """MEDIA: tags with .html, .json, .svg, .md, .tar.gz etc. should be extracted."""
+        # HTML report
+        media, cleaned = BasePlatformAdapter.extract_media(
+            "MEDIA:/tmp/report.html"
+        )
+        assert len(media) == 1
+        assert media[0][0].endswith("report.html")
+
+        # JSON export
+        media, _ = BasePlatformAdapter.extract_media("MEDIA:/data/export.json")
+        assert len(media) == 1
+        assert media[0][0].endswith("export.json")
+
+        # SVG chart
+        media, _ = BasePlatformAdapter.extract_media("MEDIA:/charts/fig.svg")
+        assert len(media) == 1
+
+        # Markdown note
+        media, _ = BasePlatformAdapter.extract_media("MEDIA:/notes/readme.md")
+        assert len(media) == 1
+
+        # Archive formats
+        for ext in ("tar", "gz", "tgz", "bz2", "xz"):
+            media, _ = BasePlatformAdapter.extract_media(
+                f"MEDIA:/tmp/archive.{ext}"
+            )
+            assert len(media) == 1, f".{ext} should be recognized"
+
+        # Presentation formats
+        for ext in ("ppt", "odp", "key"):
+            media, _ = BasePlatformAdapter.extract_media(
+                f"MEDIA:/tmp/deck.{ext}"
+            )
+            assert len(media) == 1, f".{ext} should be recognized"
+
+    def test_media_tag_recognizes_image_formats_beyond_png_jpg(self):
+        """MEDIA: tags with .bmp, .tiff, .svg images should be extracted."""
+        for ext in ("bmp", "tiff", "svg"):
+            media, _ = BasePlatformAdapter.extract_media(
+                f"MEDIA:/tmp/image.{ext}"
+            )
+            assert len(media) == 1, f".{ext} should be recognized"
+
 class TestMediaDeliveryPathValidation:
     def _patch_roots(self, monkeypatch, *roots):
         monkeypatch.setattr(
