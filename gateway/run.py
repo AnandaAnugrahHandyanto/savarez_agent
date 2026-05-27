@@ -66,6 +66,86 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_MEDIA_RESULT_TOOL_ALLOWLIST = frozenset({"text_to_speech"})
+
+
+def _tool_call_name_map(messages: Optional[List[Dict[str, Any]]]) -> Dict[str, str]:
+    """Return tool_call_id -> function name for assistant tool calls."""
+    names: Dict[str, str] = {}
+    for msg in messages or []:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        tool_calls = msg.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            continue
+        for call in tool_calls:
+            call_id = ""
+            name = ""
+            if isinstance(call, dict):
+                call_id = str(call.get("id") or call.get("call_id") or "")
+                function = call.get("function") or {}
+                if isinstance(function, dict):
+                    name = str(function.get("name") or "")
+            else:
+                call_id = str(
+                    getattr(call, "id", None) or getattr(call, "call_id", None) or ""
+                )
+                function = getattr(call, "function", None)
+                name = str(getattr(function, "name", "") or "")
+            if call_id and name:
+                names[call_id] = name
+    return names
+
+
+def _collect_media_tags_from_tool_results(
+    messages: Optional[List[Dict[str, Any]]],
+    history_media_paths: Optional[set] = None,
+    *,
+    allowed_tools: Optional[set] = None,
+) -> List[str]:
+    """Collect gateway-deliverable MEDIA tags from trusted media tool results.
+
+    Some tools (notably NapCat history/search tools) can return arbitrary
+    previously-seen chat text that contains literal ``MEDIA:`` examples. Those
+    snippets are data, not fresh media artifacts. Only tools in the explicit
+    allowlist are trusted to have produced a new attachment for this turn.
+    """
+    trusted_tools = allowed_tools or _MEDIA_RESULT_TOOL_ALLOWLIST
+    prior_paths = history_media_paths or set()
+    call_names = _tool_call_name_map(messages)
+    media_tags: List[str] = []
+    has_voice_directive = False
+
+    for msg in messages or []:
+        if not isinstance(msg, dict) or msg.get("role") not in ("tool", "function"):
+            continue
+        tool_name = str(
+            msg.get("name") or call_names.get(msg.get("tool_call_id")) or ""
+        )
+        if tool_name not in trusted_tools:
+            continue
+        content = msg.get("content", "")
+        if not isinstance(content, str) or "MEDIA:" not in content:
+            continue
+        for match in re.finditer(r"MEDIA:(\S+)", content):
+            path = match.group(1).strip().rstrip('",}')
+            if path and path not in prior_paths:
+                media_tags.append(f"MEDIA:{path}")
+        if "[[audio_as_voice]]" in content:
+            has_voice_directive = True
+
+    if not media_tags:
+        return []
+
+    seen = set()
+    unique_tags = []
+    for tag in media_tags:
+        if tag not in seen:
+            seen.add(tag)
+            unique_tags.append(tag)
+    if has_voice_directive:
+        unique_tags.insert(0, "[[audio_as_voice]]")
+    return unique_tags
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
@@ -1539,6 +1619,8 @@ def _format_gateway_process_notification(evt: dict) -> "str | None":
     return None
 
 
+_active_runner: "Optional[GatewayRunner]" = None
+
 # Module-level weak reference to the active GatewayRunner instance.
 # Used by tools (e.g. send_message) that need to route through a live
 # adapter for plugin platforms.  Set in GatewayRunner.__init__().
@@ -1674,6 +1756,12 @@ class GatewayRunner:
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
         self._warn_if_docker_media_delivery_is_risky()
         _gateway_runner_ref = _weakref.ref(self)
+
+        # Expose the most recently constructed runner at module level so
+        # in-process tools (e.g. the NapCat branch of send_message) can reach
+        # active adapters without a full dependency-injection graph.
+        global _active_runner
+        _active_runner = self
 
         # Load ephemeral config from config.yaml / env vars.
         # Both are injected at API-call time only and never persisted.
@@ -3971,6 +4059,7 @@ class GatewayRunner:
             "WEIXIN_ALLOWED_USERS",
             "BLUEBUBBLES_ALLOWED_USERS",
             "QQ_ALLOWED_USERS",
+            "NAPCAT_ALLOWED_USERS",
             "YUANBAO_ALLOWED_USERS",
             "GATEWAY_ALLOWED_USERS",
         )
@@ -6359,6 +6448,13 @@ class GatewayRunner:
                 return None
             return QQAdapter(config)
 
+        elif platform == Platform.NAPCAT:
+            from gateway.platforms.napcat import NapCatAdapter, check_napcat_requirements
+            if not check_napcat_requirements():
+                logger.warning("NapCat: aiohttp not installed")
+                return None
+            return NapCatAdapter(config)
+
         elif platform == Platform.YUANBAO:
             from gateway.platforms.yuanbao import YuanbaoAdapter, WEBSOCKETS_AVAILABLE
             if not WEBSOCKETS_AVAILABLE:
@@ -6434,6 +6530,7 @@ class GatewayRunner:
             Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
             Platform.QQBOT: "QQ_ALLOWED_USERS",
+            Platform.NAPCAT: "NAPCAT_ALLOWED_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
         }
         platform_group_user_env_map = {
@@ -6442,6 +6539,7 @@ class GatewayRunner:
         platform_group_chat_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
             Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
+            Platform.NAPCAT: "NAPCAT_ALLOWED_GROUPS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
@@ -6460,6 +6558,7 @@ class GatewayRunner:
             Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
+            Platform.NAPCAT: "NAPCAT_ALLOW_ALL_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
         }
         # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
@@ -6490,6 +6589,19 @@ class GatewayRunner:
             allow_bots_var = platform_allow_bots_map.get(source.platform)
             if allow_bots_var and os.getenv(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
                 return True
+
+        # Discord role-based access (DISCORD_ALLOWED_ROLES): the adapter's
+        # on_message pre-filter already verified role membership — if the
+        # message reached here, the user passed that check. Authorize
+        # directly to avoid the "no allowlists configured" branch below
+        # rejecting role-only setups where DISCORD_ALLOWED_USERS is empty
+        # (issue #7871).
+        if (
+            source.platform == Platform.DISCORD
+            and os.getenv("DISCORD_ALLOWED_ROLES", "").strip()
+        ):
+            return True
+
 
         # Check pairing store (always checked, regardless of allowlists)
         platform_name = source.platform.value if source.platform else ""
@@ -6634,6 +6746,8 @@ class GatewayRunner:
                 Platform.WEIXIN:   "WEIXIN_ALLOWED_USERS",
                 Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
                 Platform.QQBOT:    "QQ_ALLOWED_USERS",
+                Platform.NAPCAT:   "NAPCAT_ALLOWED_USERS",
+                Platform.YUANBAO:  "YUANBAO_ALLOWED_USERS",
             }
             platform_group_env_map = {
                 Platform.TELEGRAM: (
@@ -6641,6 +6755,7 @@ class GatewayRunner:
                     "TELEGRAM_GROUP_ALLOWED_CHATS",
                 ),
                 Platform.QQBOT: ("QQ_GROUP_ALLOWED_USERS",),
+                Platform.NAPCAT: ("NAPCAT_GROUP_ALLOWED_USERS", "NAPCAT_ALLOWED_GROUPS"),
             }
             if os.getenv(platform_env_map.get(platform, ""), "").strip():
                 return "ignore"
@@ -11453,6 +11568,17 @@ class GatewayRunner:
         from pathlib import Path
         from urllib.parse import quote as _quote
 
+        delivery_errors: List[str] = []
+
+        def _record_delivery_error(kind: str, path: str, error: Any) -> None:
+            error_text = str(error or "unknown error").strip()
+            path_text = str(path or "").strip()
+            if len(path_text) > 240:
+                path_text = path_text[:237] + "..."
+            if len(error_text) > 500:
+                error_text = error_text[:497] + "..."
+            delivery_errors.append(f"{kind} failed for {path_text}: {error_text}")
+
         try:
             # Capture [[as_document]] before extract_media strips it, so the
             # dispatch partition below can route image-extension files
@@ -11499,55 +11625,87 @@ class GatewayRunner:
             if image_paths:
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
-                    await adapter.send_multiple_images(
+                    image_results = await adapter.send_multiple_images(
                         chat_id=event.source.chat_id,
                         images=images,
                         metadata=_thread_meta,
                     )
+                    for idx, image_result in enumerate(image_results or []):
+                        if not image_result.success:
+                            image_path = image_paths[idx] if idx < len(image_paths) else "image"
+                            _record_delivery_error("image", image_path, image_result.error)
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
+                    _record_delivery_error("image batch", f"{len(image_paths)} image(s)", e)
 
             for media_path, is_voice in non_image_media:
                 try:
                     ext = Path(media_path).suffix.lower()
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
-                        await adapter.send_voice(
+                        result = await adapter.send_voice(
                             chat_id=event.source.chat_id,
                             audio_path=media_path,
                             metadata=_thread_meta,
                         )
                     elif ext in _VIDEO_EXTS:
-                        await adapter.send_video(
+                        result = await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=media_path,
                             metadata=_thread_meta,
                         )
                     else:
-                        await adapter.send_document(
+                        result = await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=media_path,
                             metadata=_thread_meta,
                         )
+                    if not result.success:
+                        _record_delivery_error("media", media_path, result.error)
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
+                    _record_delivery_error("media", media_path, e)
 
             for file_path in non_image_local:
                 try:
                     ext = Path(file_path).suffix.lower()
                     if ext in _VIDEO_EXTS:
-                        await adapter.send_video(
+                        result = await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=file_path,
                             metadata=_thread_meta,
                         )
                     else:
-                        await adapter.send_document(
+                        result = await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=file_path,
                             metadata=_thread_meta,
                         )
+                    if not result.success:
+                        _record_delivery_error("file", file_path, result.error)
                 except Exception as e:
                     logger.warning("[%s] Post-stream file delivery failed: %s", adapter.name, e)
+                    _record_delivery_error("file", file_path, e)
+
+            if delivery_errors:
+                feedback = (
+                    "[Hermes gateway delivery feedback]\n"
+                    + "\n".join(f"- {item}" for item in delivery_errors)
+                    + "\nIf this was a local path, remember the messaging platform may run on a different machine; use a URL, base64://, or a shared path readable by the platform host."
+                )
+                try:
+                    session_store = getattr(self, "session_store", None)
+                    if session_store is not None:
+                        session_entry = session_store.get_or_create_session(event.source)
+                        session_store.append_to_transcript(
+                            session_entry.session_id,
+                            {
+                                "role": "user",
+                                "content": feedback,
+                                "timestamp": datetime.now().isoformat(),
+                            },
+                        )
+                except Exception as feedback_err:
+                    logger.debug("Post-stream media feedback persistence failed: %s", feedback_err)
 
         except Exception as e:
             logger.warning("Post-stream media extraction failed: %s", e)
@@ -13862,7 +14020,7 @@ class GatewayRunner:
         Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK, Platform.WHATSAPP,
         Platform.SIGNAL, Platform.MATTERMOST, Platform.MATRIX,
         Platform.HOMEASSISTANT, Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
-        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.LOCAL,
+        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.NAPCAT, Platform.LOCAL,
     })
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:
@@ -17138,46 +17296,23 @@ class GatewayRunner:
                     "context_length": _context_length,
                 }
             
-            # Scan tool results for MEDIA:<path> tags that need to be delivered
-            # as native audio/file attachments.  The TTS tool embeds MEDIA: tags
-            # in its JSON response, but the model's final text reply usually
-            # doesn't include them.  We collect unique tags from tool results and
-            # append any that aren't already present in the final response, so the
-            # adapter's extract_media() can find and deliver the files exactly once.
+            # Scan trusted media-tool results for MEDIA:<path> tags that need to
+            # be delivered as native audio/file attachments.  The TTS tool embeds
+            # MEDIA tags in its JSON response, but the model's final text reply
+            # usually doesn't include them.  Do not scan arbitrary tool output:
+            # history/search tools (for example NapCat group history) may return
+            # old chat text containing literal MEDIA examples, which must not be
+            # replayed as fresh attachments.
             #
             # Uses path-based deduplication against _history_media_paths (collected
             # before run_conversation) instead of index slicing. This is safe even
             # when context compression shrinks the message list. (Fixes #160)
             if "MEDIA:" not in final_response:
-                media_tags = []
-                has_voice_directive = False
-                for msg in result.get("messages", []):
-                    if msg.get("role") in {"tool", "function"}:
-                        content = msg.get("content", "")
-                        if "MEDIA:" in content:
-                            _TOOL_MEDIA_RE = re.compile(
-                                r'MEDIA:((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
-                                r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
-                                r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
-                                r'txt|csv|apk|ipa))',
-                                re.IGNORECASE
-                            )
-                            for match in _TOOL_MEDIA_RE.finditer(content):
-                                path = match.group(1).strip().rstrip('",}')
-                                if path and path not in _history_media_paths:
-                                    media_tags.append(f"MEDIA:{path}")
-                            if "[[audio_as_voice]]" in content:
-                                has_voice_directive = True
-                
-                if media_tags:
-                    seen = set()
-                    unique_tags = []
-                    for tag in media_tags:
-                        if tag not in seen:
-                            seen.add(tag)
-                            unique_tags.append(tag)
-                    if has_voice_directive:
-                        unique_tags.insert(0, "[[audio_as_voice]]")
+                unique_tags = _collect_media_tags_from_tool_results(
+                    result.get("messages", []),
+                    _history_media_paths,
+                )
+                if unique_tags:
                     final_response = final_response + "\n" + "\n".join(unique_tags)
             
             # Sync session_id: the agent may have created a new session during

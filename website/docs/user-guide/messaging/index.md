@@ -439,6 +439,7 @@ Each platform has its own toolset:
 | Weixin | `hermes-weixin` | Full tools including terminal |
 | BlueBubbles | `hermes-bluebubbles` | Full tools including terminal |
 | QQBot | `hermes-qqbot` | Full tools including terminal |
+| NapCat (QQ) | `hermes-napcat` | Full tools including terminal |
 | Yuanbao | `hermes-yuanbao` | Full tools including terminal |
 | Microsoft Teams | `hermes-teams` | Full tools including terminal |
 | API Server | `hermes-api-server` | Full tools (drops `clarify`, `send_message`, `text_to_speech` — programmatic access doesn't have an interactive user) |
@@ -542,6 +543,7 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [Weixin Setup (WeChat)](weixin.md)
 - [BlueBubbles Setup (iMessage)](bluebubbles.md)
 - [QQBot Setup](qqbot.md)
+- [NapCat Setup (QQ / OneBot 11)](napcat.md)
 - [Yuanbao Setup](yuanbao.md)
 - [Microsoft Teams Setup](teams.md)
 - [Teams Meetings Pipeline](teams-meetings.md)

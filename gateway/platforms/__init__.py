@@ -27,6 +27,7 @@ __all__ = [
     "MessageEvent",
     "SendResult",
     "QQAdapter",
+    "NapCatAdapter",
     "YuanbaoAdapter",
 ]
 
@@ -35,6 +36,9 @@ def __getattr__(name):
     if name == "QQAdapter":
         from .qqbot import QQAdapter  # noqa: F401
         return QQAdapter
+    if name == "NapCatAdapter":
+        from .napcat import NapCatAdapter  # noqa: F401
+        return NapCatAdapter
     if name == "YuanbaoAdapter":
         from .yuanbao import YuanbaoAdapter  # noqa: F401
         return YuanbaoAdapter
