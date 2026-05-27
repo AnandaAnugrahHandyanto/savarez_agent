@@ -202,6 +202,18 @@ def _is_arcee_trinity_thinking(model: Optional[str]) -> bool:
     return bare == "trinity-large-thinking"
 
 
+def _is_bob_prime_qwen_fallback(model: Optional[str]) -> bool:
+    """True for the local Qwen fallback used by Bob Prime's gateway.
+
+    Bob Prime's Telegram sessions carry a large standing prompt/tool/skill
+    footprint. With the global 19% compression threshold, the local Qwen
+    fallback starts compacting at ~25k tokens despite having a 131k context
+    window, which can cause repeated compaction immediately after fallback.
+    """
+    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return bare == "qwen3.6-35b-a3b-fp8"
+
+
 def _fixed_temperature_for_model(
     model: Optional[str],
     base_url: Optional[str] = None,
@@ -235,6 +247,8 @@ def _compression_threshold_for_model(model: Optional[str]) -> Optional[float]:
     config value, or ``None`` to leave the user's config value unchanged.
     """
     if _is_arcee_trinity_thinking(model):
+        return 0.75
+    if _is_bob_prime_qwen_fallback(model):
         return 0.75
     return None
 

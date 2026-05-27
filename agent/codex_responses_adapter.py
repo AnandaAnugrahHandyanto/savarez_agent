@@ -22,6 +22,29 @@ from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
 logger = logging.getLogger(__name__)
 
+_RESPONSES_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _sanitize_responses_name(value: Any, *, fallback: str = "tool") -> str:
+    """Return a Responses-API-safe function/tool name.
+
+    OpenAI's Responses API rejects replayed ``function_call.name`` values
+    containing dots or other punctuation (``^[a-zA-Z0-9_-]+$``). Hermes can
+    legitimately have historical tool-call names from wrapper namespaces such
+    as ``multi_tool_use.parallel`` in the session transcript; when those are
+    replayed to Codex they should be normalized rather than poisoning the
+    whole conversation and forcing provider fallback.
+    """
+    raw = str(value or "").strip()
+    if raw and _RESPONSES_NAME_RE.match(raw):
+        return raw
+    sanitized = re.sub(r"[^A-Za-z0-9_-]+", "_", raw).strip("_")
+    if not sanitized:
+        sanitized = fallback
+    if not re.match(r"^[A-Za-z0-9_]", sanitized):
+        sanitized = f"{fallback}_{sanitized}"
+    return sanitized
+
 
 # Matches Codex/Harmony tool-call serialization that occasionally leaks into
 # assistant-message content when the model fails to emit a structured
@@ -392,6 +415,7 @@ def _chat_messages_to_responses_input(
                         fn_name = fn.get("name")
                         if not isinstance(fn_name, str) or not fn_name.strip():
                             continue
+                        fn_name = _sanitize_responses_name(fn_name, fallback="tool")
 
                         embedded_call_id, embedded_response_item_id = _split_responses_tool_id(
                             tc.get("id")
@@ -492,6 +516,7 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                 raise ValueError(f"Codex Responses input[{idx}] function_call is missing call_id.")
             if not isinstance(name, str) or not name.strip():
                 raise ValueError(f"Codex Responses input[{idx}] function_call is missing name.")
+            name = _sanitize_responses_name(name, fallback="tool")
 
             arguments = item.get("arguments", "{}")
             if isinstance(arguments, dict):
@@ -504,7 +529,7 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                 {
                     "type": "function_call",
                     "call_id": call_id.strip(),
-                    "name": name.strip(),
+                    "name": name,
                     "arguments": arguments,
                 }
             )

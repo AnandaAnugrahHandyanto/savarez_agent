@@ -17,6 +17,7 @@ from agent.auxiliary_client import (
     _compression_threshold_for_model,
     _fixed_temperature_for_model,
     _is_arcee_trinity_thinking,
+    _is_bob_prime_qwen_fallback,
 )
 
 
@@ -65,6 +66,14 @@ def test_fixed_temperature_sibling_arcee_models_unaffected() -> None:
 def test_compression_threshold_for_trinity_thinking() -> None:
     assert _compression_threshold_for_model("trinity-large-thinking") == 0.75
     assert _compression_threshold_for_model("arcee-ai/trinity-large-thinking") == 0.75
+
+
+def test_bob_prime_qwen_fallback_compression_threshold() -> None:
+    assert _is_bob_prime_qwen_fallback("qwen3.6-35b-a3b-fp8") is True
+    assert _is_bob_prime_qwen_fallback("Qwen/Qwen3.6-35B-A3B-FP8") is True
+    assert _is_bob_prime_qwen_fallback("qwen3.6-14b") is False
+    assert _compression_threshold_for_model("qwen3.6-35b-a3b-fp8") == 0.75
+    assert _compression_threshold_for_model("qwen/qwen3.6-35b-a3b-fp8") == 0.75
 
 
 def test_compression_threshold_default_none_for_other_models() -> None:
