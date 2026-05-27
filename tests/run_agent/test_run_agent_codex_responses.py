@@ -201,6 +201,12 @@ class _IteratorTypeErrorStream:
     def __iter__(self):
         for event in self._events_before_error:
             yield event
+        sse_event = SimpleNamespace(
+            response=SimpleNamespace(
+                usage=SimpleNamespace(input_tokens=17, output_tokens=23, total_tokens=40)
+            )
+        )
+        _ = sse_event  # keep the raw terminal event available in the traceback frame
         raise TypeError("'NoneType' object is not iterable")
 
     def get_final_response(self):  # pragma: no cover - iterator fails first
@@ -537,6 +543,9 @@ def test_run_codex_stream_falls_back_when_stream_iteration_parses_null_output(mo
     assert calls["stream"] == 1
     assert response.output == [output_item]
     assert response.status == "completed"
+    assert response.usage.input_tokens == 17
+    assert response.usage.output_tokens == 23
+    assert response.usage.total_tokens == 40
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):

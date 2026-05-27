@@ -182,12 +182,32 @@ def _responses_null_output_iterable_error(exc: BaseException) -> bool:
     return isinstance(exc, TypeError) and "NoneType" in text and "not iterable" in text
 
 
-def _codex_backfilled_response(output_items: list, text_parts: list, *, has_tool_calls: bool, model: str = None):
+def _codex_usage_from_null_output_traceback(exc: BaseException) -> Any:
+    """Best-effort extraction of usage from the terminal SDK SSE frame.
+
+    The OpenAI SDK raises while parsing response.completed.output=None before
+    yielding the completed event. The traceback still contains the raw SSE event
+    frame in SDK internals, and that response can carry accurate usage.
+    """
+    tb = exc.__traceback__
+    while tb is not None:
+        frame = tb.tb_frame
+        for local_name in ("sse_event", "event", "_event"):
+            event = frame.f_locals.get(local_name)
+            response = getattr(event, "response", None) if event is not None else None
+            usage = getattr(response, "usage", None) if response is not None else None
+            if usage is not None:
+                return usage
+        tb = tb.tb_next
+    return None
+
+
+def _codex_backfilled_response(output_items: list, text_parts: list, *, has_tool_calls: bool, model: str | None = None, usage: Any = None):
     """Build a minimal Responses-like object from events already streamed."""
     if output_items:
         return SimpleNamespace(
             output=list(output_items),
-            usage=None,
+            usage=usage,
             status="completed",
             model=model,
         )
@@ -200,7 +220,7 @@ def _codex_backfilled_response(output_items: list, text_parts: list, *, has_tool
                 status="completed",
                 content=[SimpleNamespace(type="output_text", text=assembled)],
             )],
-            usage=None,
+            usage=usage,
             status="completed",
             model=model,
         )
@@ -321,6 +341,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     agent._codex_streamed_text_parts,
                     has_tool_calls=has_tool_calls,
                     model=api_kwargs.get("model"),
+                    usage=_codex_usage_from_null_output_traceback(exc),
                 )
                 if recovered is not None:
                     logger.debug(
