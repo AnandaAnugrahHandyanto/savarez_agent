@@ -129,3 +129,18 @@ class TestToolsEnvironmentLocalF401:
             "tools/environments/local.py has F401 violation(s):\n"
             f"{result.stdout}"
         )
+class TestToolsPatchParserF821:
+    """tools/patch_parser.py must have zero F821 (undefined-name) violations."""
+
+    def test_patch_parser_has_zero_f821_violations(self):
+        """tools/patch_parser.py must have zero undefined-name violations."""
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F821",
+             "--output-format=concise", "tools/patch_parser.py"],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, (
+            "tools/patch_parser.py has F821 violation(s):\n"
+            f"{result.stdout}"
+        )
