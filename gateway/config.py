@@ -239,10 +239,21 @@ class HomeChannel:
         if isinstance(data, str):
             if platform_default is None:
                 raise TypeError(
-                    "HomeChannel.from_dict received a bare string but no "
-                    "platform_default was provided to associate it with"
+                    "HomeChannel.from_dict received a bare string chat_id but "
+                    "no platform_default was provided to associate it with. "
+                    "Accepted shapes: a string chat_id (when called with "
+                    "platform_default=<Platform>), or a dict "
+                    "{'platform': ..., 'chat_id': ..., 'name': ..., 'thread_id': ...}."
                 )
             return cls(platform=platform_default, chat_id=data, name="Home")
+        if not isinstance(data, dict):
+            raise TypeError(
+                f"HomeChannel.from_dict expects a str chat_id or a dict, "
+                f"got {type(data).__name__}: {data!r}. "
+                f"Accepted shapes: a string chat_id (when called with "
+                f"platform_default=<Platform>), or a dict "
+                f"{{'platform': ..., 'chat_id': ..., 'name': ..., 'thread_id': ...}}."
+            )
         return cls(
             platform=Platform(data["platform"]),
             chat_id=str(data["chat_id"]),

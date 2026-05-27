@@ -48,6 +48,14 @@ class TestHomeChannelFromString:
         with pytest.raises(TypeError, match="platform_default"):
             HomeChannel.from_dict("oc_123")
 
+    def test_non_str_non_dict_raises_clear_type_error(self):
+        with pytest.raises(TypeError, match="expects a str chat_id or a dict"):
+            HomeChannel.from_dict(123, platform_default=Platform.FEISHU)
+        with pytest.raises(TypeError, match="expects a str chat_id or a dict"):
+            HomeChannel.from_dict([1, 2, 3], platform_default=Platform.FEISHU)
+        with pytest.raises(TypeError, match="expects a str chat_id or a dict"):
+            HomeChannel.from_dict(None, platform_default=Platform.FEISHU)
+
     def test_platform_config_threads_platform_through(self):
         """End-to-end: a config dict produced by `hermes config set
         platforms.feishu.home_channel <chat_id>` round-trips through
