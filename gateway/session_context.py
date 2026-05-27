@@ -37,7 +37,7 @@ needs to replace the import + call site:
 """
 
 from contextvars import ContextVar, Token
-from typing import Any
+from typing import Any, Optional
 
 # Sentinel to distinguish "never set in this context" from "explicitly set to empty".
 # When a contextvar holds _UNSET, we fall back to os.environ (CLI/cron compat).
@@ -98,10 +98,12 @@ def set_current_session_id(session_id: str) -> None:
     _SESSION_ID.set(session_id)
 
 
-def set_current_turn_session_key(session_key: str) -> Token:
+def set_current_turn_session_key(session_key: Optional[str]) -> Token[str]:
     """Bind the per-turn session-identity ContextVar to ``session_key``.
 
-    Returns the :class:`contextvars.Token`; callers MUST pass it to
+    Accepts ``None`` (treated as empty string) so server-initiated turns can
+    pass through whatever they have without a pre-check; returns the
+    :class:`contextvars.Token` that callers MUST pass to
     :func:`reset_current_turn_session_key` in a ``finally`` clause.
 
     Public wrapper for the per-turn session-identity binding used by
@@ -109,20 +111,21 @@ def set_current_turn_session_key(session_key: str) -> Token:
     callers do not need to import ``_SESSION_KEY`` directly.
 
     Mirror of the pattern at ``tools/approval.py`` for the
-    approval-session ContextVar; intentionally NAMED DISTINCTLY
-    (``turn_session`` vs ``session``) because the two ContextVars
+    approval-session ContextVar; the public API here is intentionally
+    named with the ``turn_session_key`` suffix (and binds the
+    ``_SESSION_KEY`` ContextVar) because the two ContextVars
     carry different concerns:
 
     * approval-session: identifies the human/policy session that
       approves tool calls (``tools/approval.py:_approval_session_key``).
-    * per-turn session: identifies the agent turn / chat session for
-      downstream model-resolve, stream routing, and persistence
-      (this module's ``_SESSION_KEY``).
+    * per-turn session (``_SESSION_KEY`` in this module): identifies the
+      agent turn / chat session for downstream model-resolve, stream
+      routing, and persistence.
     """
     return _SESSION_KEY.set(session_key or "")
 
 
-def reset_current_turn_session_key(token: Token) -> None:
+def reset_current_turn_session_key(token: Token[str]) -> None:
     """Reset the per-turn session-identity ContextVar.
 
     Pair with :func:`set_current_turn_session_key` in a ``finally``

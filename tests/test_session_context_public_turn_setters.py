@@ -15,15 +15,19 @@ from gateway.session_context import (
 
 
 def test_set_and_reset_round_trip():
+    # Capture the surrounding-context value BEFORE setting so the post-reset
+    # assertion is robust: an outer fixture / parent context could legitimately
+    # hold "session-abc" itself, in which case a `!=` check would flake.
+    previous = _SESSION_KEY.get()
     token = set_current_turn_session_key("session-abc")
     try:
         assert _SESSION_KEY.get() == "session-abc"
     finally:
         reset_current_turn_session_key(token)
-    # After reset, the value is no longer "session-abc". It either returns
-    # to the module-level default (the _UNSET sentinel) or to whatever the
-    # surrounding test context had set it to.
-    assert _SESSION_KEY.get() != "session-abc"
+    # After reset, the value returns to whatever it was before set() — the
+    # module-level default (the _UNSET sentinel) for a fresh context, or the
+    # surrounding context's value if one was already bound.
+    assert _SESSION_KEY.get() is previous
 
 
 def test_nested_set_reset():
