@@ -443,6 +443,34 @@ export const api = {
       },
     ),
 
+  // Jobs board
+  getJobs: (params?: { status?: string; starred?: boolean; search?: string; limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    if (params?.starred !== undefined) qs.set("starred", String(params.starred));
+    if (params?.search) qs.set("search", params.search);
+    if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params?.offset !== undefined) qs.set("offset", String(params.offset));
+    return fetchJSON<JobsResponse>(`/api/jobs?${qs.toString()}`);
+  },
+  getJobStats: () => fetchJSON<JobStats>("/api/jobs/stats"),
+  updateJob: (id: number, updates: Partial<Pick<Job, "status" | "starred" | "notes">>) =>
+    fetchJSON<Job>(`/api/jobs/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updates),
+    }),
+  deleteJob: (id: number) =>
+    fetchJSON<{ ok: boolean; id: number }>(`/api/jobs/${id}`, { method: "DELETE" }),
+  moveJobToStage: (id: number, stage: PipelineStage, notes?: string) =>
+    fetchJSON<JobPipelineEvent>(`/api/jobs/${id}/pipeline`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stage, notes }),
+    }),
+  getJobPipeline: (id: number) =>
+    fetchJSON<{ events: JobPipelineEvent[] }>(`/api/jobs/${id}/pipeline`),
+
   // Dashboard themes
   getThemes: () =>
     fetchJSON<DashboardThemesResponse>("/api/dashboard/themes"),
@@ -953,4 +981,55 @@ export interface AgentPluginUpdateResponse {
 export interface PluginProvidersPutRequest {
   memory_provider?: string;
   context_engine?: string;
+}
+
+// ── Jobs board types ───────────────────────────────────────────────────────
+
+export type JobStatus = "new" | "highlighted" | "read" | "for_later" | "discarded" | "in_pipeline";
+export type PipelineStage =
+  | "interested"
+  | "applied"
+  | "interviewing"
+  | "waiting_response"
+  | "offer"
+  | "rejected"
+  | "closed";
+
+export interface Job {
+  id: number;
+  date_added: string;
+  company: string;
+  sector: string | null;
+  title: string;
+  location: string | null;
+  comp_est: string | null;
+  comp_source: string | null;
+  description: string | null;
+  link: string | null;
+  starred: number;
+  applied: number;
+  notes: string | null;
+  status: JobStatus;
+  current_stage?: PipelineStage | null;
+  current_stage_date?: string | null;
+}
+
+export interface JobPipelineEvent {
+  id: number;
+  job_id: number;
+  stage: PipelineStage;
+  entered_at: string;
+  notes: string | null;
+}
+
+export interface JobStats {
+  status_counts: Record<string, number>;
+  stage_counts: Record<string, number>;
+}
+
+export interface JobsResponse {
+  jobs: Job[];
+  total: number;
+  limit: number;
+  offset: number;
 }

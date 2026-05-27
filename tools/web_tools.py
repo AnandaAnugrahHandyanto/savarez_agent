@@ -1552,7 +1552,8 @@ registry.register(
     toolset="web",
     schema=WEB_EXTRACT_SCHEMA,
     handler=lambda args, **kw: web_extract_tool(
-        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown"),
+        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown",
+        use_llm_processing=False),
     check_fn=check_web_api_key,
     requires_env=_web_requires_env(),
     is_async=True,

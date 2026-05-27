@@ -66,6 +66,32 @@ hermes-agent/
 `gateway.log` when running the gateway. Profile-aware via `get_hermes_home()`.
 Browse with `hermes logs [--follow] [--level ...] [--session ...]`.
 
+## Web Dashboard (Jobs UI)
+
+The web dashboard is a React/TypeScript SPA served by the FastAPI server in `hermes_cli/web_server.py`. It runs at **http://localhost:9119** (started via `hermes dashboard --host 0.0.0.0 --insecure`).
+
+**Source root:** `~/.hermes/hermes-agent/web/src/`
+
+Key files:
+- `~/.hermes/hermes-agent/web/src/components/jobs/JobCard.tsx` — job card component (location, comp, status, starred)
+- `~/.hermes/hermes-agent/web/src/components/jobs/TriageView.tsx` — triage tab view with status filters and search
+- `~/.hermes/hermes-agent/web/src/components/jobs/PipelineView.tsx` — kanban pipeline view
+- `~/.hermes/hermes-agent/web/src/components/jobs/JobDetailModal.tsx` — job detail modal
+- `~/.hermes/hermes-agent/web/src/pages/JobsPage.tsx` — jobs page entry point
+- `~/.hermes/hermes-agent/web/src/lib/api.ts` — typed API client (`Job`, `JobStatus`, `getJobs()`, `updateJob()`)
+- `~/.hermes/hermes-agent/web/src/components/ui/card.tsx` — Card primitive (uses CSS vars for theming)
+- `~/.hermes/hermes-agent/web/src/themes/` — theme system; CSS variable names like `--color-warning`, `--color-muted-foreground`
+
+**Job data:** `~/.hermes/shared/job-board.db` (SQLite). REST endpoints in `hermes_cli/web_server.py` under `/api/jobs/`.
+
+**Build after editing source:**
+```bash
+cd ~/.hermes/hermes-agent/web && npm run build
+```
+Output goes to `~/.hermes/hermes-agent/hermes_cli/web_dist/`. No server restart needed — hard-refresh the browser after building.
+
+**Theme-safe inline styling:** use CSS variables (`var(--color-warning)`, `var(--color-success)`, `var(--color-destructive)`, `var(--color-muted-foreground)`) via inline `style` props rather than hardcoded Tailwind color classes, so styling adapts to the active theme.
+
 ## File Dependency Chain
 
 ```
@@ -257,6 +283,7 @@ The dashboard embeds the real `hermes --tui` — **not** a rewrite.  See `hermes
 **Do not re-implement the primary chat experience in React.** The main transcript, composer/input flow (including slash-command behavior), and PTY-backed terminal belong to the embedded `hermes --tui` — anything new you add to Ink shows up in the dashboard automatically. If you find yourself rebuilding the transcript or composer for the dashboard, stop and extend Ink instead.
 
 **Structured React UI around the TUI is allowed when it is not a second chat surface.** Sidebar widgets, inspectors, summaries, status panels, and similar supporting views (e.g. `ChatSidebar`, `ModelPickerDialog`, `ToolCall`) are fine when they complement the embedded TUI rather than replacing the transcript / composer / terminal. Keep their state independent of the PTY child's session and surface their failures non-destructively so the terminal pane keeps working unimpaired.
+
 
 ---
 

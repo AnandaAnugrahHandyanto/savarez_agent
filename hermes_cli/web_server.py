@@ -883,6 +883,263 @@ async def search_sessions(q: str = "", limit: int = 20):
         raise HTTPException(status_code=500, detail="Search failed")
 
 
+# ---------------------------------------------------------------------------
+# Jobs board — triage & pipeline tracking
+# ---------------------------------------------------------------------------
+
+_JOBS_DB_PATH = Path.home() / ".hermes" / "shared" / "job-board.db"
+
+
+def _migrate_jobs_db() -> None:
+    """Add status column and job_pipeline table if they don't exist yet."""
+    if not _JOBS_DB_PATH.exists():
+        return
+    import sqlite3 as _sq3
+    try:
+        conn = _sq3.connect(str(_JOBS_DB_PATH))
+        cur = conn.cursor()
+        try:
+            cur.execute("ALTER TABLE jobs ADD COLUMN status TEXT DEFAULT 'new'")
+        except _sq3.OperationalError:
+            pass  # column already exists
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS job_pipeline (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id     INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+                stage      TEXT    NOT NULL,
+                entered_at TEXT    NOT NULL,
+                notes      TEXT
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_job_pipeline_job_id ON job_pipeline(job_id)"
+        )
+        conn.commit()
+    except Exception:
+        _log.exception("jobs DB migration failed")
+    finally:
+        conn.close()
+
+
+def _jobs_db_connect():
+    import sqlite3 as _sq3
+    conn = _sq3.connect(str(_JOBS_DB_PATH))
+    conn.row_factory = _sq3.Row
+    return conn
+
+
+class _JobUpdateBody(BaseModel):
+    status: Optional[str] = None
+    starred: Optional[int] = None
+    notes: Optional[str] = None
+
+
+class _JobPipelineBody(BaseModel):
+    stage: str
+    notes: Optional[str] = None
+
+
+@app.get("/api/jobs/stats")
+async def get_jobs_stats():
+    """Return job counts grouped by triage status and current pipeline stage."""
+    if not _JOBS_DB_PATH.exists():
+        return {"status_counts": {}, "stage_counts": {}}
+    try:
+        conn = _jobs_db_connect()
+        cur = conn.cursor()
+        cur.execute("SELECT COALESCE(status,'new') as s, COUNT(*) as cnt FROM jobs GROUP BY s")
+        status_counts = {row["s"]: row["cnt"] for row in cur.fetchall()}
+        cur.execute("""
+            SELECT p.stage, COUNT(*) AS cnt
+            FROM job_pipeline p
+            WHERE p.id IN (SELECT MAX(id) FROM job_pipeline GROUP BY job_id)
+            GROUP BY p.stage
+        """)
+        stage_counts = {row["stage"]: row["cnt"] for row in cur.fetchall()}
+        conn.close()
+        return {"status_counts": status_counts, "stage_counts": stage_counts}
+    except Exception:
+        _log.exception("GET /api/jobs/stats failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/jobs")
+async def get_jobs(
+    status: Optional[str] = None,
+    starred: Optional[bool] = None,
+    search: Optional[str] = None,
+    limit: int = 20,
+    offset: int = 0,
+):
+    """List jobs with optional filters; returns current pipeline stage joined in."""
+    if not _JOBS_DB_PATH.exists():
+        return {"jobs": [], "total": 0, "limit": limit, "offset": offset}
+    try:
+        conn = _jobs_db_connect()
+        cur = conn.cursor()
+        conditions: List[str] = []
+        params: List[Any] = []
+        if status:
+            if status == "new":
+                conditions.append("(j.status IS NULL OR j.status = 'new')")
+            else:
+                conditions.append("j.status = ?")
+                params.append(status)
+        if starred is not None:
+            conditions.append("j.starred = ?")
+            params.append(1 if starred else 0)
+        if search:
+            conditions.append(
+                "(j.company LIKE ? OR j.title LIKE ? OR j.description LIKE ? OR j.notes LIKE ?)"
+            )
+            like = f"%{search}%"
+            params.extend([like, like, like, like])
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        cur.execute(f"SELECT COUNT(*) FROM jobs j {where}", params)
+        total = cur.fetchone()[0]
+        sql = f"""
+            SELECT j.*,
+                   COALESCE(j.status, 'new') AS status,
+                   p.stage       AS current_stage,
+                   p.entered_at  AS current_stage_date
+            FROM jobs j
+            LEFT JOIN (
+                SELECT job_id, stage, entered_at
+                FROM job_pipeline
+                WHERE id IN (SELECT MAX(id) FROM job_pipeline GROUP BY job_id)
+            ) p ON p.job_id = j.id
+            {where}
+            ORDER BY j.date_added DESC, j.id DESC
+            LIMIT ? OFFSET ?
+        """
+        cur.execute(sql, params + [limit, offset])
+        jobs = [dict(row) for row in cur.fetchall()]
+        conn.close()
+        return {"jobs": jobs, "total": total, "limit": limit, "offset": offset}
+    except Exception:
+        _log.exception("GET /api/jobs failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.patch("/api/jobs/{job_id}")
+async def update_job(job_id: int, body: _JobUpdateBody):
+    """Update triage status, starred flag, or notes for a job."""
+    if not _JOBS_DB_PATH.exists():
+        raise HTTPException(status_code=404, detail="Jobs database not found")
+    updates: Dict[str, Any] = {}
+    if body.status is not None:
+        updates["status"] = body.status
+    if body.starred is not None:
+        updates["starred"] = body.starred
+    if body.notes is not None:
+        updates["notes"] = body.notes
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    try:
+        conn = _jobs_db_connect()
+        cur = conn.cursor()
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        cur.execute(
+            f"UPDATE jobs SET {set_clause} WHERE id = ?",
+            list(updates.values()) + [job_id],
+        )
+        if cur.rowcount == 0:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Job not found")
+        conn.commit()
+        cur.execute("""
+            SELECT j.*, COALESCE(j.status, 'new') AS status,
+                   p.stage AS current_stage, p.entered_at AS current_stage_date
+            FROM jobs j
+            LEFT JOIN (
+                SELECT job_id, stage, entered_at FROM job_pipeline
+                WHERE id IN (SELECT MAX(id) FROM job_pipeline GROUP BY job_id)
+            ) p ON p.job_id = j.id
+            WHERE j.id = ?
+        """, [job_id])
+        row = cur.fetchone()
+        conn.close()
+        return dict(row) if row else {}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("PATCH /api/jobs/%s failed", job_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.delete("/api/jobs/{job_id}")
+async def delete_job(job_id: int):
+    """Hard-delete a job record and its pipeline history."""
+    if not _JOBS_DB_PATH.exists():
+        raise HTTPException(status_code=404, detail="Jobs database not found")
+    try:
+        conn = _jobs_db_connect()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM jobs WHERE id = ?", [job_id])
+        if cur.rowcount == 0:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Job not found")
+        conn.commit()
+        conn.close()
+        return {"ok": True, "id": job_id}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("DELETE /api/jobs/%s failed", job_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/jobs/{job_id}/pipeline")
+async def move_job_to_stage(job_id: int, body: _JobPipelineBody):
+    """Add a pipeline stage event; sets job status to in_pipeline."""
+    if not _JOBS_DB_PATH.exists():
+        raise HTTPException(status_code=404, detail="Jobs database not found")
+    import datetime as _dt
+    try:
+        conn = _jobs_db_connect()
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM jobs WHERE id = ?", [job_id])
+        if not cur.fetchone():
+            conn.close()
+            raise HTTPException(status_code=404, detail="Job not found")
+        entered_at = _dt.date.today().isoformat()
+        cur.execute(
+            "INSERT INTO job_pipeline (job_id, stage, entered_at, notes) VALUES (?, ?, ?, ?)",
+            [job_id, body.stage, entered_at, body.notes],
+        )
+        event_id = cur.lastrowid
+        cur.execute("UPDATE jobs SET status = 'in_pipeline' WHERE id = ?", [job_id])
+        conn.commit()
+        conn.close()
+        return {"id": event_id, "job_id": job_id, "stage": body.stage,
+                "entered_at": entered_at, "notes": body.notes}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/jobs/%s/pipeline failed", job_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/jobs/{job_id}/pipeline")
+async def get_job_pipeline_history(job_id: int):
+    """Return the full pipeline stage history for a job."""
+    if not _JOBS_DB_PATH.exists():
+        return {"events": []}
+    try:
+        conn = _jobs_db_connect()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT * FROM job_pipeline WHERE job_id = ? ORDER BY entered_at ASC, id ASC",
+            [job_id],
+        )
+        events = [dict(row) for row in cur.fetchall()]
+        conn.close()
+        return {"events": events}
+    except Exception:
+        _log.exception("GET /api/jobs/%s/pipeline failed", job_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize config for the web UI.
 
@@ -4811,6 +5068,9 @@ def _mount_plugin_api_routes():
         except Exception as exc:
             _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)
 
+
+# Run jobs DB migration on startup.
+_migrate_jobs_db()
 
 # Mount plugin API routes before the SPA catch-all.
 _mount_plugin_api_routes()

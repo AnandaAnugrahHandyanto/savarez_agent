@@ -18,6 +18,7 @@ import {
   Activity,
   BarChart3,
   BookOpen,
+  Briefcase,
   Clock,
   Code,
   Cpu,
@@ -67,6 +68,7 @@ import CronPage from "@/pages/CronPage";
 import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
+import JobsPage from "@/pages/JobsPage";
 import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
@@ -119,6 +121,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
+  "/jobs": JobsPage,
 };
 
 // Route placeholder for /chat.  The persistent ChatPage host (rendered
@@ -186,6 +189,7 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Star,
   Code,
   Eye,
+  Briefcase,
 };
 
 function resolveIcon(name: string): ComponentType<{ className?: string }> {
@@ -227,10 +231,16 @@ function buildNavItems(
   return items;
 }
 
+// Built-in pages that should appear in the plugin/extensions section of the sidebar.
+const BUILTIN_PLUGIN_NAV: NavItem[] = [
+  { path: "/jobs", labelKey: "jobs", label: "Jobs", icon: Briefcase },
+];
+
 /** Split merged nav into built-in sidebar entries vs plugin tabs, preserving plugin order hints. */
 function partitionSidebarNav(
   builtIn: NavItem[],
   manifests: PluginManifest[],
+  extraPluginItems: NavItem[] = [],
 ): { coreItems: NavItem[]; pluginItems: NavItem[] } {
   const merged = buildNavItems(builtIn, manifests);
   const builtinPaths = new Set(builtIn.map((i) => i.path));
@@ -240,7 +250,7 @@ function partitionSidebarNav(
     if (builtinPaths.has(item.path)) coreItems.push(item);
     else pluginItems.push(item);
   }
-  return { coreItems, pluginItems };
+  return { coreItems, pluginItems: [...extraPluginItems, ...pluginItems] };
 }
 
 function buildRoutes(
@@ -375,7 +385,7 @@ export default function App() {
   }, [embeddedChat, showTokenAnalytics]);
 
   const sidebarNav = useMemo(
-    () => partitionSidebarNav(builtinNav, manifests),
+    () => partitionSidebarNav(builtinNav, manifests, BUILTIN_PLUGIN_NAV),
     [builtinNav, manifests],
   );
   const routes = useMemo(
