@@ -1018,9 +1018,6 @@ def _open_connection(
     resolved = str(path.resolve())
     path.parent.mkdir(parents=True, exist_ok=True)
     _validate_sqlite_header(path)
-    # For existing non-empty files, run integrity check BEFORE WAL setup
-    # so corrupt files are caught with KanbanDbCorruptError (not a raw
-    # DatabaseError from apply_wal_with_fallback).
     _stat = _try_stat(path)
     existing_nonempty = _stat is not None and _stat.st_size > 0
     conn = sqlite3.connect(
@@ -1033,22 +1030,39 @@ def _open_connection(
     try:
         with _INIT_LOCK:
             needs_init = resolved not in _INITIALIZED_PATHS
-            if existing_nonempty and needs_init:
-                # Integrity check on the MAIN connection BEFORE WAL setup —
-                # no separate probe connection. Catches genuinely corrupt
-                # files early and raises KanbanDbCorruptError.
-                _check_db_health(conn, path)
-            from hermes_state import apply_wal_with_fallback
-            apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("PRAGMA foreign_keys=ON")
-            conn.execute("PRAGMA busy_timeout=30000")
+            # Run WAL setup + pragmas first. apply_wal_with_fallback may
+            # need to switch journal_mode on an existing WAL file, which
+            # requires that no other read/write transaction (including an
+            # implicit one from a prior integrity_check on this connection)
+            # be holding locks. Doing health check after WAL setup also
+            # means apply_wal_with_fallback handles its own DatabaseError
+            # surface uniformly.
+            try:
+                from hermes_state import apply_wal_with_fallback
+                apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+                conn.execute("PRAGMA synchronous=NORMAL")
+                conn.execute("PRAGMA foreign_keys=ON")
+                conn.execute("PRAGMA busy_timeout=30000")
+            except sqlite3.DatabaseError as exc:
+                # If WAL setup itself crashes on a malformed file, surface
+                # it as KanbanDbCorruptError (with a backup) so the caller
+                # gets a consistent error type — not a raw DatabaseError.
+                backup = _backup_corrupt_db(path)
+                raise KanbanDbCorruptError(
+                    path, backup, f"sqlite refused WAL setup: {exc}"
+                )
             if needs_init:
-                if not existing_nonempty:
-                    # New or empty file — health check after WAL setup.
+                # Integrity check on the MAIN connection — no separate
+                # probe connection. Catches genuinely corrupt files and
+                # raises KanbanDbCorruptError. Runs once per process per
+                # path (cached via _INITIALIZED_PATHS below).
+                if existing_nonempty:
                     _check_db_health(conn, path)
                 conn.executescript(SCHEMA_SQL)
                 _migrate_add_optional_columns(conn)
+                if not existing_nonempty:
+                    # New file: health check after schema is laid down.
+                    _check_db_health(conn, path)
                 _INITIALIZED_PATHS.add(resolved)
     except Exception:
         conn.close()
@@ -1316,9 +1330,14 @@ def init_db(
     # schema + migration pass unconditionally.
     with _INIT_LOCK:
         _INITIALIZED_PATHS.discard(resolved)
-    # connect() now returns a pooled connection — do NOT close it.
-    connect(path)
-    return path
+    # connect() returns a fresh non-pooled connection; close it after
+    # the schema/migration pass to release any locks. (get_connection()
+    # returns a pooled connection — that's the long-lived caller path.)
+    conn = connect(path)
+    try:
+        return path
+    finally:
+        conn.close()
 
 
 def _add_column_if_missing(
