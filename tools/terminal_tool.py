@@ -953,7 +953,12 @@ def _get_env_config() -> Dict[str, Any]:
     # remote home, and everything else starts in the backend's default
     # root-like cwd.
     if env_type == "local":
-        default_cwd = os.getcwd()
+        try:
+            default_cwd = os.getcwd()
+        except (FileNotFoundError, OSError):
+            # CWD may have been removed (e.g. tmpfs cleanup on Arch Linux).
+            # Fall back to the user's home directory.
+            default_cwd = os.path.expanduser("~")
     elif env_type == "ssh":
         default_cwd = "~"
     else:
@@ -969,7 +974,10 @@ def _get_env_config() -> Dict[str, Any]:
     host_cwd = None
     host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
     if env_type == "docker" and mount_docker_cwd:
-        docker_cwd_source = os.getenv("TERMINAL_CWD") or os.getcwd()
+        try:
+            docker_cwd_source = os.getenv("TERMINAL_CWD") or os.getcwd()
+        except (FileNotFoundError, OSError):
+            docker_cwd_source = os.getenv("TERMINAL_CWD") or os.path.expanduser("~")
         candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
         if (
             any(candidate.startswith(p) for p in host_prefixes)
