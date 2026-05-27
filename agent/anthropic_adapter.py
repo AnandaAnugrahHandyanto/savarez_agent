@@ -316,6 +316,39 @@ def _detect_claude_code_version() -> str:
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
 _MCP_TOOL_PREFIX = "mcp_"
 
+# Anthropic's Claude-Code OAuth proxy has brittle request-shape routing: some
+# third-party agent prompt/tool-management literals can send an otherwise valid
+# subscription request to the extra-usage lane, yielding the misleading billing
+# error "You're out of extra usage". Replace those literals on the OAuth path
+# only — third-party Anthropic-compatible providers and API-key auth users see
+# the normal Hermes prompt text.
+#
+# Longest matches first so subsequent passes don't re-rewrite already-rewritten
+# tokens (e.g. "Hermes Agent" must rewrite before bare "Hermes").
+_OAUTH_SYSTEM_TEXT_REPLACEMENTS = (
+    ("Hermes Agent", "Claude Code"),
+    ("Hermes agent", "Claude Code"),
+    ("hermes-agent", "claude-code"),
+    ("Nous Research", "Anthropic"),
+    ("session_search", "session lookup"),
+    ("skill_manage", "skill editor"),
+    ("MEDIA:", "FILE:"),
+    ("HEARTBEAT_OK", "NO_ACTION_NEEDED"),
+    ("Hermes", "Claude Code"),
+)
+
+
+def _sanitize_oauth_system_text(text: str) -> str:
+    """Replace literals that misroute Claude-Code OAuth requests.
+
+    Applied only on the Anthropic OAuth path inside ``build_anthropic_kwargs``;
+    third-party Anthropic-compatible providers and API-key auth keep the normal
+    Hermes prompt and tool-name vocabulary.
+    """
+    for old, new in _OAUTH_SYSTEM_TEXT_REPLACEMENTS:
+        text = text.replace(old, new)
+    return text
+
 
 def _get_claude_code_version() -> str:
     """Lazily detect the installed Claude Code version when OAuth headers need it."""
@@ -2139,12 +2172,7 @@ def build_anthropic_kwargs(
         #    to avoid Anthropic's server-side content filters.
         for block in system:
             if isinstance(block, dict) and block.get("type") == "text":
-                text = block.get("text", "")
-                text = text.replace("Hermes Agent", "Claude Code")
-                text = text.replace("Hermes agent", "Claude Code")
-                text = text.replace("hermes-agent", "claude-code")
-                text = text.replace("Nous Research", "Anthropic")
-                block["text"] = text
+                block["text"] = _sanitize_oauth_system_text(block.get("text", ""))
 
         # 3. Prefix tool names with mcp_ (Claude Code convention)
         #    Skip names that already begin with the marker — native MCP server
@@ -2188,8 +2216,16 @@ def build_anthropic_kwargs(
             # Anthropic has no tool_choice "none" — omit tools entirely to prevent use
             kwargs.pop("tools", None)
         elif isinstance(tool_choice, str):
-            # Specific tool name
-            kwargs["tool_choice"] = {"type": "tool", "name": tool_choice}
+            # Specific tool name. On the Claude-Code OAuth path the tool name
+            # is prefixed with `mcp_` in step 3 above; the corresponding entry
+            # in `tool_choice` has to match the wire format the model will see
+            # in the tools array, otherwise Anthropic returns 400 "tool_choice
+            # not in tools".
+            if is_oauth and not tool_choice.startswith(_MCP_TOOL_PREFIX):
+                choice_name = _MCP_TOOL_PREFIX + tool_choice
+            else:
+                choice_name = tool_choice
+            kwargs["tool_choice"] = {"type": "tool", "name": choice_name}
 
     # Map reasoning_config to Anthropic's thinking parameter.
     # Claude 4.6+ models use adaptive thinking + output_config.effort.

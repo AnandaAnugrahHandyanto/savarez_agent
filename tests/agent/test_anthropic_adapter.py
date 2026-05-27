@@ -1339,6 +1339,129 @@ class TestBuildAnthropicKwargs:
         )
         assert kwargs["max_tokens"] == 64_000
 
+    # -----------------------------------------------------------------
+    # Anthropic OAuth proxy classifier hardening (extra-usage misrouting)
+    # -----------------------------------------------------------------
+    def test_oauth_sanitizes_system_text_with_hermes_literals(self):
+        """OAuth path: system literals that trip the OAuth proxy classifier
+        get replaced with the Claude-Code-shaped equivalents.
+
+        Aimed at the "You're out of extra usage" misclassification: certain
+        third-party-harness literals (Hermes / Nous / session_search etc.)
+        cause the OAuth proxy to route an otherwise valid subscription
+        request to the extra-usage billing lane.
+        """
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        system = (
+            "You are Hermes Agent, built by Nous Research.\n"
+            "When the user asks a question, call session_search and use "
+            "skill_manage to record findings. Use MEDIA: prefixes for files.\n"
+            "On idle ticks reply with HEARTBEAT_OK."
+        )
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-20250514",
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+        )
+        sys_text = "".join(b["text"] for b in kwargs["system"] if b.get("type") == "text")
+        assert "Hermes" not in sys_text
+        assert "Nous Research" not in sys_text
+        assert "session_search" not in sys_text
+        assert "skill_manage" not in sys_text
+        assert "MEDIA:" not in sys_text
+        assert "HEARTBEAT_OK" not in sys_text
+        assert "Claude Code" in sys_text
+        assert "session lookup" in sys_text
+        assert "skill editor" in sys_text
+        assert "FILE:" in sys_text
+        assert "NO_ACTION_NEEDED" in sys_text
+
+    def test_non_oauth_path_leaves_system_text_untouched(self):
+        """API-key auth must NOT mangle Hermes literals — the proxy classifier
+        only fires on the Claude-Code OAuth lane; third-party Anthropic-compat
+        endpoints and direct API keys see the original prompt unchanged.
+        """
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        original = "You are Hermes Agent, by Nous Research. Use session_search."
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-20250514",
+            messages=[{"role": "system", "content": original},
+                      {"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=False,
+        )
+        # Non-OAuth path stores system as a plain string, not a list of blocks.
+        assert kwargs["system"] == original
+
+    def test_oauth_concrete_tool_choice_gets_mcp_prefix(self):
+        """A concrete `tool_choice` name on the OAuth path must use the same
+        `mcp_<name>` wire shape as the tools array, or Anthropic returns
+        400 "tool_choice not in tools".
+        """
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-20250514",
+            messages=[{"role": "user", "content": "Search the docs."}],
+            tools=[{"type": "function",
+                    "function": {"name": "search", "description": "d", "parameters": {}}}],
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+            tool_choice="search",
+        )
+        assert kwargs["tool_choice"] == {"type": "tool", "name": "mcp_search"}
+        # And the corresponding entry in the tools array carries the same prefix.
+        assert kwargs["tools"][0]["name"] == "mcp_search"
+
+    def test_oauth_concrete_tool_choice_idempotent_when_already_prefixed(self):
+        """Native MCP tools registered as `mcp_<server>_<tool>` must not get
+        re-prefixed when used as `tool_choice` — would yield `mcp_mcp_…`
+        and break round-trip lookup."""
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-20250514",
+            messages=[{"role": "user", "content": "Query composio."}],
+            tools=[{"type": "function",
+                    "function": {"name": "mcp_composio_SEARCH",
+                                 "description": "d", "parameters": {}}}],
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+            tool_choice="mcp_composio_SEARCH",
+        )
+        assert kwargs["tool_choice"] == {
+            "type": "tool", "name": "mcp_composio_SEARCH",
+        }
+        assert kwargs["tools"][0]["name"] == "mcp_composio_SEARCH"
+
+    def test_non_oauth_concrete_tool_choice_is_raw(self):
+        """API-key path: concrete tool_choice is forwarded verbatim — no
+        OAuth-only prefix applied."""
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-20250514",
+            messages=[{"role": "user", "content": "Hi."}],
+            tools=[{"type": "function",
+                    "function": {"name": "search", "description": "d", "parameters": {}}}],
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=False,
+            tool_choice="search",
+        )
+        assert kwargs["tool_choice"] == {"type": "tool", "name": "search"}
+        assert kwargs["tools"][0]["name"] == "search"
+
 
 # ---------------------------------------------------------------------------
 # Model output limit lookup
