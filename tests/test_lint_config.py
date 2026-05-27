@@ -113,3 +113,96 @@ class TestLintWorkflow:
             pytest.fail(f"lint.yml is not valid YAML: {exc}")
         assert isinstance(parsed, dict)
         assert "jobs" in parsed
+
+class TestToolsLintRegression:
+    """Guards against new lint violations in tools/."""
+
+    def test_tools_dir_has_zero_e741_violations(self):
+        """tools/ must have zero E741 (ambiguous variable name) violations."""
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=E741",
+             "--output-format=concise", "tools/"],
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
+        )
+
+        assert result.returncode == 0, (
+            f"tools/ has E741 violation(s):\n{result.stdout}"
+        )
+
+    def test_tools_dir_has_zero_f541_violations(self):
+        """tools/ must have zero F541 (unnecessary f-string) violations."""
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F541",
+             "--output-format=concise", "tools/"],
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
+        )
+
+        assert result.returncode == 0, (
+            f"tools/ has F541 violation(s):\n{result.stdout}"
+        )
+    def test_tools_dir_has_zero_f821_violations(self):
+        """tools/ must have zero F821 (undefined name) violations."""
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F821",
+             "--output-format=concise", "tools/"],
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
+        )
+
+        assert result.returncode == 0, (
+            f"tools/ has F821 violation(s):\n{result.stdout}"
+        )
+
+    def test_skill_usage_py_has_zero_f401_violations(self):
+        """tools/skill_usage.py must have zero F401 (unused import) violations."""
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F401",
+             "--output-format=concise", "tools/skill_usage.py"],
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
+        )
+
+        assert result.returncode == 0, (
+            f"tools/skill_usage.py has F401 violation(s):\n{result.stdout}"
+        )
+
+
+
+    def test_skill_usage_py_has_zero_f841_violations(self):
+        """tools/skill_usage.py must have zero F841 (unused variable) violations."""
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F841",
+             "--output-format=concise", "tools/skill_usage.py"],
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
+        )
+
+        assert result.returncode == 0, (
+            f"tools/skill_usage.py has F841 violation(s):\n{result.stdout}"
+        )
+    def test_send_message_tool_py_has_zero_f401_and_f811_violations(self):
+        """tools/send_message_tool.py must have zero F401 and F811 violations."""
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F401,F811",
+             "--output-format=concise", "tools/send_message_tool.py"],
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
+        )
+
+        assert result.returncode == 0, (
+            f"tools/send_message_tool.py has F401/F811 violation(s):\n{result.stdout}"
+        )

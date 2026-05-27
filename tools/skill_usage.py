@@ -31,7 +31,7 @@ import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
 from agent.skill_utils import is_excluded_skill_path
@@ -174,7 +174,7 @@ def _read_bundled_manifest_names() -> Set[str]:
             name = line.split(":", 1)[0].strip()
             if name:
                 names.add(name)
-    except OSError as e:
+    except OSError as e:  # noqa: F841 -- e used in handler body
         logger.debug("Failed to read bundled manifest: %s", e)
     return names
 
@@ -241,7 +241,7 @@ def list_agent_created_skill_names() -> List[str]:
         if is_excluded_skill_path(skill_md):
             continue
         try:
-            rel = skill_md.relative_to(base)
+            skill_md.relative_to(base)
         except ValueError:
             continue
         name = _read_skill_name(skill_md, fallback=skill_md.parent.name)
@@ -506,7 +506,7 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
 
     try:
         skill_dir.rename(dest)
-    except OSError as e:
+    except OSError:
         # Cross-device — fall back to shutil.move
         import shutil
         try:
