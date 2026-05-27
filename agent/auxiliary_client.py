@@ -784,6 +784,68 @@ class _CodexCompletionsAdapter:
                 # new failure mode for auxiliary calls.
                 pass
 
+        def _backfill_final_output(
+            final: Any,
+            collected_output_items: List[Any],
+            collected_text_deltas: List[str],
+            has_function_calls: bool,
+        ) -> None:
+            _output = getattr(final, "output", None)
+            if _output is not None and not (isinstance(_output, list) and not _output):
+                return
+            if collected_output_items:
+                final.output = list(collected_output_items)
+                logger.debug(
+                    "Codex auxiliary: backfilled %d output items from stream events",
+                    len(collected_output_items),
+                )
+            elif collected_text_deltas and not has_function_calls:
+                # Only synthesize text when no tool calls were streamed —
+                # a function_call response with incidental text should not
+                # be collapsed into a plain-text message.
+                assembled = "".join(collected_text_deltas)
+                final.output = [SimpleNamespace(
+                    type="message",
+                    role="assistant",
+                    status="completed",
+                    content=[SimpleNamespace(type="output_text", text=assembled)],
+                )]
+                logger.debug(
+                    "Codex auxiliary: synthesized from %d deltas (%d chars)",
+                    len(collected_text_deltas),
+                    len(assembled),
+                )
+
+        def _recover_stream_typeerror(
+            exc: TypeError,
+            collected_output_items: List[Any],
+            collected_text_deltas: List[str],
+            has_function_calls: bool,
+        ) -> Any:
+            if (
+                "'NoneType' object is not iterable" not in str(exc)
+                or (
+                    not collected_output_items
+                    and (has_function_calls or not collected_text_deltas)
+                )
+            ):
+                raise exc
+
+            final = SimpleNamespace(output=None, usage=None)
+            _backfill_final_output(
+                final,
+                collected_output_items,
+                collected_text_deltas,
+                has_function_calls,
+            )
+            logger.warning(
+                "Codex auxiliary stream terminal response had output=None; "
+                "recovered from streamed events (items=%d, chars=%d)",
+                len(collected_output_items),
+                sum(len(p) for p in collected_text_deltas),
+            )
+            return final
+
         try:
             # Collect output items and text deltas during streaming —
             # the Codex backend can return empty response.output from
@@ -797,44 +859,47 @@ class _CodexCompletionsAdapter:
                 timeout_timer.start()
             _check_cancelled()
             with self._client.responses.stream(**resp_kwargs) as stream:
-                for _event in stream:
+                try:
+                    for _event in stream:
+                        _check_cancelled()
+                        _etype = getattr(_event, "type", "")
+                        if _etype == "response.output_item.done":
+                            _done = getattr(_event, "item", None)
+                            if _done is not None:
+                                collected_output_items.append(_done)
+                        elif "output_text.delta" in _etype:
+                            _delta = getattr(_event, "delta", "")
+                            if _delta:
+                                collected_text_deltas.append(_delta)
+                        elif "function_call" in _etype:
+                            has_function_calls = True
+                except TypeError as exc:
+                    final = _recover_stream_typeerror(
+                        exc,
+                        collected_output_items,
+                        collected_text_deltas,
+                        has_function_calls,
+                    )
+                else:
                     _check_cancelled()
-                    _etype = getattr(_event, "type", "")
-                    if _etype == "response.output_item.done":
-                        _done = getattr(_event, "item", None)
-                        if _done is not None:
-                            collected_output_items.append(_done)
-                    elif "output_text.delta" in _etype:
-                        _delta = getattr(_event, "delta", "")
-                        if _delta:
-                            collected_text_deltas.append(_delta)
-                    elif "function_call" in _etype:
-                        has_function_calls = True
+                    try:
+                        final = stream.get_final_response()
+                    except TypeError as exc:
+                        final = _recover_stream_typeerror(
+                            exc,
+                            collected_output_items,
+                            collected_text_deltas,
+                            has_function_calls,
+                        )
                 _check_cancelled()
-                final = stream.get_final_response()
 
-            # Backfill empty output from collected stream events
-            _output = getattr(final, "output", None)
-            if isinstance(_output, list) and not _output:
-                if collected_output_items:
-                    final.output = list(collected_output_items)
-                    logger.debug(
-                        "Codex auxiliary: backfilled %d output items from stream events",
-                        len(collected_output_items),
-                    )
-                elif collected_text_deltas and not has_function_calls:
-                    # Only synthesize text when no tool calls were streamed —
-                    # a function_call response with incidental text should not
-                    # be collapsed into a plain-text message.
-                    assembled = "".join(collected_text_deltas)
-                    final.output = [SimpleNamespace(
-                        type="message", role="assistant", status="completed",
-                        content=[SimpleNamespace(type="output_text", text=assembled)],
-                    )]
-                    logger.debug(
-                        "Codex auxiliary: synthesized from %d deltas (%d chars)",
-                        len(collected_text_deltas), len(assembled),
-                    )
+            # Backfill empty/None output from collected stream events.
+            _backfill_final_output(
+                final,
+                collected_output_items,
+                collected_text_deltas,
+                has_function_calls,
+            )
 
             # Extract text and tool calls from the Responses output.
             # Items may be SDK objects (attrs) or dicts (raw/fallback paths),
