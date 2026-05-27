@@ -239,6 +239,14 @@ def _build_command_lookup() -> dict[str, CommandDef]:
 
 _COMMAND_LOOKUP: dict[str, CommandDef] = _build_command_lookup()
 
+# Set of alias names (without leading slash) that should NOT appear as
+# separate entries in the autocomplete dropdown (issue #33211).
+# Aliases still resolve correctly via resolve_command() — they just
+# don't clutter the completion menu.
+_ALIAS_NAMES: frozenset[str] = frozenset(
+    alias for cmd in COMMAND_REGISTRY for alias in cmd.aliases
+)
+
 
 def resolve_command(name: str) -> CommandDef | None:
     """Resolve a command name or alias to its CommandDef.
@@ -1691,9 +1699,14 @@ class SlashCommandCompleter(Completer):
         word = text[1:]
 
         for cmd, desc in COMMANDS.items():
+            cmd_name = cmd[1:]
+            # Skip alias entries so the autocomplete menu shows only
+            # canonical command names (issue #33211).  Aliases still
+            # resolve correctly via resolve_command().
+            if cmd_name in _ALIAS_NAMES:
+                continue
             if not self._command_allowed(cmd):
                 continue
-            cmd_name = cmd[1:]
             if cmd_name.startswith(word):
                 yield Completion(
                     self._completion_text(cmd_name, word),
