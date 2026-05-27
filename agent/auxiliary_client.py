@@ -746,6 +746,12 @@ class _CodexCompletionsAdapter:
         timed_out = threading.Event()
         timeout_timer: Optional[threading.Timer] = None
 
+        def _item_get(obj: Any, key: str, default: Any = None) -> Any:
+            val = getattr(obj, key, None)
+            if val is None and isinstance(obj, dict):
+                val = obj.get(key, default)
+            return val if val is not None else default
+
         def _timeout_message() -> str:
             return f"Codex auxiliary Responses stream exceeded {float(total_timeout):.1f}s total timeout"
 
@@ -813,9 +819,9 @@ class _CodexCompletionsAdapter:
                 _check_cancelled()
                 final = stream.get_final_response()
 
-            # Backfill empty output from collected stream events
+            # Backfill missing/empty output from collected stream events
             _output = getattr(final, "output", None)
-            if isinstance(_output, list) and not _output:
+            if _output is None or (isinstance(_output, list) and not _output):
                 if collected_output_items:
                     final.output = list(collected_output_items)
                     logger.debug(
@@ -839,13 +845,7 @@ class _CodexCompletionsAdapter:
             # Extract text and tool calls from the Responses output.
             # Items may be SDK objects (attrs) or dicts (raw/fallback paths),
             # so use a helper that handles both shapes.
-            def _item_get(obj: Any, key: str, default: Any = None) -> Any:
-                val = getattr(obj, key, None)
-                if val is None and isinstance(obj, dict):
-                    val = obj.get(key, default)
-                return val if val is not None else default
-
-            for item in getattr(final, "output", []):
+            for item in (getattr(final, "output", None) or []):
                 item_type = _item_get(item, "type")
                 if item_type == "message":
                     for part in (_item_get(item, "content") or []):
@@ -869,6 +869,56 @@ class _CodexCompletionsAdapter:
                     completion_tokens=getattr(resp_usage, "output_tokens", 0),
                     total_tokens=getattr(resp_usage, "total_tokens", 0),
                 )
+        except TypeError as exc:
+            err_text = str(exc)
+            if "NoneType" in err_text and "iterable" in err_text:
+                # OpenAI SDK 2.24.0 tries to iterate response.output while
+                # parsing response.completed. The Codex backend can send
+                # output=null there, after it already streamed the useful
+                # deltas/items. Recover from those already-collected events.
+                recovered_output = None
+                if collected_output_items:
+                    recovered_output = list(collected_output_items)
+                elif collected_text_deltas and not has_function_calls:
+                    recovered_output = [SimpleNamespace(
+                        type="message", role="assistant", status="completed",
+                        content=[SimpleNamespace(
+                            type="output_text",
+                            text="".join(collected_text_deltas),
+                        )],
+                    )]
+                if recovered_output is not None:
+                    final = SimpleNamespace(
+                        status="completed",
+                        output=recovered_output,
+                        usage=None,
+                    )
+                    logger.info(
+                        "Codex auxiliary stream terminal event had null output; "
+                        "recovered from streamed events (%d items, %d chars).",
+                        len(collected_output_items),
+                        sum(len(p) for p in collected_text_deltas),
+                    )
+                    for item in (getattr(final, "output", None) or []):
+                        item_type = _item_get(item, "type")
+                        if item_type == "message":
+                            for part in (_item_get(item, "content") or []):
+                                ptype = _item_get(part, "type")
+                                if ptype in {"output_text", "text"}:
+                                    text_parts.append(_item_get(part, "text", ""))
+                        elif item_type == "function_call":
+                            tool_calls_raw.append(SimpleNamespace(
+                                id=_item_get(item, "call_id", ""),
+                                type="function",
+                                function=SimpleNamespace(
+                                    name=_item_get(item, "name", ""),
+                                    arguments=_item_get(item, "arguments", "{}"),
+                                ),
+                            ))
+                else:
+                    raise
+            else:
+                raise
         except Exception as exc:
             if timed_out.is_set():
                 raise TimeoutError(_timeout_message()) from exc

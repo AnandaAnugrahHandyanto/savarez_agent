@@ -26,6 +26,43 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _synthesize_codex_stream_response(
+    agent,
+    *,
+    collected_output_items: list,
+    has_tool_calls: bool,
+) -> Any:
+    """Build a minimal Responses object from stream events already received.
+
+    The chatgpt.com Codex backend can emit a final ``response.completed`` event
+    whose ``response.output`` is null. OpenAI SDK 2.24.0 then raises
+    ``TypeError: 'NoneType' object is not iterable`` while parsing that terminal
+    event, even though text deltas or output_item.done events were already
+    delivered. Returning a small response object lets the normal Hermes
+    normalization path continue.
+    """
+    if collected_output_items:
+        return SimpleNamespace(
+            status="completed",
+            output=list(collected_output_items),
+            usage=None,
+        )
+    text_parts = getattr(agent, "_codex_streamed_text_parts", None) or []
+    if text_parts and not has_tool_calls:
+        assembled = "".join(text_parts)
+        return SimpleNamespace(
+            status="completed",
+            output=[SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text=assembled)],
+            )],
+            usage=None,
+        )
+    return None
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -248,10 +285,11 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                         )
                 final_response = stream.get_final_response()
                 # PATCH: ChatGPT Codex backend streams valid output items
-                # but get_final_response() can return an empty output list.
-                # Backfill from collected items or synthesize from deltas.
+                # but get_final_response() can return output=None or an
+                # empty output list. Backfill from collected items or
+                # synthesize from deltas.
                 _out = getattr(final_response, "output", None)
-                if isinstance(_out, list) and not _out:
+                if _out is None or (isinstance(_out, list) and not _out):
                     if collected_output_items:
                         final_response.output = list(collected_output_items)
                         logger.debug(
@@ -335,6 +373,24 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 )
                 return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
             raise
+        except TypeError as exc:
+            err_text = str(exc)
+            if "NoneType" in err_text and "iterable" in err_text:
+                recovered = _synthesize_codex_stream_response(
+                    agent,
+                    collected_output_items=collected_output_items,
+                    has_tool_calls=has_tool_calls,
+                )
+                if recovered is not None:
+                    logger.info(
+                        "Codex Responses stream terminal event had null output; "
+                        "recovered response from streamed events (%d items, %d chars). %s",
+                        len(collected_output_items),
+                        sum(len(p) for p in getattr(agent, "_codex_streamed_text_parts", []) or []),
+                        agent._client_log_context(),
+                    )
+                    return recovered
+            raise
 
 
 
@@ -412,9 +468,9 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
             if terminal_response is None and isinstance(event, dict):
                 terminal_response = event.get("response")
             if terminal_response is not None:
-                # Backfill empty output from collected stream events
+                # Backfill missing/empty output from collected stream events
                 _out = getattr(terminal_response, "output", None)
-                if isinstance(_out, list) and not _out:
+                if _out is None or (isinstance(_out, list) and not _out):
                     if collected_output_items:
                         terminal_response.output = list(collected_output_items)
                         logger.debug(
