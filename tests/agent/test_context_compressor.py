@@ -16,6 +16,8 @@ def compressor():
             protect_first_n=2,
             protect_last_n=2,
             quiet_mode=True,
+            allow_fallback_marker=True,
+            abort_on_summary_failure=False,
         )
         return c
 
@@ -74,13 +76,13 @@ class TestCompress:
         # Should keep system message and last N
         assert result[0]["role"] == "system"
         assert compressor.compression_count == 1
-        # Abort flag must NOT fire under the default config.
+        # Abort flag must NOT fire when the legacy marker is explicitly allowed.
         assert compressor._last_compress_aborted is False
         assert compressor._last_summary_fallback_used is True
 
     def test_compression_increments_count(self, compressor):
         msgs = self._make_messages(10)
-        # Default config (abort_on_summary_failure=False) — fallback path
+        # Explicit legacy marker path increments the count even on summary failure.
         # increments the count even on summary failure.
         compressor.compress(msgs)
         assert compressor.compression_count == 1
@@ -129,7 +131,14 @@ class TestGenerateSummaryNoneContent:
     def test_none_content_in_system_message_compress(self):
         """System message with content=None should not crash during compress."""
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=False,
+                allow_fallback_marker=True,
+            )
 
         msgs = [{"role": "system", "content": None}] + [
             {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
@@ -723,14 +732,18 @@ class TestAuxModelFallbackSurfacedToCallers:
 
 
 class TestSummaryFailureTrackingForGatewayWarning:
-    """Default behavior (compression.abort_on_summary_failure=False):
-    summary-generation failure inserts a static fallback placeholder and
-    records dropped count + fallback flag so gateway hygiene & /compress
-    can surface a visible warning."""
+    """Legacy opt-in behavior records dropped count + fallback flag."""
 
-    def test_compress_records_fallback_and_dropped_count_on_summary_failure(self):
+    def test_compress_records_fallback_and_dropped_count_when_marker_allowed(self):
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=False,
+                allow_fallback_marker=True,
+            )
 
         msgs = [
             {"role": "system", "content": "sys"},
@@ -749,7 +762,7 @@ class TestSummaryFailureTrackingForGatewayWarning:
         assert c._last_summary_fallback_used is True
         assert c._last_summary_dropped_count > 0
         assert c._last_summary_error is not None
-        # Default mode: abort flag must NOT fire.
+        # Explicit legacy mode: abort flag must NOT fire.
         assert c._last_compress_aborted is False
         assert any(
             isinstance(m.get("content"), str) and "Summary generation was unavailable" in m["content"]
@@ -762,7 +775,14 @@ class TestSummaryFailureTrackingForGatewayWarning:
         mock_response.choices[0].message.content = "summary text"
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=False,
+                allow_fallback_marker=True,
+            )
 
         msgs = [
             {"role": "system", "content": "sys"},
@@ -787,8 +807,8 @@ class TestSummaryFailureTrackingForGatewayWarning:
 
 
 class TestAbortOnSummaryFailure:
-    """Opt-in behavior (compression.abort_on_summary_failure=True):
-    summary-generation failure ABORTS compression entirely — returns the
+    """Fail-closed behavior:
+    summary-generation failure aborts compression entirely — returns the
     original messages unchanged and sets _last_compress_aborted=True so
     gateway hygiene & /compress can surface a visible warning."""
 
@@ -832,6 +852,23 @@ class TestAbortOnSummaryFailure:
             isinstance(m.get("content"), str) and "Summary generation was unavailable" in m["content"]
             for m in result
         )
+
+    def test_compress_aborts_by_default_when_summary_failure(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+            )
+        msgs = self._make_msgs()
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("usage_limit_reached")):
+            result = c.compress(msgs)
+
+        assert result == msgs
+        assert c._last_compress_aborted is True
+        assert c._last_summary_fallback_used is False
+        assert c._last_summary_dropped_count == 0
 
     def test_compress_clears_abort_flag_on_subsequent_success(self):
         mock_response = MagicMock()
@@ -1425,6 +1462,8 @@ class TestSummaryTargetRatio:
                 quiet_mode=True,
                 protect_first_n=0,
                 protect_last_n=2,
+                abort_on_summary_failure=False,
+                allow_fallback_marker=True,
             )
         msgs = (
             [{"role": "system", "content": "System prompt"}]

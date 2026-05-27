@@ -1238,7 +1238,10 @@ def init_agent(
         0, int(_compression_cfg.get("protect_first_n", 3))
     )
     compression_abort_on_summary_failure = str(
-        _compression_cfg.get("abort_on_summary_failure", False)
+        _compression_cfg.get("abort_on_summary_failure", True)
+    ).lower() in {"true", "1", "yes"}
+    compression_allow_fallback_marker = str(
+        _compression_cfg.get("allow_fallback_marker", False)
     ).lower() in {"true", "1", "yes"}
 
     # Read optional explicit context_length override for the auxiliary
@@ -1457,6 +1460,7 @@ def init_agent(
             provider=agent.provider,
             api_mode=agent.api_mode,
             abort_on_summary_failure=compression_abort_on_summary_failure,
+            allow_fallback_marker=compression_allow_fallback_marker,
         )
     agent.compression_enabled = compression_enabled
 

@@ -248,6 +248,45 @@ def replay_compression_warning(agent: Any) -> None:
             pass
 
 
+def run_compression_preflight(agent: Any, *, live_smoke: bool = False) -> dict:
+    """Validate compression routing for gateway/doctor preflight callers.
+
+    The default path is pure configuration/context-fit validation: it resolves
+    the configured auxiliary compression route and compares its context window
+    to the live compression threshold without making a model generation call.
+
+    ``live_smoke=True`` additionally performs a tiny summarization request
+    through the configured auxiliary route. Keep that opt-in for doctor-style
+    diagnostics; gateway startup should not spend quota on every boot.
+    """
+    result = {
+        "ok": True,
+        "live_smoke": bool(live_smoke),
+        "warning": None,
+        "error": None,
+        "threshold_tokens": getattr(getattr(agent, "context_compressor", None), "threshold_tokens", None),
+    }
+    try:
+        before_warning = getattr(agent, "_compression_warning", None)
+        check_compression_model_feasibility(agent)
+        warning = getattr(agent, "_compression_warning", None)
+        if warning and warning != before_warning:
+            result["warning"] = warning
+        if live_smoke and getattr(agent, "context_compressor", None):
+            summary = agent.context_compressor._generate_summary([
+                {"role": "user", "content": "Compression preflight smoke test."},
+                {"role": "assistant", "content": "Preflight acknowledged."},
+            ], focus_topic="preflight")
+            if not summary:
+                err = getattr(agent.context_compressor, "_last_summary_error", None) or "summary generation returned empty output"
+                result["ok"] = False
+                result["error"] = err
+    except Exception as exc:
+        result["ok"] = False
+        result["error"] = str(exc)
+    return result
+
+
 def compress_context(
     agent: Any,
     messages: list,

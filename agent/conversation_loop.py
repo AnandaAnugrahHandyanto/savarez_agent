@@ -2699,6 +2699,40 @@ def run_conversation(
                             primary_recovery_attempted = False
                             continue
 
+                # Confirmed billing/subscription/quota exhaustion is terminal
+                # for this provider after credential-pool rotation and fallback
+                # activation have had a chance. Do not spend minutes retrying a
+                # monthly/org usage limit with the same exhausted route.
+                if classified.reason == FailoverReason.billing:
+                    _quota_summary = agent._summarize_api_error(api_error)
+                    _provider_label = _provider or getattr(agent, "provider", "") or "unknown provider"
+                    _model_label = _model or getattr(agent, "model", "") or "unknown model"
+                    _diagnosis = (
+                        f"Provider quota exhausted for {_provider_label}/{_model_label}: "
+                        f"{_quota_summary}"
+                    )
+                    agent._emit_status(f"❌ {_diagnosis}")
+                    agent._vprint(f"{agent.log_prefix}❌ {_diagnosis}", force=True)
+                    agent._vprint(
+                        f"{agent.log_prefix}   💡 Check the provider's billing/quota dashboard "
+                        "or switch to a non-exhausted provider/model.",
+                        force=True,
+                    )
+                    logging.error(
+                        "%sProvider quota exhausted without usable fallback. provider=%s model=%s error=%s",
+                        agent.log_prefix, _provider_label, _model_label, _quota_summary,
+                    )
+                    agent._persist_session(messages, conversation_history)
+                    return {
+                        "final_response": _diagnosis,
+                        "messages": messages,
+                        "api_calls": api_call_count,
+                        "completed": False,
+                        "failed": True,
+                        "error": _quota_summary,
+                        "provider_quota_exhausted": True,
+                    }
+
                 # ── Nous Portal: record rate limit & skip retries ─────
                 # When Nous returns a 429 that is a genuine account-
                 # level rate limit, record the reset time to a shared

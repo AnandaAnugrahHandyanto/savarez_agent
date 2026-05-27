@@ -135,9 +135,23 @@ _RATE_LIMIT_PATTERNS = [
 # Usage-limit patterns that need disambiguation (could be billing OR rate_limit)
 _USAGE_LIMIT_PATTERNS = [
     "usage limit",
+    "usage_limit",
+    "usage_limit_reached",
     "quota",
     "limit exceeded",
     "key limit exceeded",
+]
+
+# Usage-limit signals that represent exhausted account/subscription quota
+# rather than a short-lived traffic throttle. Retrying these just burns time.
+_QUOTA_EXHAUSTED_PATTERNS = [
+    "usage_limit_reached",
+    "monthly usage limit",
+    "monthly usage quota",
+    "org usage limit",
+    "organization usage limit",
+    "subscription usage limit",
+    "rate-limit/quota signal detected",
 ]
 
 # Patterns confirming usage limit is transient (not billing)
@@ -831,7 +845,15 @@ def _classify_402(error_msg: str, result_fn) -> ClassifiedError:
     disguised as payment errors.  "Usage limit, try again in 5 minutes"
     is NOT a billing problem — it's a periodic quota that resets.
     """
-    # Check for transient usage-limit signals first
+    if any(p in error_msg for p in _QUOTA_EXHAUSTED_PATTERNS):
+        return result_fn(
+            FailoverReason.billing,
+            retryable=False,
+            should_rotate_credential=True,
+            should_fallback=True,
+        )
+
+    # Check for transient usage-limit signals next
     has_usage_limit = any(p in error_msg for p in _USAGE_LIMIT_PATTERNS)
     has_transient_signal = any(p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS)
 
@@ -989,6 +1011,14 @@ def _classify_by_error_code(
     """Classify by structured error codes from the response body."""
     code_lower = error_code.lower()
 
+    if code_lower in {"usage_limit_reached"}:
+        return result_fn(
+            FailoverReason.billing,
+            retryable=False,
+            should_rotate_credential=True,
+            should_fallback=True,
+        )
+
     if code_lower in {"resource_exhausted", "throttled", "rate_limit_exceeded"}:
         return result_fn(
             FailoverReason.rate_limit,
@@ -1076,6 +1106,13 @@ def _classify_by_message(
     # billing exhaustion.
     has_usage_limit = any(p in error_msg for p in _USAGE_LIMIT_PATTERNS)
     if has_usage_limit:
+        if any(p in error_msg for p in _QUOTA_EXHAUSTED_PATTERNS):
+            return result_fn(
+                FailoverReason.billing,
+                retryable=False,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
         has_transient_signal = any(p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS)
         if has_transient_signal:
             return result_fn(

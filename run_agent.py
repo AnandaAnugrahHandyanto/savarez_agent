@@ -857,6 +857,11 @@ class AIAgent:
         from agent.conversation_compression import replay_compression_warning
         replay_compression_warning(self)
 
+    def run_compression_preflight(self, *, live_smoke: bool = False) -> dict:
+        """Forwarder — see ``agent.conversation_compression.run_compression_preflight``."""
+        from agent.conversation_compression import run_compression_preflight
+        return run_compression_preflight(self, live_smoke=live_smoke)
+
     def _is_direct_openai_url(self, base_url: str = None) -> bool:
         """Return True when a base URL targets OpenAI's native API."""
         if base_url is not None:

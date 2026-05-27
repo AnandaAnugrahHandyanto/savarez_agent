@@ -90,6 +90,7 @@ _GATEWAY_PROVIDER_ERROR_RE = re.compile(
     r"("  # infrastructure/provider error preambles, not ordinary assistant prose
     r"api\s+(?:call\s+)?failed"
     r"|provider\s+authentication\s+failed"
+    r"|provider\s+quota\s+exhausted"
     r"|non-retryable\s+error"
     r"|rate\s+limited\s+after\s+\d+\s+retries"
     r"|error\s+code\s*:"
@@ -122,6 +123,11 @@ _GATEWAY_AUTH_ERROR_RE = re.compile(
 
 _GATEWAY_RATE_LIMIT_RE = re.compile(
     r"(rate\s+limit|rate-limited|\b429\b|quota|usage\s+limit)",
+    re.IGNORECASE,
+)
+
+_GATEWAY_QUOTA_EXHAUSTED_RE = re.compile(
+    r"(provider\s+quota\s+exhausted|quota\s+exhausted|usage_limit_reached|monthly\s+usage\s+limit|org(?:anization)?\s+usage\s+limit)",
     re.IGNORECASE,
 )
 
@@ -239,6 +245,16 @@ def _gateway_provider_error_reply(text: str) -> str:
             "⚠️ The model provider rejected the request. I kept the raw provider "
             "error out of chat; check gateway logs for details or try rephrasing."
         )
+    if _GATEWAY_QUOTA_EXHAUSTED_RE.search(text):
+        safe = _redact_gateway_user_facing_secrets(text)
+        provider_model = ""
+        match = re.search(r"provider\s+quota\s+exhausted\s+for\s+([^:]+)", safe, re.IGNORECASE)
+        if match:
+            provider_model = f" ({match.group(1).strip()})"
+        return (
+            f"⚠️ Provider quota exhausted{provider_model}. "
+            "Check that provider's billing/usage limits or switch models."
+        )
     if _GATEWAY_RATE_LIMIT_RE.search(text):
         return "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."
     return (
@@ -251,6 +267,7 @@ _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     r"^\s*(\W*\s*)?("
     r"api\s+(?:call\s+)?failed"
     r"|provider\s+authentication\s+failed"
+    r"|provider\s+quota\s+exhausted"
     r"|non-retryable\s+error"
     r"|rate\s+limited\s+after\s+\d+\s+retries"
     r"|error\s+code\s*:"

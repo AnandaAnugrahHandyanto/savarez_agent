@@ -523,7 +523,8 @@ class ContextCompressor(ContextEngine):
         config_context_length: int | None = None,
         provider: str = "",
         api_mode: str = "",
-        abort_on_summary_failure: bool = False,
+        abort_on_summary_failure: bool = True,
+        allow_fallback_marker: bool = False,
     ):
         self.model = model
         self.base_url = base_url
@@ -535,11 +536,11 @@ class ContextCompressor(ContextEngine):
         self.protect_last_n = protect_last_n
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
-        # When True, summary-generation failure aborts compression entirely
-        # (returns messages unchanged, sets _last_compress_aborted=True).
-        # When False (default = historical behavior), insert a static
-        # "summary unavailable" placeholder and drop the middle window.
+        # Summary-generation failure is fail-closed by default: preserve
+        # messages unchanged and let callers surface the problem. The legacy
+        # static marker path is only allowed when explicitly opted in.
         self.abort_on_summary_failure = abort_on_summary_failure
+        self.allow_fallback_marker = allow_fallback_marker
 
         self.context_length = get_model_context_length(
             model, base_url=base_url, api_key=api_key,
@@ -592,11 +593,10 @@ class ContextCompressor(ContextEngine):
         # (gateway hygiene, /compress) can surface a visible warning.
         self._last_summary_dropped_count: int = 0
         self._last_summary_fallback_used: bool = False
-        # When summary generation fails we now ABORT compression entirely
-        # and return the original messages unchanged instead of dropping
-        # the middle window with a static placeholder.  Callers inspect
-        # this flag to know "compression was attempted but aborted, freeze
-        # the chat until the user manually retries via /compress".
+        # When summary generation fails we abort compression entirely by
+        # default instead of dropping the middle window with a static
+        # placeholder. Callers inspect this flag to know no compaction
+        # happened and no messages were dropped.
         self._last_compress_aborted: bool = False
         # When a user-configured summary model fails and we recover by
         # retrying on the main model, record the failure so gateway /
@@ -1603,18 +1603,11 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         # Phase 3: Generate structured summary
         summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
 
-        # If summary generation failed, behavior splits on
-        # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):
-        #   True  → ABORT compression entirely. Return messages unchanged
-        #           and set _last_compress_aborted=True so callers can warn
-        #           the user and stop the auto-compress retry loop.
-        #   False → Fall through to the legacy fallback path below: insert
-        #           a static "summary unavailable" placeholder and drop the
-        #           middle window.  Records _last_summary_fallback_used /
-        #           _last_summary_dropped_count for gateway hygiene to
-        #           surface a warning.
-        # Default is False (historical behavior).
-        if not summary and self.abort_on_summary_failure:
+        # If summary generation failed, fail closed unless the legacy marker
+        # path was explicitly enabled. This prevents silent loss of middle
+        # context in production when the auxiliary route is misconfigured or
+        # quota-exhausted.
+        if not summary and (self.abort_on_summary_failure or not self.allow_fallback_marker):
             n_skipped = compress_end - compress_start
             self._last_summary_dropped_count = 0  # nothing actually dropped
             self._last_summary_fallback_used = False
@@ -1622,7 +1615,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             if not self.quiet_mode:
                 logger.warning(
                     "Summary generation failed — aborting compression "
-                    "(compression.abort_on_summary_failure=true). "
+                    "(compression.abort_on_summary_failure=true or "
+                    "compression.allow_fallback_marker=false). "
                     "%d message(s) preserved unchanged. Conversation is "
                     "frozen until the next /compress or /new.",
                     n_skipped,
@@ -1643,8 +1637,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     )
             compressed.append(msg)
 
-        # Legacy fallback path: LLM summary failed and abort_on_summary_failure
-        # is False (the default).  Insert a static placeholder so the model
+        # Legacy fallback path: LLM summary failed and the operator explicitly
+        # allowed a static marker. Insert a visible placeholder so the model
         # knows context was lost rather than silently dropping everything.
         if not summary:
             if not self.quiet_mode:

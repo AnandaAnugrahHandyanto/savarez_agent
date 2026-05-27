@@ -14,6 +14,7 @@ import pytest
 
 from run_agent import AIAgent
 from agent.context_compressor import ContextCompressor
+from agent.conversation_compression import run_compression_preflight
 
 
 @pytest.fixture(autouse=True)
@@ -96,6 +97,26 @@ def test_auto_corrects_threshold_when_aux_context_below_threshold(mock_get_clien
     assert agent._compression_warning is not None
     # Threshold on the live compressor was actually lowered to aux_context.
     assert agent.context_compressor.threshold_tokens == 80_000
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=80_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_preflight_helper_reports_threshold_context_warning(mock_get_client, mock_ctx_len):
+    """Pure preflight reports actionable context-fit diagnostics without live smoke."""
+    agent = _make_agent(main_context=200_000, threshold_percent=0.50)
+    mock_client = MagicMock()
+    mock_client.base_url = "https://openrouter.ai/api/v1"
+    mock_client.api_key = "sk-aux"
+    mock_get_client.return_value = (mock_client, "small-compression-model")
+    agent._emit_status = lambda msg: None
+
+    result = run_compression_preflight(agent)
+
+    assert result["ok"] is True
+    assert result["live_smoke"] is False
+    assert result["warning"]
+    assert "small-compression-model" in result["warning"]
+    assert "Lower the compression threshold" in result["warning"]
 
 
 @patch("agent.model_metadata.get_model_context_length", return_value=32_768)

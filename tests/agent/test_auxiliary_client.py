@@ -1223,6 +1223,15 @@ class TestIsPaymentError:
         exc.status_code = 429
         assert _is_payment_error(exc) is True
 
+    def test_claude_code_usage_limit_reached_is_payment_error(self):
+        """Claude Code monthly/org usage exhaustion must bypass retry loops."""
+        exc = Exception("Claude CLI fail-fast: rate-limit/quota signal detected (usage_limit_reached)")
+        assert _is_payment_error(exc) is True
+
+    def test_monthly_usage_limit_phrase_is_payment_error(self):
+        exc = Exception("Claude Code monthly usage limit reached.")
+        assert _is_payment_error(exc) is True
+
     def test_429_transient_rate_limit_not_quota(self):
         """Transient 429 rate limit without quota keywords is NOT a payment error."""
         exc = Exception("Rate limit exceeded. Retry after 10s.")

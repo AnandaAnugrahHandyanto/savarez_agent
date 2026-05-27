@@ -856,6 +856,21 @@ class TestClassifyApiError:
         assert result.retryable is False
         assert result.should_rotate_credential is True
 
+    def test_usage_limit_reached_code_is_billing_fail_fast(self):
+        """Claude Code usage_limit_reached should not be retried as traffic throttling."""
+        e = Exception("Claude CLI fail-fast: rate-limit/quota signal detected (usage_limit_reached)")
+        result = classify_api_error(e, provider="claude-code-cli", model="claude-sonnet-4-6")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_monthly_usage_limit_is_billing_even_with_try_again_text(self):
+        """Monthly/org subscription limits reset later but are terminal for this turn."""
+        e = Exception("Claude Code monthly usage limit reached. Try again next month.")
+        result = classify_api_error(e, provider="claude-code-cli", model="claude-sonnet-4-6")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
     def test_message_quota_with_reset_window_is_rate_limit(self):
         """'quota' + 'resets at' with no status code → rate_limit."""
         e = Exception("quota exceeded, resets at midnight UTC")
