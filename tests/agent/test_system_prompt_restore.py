@@ -188,6 +188,72 @@ class TestSilentFailureWarnings:
 
 
 # ---------------------------------------------------------------------------
+# Model/provider mismatch — prompt rebuild
+# ---------------------------------------------------------------------------
+
+
+class TestModelProviderMismatch:
+    # Stored prompt says Model: X but agent uses Y -> rebuild
+    def test_mismatch_triggers_rebuild(self, caplog):
+        stored = (
+            "You are Hermes Agent.\n"
+            "Model: old-model\n"
+            "Provider: old-provider\n"
+            "Conversation started: Sunday\n"
+        )
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent.model = "new-model"  # mismatch!
+
+        with caplog.at_level(logging.INFO, logger="agent.conversation_loop"):
+            _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        # Rebuilt fresh instead of reusing stale prompt
+        agent._build_system_prompt.assert_called_once()
+        assert agent._cached_system_prompt == "BUILT_PROMPT"
+        # Log says mismatch detected
+        infos = [r.getMessage() for r in caplog.records if r.levelno >= logging.INFO]
+        assert any("does not match" in m for m in infos), \
+            f"Expected mismatch log, got: {infos}"
+
+    # Stored prompt matches agent model -> reuse
+    def test_match_reuses_stored_prompt(self, caplog):
+        stored = (
+            "You are Hermes Agent.\n"
+            "Model: test-model\n"
+            "Provider: deepseek\n"
+        )
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent.provider = "deepseek"  # match!
+
+        with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
+            _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        # Reused verbatim - no rebuild
+        assert agent._cached_system_prompt == stored
+        agent._build_system_prompt.assert_not_called()
+        # No warnings on the happy path
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    # Stored prompt without Model: line -> reuse (backward compat)
+    def test_no_model_in_stored_prompt_reuses(self, caplog):
+        stored = "You are Hermes Agent.\nNo model header here.\n"
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+
+        with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
+            _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        # Reused - no mismatch because stored prompt doesn't have model info
+        assert agent._cached_system_prompt == stored
+        agent._build_system_prompt.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Byte-stability invariant
 # ---------------------------------------------------------------------------
 
