@@ -1,6 +1,6 @@
-"""Regression guard for #4466: DISCORD_ALLOW_BOTS works without DISCORD_ALLOWED_USERS.
+"""Regression guard for bot allow policies working without *_ALLOWED_USERS.
 
-The bug had two sequential gates both rejecting bot messages:
+The original #4466 bug had two sequential gates both rejecting bot messages:
 
   Gate 1 — `on_message` in gateway/platforms/discord.py ran the user-allowlist
   check BEFORE the bot filter, so bot senders were dropped with a warning
@@ -9,8 +9,8 @@ The bug had two sequential gates both rejecting bot messages:
   Gate 2 — `_is_user_authorized` in gateway/run.py rejected bots at the
   gateway level even if they somehow reached that layer.
 
-These tests assert both gates now pass a bot message through when
-DISCORD_ALLOW_BOTS permits it AND no user allowlist entry exists.
+These tests assert both gates now pass a bot message through when the platform's
+*_ALLOW_BOTS permits it AND no user allowlist entry exists.
 """
 
 import os
@@ -33,6 +33,9 @@ def _isolate_discord_env(monkeypatch):
         "DISCORD_ALLOWED_USERS",
         "DISCORD_ALLOWED_ROLES",
         "DISCORD_ALLOW_ALL_USERS",
+        "SLACK_ALLOW_BOTS",
+        "SLACK_ALLOWED_USERS",
+        "SLACK_ALLOW_ALL_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
         "GATEWAY_ALLOWED_USERS",
     ):
@@ -81,6 +84,17 @@ def _make_discord_human_source(user_id: str = "100200300"):
     )
 
 
+def _make_slack_bot_source(bot_id: str = "U0B13E9M3LZ"):
+    return SessionSource(
+        platform=Platform.SLACK,
+        chat_id="C123",
+        chat_type="channel",
+        user_id=bot_id,
+        user_name="Storm",
+        is_bot=True,
+    )
+
+
 def test_discord_bot_authorized_when_allow_bots_mentions(monkeypatch):
     """DISCORD_ALLOW_BOTS=mentions must authorize a bot sender even when
     DISCORD_ALLOWED_USERS is set and the bot's ID is NOT in it.
@@ -108,6 +122,40 @@ def test_discord_bot_authorized_when_allow_bots_all(monkeypatch):
 
     source = _make_discord_bot_source()
     assert runner._is_user_authorized(source) is True
+
+
+def test_slack_bot_authorized_when_allow_bots_mentions(monkeypatch):
+    """SLACK_ALLOW_BOTS=mentions must authorize bot senders at the gateway
+    layer just like Discord/Feishu. The Slack adapter already enforces that the
+    message mentioned this bot before the event reaches _is_user_authorized.
+    """
+    runner = _make_bare_runner()
+
+    monkeypatch.setenv("SLACK_ALLOW_BOTS", "mentions")
+    monkeypatch.setenv("SLACK_ALLOWED_USERS", "U-human-only")
+
+    source = _make_slack_bot_source(bot_id="U0B13E9M3LZ")
+    assert runner._is_user_authorized(source) is True
+
+
+def test_slack_bot_authorized_when_allow_bots_all(monkeypatch):
+    runner = _make_bare_runner()
+
+    monkeypatch.setenv("SLACK_ALLOW_BOTS", "all")
+    monkeypatch.setenv("SLACK_ALLOWED_USERS", "U-human-only")
+
+    source = _make_slack_bot_source()
+    assert runner._is_user_authorized(source) is True
+
+
+def test_slack_bot_NOT_authorized_when_allow_bots_none(monkeypatch):
+    runner = _make_bare_runner()
+
+    monkeypatch.setenv("SLACK_ALLOW_BOTS", "none")
+    monkeypatch.setenv("SLACK_ALLOWED_USERS", "U-human-only")
+
+    source = _make_slack_bot_source()
+    assert runner._is_user_authorized(source) is False
 
 
 def test_discord_bot_NOT_authorized_when_allow_bots_none(monkeypatch):

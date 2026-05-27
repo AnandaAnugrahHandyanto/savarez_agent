@@ -251,7 +251,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 # but get_final_response() can return an empty output list.
                 # Backfill from collected items or synthesize from deltas.
                 _out = getattr(final_response, "output", None)
-                if isinstance(_out, list) and not _out:
+                if _out is None or (isinstance(_out, list) and not _out):
                     if collected_output_items:
                         final_response.output = list(collected_output_items)
                         logger.debug(
@@ -271,6 +271,39 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                             len(agent._codex_streamed_text_parts), len(assembled),
                         )
                 return final_response
+        except TypeError as exc:
+            # OpenAI SDK ≤2.24 bug: parse_response() in the streaming state
+            # machine iterates response.output which can be None when the
+            # Codex backend sends response.completed with output=null.
+            # The SDK crashes with "'NoneType' object is not iterable" inside
+            # accumulate_event() before get_final_response() is ever reached.
+            # Recover from collected output items / streamed text deltas.
+            if "'NoneType' object is not iterable" in str(exc) or "not iterable" in str(exc):
+                logger.warning(
+                    "Codex stream: SDK parse_response() hit None output — "
+                    "recovering from %d collected items, %d text deltas. %s",
+                    len(collected_output_items),
+                    len(agent._codex_streamed_text_parts),
+                    agent._client_log_context(),
+                )
+                if collected_output_items:
+                    return SimpleNamespace(
+                        output=list(collected_output_items),
+                        status="completed",
+                    )
+                elif agent._codex_streamed_text_parts:
+                    assembled = "".join(agent._codex_streamed_text_parts)
+                    return SimpleNamespace(
+                        output=[SimpleNamespace(
+                            type="message",
+                            role="assistant",
+                            status="completed",
+                            content=[SimpleNamespace(type="output_text", text=assembled)],
+                        )],
+                        status="completed",
+                    )
+            # Not the SDK None-output bug — re-raise
+            raise
         except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
             if attempt < max_stream_retries:
                 logger.debug(

@@ -862,6 +862,41 @@ class TestCodexStreamCallbacks:
 
         assert touch_calls.count("receiving stream response") == 3
 
+    def test_codex_stream_none_output_typeerror_recovers_from_text_deltas(self):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "codex_responses"
+        agent._interrupt_requested = False
+
+        def broken_sdk_iter():
+            yield SimpleNamespace(type="response.output_text.delta", delta="partial answer")
+            raise TypeError("'NoneType' object is not iterable")
+
+        mock_stream = MagicMock()
+        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
+        mock_stream.__exit__ = MagicMock(return_value=False)
+        mock_stream.__iter__ = MagicMock(return_value=broken_sdk_iter())
+        mock_stream.get_final_response.side_effect = AssertionError(
+            "SDK crashed before final response was available"
+        )
+
+        mock_client = MagicMock()
+        mock_client.responses.stream.return_value = mock_stream
+
+        response = agent._run_codex_stream({}, client=mock_client)
+
+        assert response.status == "completed"
+        assert response.output[0].type == "message"
+        assert response.output[0].content[0].text == "partial answer"
+
     def test_codex_remote_protocol_error_falls_back_to_create_stream(self):
         from run_agent import AIAgent
         import httpx
