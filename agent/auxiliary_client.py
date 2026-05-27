@@ -1659,6 +1659,44 @@ def _read_main_provider() -> str:
     return ""
 
 
+def _read_main_base_url() -> str:
+    """Read the user's configured ``model.base_url`` from config.yaml.
+
+    Returns the stripped URL string or ``""`` if not configured.
+    Only meaningful when the provider is ``custom`` or ``custom:<name>``.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        model_cfg = cfg.get("model", {})
+        if isinstance(model_cfg, dict):
+            base_url = str(model_cfg.get("base_url", "") or "").strip()
+            if base_url:
+                return base_url
+    except Exception:
+        pass
+    return ""
+
+
+def _read_main_api_key() -> str:
+    """Read the user's configured ``model.api_key`` from config.yaml.
+
+    Returns the stripped key string or ``""`` if not configured.
+    Only meaningful when the provider is ``custom`` or ``custom:<name>``.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        model_cfg = cfg.get("model", {})
+        if isinstance(model_cfg, dict):
+            api_key = str(model_cfg.get("api_key", "") or "").strip()
+            if api_key:
+                return api_key
+    except Exception:
+        pass
+    return ""
+
+
 # Process-local override set by AIAgent at session/turn start. Single-threaded
 # per turn — no lock needed. Cleared by ``clear_runtime_main()``.
 _RUNTIME_MAIN_PROVIDER: str = ""
@@ -2955,6 +2993,16 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
             resolved_provider = "custom"
             explicit_base_url = runtime_base_url
             explicit_api_key = runtime_api_key or None
+        elif (main_provider == "custom" or main_provider.startswith("custom:")) and not runtime_base_url:
+            # No runtime override (cron / background tasks): fall back to
+            # model.base_url and model.api_key from config.yaml so that
+            # custom-provider users don't lose aux routing when no active
+            # CLI/gateway session is present.
+            resolved_provider = "custom"
+            cfg_base_url = _read_main_base_url()
+            if cfg_base_url:
+                explicit_base_url = cfg_base_url
+                explicit_api_key = _read_main_api_key() or None
         elif runtime_api_key:
             # Pin auxiliary to the same api_key as the active main chat session
             # so that a working key is reused instead of re-selecting from the pool
