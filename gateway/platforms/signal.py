@@ -253,13 +253,13 @@ class SignalAdapter(BasePlatformAdapter):
     async def connect(self) -> bool:
         """Connect to signal-cli daemon and start SSE listener."""
         if not self.http_url or not self.account:
-            logger.error("Signal: SIGNAL_HTTP_URL and SIGNAL_ACCOUNT are required")
+            logger.error(t('signal.signal.signalhttpurl.signalaccount.required'))
             return False
 
         # Acquire scoped lock to prevent duplicate Signal listeners for the same phone
         lock_acquired = False
         try:
-            if not self._acquire_platform_lock('signal-phone', self.account, 'Signal account'):
+            if not self._acquire_platform_lock('signal-phone', self.account, t('signal.signal.account')):
                 return False
             lock_acquired = True
         except Exception as e:
@@ -323,7 +323,7 @@ class SignalAdapter(BasePlatformAdapter):
 
         self._release_platform_lock()
 
-        logger.info("Signal: disconnected")
+        logger.info(t('signal.signal.disconnected'))
 
     # ------------------------------------------------------------------
     # SSE Streaming (inbound messages)
@@ -345,7 +345,7 @@ class SignalAdapter(BasePlatformAdapter):
                     self._sse_response = response
                     backoff = SSE_RETRY_DELAY_INITIAL  # Reset on successful connection
                     self._last_sse_activity = time.time()
-                    logger.info("Signal SSE: connected")
+                    logger.info(t('signal.signal.sse.connected'))
 
                     buffer = ""
                     async for chunk in response.aiter_text():
@@ -375,7 +375,7 @@ class SignalAdapter(BasePlatformAdapter):
                                 except json.JSONDecodeError:
                                     logger.debug("Signal SSE: invalid JSON: %s", data_str[:100])
                                 except Exception:
-                                    logger.exception("Signal SSE: error handling event")
+                                    logger.exception(t('signal.signal.sse.error.handling'))
 
             except asyncio.CancelledError:
                 break
@@ -407,7 +407,7 @@ class SignalAdapter(BasePlatformAdapter):
 
             elapsed = time.time() - self._last_sse_activity
             if elapsed > HEALTH_CHECK_STALE_THRESHOLD:
-                logger.warning("Signal: SSE idle for %.0fs, checking daemon health", elapsed)
+                logger.warning(t('signal.signal.sse.idle.0fs'), elapsed)
                 try:
                     resp = await self.client.get(
                         f"{self.http_url}/api/v1/check", timeout=10.0
@@ -416,7 +416,7 @@ class SignalAdapter(BasePlatformAdapter):
                         # Daemon is alive but SSE is idle — update activity to
                         # avoid repeated warnings (connection may just be quiet)
                         self._last_sse_activity = time.time()
-                        logger.debug("Signal: daemon healthy, SSE idle")
+                        logger.debug(t('signal.signal.daemon.healthy.sse'))
                     else:
                         logger.warning("Signal: health check failed (%d), forcing reconnect", resp.status_code)
                         self._force_reconnect()
@@ -478,7 +478,7 @@ class SignalAdapter(BasePlatformAdapter):
         self._remember_recipient_identifiers(sender, sender_uuid)
 
         if not sender:
-            logger.debug("Signal: ignoring envelope with no sender")
+            logger.debug(t('signal.signal.ignoring.envelope.sender'))
             return
 
         # Self-message filtering — prevent reply loops (but allow Note to Self)
@@ -763,7 +763,7 @@ class SignalAdapter(BasePlatformAdapter):
         opt into backoff-retry without changing default behaviour.
         """
         if not self.client:
-            logger.warning("Signal: RPC called but client not connected")
+            logger.warning(t('signal.signal.rpc.called.client'))
             return None
 
         if rpc_id is None:
@@ -1002,7 +1002,7 @@ class SignalAdapter(BasePlatformAdapter):
             # stream consumer on the non-edit fallback path instead of pretending
             # future edits can remove an in-progress cursor from the chat thread.
             return SendResult(success=True, message_id=None)
-        return SendResult(success=False, error="RPC send failed")
+        return SendResult(success=False, error=t('signal.rpc.send.failed'))
 
     def _track_sent_timestamp(self, rpc_result) -> None:
         """Record outbound message timestamp for echo-back filtering."""
@@ -1259,7 +1259,7 @@ class SignalAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=str(e))
 
         if not file_path or not Path(file_path).exists():
-            return SendResult(success=False, error="Image file not found")
+            return SendResult(success=False, error=t('signal.image.file.found'))
 
         # Validate size
         file_size = Path(file_path).stat().st_size
@@ -1281,7 +1281,7 @@ class SignalAdapter(BasePlatformAdapter):
         if result is not None:
             self._track_sent_timestamp(result)
             return SendResult(success=True)
-        return SendResult(success=False, error="RPC send with attachment failed")
+        return SendResult(success=False, error=t('signal.rpc.send.attachment.failed'))
 
     async def _send_attachment(
         self,

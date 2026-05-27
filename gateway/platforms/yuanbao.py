@@ -139,7 +139,7 @@ REPLY_REF_TTL_S = 300.0            # Reference dedup TTL (5 minutes)
 
 # Slow-response hint: push a waiting message when agent produces no data for this duration (seconds)
 SLOW_RESPONSE_TIMEOUT_S = 120.0
-SLOW_RESPONSE_MESSAGE = "任务有点复杂，正在努力处理中，请耐心等待..."
+SLOW_RESPONSE_MESSAGE = t('yuanbao.')
 
 # Regex matching Yuanbao resource reference anchors in transcript text:
 #   [image|ybres:abc123]  [file:report.pdf|ybres:xyz789]  [voice|ybres:...]
@@ -803,7 +803,7 @@ class SignManager:
                 msg = result_data.get("msg", "")
                 raise RuntimeError(f"Sign token error: code={code}, msg={msg}")
 
-        raise RuntimeError("Sign token failed: max retries exceeded")
+        raise RuntimeError(t('yuanbao.sign.token.failed.max'))
 
     # -- Public API: get (with cache) --------------------------------------
 
@@ -1335,7 +1335,7 @@ class RecallGuardMiddleware(InboundMiddleware):
             f"Do NOT continue the task, do NOT call more tools, do NOT "
             f"reference the recalled content. "
             f"Reply only with a brief acknowledgment such as "
-            f"\"The message has been recalled.\" in the "
+            f"\t('yuanbao.message.recalled') in the "
             f"language the user was using."
         )
 
@@ -1430,7 +1430,7 @@ class RecallGuardMiddleware(InboundMiddleware):
         for entry in transcript:
             if entry.get("message_id") == recalled_id:
                 target = entry
-                branch_label = "branch A1: id match"
+                branch_label = t('yuanbao.branch.match')
                 break
         # Branch A2: content-match fallback for messages that lack an exact
         # platform id on the row — e.g. agent-processed @bot messages
@@ -1440,7 +1440,7 @@ class RecallGuardMiddleware(InboundMiddleware):
             for entry in transcript:
                 if entry.get("role") == "user" and entry.get("content") == recalled_content:
                     target = entry
-                    branch_label = "branch A2: content match"
+                    branch_label = t('yuanbao.branch.content.match')
                     break
         if target is not None:
             target["content"] = cls._REDACTED
@@ -2294,9 +2294,9 @@ class MediaResolveMiddleware(InboundMiddleware):
                 real_url = str((data or {}).get("url") or (data or {}).get("realUrl") or "").strip()
                 if real_url:
                     return real_url
-                raise RuntimeError("resource/v1/download missing url/realUrl")
+                raise RuntimeError(t('yuanbao.resourcev1download.missing.urlrealurl'))
 
-        raise RuntimeError("resource/v1/download did not return a URL")
+        raise RuntimeError(t('yuanbao.resourcev1download.return.url'))
 
     @staticmethod
     async def _resolve_download_url(adapter, url: str) -> str:
@@ -2824,7 +2824,7 @@ class ConnectionManager:
 
         # Acquire platform-scoped lock to prevent duplicate connections
         if not adapter._acquire_platform_lock(
-            'yuanbao-app-key', adapter._app_key, 'Yuanbao app key'
+            'yuanbao-app-key', adapter._app_key, t('yuanbao.yuanbao.app.key')
         ):
             return False
 
@@ -2908,7 +2908,7 @@ class ConnectionManager:
             self._recv_task = None
 
         # Fail any pending ACK futures
-        disc_exc = RuntimeError("YuanbaoAdapter disconnected")
+        disc_exc = RuntimeError(t('yuanbao.yuanbaoadapter.disconnected'))
         for fut in self._pending_acks.values():
             if not fut.done():
                 fut.set_exception(disc_exc)
@@ -3273,7 +3273,7 @@ class ConnectionManager:
         4. Clean up pending_acks on timeout/exception
         """
         if self._ws is None:
-            raise RuntimeError("Not connected")
+            raise RuntimeError(t('yuanbao.not.connected'))
 
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
@@ -3750,11 +3750,11 @@ class GroupQueryService:
         Returns group name, owner, member count, etc.
         """
         if not chat_id.startswith("group:"):
-            return {"error": "This command is only available in group chats"}
+            return {"error": t('yuanbao.command.only.available.group')}
         group_code = chat_id[len("group:"):]
         result = await self.query_group_info_raw(group_code)
         if result is None:
-            return {"error": "Failed to query group info"}
+            return {"error": t('yuanbao.failed.query.group.info')}
         return result
 
     async def query_session_members(
@@ -3778,7 +3778,7 @@ class GroupQueryService:
         group_code = chat_id[len("group:"):]
         result = await self.get_group_member_list_raw(group_code)
         if result is None:
-            return {"error": "Failed to query group members"}
+            return {"error": t('yuanbao.failed.query.group.members')}
 
         members = result.get("members", [])
 
@@ -3797,7 +3797,7 @@ class GroupQueryService:
         mention_hint = ""
         if members and len(members) <= 10:
             names = [m.get("name_card") or m.get("nickname") or m.get("user_id", "") for m in members]
-            mention_hint = "Mention with @name: " + ", ".join(names)
+            mention_hint = t('yuanbao.mention.name') + ", ".join(names)
 
         return {
             "members": members[:50],  # Limit return count
@@ -4131,7 +4131,7 @@ class MessageSender:
                 return {"error": f"Yuanbao media send failed: {last_result.error}"}
 
         if last_result is None:
-            return {"error": "No deliverable text or media remained after processing"}
+            return {"error": t('yuanbao.deliverable.text.media.remained')}
 
         return {
             "success": True,
@@ -4159,7 +4159,7 @@ class MessageSender:
 
         if result.get("success"):
             return SendResult(success=True, message_id=result.get("msg_key"))
-        return SendResult(success=False, error=result.get("error", "Unknown error"))
+        return SendResult(success=False, error=result.get("error", t('yuanbao.unknown.error')))
 
     async def send_text_chunk(
         self,
@@ -4378,7 +4378,7 @@ class MessageSender:
     @staticmethod
     def strip_cron_wrapper(content: str) -> str:
         """Strip scheduler cron header/footer wrapper for cleaner Yuanbao output."""
-        if not content.startswith("Cronjob Response: "):
+        if not content.startswith(t('yuanbao.cronjob.response')):
             return content
 
         divider = "\n-------------\n\n"
@@ -4743,7 +4743,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
             SendResult
         """
         if not self._access_policy.is_dm_allowed(user_id):
-            return SendResult(success=False, error="DM access denied for this user")
+            return SendResult(success=False, error=t('yuanbao.access.denied.user'))
         if len(text) > self.DM_MAX_CHARS:
             text = text[:self.DM_MAX_CHARS] + "\n...(truncated)"
         chat_id = f"direct:{user_id}"

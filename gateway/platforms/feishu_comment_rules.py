@@ -339,7 +339,7 @@ def _do_check(doc_key: str, user_open_id: str) -> None:
     allowed = is_user_allowed(rule, user_open_id)
     print(f"Document:     {doc_key}")
     print(f"User:         {user_open_id}")
-    print(f"Resolved rule:")
+    print(ft('feishu_comment_rules.resolved.rule'))
     print(f"  enabled:      {rule.enabled}")
     print(f"  policy:       {rule.policy}")
     print(f"  allow_from:   {sorted(rule.allow_from) if rule.allow_from else '[]'}")

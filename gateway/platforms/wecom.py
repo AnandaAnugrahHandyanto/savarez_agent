@@ -192,17 +192,17 @@ class WeComAdapter(BasePlatformAdapter):
     async def connect(self) -> bool:
         """Connect to the WeCom AI Bot gateway."""
         if not AIOHTTP_AVAILABLE:
-            message = "WeCom startup failed: aiohttp not installed"
+            message = t('wecom.wecom.startup.failed.aiohttp')
             self._set_fatal_error("wecom_missing_dependency", message, retryable=True)
             logger.warning("[%s] %s. Run: pip install aiohttp", self.name, message)
             return False
         if not HTTPX_AVAILABLE:
-            message = "WeCom startup failed: httpx not installed"
+            message = t('wecom.wecom.startup.failed.httpx')
             self._set_fatal_error("wecom_missing_dependency", message, retryable=True)
             logger.warning("[%s] %s. Run: pip install httpx", self.name, message)
             return False
         if not self._bot_id or not self._secret:
-            message = "WeCom startup failed: WECOM_BOT_ID and WECOM_SECRET are required"
+            message = t('wecom.wecom.startup.failed.wecombotid')
             self._set_fatal_error("wecom_missing_credentials", message, retryable=True)
             logger.warning("[%s] %s", self.name, message)
             return False
@@ -250,7 +250,7 @@ class WeComAdapter(BasePlatformAdapter):
                 pass
             self._heartbeat_task = None
 
-        self._fail_pending_responses(RuntimeError("WeCom adapter disconnected"))
+        self._fail_pending_responses(RuntimeError(t('wecom.wecom.adapter.disconnected')))
         await self._cleanup_ws()
 
         if self._http_client:
@@ -302,13 +302,13 @@ class WeComAdapter(BasePlatformAdapter):
     async def _wait_for_handshake(self, req_id: str) -> Dict[str, Any]:
         """Wait for the subscribe acknowledgement."""
         if not self._ws:
-            raise RuntimeError("WebSocket not initialized")
+            raise RuntimeError(t('wecom.websocket.initialized'))
 
         deadline = asyncio.get_running_loop().time() + CONNECT_TIMEOUT_SECONDS
         while True:
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
-                raise TimeoutError("Timed out waiting for WeCom subscribe acknowledgement")
+                raise TimeoutError(t('wecom.timed.out.waiting.wecom'))
 
             msg = await asyncio.wait_for(self._ws.receive(), timeout=remaining)
             if msg.type == aiohttp.WSMsgType.TEXT:
@@ -321,7 +321,7 @@ class WeComAdapter(BasePlatformAdapter):
                     return payload
                 logger.debug("[%s] Ignoring pre-auth payload: %s", self.name, payload.get("cmd"))
             elif msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR}:
-                raise RuntimeError("WeCom websocket closed during authentication")
+                raise RuntimeError(t('wecom.wecom.websocket.closed.during'))
 
     async def _listen_loop(self) -> None:
         """Read websocket events forever, reconnecting on errors."""
@@ -336,7 +336,7 @@ class WeComAdapter(BasePlatformAdapter):
                 if not self._running:
                     return
                 logger.warning("[%s] WebSocket error: %s", self.name, exc)
-                self._fail_pending_responses(RuntimeError("WeCom connection interrupted"))
+                self._fail_pending_responses(RuntimeError(t('wecom.wecom.connection.interrupted')))
 
                 delay = RECONNECT_BACKOFF[min(backoff_idx, len(RECONNECT_BACKOFF) - 1)]
                 backoff_idx += 1
@@ -353,7 +353,7 @@ class WeComAdapter(BasePlatformAdapter):
     async def _read_events(self) -> None:
         """Read websocket frames until the connection closes."""
         if not self._ws:
-            raise RuntimeError("WebSocket not connected")
+            raise RuntimeError(t('wecom.websocket.connected'))
 
         while self._running and self._ws and not self._ws.closed:
             msg = await self._ws.receive()
@@ -362,7 +362,7 @@ class WeComAdapter(BasePlatformAdapter):
                 if payload:
                     await self._dispatch_payload(payload)
             elif msg.type in {aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSING}:
-                raise RuntimeError("WeCom websocket closed")
+                raise RuntimeError(t('wecom.wecom.websocket.closed'))
 
     async def _heartbeat_loop(self) -> None:
         """Send lightweight application-level pings."""
@@ -413,7 +413,7 @@ class WeComAdapter(BasePlatformAdapter):
     async def _send_json(self, payload: Dict[str, Any]) -> None:
         """Send a raw JSON frame over the active websocket."""
         if not self._ws or self._ws.closed:
-            raise RuntimeError("WeCom websocket is not connected")
+            raise RuntimeError(t('wecom.wecom.websocket.connected'))
         await self._ws.send_json(payload)
 
     async def _send_request(self, cmd: str, body: Dict[str, Any], timeout: float = REQUEST_TIMEOUT_SECONDS) -> Dict[str, Any]:
@@ -1038,7 +1038,7 @@ class WeComAdapter(BasePlatformAdapter):
         try:
             from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
         except ImportError as exc:  # pragma: no cover - dependency is environment-specific
-            raise RuntimeError("cryptography is required for WeCom media decryption") from exc
+            raise RuntimeError(t('wecom.cryptography.required.wecom.media')) from exc
 
         cipher = Cipher(algorithms.AES(key), modes.CBC(key[:16]))
         decryptor = cipher.decryptor()
@@ -1048,7 +1048,7 @@ class WeComAdapter(BasePlatformAdapter):
         if pad_len < 1 or pad_len > 32 or pad_len > len(decrypted):
             raise ValueError(f"Invalid PKCS#7 padding value: {pad_len}")
         if any(byte != pad_len for byte in decrypted[-pad_len:]):
-            raise ValueError("Invalid PKCS#7 padding: padding bytes mismatch")
+            raise ValueError(t('wecom.invalid.pkcs7.padding.padding'))
 
         return decrypted[:-pad_len]
 
@@ -1154,7 +1154,7 @@ class WeComAdapter(BasePlatformAdapter):
 
     async def _upload_media_bytes(self, data: bytes, media_type: str, filename: str) -> Dict[str, Any]:
         if not data:
-            raise ValueError("Cannot upload empty media")
+            raise ValueError(t('wecom.cannot.upload.empty.media'))
 
         total_size = len(data)
         total_chunks = (total_size + UPLOAD_CHUNK_SIZE - 1) // UPLOAD_CHUNK_SIZE
@@ -1312,7 +1312,7 @@ class WeComAdapter(BasePlatformAdapter):
                     upload_result["media_id"],
                 )
         except asyncio.TimeoutError:
-            return SendResult(success=False, error="Timeout sending media to WeCom")
+            return SendResult(success=False, error=t('wecom.timeout.sending.media.wecom'))
         except Exception as exc:
             logger.error("[%s] Failed to send media %s: %s", self.name, media_source, exc)
             return SendResult(success=False, error=str(exc))
@@ -1376,7 +1376,7 @@ class WeComAdapter(BasePlatformAdapter):
                     },
                 )
         except asyncio.TimeoutError:
-            return SendResult(success=False, error="Timeout sending message to WeCom")
+            return SendResult(success=False, error=t('wecom.timeout.sending.message.wecom'))
         except Exception as exc:
             logger.error("[%s] Send failed: %s", self.name, exc)
             return SendResult(success=False, error=str(exc))
@@ -1524,13 +1524,13 @@ def qr_scan_for_bot_info(
         import urllib.request
         import urllib.parse
     except ImportError:  # pragma: no cover
-        logger.error("urllib is required for WeCom QR scan")
+        logger.error(t('wecom.urllib.required.wecom.scan'))
         return None
 
     generate_url = f"{_QR_GENERATE_URL}?source=hermes"
 
     # ── Step 1: Fetch QR code ──
-    print("  Connecting to WeCom...", end="", flush=True)
+    print(t('wecom.connecting.wecom'), end="", flush=True)
     try:
         req = urllib.request.Request(generate_url, headers={"User-Agent": "HermesAgent/1.0"})
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -1573,7 +1573,7 @@ def qr_scan_for_bot_info(
         print(f"  Open this URL in WeCom on your phone:\n\n  {page_url}\n")
         print("  Tip: pip install qrcode  to display a scannable QR code here next time")
     print()
-    print("  Fetching configuration results...", end="", flush=True)
+    print(t('wecom.fetching.configuration.results'), end="", flush=True)
 
     # ── Step 3: Poll for result ──
     deadline = time.monotonic() + timeout_seconds
@@ -1598,7 +1598,7 @@ def qr_scan_for_bot_info(
         status = str(result_data.get("status") or "").lower()
 
         if status == "success":
-            print()  # newline after "Fetching configuration results..." dots
+            print()  # newline after t('wecom.fetching.configuration.results_1') dots
             bot_info = result_data.get("bot_info") or {}
             bot_id = str(bot_info.get("botid") or bot_info.get("bot_id") or "").strip()
             secret = str(bot_info.get("secret") or "").strip()

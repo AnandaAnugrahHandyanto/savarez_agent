@@ -773,7 +773,7 @@ def _format_referenced_docs(
     """Format resolved document links for prompt embedding."""
     if not links:
         return ""
-    lines = ["", "Referenced documents in comments:"]
+    lines = ["", t('feishu_comment.referenced.documents.comments')]
     for link in links:
         rtype = link.get("resolved_type", link["doc_type"])
         rtoken = link.get("resolved_token", link["token"])
@@ -875,7 +875,7 @@ The quoted content is your primary anchor — insert/summarize/explain requests 
 Do not guess document content you haven't read.
 Reply in the same language as the user's comment unless they request otherwise.
 Use plain text only. Do not use Markdown, headings, bullet lists, tables, or code blocks.
-Do not show your reasoning process. Do not start with "I will", "Let me", or "I'll first".
+Do not show your reasoning process. Do not start with t('feishu_comment.i.will'), t('feishu_comment.let.me'), or "I'll first".
 Output only the final user-facing reply.
 If no reply is needed, output exactly NO_REPLY.
 """.strip()
@@ -906,7 +906,7 @@ def build_local_comment_prompt(
         f'Quoted content: "{_truncate(quote_text, 500)}"',
         "This comment mentioned you (@mention is for routing, not task content).",
         f"Document link: {doc_url}",
-        "Current commented document:",
+        t('feishu_comment.current.commented.document'),
         f"- file_type={file_type}",
         f"- file_token={file_token}",
         f"- comment_id={comment_id}",
@@ -915,7 +915,7 @@ def build_local_comment_prompt(
     ]
 
     for user_id, text, is_self in selected:
-        marker = " <-- YOU" if is_self else ""
+        marker = t('feishu_comment.you') if is_self else ""
         lines.append(f"[{user_id}] {_truncate(text)}{marker}")
 
     if referenced_docs:
@@ -945,7 +945,7 @@ def build_whole_comment_prompt(
     lines = [
         f'The user added a comment in "{doc_title}".',
         f'Current user comment text: "{_truncate(comment_text)}"',
-        "This is a whole-document comment.",
+        t('feishu_comment.wholedocument.comment'),
         "This comment mentioned you (@mention is for routing, not task content).",
         f"Document link: {doc_url}",
         "Current commented document:",

@@ -1,354 +1,3164 @@
-# Hermes 静态消息目录 -- 中文（简体）
-# See locales/en.yaml for the source of truth; keep keys in sync.
-
 approval:
-  dangerous_header: "⚠️  危险命令： {description}"
-  choose_long:     "      [o]仅此一次  |  [s]本次会话  |  [a]永久允许  |  [d]拒绝"
-  choose_short:    "      [o]仅此一次  |  [s]本次会话  |  [d]拒绝"
-  prompt_long:     "      选择 [o/s/a/D]: "
-  prompt_short:    "      选择 [o/s/D]: "
-  timeout:         "      ⏱ 超时 — 已拒绝命令"
-  allowed_once:    "      ✓ 本次允许"
-  allowed_session: "      ✓ 本次会话内允许"
-  allowed_always:  "      ✓ 已加入永久允许列表"
-  denied:          "      ✗ 已拒绝"
-  cancelled:       "      ✗ 已取消"
-  blocklist_message: "此命令位于无条件拦截列表中，无法被批准。"
+  dangerous_header: ⚠️  危险命令： {description}
+  choose_long: '      [o]仅此一次  |  [s]本次会话  |  [a]永久允许  |  [d]拒绝'
+  choose_short: '      [o]仅此一次  |  [s]本次会话  |  [d]拒绝'
+  prompt_long: '      选择 [o/s/a/D]: '
+  prompt_short: '      选择 [o/s/D]: '
+  timeout: '      ⏱ 超时 — 已拒绝命令'
+  allowed_once: '      ✓ 本次允许'
+  allowed_session: '      ✓ 本次会话内允许'
+  allowed_always: '      ✓ 已加入永久允许列表'
+  denied: '      ✗ 已拒绝'
+  cancelled: '      ✗ 已取消'
+  blocklist_message: 此命令位于无条件拦截列表中，无法被批准。
+  reason:
+    delete_root_path: 删除根路径文件
+    recursive_delete: 递归删除
+    recursive_delete_long: 递归删除（长参数）
+    world_writable: 全局可写权限
+    recursive_world_writable: 递归全局可写（长参数）
+    recursive_chown_root: 递归 chown 到 root
+    recursive_chown_root_long: 递归 chown 到 root（长参数）
+    format_filesystem: 格式化文件系统
+    format_filesystem_mkfs: 格式化文件系统（mkfs）
+    disk_copy: 磁盘复制
+    write_block_device: 写入块设备
+    redirect_block_device: 重定向到原始块设备
+    dd_block_device: dd 写入原始块设备
+    sql_drop: SQL DROP 删除表/库
+    sql_delete_no_where: SQL DELETE 无 WHERE 条件
+    sql_truncate: SQL TRUNCATE 清空表
+    overwrite_system_config: 覆盖系统配置
+    stop_restart_service: 停止/重启系统服务
+    kill_all_processes: 杀死所有进程
+    force_kill: 强制杀死进程
+    force_kill_killall: 强制杀死进程（killall -KILL）
+    force_kill_killall_s: 强制杀死进程（killall -s KILL）
+    kill_by_regex: 按正则杀死进程（killall -r）
+    fork_bomb: fork 炸弹
+    shell_c_flag: 通过 -c/-lc 标志执行 shell 命令
+    script_execution_flag: 通过 -e/-c 标志执行脚本
+    pipe_remote_shell: 管道远程内容到 shell
+    exec_remote_substitution: 通过进程替换执行远程脚本
+    overwrite_system_tee: 通过 tee 覆盖系统文件
+    overwrite_system_redirect: 通过重定向覆盖系统文件
+    overwrite_project_tee: 通过 tee 覆盖项目配置
+    overwrite_project_redirect: 通过重定向覆盖项目配置
+    xargs_rm: xargs 配合 rm
+    find_exec_rm: find -exec/-execdir rm
+    find_delete: find -delete
+    stop_restart_gateway: 停止/重启 Hermes 网关（会终止运行中的代理）
+    hermes_update: Hermes 更新（会重启网关，终止运行中的代理）
+    gateway_outside_systemd: 在 systemd 外启动网关（应使用 systemctl --user restart hermes-gateway）
+    kill_gateway: 杀死 Hermes/网关进程（自终止）
+    kill_pgrep: 通过 pgrep 扩展杀死进程（自终止）
+    kill_pgrep_backtick: 通过反引号 pgrep 扩展杀死进程（自终止）
+    copy_into_system_config: 复制/移动文件到系统配置路径
+    overwrite_project_file: 覆盖项目配置文件
+    inplace_edit_system: 就地编辑系统配置
+    inplace_edit_system_long: 就地编辑系统配置（长参数）
+    script_heredoc: 通过 heredoc 执行脚本
+    git_reset_hard: git reset --hard（丢失未提交的更改）
+    git_force_push: git force push（重写远程历史）
+    git_force_push_short: git force push 短参数（重写远程历史）
+    git_clean_force: git clean -f（删除未跟踪文件）
+    git_branch_force_delete: git branch 强制删除分支
+    chmod_exec: chmod +x 后立即执行
+    recursive_delete_home: 递归删除主目录
+    recursive_delete_root: 递归删除根文件系统
+    recursive_delete_system: 递归删除系统目录
+    sudo_privilege_flag: sudo 特权标志（stdin/askpass/shell/list）
+    sudo_combined_flag: sudo 组合标志提权
+    security_scan_prefix: 安全扫描
+    security_issue_detected: 检测到安全问题
+agent:
+  rate_limited_fallback: ⚠️ 请求频率受限 — 正在切换到备用提供方...
+  stream_interrupted: ↻ 流式传输中断 — 使用已传输内容作为最终回复
+  empty_response_tools: ↻ 工具调用后收到空响应 — 使用之前的回复内容
+  empty_after_tools: ⚠️ 模型在工具调用后返回空响应 — 提示继续
+  thinking_only: ↻ 仅思考响应 — 预填充以继续
+  empty_responses_fallback: ⚠️ 模型持续返回空响应 — 正在切换到备用提供方...
+  switched_fallback: '↻ 已切换到备用模型: {model} ({provider})'
+  reasoning_no_content: ⚠️ 模型产生了推理内容但无可见回复，所有重试已耗尽。返回空内容。
+  primary_model_failed: '🔄 主模型失败 — 正在切换到备用: {model} ({provider})'
+  max_iterations: ⚠️ 已达到最大迭代次数 ({max})。正在请求摘要...
+  no_response_reconnect: '⚠️ 提供方 {time} 秒无响应（模型: {model}, 上下文: ~{tokens} tokens）。正在重连...'
+  api_key_warning: '⚠️ 警告: API 密钥似乎无效或缺失'
+  fallback_model: '🔄 备用模型: {model} ({provider})'
+  fallback_chain: '🔄 备用链 ({count} 个提供方):'
+  missing_requirements: '⚠️ 部分工具可能因缺少依赖而无法工作: {missing}'
+  trajectory_enabled: 📝 轨迹保存已启用
+  init:
+    initialized: '🤖 AI Agent 已初始化，模型: {model}'
+    initialized_bedrock_sdk: '🤖 AI Agent 已初始化，模型: {model} (AWS Bedrock + AnthropicBedrock
+      SDK, {region})'
+    initialized_anthropic: '🤖 AI Agent 已初始化，模型: {model} (Anthropic 原生)'
+    initialized_bedrock: '🤖 AI Agent 已初始化，模型: {model} (AWS Bedrock, {region}{guardrails})'
+    using_entra: '🔑 使用凭据: Microsoft Entra ID'
+    using_token: '🔑 使用令牌: {token}'
+    custom_base_url: '🔗 使用自定义基础 URL: {url}'
+    using_api_key: '🔑 使用 API 密钥: {key}'
+    tools_loaded: '🛠️  已加载 {count} 个工具: {tools}'
+    enabled_toolsets: '   ✅ 已启用的工具集: {toolsets}'
+    disabled_toolsets: '   ❌ 已禁用的工具集: {toolsets}'
+    no_tools: 🛠️  未加载工具（所有工具已被过滤或不可用）
+    ephemeral_prompt: '🔒 临时系统提示词: ''{prompt}''（不保存到轨迹）'
+    prompt_caching: '💾 提示词缓存: 已启用 ({source}, {ttl} TTL)'
+    context_limit: '📊 上下文限制: {tokens} 个令牌（在 {threshold}% = {threshold_tokens} 处压缩）'
+    context_limit_disabled: '📊 上下文限制: {tokens} 个令牌（自动压缩已禁用）'
+  stream_retry: ⚠️ {provider} 流 {kind} ({error_type}){_suffix} — 正在重连，重试 {attempt}/{max}
+  stale_connections_cleaned: 🔌 检测到之前提供方的过期连接 — 已自动清理。使用新连接继续。
+  starting_conversation: '💬 开始对话: ''{preview}'''
+  iteration_budget_exhausted: '
 
+    ⚠️ 迭代预算已用尽（{used}/{max_total} 次迭代已使用）'
+  cached_context: '{prefix}💾 已缓存上下文长度: {ctx:,} 个 token（模型: {model}）'
+  operation_interrupted_retry: 重试期间操作被中断（{hint}，尝试 {attempt}/{max}）。
+  response_truncated: 在 3 次续写尝试后响应仍然被截断
+  output_length_limit: 响应因输出长度限制而被截断
+  first_response_truncated: 首次响应因输出长度限制而被截断
+  operation_interrupted_waiting: '操作被中断: 等待模型响应（已过 {elapsed} 秒）。'
+  payload_too_large_max: '请求载荷过大: 已达到最大压缩尝试次数 ({max})。'
+  payload_too_large: 请求载荷过大（413）。无法进一步压缩。
+  context_length_exceeded_max: '上下文长度超限: 已达到最大压缩尝试次数 ({max})。'
+  context_length_exceeded: 上下文长度超限（{tokens} 个 token）。无法进一步压缩。
+  no_sessions_found: 过去 {days} 天内没有找到会话记录。
+  title: 📊 **Hermes Insights** — 过去 {days} 天
+  sessions_label: '**会话数:**'
+  messages_label: '**消息数:**'
+  tool_calls_label: '**工具调用:**'
+  tokens_label: '**Token:**'
+  active_time_label: '**活跃时间:**'
+  avg_session_label: '**平均会话:**'
+  models_section: '**🤖 模型:**'
+  platforms_section: '**📱 平台:**'
+  tools_section: '**🔧 常用工具:**'
+  skills_section: '**🧠 常用技能:**'
+  busiest_label: '**📅 最活跃:**'
+  active_days_label: '**活跃天数:**'
+  best_streak_label: '**最佳连续:**'
+  overview: 📋 概览
+  period: '时间段:'
+  sessions: '会话数:'
+  messages: '消息数:'
+  tool_calls: '工具调用:'
+  user_messages: '用户消息:'
+  input_tokens: '输入 Token:'
+  output_tokens: '输出 Token:'
+  total_tokens: '总 Token:'
+  avg_msgs_session: '平均消息/会话:'
+  models_used: 🤖 使用的模型
+  platforms_section_term: 📱 平台
+  top_tools: 🔧 常用工具
+  top_skills: 🧠 常用技能
+  activity_patterns: 📅 活动模式
+  peak_hours: '高峰时段:'
+  active_days: '活跃天数:'
+  best_streak_term: '最佳连续:'
+  notable_sessions: 🏆 重要会话
+  more_tools: '... 还有 {count} 个工具'
+  distinct_skills: '不同技能:'
 gateway:
-  approval_expired: "⚠️ 批准已过期（代理不再等待）。请让代理重试。"
-  draining:         "⏳ 正在等待 {count} 个活跃代理结束后重启..."
-  goal_cleared:     "✓ 目标已清除。"
-  no_active_goal:   "当前没有活跃的目标。"
-  config_read_failed: "⚠️ 无法读取 config.yaml：{error}"
-  config_save_failed: "⚠️ 无法保存配置：{error}"
-
-  model:
-    error_prefix:           "错误：{error}"
-    switched:               "已切换模型为 `{model}`"
-    provider_label:         "提供方：{provider}"
-    context_label:          "上下文：{tokens} tokens"
-    max_output_label:       "最大输出：{tokens} tokens"
-    cost_label:             "费用：{cost}"
-    capabilities_label:     "能力：{capabilities}"
-    prompt_caching_enabled: "提示词缓存：已启用"
-    warning_prefix:         "警告：{warning}"
-    saved_global:           "已保存到 config.yaml（`--global`）"
-    session_only_hint:      "_（仅本次会话有效 — 添加 `--global` 可永久保存）_"
-    current_label:          "当前：`{model}`（{provider}）"
-    current_tag:            "（当前）"
-    more_models_suffix:     "（还有 {count} 个）"
-    usage_switch_model:     "`/model <name>` — 切换模型"
-    usage_switch_provider:  "`/model <name> --provider <slug>` — 切换提供方"
-    usage_persist:          "`/model <name> --global` — 永久保存"
-
-  agents:
-    header:                "🤖 **活跃代理与任务**"
-    active_agents:         "**活跃代理：** {count}"
-    this_chat:             " · 当前聊天"
-    more:                  "... 还有 {count} 个"
-    running_processes:     "**运行中的后台进程：** {count}"
-    async_jobs:            "**网关异步任务：** {count}"
-    none:                  "没有活跃的代理或运行中的任务。"
-    state_starting:        "启动中"
-    state_running:         "运行中"
-
-  approve:
-    no_pending:            "没有待批准的命令。"
-    once_singular:         "✅ 命令已批准。代理正在恢复…"
-    once_plural:           "✅ 命令已批准（{count} 条命令）。代理正在恢复…"
-    session_singular:      "✅ 命令已批准（本次会话内允许该模式）。代理正在恢复…"
-    session_plural:        "✅ 命令已批准（本次会话内允许该模式）（{count} 条命令）。代理正在恢复…"
-    always_singular:       "✅ 命令已批准（永久允许该模式）。代理正在恢复…"
-    always_plural:         "✅ 命令已批准（永久允许该模式）（{count} 条命令）。代理正在恢复…"
-
-  background:
-    usage:                 "用法：/background <提示>\n示例：/background 总结今天 HN 上热门的故事\n\n在独立会话中运行该提示。你可以继续聊天 — 结果完成后将在此显示。"
-    started:               "🔄 后台任务已启动：「{preview}」\n任务 ID：{task_id}\n你可以继续聊天 — 完成后结果将在此显示。"
-
-  branch:
-    db_unavailable:        "会话数据库不可用。"
-    no_conversation:       "没有可分支的对话 — 请先发送一条消息。"
-    create_failed:         "创建分支失败：{error}"
-    switch_failed:         "分支已创建，但无法切换到它。"
-    branched_one:          "⑂ 已分支到 **{title}**（已复制 {count} 条消息）\n原始：`{parent}`\n分支：`{new}`\n使用 `/resume` 切换回原始会话。"
-    branched_many:         "⑂ 已分支到 **{title}**（已复制 {count} 条消息）\n原始：`{parent}`\n分支：`{new}`\n使用 `/resume` 切换回原始会话。"
-
-  commands:
-    usage:                 "用法：`/commands [page]`"
-    skill_header:          "⚡ **技能命令**："
-    default_desc:          "技能命令"
-    none:                  "没有可用的命令。"
-    header:                "📚 **命令**（共 {total} 个，第 {page}/{total_pages} 页）"
-    nav_prev:              "`/commands {page}` ← 上一页"
-    nav_next:              "下一页 → `/commands {page}`"
-    out_of_range:          "_（请求的第 {requested} 页超出范围，显示第 {page} 页。）_"
-
-  compress:
-    not_enough:            "对话内容不足，无法压缩（至少需要 4 条消息）。"
-    no_provider:           "未配置提供方 — 无法压缩。"
-    nothing_to_do:         "暂无可压缩内容（对话记录仍全部为受保护上下文）。"
-    focus_line:            "聚焦：\"{topic}\""
-    summary_failed:        "⚠️ 摘要生成失败（{error}）。{count} 条历史消息已被移除并替换为占位符；之前的上下文已无法恢复。建议检查 auxiliary.compression 模型配置。"
-    aborted:               "⚠️ 压缩已中止 ({error})。未删除任何消息 — 对话保持不变。运行 /compress 重试，运行 /reset 开始新会话，或检查你的 auxiliary.compression 模型配置。"
-    aux_failed:            "ℹ️ 配置的压缩模型 `{model}` 失败（{error}）。已使用主模型恢复 — 上下文完好 — 但您可能想检查 config.yaml 中的 `auxiliary.compression.model`。"
-    failed:                "压缩失败：{error}"
-
-  debug:
-    upload_failed:         "✗ 无法上传调试报告：{error}"
-    header:                "**调试报告已上传：**"
-    auto_delete:           "⏱ 粘贴内容将在 6 小时后自动删除。"
-    full_logs_hint:        "如需上传完整日志，请在 CLI 中使用 `hermes debug share`。"
-    share_hint:            "请将这些链接分享给 Hermes 团队以获得支持。"
-
-  deny:
-    stale:                 "❌ 命令已拒绝（批准已过期）。"
-    no_pending:            "没有待拒绝的命令。"
-    denied_singular:       "❌ 命令已拒绝。"
-    denied_plural:         "❌ 命令已拒绝（{count} 条命令）。"
-
-  fast:
-    not_supported:         "⚡ /fast 仅适用于支持优先处理（Priority Processing）的 OpenAI 模型。"
-    status:                "⚡ 优先处理\n\n当前模式：`{mode}`\n\n_用法：_ `/fast <normal|fast|status>`"
-    unknown_arg:           "⚠️ 未知参数：`{arg}`\n\n**有效选项：** normal、fast、status"
-    saved:                 "⚡ ✓ 优先处理：**{label}**（已保存到配置）\n_（下一条消息生效）_"
-    session_only:          "⚡ ✓ 优先处理：**{label}**（仅本次会话）"
-    label_fast:            "FAST"
-    label_normal:          "NORMAL"
-    status_fast:           "fast"
-    status_normal:         "normal"
-
-  footer:
-    status:                "📎 运行时页脚：**{state}**\n字段：`{fields}`\n平台：`{platform}`"
-    usage:                 "用法：`/footer [on|off|status]`"
-    saved:                 "📎 运行时页脚：**{state}**{example}\n_（已全局保存 — 下一条消息生效）_"
-    example_line:          "\n示例：`{preview}`"
-    state_on:              "ON"
-    state_off:             "OFF"
-
-  goal:
-    unavailable:           "此会话不支持目标功能。"
-    no_goal_set:           "未设置目标。"
-    paused:                "⏸ 目标已暂停：{goal}"
-    no_resume:             "没有可恢复的目标。"
-    resumed:               "▶ 目标已恢复：{goal}\n发送任意消息继续，或等待 — 我会在下一轮继续推进。"
-    invalid:               "无效目标：{error}"
-    set:                   "⊙ 目标已设置（{budget} 轮预算）：{goal}\n我将持续工作直到目标完成、你暂停/清除它，或预算耗尽。\n控制命令：/goal status · /goal pause · /goal resume · /goal clear"
-
-  help:
-    header:                "📖 **Hermes 命令**\n"
-    skill_header:          "\n⚡ **技能命令**（{count} 个活跃）："
-    more_use_commands:     "\n... 还有 {count} 个。使用 `/commands` 查看完整分页列表。"
-
-  insights:
-    invalid_days:          "无效的 --days 值：{value}"
-    error:                 "生成洞察时出错：{error}"
-
-  kanban:
-    error_prefix:          "⚠ kanban 错误：{error}"
-    subscribed_suffix:     "（已订阅 — 当 {task_id} 完成或被阻塞时将通知您）"
-    truncated_suffix:      "…（已截断；如需完整输出请在终端运行 `hermes kanban …`）"
-    no_output:             "（无输出）"
-
-  personality:
-    none_configured:       "`{path}/config.yaml` 中未配置人格设定"
-    header:                "🎭 **可用人格**\n"
-    none_option:           "• `none` — （不应用人格覆盖）"
-    item:                  "• `{name}` — {preview}"
-    usage:                 "\n用法：`/personality <name>`"
-    save_failed:           "⚠️ 保存人格变更失败：{error}"
-    cleared:               "🎭 已清除人格 — 使用基础代理行为。\n_（在下一条消息时生效）_"
-    set_to:                "🎭 人格已设置为 **{name}**\n_（在下一条消息时生效）_"
-    unknown:               "未知人格：`{name}`\n\n可用：{available}"
-
-  profile:
-    header:                "👤 **配置文件：** `{profile}`"
-    home:                  "📂 **主目录：** `{home}`"
-
-  reasoning:
-    level_default:             "medium（默认）"
-    level_disabled:            "none（已禁用）"
-    scope_session:             "会话覆盖"
-    scope_global:              "全局配置"
-    status:                    "🧠 **推理设置**\n\n**强度：** `{level}`\n**作用域：** {scope}\n**显示：** {display}\n\n_用法：_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
-    display_on:                "开 ✓"
-    display_off:               "关"
-    display_set_on:            "🧠 ✓ 推理显示：**开启**\n在 **{platform}** 上每次响应前将显示模型的思考过程。"
-    display_set_off:           "🧠 ✓ **{platform}** 上的推理显示：**关闭**"
-    reset_global_unsupported:  "⚠️ 不支持 `/reasoning reset --global`。请使用 `/reasoning <level> --global` 修改全局默认值。"
-    reset_done:                "🧠 ✓ 已清除本会话的推理覆盖；回退到全局配置。"
-    unknown_arg:               "⚠️ 未知参数：`{arg}`\n\n**有效级别：** none, minimal, low, medium, high, xhigh\n**显示：** show, hide\n**持久化：** 添加 `--global` 以跨会话保存"
-    set_global:                "🧠 ✓ 推理强度已设置为 `{effort}`（已保存到配置）\n_（下一条消息生效）_"
-    set_global_save_failed:    "🧠 ✓ 推理强度已设置为 `{effort}`（仅本会话 — 配置保存失败）\n_（下一条消息生效）_"
-    set_session:               "🧠 ✓ 推理强度已设置为 `{effort}`（仅本会话 — 添加 `--global` 以持久化）\n_（下一条消息生效）_"
-
-  reload_mcp:
-    cancelled:             "🟡 已取消 /reload-mcp。MCP 工具未更改。"
-    always_followup:       "ℹ️ 后续 `/reload-mcp` 调用将不再确认。可在 `config.yaml` 中将 `approvals.mcp_reload_confirm: true` 重新启用。"
-    confirm_prompt:        "⚠️ **确认 /reload-mcp**\n\n重新加载 MCP 服务器会为本会话重建工具集，并**使提供方提示词缓存失效** — 下一条消息将重新发送完整输入令牌。在长上下文或高推理模型上，这可能开销较大。\n\n请选择：\n• **批准一次** — 立即重新加载\n• **始终批准** — 立即重新加载并永久静默此提示\n• **取消** — 保持 MCP 工具不变\n\n_文本备用：回复 `/approve`、`/always` 或 `/cancel`。_"
-    header:                "🔄 **MCP 服务器已重新加载**\n"
-    reconnected:           "♻️ 已重新连接：{names}"
-    added:                 "➕ 已添加：{names}"
-    removed:               "➖ 已移除：{names}"
-    none_connected:        "没有连接的 MCP 服务器。"
-    tools_available:       "\n🔧 来自 {servers} 个服务器的 {tools} 个工具可用"
-    failed:                "❌ MCP 重新加载失败：{error}"
-
-  reload_skills:
-    header:                "🔄 **技能已重新加载**\n"
-    no_new:                "未检测到新技能。"
-    total:                 "\n📚 {count} 个技能可用"
-    added_header:          "➕ **新增技能：**"
-    removed_header:        "➖ **移除技能：**"
-    item_with_desc:        "    - {name}：{desc}"
-    item_no_desc:          "    - {name}"
-    failed:                "❌ 技能重新加载失败：{error}"
-
-  reset:
-    header_default:        "✨ 会话已重置！重新开始。"
-    header_new:            "✨ 新会话已启动！"
-    header_titled:         "✨ 新会话已启动：{title}"
-    title_rejected:        "\n⚠️ 标题被拒绝：{error}"
-    title_error_untitled:  "\n⚠️ {error} — 会话以未命名方式启动。"
-    title_empty_untitled:  "\n⚠️ 清理后标题为空 — 会话以未命名方式启动。"
-    tip:                   "\n✦ 提示：{tip}"
-
-  restart:
-    in_progress:           "⏳ 网关重启已在进行中……"
-    restarting:            "♻ 正在重启网关。如果 60 秒内没有收到通知，请在控制台运行 `hermes gateway restart` 重启。"
-
-  resume:
-    db_unavailable:        "会话数据库不可用。"
-    no_named_sessions:     "未找到已命名的会话。\n使用 `/title 我的会话` 为当前会话命名，然后用 `/resume 我的会话` 返回。"
-    list_header:           "📋 **已命名会话**\n"
-    list_item:             "• **{title}**{preview_part}"
-    list_item_numbered:    "{index}. **{title}**{preview_part}"
-    list_preview_suffix:   " — _{preview}_"
-    list_footer:           "\n用法：`/resume <会话名称>`"
-    list_footer_numbered:  "\n用法：`/resume <会话名称>` 或 `/resume <编号>`（例如，`/resume 1` 表示最近的会话）"
-    list_failed:           "无法列出会话：{error}"
-    out_of_range:          "恢复索引 {index} 超出范围。\n请使用不带参数的 `/resume` 查看可用会话。"
-    not_found:             "未找到匹配 '**{name}**' 的会话。\n使用不带参数的 `/resume` 查看可用会话。"
-    already_on:            "📌 已在会话 **{name}** 上。"
-    switch_failed:         "切换会话失败。"
-    resumed_one:           "↻ 已恢复会话 **{title}**（{count} 条消息）。对话已还原。"
-    resumed_many:          "↻ 已恢复会话 **{title}**（{count} 条消息）。对话已还原。"
-    resumed_no_count:      "↻ 已恢复会话 **{title}**。对话已还原。"
-
-  retry:
-    no_previous:           "没有可重试的上一条消息。"
-
-  rollback:
-    not_enabled:           "检查点未启用。\n请在 config.yaml 中启用：\n```\ncheckpoints:\n  enabled: true\n```"
-    none_found:            "未找到 {cwd} 的检查点"
-    invalid_number:        "无效的检查点编号。请使用 1-{max}。"
-    restored:              "✅ 已恢复到检查点 {hash}：{reason}\n已自动保存回滚前的快照。"
-    restore_failed:        "❌ {error}"
-
-  set_home:
-    save_failed:           "无法保存主频道：{error}"
-    success:               "✅ 主频道已设置为 **{name}**（ID：{chat_id}）。\n定时任务和跨平台消息将发送到此处。"
-
+  approval_expired: ⚠️ 批准已过期（代理不再等待）。请让代理重试。
+  draining: ⏳ 正在等待 {count} 个活跃代理结束后重启...
+  goal_cleared: ✓ 目标已清除。
+  no_active_goal: 当前没有活跃的目标。
+  config_read_failed: ⚠️ 无法读取 config.yaml：{error}
+  config_save_failed: ⚠️ 无法保存配置：{error}
   status:
-    header:                "📊 **Hermes 网关状态**"
-    session_id:            "**会话 ID：** `{session_id}`"
-    title:                 "**标题：** {title}"
-    created:               "**创建时间：** {timestamp}"
-    last_activity:         "**最近活动：** {timestamp}"
-    tokens:                "**Token 数：** {tokens}"
-    agent_running:         "**代理运行中：** {state}"
-    state_yes:             "是 ⚡"
-    state_no:              "否"
-    queued:                "**排队的后续：** {count}"
-    platforms:             "**已连接平台：** {platforms}"
+    header: 📊 **Hermes 网关状态**
+    session_id: '**会话 ID：** `{session_id}`'
+    title: '**标题：** {title}'
+    created: '**创建时间：** {timestamp}'
+    last_activity: '**最近活动：** {timestamp}'
+    tokens: '**Token 数：** {tokens}'
+    agent_running: '**代理运行中：** {state}'
+    state_yes: 是 ⚡
+    state_no: 否
+    queued: '**排队的后续：** {count}'
+    platforms: '**已连接平台：** {platforms}'
+  interrupting: ⚡ 正在中断当前任务{detail}。我很快会回复你的消息。
+  model:
+    error_prefix: 错误：{error}
+    switched: 已切换模型为 `{model}`
+    provider_label: 提供方：{provider}
+    context_label: 上下文：{tokens} tokens
+    max_output_label: 最大输出：{tokens} tokens
+    cost_label: 费用：{cost}
+    capabilities_label: 能力：{capabilities}
+    prompt_caching_enabled: 提示词缓存：已启用
+    warning_prefix: 警告：{warning}
+    saved_global: 已保存到 config.yaml（`--global`）
+    session_only_hint: _（仅本次会话有效 — 添加 `--global` 可永久保存）_
+    current_label: 当前：`{model}`（{provider}）
+    current_tag: （当前）
+    more_models_suffix: （还有 {count} 个）
+    usage_switch_model: '`/model <name>` — 切换模型'
+    usage_switch_provider: '`/model <name> --provider <slug>` — 切换提供方'
+    usage_persist: '`/model <name> --global` — 永久保存'
+  agents:
+    header: 🤖 **活跃代理与任务**
+    active_agents: '**活跃代理：** {count}'
+    this_chat: ' · 当前聊天'
+    more: '... 还有 {count} 个'
+    running_processes: '**运行中的后台进程：** {count}'
+    async_jobs: '**网关异步任务：** {count}'
+    none: 没有活跃的代理或运行中的任务。
+    state_starting: 启动中
+    state_running: 运行中
+  approve:
+    no_pending: 没有待批准的命令。
+    once_singular: ✅ 命令已批准。代理正在恢复…
+    once_plural: ✅ 命令已批准（{count} 条命令）。代理正在恢复…
+    session_singular: ✅ 命令已批准（本次会话内允许该模式）。代理正在恢复…
+    session_plural: ✅ 命令已批准（本次会话内允许该模式）（{count} 条命令）。代理正在恢复…
+    always_singular: ✅ 命令已批准（永久允许该模式）。代理正在恢复…
+    always_plural: ✅ 命令已批准（永久允许该模式）（{count} 条命令）。代理正在恢复…
+  background:
+    usage: '用法：/background <提示>
 
+      示例：/background 总结今天 HN 上热门的故事
+
+
+      在独立会话中运行该提示。你可以继续聊天 — 结果完成后将在此显示。'
+    started: '🔄 后台任务已启动：「{preview}」
+
+      任务 ID：{task_id}
+
+      你可以继续聊天 — 完成后结果将在此显示。'
+  branch:
+    db_unavailable: 会话数据库不可用。
+    no_conversation: 没有可分支的对话 — 请先发送一条消息。
+    create_failed: 创建分支失败：{error}
+    switch_failed: 分支已创建，但无法切换到它。
+    branched_one: '⑂ 已分支到 **{title}**（已复制 {count} 条消息）
+
+      原始：`{parent}`
+
+      分支：`{new}`
+
+      使用 `/resume` 切换回原始会话。'
+    branched_many: '⑂ 已分支到 **{title}**（已复制 {count} 条消息）
+
+      原始：`{parent}`
+
+      分支：`{new}`
+
+      使用 `/resume` 切换回原始会话。'
+  commands:
+    usage: 用法：`/commands [page]`
+    skill_header: ⚡ **技能命令**：
+    default_desc: 技能命令
+    none: 没有可用的命令。
+    header: 📚 **命令**（共 {total} 个，第 {page}/{total_pages} 页）
+    nav_prev: '`/commands {page}` ← 上一页'
+    nav_next: 下一页 → `/commands {page}`
+    out_of_range: _（请求的第 {requested} 页超出范围，显示第 {page} 页。）_
+  compress:
+    not_enough: 对话内容不足，无法压缩（至少需要 4 条消息）。
+    no_provider: 未配置提供方 — 无法压缩。
+    nothing_to_do: 暂无可压缩内容（对话记录仍全部为受保护上下文）。
+    focus_line: 聚焦："{topic}"
+    summary_failed: ⚠️ 摘要生成失败（{error}）。{count} 条历史消息已被移除并替换为占位符；之前的上下文已无法恢复。建议检查 auxiliary.compression
+      模型配置。
+    aborted: ⚠️ 压缩已中止 ({error})。未删除任何消息 — 对话保持不变。运行 /compress 重试，运行 /reset 开始新会话，或检查你的
+      auxiliary.compression 模型配置。
+    aux_failed: ℹ️ 配置的压缩模型 `{model}` 失败（{error}）。已使用主模型恢复 — 上下文完好 — 但您可能想检查 config.yaml
+      中的 `auxiliary.compression.model`。
+    failed: 压缩失败：{error}
+  debug:
+    upload_failed: ✗ 无法上传调试报告：{error}
+    header: '**调试报告已上传：**'
+    auto_delete: ⏱ 粘贴内容将在 6 小时后自动删除。
+    full_logs_hint: 如需上传完整日志，请在 CLI 中使用 `hermes debug share`。
+    share_hint: 请将这些链接分享给 Hermes 团队以获得支持。
+  deny:
+    stale: ❌ 命令已拒绝（批准已过期）。
+    no_pending: 没有待拒绝的命令。
+    denied_singular: ❌ 命令已拒绝。
+    denied_plural: ❌ 命令已拒绝（{count} 条命令）。
+  fast:
+    not_supported: ⚡ /fast 仅适用于支持优先处理（Priority Processing）的 OpenAI 模型。
+    status: '⚡ 优先处理
+
+
+      当前模式：`{mode}`
+
+
+      _用法：_ `/fast <normal|fast|status>`'
+    unknown_arg: '⚠️ 未知参数：`{arg}`
+
+
+      **有效选项：** normal、fast、status'
+    saved: '⚡ ✓ 优先处理：**{label}**（已保存到配置）
+
+      _（下一条消息生效）_'
+    session_only: ⚡ ✓ 优先处理：**{label}**（仅本次会话）
+    label_fast: ⚡ 快速模式
+    label_normal: 🔄 正常模式
+    status_fast: 快速模式已启用
+    status_normal: 正常模式
+  footer:
+    status: '📎 运行时页脚：**{state}**
+
+      字段：`{fields}`
+
+      平台：`{platform}`'
+    usage: 用法：`/footer [on|off|status]`
+    saved: '📎 运行时页脚：**{state}**{example}
+
+      _（已全局保存 — 下一条消息生效）_'
+    example_line: '
+
+      示例：`{preview}`'
+    state_on: 已启用
+    state_off: 已禁用
+  goal:
+    unavailable: 此会话不支持目标功能。
+    no_goal_set: 未设置目标。
+    paused: ⏸ 目标已暂停：{goal}
+    no_resume: 没有可恢复的目标。
+    resumed: '▶ 目标已恢复：{goal}
+
+      发送任意消息继续，或等待 — 我会在下一轮继续推进。'
+    invalid: 无效目标：{error}
+    set: '⊙ 目标已设置（{budget} 轮预算）：{goal}
+
+      我将持续工作直到目标完成、你暂停/清除它，或预算耗尽。
+
+      控制命令：/goal status · /goal pause · /goal resume · /goal clear'
+  help:
+    header: '📖 **Hermes 命令**
+
+      '
+    skill_header: '
+
+      ⚡ **技能命令**（{count} 个活跃）：'
+    more_use_commands: '
+
+      ... 还有 {count} 个。使用 `/commands` 查看完整分页列表。'
+  insights:
+    invalid_days: 无效的 --days 值：{value}
+    error: 生成洞察时出错：{error}
+  kanban:
+    error_prefix: ⚠ kanban 错误：{error}
+    subscribed_suffix: （已订阅 — 当 {task_id} 完成或被阻塞时将通知您）
+    truncated_suffix: …（已截断；如需完整输出请在终端运行 `hermes kanban …`）
+    no_output: （无输出）
+  personality:
+    none_configured: '`{path}/config.yaml` 中未配置人格设定'
+    header: '🎭 **可用人格**
+
+      '
+    none_option: • `none` — （不应用人格覆盖）
+    item: '人格: {name}
+
+      {preview}'
+    usage: '
+
+      用法：`/personality <name>`'
+    save_failed: ⚠️ 保存人格变更失败：{error}
+    cleared: '🎭 已清除人格 — 使用基础代理行为。
+
+      _（在下一条消息时生效）_'
+    set_to: '🎭 人格已设置为 **{name}**
+
+      _（在下一条消息时生效）_'
+    unknown: '未知人格：`{name}`
+
+
+      可用：{available}'
+  profile:
+    header: 👤 **配置文件：** `{profile}`
+    home: 📂 **主目录：** `{home}`
+  reasoning:
+    level_default: medium（默认）
+    level_disabled: none（已禁用）
+    scope_session: 会话覆盖
+    scope_global: 全局配置
+    status: '🧠 **推理设置**
+
+
+      **强度：** `{level}`
+
+      **作用域：** {scope}
+
+      **显示：** {display}
+
+
+      _用法：_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`'
+    display_on: 开 ✓
+    display_off: 关
+    display_set_on: '🧠 ✓ 推理显示：**开启**
+
+      在 **{platform}** 上每次响应前将显示模型的思考过程。'
+    display_set_off: 🧠 ✓ **{platform}** 上的推理显示：**关闭**
+    reset_global_unsupported: ⚠️ 不支持 `/reasoning reset --global`。请使用 `/reasoning <level>
+      --global` 修改全局默认值。
+    reset_done: 🧠 ✓ 已清除本会话的推理覆盖；回退到全局配置。
+    unknown_arg: '⚠️ 未知参数：`{arg}`
+
+
+      **有效级别：** none, minimal, low, medium, high, xhigh
+
+      **显示：** show, hide
+
+      **持久化：** 添加 `--global` 以跨会话保存'
+    set_global: '🧠 ✓ 推理强度已设置为 `{effort}`（已保存到配置）
+
+      _（下一条消息生效）_'
+    set_global_save_failed: '🧠 ✓ 推理强度已设置为 `{effort}`（仅本会话 — 配置保存失败）
+
+      _（下一条消息生效）_'
+    set_session: '🧠 ✓ 推理强度已设置为 `{effort}`（仅本会话 — 添加 `--global` 以持久化）
+
+      _（下一条消息生效）_'
+  reload_mcp:
+    cancelled: 🟡 已取消 /reload-mcp。MCP 工具未更改。
+    always_followup: 'ℹ️ 后续 `/reload-mcp` 调用将不再确认。可在 `config.yaml` 中将 `approvals.mcp_reload_confirm:
+      true` 重新启用。'
+    confirm_prompt: '⚠️ **确认 /reload-mcp**
+
+
+      重新加载 MCP 服务器会为本会话重建工具集，并**使提供方提示词缓存失效** — 下一条消息将重新发送完整输入令牌。在长上下文或高推理模型上，这可能开销较大。
+
+
+      请选择：
+
+      • **批准一次** — 立即重新加载
+
+      • **始终批准** — 立即重新加载并永久静默此提示
+
+      • **取消** — 保持 MCP 工具不变
+
+
+      _文本备用：回复 `/approve`、`/always` 或 `/cancel`。_'
+    header: '🔄 **MCP 服务器已重新加载**
+
+      '
+    reconnected: ♻️ 已重新连接：{names}
+    added: ➕ 已添加：{names}
+    removed: ➖ 已移除：{names}
+    none_connected: 没有连接的 MCP 服务器。
+    tools_available: '
+
+      🔧 来自 {servers} 个服务器的 {tools} 个工具可用'
+    failed: ❌ MCP 重新加载失败：{error}
+  reload_skills:
+    header: '🔄 **技能已重新加载**
+
+      '
+    no_new: 未检测到新技能。
+    total: '
+
+      📚 {count} 个技能可用'
+    added_header: ➕ **新增技能：**
+    removed_header: ➖ **移除技能：**
+    item_with_desc: '    - {name}：{desc}'
+    item_no_desc: '{name}（无描述）'
+    failed: ❌ 技能重新加载失败：{error}
+  reset:
+    header_default: ✨ 会话已重置！重新开始。
+    header_new: ✨ 新会话已启动！
+    header_titled: ✨ 新会话已启动：{title}
+    title_rejected: '
+
+      ⚠️ 标题被拒绝：{error}'
+    title_error_untitled: '
+
+      ⚠️ {error} — 会话以未命名方式启动。'
+    title_empty_untitled: '
+
+      ⚠️ 清理后标题为空 — 会话以未命名方式启动。'
+    tip: '
+
+      ✦ 提示：{tip}'
+    info_model: ◆ 模型：`{model}`
+    info_provider: ◆ 提供商：{provider}
+    info_context: ◆ 上下文：{ctx_display} tokens（{ctx_source}）
+    info_endpoint: ◆ 端点：{base_url}
+    ctx_source_default: 默认值 — 在 config 中设置 model.context_length 覆盖
+  restart:
+    in_progress: ⏳ 网关重启已在进行中……
+    restarting: ♻ 正在重启网关。如果 60 秒内没有收到通知，请在控制台运行 `hermes gateway restart` 重启。
+    success: ♻ 网关重启成功，会话继续。
+    shutting_down: ⚠️ 网关正在关闭 — 当前任务将被中断。
+    restarting_hint: ⚠️ 网关正在重启 — 当前任务将被中断。重启后发送任意消息，我会尝试继续之前的工作。
+  online: ♻️ 网关已上线 — Hermes 准备就绪。
+  provider_auth_failed: ⚠️ 提供商认证失败：{error}
+  provider_rejected: ⚠️ 模型 provider 拒绝了请求。我已将原始 provider 错误信息排除在聊天之外；详情请查看网关日志或尝试换个说法。
+  provider_rate_limited: ⏱️ 模型 provider 正在限流。请稍等片刻后重试。
+  provider_failed: ⚠️ 模型 provider 在多次重试后失败。我已将原始 provider 详情排除在聊天之外；诊断信息请查看网关日志。
+  busy_queued: ⏳ 网关{action} — 已排队，等待下一轮次处理。
+  busy_rejecting: ⏳ 网关正在{action}，当前不接受新的对话轮次。
+  busy_queued_detail: ⏳ 已排队等待下一轮次{detail}。
+  busy_action_hint: ⚠️ 网关{action} — {hint}
+  action_restarting: 正在重启
+  action_shutting_down: 正在关闭
+  hint_interrupt_resume: 你的当前任务将被中断。重启后发送任何消息，我会尝试从上次中断处继续。
+  hint_interrupt: 你的当前任务将被中断。
+  busy_agent_running: ⏳ Agent 正在运行中 — `/{command}` 当前无法执行。请在当前轮次完成后重试。
+  busy_not_accepting: ⏳ 网关正在{action}，当前不接受新的工作。
+  session_too_large: '⚠️ 会话内容超出了模型的上下文窗口限制。
+
+
+    你可以：
+
+    • `/reset` — 开始新会话
+
+    • `/compress` — 压缩早期消息
+
+    • `/new` — 全新开始，可设置标题'
+  processing_stopped: ⚠️ 处理已停止：{error}。请重试。
+  processing_no_response: ⚠️ 处理已完成但未生成响应。这有时发生在非常长的会话中 — 请尝试发送另一条消息。
+  compression_aborted: ⚠️ 上下文压缩已中止（{error}）。没有消息被删除 — 对话内容未变。
+  no_response_after_tools: ⚠️ 模型在处理工具后未返回响应。这可能发生在非常长的会话中 — 请尝试发送另一条消息。
+  bg_task_no_creds: ❌ 后台任务 {task_id} 失败：未配置 provider 凭据。
+  bg_task_failed: ❌ 后台任务 {task_id} 失败：{error}
+  update_finished: '✅ Hermes 更新完成。
+
+
+    ```
+
+    {output}
+
+    ```'
+  update_failed_code: ❌ Hermes 更新失败（退出码 {code}）。
+  update_failed: '❌ Hermes 更新失败。
+
+
+    ```
+
+    {output}
+
+    ```'
+  update_finished_output: '✅ Hermes 更新完成。
+
+
+    ```
+
+    {output}
+
+    ```'
+  update_failed_output: '❌ Hermes 更新失败。
+
+
+    ```
+
+    {output}
+
+    ```'
+  update_finished_success: ✅ Hermes 更新成功完成。
+  update_timed_out: ❌ Hermes 更新超时（30 分钟）。
+  still_working: ⏳ 仍在处理中...（已过 {elapsed} 分钟{detail}）
+  no_activity_warning: ⚠️ 已无活动 {minutes} 分钟。Agent 可能已卡住 — 请尝试发送消息或使用 /stop 取消。
+  proxy_no_aiohttp: ⚠️ 代理模式需要 aiohttp。请安装：pip install aiohttp
+  proxy_not_configured: ⚠️ 代理 URL 未配置（GATEWAY_PROXY_URL 或 gateway.proxy_url）
+  proxy_error: ⚠️ 代理错误（{status}）：{detail}
+  proxy_connection_error: ⚠️ 代理连接错误：{error}
+  session_auto_reset: 🔄 会话自动重置 — 对话超出上下文限制已被压缩。我将从上次中断的地方继续。
+  bg_task_complete: '✅ 后台任务完成
+
+    提示词："{preview}"
+
+
+    '
+  bg_task_complete_empty: '✅ 后台任务完成
+
+    提示词："{preview}"
+
+
+    （无响应生成）'
+  compression_summary: 🗜️ {headline}
+  already_running: '
+
+    ❌ Gateway 已在运行（PID {pid}）。
+
+    '
+  admin_only: ⛔ /{command} 仅限管理员使用。{hint}
+  config_load_errors: ⚠️ 配置加载错误：{errors}
+  config_load_error: ❌ 无法加载配置：{error}
+  dangerous_confirm: '⚠️ **确认 /{command}**
+
+
+    {detail}
+
+
+    请选择：
+
+    • **仅批准一次** — 仅本次执行
+
+    • **始终批准** — 执行并永久取消此提示
+
+    • **取消** — 保持当前对话
+
+
+    _文字回复方式：回复 `/approve`、`/always` 或 `/cancel`。_'
+  detail_new: 这将开启一个新会话并丢弃当前对话历史。
+  detail_undo: 这将移除最后一组用户/助手对话。
+  steer_failed: ⚠️ 转向失败：{error}
+  resume:
+    db_unavailable: 会话数据库不可用。
+    no_named_sessions: '未找到已命名的会话。
+
+      使用 `/title 我的会话` 为当前会话命名，然后用 `/resume 我的会话` 返回。'
+    list_header: '📋 **已命名会话**
+
+      '
+    list_item: • **{title}**{preview_part}
+    list_preview_suffix: ' ...{preview}'
+    list_footer: '
+
+      用法：`/resume <会话名称>`'
+    list_failed: 无法列出会话：{error}
+    not_found: '未找到匹配 ''**{name}**'' 的会话。
+
+      使用不带参数的 `/resume` 查看可用会话。'
+    already_on: 📌 已在会话 **{name}** 上。
+    switch_failed: 切换会话失败。
+    resumed_one: ↻ 已恢复会话 **{title}**（{count} 条消息）。对话已还原。
+    resumed_many: ↻ 已恢复会话 **{title}**（{count} 条消息）。对话已还原。
+    resumed_no_count: ↻ 已恢复会话 **{title}**。对话已还原。
+    list_footer_numbered: '
+
+      用法：`/resume <会话名称>` 或 `/resume <编号>`（例如 `/resume 1` 恢复最近的会话）'
+    list_item_numbered: '{index}. **{title}**{preview_part}'
+    out_of_range: '恢复索引 {index} 超出范围。
+
+      使用不带参数的 `/resume` 查看可用会话。'
+  retry:
+    no_previous: 没有可重试的上一条消息。
+  rollback:
+    not_enabled: "检查点未启用。\n请在 config.yaml 中启用：\n```\ncheckpoints:\n  enabled: true\n\
+      ```"
+    none_found: 未找到 {cwd} 的检查点
+    invalid_number: 无效的检查点编号。请使用 1-{max}。
+    restored: '✅ 已恢复到检查点 {hash}：{reason}
+
+      已自动保存回滚前的快照。'
+    restore_failed: '❌ 回滚失败: {error}'
+  set_home:
+    save_failed: 无法保存主频道：{error}
+    success: '✅ 主频道已设置为 **{name}**（ID：{chat_id}）。
+
+      定时任务和跨平台消息将发送到此处。'
   stop:
-    stopped_pending:       "⚡ 已停止。代理尚未启动 — 你可以继续此会话。"
-    stopped:               "⚡ 已停止。你可以继续此会话。"
-    no_active:             "没有可停止的活跃任务。"
-
+    stopped_pending: ⚡ 已停止。代理尚未启动 — 你可以继续此会话。
+    stopped: ⚡ 已停止。你可以继续此会话。
+    no_active: 没有可停止的活跃任务。
   title:
-    db_unavailable:        "会话数据库不可用。"
-    warn_prefix:           "⚠️ {error}"
-    empty_after_clean:     "⚠️ 清理后标题为空。请使用可打印字符。"
-    set_to:                "✏️ 已设置会话标题：**{title}**"
-    not_found:             "未在数据库中找到该会话。"
-    current_with_title:    "📌 会话：`{session_id}`\n标题：**{title}**"
-    current_no_title:      "📌 会话：`{session_id}`\n尚未设置标题。用法：`/title 我的会话名称`"
+    db_unavailable: 会话数据库不可用。
+    warn_prefix: ⚠️ {error}
+    empty_after_clean: ⚠️ 清理后标题为空。请使用可打印字符。
+    set_to: ✏️ 已设置会话标题：**{title}**
+    not_found: 未在数据库中找到该会话。
+    current_with_title: '📌 会话：`{session_id}`
 
+      标题：**{title}**'
+    current_no_title: '📌 会话：`{session_id}`
+
+      尚未设置标题。用法：`/title 我的会话名称`'
   topic:
-    not_telegram_dm:         "/topic 命令仅在 Telegram 私聊中可用。"
-    no_session_db:           "会话数据库不可用。"
-    unauthorized:            "您无权在此 bot 上使用 /topic。"
-    restore_needs_topic:     "若要恢复会话，请先创建或打开一个 Telegram topic，然后在该 topic 中发送 /topic <session-id>。要创建新 topic，请打开 All Messages 并在其中发送任意消息。"
-    topics_disabled:         "此 bot 尚未启用 Telegram topics。\n\n启用方法：\n1. 打开 @BotFather。\n2. 选择您的 bot。\n3. 打开 Bot Settings → Threads Settings。\n4. 开启 Threaded Mode，并确保允许用户创建新线程。\n\n然后再次发送 /topic。"
-    topics_user_disallowed:  "Telegram topics 已启用，但不允许用户创建 topics。\n\n打开 @BotFather → 选择您的 bot → Bot Settings → Threads Settings，然后关闭 'Disallow users to create new threads'。\n\n然后再次发送 /topic。"
-    enable_failed:           "启用 Telegram topic 模式失败：{error}"
-    bound_status:            "此 topic 已关联到：\n会话：{label}\nID：{session_id}\n\n使用 /new 将此 topic 替换为新会话。\n如需并行工作，请打开 All Messages 并在其中发送消息以创建另一个 topic。"
-    thread_ready:            "Telegram 多会话 topics 已启用。\n\n此 topic 将作为独立的 Hermes 会话使用。使用 /new 替换此 topic 的当前会话。如需并行工作，请打开 All Messages 并在其中发送消息以创建另一个 topic。"
-    untitled_session:        "未命名会话"
+    not_telegram_dm: /topic 命令仅在 Telegram 私聊中可用。
+    no_session_db: 会话数据库不可用。
+    unauthorized: 您无权在此 bot 上使用 /topic。
+    restore_needs_topic: 若要恢复会话，请先创建或打开一个 Telegram topic，然后在该 topic 中发送 /topic <session-id>。要创建新
+      topic，请打开 All Messages 并在其中发送任意消息。
+    topics_disabled: '此 bot 尚未启用 Telegram topics。
 
+
+      启用方法：
+
+      1. 打开 @BotFather。
+
+      2. 选择您的 bot。
+
+      3. 打开 Bot Settings → Threads Settings。
+
+      4. 开启 Threaded Mode，并确保允许用户创建新线程。
+
+
+      然后再次发送 /topic。'
+    topics_user_disallowed: 'Telegram topics 已启用，但不允许用户创建 topics。
+
+
+      打开 @BotFather → 选择您的 bot → Bot Settings → Threads Settings，然后关闭 ''Disallow users
+      to create new threads''。
+
+
+      然后再次发送 /topic。'
+    enable_failed: 启用 Telegram topic 模式失败：{error}
+    bound_status: '此 topic 已关联到：
+
+      会话：{label}
+
+      ID：{session_id}
+
+
+      使用 /new 将此 topic 替换为新会话。
+
+      如需并行工作，请打开 All Messages 并在其中发送消息以创建另一个 topic。'
+    thread_ready: 'Telegram 多会话 topics 已启用。
+
+
+      此 topic 将作为独立的 Hermes 会话使用。使用 /new 替换此 topic 的当前会话。如需并行工作，请打开 All Messages 并在其中发送消息以创建另一个
+      topic。'
+    untitled_session: 未命名会话
   undo:
-    nothing:               "没有可撤销的内容。"
-    removed:               "↩️ 已撤销 {count} 条消息。\n已移除：「{preview}」"
+    nothing: 没有可撤销的内容。
+    removed: '↩️ 已撤销 {count} 条消息。
 
+      已移除：「{preview}」'
   update:
-    platform_not_messaging:  "✗ /update 仅在消息平台可用。请在终端运行 `hermes update`。"
-    not_git_repo:            "✗ 不是 git 仓库 — 无法更新。"
-    hermes_cmd_not_found:    "✗ 无法找到 `hermes` 命令。Hermes 正在运行，但更新命令无法在 PATH 上或通过当前 Python 解释器找到可执行文件。请尝试在终端中手动运行 `hermes update`。"
-    start_failed:            "✗ 启动更新失败：{error}"
-    starting:                "⚕ 正在启动 Hermes 更新…… 进度将在此处显示。"
-
+    platform_not_messaging: ✗ /update 仅在消息平台可用。请在终端运行 `hermes update`。
+    not_git_repo: ✗ 不是 git 仓库 — 无法更新。
+    hermes_cmd_not_found: ✗ 无法找到 `hermes` 命令。Hermes 正在运行，但更新命令无法在 PATH 上或通过当前 Python
+      解释器找到可执行文件。请尝试在终端中手动运行 `hermes update`。
+    start_failed: ✗ 启动更新失败：{error}
+    starting: ⚕ 正在启动 Hermes 更新…… 进度将在此处显示。
   usage:
-    rate_limits:              "⏱️ **速率限制：** {state}"
-    header_session:           "📊 **会话令牌使用情况**"
-    label_model:              "模型：`{model}`"
-    label_input_tokens:       "输入令牌：{count}"
-    label_cache_read:         "缓存读取令牌：{count}"
-    label_cache_write:        "缓存写入令牌：{count}"
-    label_output_tokens:      "输出令牌：{count}"
-    label_total:              "总计：{count}"
-    label_api_calls:          "API 调用次数：{count}"
-    label_cost:               "费用：{prefix}${amount}"
-    label_cost_included:      "费用：已包含"
-    label_context:            "上下文：{used} / {total}（{pct}%）"
-    label_compressions:       "压缩次数：{count}"
-    header_session_info:      "📊 **会话信息**"
-    label_messages:           "消息数：{count}"
-    label_estimated_context:  "估计上下文：~{count} 个令牌"
-    detailed_after_first:     "_（首次代理响应后可查看详细使用情况）_"
-    no_data:                  "此会话暂无使用数据。"
-
+    rate_limits: ⏱️ **速率限制：** {state}
+    header_session: 📊 **会话令牌使用情况**
+    label_model: 模型：`{model}`
+    label_input_tokens: 输入令牌：{count}
+    label_cache_read: 缓存读取令牌：{count}
+    label_cache_write: 缓存写入令牌：{count}
+    label_output_tokens: 输出令牌：{count}
+    label_total: 总计：{count}
+    label_api_calls: API 调用次数：{count}
+    label_cost: 费用：{prefix}${amount}
+    label_cost_included: 费用：已包含
+    label_context: 上下文：{used} / {total}（{pct}%）
+    label_compressions: 压缩次数：{count}
+    header_session_info: 📊 **会话信息**
+    label_messages: 消息数：{count}
+    label_estimated_context: 估计上下文：~{count} 个令牌
+    detailed_after_first: _（首次代理响应后可查看详细使用情况）_
+    no_data: 此会话暂无使用数据。
   verbose:
-    not_enabled:           "`/verbose` 命令未在消息平台启用。\n\n请在 `config.yaml` 中启用：\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
-    mode_off:              "⚙️ 工具进度：**OFF** — 不显示任何工具活动。"
-    mode_new:              "⚙️ 工具进度：**NEW** — 工具变化时显示（预览长度：`display.tool_preview_length`，默认 40）。"
-    mode_all:              "⚙️ 工具进度：**ALL** — 显示每次工具调用（预览长度：`display.tool_preview_length`，默认 40）。"
-    mode_verbose:          "⚙️ 工具进度：**VERBOSE** — 显示每次工具调用及完整参数。"
-    saved_suffix:          "_（已为 **{platform}** 保存 — 下一条消息生效）_"
-    save_failed:           "_（无法保存到配置：{error}）_"
-
+    not_enabled: "`/verbose` 命令未在消息平台启用。\n\n请在 `config.yaml` 中启用：\n```yaml\ndisplay:\n\
+      \  tool_progress_command: true\n```"
+    mode_off: ⚙️ 工具进度：**OFF** — 不显示任何工具活动。
+    mode_new: ⚙️ 工具进度：**NEW** — 工具变化时显示（预览长度：`display.tool_preview_length`，默认 40）。
+    mode_all: ⚙️ 工具进度：**ALL** — 显示每次工具调用（预览长度：`display.tool_preview_length`，默认 40）。
+    mode_verbose: ⚙️ 工具进度：**VERBOSE** — 显示每次工具调用及完整参数。
+    saved_suffix: _（已为 **{platform}** 保存 — 下一条消息生效）_
+    save_failed: _（无法保存到配置：{error}）_
   voice:
-    enabled_voice_only:    "语音模式已启用。\n当你发送语音消息时，我会用语音回复。\n使用 /voice tts 让所有消息都收到语音回复。"
-    disabled_text:         "语音模式已禁用。仅文本回复。"
-    tts_enabled:           "自动 TTS 已启用。\n所有回复都将包含一条语音消息。"
-    status_mode:           "语音模式：{label}"
-    status_channel:        "语音频道：#{channel}"
-    status_participants:   "参与人数：{count}"
-    status_member:         "  - {name}{status}"
-    speaking:              "（正在说话）"
-    enabled_short:         "语音模式已启用。"
-    disabled_short:        "语音模式已禁用。"
-    label_off:             "关闭（仅文本）"
-    label_voice_only:      "开启（仅对语音消息进行语音回复）"
-    label_all:             "TTS（对所有消息进行语音回复）"
+    enabled_voice_only: '语音模式已启用。
 
+      当你发送语音消息时，我会用语音回复。
+
+      使用 /voice tts 让所有消息都收到语音回复。'
+    disabled_text: 语音模式已禁用。仅文本回复。
+    tts_enabled: '自动 TTS 已启用。
+
+      所有回复都将包含一条语音消息。'
+    status_mode: 语音模式：{label}
+    status_channel: 语音频道：#{channel}
+    status_participants: 参与人数：{count}
+    status_member: '语音成员: {name} ({status})'
+    speaking: （正在说话）
+    enabled_short: 语音模式已启用。
+    disabled_short: 语音模式已禁用。
+    label_off: 关闭（仅文本）
+    label_voice_only: 开启（仅对语音消息进行语音回复）
+    label_all: TTS（对所有消息进行语音回复）
   yolo:
-    disabled:                   "⚠️ 本会话 YOLO 模式 **已关闭** — 危险命令将需要批准。"
-    enabled:                    "⚡ 本会话 YOLO 模式 **已开启** — 所有命令自动批准。请谨慎使用。"
-
+    disabled: ⚠️ 本会话 YOLO 模式 **已关闭** — 危险命令将需要批准。
+    enabled: ⚡ 本会话 YOLO 模式 **已开启** — 所有命令自动批准。请谨慎使用。
   shared:
-    session_db_unavailable:      "会话数据库不可用。"
-    session_db_unavailable_prefix: "会话数据库不可用"
-    session_not_found:           "数据库中未找到该会话。"
-    warn_passthrough:            "⚠️ {error}"
+    session_db_unavailable: 会话数据库不可用。
+    session_db_unavailable_prefix: 会话数据库不可用
+    session_not_found: 数据库中未找到该会话。
+    warn_passthrough: '⚠️ 直通模式: {error}'
+  queue:
+    usage: 用法：/queue <提示>
+    queued: 已排队等待下一轮。
+    queued_depth: 已排队等待下一轮。（{depth} 条排队中）
+  steer:
+    usage: 用法：/steer <提示>
+    starting_queued: 代理仍在启动 — /steer 已排队等待下一轮。
+    queued: ⏩ 已引导 — 将在下一次工具调用后到达：'{preview}'
+    rejected_empty: 引导被拒绝（内容为空）。
+    no_agent_queued: 没有活跃代理 — /steer 已排队等待下一轮。
+    usage_no_agent: 用法：/steer <提示>（没有运行中的代理；将作为普通消息发送）
+  agent_running:
+    wait_or_stop: 代理正在运行 — 请先等待或 /stop，然后再切换模型。
+    goal_hint: 代理正在运行 — 使用 /goal status / pause / clear 在运行中管理目标，或 /stop 后再设置新目标。
+    hook_blocked: 命令 `/{command}` 被钩子拦截。
+  quick:
+    timed_out: 快捷命令超时（30秒）。
+    error: 快捷命令错误：{error}
+    no_command: 快捷命令 '/{command}' 未定义命令。
+    no_target: 快捷命令 '/{command}' 未定义目标。
+    unsupported_type: 快捷命令 '/{command}' 不支持的类型（支持：'exec'、'alias'）。
+  usage_cmd:
+    platform: 用法：/platform {action} <名称>
+    subgoal_remove: 用法：/subgoal remove <n>
+  processing_completed_no_response: ⚠️ 处理完成但未生成响应。这可能是临时错误 — 请尝试重新发送消息。
+  steered_into_run: ⏩ 已转向当前运行{status_detail}。您的消息将在下一个工具调用后到达。
+  subagent_working: ⏳ 子代理正在工作{status_detail} — 您的消息已排队等待完成（使用 /stop 取消所有操作）。
+  queued_for_next_turn: ⏳ 已排队等待下一轮{status_detail}。
+  interrupting_current_task: ⚡ 正在中断当前任务{status_detail}。我会尽快回复您的消息。
+  queued_next_turn: ⏳ 网关{action} — 排队等待下一轮。
+  not_accepting: ⏳ 网关正在{action}，目前不接受新的请求。
+  action_hint: ⚠️ 网关{action} — {hint}
+  agent_running_cant_run: ⏳ Agent 正在运行 — `/{command}` 目前无法执行。请在当前轮次完成后重试。
+  not_accepting_new: ⏳ 网关正在{action}，目前不接受新任务。
+  config_compression_model: ℹ️ 配置的压缩模型 `{model}` 在此提供商不可用，回退到主模型。
+  reasoning_label: '💭 **推理过程：**
+
+    ```
+
+    {reasoning}
+
+    ```
+
+
+    {response}'
+  session_info_model: ◆ 模型：`{model}`
+  session_info_provider: ◆ 提供商：{provider}
+  session_info_context: ◆ 上下文：{tokens} tokens（{source}）
+  session_info_endpoint: ◆ 端点：{url}
+  config_load_failed: ❌ 无法加载配置：{error}
+  background_task_no_credentials: ❌ 后台任务 {task_id} 失败：未配置提供商凭据。
+  background_task_complete: '✅ 后台任务完成
+
+    提示词："{preview}"'
+  background_task_no_response: '✅ 后台任务完成
+
+    提示词："{preview}"
+
+
+    （未生成响应 — 请检查日志）'
+  background_task_failed: ❌ 后台任务 {task_id} 失败：{error}
+  confirm_command: '⚠️ **确认 /{command}**
+
+
+    '
+  dangerous_command_approval: '⚠️ **危险命令需要审批：**
+
+    '
+  agent_inactive_timeout: ⏱️ Agent 已闲置 {minutes} 分钟 — 未检测到工具调用。Agent 可能已卡住。
+run_agent:
+  self_improvement_review: 💾 自我改进审查：{summary}
+  compacting_context: 🗜️ 压缩上下文 — 正在总结早期对话以便继续……
+  preflight_compression: 📦 预检压缩：约 {tokens} 个 token >= {threshold} 阈值，可能需要一些时间。
+  compression_aborted: ⚠️ 压缩已中止：{error}。未丢失任何消息 — 对话继续不变。运行 /compress 重试，或 /new 开始新会话。
+  compression_failed: ⚠️ 压缩摘要失败：{error}。已插入回退上下文标记。
+  aux_model_failed: ℹ️ 配置的压缩模型 '{model}' 失败（{error}）。已使用主模型恢复 — 请检查 config.yaml 中的
+    auxiliary.compression.model。
+  interrupting: ⚡ 正在中断当前任务{detail}。我很快会回复你的消息。
+onboarding:
+  busy_queue: 💡 首次提示 — 我将你的消息排队而非中断当前任务。发送 `/busy interrupt` 让新消息立即停止当前任务，或 `/busy
+    status` 查看状态。此提示不再显示。
+  busy_steer: 💡 首次提示 — 我将你的消息引导至当前运行；它将在下一次工具调用后到达而非中断。发送 `/busy interrupt` 或 `/busy
+    queue` 更改此设置，或 `/busy status` 查看状态。此提示不再显示。
+  busy_interrupt: 💡 首次提示 — 我刚刚中断了当前任务来回复你。发送 `/busy queue` 将后续消息排队到当前任务之后，`/busy steer`
+    在不中断的情况下注入运行中，或 `/busy status` 查看状态。此提示不再显示。
+  busy_queue_cli: （提示）你的消息已排队等待下一轮。使用 /busy interrupt 让 Enter 键停止当前运行，或 /busy steer
+    在运行中注入。此提示仅显示一次。
+  busy_steer_cli: （提示）你的消息已引导至当前运行；它将在下一次工具调用后到达。使用 /busy interrupt 或 /busy queue
+    更改此设置。此提示仅显示一次。
+  busy_interrupt_cli: （提示）你的消息中断了当前运行。使用 /busy queue 将消息排队到下一轮，或 /busy steer 在运行中注入。此提示仅显示一次。
+  tool_progress_gateway: 💡 首次提示 — 该工具运行较久，我正在流式输出每一步。如果进度消息太嘈杂，发送 `/verbose` 循环切换模式（全部→仅新→关闭）。此提示不再显示。
+  tool_progress_cli: （提示）该工具运行较久 — 我正在流式输出每一步。使用 /verbose 循环切换进度模式（全部→仅新→关闭）。此提示仅显示一次。
+  openclaw_residue: '在 ~/.openclaw/ 检测到旧版 OpenClaw 目录。
+
+    要将配置、记忆和技能迁移到 Hermes，请运行 `hermes claw migrate`。
+
+    如果已迁移并想归档旧目录，请运行 `hermes claw cleanup`（重命名为 ~/.openclaw.pre-migration — 之后 OpenClaw
+    将停止工作）。
+
+    此提示仅显示一次。'
+activity:
+  iteration: 迭代 {current}/{max}
+  running_tool: '正在运行: {tool}'
+  waiting_stream: 等待提供商响应（流式传输）
+  waiting_api: 等待非流式 API 响应
+  receiving_stream: 接收流式响应
+  executing_tool: '正在执行工具: {name}'
+  executing_concurrent: '正在并发执行 {count} 个工具: {tools}'
+  tool_completed: '工具完成: {name}（{duration}秒）'
+  starting_api: '开始 API 调用 #{number}'
+  retry_backoff: 重试退避（{current}/{max}），剩余 {remaining} 秒
+  error_recovery: API 错误恢复（尝试 {current}/{max}）
+  error_retry_backoff: 错误重试退避（{current}/{max}），剩余 {remaining} 秒
+  max_retries_invalid: ⚠️ 无效响应已达最大重试次数（{max}）— 尝试备用方案...
+  max_retries_exceeded: ❌ 无效响应重试次数（{max}）已用尽。放弃。
+  payload_too_large: ⚠️ 请求载荷过大（413）— 压缩尝试 {current}/{max}...
+  compressed: 🗜️ 已压缩 {original} → {compressed} 条消息，重试中...
+  context_too_large: 🗜️ 上下文过大（约 {tokens} 个 token）— 压缩中（{current}/{max}）...
+  non_retryable_error: ⚠️ 不可重试错误（HTTP {status}）— 尝试备用方案...
+  max_retries_exhausted: ⚠️ 重试次数（{max}）已耗尽 — 尝试备用方案...
+  rate_limited_retries: ❌ 速率限制，已重试 {max} 次 — {summary}
+  api_failed_retries: ❌ API 失败，已重试 {max} 次 — {summary}
+  rate_limited_waiting: ⏱️ 速率限制。等待 {time} 秒（尝试 {current}/{max}）...
+  retrying_in: ⏳ {time} 秒后重试（尝试 {current}/{max}）...
+  auxiliary_failed: ⚠️ 辅助 {task} 失败：{detail}
+  nous_rate_limit: Nous Portal 速率限制生效 — {time} 后重置。
+  empty_response: ⚠️ 空/格式错误的响应 — 切换到备用方案...
+  thinking_exhausted: '⚠️ **思考预算已用尽**
+
+
+    模型将所有输出 token 用于推理，没有剩余 token 用于实际响应。
+
+
+    解决方法：
+
+    → 降低推理强度：`/thinkon low` 或 `/thinkon minimal`
+
+    → 或使用 `/model` 切换到更大/非推理模型'
+  no_retryable_error: ❌ 不可重试错误（HTTP {status}）：{detail}
+  no_content_retries: ❌ 模型在所有重试后未返回内容
+  context_reduced: 🗜️ 上下文已缩减至 {tokens} 个 token — 重试中...
+  no_provider_response: ⚠️ 提供商 {time} 秒无响应 — 重试中...
+  malformed_stream: ❌ 提供商在 {retries} 次重试后返回了格式错误的流式数据 — {detail}
+  connection_failed: ❌ 连接提供商失败，已重试 {retries} 次 — {detail}
+  guardrail_halted: ⚠️ 工具护栏已阻止 {tool}：{code}
+  empty_model_response: ⚠️ 模型返回空响应 — 重试中（{current}/3）
+  iteration_exhausted: ⚠️ 迭代预算已用尽（{current}/{max}）— 请求模型总结
+  iteration_exhausted_cli: ⚠️ 迭代预算已用尽（{current}/{max}）— 正在请求摘要...
+  agent_inactive: ⏱️ 智能体已空闲 {minutes} 分钟 — 无工具调用或 API 响应。
+  agent_stuck_tool: 智能体似乎卡在工具 `{tool}` 上（距上次活动 {seconds} 秒，迭代 {current}/{max}）。
+  agent_last_activity: 上次活动：{desc}（{seconds} 秒前，迭代 {current}/{max}）。智能体可能正在等待 API
+    响应。
+platform:
+  approve_once: ✅ 批准一次
+  approve_session: ✅ 本次会话批准
+  approve_always: 🔒 永久批准
+  deny: ❌ 拒绝
+  cancel: ❌ 取消
+  cancelled: ❌ 已取消
+  approved_always: ✅ 已永久批准
+  approval_prompt: '⚠️ **危险命令需要批准**
+
+    ```
+
+    {command}
+
+    ```
+
+    原因：{reason}
+
+
+    回复 `/approve` 执行，`/approve session` 为本次会话批准此模式，`/approve always` 永久批准，或 `/deny`
+    取消。
+
+
+    也可以点击表情符号来批准：
+
+    ✅ = /approve
+
+    ❎ = /deny'
+  update_prompt_answered: 更新提示已回答：{label}
+  approval_required: 需要命令审批：{command}
+  approved_once: 已由 {user} 批准一次
+  approved_session: 已由 {user} 批准会话
+  approved_permanently: 已由 {user} 永久批准
+  denied: 已由 {user} 拒绝
+  approval_required_title: 需要命令审批
+  script_missing: '{name} 缺失'
+  verb_failed: '{verb} 失败：{detail}'
+  verb_timeout: '{verb} 超时'
+  verb_error: '{verb} 错误：{detail}'
+  reject_reason: 原因：{reason}
+  creator_only: '{command} 仅在私聊模式下对创建者可用'
+  discord:
+    approval_required_title: ⚠️ 命令需要审批
+    reason: 原因
+    confirm: 确认
+    input_needed: ❓ Hermes 需要您的输入
+    choices: 选项
+    pick_one: 请选择下方选项，或点击 ✏️ 其他 来输入自定义回答。
+    reply: 回复
+    reply_instruction: 请在此频道回复您的答案。
+    update_needs_input: ⚕ 更新需要您的输入
+    model_config_title: ⚙ 模型配置
+    current_model: 当前模型：
+    provider_label: 提供方：{provider}
+    select_provider: 选择一个提供方：
+    select_model: 选择一个模型：
+    switching_model: ⚙ 正在切换模型
+    switching_to: 正在切换到 `{model_id}`...
+    switch_error: 切换模型出错：{error}
+    model_switched: ⚙ 模型已切换
+    model_selection_cancelled: 模型选择已取消。
+    choose_provider_placeholder: 选择一个提供方...
+    choose_model_placeholder: 从 {provider} 中选择一个模型...
+    back: ◀ 返回
+    cancel: 取消
+    already_resolved_approval: 此审批已经处理过了~
+    not_authorized_approve: 您没有权限审批命令~
+    not_authorized_command: 您没有权限使用此命令。
+    allow_once: 允许一次
+    allow_session: 本次会话允许
+    always_allow: 始终允许
+    deny_button: 拒绝
+    approved_once: 已批准一次
+    approved_session: 本次会话已批准
+    approved_permanently: 已永久批准
+    denied: 已拒绝
+    already_resolved: 已经处理过了~
+    not_authorized_prompt: 您没有权限回答此提示~
+    approve_once: 批准一次
+    approve_always: 始终批准
+    cancel_button: 取消
+    always_approved: 已永久批准
+    cancelled: 已取消
+    already_answered: 已经回答过了~
+    not_authorized: 您没有权限~
+    true: 是
+    false: 否
+    other_answer: ✏️ 其他（输入答案）
+    already_answered_prompt: 此提示已经回答过了~
+    unauthorized_slash: ⚠️ 未授权的 Discord 斜杠命令尝试
+    user: 用户
+    channel: 频道
+    guild: 服务器
+    command: 命令
+    thread_create_failed: 创建线程失败：{error}
+    thread_created: 已创建线程 {link}
+    unknown_skill: 未知技能：`{name}`。开始输入以获取自动补全建议。
+    footer_by: '{label} 由 {user} 执行'
+    answered_by: 由 {user} 回答：{choice}
+    awaiting_response: 等待 {user} 输入回复…
+    slash_new_started: 新会话已开始~
+    slash_reset_done: 会话已重置~
+    slash_retrying: 正在重试~
+    slash_status_sent: 状态已发送~
+    slash_stop_requested: 已请求停止~
+    slash_update_initiated: 更新已启动~
+    slash_restart_requested: 已请求重启~
+    slash_queued: 已排队等待下一轮。
+    slash_bg_started: 后台任务已启动~
+    slash_new_desc: 开始新会话
+    slash_reset_desc: 重置您的 Hermes 会话
+    slash_model_desc: 查看或更改模型
+    slash_model_name_desc: 模型名称（例如 anthropic/claude-sonnet-4）。留空以查看当前模型。
+    slash_reasoning_desc: 查看或更改推理强度
+    slash_reasoning_effort_desc: 推理强度：none、minimal、low、medium、high 或 xhigh。
+    slash_personality_desc: 设置人格
+    slash_personality_name_desc: 人格名称。留空以列出可用人格。
+    slash_retry_desc: 重试您最后一条消息
+    slash_undo_desc: 撤回上次对话
+    slash_status_desc: 查看 Hermes 会话状态
+    slash_sethome_desc: 将此聊天设为主频道
+    slash_stop_desc: 停止正在运行的 Hermes 智能体
+    slash_steer_desc: 在下次工具调用后注入消息（不中断）
+    slash_steer_prompt_desc: 要注入到智能体下次工具结果中的文本
+    slash_compress_desc: 压缩对话上下文
+    slash_title_desc: 设置或查看会话标题
+    slash_title_name_desc: 会话标题。留空以查看当前标题。
+    slash_resume_desc: 恢复之前命名的会话
+    slash_resume_name_desc: 要恢复的会话名称。留空以列出会话。
+    slash_usage_desc: 查看此会话的令牌使用情况
+    slash_help_desc: 查看可用命令
+    slash_insights_desc: 查看使用洞察和分析
+    slash_insights_days_desc: 要分析的天数（默认：7）
+    slash_reload_mcp_desc: 从配置重新加载 MCP 服务器
+    slash_reload_skills_desc: 重新扫描 ~/.hermes/skills/ 以查找新增或删除的技能
+    slash_voice_desc: 切换语音回复模式
+    slash_voice_mode_desc: 语音模式：join、channel、leave、on、tts、off 或 status
+    slash_voice_join_desc: join — 加入您的语音频道
+    slash_voice_channel_desc: channel — 加入您的语音频道（别名）
+    slash_voice_leave_desc: leave — 离开语音频道
+    slash_voice_on_desc: on — 对语音消息进行语音回复
+    slash_voice_tts_desc: tts — 对所有消息进行语音回复
+    slash_voice_off_desc: off — 仅文本
+    slash_voice_status_desc: status — 查看当前模式
+    slash_update_desc: 将 Hermes Agent 更新到最新版本
+    slash_restart_desc: 优雅地重启 Hermes 网关
+    slash_approve_desc: 批准待处理的危险命令
+    slash_approve_scope_desc: 可选：'all'、'session'、'always'、'all session'、'all always'
+    slash_deny_desc: 拒绝待处理的危险命令
+    slash_deny_scope_desc: 可选：'all' 以拒绝所有待处理命令
+    slash_thread_desc: 创建新线程并在其中启动 Hermes 会话
+    slash_thread_name_desc: 线程名称
+    slash_thread_msg_desc: 可选的发送到线程中 Hermes 的第一条消息
+    slash_thread_archive_desc: 自动归档时间（分钟）（60、1440、4320、10080）
+    slash_queue_desc: 为下一轮排队一个提示（不中断）
+    slash_queue_prompt_desc: 要排队的提示
+    slash_background_desc: 在后台运行提示
+    slash_background_prompt_desc: 要在后台运行的提示
+    more_available_hint: （还有 {count} 个可用 — 直接输入 `/model <名称>`）
+  feishu:
+    true: 是
+    false: 否
+    resolved: 已处理
+    answered_by: 由 **{user}** 回答
+    approved_by: '{label} 由 {user} 执行'
+    share_chat_label: 共享群聊：{name}
+    chat_id_label: 群聊 ID：{id}
+    actions_label: 操作：{actions}
+  telegram:
+    cancel: ✗ 取消
+    back: ◀ 返回
+    prev_page: ◀ 上一页
+    next_page: 下一页 ▶
+    model_config_title: ⚙ *模型配置*
+    current_model: 当前模型：`{model}`
+    provider_label: 提供方：{label}
+    select_provider: 选择提供方：
+    select_model: 选择模型：{extra}
+    more_available: _还有 {count} 个可用 — 直接输入 `/model <名称>`_
+    picker_expired: 选择器已过期 — 请重新使用 /model。
+    picker_expired_short: 选择器已过期。
+    provider_not_found: 提供方未找到。
+    invalid_page: 无效页面。
+    invalid_selection: 无效选择。
+    invalid_model_index: 无效模型索引。
+    error_switching_model: 切换模型时出错：{error}
+    model_switched: 模型已切换！
+    model_selection_cancelled: 模型选择已取消。
+    invalid_approval_data: 无效的审批数据。
+    unauthorized_approve: ⛔ 您无权批准命令。
+    approval_resolved: 此审批已被处理。
+    unauthorized_prompt: ⛔ 您无权回答此提示。
+    prompt_resolved: 此提示已被处理。
+    invalid_choice: 无效选择。
+    unauthorized_update: ⛔ 您无权回答更新提示。
+    sent_to_update: 已向更新进程发送「{answer}」。
+    invalid_gmail_data: 无效的 gmail-triage 数据。
+    unauthorized_email: ⛔ 您无权处理此邮件。
+cli:
+  compression_count: 🗜️ {count}
+  model_normalized: ⚠️ 已将模型 '{from_model}' 标准化为 '{to_model}'（{provider}）。
+  copilot_normalized: ⚠️ 已将 Copilot 模型 '{from_model}' 标准化为 '{to_model}'。
+  provider_stripped: ⚠️ 已从 '{from_model}' 中移除提供商前缀；对 {provider} 使用 '{to_model}'。
+  context_length_warning: ⚠️ 上下文长度仅 {length:,} 个 token — {detail}
+  command_destroys: ⚠️ /{command} — 将销毁对话状态
+  steered: ⏩ 已将消息引导至当前运行{detail}。你的消息将在下一次工具调用后到达。
+setup:
+  edit_config_hint: 📝 编辑您的配置：
+  ready_to_go: 🚀 准备就绪！
+  tg_no_allowlist: ⚠️  Telegram 未设置用户白名单 — 任何人都可以使用您的 bot！
+  discord_no_allowlist: ⚠️  Discord 未设置用户白名单 — 任何人都可以使用您的 bot！
+  slack_no_allowlist: ⚠️  未设置 Slack 白名单 — 未配对的用户将被默认拒绝。
+  generic_no_allowlist: ⚠️  未设置白名单 — 任何能向 bot 发送消息的人都可以使用它！
+  imessage_no_allowlist: ⚠️  未设置白名单 — 任何能向您发送 iMessage 的人都可以使用 bot！
+  servers_no_allowlist: ⚠️  未设置白名单 — 任何拥有您的 bot 的服务器中的人都可以使用它！
+  platform_telegram: 📱 Telegram
+  platform_discord: 💬 Discord
+  platform_slack: 💼 Slack
+  model_header: 🤖 **模型与提供方设置**
+  model_select_provider: 选择您的 AI 提供方：
+  model_select_model: 选择模型：
+  model_enter_api_key: 输入您的 API 密钥：
+  model_key_saved: ✅ API 密钥已保存。
+  model_key_invalid: ❌ 无效的 API 密钥。请重试。
+  model_test_success: ✅ 模型测试成功！
+  model_test_failed: ❌ 模型测试失败：{error}
+  model_current: 当前模型：{model}
+  terminal_header: 🖥️ **终端后端设置**
+  terminal_select: 选择代理运行命令的位置：
+  terminal_local: 本地（本机）
+  terminal_docker: Docker 容器
+  terminal_ssh: 远程 SSH 服务器
+  agent_header: ⚙️ **代理设置**
+  agent_max_iterations: 每轮最大迭代次数（默认：90）：
+  agent_compression: 启用上下文压缩？（y/n）：
+  agent_session_reset: N 条消息后自动重置会话（0=关闭）：
+  tools_header: 🔧 **工具设置**
+  tools_tts: 启用文字转语音？（y/n）：
+  tools_web_search: 启用网络搜索？（y/n）：
+  tools_image_gen: 启用图片生成？（y/n）：
+  complete_header: ✅ **设置完成！**
+  complete_next_steps: 下一步：
+  complete_start: 开始聊天：hermes
+  complete_gateway: 运行网关：hermes gateway run
+  complete_docs: 查看文档：hermes help
+  run_agent.compending_context: 🗜️ 正在压缩上下文——总结之前的对话以便继续...
+stream:
+  waiting_for_response: 等待流式响应（已等{secs}秒，无数据块）
+steer: {}
+config: {}
+reasoning: {}
+session: {}
+background: {}
+compression: {}
+confirm: {}
+update: {}
+proxy: {}
+provider: {}
+dangerous: {}
+'no': {}
+gateway.return.normalized.gateway.platform: Return a normalized gateway platform value
+  for enums or raw strings.
+error.gateway.swallowed.transient.network: 'Gateway swallowed transient network error
+  from %s: %s: %s'
+gateway.besteffort.secret.redaction.before: Best-effort secret redaction before text
+  can leave the gateway.
+error.map.raw.providerapi.errors: Map raw provider/API errors to a short user-safe
+  Telegram reply.
+gateway.provider.authentication.failed.check: '⚠️ Provider authentication failed.
+  Check the configured credentials; '
+log.raw.provider.details.gateway: raw provider details are in the gateway logs.
+gateway.model.provider.rejected.request: '⚠️ The model provider rejected the request.
+  I kept the raw provider '
+log.error.out.chat.check: error out of chat; check gateway logs for details or try
+  rephrasing.
+gateway.model.provider.ratelimiting.requests: ⏱️ The model provider is rate-limiting
+  requests. Please wait a moment and try again.
+gateway.model.provider.failed.after: '⚠️ The model provider failed after retries.
+  I kept raw provider details '
+log.out.chat.check.gateway: out of chat; check gateway logs for diagnostics.
+gateway.http.404.means: 'HTTP 404 means '
+gateway.filtersanitize.agent.status.callbacks: Filter/sanitize agent status callbacks
+  before platform delivery.
+gateway.observed.telegram.group.context: observed Telegram group context
+gateway.observed.telegram.group.context_1: '[Observed Telegram group context - context
+  only, not requests]'
+gateway.current.addressed.message.answer: '[Current addressed message - answer only
+  this unless it explicitly asks you to use the observed context]'
+gateway.delivered.mirrorsrc.content: '[Delivered from {mirror_src}] {content}'
+gateway.prepend.observed.telegram.context: Prepend observed Telegram context to the
+  API-only current user turn.
+gateway.set.sslcertfile.system.doesn: Set SSL_CERT_FILE if the system doesn
+gateway.return.optional.threadtopic.env: Return the optional thread/topic env var
+  for a platform home target.
+gateway.return.true.when.restart: Return True when a /restart completion marker is
+  waiting to be delivered.
+warn.warning.configyaml.env.bridge: '  Warning: config.yaml → env bridge failed: '
+gateway.typebridgeerrname.bridgeerr: '{type(_bridge_err).__name__}: {_bridge_err}'
+gateway.gateway.fall.back.env: '  Gateway will fall back to .env values, which may
+  not match '
+gateway.current.configyaml.run.hermes: your current config.yaml. Run `hermes doctor`
+  to investigate.
+warn.warning.ipv4.preference.application: '  Warning: IPv4 preference application
+  failed: {_bootstrap_exc}'
+warn.warning.config.validation.failed: '  Warning: config validation failed: {_bootstrap_exc}'
+warn.warning.deprecation.check.failed: '  Warning: deprecation check failed: {_bootstrap_exc}'
+log.primary.provider.auth.failed: 'Primary provider auth failed: %s — trying fallback'
+gateway.attempt.resolve.credentials.fallbackmodelfallbackproviders: Attempt to resolve
+  credentials from the fallback_model/fallback_providers config.
+gateway.fallback.provider.resolved.models: 'Fallback provider resolved: %s model=%s'
+log.fallback.entry.failed: 'Fallback entry %s failed: %s'
+gateway.build.text.placeholder.mediaonly: Build a text placeholder for media-only
+  events so they aren
+gateway.user.sent.image.url: '[User sent an image: {url}]'
+gateway.user.sent.audio.url: '[User sent audio: {url}]'
+gateway.user.sent.file.url: '[User sent a file: {url}]'
+gateway.besteffort.duration.probe.returns: Best-effort duration probe. Returns formatted
+  MM:SS / HH:MM:SS, or None on failure.
+gateway.stop.requested: Stop requested
+gateway.session.reset.requested: Session reset requested
+gateway.execution.timed.out.inactivity: Execution timed out (inactivity)
+gateway.sse.client.disconnected: SSE client disconnected
+gateway.gateway.shutting.down: Gateway shutting down
+gateway.gateway.restarting: Gateway restarting
+gateway.return.true.when.interrupt: Return True when an interrupt message is internal
+  control flow.
+gateway.commandname.skill.installed.disabledn: The **{command_name}** skill is installed
+  but disabled.\n
+gateway.enable.hermes.skills.config: 'Enable it with: `hermes skills config`'
+gateway.commandname.skill.available.installedn: The **{command_name}** skill is available
+  but not installed.\n
+gateway.install.hermes.skills.install: 'Install it with: `hermes skills install {install_path}`'
+gateway.map.platform.enum.configyaml: Map a Platform enum to its config.yaml key (LOCAL→
+gateway.restenum.value: ', rest→enum value).'
+gateway.return.true.when.standalone: Return True when the standalone Teams pipeline
+  plugin is enabled.
+log.load.gateway.config: Could not load gateway config from %s
+gateway.dict.none: dict | None
+gateway.format.watch.pattern.event: Format a watch pattern event from completion_queue
+  into a [IMPORTANT:] message.
+gateway.important.evtget: '[IMPORTANT: {evt.get('
+gateway.important.background.process.sid: '[IMPORTANT: Background process {_sid} matched '
+gateway.command.cmdn: 'Command: {_cmd}\n'
+gateway.matched.outputnout: Matched output:\n{_out}
+gateway.session.too.large.model: ⚠️ Session too large for the model
+gateway.use.compact.compress.conversation: 'Use /compact to compress the conversation,
+  or '
+gateway.reset.start.fresh: /reset to start fresh.
+error.request.failed.strerrordetail300n: 'The request failed: {str(error_detail)[:300]}\n'
+gateway.try.again.use.reset: Try again or use /reset to start a fresh session.
+gateway.ordereddictstr.sessionsource: OrderedDict[str, SessionSource]
+gateway.ordereddictstr.tuple: OrderedDict[str, tuple]
+log.sqlite.session.store.available: 'SQLite session store not available: %s'
+log.statedb.automaintenance.skipped: 'state.db auto-maintenance skipped: %s'
+log.checkpoint.automaintenance.skipped: 'checkpoint auto-maintenance skipped: %s'
+log.teams.pipeline.plugin.disabled: Teams pipeline plugin is disabled; skipping runtime
+  wiring
+log.teams.pipeline.runtime.import: 'Teams pipeline runtime import failed: %s'
+log.teams.pipeline.runtime.wiring: 'Teams pipeline runtime wiring failed: %s'
+log.teams.pipeline.runtime.bound: Teams pipeline runtime bound to msgraph webhook
+  ingress
+gateway.teams.pipeline.runtime.unavailable: 'Teams pipeline runtime unavailable: %s'
+gateway.striplower: ').strip().lower() != '
+log.parse.terminaldockervolumes.gateway.media: Could not parse TERMINAL_DOCKER_VOLUMES
+  for gateway media warning
+gateway.docker.backend.enabled.messaging: 'Docker backend is enabled for the messaging
+  gateway but no explicit host-visible '
+gateway.is.configured: ') is configured. '
+gateway.fine.model.already.emits: 'This is fine if the model already emits host-visible
+  paths, but MEDIA file delivery can fail '
+gateway.check.hermesagentsetup.skill.installed: Check if the hermes-agent-setup skill
+  is installed.
+gateway.return.platformnamespaced.key.voice: Return a platform-namespaced key for
+  voice mode state.
+gateway.skipping.legacy.unprefixed.voice: 'Skipping legacy unprefixed voice mode key
+  %r during migration. '
+gateway.reenable.voice.mode.chat: Re-enable voice mode on that chat to rebuild the
+  prefixed key.
+log.failed.save.voice.modes: 'Failed to save voice modes: %s'
+gateway.update.adapter: Update an adapter
+gateway.update.adapter_1: Update an adapter
+warn.unclosed.client.session: Unclosed client session
+gateway.timed.out.after.1fs: Timed out after %.1fs while disconnecting %s adapter;
+  continuing shutdown
+gateway.defensive.disconnect.after.failed: 'Defensive %s disconnect after failed connect
+  raised: %s'
+gateway.return.peradapter.disconnect.timeout: Return the per-adapter disconnect timeout
+  used during shutdown.
+gateway.ignoring.invalid.hermesgatewayadapterdisconnecttimeoutr: Ignoring invalid
+  HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT=%r
+gateway.return.perplatform.connect.timeout: Return the per-platform connect timeout
+  used during startup/retry.
+gateway.ignoring.invalid.hermesgatewayplatformconnecttimeoutr: Ignoring invalid HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT=%r
+gateway.connect.adapter.without.allowing: Connect an adapter without allowing one
+  platform to block others.
+gateway.platformvalue.connect.timed.out: '{platform.value} connect timed out after
+  {timeout:g}s'
+gateway.resolve.current.session.key: Resolve the current session key for a source,
+  honoring gateway config when available.
+gateway.return.whether.telegram.topic: Return whether Telegram DM topic mode is active
+  for this chat.
+log.failed.read.telegram.topic: Failed to read Telegram topic mode state
+gateway.true.main.telegram.general: True for the main Telegram DM (or General topic)
+  when topic mode has made it a lobby.
+gateway.true.usercreated.telegram.privatechat: True for a user-created Telegram private-chat
+  topic lane.
+gateway.main.chat.reserved.system: This main chat is reserved for system commands.\n\n
+gateway.start.new.hermes.chat: 'To start a new Hermes chat, open the All Messages
+  topic at the top '
+gateway.bot.interface.send.any: 'of this bot interface and send any message there.
+  Telegram will '
+gateway.create.new.topic.message: 'create a new topic for that message; each topic
+  works as an '
+gateway.independent.hermes.session: independent Hermes session.
+gateway.start.new.parallel.hermes: 'To start a new parallel Hermes chat, open the
+  All Messages topic '
+gateway.top.bot.interface.send: 'at the top of this bot interface and send any message
+  there. '
+gateway.telegram.create.new.topic: Telegram will create a new topic for it.\n\n
+gateway.each.topic.independent.hermes: 'Each topic is an independent Hermes session.
+  Use /new inside an '
+gateway.started.new.hermes.session: Started a new Hermes session in this topic.\n\n
+gateway.tip.parallel.work.open: 'Tip: for parallel work, open All Messages and send
+  a message there '
+gateway.create.separate.topic.instead: 'to create a separate topic instead of using
+  /new here. /new replaces '
+gateway.session.attached.current.topic: the session attached to the current topic.
+gateway.persist.telegram.topic.hermes: Persist the Telegram topic -> Hermes session
+  binding for topic lanes.
+gateway.pin.dmtopic.routing.user: Pin DM-topic routing to the user
+log.topicrecover.read.failed: 'topic-recover: read failed'
+gateway.session.model.override.fast: 'Session model override (fast): session=%s config_model=%s
+  -> override_model=%s provider=%s'
+gateway.session.model.override.apikey: 'Session model override (no api_key, fallback):
+  session=%s config_model=%s override_model=%s'
+gateway.session.model.override.sessions: 'No session model override: session=%s config_model=%s
+  override_keys=%s'
+gateway.runtime.provider.supplied.explicit: 'Runtime provider supplied explicit model
+  override: %s -> %s'
+gateway.model.configured.defaulting.provider: No model configured — defaulting to
+  %s for provider %s
+error.fatal.adapter.error: 'Fatal %s adapter error (%s): %s'
+error.all.messaging.adapters.disconnected: All messaging adapters disconnected
+log.connected.messaging.platforms.remain: No connected messaging platforms remain.
+  Shutting down gateway for service restart.
+log.connected.messaging.platforms.remain_1: No connected messaging platforms remain.
+  Shutting down gateway cleanly.
+gateway.connected.messaging.platforms.remain: 'No connected messaging platforms remain,
+  but %d platform(s) '
+gateway.queued.reconnection.gateway.staying: 'queued for reconnection — gateway staying
+  alive, watcher will '
+gateway.retry.background: retry in background.
+gateway.append.queue.event.fifo: Append a /queue event to the FIFO chain for a session.
+gateway.total.pending.queue.items: Total pending /queue items for a session — slot
+  + overflow.
+gateway.continuing.toward.standing.goalngoal: '[Continuing toward your standing goal]\nGoal:'
+gateway.besteffort.fresh.check.before: Best-effort fresh DB check before running a
+  queued continuation.
+log.goal.continuation.activestate.recheck: 'goal continuation: active-state recheck
+  failed: %s'
+gateway.retry.hermes.gateway.restart: to retry, or `hermes gateway restart` to restart
+  the gateway.
+log.prefill.messages.file.found: 'Prefill messages file not found: %s'
+log.prefill.messages.file.contain: 'Prefill messages file must contain a JSON array:
+  %s'
+log.failed.load.prefill.messages: 'Failed to load prefill messages from %s: %s'
+log.unknown.reasoningeffort: 'Unknown reasoning_effort '
+log.using.default.medium: ', using default (medium)'
+gateway.resolve.reasoning.effort.session: Resolve reasoning effort for a session,
+  honoring session overrides.
+gateway.set.clear.sessionscoped.reasoning: Set or clear the session-scoped reasoning
+  override.
+log.unknown.servicetier: 'Unknown service_tier '
+gateway.load.showreasoning.toggle.configyaml: Load show_reasoning toggle from config.yaml
+  display section.
+gateway.load.gateway.draintime.busyinput: Load gateway drain-time busy-input behavior
+  from config/env.
+gateway.load.normal.busy.text: Load normal busy TEXT follow-up behavior from config/env.
+gateway.load.graceful.gateway.restartstop: Load graceful gateway restart/stop drain
+  timeout in seconds.
+gateway.invalid.restartdraintimeout: 'Invalid restart_drain_timeout '
+gateway.using.default.0fs: ', using default %.0fs'
+gateway.unknown.backgroundprocessnotifications: 'Unknown background_process_notifications '
+gateway.defaulting.to: ', defaulting to '
+gateway.load.openrouter.provider.routing: Load OpenRouter provider routing preferences
+  from config.yaml.
+gateway.dropping.message.unauthorized.user: 'Dropping message from unauthorized user
+  in active session: '
+gateway.users.platforms.sessions: user=%s (%s), platform=%s, session=%s
+gateway.demoting.busyinputmode: 'Demoting busy_input_mode '
+log.gateway.steer.failed.session: 'Gateway steer failed for session %s: %s'
+log.busy.ack.suppressed.session: Busy ack suppressed for session %s
+gateway.running.currenttool: 'running: {current_tool}'
+gateway.interrupting.current.taskstatusdetail: '⚡ Interrupting current task{status_detail}. '
+log.failed.apply.busyinput.onboarding: 'Failed to apply busy-input onboarding hint:
+  %s'
+log.failed.send.busyack: 'Failed to send busy-ack: %s'
+log.interrupted.running.agent.session: Interrupted running agent for session %s during
+  shutdown
+log.failed.interrupting.agent.during: 'Failed interrupting agent during shutdown:
+  %s'
+gateway.current.task.interrupted: 'Your current task will be interrupted. '
+gateway.send.any.message.after: Send any message after restart and I
+gateway.current.task.interrupted_1: Your current task will be interrupted.
+gateway.failed.load.session.origin: 'Failed to load session origin for shutdown notification
+  %s: %s'
+gateway.shutdown.notification.suppressed.active: 'Shutdown notification suppressed
+  for active session: %s has gateway_restart_notification=false'
+gateway.failed.send.shutdown.notification: 'Failed to send shutdown notification to
+  %s:%s: %s'
+error.send.returned.successfalse: send returned success=False
+gateway.sent.shutdown.notification.active: Sent shutdown notification to active chat
+  %s:%s
+gateway.failed.send.shutdown.notification_1: 'Failed to send shutdown notification
+  to %s:%s: %s'
+gateway.shutdown.notification.suppressed.home: 'Shutdown notification suppressed for
+  home channel: %s has gateway_restart_notification=false'
+gateway.failed.send.shutdown.notification_2: 'Failed to send shutdown notification
+  to home channel %s:%s: %s'
+error.send.returned.successfalse_1: send returned success=False
+gateway.sent.shutdown.notification.home: Sent shutdown notification to home channel
+  %s:%s
+gateway.failed.send.shutdown.notification_3: 'Failed to send shutdown notification
+  to home channel %s:%s: %s'
+gateway.besteffort.cleanup.temporary.cached: Best-effort cleanup for temporary or
+  cached agent instances.
+gateway.autosuspended.stuck.session.active: 'Auto-suspended stuck session %s (active
+  across %d '
+log.locate.hermes.binary.detached: Could not locate hermes binary for detached /restart
+gateway.while.kill.currentpid.2devnull: 'while kill -0 {current_pid} 2>/dev/null;
+  do sleep 0.2; done; '
+log.failed.enumerate.resumepending.sessions: 'Failed to enumerate resume-pending sessions:
+  %s'
+gateway.skipping.autoresume.adapter.ready: 'Skipping auto-resume for %s: adapter not
+  ready for %s'
+gateway.scheduled.autoresume.restartinterrupted.sessions: Scheduled auto-resume for
+  %d restart-interrupted session(s)
+log.starting.hermes.gateway: Starting Hermes Gateway...
+log.session.storage: 'Session storage: %s'
+gateway.stale.systemd.unit.detected: 'Stale systemd unit detected: %s has TimeoutStopSec=%.0fs
+  but '
+gateway.draintimeout0fs.expected.0fs.systemd: 'drain_timeout=%.0fs (expected >=%.0fs).
+  systemd may SIGKILL the '
+gateway.gateway.middrain.run.hermes: 'gateway mid-drain. Run `hermes gateway service
+  install --replace` '
+gateway.regenerate.unit.shorten.agentrestartdraintimeout: to regenerate the unit,
+  or shorten agent.restart_drain_timeout.
+log.checksystemdtimingalignment.failed: 'check_systemd_timing_alignment failed: %s'
+gateway.agent.budget.maxiterationsd.agentmaxturns: 'Agent budget: max_iterations=%d
+  (agent.max_turns from config.yaml, '
+gateway.hermesmaxiterations.env.default: or HERMES_MAX_ITERATIONS from .env, or default
+  90)
+log.secret.redaction.enabled.tool: 'Secret redaction: ENABLED (tool output, logs,
+  and chat '
+gateway.secret.redaction.disabled.hermesredactsecretss: 'Secret redaction: DISABLED
+  (HERMES_REDACT_SECRETS=%s). '
+gateway.api.keys.tokens.appear: 'API keys and tokens may appear verbatim in chat output, '
+log.session.jsons.logs.set: 'session JSONs, and logs. Set security.redact_secrets:
+  true '
+gateway.configyaml.reenable: in config.yaml to re-enable.
+log.active.profile: 'Active profile: %s'
+gateway.run.hermes.doctor.gateway: 'Run `hermes doctor` on the gateway host for full '
+gateway.remediation.steps: remediation steps.
+gateway.lower.in: ).lower() in {
+gateway.lower.in_1: ).lower() in {
+gateway.user.allowlists.configured.all: 'No user allowlists configured. All unauthorized
+  users will be denied. '
+gateway.set.gatewayallowalluserstrue.hermesenv.allow: 'Set GATEWAY_ALLOW_ALL_USERS=true
+  in ~/.hermes/.env to allow open access, '
+gateway.configure.platform.allowlists.telegramallowedusersyourid: or configure platform
+  allowlists (e.g., TELEGRAM_ALLOWED_USERS=your_id).
+log.recovered.background.processes.previous: Recovered %s background process(es) from
+  previous run
+log.process.checkpoint.recovery: 'Process checkpoint recovery: %s'
+log.previous.gateway.exited.cleanly: Previous gateway exited cleanly — skipping session
+  suspension
+log.marked.inflight.sessions.resumable: Marked %d in-flight session(s) as resumable
+  from previous run
+log.session.suspension.startup.failed: 'Session suspension on startup failed: %s'
+log.autosuspended.stuckloop.sessions: Auto-suspended %d stuck-loop session(s)
+log.stuckloop.detection.failed: 'Stuck-loop detection failed: %s'
+gateway.no.adapter.for: 'No adapter for '
+gateway.plugin.installed: ' — is the plugin installed? '
+gateway.platform.enabled.configyaml.plugin: (platform is enabled in config.yaml but
+  no plugin registered it)
+log.adapter.available: No adapter available for %s
+log.connecting.to.s: Connecting to %s...
+error.platformvalue.adapterfatalerrormessage: '{platform.value}: {adapter.fatal_error_message}'
+gateway.platformvalue.failed.connect: '{platform.value}: failed to connect'
+log.s.error.s: '✗ %s error: %s'
+error.platformvalue.e: '{platform.value}: {e}'
+log.gateway.hit.nonretryable.startup: 'Gateway hit a non-retryable startup conflict:
+  %s'
+gateway.gateway.started.connected.platforms: 'Gateway started with no connected platforms
+  — '
+gateway.platforms.queued.retry: '%d platform(s) queued for retry: %s'
+gateway.adapter.created.any.configured: 'No adapter could be created for any of the
+  %d configured platform(s). '
+gateway.check.required.dependencies.installed: 'Check that required dependencies are
+  installed and credentials are set. '
+gateway.gateway.continue.cron.job: Gateway will continue for cron job execution.
+log.messaging.platforms.enabled: No messaging platforms enabled.
+log.gateway.continue.running.cron: Gateway will continue running for cron job execution.
+log.gateway.running.platforms: Gateway running with %s platform(s)
+log.channel.directory.built.targets: 'Channel directory built: %d target(s)'
+log.channel.directory.build.failed: 'Channel directory build failed: %s'
+log.resumed.watcher.recovered.process: Resumed watcher for recovered process %s
+log.recovered.watcher.setup.error: 'Recovered watcher setup error: %s'
+gateway.starting.reconnection.watcher.failed: 'Starting reconnection watcher for %d
+  failed platform(s): %s'
+log.press.ctrlc.stop: Press Ctrl+C to stop
+gateway.handoff.session.failed: 'Handoff for session %s failed: %s'
+log.handoff.watcher.tick.error: 'Handoff watcher tick error: %s'
+gateway.execute.one.handoff.row: Execute one handoff row. Raises on failure (caller
+  marks failed).
+gateway.home.channel.configured.platformname: 'no home channel configured for {platform_name}; '
+gateway.hermes.clititle: Hermes — {cli_title}
+gateway.handoff.createhandoffthread.raised: 'Handoff: create_handoff_thread raised
+  on %s: %s'
+gateway.session.just.handed.off: '[Session was just handed off from CLI (\'
+gateway.channel.full.prior.conversation: 'channel. The full prior conversation history
+  is loaded above. '
+gateway.briefly.confirm: Briefly confirm you
+gateway.working.user.can.continue: working on, so the user can continue from this
+  device.]
+gateway.handoff.dispatching.synthetic.turn: 'Handoff: dispatching synthetic turn for
+  CLI session %s → %s '
+gateway.homes.threads.sessionkeys: (home=%s, thread=%s, session_key=%s)
+error.adaptersend.failed.exc: 'adapter.send failed: {exc}'
+error.send.returned.successfalse_2: send returned success=False
+error.adaptersend.failed.err: 'adapter.send failed: {err}'
+gateway.session.expiry.sessions.finalize: 'Session expiry: %d sessions to finalize
+  (%s)'
+gateway.session.expiry.finalized: Session expiry finalized for %s
+gateway.session.finalize.gave.after: 'Session finalize gave up after %d attempts for
+  %s: %s. '
+gateway.marking.finalized.prevent.infinite: Marking as finalized to prevent infinite
+  retry loop.
+gateway.session.finalize.failed: 'Session finalize failed (%d/%d) for %s: %s'
+gateway.session.expiry.done.finalized: 'Session expiry done: %d finalized, %d pending
+  retry'
+gateway.session.expiry.done.finalized_1: 'Session expiry done: %d finalized'
+gateway.agent.cache.idle.sweep: 'Agent cache idle sweep: evicted %d agent(s)'
+log.idle.agent.sweep.failed: 'Idle agent sweep failed: %s'
+gateway.sessionstore.prune.dropped.stale: 'SessionStore prune: dropped %d stale entries'
+log.sessionstore.prune.failed: 'SessionStore prune failed: %s'
+log.session.expiry.watcher.error: 'Session expiry watcher error: %s'
+gateway.return.profile.name.gateway: Return the profile name this gateway represents.
+log.kanban.notifier.kanbandb.importable: 'kanban notifier: kanban_db not importable;
+  notifier disabled'
+log.kanban.notifier.connected.adapters: 'kanban notifier: no connected adapters; skipping
+  tick'
+gateway.kanban.notifier.skipping.duplicate: 'kanban notifier: skipping duplicate board
+  slug %s for DB %s'
+log.kanban.notifier.cannot.open: 'kanban notifier: cannot open board %s: %s'
+log.kanban.notifier.board.subscriptions: 'kanban notifier: board %s has no subscriptions'
+gateway.kanban.notifier.subscription.owned: 'kanban notifier: subscription for %s
+  owned by profile %s; current profile %s skipping'
+gateway.kanban.notifier.subscription.skipped: 'kanban notifier: subscription for %s
+  on %s skipped; adapter not connected'
+gateway.kanban.notifier.claimed.events: 'kanban notifier: claimed %d event(s) for
+  %s on board %s cursor %s→%s'
+gateway.kanban.notifier.adapter.disconnected: 'kanban notifier: adapter %s disconnected
+  before delivery for %s; rewinding claim'
+gateway.tagkanban.sub: ✔ {tag}Kanban {sub[
+gateway.strevpayload: ': {str(ev.payload['
+gateway.tagkanban.sub_1: ⏸ {tag}Kanban {sub[
+gateway.tagkanban.sub_2: ✖ {tag}Kanban {sub[
+gateway.tagkanban.sub_3: ✖ {tag}Kanban {sub[
+gateway.pid.gone.dispatcher.retry: (pid gone); dispatcher will retry
+gateway.tagkanban.sub_4: ⏱ {tag}Kanban {sub[
+gateway.maxruntimelimits.retry: (max_runtime={limit}s); will retry
+gateway.kanban.notifier.delivered.event: 'kanban notifier: delivered %s event for
+  %s to %s/%s on board %s'
+gateway.kanban.notifier.artifact.delivery: 'kanban notifier: artifact delivery for
+  %s failed: %s'
+gateway.kanban.notifier.send.failed: 'kanban notifier: send failed for %s on %s '
+gateway.attempt.dd.s: '(attempt %d/%d): %s'
+gateway.kanban.notifier.dropping.subscription: 'kanban notifier: dropping subscription '
+log.kanban.notifier.tick.failed: 'kanban notifier tick failed: %s'
+gateway.sync.helper.advance.subscription: 'Sync helper: advance a subscription'
+gateway.sync.helper.undo.claimed: 'Sync helper: undo a claimed notification cursor
+  after send failure.'
+gateway.kanban.notifier.image.batch: 'kanban notifier: image batch upload failed:
+  %s'
+gateway.kanban.notifier.artifact.upload: 'kanban notifier: artifact upload (%s) failed:
+  %s'
+log.kanban.dispatcher.config.loader: 'kanban dispatcher: config loader unavailable;
+  disabled'
+log.kanban.dispatcher.disabled.via: 'kanban dispatcher: disabled via HERMES_KANBAN_DISPATCH_IN_GATEWAY
+  env'
+log.kanban.dispatcher.cannot.load: 'kanban dispatcher: cannot load config (%s); disabled'
+gateway.kanban.dispatcher.disabled.via: 'kanban dispatcher: disabled via config kanban.dispatch_in_gateway=false'
+log.kanban.dispatcher.kanbandb.importable: 'kanban dispatcher: kanban_db not importable;
+  dispatcher disabled'
+log.kanban.dispatcher.maxspawnmaxspawn: 'kanban dispatcher: max_spawn={max_spawn}'
+gateway.kanban.dispatcher.invalid.kanbanmaxinprogressr: 'kanban dispatcher: invalid
+  kanban.max_in_progress=%r; ignoring'
+gateway.kanban.dispatcher.kanbanmaxinprogressr.below: 'kanban dispatcher: kanban.max_in_progress=%r
+  is below 1; ignoring'
+log.kanban.dispatcher.maxinprogressmaxinprogress: 'kanban dispatcher: max_in_progress={max_in_progress}'
+gateway.kanban.dispatcher.invalid.kanbanfailurelimitr: 'kanban dispatcher: invalid
+  kanban.failure_limit=%r; using default %d'
+gateway.kanban.dispatcher.kanbanfailurelimitr.below: 'kanban dispatcher: kanban.failure_limit=%r
+  is below 1; using default %d'
+gateway.kanban.dispatcher.invalid.kanbandispatchstaletimeoutsecondsr: 'kanban dispatcher:
+  invalid kanban.dispatch_stale_timeout_seconds=%r; '
+gateway.kanban.dispatcher.board.database: 'kanban dispatcher: board %s database changed;
+  retrying dispatch'
+gateway.kanban.dispatcher.board.database_1: 'kanban dispatcher: board %s database
+  %s is not a valid '
+gateway.sqlite.database.disabling.dispatch: 'SQLite database; disabling dispatch for
+  this board '
+gateway.until.file.changes.gateway: 'until the file changes or the gateway restarts.
+  Move '
+gateway.restore.file.then.run: 'or restore the file, then run `hermes kanban init`
+  if '
+gateway.need.fresh.board: you need a fresh board.
+log.kanban.dispatcher.tick.failed: 'kanban dispatcher: tick failed on board %s'
+log.kanban.dispatcher.tick.failed_1: 'kanban dispatcher: tick failed on board %s'
+gateway.listtuplestr.optionalobject: list[tuple[str, Optional[object]]]
+gateway.kanban.autodecompose.import.failed: 'kanban auto-decompose: import failed
+  (%s); skipping'
+gateway.kanban.autodecompose.listtriageids.failed: 'kanban auto-decompose: list_triage_ids
+  failed on board %s (%s)'
+gateway.kanban.autodecompose.decomposetask.crashed: 'kanban auto-decompose: decompose_task
+  crashed on %s'
+gateway.kanban.autodecompose.children: 'kanban auto-decompose [%s]: %s → %d children'
+gateway.kanban.autodecompose.single.task: 'kanban auto-decompose [%s]: %s → single
+  task (no fanout)'
+gateway.kanban.autodecompose.skipped: 'kanban auto-decompose [%s]: %s skipped: %s'
+gateway.kanban.dispatcher.embedded.gateway: 'kanban dispatcher: embedded in gateway
+  (interval=%.1fs)'
+gateway.kanban.dispatcher.spawnedd.reclaimedd: 'kanban dispatcher [%s]: spawned=%d
+  reclaimed=%d '
+gateway.kanban.dispatcher.stuck.ready: 'kanban dispatcher stuck: ready queue non-empty
+  for '
+gateway.consecutive.ticks.workers.spawned: '%d consecutive ticks but 0 workers spawned.
+  Check '
+gateway.profile.health.venv.path: 'profile health (venv, PATH, credentials) and '
+gateway.hermes.kanban.list.status: '`hermes kanban list --status ready`.'
+log.kanban.dispatcher.cancelled: 'kanban dispatcher: cancelled'
+log.kanban.dispatcher.unexpected.watcher: 'kanban dispatcher: unexpected watcher error'
+gateway.reconnecting.attempt: Reconnecting %s (attempt %d)...
+gateway.reconnect.adapter.creation.returned: 'Reconnect %s: adapter creation returned
+  None, removing from retry queue'
+error.reconnect.nonretryable.error.removing: 'Reconnect %s: non-retryable error (%s),
+  removing from retry queue'
+gateway.reconnect.failed.next.retry: Reconnect %s failed, next retry in %ds
+error.reconnect.error.next.retry: 'Reconnect %s error: %s, next retry in %ds'
+gateway.stop.gateway.disconnect.all: Stop the gateway and disconnect all adapters.
+gateway.shutdown.killed.tool.subprocesses: 'Shutdown (%s): killed %d tool subprocess(es)'
+log.processregistrykillall.error: 'process_registry.kill_all (%s) error: %s'
+log.cleanupallenvironments.error: 'cleanup_all_environments (%s) error: %s'
+log.cleanupallbrowsers.error: 'cleanup_all_browsers (%s) error: %s'
+gateway.stopping.gateways: Stopping gateway%s...
+gateway.shutdown.phase.notifyactivesessions.done: 'Shutdown phase: notify_active_sessions
+  done at +%.2fs'
+log.predrain.markresumepending.failed: 'pre-drain mark_resume_pending failed for %s:
+  %s'
+gateway.shutdown.phase.drain.done: 'Shutdown phase: drain done at +%.2fs (drain took
+  %.2fs, '
+gateway.timedouts.activeatstartd.activenowd: timed_out=%s, active_at_start=%d, active_now=%d)
+gateway.clearresumepending.after.drain.failed: 'clear_resume_pending after drain failed
+  for %s: %s'
+gateway.gateway.drain.timed.out: Gateway drain timed out after %.1fs with %d active
+  agent(s); interrupting remaining work.
+gateway.markresumepending.failed: 'mark_resume_pending failed for %s: %s'
+gateway.shutdown.phase.postinterrupt.tool: 'Shutdown phase: post-interrupt tool kill
+  done at +%.2fs'
+log.failed.launch.detached.gateway: 'Failed to launch detached gateway restart: %s'
+log.backgroundtask.cancel.error: '✗ %s background-task cancel error: %s'
+gateway.disconnected.2fs: ✓ %s disconnected (%.2fs)
+error.disconnect.error.after.2fs: '✗ %s disconnect error after %.2fs: %s'
+gateway.shutdown.phase.all.adapters: 'Shutdown phase: all adapters disconnected at
+  +%.2fs'
+gateway.shutdown.phase.finalcleanup.tool: 'Shutdown phase: final-cleanup tool kill
+  done at +%.2fs'
+log.shutdowncachedclients.error: 'shutdown_cached_clients error: %s'
+log.sessiondb.close.error: 'SessionDB close error: %s'
+gateway.shutdown.phase.sessiondb.close: 'Shutdown phase: SessionDB close done at +%.2fs'
+gateway.skipping.cleanshutdown.marker.drain: 'Skipping .clean_shutdown marker — drain
+  timed out with '
+gateway.interrupted.agents.next.startup: 'interrupted agents; next startup will suspend
+  recently '
+gateway.active.sessions: active sessions.
+gateway.gateway.restart.requested: Gateway restart requested
+log.gateway.stopped.total.teardown: Gateway stopped (total teardown %.2fs)
+gateway.wait.shutdown.signal: Wait for shutdown signal.
+log.platform.registry.lookup: 'Platform registry lookup for '
+log.failed.s: ' failed: %s'
+log.telegram.pythontelegrambot.installed: 'Telegram: python-telegram-bot not installed'
+gateway.unknown.telegram.notifications.mode: 'Unknown telegram notifications mode '
+gateway.valid.all.important: ' (valid: all, important)'
+log.whatsapp.nodejs.installed.bridge: 'WhatsApp: Node.js not installed or bridge not
+  configured'
+log.slack.slackbolt.installed.run: 'Slack: slack-bolt not installed. Run: pip install '
+log.signal.signalhttpurl.signalaccount.configured: 'Signal: SIGNAL_HTTP_URL or SIGNAL_ACCOUNT
+  not configured'
+log.homeassistant.aiohttp.installed.hasstoken: 'HomeAssistant: aiohttp not installed
+  or HASS_TOKEN not set'
+log.email.emailaddress.emailpassword.emailimaphost: 'Email: EMAIL_ADDRESS, EMAIL_PASSWORD,
+  EMAIL_IMAP_HOST, or EMAIL_SMTP_HOST not set'
+log.sms.aiohttp.installed.twilioaccountsidtwilioauthtoken: 'SMS: aiohttp not installed
+  or TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN not set'
+log.dingtalk.dingtalkstream.installed.dingtalkclientidsecret: 'DingTalk: dingtalk-stream
+  not installed or DINGTALK_CLIENT_ID/SECRET not set'
+log.feishu.larkoapi.installed.feishuappidsecret: 'Feishu: lark-oapi not installed
+  or FEISHU_APP_ID/SECRET not set'
+log.wecomcallback.aiohttphttpxdefusedxml.installed: 'WeComCallback: aiohttp/httpx/defusedxml
+  not installed'
+log.wecom.aiohttp.installed.wecombotidsecret: 'WeCom: aiohttp not installed or WECOM_BOT_ID/SECRET
+  not set'
+log.weixin.aiohttpcryptography.installed: 'Weixin: aiohttp/cryptography not installed'
+log.matrix.mautrix.installed.credentials: 'Matrix: mautrix not installed or credentials
+  not set. Run: pip install '
+log.api.server.aiohttp.installed: 'API Server: aiohttp not installed'
+log.webhook.aiohttp.installed: 'Webhook: aiohttp not installed'
+log.msgraph.webhook.aiohttp.installed: 'MSGraph webhook: aiohttp not installed'
+log.bluebubbles.aiohttphttpx.missing.bluebubblesserverurlbluebubblespassword: 'BlueBubbles:
+  aiohttp/httpx missing or BLUEBUBBLES_SERVER_URL/BLUEBUBBLES_PASSWORD not configured'
+log.qqbot.aiohttphttpx.missing.qqappidqqclientsecret: 'QQBot: aiohttp/httpx missing
+  or QQ_APP_ID/QQ_CLIENT_SECRET not configured'
+log.yuanbao.websockets.installed.run: 'Yuanbao: websockets not installed. Run: pip
+  install websockets'
+gateway.lower.in_2: ).lower() in {
+gateway.lower.in_3: ).lower() in {
+gateway.telegramgroupallowedusers.contains.chatidshaped.values: 'TELEGRAM_GROUP_ALLOWED_USERS
+  contains chat-ID-shaped values '
+gateway.treating.chat.ids.backward: '(%s). Treating them as chat IDs for backward
+  compatibility. '
+gateway.move.chat.ids.telegramgroupallowedchats: 'Move chat IDs to TELEGRAM_GROUP_ALLOWED_CHATS
+  — the _USERS var '
+gateway.now.sender.user.ids: is now for sender user IDs.
+gateway.deliver.setupoperational.notice.using: Deliver a setup/operational notice
+  using platform-specific privacy rules.
+gateway.sendprivatenotice.failed.falling.back: '[%s] send_private_notice failed, falling
+  back to public'
+log.pregatewaydispatch.invocation.failed: 'pre_gateway_dispatch invocation failed:
+  %s'
+gateway.pregatewaydispatch.skip.reasons.platforms: 'pre_gateway_dispatch skip: reason=%s
+  platform=%s chat=%s'
+log.ignoring.message.userid: Ignoring message with no user_id from %s
+log.unauthorized.user: 'Unauthorized user: %s (%s) on %s'
+gateway.ask.bot.owner.runn: Ask the bot owner to run:\n
+gateway.too.many.pairing.requests: 'Too many pairing requests right now~ '
+gateway.please.try.again.later: Please try again later!
+log.failed.write.update.response: 'Failed to write update response: %s'
+gateway.failed.send.response.update: '✗ Failed to send response to update process:
+  {e}'
+gateway.sent.label.update.process: ✓ Sent `{label}` to the update process.
+gateway.recognized.during.pending.update: 'Recognized /%s during pending update prompt
+  for %s; '
+gateway.failed.write.cancel.response: 'Failed to write cancel response for pending
+  update prompt: %s'
+gateway.gateway.intercepted.clarify.text: Gateway intercepted clarify text response
+  (session=%s, id=%s)
+gateway.lastactivitysaget: ' | last_activity={_sa.get('
+gateway.staleidle0fs.ago: '({_stale_idle:.0f}s ago) '
+gateway.iterationsaget: '| iteration={_sa.get('
+gateway.0saget: ', 0)}/{_sa.get('
+gateway.evicting.stale.runningagents.entry: 'Evicting stale _running_agents entry
+  for %s '
+gateway.age.0fs.idle.0fs: '(age: %.0fs, idle: %.0fs, timeout: %.0fs)%s'
+log.stop.session.agent.interrupted: STOP for session %s — agent interrupted, session
+  lock released
+gateway.usage.queue.prompt: 'Usage: /queue <prompt>'
+gateway.queued.next.turn: Queued for the next turn.
+gateway.queued.next.turn.depth: Queued for the next turn. ({depth} queued)
+gateway.usage.steer.prompt: 'Usage: /steer <prompt>'
+gateway.agent.still.starting.steer: Agent still starting — /steer queued for the next
+  turn.
+log.steer.failed.session: 'Steer failed for session %s: %s'
+gateway.steer.queued.arrives.after: '⏩ Steer queued — arrives after the next tool
+  call: '
+gateway.steer.rejected.empty.payload: Steer rejected (empty payload).
+gateway.active.agent.steer.queued: No active agent — /steer queued for the next turn.
+gateway.agent.running.wait.stop: Agent is running — wait or /stop first, then switch
+  models.
+gateway.agent.running.wait.stop_1: 'Agent is running — wait or /stop first, then '
+gateway.change.runtime: change runtime.
+gateway.agent.running.use.goal: Agent is running — use /goal status / pause / clear
+  mid-run, or /stop before setting a new goal.
+gateway.agent.running.cmddefinnername.can: ⏳ Agent is running — `/{_cmd_def_inner.name}`
+  can
+gateway.midturn.wait.current.response: mid-turn. Wait for the current response or
+  `/stop` first.
+log.priority.photo.followup.session: PRIORITY photo follow-up for session %s — queueing
+  without interrupt
+gateway.telegram.followup.arrived.2fs: Telegram follow-up arrived %.2fs after run
+  start for %s — queueing without interrupt
+log.hard.stop.pending.session: HARD STOP (pending) for session %s — sentinel cleared
+gateway.forcestopped.agent.still.starting: ⚡ Force-stopped. The agent was still starting
+  — session unlocked.
+log.priority.queue.followup.session: PRIORITY queue follow-up for session %s
+log.priority.steer.failed.session: 'PRIORITY steer failed for session %s: %s'
+log.priority.steer.session: PRIORITY steer for session %s
+log.priority.steerfallbacktoqueue.session: PRIORITY steer-fallback-to-queue for session
+  %s
+gateway.priority.interrupt.demoted.queue: 'PRIORITY interrupt demoted to queue for
+  session %s '
+log.priority.interrupt.session: PRIORITY interrupt for session %s
+gateway.commands.hook.dispatch.failed: 'command:%s hook dispatch failed (non-fatal):
+  %s'
+gateway.command.command.blocked.hook: Command `/{command}` was blocked by a hook.
+gateway.starts.fresh.session.discards: 'This starts a fresh session and discards the
+  current '
+gateway.conversation.history: conversation history.
+gateway.removes.last.userassistant.exchange: This removes the last user/assistant
+  exchange from history.
+gateway.usage.steer.prompt.agent: 'Usage: /steer <prompt>  (no agent is running; sending
+  as a normal message)'
+gateway.command.returned.output: Command returned no output.
+gateway.quick.command.timed.out: Quick command timed out (30s).
+error.quick.command.error: 'Quick command error: {e}'
+gateway.quick.command: 'Quick command '
+gateway.command.defined: ' has no command defined.'
+gateway.quick.command_1: 'Quick command '
+gateway.target.defined: ' has no target defined.'
+gateway.quick.command_2: 'Quick command '
+gateway.unsupported.type.supported: ' has unsupported type (supported: '
+log.plugin.command.dispatch.failed: 'Plugin command dispatch failed (non-fatal): %s'
+gateway.bundle.skipped.missing.skills: 'Bundle %s skipped missing skills: %s'
+log.bundle.dispatch.failed.nonfatal: 'Bundle dispatch failed (non-fatal): %s'
+gateway.skillname.skill.disabled.platn: The **{_skill_name}** skill is disabled for
+  {_plat}.\n
+gateway.enable.hermes.skills.config_1: 'Enable it with: `hermes skills config`'
+gateway.unrecognized.slash.command: 'Unrecognized slash command /%s from %s — '
+gateway.unknown.command.command: 'Unknown command `/{command}`. '
+gateway.type.commands.see.what: Type /commands to see what
+gateway.regular.message: as a regular message.
+log.skill.command.check.failed: 'Skill command check failed (non-fatal): %s'
+log.goal.continuation.hook.failed: 'goal continuation hook failed: %s'
+gateway.sourceusername.messagetext: '[{source.user_name}] {message_text}'
+gateway.eventchannelcontextnnnew.messagenmessagetext: '{event.channel_context}\n\n[New
+  message]\n{message_text}'
+gateway.image.routing.native.model: 'Image routing: native (model supports vision).
+  %d image(s) will be attached inline.'
+gateway.image.routing.text.modes: 'Image routing: text (mode=%s). Pre-analyzing %d
+  image(s) via vision_analyze.'
+gateway.stt.provider: No STT provider
+gateway.stt.disabled: STT is disabled
+gateway.received.voice.message.can: 🎤 I received your voice message but can
+gateway.speechtotext.provider.configurednn: no speech-to-text provider is configured.\n\n
+gateway.enable.voice.install.fasterwhisper: 'To enable voice: install faster-whisper '
+gateway.pip.install.fasterwhisper.hermes: '(`pip install faster-whisper` in the Hermes
+  venv) '
+gateway.set.sttenabled.true.configyaml: 'and set `stt.enabled: true` in config.yaml, '
+gateway.then.restart.gateway: then /restart the gateway.
+gateway.nnfor.full.setup.instructions: '\n\nFor full setup instructions, type: `/skill
+  hermes-agent-setup`'
+gateway.user.sent.audio.file: '[The user sent an audio file attachment: '
+gateway.saved.agentpath: 'It is saved at: {_agent_path}. '
+gateway.ask.user.what: Ask the user what they
+gateway.user.sent.text.document: '[The user sent a text document: '
+gateway.content.included.below: 'Its content has been included below. '
+gateway.file.also.saved.agentpath: 'The file is also saved at: {agent_path}]'
+gateway.user.sent.document: '[The user sent a document: '
+gateway.file.saved.agentpath: 'The file is saved at: {agent_path}. '
+gateway.ask.user.what_1: Ask the user what they
+gateway.replying.to: '[Replying to: '
+warn.context.injection.refused: Context injection refused.
+log.context.reference.expansion.failed: '@ context reference expansion failed: %s'
+log.failed.cache.live.session: Failed to cache live session source for %s
+gateway.inner.handler.runs.under: Inner handler that runs under the _running_agents
+  sentinel guard.
+gateway.inbound.message.platforms.users: 'inbound message: platform=%s user=%s chat=%s
+  msg=%r'
+gateway.telegram.topic.recovery.chats: 'telegram topic recovery: chat=%s user=%s %r
+  -> %s'
+log.failed.read.telegram.topic_1: Failed to read Telegram topic binding
+log.failed.record.telegram.topic: Failed to record Telegram topic binding
+gateway.system.note.user: '[System note: The user'
+gateway.system.note.user_1: '[System note: The user'
+gateway.system.note.user_2: '[System note: The user'
+gateway.daily.schedule.policyathour00: daily schedule at {policy.at_hour}:00
+gateway.session.automatically.reset.reasontext: '◐ Session automatically reset ({reason_text}). '
+gateway.conversation.history.clearedn: Conversation history cleared.\n
+gateway.use.resume.browse.restore: Use /resume to browse and restore a previous session.\n
+gateway.adjust.reset.timing.configyaml: Adjust reset timing in config.yaml under session_reset.
+log.autoreset.notification.failed.nonfatal: 'Auto-reset notification failed (non-fatal):
+  %s'
+gateway.important.the: '[IMPORTANT: The '
+gateway.skill.autoloaded: ' skill is auto-loaded. '
+gateway.follow.instructions.session: Follow its instructions for this session.]
+log.gateway.autoskill: '[Gateway] Auto-skill '
+gateway.gateway.autoloaded.skills.session: '[Gateway] Auto-loaded skill(s) %s for
+  session %s'
+log.gateway.failed.autoload.skills: '[Gateway] Failed to auto-load skill(s) %s: %s'
+gateway.session.hygiene.messages.tokens: 'Session hygiene: %s messages, ~%s tokens
+  (%s) — auto-compressing '
+gateway.threshold.tokens: '(threshold: %s%% of %s = %s tokens)'
+gateway.session.hygiene.compressed.msgs: 'Session hygiene: compressed %s → %s msgs, '
+gateway.session.hygiene.still.tokens: 'Session hygiene: still ~%s tokens after '
+gateway.context.compression.aborted: '⚠️ Context compression aborted '
+gateway.err.messages.dropped: '({_err}). No messages were dropped — '
+gateway.conversation.unchanged.run.compress: 'conversation is unchanged. Run /compress '
+gateway.retry.reset.clean.session: 'to retry, /reset for a clean session, or '
+gateway.check.auxiliarycompression.model: 'check your auxiliary.compression model '
+warn.failed.deliver.compressionfailure.warning: 'Failed to deliver compression-failure
+  warning to user: %s'
+gateway.configured.compression.model.auxmodel: 'ℹ️ Configured compression model `{_aux_model}` '
+gateway.failed.auxerr.recovered.using: 'failed ({_aux_err}). Recovered using your
+  main '
+gateway.check.auxiliarycompressionmodel.configyaml: check `auxiliary.compression.model`
+  in config.yaml.
+gateway.failed.deliver.auxmodelfallback.notice: 'Failed to deliver aux-model-fallback
+  notice to user: %s'
+gateway.session.hygiene.autocompress.failed: 'Session hygiene auto-compress failed:
+  %s'
+gateway.nnsystem.note.user: '\n\n[System note: This is the user'
+gateway.briefly.introduce.yourself.mention: 'Briefly introduce yourself and mention
+  that /help shows available commands. '
+gateway.keep.introduction.concise.one: Keep the introduction concise -- one or two
+  sentences max.]
+gateway.home.channel.set.platformnametitle: '📬 No home channel is set for {platform_name.title()}. '
+gateway.home.channel.where.hermes: 'A home channel is where Hermes delivers cron job
+  results '
+gateway.crossplatform.messagesnn: and cross-platform messages.\n\n
+gateway.type.sethomecmd.make.chat: 'Type {sethome_cmd} to make this chat your home
+  channel, '
+gateway.ignore.skip: or ignore to skip.
+gateway.discarding.stale.agent.result: Discarding stale agent result for %s — generation
+  %d is no longer current
+gateway.model.returned.response.after: '⚠️ The model returned no response after processing
+  tool '
+gateway.results.can.happen.some: 'results. This can happen with some models — try
+  again or '
+gateway.rephrase.question: rephrase your question.
+gateway.response.ready.platforms.chats: 'response ready: platform=%s chat=%s time=%.1fs
+  api_calls=%d response=%d chars'
+gateway.clearresumepending.failed: 'clear_resume_pending failed for %s: %s'
+gateway.lenlines.more.lines: \n_... ({len(lines) - 15} more lines)_
+log.runtimefooter.build.failed: 'runtime_footer build failed: %s'
+log.process.watcher.setup.error: 'Process watcher setup error: %s'
+log.watch.notification.injection.error: 'Watch notification injection error: %s'
+log.watch.queue.drain.error: 'Watch queue drain error: %s'
+gateway.skipping.transcript.persistence.contextoverflow: 'Skipping transcript persistence
+  for context-overflow '
+gateway.failure.session.prevent.session: failure in session %s to prevent session
+  growth loop.
+gateway.transient.agent.failure.session: 'Transient agent failure in session %s —
+  persisting user '
+gateway.message.conversation.context.preserved: message so conversation context is
+  preserved on retry.
+gateway.autoresetting.session.after.compression: Auto-resetting session %s after compression
+  exhaustion.
+gateway.session.autoreset.conversation.exceeded: '\n\n🔄 Session auto-reset — the conversation
+  exceeded the '
+gateway.maximum.context.size.compressed: 'maximum context size and could not be compressed
+  further. '
+gateway.next.message.start.fresh: Your next message will start a fresh session.
+log.trailing.footer.send.failed: 'trailing footer send failed: %s'
+log.agent.error.session: Agent error in session %s
+log.check.api.key.run: ' Check your API key or run `claude /login` to refresh OAuth
+  credentials.'
+gateway.api.balance.quota.exhausted: ' Your API balance or quota is exhausted. Check
+  your provider dashboard.'
+gateway.ratelimited.please.wait.moment: ' You are being rate-limited. Please wait
+  a moment and try again.'
+gateway.api.temporarily.overloaded.please: ' The API is temporarily overloaded. Please
+  try again shortly.'
+gateway.session.too.large.model_1: ⚠️ Session too large for the model
+gateway.use.compact.compress.conversation_1: 'Use /compact to compress the conversation,
+  or '
+gateway.reset.start.fresh_1: /reset to start fresh.
+gateway.request.rejected.api: ' The request was rejected by the API.'
+error.sorry.encountered.error.errortypen: Sorry, I encountered an error ({error_type}).\n
+gateway.try.again.use.reset_1: Try again or use /reset to start a fresh session.
+gateway.default.set.modelcontextlength.config: default — set model.context_length
+  in config to override
+gateway.contextlength.10000001fm: '{context_length / 1_000_000:.1f}M'
+gateway.contextlength.1000k: '{context_length // 1_000}K'
+gateway.handle.new.reset.command: Handle /new or /reset command.
+log.failed.rebind.telegram.topic: Failed to rebind Telegram topic after /new
+gateway.handle.profile.show.active: Handle /profile — show active profile name and
+  home directory.
+gateway.slash.command.denied.admin: Slash command /%s denied for %s:%s (not admin,
+  not in user_allowed_commands)
+gateway.can.run: 'You can run: '
+gateway.use.whoami.full.list: . Use /whoami for the full list.
+gateway.slash.commands.enabled.nonadmins: 'No slash commands are enabled for non-admins
+  on this '
+gateway.platform.ask.admin.add: 'platform. Ask an admin to add you to allow_admin_from '
+gateway.set.userallowedcommands: or to set user_allowed_commands.
+gateway.canonicalcmd.adminonly.here.suffix: ⛔ /{canonical_cmd} is admin-only here.
+  {suffix}
+gateway.handle.whoami.show.user: Handle /whoami — show the user
+gateway.platform.scopen: '**You** — {platform} ({scope})\n'
+gateway.user.useridn: 'User ID: `{user_id}`\n'
+gateway.tier.unrestricted.admin.list: 'Tier: unrestricted (no admin list configured
+  for this scope)\n'
+gateway.slash.commands.all.available: 'Slash commands: all available'
+gateway.platform.scopen_1: '**You** — {platform} ({scope})\n'
+gateway.user.useridn_1: 'User ID: `{user_id}`\n'
+gateway.tier.adminn: 'Tier: **admin**\n'
+gateway.slash.commands.all.available_1: 'Slash commands: all available'
+gateway.platform.scopen_2: '**You** — {platform} ({scope})\n'
+gateway.user.useridn_2: 'User ID: `{user_id}`\n'
+gateway.tier.usern: 'Tier: user\n'
+gateway.slash.commands.can.run: 'Slash commands you can run: {runnable_str}'
+log.kanban.create.autosubscribe.failed: 'kanban create auto-subscribe failed: %s'
+gateway.handle.status.command: Handle /status command.
+gateway.ymd.hm: '%Y-%m-%d %H:%M'
+gateway.ymd.hm_1: '%Y-%m-%d %H:%M'
+log.buildrecap.failed.status: 'build_recap failed in /status: %s'
+gateway.handle.agents.command.list: Handle /agents command - list active agents and
+  running tasks.
+gateway.ispending.else.strgetattragent: ' if is_pending else str(getattr(agent, '
+gateway.ispending.else.strgetattragent_1: ' if is_pending else str(getattr(agent, '
+gateway.idx.row: '{idx}. `{row['
+gateway.procget: '- `{proc.get('
+gateway.0.cmd: ', 0)))} · `{cmd}`'
+log.stop.pending.session.sentinel: STOP (pending) for session %s — sentinel cleared
+gateway.gateway.platforms: '**Gateway platforms**'
+gateway.connected: 'Connected: '
+gateway.connected.none: 'Connected: (none)'
+gateway.pvalue.paused.reason: '  · {p.value} — PAUSED ({reason}). '
+gateway.resume.platform.resume.pvalue: Resume with `/platform resume {p.value}`.
+gateway.pvalue.retrying.attempt.attempts: '  · {p.value} — retrying (attempt {attempts})'
+gateway.failedpaused.none: 'Failed/paused: (none)'
+gateway.usage.platform.action.name: 'Usage: /platform {action} <name>'
+gateway.unknown.platform.target: 'Unknown platform: {target}'
+gateway.platformvalue.retry.queue: '{platform.value} is not in the retry queue '
+gateway.platformvalue.already.paused: '{platform.value} is already paused.'
+gateway.platformvalue.paused: '✓ {platform.value} paused. '
+gateway.resume.platform.resume.platformvalue: 'Resume with `/platform resume {platform.value}`
+  or '
+gateway.hermes.gateway.restart.reset: '`hermes gateway restart` to reset.'
+gateway.platformvalue.retry.queue_1: '{platform.value} is not in the retry queue — '
+gateway.nothing.resume: nothing to resume.
+gateway.platformvalue.already.retrying: '{platform.value} is already retrying — '
+gateway.resume.needed: no resume needed.
+gateway.platformvalue.resumed.retrying.next: ✓ {platform.value} resumed — retrying
+  on next watcher tick.
+gateway.usage.platform.listpauseresume.namen: 'Usage: /platform <list|pause|resume>
+  [name]\n'
+gateway.handle.restart.command.drain: Handle /restart command - drain active work,
+  then restart the gateway.
+gateway.ignoring.redelivered.restart.platforms: 'Ignoring redelivered /restart (platform=%s,
+  update_id=%s) — '
+gateway.already.processed.previous.gateway: already processed by a previous gateway
+  instance.
+log.failed.write.restart.notify: 'Failed to write restart notify file: %s'
+log.failed.write.restart.dedup: 'Failed to write restart dedup marker: %s'
+gateway.handle.help.command.list: Handle /help command - list available commands.
+gateway.strip.or.t: ).strip() or t(
+gateway.perform.model.switch.return: Perform the model switch and return confirmation
+  text.
+log.picker.model.switch.failed: 'Picker model switch failed for cached agent: %s'
+gateway.note.model.just.switched: '[Note: model was just switched from {_cur_model}
+  to {result.new_model} '
+gateway.via.resultproviderlabel.resulttargetprovider: 'via {result.provider_label
+  or result.target_provider}. '
+gateway.adjust.selfidentification.accordingly: Adjust your self-identification accordingly.]
+log.inplace.model.switch.failed: 'In-place model switch failed for cached agent: %s'
+gateway.note.model.just.switched_1: '[Note: model was just switched from {current_model}
+  to {result.new_model} '
+gateway.via.resultproviderlabel.resulttargetprovider_1: 'via {result.provider_label
+  or result.target_provider}. '
+gateway.adjust.selfidentification.accordingly_1: Adjust your self-identification accordingly.]
+log.failed.persist.model.switch: 'Failed to persist model switch: %s'
+gateway.prefix.resultmessage: '{prefix} {result.message}'
+gateway.handle.personality.command.list: Handle /personality command - list or set
+  a personality.
+gateway.tone.value: 'Tone: {value['
+gateway.style.value: 'Style: {value['
+gateway.handle.retry.command.resend: Handle /retry command - re-send the last user
+  message.
+log.goal.manager.unavailable: 'goal manager unavailable: %s'
+log.goal.manager.session.lookup: 'goal manager: session lookup failed: %s'
+log.goal.pause.pending.continuation: 'goal pause: pending continuation cleanup failed:
+  %s'
+log.goal.clear.pending.continuation: 'goal clear: pending continuation cleanup failed:
+  %s'
+log.goal.kickoff.enqueue.failed: 'goal kickoff enqueue failed: %s'
+gateway.active.goal.set.one: No active goal. Set one with /goal <text>.
+gateway.usage.subgoal.remove: 'Usage: /subgoal remove <n>'
+gateway.subgoal.remove.integer.1based: '/subgoal remove: <n> must be an integer (1-based
+  index).'
+gateway.subgoal.remove.exc: '/subgoal remove: {exc}'
+gateway.removed.subgoal.idx.removed: '✓ Removed subgoal {idx}: {removed}'
+gateway.subgoal.clear.exc: '/subgoal clear: {exc}'
+gateway.cleared.prev.subgoal: ✓ Cleared {prev} subgoal{
+gateway.prev.else: ' if prev != 1 else '
+gateway.subgoals.clear: No subgoals to clear.
+gateway.subgoal.exc: '/subgoal: {exc}'
+gateway.added.subgoal.idx.text: '✓ Added subgoal {idx}: {text}'
+gateway.send.goal.judge.status: Send a /goal judge status line back to the originating
+  chat/thread.
+log.goal.continuation.adapter: 'goal continuation: no adapter for %s'
+gateway.goal.continuation.status.send: 'goal continuation: status send failed: %s'
+log.goal.continuation.adapter_1: 'goal continuation: no adapter for %s'
+log.goal.continuation.status.send: 'goal continuation: status send failed: %s'
+log.goal.continuation.postdelivery.callback: 'goal continuation: post-delivery callback
+  registration failed: %s'
+log.goal.continuation.goals.module: 'goal continuation: goals module unavailable:
+  %s'
+log.goal.continuation.enqueue.failed: 'goal continuation: enqueue failed: %s'
+gateway.handle.undo.command.remove: Handle /undo command - remove the last user/assistant
+  exchange.
+gateway.handle.sethome.command.set: Handle /sethome command -- set the current chat
+  as the platform
+gateway.extract.discord.guildid.raw: Extract Discord guild_id from the raw message
+  object.
+gateway.handle.voice.onoffttschannelleavestatus.command: Handle /voice [on|off|tts|channel|leave|status]
+  command.
+gateway.join.user: Join the user
+gateway.voice.channels.supported.platform: Voice channels are not supported on this
+  platform.
+gateway.command.only.works.discord: This command only works in a Discord server.
+gateway.need.voice.channel.first: You need to be in a voice channel first.
+log.failed.join.voice.channel: 'Failed to join voice channel: %s'
+gateway.voice.dependencies.missing.pynacl: 'Voice dependencies are missing (PyNaCl
+  / davey). '
+gateway.install.sysexecutable.pip.install: 'Install with: `{sys.executable} -m pip
+  install PyNaCl`'
+gateway.failed.join.voice.channel: 'Failed to join voice channel: {e}'
+gateway.joined.voice.channel.voicechannelnamen: Joined voice channel **{voice_channel.name}**.\n
+gateway.failed.join.voice.channel_1: Failed to join voice channel. Check bot permissions
+  (Connect + Speak).
+gateway.leave.discord.voice.channel: Leave the Discord voice channel.
+gateway.voice.channel: Not in a voice channel.
+gateway.voice.channel_1: Not in a voice channel.
+log.error.leaving.voice.channel: 'Error leaving voice channel: %s'
+gateway.left.voice.channel: Left voice channel.
+log.unauthorized.voice.input.user: Unauthorized voice input from user %d, ignoring
+gateway.suppressing.duplicate.voice.transcript: 'Suppressing duplicate voice transcript
+  for guild=%s user=%s: %s'
+gateway.voice.userid.safetext: '**[Voice]** <@{user_id}>: {safe_text}'
+gateway.generate.tts.audio.send: Generate TTS audio and send as a voice message before
+  the text reply.
+log.auto.voice.reply.tts: 'Auto voice reply TTS returned invalid JSON: %s'
+log.auto.voice.reply.tts_1: 'Auto voice reply TTS failed: %s'
+log.auto.voice.reply.failed: 'Auto voice reply failed: %s'
+log.poststream.image.batch.delivery: '[%s] Post-stream image batch delivery failed:
+  %s'
+log.poststream.media.delivery.failed: '[%s] Post-stream media delivery failed: %s'
+log.poststream.file.delivery.failed: '[%s] Post-stream file delivery failed: %s'
+log.poststream.media.extraction.failed: 'Post-stream media extraction failed: %s'
+gateway.handle.rollback.command.list: Handle /rollback command — list or restore filesystem
+  checkpoints.
+gateway.execute.background.agent.task: Execute a background agent task and deliver
+  the result to the chat.
+log.adapter.platform.background.task: No adapter for platform %s in background task
+  %s
+log.background.task.vision.enrichment: 'Background task vision enrichment failed:
+  %s'
+error.error.result: 'Error: {result['
+gateway.background.task.completenprompt: '✅ Background task complete\nPrompt: '
+gateway.response.generated: (No response generated)
+gateway.background.task.completenprompt_1: '✅ Background task complete\nPrompt: '
+gateway.nnno.response.generated: \n\n(No response generated)
+log.background.task.failed: Background task %s failed
+gateway.save.dotseparated.key.configyaml: Save a dot-separated key to config.yaml.
+log.failed.save.config.key: 'Failed to save config key %s: %s'
+gateway.handle.fast.mirror.cli: Handle /fast — mirror the CLI Priority Processing
+  toggle in gateway chats.
+gateway.save.dotseparated.key.configyaml_1: Save a dot-separated key to config.yaml.
+log.failed.save.config.key_1: 'Failed to save config key %s: %s'
+gateway.handle.yolo.toggle.dangerous: Handle /yolo — toggle dangerous command approval
+  bypass for this session only.
+log.failed.save.toolprogress.mode: 'Failed to save tool_progress mode: %s'
+log.failed.save.runtimefooterenabled: 'Failed to save runtime_footer.enabled: %s'
+log.manual.compress.failed: 'Manual compress failed: %s'
+gateway.read.telegram.privatetopic.capability: Read Telegram private-topic capability
+  flags via Bot API getMe.
+log.failed.fetch.telegram.getme: Failed to fetch Telegram getMe topic capabilities
+gateway.createpin.managed.system.topic: Create/pin the managed System topic after
+  /topic activation when possible.
+log.failed.create.telegram.system: Failed to create Telegram System topic
+gateway.system.topic.hermes.commands: System topic for Hermes commands and status.
+log.failed.send.telegram.system: Failed to send Telegram System topic intro
+log.failed.pin.telegram.system: Failed to pin Telegram System topic intro
+gateway.send.bundled.botfather.threads: Send the bundled BotFather Threads Settings
+  screenshot when available.
+gateway.botfather.bot.settings.threads: BotFather → Bot Settings → Threads Settings
+log.failed.send.telegram.topic: Failed to send Telegram topic setup image
+gateway.return.bot.apisafe.forum: Return a Bot API-safe forum topic name from a generated
+  session title.
+gateway.hermes.chat: Hermes Chat
+gateway.besteffort.rename.telegram.topic: Best-effort rename of a Telegram DM topic
+  when Hermes auto-titles a session.
+log.failed.verify.telegram.topic: Failed to verify Telegram topic binding before rename
+log.failed.rename.telegram.topic: Failed to rename Telegram topic for auto-generated
+  title
+gateway.schedule.topic.rename.autotitle: Schedule a topic rename from the auto-title
+  background thread.
+log.telegram.topic.title.rename: Telegram topic title rename failed to schedule
+log.telegram.topic.title.rename_1: Telegram topic title rename failed
+gateway.topic.enable.multisession.mode: /topic — enable multi-session DM mode (one
+  bot, many parallel chats)\n
+gateway.topic.enable.topic.mode: '  /topic             Enable topic mode, or show
+  status if already on\n'
+gateway.topic.help.show.messagen: '  /topic help        Show this message\n'
+gateway.topic.off.disable.topic: '  /topic off         Disable topic mode and clear
+  topic bindings\n'
+gateway.topic.inside.topic.restore: '  /topic <id>        Inside a topic: restore
+  a previous session by ID\n'
+gateway.how.worksn: How it works:\n
+gateway.run.topic.once.hermes: 1. Run /topic once in this DM — Hermes checks BotFather
+  Threads\n
+gateway.settings.enabled.flips.multisession: '   Settings are enabled and flips on
+  multi-session mode.\n'
+gateway.tap.all.messages.top: 2. Tap All Messages at the top of the bot and send any
+  message.\n
+gateway.telegram.creates.new.topic: '   Telegram creates a new topic for that message;
+  each topic is\n'
+gateway.independent.hermes.session.fresh: '   an independent Hermes session (fresh
+  history, fresh context).\n'
+gateway.root.becomes.system.lobby: 3. The root DM becomes a system lobby — send /topic,
+  /status,\n
+gateway.help.usage.there.normal: '   /help, /usage there. Normal prompts go in a topic.\n'
+gateway.new.inside.topic.resets: 4. /new inside a topic resets just that topic
+gateway.topic.inside.topic.restores: 5. /topic <id> inside a topic restores an old
+  session into it.
+gateway.cleanly.disable.topic.mode: Cleanly disable topic mode for a chat via /topic
+  off.
+gateway.determine.chat: Could not determine chat ID.
+gateway.multisession.topic.mode.currently: Multi-session topic mode is not currently
+  enabled for this chat.
+log.failed.disable.telegram.topic: Failed to disable Telegram topic mode
+gateway.failed.disable.topic.mode: 'Failed to disable topic mode: {exc}'
+gateway.multisession.topic.mode.now: Multi-session topic mode is now OFF for this
+  chat.\n\n
+gateway.existing.topics.telegram.aren: Existing topics in Telegram aren
+gateway.gated.independent.sessions.root: 'being gated as independent sessions. The
+  root DM works as a '
+gateway.normal.hermes.chat.again: normal Hermes chat again. Run /topic to re-enable
+  later.
+gateway.handle.topic.telegram.usermanaged: Handle /topic for Telegram DM user-managed
+  topic sessions.
+log.topic.auth.check.failed: Topic auth check failed
+log.failed.enable.telegram.topic: Failed to enable Telegram topic mode
+log.failed.read.telegram.topic_2: Failed to read Telegram topic binding
+gateway.telegram.multisession.topics.enabled: Telegram multi-session topics are enabled.
+gateway.create.new.hermes.chat: 'To create a new Hermes chat, open All Messages at
+  the top of this '
+gateway.bot.interface.send.any_1: 'bot interface and send any message there. Telegram
+  will create a '
+gateway.new.topic: new topic for it.
+log.failed.list.unlinked.telegram: Failed to list unlinked Telegram sessions
+gateway.previous.unlinked.sessions: 'Previous unlinked sessions:'
+gateway.untitled.session: Untitled session
+gateway.restore.one: 'To restore one:'
+gateway.create.open.topic.create: 1. Create or open a topic. To create a new one,
+  open All Messages and send any message there.
+gateway.send.topic.sessionid.inside: 2. Send /topic <session-id> inside that topic.
+gateway.example.send.topic.sessions0get: 'Example: Send /topic {sessions[0].get('
+gateway.inside.topic: )} inside a topic.
+gateway.previous.unlinked.telegram.sessions: No previous unlinked Telegram sessions
+  found.
+gateway.restore.previous.session.later: 'To restore a previous session later:'
+gateway.create.open.topic.create_1: 1. Create or open a topic. To create a new one,
+  open All Messages and send any message there.
+gateway.send.topic.sessionid.inside_1: 2. Send /topic <session-id> inside that topic.
+gateway.restore.existing.telegramowned.hermes: Restore an existing Telegram-owned
+  Hermes session into this topic.
+gateway.session.found.rawsessionidstrip: 'Session not found: {raw_session_id.strip()}'
+gateway.session.found.rawsessionidstrip_1: 'Session not found: {raw_session_id.strip()}'
+gateway.session.telegram.session.cannot: That session is not a Telegram session and
+  cannot be restored into this topic.
+gateway.session.belong.telegram.user: That session does not belong to this Telegram
+  user.
+gateway.session.already.linked.another: That session is already linked to another
+  Telegram topic.
+gateway.session.already.linked.another_1: That session is already linked to another
+  Telegram topic.
+gateway.session.restored.title: 'Session restored: {title}'
+gateway.nnlast.hermes.messagenlastassistant: \n\nLast Hermes message:\n{last_assistant}
+gateway.handle.title.command.set: Handle /title command — set or show the current
+  session
+gateway.handle.resume.command.list: Handle /resume command — list or switch to a previous
+  session.
+log.failed.list.titled.sessions: 'Failed to list titled sessions: %s'
+log.failed.list.titled.sessions_1: 'Failed to list titled sessions for numeric resume:
+  %s'
+log.failed.resolve.resume.continuation: 'Failed to resolve resume continuation for
+  %s: %s'
+log.failed.create.branch.session: 'Failed to create branch session: %s'
+gateway.handle.insights.command.show: Handle /insights command -- show usage insights
+  and analytics.
+log.insights.command.error: 'Insights command error: %s'
+gateway.always.approve: Always Approve
+gateway.user.opted.out.reloadmcp: User opted out of /reload-mcp confirmation (session=%s)
+log.failed.persist.mcpreloadconfirmfalse: 'Failed to persist mcp_reload_confirm=false:
+  %s'
+gateway.failed.update.cached.agent: 'Failed to update cached agent tools after MCP
+  reload: %s'
+gateway.added.servers: 'Added servers: {'
+gateway.removed.servers: 'Removed servers: {'
+gateway.reconnected.servers: 'Reconnected servers: {'
+gateway.lennewtools.mcp.tools.now: '{len(new_tools)} MCP tool(s) now available'
+gateway.mcp.tools.available: No MCP tools available
+gateway.important.mcp.servers.reloaded: '[IMPORTANT: MCP servers have been reloaded.
+  {change_detail}{tool_summary}. The tool list for this conversation has been updated
+  accordingly.]'
+log.mcp.reload.failed: 'MCP reload failed: %s'
+gateway.adapter.refreshskillgroup.raised: 'Adapter %s refresh_skill_group raised:
+  %s'
+gateway.user.initiated.skills.reload: '[USER INITIATED SKILLS RELOAD:'
+gateway.added.skills: 'Added Skills:'
+gateway.removed.skills: 'Removed Skills:'
+log.use.skillslist.see.updated: Use skills_list to see the updated catalog.]
+log.skills.reload.failed: 'Skills reload failed: %s'
+log.bundles.command.unavailable: 'Bundles command unavailable: %s'
+gateway.bundles.subsystem.unavailable.exc: 'Bundles subsystem unavailable: {exc}'
+gateway.skill.bundles.installedn: No skill bundles installed.\n
+gateway.create.one.host.withn: Create one on the host with:\n
+gateway.directory.bundlesdir: 'Directory: `{_bundles_dir()}`'
+gateway.skill.bundles.lenbundles.installed: '**Skill Bundles** ({len(bundles)} installed):'
+gateway.load.skillcount.skills: Load {skill_count} skills
+gateway.invoke.bundle.slug.load: Invoke a bundle with `/<slug>` to load all its skills.
+gateway.command.cancelled.conversation.unchanged: 🟡 /{command} cancelled. Conversation
+  unchanged.
+gateway.user.opted.out.destructive: User opted out of destructive slash confirm (session=%s)
+gateway.failed.persist.destructiveslashconfirmfalse: 'Failed to persist destructive_slash_confirm=false:
+  %s'
+gateway.future.clear.new.reset: '\n\nℹ️ Future /clear, /new, /reset, and /undo will
+  run '
+gateway.without.confirmation.reenable.via: 'without confirmation. Re-enable via '
+gateway.approvalsdestructiveslashconfirm.true.configyaml: '`approvals.destructive_slash_confirm:
+  true` in config.yaml.'
+gateway.approve.once.proceed.time: • **Approve Once** — proceed this time only\n
+gateway.always.approve.proceed.silence: • **Always Approve** — proceed and silence
+  this prompt permanently\n
+gateway.cancel.keep.current.conversationnn: • **Cancel** — keep current conversation\n\n
+gateway.text.fallback.reply.approve: '_Text fallback: reply `/approve`, `/always`,
+  or `/cancel`._'
+gateway.sendslashconfirm.failed: 'send_slash_confirm failed for %s on %s: %s'
+gateway.read.user: Read the user
+gateway.always.approve_1: Always Approve
+gateway.build.metadata.dict.platforms: Build the metadata dict platforms need for
+  thread-aware replies.
+gateway.return.platformspecific.reply.anchor: Return the platform-specific reply anchor
+  for GatewayRunner sends.
+log.user.approved.dangerous.commands: User approved %d dangerous command(s) via /approve
+  (%s)
+log.user.denied.dangerous.commands: User denied %d dangerous command(s) via /deny
+gateway.labellabelwidth.url: '`{label:<{label_width}}`  {url}'
+gateway.pythonunbuffered1.hermescmdstr.update.gateway: PYTHONUNBUFFERED=1 {hermes_cmd_str}
+  update --gateway
+gateway.shlexquotestroutputpath.21: ' > {shlex.quote(str(output_path))} 2>&1; '
+gateway.rc.printf: 'rc=$?; printf '
+gateway.shlexquotestrexitcodepath: ' > {shlex.quote(str(exit_code_path))}'
+gateway.ensure.background.task.watching: Ensure a background task is watching for
+  update completion.
+log.skipping.update.notification.watcher: 'Skipping update notification watcher: no
+  running event loop'
+log.update.watcher.cannot.resolve: 'Update watcher: cannot resolve adapter/chat_id,
+  falling back to completion-only'
+gateway.send.buffered.output.user: Send buffered output to the user.
+log.update.stream.send.failed: 'Update stream send failed: %s'
+gateway.hermes.update.finished: ✅ Hermes update finished.
+gateway.hermes.update.failed.exit: ❌ Hermes update failed (exit code {}).
+log.update.finished.exits.notified: Update finished (exit=%s), notified %s
+log.update.final.notification.failed: 'Update final notification failed: %s'
+log.buttonbased.update.prompt.failed: 'Button-based update prompt failed: %s'
+gateway.default.default: ' (default: {default})'
+gateway.update.needs.inputnn: ⚕ **Update needs your input:**\n\n
+gateway.reply.approve.yes.deny: 'Reply `/approve` (yes) or `/deny` (no), '
+gateway.type.answer.directly: or type your answer directly.
+log.forwarded.update.prompt: 'Forwarded update prompt to %s: %s'
+log.failed.read.update.prompt: 'Failed to read update prompt: %s'
+log.update.watcher.timed.out: Update watcher timed out after %.0fs
+gateway.hermes.update.timed.out: ❌ Hermes update timed out after 30 minutes.
+log.update.notification.deferred.update: 'Update notification deferred: update still
+  running'
+gateway.hermes.update.finished.successfully: ✅ Hermes update finished successfully.
+log.hermes.update.failed.check: ❌ Hermes update failed. Check the gateway logs or
+  run `hermes update` manually for details.
+gateway.sent.postupdate.notification.exits: Sent post-update notification to %s:%s
+  (exit=%s)
+log.postupdate.notification.failed: 'Post-update notification failed: %s'
+gateway.notify.chat.initiated.restart: Notify the chat that initiated /restart that
+  the gateway is back.
+gateway.restart.notification.skipped.adapter: 'Restart notification skipped: %s adapter
+  not connected'
+gateway.restart.notification.suppressed.gatewayrestartnotificationfalse: 'Restart
+  notification suppressed: %s has gateway_restart_notification=false'
+gateway.restart.notification.delivered: 'Restart notification to %s:%s was not delivered:
+  %s'
+error.send.returned.successfalse_3: send returned success=False
+gateway.sent.restart.notification: Sent restart notification to %s:%s
+log.restart.notification.failed: 'Restart notification failed: %s'
+gateway.gateway.online.hermes.back: ♻️ Gateway online — Hermes is back and ready.
+gateway.homechannel.startup.notification.suppressed: 'Home-channel startup notification
+  suppressed: %s has gateway_restart_notification=false'
+gateway.homechannel.startup.notification.failed: 'Home-channel startup notification
+  failed for %s:%s: %s'
+error.send.returned.successfalse_4: send returned success=False
+gateway.sent.homechannel.startup.notification: Sent home-channel startup notification
+  to %s:%s
+gateway.homechannel.startup.notification.failed_1: 'Home-channel startup notification
+  failed for %s:%s: %s'
+gateway.restore.session.context.variables: Restore session context variables to their
+  pre-handler values.
+gateway.run.blocking.work.thread: Run blocking work in the thread pool while preserving
+  session contextvars.
+log.imagerouting.decision.failed.falling: 'image_routing: decision failed, falling
+  back to text — %s'
+gateway.describe.everything.visible.image: 'Describe everything visible in this image
+  in thorough detail. '
+gateway.include.any.text.code: 'Include any text, code, data, objects, people, layout,
+  colors, '
+gateway.any.other.notable.visual: and any other notable visual information.
+log.autoanalyzing.user.image: 'Auto-analyzing user image: %s'
+gateway.user.sent.image.here: '[The user sent an image~ Here'
+gateway.need.closer.look.use: '[If you need a closer look, use vision_analyze with '
+gateway.imageurl.path: 'image_url: {path} ~]'
+gateway.user.sent.image.couldn: '[The user sent an image but I couldn'
+gateway.time.can.try.looking: 'this time (>_<) You can try looking at it yourself '
+gateway.visionanalyze.using.imageurl.path: 'with vision_analyze using image_url: {path}]'
+log.vision.autoanalysis.error: 'Vision auto-analysis error: %s'
+gateway.user.sent.image.something: '[The user sent an image but something went wrong
+  when I '
+gateway.tried.look.can.try: 'tried to look at it~ You can try examining it yourself '
+gateway.visionanalyze.using.imageurl.path_1: 'with vision_analyze using image_url:
+  {path}]'
+gateway.user.sent.voice.message: '[The user sent a voice message: {abs_path} (duration:
+  {duration_str})]'
+gateway.user.sent.voice.message_1: '[The user sent a voice message: {abs_path}]'
+gateway.user.sent.message.text: (The user sent a message with no text content)
+log.transcribing.user.voice: 'Transcribing user voice: %s'
+gateway.user.sent.voice.message_2: '[The user sent a voice message~ '
+error.stt.provider: No STT provider
+error.neither.voicetoolsopenaikey.nor.openaiapikey: Neither VOICE_TOOLS_OPENAI_KEY
+  nor OPENAI_API_KEY is set
+gateway.user.sent.voice.message_3: '[The user sent a voice message but I can'
+gateway.right.now.stt.provider: 'to it right now — no STT provider is configured. '
+gateway.direct.message.already.sent: 'A direct message has already been sent to the
+  user '
+gateway.setup.instructions: with setup instructions.
+gateway.skill.called.hermesagentsetup: ' You have a skill called hermes-agent-setup '
+gateway.can.help.users.configure: 'that can help users configure Hermes features '
+gateway.including.voice.tools.more: including voice, tools, and more.
+gateway.user.sent.voice.message_4: '[The user sent a voice message but I had trouble '
+log.transcription.error: 'Transcription error: %s'
+gateway.user.sent.voice.message_5: '[The user sent a voice message but something went
+  wrong '
+gateway.when.tried.listen.let: when I tried to listen to it~ Let them know!]
+gateway.user.sent.message.text_1: (The user sent a message with no text content)
+gateway.synthetic.processevent.sessionstore.lookup: 'Synthetic process-event session-store
+  lookup failed for %s: %s'
+gateway.synthetic.process.event.invalid: 'Synthetic process event has invalid platform
+  metadata: %r'
+gateway.dropping.watch.notification.routing: Dropping watch notification with no routing
+  metadata for process %s
+gateway.watch.pattern.notification.injecting: Watch pattern notification — injecting
+  for %s chat=%s thread=%s
+log.watch.notification.injection.error_1: 'Watch notification injection error: %s'
+log.process.watcher.started.every: 'Process watcher started: %s (every %ss, notify=%s,
+  agent_notify=%s)'
+log.process.watcher.ended.silent: 'Process watcher ended (silent): %s'
+gateway.important.background.process.sessionid: '[IMPORTANT: Background process {session_id}
+  completed '
+gateway.exit.code.sessionexitcoden: (exit code {session.exit_code}).\n
+gateway.command.sessioncommandn: 'Command: {session.command}\n'
+gateway.dropping.completion.notification.routing: Dropping completion notification
+  with no routing metadata for process %s
+gateway.process.finished.injecting.agent: Process %s finished — injecting agent notification
+  for session %s chat=%s thread=%s
+log.agent.notify.injection.error: 'Agent notify injection error: %s'
+gateway.background.process.sessionid.finished: '[Background process {session_id} finished
+  with exit code {session.exit_code}~ '
+log.watcher.delivery.error: 'Watcher delivery error: %s'
+gateway.background.process.sessionid.still: '[Background process {session_id} is still
+  running~ '
+gateway.new.outputnnewoutput: New output:\n{new_output}]
+log.watcher.delivery.error_1: 'Watcher delivery error: %s'
+log.process.watcher.ended: 'Process watcher ended: %s'
+gateway.return.true.agentmodel.matches: Return True if *agent_model* matches an active
+  /model session override.
+gateway.clear.persession.control.state: Clear per-session control state that must
+  not survive a boundary switch.
+gateway.failed.clear.slashconfirm.state: 'Failed to clear slash-confirm state for
+  session boundary %s: %s'
+gateway.failed.clear.approval.state: 'Failed to clear approval state for session boundary
+  %s: %s'
+gateway.invalidate.any.inflight.run: Invalidate any in-flight run token for ``session_key``.
+gateway.invalidated.run.generation: Invalidated run generation for %s → %d (%s)
+gateway.return.true.when.generation: Return True when ``generation`` is still current
+  for ``session_key``.
+gateway.bind.gateway.run.generation: Bind a gateway run generation to the adapter
+gateway.interrupt.current.run.clear: Interrupt the current run and clear queued session
+  state consistently.
+gateway.remove.cached.agent.session: Remove a cached agent for a session (called on
+  /new, /model, etc).
+gateway.evict.don: t evict, don
+gateway.agent.cache.over.cap: 'Agent cache over cap (%d > %d); %d excess slot(s) held
+  by '
+gateway.midturn.agents.recheck.next: mid-turn agents — will re-check on next insert.
+gateway.agent.cache.cap.evicting: Agent cache at cap; evicting LRU session=%s (cache_size=%d)
+gateway.agent.cache.idlettl.evict: 'Agent cache idle-TTL evict: session=%s (idle=%.0fs)'
+gateway.proxy.mode.requires.aiohttp: '⚠️ Proxy mode requires aiohttp. Install with:
+  pip install aiohttp'
+gateway.proxy.url.configured.gatewayproxyurl: ⚠️ Proxy URL not configured (GATEWAY_PROXY_URL
+  or gateway.proxy_url)
+gateway.bearer.proxykey: Bearer {proxy_key}
+log.proxy.set.stream.consumer: 'Proxy: could not set up stream consumer: %s'
+error.proxy.error: 'Proxy error (%d) from %s: %s'
+gateway.discarding.stale.proxy.stream: Discarding stale proxy stream for %s — generation
+  %d is no longer current
+log.proxy.connection.error: 'Proxy connection error to %s: %s'
+gateway.discarding.stale.proxy.result: Discarding stale proxy result for %s — generation
+  %d is no longer current
+gateway.proxy.response.urls.sessions: 'proxy response: url=%s session=%s time=%.1fs
+  response=%d chars'
+gateway.response.remote.agent: (No response from remote agent)
+gateway.callback.invoked.agent.tool: Callback invoked by agent on tool lifecycle events.
+log.toolprogress.onboarding.hint.failed: 'tool-progress onboarding hint failed: %s'
+gateway.emoji.toolnamelistargskeysnargsstr: '{emoji} {tool_name}({list(args.keys())})\n{args_str}'
+gateway.emoji.toolname: '{emoji} {tool_name}: \'
+gateway.emoji.toolname_1: '{emoji} {tool_name}...'
+gateway.emoji.toolname_2: '{emoji} {tool_name}: \'
+gateway.emoji.toolname_3: '{emoji} {tool_name}...'
+gateway.dedup: __dedup__
+gateway.partition.progress.lines.into: Partition progress lines into platform-sized
+  editable bubbles.
+gateway.transient.edit.failure.keeping: '[%s] Transient edit failure — keeping can_edit=True'
+gateway.progress.edit.flood.control: '[%s] Progress edit flood control, backing off'
+log.progress.message.error: 'Progress message error: %s'
+log.agentstep.hook.scheduling.error: agent:step hook scheduling error
+gateway.statuscallback.suppressed: 'status_callback suppressed for %s/%s: %s'
+gateway.runagent.resolved.models.providers: 'run_agent resolved: model=%s provider=%s
+  session=%s'
+gateway.reset: __reset__
+log.set.stream.consumer: 'Could not set up stream consumer: %s'
+log.reusing.cached.agent.session: Reusing cached agent for session %s
+log.created.new.agent.session: Created new agent for session %s (sig=%s)
+log.clarify.send.failed.schedule: Clarify send failed to schedule
+log.clarify.send.failed: 'Clarify send failed: %s'
+error.sendexecapproval.loop.unavailable: 'send_exec_approval: loop unavailable'
+error.buttonbased.approval.failed.send: 'Button-based approval failed (send returned
+  error), falling back to text: %s'
+gateway.buttonbased.approval.failed.falling: 'Button-based approval failed, falling
+  back to text: %s'
+gateway.reason.descnn: 'Reason: {desc}\n\n'
+gateway.reply.approve.execute.approve: 'Reply `/approve` to execute, `/approve session`
+  to approve this pattern '
+gateway.session.approve.always.approve: for the session, `/approve always` to approve
+  permanently, or `/deny` to cancel.
+log.approval.textsend.scheduling.error: Approval text-send scheduling error
+log.failed.send.approval.request: 'Failed to send approval request: %s'
+gateway.system.note.previous.turn: '[System note: Your previous turn in this session
+  was interrupted '
+gateway.reasonphrase.conversation.history.below: 'by {_reason_phrase}. The conversation
+  history below is intact. '
+gateway.contains.unfinished.tool.results: 'If it contains unfinished tool result(s),
+  process them first and '
+gateway.summarize.what.accomplished.then: summarize what was accomplished, then address
+  the user
+gateway.message.belownn: message below.]\n\n
+gateway.system.note.previous.turn_1: '[System note: Your previous turn was interrupted
+  before you could '
+gateway.process.last.tool.results: 'process the last tool result(s). The conversation
+  history contains '
+gateway.results.summarize.what.accomplished: 'those results and summarize what was
+  accomplished, then address the '
+gateway.native.image.attachment.skipped: 'Native image attachment: skipped %d unreadable
+  path(s): %s'
+gateway.native.image.attachment.failed: 'Native image attachment failed, falling back
+  to text: %s'
+gateway.session.split.detected.compression: 'Session split detected: %s → %s (compression)'
+gateway.restored.sourcethreadids.binding.after: Restored source.thread_id=%s from
+  binding after session split %s → %s
+gateway.failed.restore.threadid.binding: Failed to restore thread_id from binding
+  after session split
+gateway.gateway.autotitle.failure.suppressed: 'Gateway auto-title failure suppressed
+  (not user-visible): %s: %s'
+gateway.wait.stream.consumer.created: Wait for the stream consumer to be created,
+  then run it.
+gateway.skipping.stale.agent.promotion: Skipping stale agent promotion for %s — generation
+  %s is no longer current
+log.interrupt.detected.adapter.signaling: Interrupt detected from adapter, signaling
+  agent...
+log.monitorforinterrupt.error.retry: 'monitor_for_interrupt error (will retry): %s'
+log.longrunning.notification.error: 'Long-running notification error: %s'
+gateway.backup.interrupt.detected.session: 'Backup interrupt detected for session
+  %s '
+gateway.monitor.task.state: '(monitor task state: %s)'
+msg.agent.respond.soon: 'If the agent does not respond soon, it will '
+gateway.timed.out.remainingmins.min: 'be timed out in {_remaining_mins} min. '
+gateway.can.continue.waiting.use: You can continue waiting or use /reset.
+log.inactivity.warning.send.error: 'Inactivity warning send error: %s'
+gateway.backup.interrupt.detected.session_1: 'Backup interrupt detected for session
+  %s '
+gateway.monitor.task.state_1: '(monitor task state: %s)'
+gateway.agent.idle.0fs.timeout: 'Agent idle for %.0fs (timeout %.0fs) in session %s '
+gateway.api.responses: or API responses.
+gateway.agent.appears.stuck.tool: 'The agent appears stuck on tool `{_cur_tool}` '
+gateway.secsago0fs.since.last.activity: '({_secs_ago:.0f}s since last activity, '
+gateway.iteration.iternitermax: iteration {_iter_n}/{_iter_max}).
+gateway.last.activity.lastdesc.secsago0fs: 'Last activity: {_last_desc} ({_secs_ago:.0f}s
+  ago, '
+gateway.iteration.iternitermax_1: 'iteration {_iter_n}/{_iter_max}). '
+gateway.agent.waiting.api.response: The agent may have been waiting on an API response.
+gateway.increase.limit.set.agentgatewaytimeout: 'To increase the limit, set agent.gateway_timeout
+  in config.yaml '
+gateway.value.seconds.limit.restart: (value in seconds, 0 = no limit) and restart
+  the gateway.\n
+gateway.try.again.use.reset_2: Try again, or use /reset to start fresh.
+gateway.ignoring.control.interrupt.message: 'Ignoring control interrupt message for
+  session %s: %s'
+log.processing.queued.message.after: 'Processing queued message after agent completion: '
+log.delivering.leftover.steer.next: 'Delivering leftover /steer as next turn: '
+gateway.discarding.command: 'Discarding command '
+gateway.discarding.pending.followup.session: Discarding pending follow-up for session
+  %s during gateway %s
+log.processing.pending.message: 'Processing pending message: '
+gateway.interrupt.recursion.depth.reached: 'Interrupt recursion depth %d reached for
+  session %s — '
+gateway.queueing.message.instead.recursing: queueing message instead of recursing.
+log.stream.consumer.wait.before: 'Stream consumer wait before queued message failed:
+  %s'
+gateway.queued.followup.session.final: 'Queued follow-up for session %s: final stream
+  delivery not confirmed; sending first response before continuing.'
+log.failed.send.first.response: 'Failed to send first response before queued message:
+  %s'
+gateway.queued.followup.session.skipping: 'Queued follow-up for session %s: skipping
+  resend because final streamed delivery was confirmed.'
+gateway.discarding.stale.goal.continuation: Discarding stale goal continuation for
+  session %s — goal is no longer active
+gateway.suppressing.normal.final.send: 'Suppressing normal final send for session
+  %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).'
+gateway.edited.streamed.message.session: Edited streamed message %s for session %s
+  to include plugin-transformed content.
+gateway.failed.edit.streamed.message: 'Failed to edit streamed message for session
+  %s: %s'
+log.temp.bubble.cleanup.scheduling: Temp bubble cleanup scheduling error
+log.postdelivery.cleanup.registration.failed: 'Post-delivery cleanup registration
+  failed: %s'
+log.cron.ticker.started.intervalds: Cron ticker started (interval=%ds)
+log.cron.tick.error: 'Cron tick error: %s'
+log.channel.directory.refresh.scheduling: Channel directory refresh scheduling error
+log.channel.directory.refresh.error: 'Channel directory refresh error: %s'
+log.image.cache.cleanup.removed: 'Image cache cleanup: removed %d stale file(s)'
+log.image.cache.cleanup.error: 'Image cache cleanup error: %s'
+log.document.cache.cleanup.removed: 'Document cache cleanup: removed %d stale file(s)'
+log.document.cache.cleanup.error: 'Document cache cleanup error: %s'
+gateway.paste.sweep.deleted.expired: 'Paste sweep: deleted %d expired paste(s), %d
+  pending'
+log.paste.sweep.error: 'Paste sweep error: %s'
+log.curator.s: 'curator: %s'
+log.curator.tick.error: 'Curator tick error: %s'
+log.cron.ticker.stopped: Cron ticker stopped
+gateway.replacing.existing.gateway.instance: Replacing existing gateway instance (PID
+  %d) with --replace.
+log.write.takeover.marker: 'Could not write takeover marker: %s'
+gateway.permission.denied.killing.pid: Permission denied killing PID %d. Cannot replace.
+gateway.old.gateway.pid.exit: Old gateway (PID %d) did not exit after SIGTERM, sending
+  SIGKILL.
+log.released.stale.scoped.locks: Released %d stale scoped lock(s) from old gateway.
+gateway.another.gateway.instance.already: 'Another gateway instance is already running
+  (PID %d, HERMES_HOME=%s). '
+gateway.to.replace.it: ' to replace it, or '
+gateway.gateway.already.running.pid: \n❌ Gateway already running (PID {existing_pid}).\n
+gateway.replace.itn: ' to replace it,\n'
+gateway.kill.firstn: ' to kill it first.\n'
+gateway.to.autoreplacen: ' to auto-replace.\n'
+log.failed.start.memory.monitor: 'Failed to start memory monitor: %s'
+gateway.levelnames.names.messages: '%(levelname)s %(name)s: %(message)s'
+log.takeover.marker.check.failed: 'Takeover marker check failed: %s'
+log.planned.stop.marker.check: 'Planned stop marker check failed: %s'
+log.snapshotshutdowncontext.failed: 'snapshot_shutdown_context failed: %s'
+gateway.received.planned.replace.takeover: Received %s as a planned --replace takeover
+  — exiting cleanly
+gateway.received.planned.gateway.stop: Received %s as a planned gateway stop — exiting
+  cleanly
+gateway.received.initiating.shutdown: Received %s — initiating shutdown
+log.shutdown.context: 'Shutdown context: %s'
+log.formatcontextforlog.failed: 'format_context_for_log failed: %s'
+log.spawnasyncdiagnostic.failed: 'spawn_async_diagnostic failed: %s'
+log.skipping.signal.handlers.running: Skipping signal handlers (not running in main
+  thread).
+gateway.another.gateway.instance.pid: 'Another gateway instance (PID %d) started during
+  our startup. '
+gateway.exiting.avoid.doublerunning: Exiting to avoid double-running.
+gateway.gateway.runtime.lock.already: Gateway runtime lock is already held by another
+  instance. Exiting.
+gateway.pid.file.race.lost: PID file race lost to another gateway instance. Exiting.
+log.mcp.tool.discovery.failed: 'MCP tool discovery failed: %s'
+log.gateway.exiting.cleanly: 'Gateway exiting cleanly: %s'
+log.gateway.exiting.failure: 'Gateway exiting with failure: %s'
+gateway.exiting.code.signalinitiated.shutdown: 'Exiting with code 1 (signal-initiated
+  shutdown without restart '
+gateway.request.systemd.restartonfailure.can: request) so systemd Restart=on-failure
+  can revive the gateway.
+gateway.exiting.code.servicerestart.requested: 'Exiting with code 75 (service-restart
+  requested) so '
+gateway.launchd.keepalive.relaunches.gateway: launchd KeepAlive relaunches the gateway.
+gateway.cli.entry.point.gateway: CLI entry point for the gateway.
+gateway.hermes.gateway.multiplatform.messaging: Hermes Gateway - Multi-platform messaging
+gateway.path.gateway.config.file: Path to gateway config file
+gateway.verbose.output: Verbose output
+conversation.return.userfacing.error.when: Return a user-facing error when Ollama
+  is loaded with too little context.
+conversation.ollama.runtime.context.too: 'Ollama runtime context too small for Hermes
+  tool use: '
+conversation.increase.ollama.context.model: 'Increase the Ollama context for this
+  model and restart/reload the '
+conversation.model.before.trying.again: 'model before trying again. A known-good starting
+  point is 65,536 '
+conversation.tokens.hermes.config.set: 'tokens. In Hermes config, set `model.ollama_num_ctx:
+  65536` '
+conversation.set.parameter.numctx.65536: set `PARAMETER num_ctx 65536` there instead.
+conversation.session.getsession.failed.systemprompt: 'Session DB get_session failed
+  for system-prompt restore '
+conversation.scratch.turn.prefix.cache: 'from scratch this turn. Prefix cache will
+  miss until '
+conversation.rebuild.persists.investigate.previous: the rebuild persists. Investigate
+  the previous turn
+conversation.delivered.retry: 'could be delivered. Do NOT retry '
+conversation.large.content.instead.break: 'large content. Instead, break the '
+conversation.arguments.under: 's arguments must be under ~8K '
+conversation.network.error.midstream.continue: 'network error mid-stream. Continue
+  exactly where '
+conversation.left.off.restart.repeat: 'you left off. Do not restart or repeat prior
+  text. '
+conversation.length.limit.continue.exactly: 'length limit. Continue exactly where
+  you left off. Do not '
+conversation.detected.stale.connections.previous: '🔌 Detected stale connections from
+  a previous provider '
+conversation.issue.cleaned.automatically.proceeding: 'issue — cleaned up automatically.
+  Proceeding with fresh '
+conversation.starting.conversation: '💬 Starting conversation: '
+conversation.take.moment: This may take a moment.
+conversation.ollama.runtime.context.too_1: ❌ Ollama runtime context is too small for
+  Hermes tool use
+conversation.nous.portal.rate.limit: 'Nous Portal rate limit active — '
+conversation.fallback.provider.available: 'No fallback provider available. '
+conversation.try.again.after.reset: 'Try again after the reset, or add a '
+conversation.response.none: response is None
+conversation.responses.api.returned.status: 'Responses API returned status '
+conversation.codex.response.status: Codex response status=
+conversation.codex.responseoutput.empty.outputtext: 'Codex response.output is empty
+  but output_text is present '
+conversation.codex.responseoutput.empty.after: 'Codex response.output is empty after
+  stream backfill '
+conversation.response.none_1: response is None
+conversation.response.none_2: response is None
+conversation.response.none_3: response is None
+conversation.responsechoices.none: response.choices is None
+conversation.emptymalformed.response.switching.fallback: ⚠️ Empty/malformed response
+  — switching to fallback...
+conversation.model.used.all.output: 'Model used all output tokens on reasoning with
+  none left '
+conversation.response.try.lowering.reasoning: 'for the response. Try lowering reasoning
+  effort or '
+conversation.model.used.all.output_1: 'The model used all its output tokens on reasoning '
+conversation.switch.largernonreasoning.model.model: → Or switch to a larger/non-reasoning
+  model with `/model`
+conversation.response.remained.truncated.after: Response remained truncated after
+  3 continuation attempts
+conversation.response.truncated.due.output: Response truncated due to output length
+  limit
+conversation.response.truncated.due.output_1: Response truncated due to output length
+  limit
+conversation.first.response.truncated.due: First response truncated due to output
+  length limit
+conversation.stripped.images.history.retrying: . Stripped images from history and
+  retrying.
+conversation.imageshrink.recovery.dataurl.image: 'image-shrink recovery: no data-URL
+  image parts found '
+conversation.1mcontext.beta.disabled.session: the 1M-context beta — disabled for this
+  session and retrying...
+conversation.xai.oauth: xAI OAuth
+conversation.rate.limited.switching.fallback: ⚠️ Rate limited — switching to fallback
+  provider...
+conversation.nous.429.looks.like: 'Nous 429 looks like upstream capacity '
+conversation.connection.keeps.dropping.often: 'connection keeps dropping. This often
+  happens '
+conversation.use.executecode.python: to use execute_code with Python
+conversation.executecode.python: execute_code with Python
+conversation.incomplete.reasoningscratchpad.after.retries: Incomplete REASONING_SCRATCHPAD
+  after 2 retries
+conversation.codex.response.remained.incomplete: Codex response remained incomplete
+  after 3 continuation attempts
+conversation.tool: 'Tool '
+conversation.skipped.another.tool.call: 'Skipped: another tool call in this turn used
+  an invalid name. Please retry this tool call.'
+conversation.response.truncated.due.output_2: Response truncated due to output length
+  limit
+conversation.please.retry.valid.json: Please retry with valid JSON.
+conversation.skipped.other.tool.call: 'Skipped: other tool call in this response had
+  invalid JSON.'
+conversation.stream.interrupted.using.delivered: '↻ Stream interrupted — using delivered
+  content '
+conversation.empty.followup.after.tool: Empty follow-up after tool calls — using prior
+  turn content as final response
+conversation.empty.response.after.tool: ↻ Empty response after tool calls — using
+  earlier content as final answer
+conversation.empty.response.after.tool_1: 'Empty response after tool calls — nudging
+  model '
+conversation.model.returned.empty.after: '⚠️ Model returned empty after tool calls
+  — '
+conversation.just.executed.tool.calls: 'You just executed tool calls but returned
+  an '
+conversation.empty.response.please.process: 'empty response. Please process the tool '
+conversation.thinkingonly.response.prefilling.continue: '↻ Thinking-only response
+  — prefilling to continue '
+conversation.empty.response.model.retrying: '⚠️ Empty response from model — retrying '
+conversation.model.returning.empty.responses: '⚠️ Model returning empty responses
+  — '
+conversation.fallback.activated.after.empty: 'Fallback activated after empty responses: '
+conversation.model.produced.reasoning.visible: '⚠️ Model produced reasoning but no
+  visible '
+conversation.response.after.all.retries: response after all retries. Returning empty.
+conversation.model.returned.content.after: ❌ Model returned no content after all retries
+conversation.fallback.providers.configured: . No fallback providers configured.
+conversation.iteration.budget.exhausted: 'Iteration budget exhausted '
+conversation.failed.call.kanbanblock.after: 'Failed to call kanban_block after iteration '
+_http_client_limits.lingering.closewait.window.can: s lingering CLOSE_WAIT window
+  can
+api_server.both.conversationhistory.previousresponseid.provided: Both conversation_history
+  and previous_response_id provided; using conversation_history
+api_server.invalidcontentpartimage.detail.nonempty.string: invalid_content_part:Image
+  detail must be a non-empty string when provided.
+api_server.invalid.approval.choice.expected: 'Invalid approval choice; expected one
+  of: once, session, always, deny'
+api_server.invalidimageurlimage.parts.include.nonempty: invalid_image_url:Image parts
+  must include a non-empty image URL.
+api_server.authorization.contenttype.idempotencykey: Authorization, Content-Type,
+  Idempotency-Key
+api_server.agent.run.produce.response: Agent run did not produce a response.
+api_server.maxage31536000.includesubdomains: max-age=31536000; includeSubDomains
+api_server.user.message.found.messages: No user message found in messages
+api_server.repeat.positive.integer: Repeat must be a positive integer
+api_server.invalid.contentlength.header: Invalid Content-Length header.
+api_server.user.message.found.input: No user message found in input
+api_server.invalid.json.request.body: Invalid JSON in request body
+api_server.get.post.delete.options: GET, POST, DELETE, OPTIONS
+api_server.cron.module.available: Cron module not available
+api_server.valid.fields.update: No valid fields to update
+api_server.request.body.too.large: Request body too large.
+api_server.invalid.job.format: Invalid job ID format
+api_server.session.key.too.long: Session key too long
+api_server.schedule.required: Schedule is required
+api_server.invalid.session.key: Invalid session key
+api_server.invalid.session: Invalid session ID
+api_server.name.required: Name is required
+api_server.invalid.api.key: Invalid API key
+api_server.job.found: Job not found
+api_server.invalid.json: Invalid JSON
+api_server.api.server: API Server
+api_server.bearer: 'Bearer '
+base.reply.number.option.text: Reply with the number, the option text, or your own
+  answer.
+base.skipping.unsafe.media.directive: Skipping unsafe MEDIA directive path outside
+  allowed roots
+base.skipping.unsafe.local.file: Skipping unsafe local file path outside allowed roots
+base.empty.text.after.markdown: Empty text after markdown cleanup
+base.stop.other.gateway.first: . Stop the other gateway first.
+base.postdelivery.callback.failed: Post-delivery callback failed
+base.interrupting.current.task: Interrupting current task...
+base.meeting.agenda: Meeting agenda
+base.not.supported: Not supported
+bluebubbles.bluebubbles.send.requires.text: BlueBubbles send requires text
+bluebubbles.attachment.upload.failed: Attachment upload failed
+bluebubbles.not.connected: Not connected
+dingtalk.valid.sessionwebhook.available.reply: No valid session_webhook available.
+  Reply must follow an incoming message.
+dingtalk.timeout.sending.message.dingtalk: Timeout sending message to DingTalk
+dingtalk.http.client.initialized: HTTP client not initialized
+dingtalk.access.token: No access token
+email.hermes.agent: Hermes Agent
+feishu.stop.other.gateway.before: ' Stop the other gateway before starting a second
+  Feishu websocket client.'
+feishu.feishu.configurewithoverrides.called.originalconfigure: Feishu _configure_with_overrides
+  called but original_configure is None
+feishu.another.local.hermes.gateway: Another local Hermes gateway is already using
+  this Feishu app_id
+feishu.feishu.lark.registration.return: Feishu / Lark registration did not return
+  a device_code
+feishu.feishu.image.upload.missing: Feishu image upload missing image_key
+feishu.failed.build.feishu.event: failed to build Feishu event handler
+feishu.feishu.file.upload.missing: Feishu file upload missing file_key
+feishu.fetching.configuration.results: '  Fetching configuration results...'
+feishu.fetching.configuration.results_1: Fetching configuration results...
+feishu.connecting.feishu.lark: '  Connecting to Feishu / Lark...'
+feishu.command.approval.required: ⚠️ Command Approval Required
+feishu.invalid.verification.token: Invalid verification token
+feishu.update.needs.input: ⚕ Update Needs Your Input
+feishu.unsupported.media.type: Unsupported Media Type
+feishu.request.body.too.large: Request body too large
+feishu.approved.session: Approved for session
+feishu.approved.permanently: Approved permanently
+feishu.feishu.send.failed: Feishu send failed
+feishu.too.many.requests: Too Many Requests
+feishu.invalid.signature: Invalid signature
+feishu.request.timeout: Request Timeout
+feishu.approved.once: Approved once
+feishu.not.connected: Not connected
+feishu.allow.once: ✅ Allow Once
+feishu.session: ✅ Session
+feishu.always: ✅ Always
+feishu.deny: ❌ Deny
+feishu.yes: ✓ Yes
+feishu_comment.referenced.documents.comments: 'Referenced documents in comments:'
+feishu_comment.wholedocument.comment: This is a whole-document comment.
+feishu_comment.current.commented.document: 'Current commented document:'
+feishu_comment.you: ' <-- YOU'
+feishu_comment.i.will: I will
+feishu_comment.let.me: Let me
+feishu_comment_rules.resolved.rule: 'Resolved rule:'
+homeassistant.timeout.sending.notification: Timeout sending notification to HA
+homeassistant.home.assistant.events: Home Assistant Events
+homeassistant.home.assistant: Home Assistant
+homeassistant.hermes.agent: Hermes Agent
+matrix.matrix.neither.matrixaccesstoken.nor: 'Matrix: neither MATRIX_ACCESS_TOKEN
+  nor MATRIX_PASSWORD set'
+matrix.matrix.device.keys.missing: 'Matrix: device keys missing from server — re-uploading'
+matrix.matrix.crosssigning.verified.via: 'Matrix: cross-signing verified via recovery
+  key'
+matrix.matrix.client.read.receipt: 'Matrix: client has no read receipt method'
+matrix.matrix.homeserver.url.configured: 'Matrix: homeserver URL not configured'
+matrix.matrix.matrixhomeserver.set: 'Matrix: MATRIX_HOMESERVER not set'
+matrix.client.empty.text: No client or empty text
+matrix.matrix.disconnected: 'Matrix: disconnected'
+matrix.not.connected: Not connected
+matrix.hermes.agent: Hermes Agent
+msgraph_webhook.microsoft.graph: Microsoft Graph
+signal.signal.signalhttpurl.signalaccount.required: 'Signal: SIGNAL_HTTP_URL and SIGNAL_ACCOUNT
+  are required'
+signal.signal.sse.idle.0fs: 'Signal: SSE idle for %.0fs, checking daemon health'
+signal.signal.rpc.called.client: 'Signal: RPC called but client not connected'
+signal.signal.ignoring.envelope.sender: 'Signal: ignoring envelope with no sender'
+signal.signal.sse.error.handling: 'Signal SSE: error handling event'
+signal.signal.daemon.healthy.sse: 'Signal: daemon healthy, SSE idle'
+signal.rpc.send.attachment.failed: RPC send with attachment failed
+signal.signal.sse.connected: 'Signal SSE: connected'
+signal.signal.disconnected: 'Signal: disconnected'
+signal.image.file.found: Image file not found
+signal.rpc.send.failed: RPC send failed
+signal.signal.account: Signal account
+signal_rate_limit.retry.after.seconds: Retry after N seconds
+slack.update.slack.app.scopessettings: ' Update the Slack app scopes/settings and
+  reinstall the app to the workspace.'
+slack.blocked.redirect.privateinternal.address: Blocked redirect to private/internal
+  address
+slack.slack.returned.html.instead: Slack returned HTML instead of media
+slack.missing.required.slack.scope: Missing required Slack scope.
+slack.only.visible: Only visible to you
+slack.slack.app.token: Slack app token
+slack.always.approve: Always Approve
+slack.running.cmd: Running /cmd…
+slack.not.connected: Not connected
+slack.allow.session: Allow Session
+slack.always.allow: Always Allow
+slack.approve.once: Approve Once
+slack.allow.once: Allow Once
+telegram.telegram.topic.delivery.requires: Telegram DM topic delivery requires a reply
+  anchor; refusing to send outside the requested topic
+telegram.authorized.answer.update.prompts: ⛔ You are not authorized to answer update
+  prompts.
+telegram.authorized.answer.prompt: ⛔ You are not authorized to answer this prompt.
+telegram.authorized.act.email: ⛔ You are not authorized to act on this email.
+telegram.updater.running.after.reconnect: Updater not running after reconnect heartbeat
+telegram.authorized.approve.commands: ⛔ You are not authorized to approve commands.
+telegram.approval.already.resolved: This approval has already been resolved.
+telegram.prompt.already.resolved: This prompt has already been resolved.
+telegram.picker.expired.use.model: Picker expired — use /model again.
+telegram.type.answer.chat: ✏️ Type your answer in the chat.
+telegram.model.selection.cancelled: Model selection cancelled.
+telegram.invalid.gmailtriage.data: Invalid gmail-triage data.
+telegram.message.thread.found: Message thread not found
+telegram.invalid.approval.data: Invalid approval data.
+telegram.approved.session: ✅ Approved for session
+telegram.approved.permanently: ✅ Approved permanently
+telegram.accessibility.auditor: Accessibility Auditor
+telegram.invalid.model.index: Invalid model index.
+telegram.provider.found: Provider not found.
+telegram.marked.vip.domain: ✓ marked VIP domain
+telegram.telegram.bot.token: Telegram bot token
+telegram.invalid.selection: Invalid selection.
+telegram.always.approve: 🔒 Always Approve
+telegram.always.approve_1: 🔒 Always approve
+telegram.picker.expired: Picker expired.
+telegram.model.switched: Model switched!
+telegram.approved.once: ✅ Approved once
+telegram.invalid.choice: Invalid choice.
+telegram.approve.once: ✅ Approve Once
+telegram.not.connected: Not connected
+telegram.invalid.page: Invalid page.
+telegram.allow.once: ✅ Allow Once
+telegram.marked.vip: ✓ marked VIP
+telegram.cancelled: ❌ Cancelled
+telegram.session: ✅ Session
+telegram.url.photo: URL photo
+telegram.always: ✅ Always
+telegram.cancel: ❌ Cancel
+telegram.cancel_1: ✗ Cancel
+telegram.denied: ❌ Denied
+telegram.deny: ❌ Deny
+telegram.prev: ◀ Prev
+telegram.next: Next ▶
+telegram.back: ◀ Back
+telegram.yes: ✓ Yes
+telegram_network.all.telegram.fallback.ips: All Telegram fallback IPs exhausted but
+  no error was recorded
+telegram_network.telegramapihost: ': _TELEGRAM_API_HOST, '
+webhook.gateway.runner.crossplatform.delivery: No gateway runner for cross-platform
+  delivery
+webhook.webhook.route.missing.hmac: Webhook route is missing an HMAC secret
+webhook.missing.repo.prnumber: Missing repo or pr_number
+webhook.cli.installed: gh CLI not installed
+webhook.rate.limit.exceeded: Rate limit exceeded
+webhook.payload.too.large: Payload too large
+webhook.invalid.signature: Invalid signature
+webhook.cannot.parse.body: Cannot parse body
+webhook.delivery.failed: Delivery failed
+webhook.bad.request: Bad request
+wecom.wecom.startup.failed.wecombotid: 'WeCom startup failed: WECOM_BOT_ID and WECOM_SECRET
+  are required'
+wecom.timed.out.waiting.wecom: Timed out waiting for WeCom subscribe acknowledgement
+wecom.cryptography.required.wecom.media: cryptography is required for WeCom media
+  decryption
+wecom.invalid.pkcs7.padding.padding: 'Invalid PKCS#7 padding: padding bytes mismatch'
+wecom.wecom.websocket.closed.during: WeCom websocket closed during authentication
+wecom.wecom.startup.failed.aiohttp: 'WeCom startup failed: aiohttp not installed'
+wecom.wecom.startup.failed.httpx: 'WeCom startup failed: httpx not installed'
+wecom.urllib.required.wecom.scan: urllib is required for WeCom QR scan
+wecom.fetching.configuration.results: '  Fetching configuration results...'
+wecom.fetching.configuration.results_1: Fetching configuration results...
+wecom.wecom.websocket.connected: WeCom websocket is not connected
+wecom.timeout.sending.message.wecom: Timeout sending message to WeCom
+wecom.timeout.sending.media.wecom: Timeout sending media to WeCom
+wecom.wecom.connection.interrupted: WeCom connection interrupted
+wecom.wecom.adapter.disconnected: WeCom adapter disconnected
+wecom.websocket.initialized: WebSocket not initialized
+wecom.cannot.upload.empty.media: Cannot upload empty media
+wecom.connecting.wecom: '  Connecting to WeCom...'
+wecom.websocket.connected: WebSocket not connected
+wecom.wecom.websocket.closed: WeCom websocket closed
+wecom_crypto.malformed.pkcs7.padding: malformed PKCS7 padding
+wecom_crypto.invalid.pkcs7.padding: invalid PKCS7 padding
+weixin.weixin.account.missing.configure: Weixin account ID missing. Configure WEIXIN_ACCOUNT_ID
+  or platforms.weixin.extra.account_id.
+weixin.weixin.token.missing.configure: Weixin token missing. Configure WEIXIN_TOKEN
+  or platforms.weixin.token.
+weixin.weixin.startup.failed.aiohttp: 'Weixin startup failed: aiohttp and cryptography
+  are required'
+weixin.weixin.confirmed.credential.payload: 'weixin: QR confirmed but credential payload
+  was incomplete'
+weixin.weixin.startup.failed.weixinaccountid: 'Weixin startup failed: WEIXIN_ACCOUNT_ID
+  is required'
+weixin.weixin.startup.failed.weixintoken: 'Weixin startup failed: WEIXIN_TOKEN is
+  required'
+weixin.aiohttp.required.weixin.login: aiohttp is required for Weixin QR login
+weixin.weixin.response.missing.qrcode: 'weixin: QR response missing qrcode'
+weixin.weixin.bot.token: Weixin bot token
+weixin.itemtext: ': ITEM_TEXT, '
+weixin.not.connected: Not connected
+whatsapp.nodejs.installed.install.nodejs: Node.js is not installed — install Node.js
+  and re-run `hermes gateway`.
+whatsapp.whatsapp.enabled.paired.run: WhatsApp enabled but not paired — run `hermes
+  whatsapp` to pair.
+whatsapp.whatsapp.session: WhatsApp session
+whatsapp.not.connected: Not connected
+yuanbao.deliverable.text.media.remained: No deliverable text or media remained after
+  processing
+yuanbao.command.only.available.group: This command is only available in group chats
+yuanbao.resourcev1download.return.url: resource/v1/download did not return a URL
+yuanbao.resourcev1download.missing.urlrealurl: resource/v1/download missing url/realUrl
+yuanbao.sign.token.failed.max: 'Sign token failed: max retries exceeded'
+yuanbao.message.recalled: The message has been recalled.\
+yuanbao.access.denied.user: DM access denied for this user
+yuanbao.failed.query.group.members: Failed to query group members
+yuanbao.yuanbaoadapter.disconnected: YuanbaoAdapter disconnected
+yuanbao.failed.query.group.info: Failed to query group info
+yuanbao.branch.content.match: 'branch A2: content match'
+yuanbao.: 任务有点复杂，正在努力处理中，请耐心等待...
+yuanbao.mention.name: 'Mention with @name: '
+yuanbao.branch.match: 'branch A1: id match'
+yuanbao.cronjob.response: 'Cronjob Response: '
+yuanbao.yuanbao.app.key: Yuanbao app key
+yuanbao.not.connected: Not connected
+yuanbao.unknown.error: Unknown error
+yuanbao_sticker.love.heart: 笔芯 爱你 爱心手势 love heart 喜欢你
+yuanbao_sticker.whatever: 无奈 没办法 耸肩 随便 那咋整 whatever
+yuanbao_sticker.hello.deal: 合作 你好 商务 hello deal 成交 友好
+yuanbao_sticker.666.awesome: 666 厉害 牛 棒 绝了 好强 awesome
+yuanbao_sticker.zzz.sleepy: 睡觉 困 zzZ 打盹 躺平 休眠 sleepy
+yuanbao_sticker.sleepy: 想睡 倦 打哈欠 睁不开眼 好困啊 sleepy
+yuanbao_sticker.doge: 滑稽 坏笑 doge 意味深长 阴阳怪气 嘿嘿嘿
+yuanbao_sticker.night.moon: 好梦 睡了 night 早点休息 安啦 moon
+yuanbao_sticker.cool.swagger: 帅 墨镜 cool 高冷 有型 swagger
+yuanbao_sticker.morning: 晴天 早上好 阳光 morning 好天气 日
+yuanbao_sticker.good.like: 赞 认同 好棒 good like 大拇指 顶
+yuanbao_sticker.cringe: 看不下去 cringe 毁三观 太丑了 瞎了
+yuanbao_sticker.doge_1: doge 保命 开玩笑 滑稽 反讽 懂的都懂
+yuanbao_sticker.okay: 好的 收到 没问题 okay 行 可以 懂了
+yuanbao_sticker.omg: 震惊 哇 不敢相信 OMG 居然 这么离谱
+yuanbao_sticker.salute: salute 尊重 收到 遵命 致敬 报告
+yuanbao_sticker._28: 倒霉 吃亏 自嘲 好心没好报 背锅 工具人
+yuanbao_sticker.yue: 恶心 yue 受不了 嫌弃 想吐 生理不适
+yuanbao_sticker.fight: 加油 干 冲 fight 力量 击拳 硬气
+yuanbao_sticker._2: 难过 想哭 可怜巴巴 瘪嘴 受伤 被欺负
+yuanbao_sticker.mua.kiss: 么么 mua 亲一下 kiss 飞吻 啵
+yuanbao_sticker._4: 卖萌 求饶 委屈巴巴 弱小 拜托 眼巴巴
+yuanbao_sticker._11: 窥屏 潜水 偷偷看 角落 围观 屏住呼吸
+yuanbao_sticker._12: 嫉妒 柠檬精 羡慕 吃柠檬 眼红 恰柠檬
+yuanbao_sticker._17: 大哭 伤心 破防 感动哭 泪流满面 呜呜
+yuanbao_sticker._20: 难受 痛苦 煎熬 蚌埠住了 受不了 要命
+yuanbao_sticker._25: 红包 谢谢老板 发财 开心 抢到了 欧气
+yuanbao_sticker.love: 心 love 喜欢你 红心 示爱 么么哒
+yuanbao_sticker.: 想开 佛系 释怀 顿悟 看淡了 无所谓
+yuanbao_sticker._1: 腼腆 不好意思 脸红 娇羞 羞涩 捂脸
+yuanbao_sticker._9: 坏笑 猥琐笑 偷笑 憨笑 得意 你懂的
+yuanbao_sticker._10: 程序员 加班 焦虑 没头发 秃了 肝爆
+yuanbao_sticker.call_1: 应援 加油 支持 喝彩 助威 call
+yuanbao_sticker.party: 祝贺 开心 耶 party 胜利 干杯
+yuanbao_sticker._14: 问号 不懂 啥 为什么 啥情况 懵逼问
+yuanbao_sticker._15: 思考 推敲 认真 研究 琢磨 让我想想
+yuanbao_sticker._18: 真的假的 真假 可爱问 你骗我 是不是
+yuanbao_sticker._3: 懵 愣住 放空 呆滞 出神 脑子空白
+yuanbao_sticker._5: 头疼 烦恼 郁闷 难搞 崩溃 一团乱
+yuanbao_sticker._7: 无语 崩溃 被雷 内伤 一口老血 屮
+yuanbao_sticker._21: 不屑 无聊 淡定 无所谓 鄙视 挖鼻
+yuanbao_sticker.666: 拍手 叫好 赞同 666 喝彩 掌声
+yuanbao_sticker._23: 围观 看戏 八卦 路人 看热闹 板凳
+yuanbao_sticker._24: 知道了 明白 敷衍 嗯 这样啊 收到
+yuanbao_sticker._26: 抱抱 亲昵 蹭蹭 亲密 靠靠 撒娇贴
+yuanbao_sticker._27: 酸 嫉妒 柠檬精 羡慕 我酸 恰柠檬
+yuanbao_sticker._30: 花 示爱 表白 浪漫 送你花 情人节
+yuanbao_sticker._33: 过年 喜庆 爆竹 春节 噼里啪啦 红
+yuanbao_sticker._34: 庆典 漂亮 新年 嘭 绽放 节日快乐
+yuanbao_sticker._6: 害怕 惊恐 震惊 吓一跳 恐怖 怂
+yuanbao_sticker._8: 傲娇 生气 不满 撇嘴 不理 赌气
+yuanbao_sticker._13: 努力 加油 拼搏 冲 干劲 卷起来
+yuanbao_sticker._19: 调皮 吐舌 不服 略 气死你 鬼脸
+yuanbao_sticker._22: 惊讶 起哄 哇哦 有戏 不简单 哟
+yuanbao_sticker._31: 花谢 失恋 难过 枯萎 心碎 凉了
+yuanbao_sticker._32: 谢谢 失敬 江湖 承让 拜托 有礼
+yuanbao_sticker.666_1: 牛 厉害 强 666 佩服 大佬
+yuanbao_sticker._29: 生气 愤怒 火大 暴躁 气炸 怼
+yuanbao_sticker._16: 嘟嘴 卖萌 不高兴 撒娇 嘴翘
+yuanbao_sticker.call: 打call

@@ -369,7 +369,7 @@ class WebhookAdapter(BasePlatformAdapter):
         content_length = request.content_length or 0
         if content_length > self._max_body_bytes:
             return web.json_response(
-                {"error": "Payload too large"}, status=413
+                {"error": t('webhook.payload.too.large')}, status=413
             )
 
         # Read body (must be done before any validation)
@@ -377,7 +377,7 @@ class WebhookAdapter(BasePlatformAdapter):
             raw_body = await request.read()
         except Exception as e:
             logger.error("[webhook] Failed to read body: %s", e)
-            return web.json_response({"error": "Bad request"}, status=400)
+            return web.json_response({"error": t('webhook.bad.request')}, status=400)
 
         # Validate HMAC signature FIRST (skip only for the explicit local-test
         # INSECURE_NO_AUTH mode). Missing/empty secrets must fail closed here,
@@ -390,7 +390,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 route_name,
             )
             return web.json_response(
-                {"error": "Webhook route is missing an HMAC secret"},
+                {"error": t('webhook.webhook.route.missing.hmac')},
                 status=403,
             )
         if secret != _INSECURE_NO_AUTH:
@@ -399,7 +399,7 @@ class WebhookAdapter(BasePlatformAdapter):
                     "[webhook] Invalid signature for route %s", route_name
                 )
                 return web.json_response(
-                    {"error": "Invalid signature"}, status=401
+                    {"error": t('webhook.invalid.signature')}, status=401
                 )
 
         # ── Rate limiting (after auth) ───────────────────────────
@@ -408,7 +408,7 @@ class WebhookAdapter(BasePlatformAdapter):
         window[:] = [t for t in window if now - t < 60]
         if len(window) >= self._rate_limit:
             return web.json_response(
-                {"error": "Rate limit exceeded"}, status=429
+                {"error": t('webhook.rate.limit.exceeded')}, status=429
             )
         window.append(now)
 
@@ -425,7 +425,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 )
             except Exception:
                 return web.json_response(
-                    {"error": "Cannot parse body"}, status=400
+                    {"error": t('webhook.cannot.parse.body')}, status=400
                 )
 
         # Check event type filter
@@ -542,7 +542,7 @@ class WebhookAdapter(BasePlatformAdapter):
                     delivery_id,
                 )
                 return web.json_response(
-                    {"status": "error", "error": "Delivery failed", "delivery_id": delivery_id},
+                    {"status": "error", "error": t('webhook.delivery.failed'), "delivery_id": delivery_id},
                     status=502,
                 )
 
@@ -838,7 +838,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 "[webhook] github_comment delivery missing repo or pr_number"
             )
             return SendResult(
-                success=False, error="Missing repo or pr_number"
+                success=False, error=t('webhook.missing.repo.prnumber')
             )
 
         try:
@@ -873,7 +873,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 "github_comment delivery"
             )
             return SendResult(
-                success=False, error="gh CLI not installed"
+                success=False, error=t('webhook.cli.installed')
             )
         except Exception as e:
             logger.error("[webhook] github_comment delivery error: %s", e)
@@ -886,7 +886,7 @@ class WebhookAdapter(BasePlatformAdapter):
         if not self.gateway_runner:
             return SendResult(
                 success=False,
-                error="No gateway runner for cross-platform delivery",
+                error=t('webhook.gateway.runner.crossplatform.delivery'),
             )
 
         try:

@@ -343,7 +343,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             chat_name="msgraph/webhook",
             chat_type="webhook",
             user_id="msgraph",
-            user_name="Microsoft Graph",
+            user_name=t('msgraph_webhook.microsoft.graph'),
         )
         return MessageEvent(
             text=self._render_prompt(notification),

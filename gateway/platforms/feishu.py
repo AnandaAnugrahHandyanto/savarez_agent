@@ -221,9 +221,9 @@ _APPROVAL_CHOICE_MAP: Dict[str, str] = {
     "deny": "deny",
 }
 _APPROVAL_LABEL_MAP: Dict[str, str] = {
-    "once": "Approved once",
-    "session": "Approved for session",
-    "always": "Approved permanently",
+    "once": t('feishu.approved.once'),
+    "session": t('feishu.approved.session'),
+    "always": t('feishu.approved.permanently'),
     "deny": "Denied",
 }
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
@@ -1309,7 +1309,7 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
 
     def _configure_with_overrides(conf: Any) -> Any:
         if original_configure is None:
-            raise RuntimeError("Feishu _configure_with_overrides called but original_configure is None")
+            raise RuntimeError(t('feishu.feishu.configurewithoverrides.called.originalconfigure'))
         result = original_configure(conf)
         _apply_runtime_ws_overrides()
         return result
@@ -1660,9 +1660,9 @@ class FeishuAdapter(BasePlatformAdapter):
             if not acquired:
                 owner_pid = existing.get("pid") if isinstance(existing, dict) else None
                 message = (
-                    "Another local Hermes gateway is already using this Feishu app_id"
+                    t('feishu.another.local.hermes.gateway')
                     + (f" (PID {owner_pid})." if owner_pid else ".")
-                    + " Stop the other gateway before starting a second Feishu websocket client."
+                    + t('feishu.stop.other.gateway.before')
                 )
                 logger.error("[Feishu] %s", message)
                 self._set_fatal_error("feishu_app_lock", message, retryable=False)
@@ -1770,7 +1770,7 @@ class FeishuAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a Feishu message."""
         if not self._client:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error=t('feishu.not.connected'))
 
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
@@ -1882,7 +1882,7 @@ class FeishuAdapter(BasePlatformAdapter):
             card = {
                 "config": {"wide_screen_mode": True},
                 "header": {
-                    "title": {"content": "⚠️ Command Approval Required", "tag": "plain_text"},
+                    "title": {"content": t('feishu.command.approval.required'), "tag": "plain_text"},
                     "template": "orange",
                 },
                 "elements": [
@@ -1893,10 +1893,10 @@ class FeishuAdapter(BasePlatformAdapter):
                     {
                         "tag": "action",
                         "actions": [
-                            _btn("✅ Allow Once", "approve_once", "primary"),
-                            _btn("✅ Session", "approve_session"),
-                            _btn("✅ Always", "approve_always"),
-                            _btn("❌ Deny", "deny", "danger"),
+                            _btn(t('feishu.allow.once'), "approve_once", "primary"),
+                            _btn(t('feishu.session'), "approve_session"),
+                            _btn(t('feishu.always'), "approve_always"),
+                            _btn(t('feishu.deny'), "deny", "danger"),
                         ],
                     },
                 ],
@@ -1941,7 +1941,7 @@ class FeishuAdapter(BasePlatformAdapter):
         return {
             "config": {"wide_screen_mode": True},
             "header": {
-                "title": {"content": "⚕ Update Needs Your Input", "tag": "plain_text"},
+                "title": {"content": t('feishu.update.needs.input'), "tag": "plain_text"},
                 "template": "orange",
             },
             "elements": [
@@ -1949,7 +1949,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 {
                     "tag": "action",
                     "actions": [
-                        _btn("✓ Yes", "y", "primary"),
+                        _btn(t('feishu.yes'), "y", "primary"),
                         _btn("✗ No", "n", "danger"),
                     ],
                 },
@@ -2123,7 +2123,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 return self._response_error_result(
                     upload_response,
                     default_message="image upload failed",
-                    override_error="Feishu image upload missing image_key",
+                    override_error=t('feishu.feishu.image.upload.missing'),
                 )
 
             if caption:
@@ -3248,7 +3248,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._check_webhook_rate_limit(rate_key):
             logger.warning("[Feishu] Webhook rate limit exceeded for %s", remote_ip)
             self._record_webhook_anomaly(remote_ip, "429")
-            return web.Response(status=429, text="Too Many Requests")
+            return web.Response(status=429, text=t('feishu.too.many.requests'))
 
         # Content-Type guard — Feishu always sends application/json.
         headers = getattr(request, "headers", {}) or {}
@@ -3256,14 +3256,14 @@ class FeishuAdapter(BasePlatformAdapter):
         if content_type and content_type != "application/json":
             logger.warning("[Feishu] Webhook rejected: unexpected Content-Type %r from %s", content_type, remote_ip)
             self._record_webhook_anomaly(remote_ip, "415")
-            return web.Response(status=415, text="Unsupported Media Type")
+            return web.Response(status=415, text=t('feishu.unsupported.media.type'))
 
         # Body size guard — reject early via Content-Length when present.
         content_length = getattr(request, "content_length", None)
         if content_length is not None and content_length > _FEISHU_WEBHOOK_MAX_BODY_BYTES:
             logger.warning("[Feishu] Webhook body too large (%d bytes) from %s", content_length, remote_ip)
             self._record_webhook_anomaly(remote_ip, "413")
-            return web.Response(status=413, text="Request body too large")
+            return web.Response(status=413, text=t('feishu.request.body.too.large'))
 
         try:
             body_bytes: bytes = await asyncio.wait_for(
@@ -3273,7 +3273,7 @@ class FeishuAdapter(BasePlatformAdapter):
         except asyncio.TimeoutError:
             logger.warning("[Feishu] Webhook body read timed out after %ds from %s", _FEISHU_WEBHOOK_BODY_TIMEOUT_SECONDS, remote_ip)
             self._record_webhook_anomaly(remote_ip, "408")
-            return web.Response(status=408, text="Request Timeout")
+            return web.Response(status=408, text=t('feishu.request.timeout'))
         except Exception:
             self._record_webhook_anomaly(remote_ip, "400")
             return web.json_response({"code": 400, "msg": "failed to read body"}, status=400)
@@ -3296,7 +3296,7 @@ class FeishuAdapter(BasePlatformAdapter):
             if not incoming_token or not hmac.compare_digest(incoming_token, self._verification_token):
                 logger.warning("[Feishu] Webhook rejected: invalid verification token from %s", remote_ip)
                 self._record_webhook_anomaly(remote_ip, "401-token")
-                return web.Response(status=401, text="Invalid verification token")
+                return web.Response(status=401, text=t('feishu.invalid.verification.token'))
 
         # URL verification challenge — Feishu includes the verification token in
         # challenge requests. Validate the token (above) before reflecting the
@@ -3309,7 +3309,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if self._encrypt_key and not self._is_webhook_signature_valid(request.headers, body_bytes):
             logger.warning("[Feishu] Webhook rejected: invalid signature from %s", remote_ip)
             self._record_webhook_anomaly(remote_ip, "401-sig")
-            return web.Response(status=401, text="Invalid signature")
+            return web.Response(status=401, text=t('feishu.invalid.signature'))
 
         if payload.get("encrypt"):
             logger.error("[Feishu] Encrypted webhook payloads are not supported by Hermes webhook mode")
@@ -4330,7 +4330,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 return self._response_error_result(
                     upload_response,
                     default_message="file upload failed",
-                    override_error="Feishu file upload missing file_key",
+                    override_error=t('feishu.feishu.file.upload.missing'),
                 )
 
             if caption:
@@ -4478,7 +4478,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._client = self._build_lark_client(domain)
         self._event_handler = self._build_event_handler()
         if self._event_handler is None:
-            raise RuntimeError("failed to build Feishu event handler")
+            raise RuntimeError(t('feishu.failed.build.feishu.event'))
         loop = self._loop
         if loop is None or loop.is_closed():
             raise RuntimeError("adapter loop is not ready")
@@ -4589,7 +4589,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     exc,
                 )
                 await asyncio.sleep(wait_seconds)
-        raise last_error or RuntimeError("Feishu send failed")
+        raise last_error or RuntimeError(t('feishu.feishu.send.failed'))
 
     async def _release_app_lock(self) -> None:
         if not self._app_lock_identity:
@@ -4853,7 +4853,7 @@ def _begin_registration(domain: str = "feishu") -> dict:
     })
     device_code = res.get("device_code")
     if not device_code:
-        raise RuntimeError("Feishu / Lark registration did not return a device_code")
+        raise RuntimeError(t('feishu.feishu.lark.registration.return'))
     qr_url = res.get("verification_uri_complete", "")
     if "?" in qr_url:
         qr_url += "&from=hermes&tp=hermes"
@@ -4899,7 +4899,7 @@ def _poll_registration(
 
         poll_count += 1
         if poll_count == 1:
-            print("  Fetching configuration results...", end="", flush=True)
+            print(t('feishu.fetching.configuration.results'), end="", flush=True)
         elif poll_count % 6 == 0:
             print(".", end="", flush=True)
 
@@ -4914,7 +4914,7 @@ def _poll_registration(
         # Success
         if res.get("client_id") and res.get("client_secret"):
             if poll_count > 0:
-                print()  # newline after "Fetching configuration results..." dots
+                print()  # newline after t('feishu.fetching.configuration.results_1') dots
             return {
                 "app_id": res["client_id"],
                 "app_secret": res["client_secret"],
@@ -5085,7 +5085,7 @@ def _qr_register_inner(
     timeout_seconds: int,
 ) -> Optional[dict]:
     """Run init → begin → poll → probe. Raises on network/protocol errors."""
-    print("  Connecting to Feishu / Lark...", end="", flush=True)
+    print(t('feishu.connecting.feishu.lark'), end="", flush=True)
     _init_registration(initial_domain)
     begin = _begin_registration(initial_domain)
     print(" done.")

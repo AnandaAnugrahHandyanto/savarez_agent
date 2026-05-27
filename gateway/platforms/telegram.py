@@ -608,7 +608,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _dm_topic_missing_anchor_error() -> str:
-        return "Telegram DM topic delivery requires a reply anchor; refusing to send outside the requested topic"
+        return t('telegram.telegram.topic.delivery.requires')
 
     @classmethod
     def _reply_to_message_id_for_send(
@@ -1015,7 +1015,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, HEARTBEAT_PROBE_DELAY,
             )
             await self._handle_polling_network_error(
-                RuntimeError("Updater not running after reconnect heartbeat")
+                RuntimeError(t('telegram.updater.running.after.reconnect'))
             )
             return
 
@@ -1372,7 +1372,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "chat_id": 123456789,
                 "topics": [
                     {"name": "General", "icon_color": 7322096, "thread_id": 100},
-                    {"name": "Accessibility Auditor", "icon_color": 9367192, "skill": "accessibility-auditor"}
+                    {"name": t('telegram.accessibility.auditor'), "icon_color": 9367192, "skill": "accessibility-auditor"}
                 ]
             }
         ]
@@ -1473,7 +1473,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         
         try:
-            if not self._acquire_platform_lock('telegram-bot-token', self.config.token, 'Telegram bot token'):
+            if not self._acquire_platform_lock('telegram-bot-token', self.config.token, t('telegram.telegram.bot.token')):
                 return False
 
             # Build the application
@@ -1811,7 +1811,7 @@ class TelegramAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a message to a Telegram chat."""
         if not self._bot:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error=t('telegram.not.connected'))
 
         # getattr() — tests build adapters via object.__new__() (no __init__).
         if getattr(self, "_send_path_degraded", False):
@@ -2505,7 +2505,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _send_message_with_thread_fallback(self, **kwargs):
         """Send a Telegram message, retrying once without message_thread_id
-        if Telegram returns 'Message thread not found'.
+        if Telegram returns t('telegram.message.thread.found').
 
         Used for control-style sends (approval prompts, model picker,
         update prompts) that can carry a stale thread_id from a DM
@@ -2552,7 +2552,7 @@ class TelegramAdapter(BasePlatformAdapter):
             text = self.format_message(f"⚕ *Update needs your input:*\n\n{prompt}{default_hint}")
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("✓ Yes", callback_data="update_prompt:y"),
+                    InlineKeyboardButton(t('telegram.yes'), callback_data="update_prompt:y"),
                     InlineKeyboardButton("✗ No", callback_data="update_prompt:n"),
                 ]
             ])
@@ -2612,12 +2612,12 @@ class TelegramAdapter(BasePlatformAdapter):
 
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("✅ Allow Once", callback_data=f"ea:once:{approval_id}"),
-                    InlineKeyboardButton("✅ Session", callback_data=f"ea:session:{approval_id}"),
+                    InlineKeyboardButton(t('telegram.allow.once'), callback_data=f"ea:once:{approval_id}"),
+                    InlineKeyboardButton(t('telegram.session'), callback_data=f"ea:session:{approval_id}"),
                 ],
                 [
-                    InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}"),
-                    InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"),
+                    InlineKeyboardButton(t('telegram.always'), callback_data=f"ea:always:{approval_id}"),
+                    InlineKeyboardButton(t('telegram.deny'), callback_data=f"ea:deny:{approval_id}"),
                 ],
             ])
 
@@ -2663,11 +2663,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("✅ Approve Once", callback_data=f"sc:once:{confirm_id}"),
-                    InlineKeyboardButton("🔒 Always Approve", callback_data=f"sc:always:{confirm_id}"),
+                    InlineKeyboardButton(t('telegram.approve.once'), callback_data=f"sc:once:{confirm_id}"),
+                    InlineKeyboardButton(t('telegram.always.approve'), callback_data=f"sc:always:{confirm_id}"),
                 ],
                 [
-                    InlineKeyboardButton("❌ Cancel", callback_data=f"sc:cancel:{confirm_id}"),
+                    InlineKeyboardButton(t('telegram.cancel'), callback_data=f"sc:cancel:{confirm_id}"),
                 ],
             ])
 
@@ -2818,7 +2818,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
 
             rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
-            rows.append([InlineKeyboardButton("✗ Cancel", callback_data="mx")])
+            rows.append([InlineKeyboardButton(t('telegram.cancel_1'), callback_data="mx")])
             keyboard = InlineKeyboardMarkup(rows)
 
             provider_label = get_label(current_provider)
@@ -2893,14 +2893,14 @@ class TelegramAdapter(BasePlatformAdapter):
         if total_pages > 1:
             nav: list = []
             if page > 0:
-                nav.append(InlineKeyboardButton("◀ Prev", callback_data=f"mg:{page - 1}"))
+                nav.append(InlineKeyboardButton(t('telegram.prev'), callback_data=f"mg:{page - 1}"))
             nav.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="mx:noop"))
             if page < total_pages - 1:
-                nav.append(InlineKeyboardButton("Next ▶", callback_data=f"mg:{page + 1}"))
+                nav.append(InlineKeyboardButton(t('telegram.next'), callback_data=f"mg:{page + 1}"))
             rows.append(nav)
 
         rows.append([
-            InlineKeyboardButton("◀ Back", callback_data="mb"),
+            InlineKeyboardButton(t('telegram.back'), callback_data="mb"),
             InlineKeyboardButton("✗ Cancel", callback_data="mx"),
         ])
 
@@ -2913,7 +2913,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Handle model picker inline keyboard callbacks (mp:/mm:/mb:/mx:/mg:)."""
         state = self._model_picker_state.get(chat_id)
         if not state:
-            await query.answer(text="Picker expired — use /model again.")
+            await query.answer(text=t('telegram.picker.expired.use.model'))
             return
 
         try:
@@ -2930,7 +2930,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 None,
             )
             if not provider:
-                await query.answer(text="Provider not found.")
+                await query.answer(text=t('telegram.provider.found'))
                 return
 
             models = provider.get("models", [])
@@ -2964,7 +2964,7 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 page = int(data[3:])
             except ValueError:
-                await query.answer(text="Invalid page.")
+                await query.answer(text=t('telegram.invalid.page'))
                 return
 
             models = state.get("model_list", [])
@@ -3000,12 +3000,12 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 idx = int(data[3:])
             except ValueError:
-                await query.answer(text="Invalid selection.")
+                await query.answer(text=t('telegram.invalid.selection'))
                 return
 
             model_list = state.get("model_list", [])
             if idx < 0 or idx >= len(model_list):
-                await query.answer(text="Invalid model index.")
+                await query.answer(text=t('telegram.invalid.model.index'))
                 return
 
             model_id = model_list[idx]
@@ -3013,7 +3013,7 @@ class TelegramAdapter(BasePlatformAdapter):
             callback = state.get("on_model_selected")
 
             if not callback:
-                await query.answer(text="Picker expired.")
+                await query.answer(text=t('telegram.picker.expired'))
                 return
 
             try:
@@ -3039,7 +3039,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception:
                     pass
-            await query.answer(text="Model switched!")
+            await query.answer(text=t('telegram.model.switched'))
 
             # Clean up state
             self._model_picker_state.pop(chat_id, None)
@@ -3083,7 +3083,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # --- Cancel ---
             self._model_picker_state.pop(chat_id, None)
             await query.edit_message_text(
-                text="Model selection cancelled.",
+                text=t('telegram.model.selection.cancelled'),
                 reply_markup=None,
             )
             await query.answer()
@@ -3134,7 +3134,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 try:
                     approval_id = int(parts[2])
                 except (ValueError, IndexError):
-                    await query.answer(text="Invalid approval data.")
+                    await query.answer(text=t('telegram.invalid.approval.data'))
                     return
 
                 # Only authorized users may click approval buttons.
@@ -3146,20 +3146,20 @@ class TelegramAdapter(BasePlatformAdapter):
                     thread_id=str(query_thread_id) if query_thread_id is not None else None,
                     user_name=query_user_name,
                 ):
-                    await query.answer(text="⛔ You are not authorized to approve commands.")
+                    await query.answer(text=t('telegram.authorized.approve.commands'))
                     return
 
                 session_key = self._approval_state.pop(approval_id, None)
                 if not session_key:
-                    await query.answer(text="This approval has already been resolved.")
+                    await query.answer(text=t('telegram.approval.already.resolved'))
                     return
 
                 # Map choice to human-readable label
                 label_map = {
-                    "once": "✅ Approved once",
-                    "session": "✅ Approved for session",
-                    "always": "✅ Approved permanently",
-                    "deny": "❌ Denied",
+                    "once": t('telegram.approved.once'),
+                    "session": t('telegram.approved.session'),
+                    "always": t('telegram.approved.permanently'),
+                    "deny": t('telegram.denied'),
                 }
                 user_display = getattr(query.from_user, "first_name", "User")
                 label = label_map.get(choice, "Resolved")
@@ -3212,18 +3212,18 @@ class TelegramAdapter(BasePlatformAdapter):
                     thread_id=str(query_thread_id) if query_thread_id is not None else None,
                     user_name=query_user_name,
                 ):
-                    await query.answer(text="⛔ You are not authorized to answer this prompt.")
+                    await query.answer(text=t('telegram.authorized.answer.prompt'))
                     return
 
                 session_key = self._slash_confirm_state.pop(confirm_id, None)
                 if not session_key:
-                    await query.answer(text="This prompt has already been resolved.")
+                    await query.answer(text=t('telegram.prompt.already.resolved'))
                     return
 
                 label_map = {
                     "once": "✅ Approved once",
-                    "always": "🔒 Always approve",
-                    "cancel": "❌ Cancelled",
+                    "always": t('telegram.always.approve_1'),
+                    "cancel": t('telegram.cancelled'),
                 }
                 user_display = getattr(query.from_user, "first_name", "User")
                 label = label_map.get(choice, "Resolved")
@@ -3335,7 +3335,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     except Exception as exc:
                         logger.warning("[%s] mark_awaiting_text failed: %s", self.name, exc)
 
-                    await query.answer(text="✏️ Type your answer in the chat.")
+                    await query.answer(text=t('telegram.type.answer.chat'))
                     try:
                         await query.edit_message_text(
                             text=f"❓ {query.message.text or ''}\n\n<i>Awaiting typed response from {_html.escape(user_display)}…</i>",
@@ -3350,7 +3350,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 try:
                     idx = int(choice_token)
                 except (ValueError, TypeError):
-                    await query.answer(text="Invalid choice.")
+                    await query.answer(text=t('telegram.invalid.choice'))
                     return
 
                 # Look up the choice text from the entry registered in the
@@ -3414,7 +3414,7 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id=str(query_thread_id) if query_thread_id is not None else None,
             user_name=query_user_name,
         ):
-            await query.answer(text="⛔ You are not authorized to answer update prompts.")
+            await query.answer(text=t('telegram.authorized.answer.update.prompts'))
             return
         await query.answer(text=f"Sent '{answer}' to the update process.")
         # Edit the message to show the choice and remove buttons
@@ -3456,8 +3456,8 @@ class TelegramAdapter(BasePlatformAdapter):
         "mute-domain":  ("mute-add.sh",        ["domain"], "✓ muted domain",       True),
         "trust":        ("trusted-ops-add.sh", ["email"],  "✓ trusted",            True),
         "trust-domain": ("trusted-ops-add.sh", ["domain"], "✓ trusted domain",     True),
-        "vip":          ("vip-add.sh",         ["email"],  "✓ marked VIP",         True),
-        "vip-domain":   ("vip-add.sh",         ["domain"], "✓ marked VIP domain",  True),
+        "vip":          ("vip-add.sh",         ["email"],  t('telegram.marked.vip'),         True),
+        "vip-domain":   ("vip-add.sh",         ["domain"], t('telegram.marked.vip.domain'),  True),
     }
 
     async def _handle_gmail_triage_callback(
@@ -3473,7 +3473,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """Dispatch a gmail-triage inline-button callback (gt:verb:arg)."""
         parts = data.split(":", 2)
         if len(parts) != 3:
-            await query.answer(text="Invalid gmail-triage data.")
+            await query.answer(text=t('telegram.invalid.gmailtriage.data'))
             return
         verb, arg = parts[1], parts[2]
 
@@ -3485,7 +3485,7 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id=str(query_thread_id) if query_thread_id is not None else None,
             user_name=query_user_name,
         ):
-            await query.answer(text="⛔ You are not authorized to act on this email.")
+            await query.answer(text=t('telegram.authorized.act.email'))
             return
 
         entry = self._GT_VERB_DISPATCH.get(verb)
@@ -4030,7 +4030,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 },
                 metadata,
                 reply_to_id,
-                "URL photo",
+                t('telegram.url.photo'),
             )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:

@@ -450,7 +450,7 @@ async def _send_message(
         "client_id": client_id,
         "message_type": MSG_TYPE_BOT,
         "message_state": MSG_STATE_FINISH,
-        "item_list": [{"type": ITEM_TEXT, "text_item": {"text": text}}],
+        "item_list": [{"typet('weixin.itemtext')text_item": {"text": text}}],
     }
     if context_token:
         message["context_token"] = context_token
@@ -1050,7 +1050,7 @@ async def qr_login(
     Returns a credential dict on success, or ``None`` if login fails or times out.
     """
     if not AIOHTTP_AVAILABLE:
-        raise RuntimeError("aiohttp is required for Weixin QR login")
+        raise RuntimeError(t('weixin.aiohttp.required.weixin.login'))
 
     async with aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector()) as session:
         try:
@@ -1067,7 +1067,7 @@ async def qr_login(
         qrcode_value = str(qr_resp.get("qrcode") or "")
         qrcode_url = str(qr_resp.get("qrcode_img_content") or "")
         if not qrcode_value:
-            logger.error("weixin: QR response missing qrcode")
+            logger.error(t('weixin.weixin.response.missing.qrcode'))
             return None
 
         # qrcode_url is the full scannable liteapp URL; qrcode_value is just the hex token
@@ -1151,7 +1151,7 @@ async def qr_login(
                 base_url = str(status_resp.get("baseurl") or ILINK_BASE_URL)
                 user_id = str(status_resp.get("ilink_user_id") or "")
                 if not account_id or not token:
-                    logger.error("weixin: QR confirmed but credential payload was incomplete")
+                    logger.error(t('weixin.weixin.confirmed.credential.payload'))
                     return None
                 save_weixin_account(
                     hermes_home,
@@ -1244,23 +1244,23 @@ class WeixinAdapter(BasePlatformAdapter):
 
     async def connect(self) -> bool:
         if not check_weixin_requirements():
-            message = "Weixin startup failed: aiohttp and cryptography are required"
+            message = t('weixin.weixin.startup.failed.aiohttp')
             self._set_fatal_error("weixin_missing_dependency", message, retryable=False)
             logger.warning("[%s] %s", self.name, message)
             return False
         if not self._token:
-            message = "Weixin startup failed: WEIXIN_TOKEN is required"
+            message = t('weixin.weixin.startup.failed.weixintoken')
             self._set_fatal_error("weixin_missing_token", message, retryable=False)
             logger.warning("[%s] %s", self.name, message)
             return False
         if not self._account_id:
-            message = "Weixin startup failed: WEIXIN_ACCOUNT_ID is required"
+            message = t('weixin.weixin.startup.failed.weixinaccountid')
             self._set_fatal_error("weixin_missing_account", message, retryable=False)
             logger.warning("[%s] %s", self.name, message)
             return False
 
         try:
-            if not self._acquire_platform_lock('weixin-bot-token', self._token, 'Weixin bot token'):
+            if not self._acquire_platform_lock('weixin-bot-token', self._token, t('weixin.weixin.bot.token')):
                 return False
         except Exception as exc:
             logger.debug("[%s] Token lock unavailable (non-fatal): %s", self.name, exc)
@@ -1673,7 +1673,7 @@ class WeixinAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         if not self._send_session or not self._token:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error=t('weixin.not.connected'))
         context_token = self._token_store.get(self._account_id, chat_id)
         last_message_id: Optional[str] = None
 
@@ -2088,9 +2088,9 @@ async def send_weixin_direct(
     cdn_base_url = str(extra.get("cdn_base_url") or os.getenv("WEIXIN_CDN_BASE_URL", WEIXIN_CDN_BASE_URL)).strip().rstrip("/")
     resolved_token = str(token or extra.get("token") or os.getenv("WEIXIN_TOKEN", "")).strip()
     if not resolved_token:
-        return {"error": "Weixin token missing. Configure WEIXIN_TOKEN or platforms.weixin.token."}
+        return {"error": t('weixin.weixin.token.missing.configure')}
     if not account_id:
-        return {"error": "Weixin account ID missing. Configure WEIXIN_ACCOUNT_ID or platforms.weixin.extra.account_id."}
+        return {"error": t('weixin.weixin.account.missing.configure')}
 
     token_store = ContextTokenStore(str(get_hermes_home()))
     token_store.restore(account_id)

@@ -1737,7 +1737,7 @@ class BasePlatformAdapter(ABC):
         message = (
             f'{resource_desc} already in use'
             + (f' (PID {owner_pid})' if owner_pid else '')
-            + '. Stop the other gateway first.'
+            + t('base.stop.other.gateway.first')
         )
         logger.error('[%s] %s', self.name, message)
         self._set_fatal_error(f'{scope}_lock', message, retryable=False)
@@ -1883,7 +1883,7 @@ class BasePlatformAdapter(ABC):
         response (typically when ``got_done`` fires in the stream
         consumer) and leave it ``False`` on intermediate edits.
         """
-        return SendResult(success=False, error="Not supported")
+        return SendResult(success=False, error=t('base.not.supported'))
 
     async def delete_message(
         self,
@@ -2042,7 +2042,7 @@ class BasePlatformAdapter(ABC):
             for i, choice in enumerate(choices, start=1):
                 lines.append(f"  {i}. {choice}")
             lines.append("")
-            lines.append("Reply with the number, the option text, or your own answer.")
+            lines.append(t('base.reply.number.option.text'))
             text = "\n".join(lines)
             # Text fallback: enable text-capture so the gateway intercept
             # picks up the user's typed reply (e.g. "2" or choice text).
@@ -2358,7 +2358,7 @@ class BasePlatformAdapter(ABC):
             if safe_path:
                 safe_media.append((safe_path, bool(is_voice)))
             else:
-                logger.warning("Skipping unsafe MEDIA directive path outside allowed roots")
+                logger.warning(t('base.skipping.unsafe.media.directive'))
         return safe_media
 
     @staticmethod
@@ -2370,7 +2370,7 @@ class BasePlatformAdapter(ABC):
             if safe_path:
                 safe_paths.append(safe_path)
             else:
-                logger.warning("Skipping unsafe local file path outside allowed roots")
+                logger.warning(t('base.skipping.unsafe.local.file'))
         return safe_paths
 
     @staticmethod
@@ -2674,7 +2674,7 @@ class BasePlatformAdapter(ABC):
                     try:
                         _prev()
                     except Exception:
-                        logger.debug("Post-delivery callback failed", exc_info=True)
+                        logger.debug(t('base.postdelivery.callback.failed'), exc_info=True)
                     try:
                         _new()
                     except Exception:
@@ -2860,7 +2860,7 @@ class BasePlatformAdapter(ABC):
 
         Uses line-by-line exact match (not substring) to prevent false positives
         where a shorter caption is silently dropped because it appears as a
-        substring of a longer one (e.g. "Meeting" inside "Meeting agenda").
+        substring of a longer one (e.g. "Meeting" inside t('base.meeting.agenda')).
         Whitespace is normalised for comparison.
         """
         if not existing_text:
@@ -3079,7 +3079,7 @@ class BasePlatformAdapter(ABC):
         This is the on-entry safety net sidbin's issue #11016 analysis calls
         for: without it, a split-brain — adapter still thinks the session is
         active, but nothing is actually processing — traps the chat in
-        infinite "Interrupting current task..." until the gateway is
+        infinite t('base.interrupting.current.task') until the gateway is
         restarted.
         """
         if session_key not in self._active_sessions:
@@ -3614,7 +3614,7 @@ class BasePlatformAdapter(ABC):
                             import json as _json
                             speech_text = self.prepare_tts_text(text_content)
                             if not speech_text:
-                                raise ValueError("Empty text after markdown cleanup")
+                                raise ValueError(t('base.empty.text.after.markdown'))
                             tts_result_str = await asyncio.to_thread(
                                 text_to_speech_tool, text=speech_text
                             )

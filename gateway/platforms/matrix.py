@@ -253,10 +253,10 @@ def check_matrix_requirements() -> bool:
     homeserver = os.getenv("MATRIX_HOMESERVER", "")
 
     if not token and not password:
-        logger.debug("Matrix: neither MATRIX_ACCESS_TOKEN nor MATRIX_PASSWORD set")
+        logger.debug(t('matrix.matrix.neither.matrixaccesstoken.nor'))
         return False
     if not homeserver:
-        logger.warning("Matrix: MATRIX_HOMESERVER not set")
+        logger.warning(t('matrix.matrix.matrixhomeserver.set'))
         return False
 
     # Check whether any package in the platform.matrix feature group is
@@ -582,7 +582,7 @@ class MatrixAdapter(BasePlatformAdapter):
         local_ed25519 = olm.account.identity_keys.get("ed25519")
 
         if not our_keys:
-            logger.warning("Matrix: device keys missing from server — re-uploading")
+            logger.warning(t('matrix.matrix.device.keys.missing'))
             olm.account.shared = False
             try:
                 await olm.share_keys()
@@ -645,7 +645,7 @@ class MatrixAdapter(BasePlatformAdapter):
         from mautrix.client.state_store import MemoryStateStore, MemorySyncStore
 
         if not self._homeserver:
-            logger.error("Matrix: homeserver URL not configured")
+            logger.error(t('matrix.matrix.homeserver.url.configured'))
             return False
 
         # Ensure store dir exists for E2EE key persistence.
@@ -708,7 +708,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 resp = await client.login(
                     identifier=self._user_id,
                     password=self._password,
-                    device_name="Hermes Agent",
+                    device_name=t('matrix.hermes.agent'),
                     device_id=self._device_id or None,
                 )
                 if resp and hasattr(resp, "device_id"):
@@ -837,7 +837,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 if recovery_key:
                     try:
                         await olm.verify_with_recovery_key(recovery_key)
-                        logger.info("Matrix: cross-signing verified via recovery key")
+                        logger.info(t('matrix.matrix.crosssigning.verified.via'))
                     except Exception as exc:
                         logger.warning(
                             "Matrix: recovery key verification failed: %s", exc
@@ -996,7 +996,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 pass
             self._client = None
 
-        logger.info("Matrix: disconnected")
+        logger.info(t('matrix.matrix.disconnected'))
 
     async def send(
         self,
@@ -1272,7 +1272,7 @@ class MatrixAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a reaction-based exec approval prompt for Matrix."""
         if not self._client:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error=t('matrix.not.connected'))
 
         cmd_preview = command[:2000] + "..." if len(command) > 2000 else command
         text = (
@@ -2373,7 +2373,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     read_receipt=event,
                 )
             else:
-                logger.debug("Matrix: client has no read receipt method")
+                logger.debug(t('matrix.matrix.client.read.receipt'))
                 return False
             logger.debug("Matrix: sent read receipt for %s in %s", event_id, room_id)
             return True
@@ -2496,7 +2496,7 @@ class MatrixAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a simple message (emote, notice) with optional HTML formatting."""
         if not self._client or not text:
-            return SendResult(success=False, error="No client or empty text")
+            return SendResult(success=False, error=t('matrix.client.empty.text'))
 
         msg_content = self._build_text_message_content(text, msgtype=msgtype)
 
