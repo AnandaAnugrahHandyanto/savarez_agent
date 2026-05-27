@@ -42,6 +42,21 @@ def _load_openai_cls() -> type:
     if _OPENAI_CLS_CACHE is None:
         from openai import OpenAI as _cls
         _OPENAI_CLS_CACHE = _cls
+        # Apply Responses API parse_response monkey patch to handle empty/None output fields
+        try:
+            import openai.lib._parsing._responses as responses_parsing
+            _orig_parse_response = responses_parsing.parse_response
+
+            def _patched_parse_response(*args, **kwargs):
+                response = kwargs.get("response")
+                if response is not None:
+                    if getattr(response, "output", None) is None:
+                        response.output = []
+                return _orig_parse_response(*args, **kwargs)
+
+            responses_parsing.parse_response = _patched_parse_response
+        except Exception:
+            pass
     return _OPENAI_CLS_CACHE
 
 
