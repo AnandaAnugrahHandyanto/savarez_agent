@@ -2617,6 +2617,25 @@ async def get_logs(
     return {"file": file, "lines": result}
 
 
+@app.get("/api/logs/errors")
+async def get_latest_errors_endpoint(num: int = 50):
+    """Return latest error messages from logs and profiles/coder logs.
+
+    Searches errors.log, agent.log, gateway.log, and
+    ~/.hermes/profiles/coder/logs/ for ERROR or CRITICAL level entries.
+    Returns a compact list including timestamp, file path, and error message.
+    """
+    from hermes_cli.logs import get_latest_errors
+
+    try:
+        errors = get_latest_errors(num_errors=min(num, 200))
+        return {"errors": errors}
+    except Exception as e:
+        _log.exception("GET /api/logs/errors failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
 # ---------------------------------------------------------------------------
 # Cron job management endpoints
 # ---------------------------------------------------------------------------

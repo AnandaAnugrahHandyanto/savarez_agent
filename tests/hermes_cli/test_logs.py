@@ -253,3 +253,109 @@ class TestLogFiles:
         assert "agent" in LOG_FILES
         assert "errors" in LOG_FILES
         assert "gateway" in LOG_FILES
+
+
+# ---------------------------------------------------------------------------
+# Latest errors function
+# ---------------------------------------------------------------------------
+
+class TestGetLatestErrors:
+    def test_extracts_error_lines(self, tmp_path, monkeypatch):
+        # Create test log files
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        (log_dir / "errors.log").write_text(
+            "2026-01-01 10:00:00 ERROR test.module: first error\n"
+            "2026-01-01 10:01:00 INFO test.module: normal msg\n"
+            "2026-01-01 10:02:00 ERROR test.module: second error\n"
+        )
+        monkeypatch.setattr(
+            "hermes_cli.logs.get_hermes_home", lambda: tmp_path)
+
+        from hermes_cli.logs import get_latest_errors
+        errors = get_latest_errors(num_errors=10)
+
+        assert len(errors) == 2
+        assert all(e["level"] in ("ERROR", "CRITICAL") for e in errors)
+        assert "first error" in errors[0]["message"]
+        assert "second error" in errors[1]["message"]
+
+    def test_includes_timestamp_and_file(self, tmp_path, monkeypatch):
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        log_file = log_dir / "gateway.log"
+        log_file.write_text("2026-01-01 12:00:00 CRITICAL test: critical failure\n")
+        monkeypatch.setattr(
+            "hermes_cli.logs.get_hermes_home", lambda: tmp_path)
+
+        from hermes_cli.logs import get_latest_errors
+        errors = get_latest_errors()
+
+        assert len(errors) == 1
+        assert errors[0]["timestamp"] == "2026-01-01 12:00:00"
+        assert "gateway.log" in errors[0]["file"]
+        assert "critical failure" in errors[0]["message"]
+
+    def test_includes_coder_logs(self, tmp_path, monkeypatch):
+        log_dir = tmp_path / "logs"
+        coder_logs = tmp_path / "profiles" / "coder" / "logs"
+        log_dir.mkdir()
+        coder_logs.mkdir(parents=True)
+        (log_dir / "agent.log").write_text(
+            "2026-01-01 10:00:00 ERROR agent: agent error\n"
+        )
+        (coder_logs / "coder.log").write_text(
+            "2026-01-01 10:01:00 ERROR coder: coder error\n"
+        )
+        monkeypatch.setattr(
+            "hermes_cli.logs.get_hermes_home", lambda: tmp_path)
+
+        from hermes_cli.logs import get_latest_errors
+        errors = get_latest_errors()
+
+        assert len(errors) == 2
+        files = [e["file"] for e in errors]
+        assert any("agent.log" in f for f in files)
+        assert any("coder.log" in f for f in files)
+
+    def test_respects_num_errors_limit(self, tmp_path, monkeypatch):
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        lines = [
+            f"2026-01-01 10:0{i}:00 ERROR test: error {i}\n"
+            for i in range(10)
+        ]
+        (log_dir / "errors.log").write_text("".join(lines))
+        monkeypatch.setattr(
+            "hermes_cli.logs.get_hermes_home", lambda: tmp_path)
+
+        from hermes_cli.logs import get_latest_errors
+        errors = get_latest_errors(num_errors=3)
+
+        assert len(errors) == 3
+
+    def test_handles_missing_directories(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.logs.get_hermes_home", lambda: tmp_path)
+
+        from hermes_cli.logs import get_latest_errors
+        errors = get_latest_errors()
+
+        assert errors == []
+
+    def test_truncates_long_messages(self, tmp_path, monkeypatch):
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        long_msg = "x" * 500
+        (log_dir / "errors.log").write_text(
+            f"2026-01-01 10:00:00 ERROR test: {long_msg}\n"
+        )
+        monkeypatch.setattr(
+            "hermes_cli.logs.get_hermes_home", lambda: tmp_path)
+
+        from hermes_cli.logs import get_latest_errors
+        errors = get_latest_errors()
+
+        assert len(errors) == 1
+        assert len(errors[0]["message"]) <= 200
+        assert errors[0]["message"].endswith("...")
