@@ -538,6 +538,10 @@ def test_s6_register_creates_service_dir_and_triggers_scan(
     run_text = run_path.read_text()
     assert "hermes -p coder gateway run" in run_text
     assert "s6-setuidgid hermes" in run_text
+    assert 'export HOME="${HERMES_HOME:-/opt/data}"' in run_text
+    assert run_text.index('export HOME="${HERMES_HOME:-/opt/data}"') < run_text.index(
+        "exec s6-setuidgid hermes"
+    )
 
     log_run = svc_dir / "log" / "run"
     assert log_run.is_file()

@@ -597,6 +597,7 @@ class S6ServiceManager:
             "#!/command/with-contenv sh",
             "# shellcheck shell=sh",
             "set -e",
+            'export HOME="${HERMES_HOME:-/opt/data}"',
             "cd /opt/data",
             ". /opt/hermes/.venv/bin/activate",
         ]
