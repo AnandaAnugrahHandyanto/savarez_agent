@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from hermes_cli.main import _resolve_last_session
+from agent.i18n import t
 
 
 class _FakeDB:

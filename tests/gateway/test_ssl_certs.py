@@ -3,6 +3,7 @@
 import importlib
 import os
 from unittest.mock import patch, MagicMock
+from agent.i18n import t
 
 
 def _load_ensure_ssl():

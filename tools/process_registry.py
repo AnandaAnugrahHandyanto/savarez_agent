@@ -15,6 +15,7 @@ Modal, Daytona, and SSH backends, the command runs inside the sandbox.
 
 Usage:
     from tools.process_registry import process_registry
+from agent.i18n import t
 
     # Spawn a background process (called from terminal_tool)
     session = process_registry.spawn(env, "pytest -v", task_id="task_123")

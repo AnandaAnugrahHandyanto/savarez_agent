@@ -26,6 +26,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Dict, List
 from hermes_cli.config import cfg_get
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

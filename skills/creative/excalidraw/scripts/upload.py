@@ -24,6 +24,7 @@ import sys
 import zlib
 import base64
 import urllib.request
+from agent.i18n import t
 
 try:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM

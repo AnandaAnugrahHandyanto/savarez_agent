@@ -5,6 +5,7 @@ from unittest.mock import patch, MagicMock
 from pathlib import Path
 
 from gateway.run import GatewayRunner
+from agent.i18n import t
 
 
 @pytest.fixture()

@@ -44,6 +44,7 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from utils import atomic_replace, is_truthy_value
 from hermes_cli.config import cfg_get
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

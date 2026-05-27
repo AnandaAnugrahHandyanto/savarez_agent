@@ -22,6 +22,7 @@ import sqlite3
 from typing import Any, Iterable, Optional
 
 from hermes_cli import kanban_db as kb
+from agent.i18n import t
 
 BLACKBOARD_PREFIX = "[swarm:blackboard] "
 

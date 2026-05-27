@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import difflib
 from typing import Any, Callable, Dict, List, Optional
+from agent.i18n import t
 
 
 def build_line_shift(pre_text: str, post_text: str) -> Callable[[int], Optional[int]]:

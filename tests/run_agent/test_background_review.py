@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import run_agent as run_agent_module
 from run_agent import AIAgent
+from agent.i18n import t
 
 
 def _bare_agent() -> AIAgent:

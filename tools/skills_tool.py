@@ -55,6 +55,7 @@ Available tools:
 
 Usage:
     from tools.skills_tool import skills_list, skill_view, check_skills_requirements
+from agent.i18n import t
 
     # List all skills (returns metadata only - token efficient)
     result = skills_list()

@@ -15,6 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from agent.i18n import t
 
 
 def test_status_uses_last_activity_not_only_last_used(monkeypatch, capsys):

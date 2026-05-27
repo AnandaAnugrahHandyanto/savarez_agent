@@ -14,6 +14,7 @@ import hermes_cli.doctor as doctor
 import hermes_cli.gateway as gateway_cli
 from hermes_cli import doctor as doctor_mod
 from hermes_cli.doctor import _has_provider_env_config
+from agent.i18n import t
 
 
 class TestDoctorPlatformHints:

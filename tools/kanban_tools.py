@@ -34,6 +34,7 @@ import os
 from typing import Any, Optional
 
 from tools.registry import registry, tool_error
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

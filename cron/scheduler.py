@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 from contextlib import contextmanager
+from agent.i18n import t
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:

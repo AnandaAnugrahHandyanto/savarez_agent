@@ -31,6 +31,7 @@ from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

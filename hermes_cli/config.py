@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
 from hermes_cli.secret_prompt import masked_secret_prompt
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

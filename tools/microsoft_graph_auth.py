@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
+from agent.i18n import t
 
 
 DEFAULT_GRAPH_SCOPE = "https://graph.microsoft.com/.default"

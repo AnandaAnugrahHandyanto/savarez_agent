@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tools.environments.file_sync import FileSyncManager, _FORCE_SYNC_ENV
+from agent.i18n import t
 
 
 @pytest.fixture

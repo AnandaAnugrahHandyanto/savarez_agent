@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, AsyncMock, patch
 import pytest
 
 from gateway.config import Platform
+from agent.i18n import t
 
 
 def _make_httpx_mock():

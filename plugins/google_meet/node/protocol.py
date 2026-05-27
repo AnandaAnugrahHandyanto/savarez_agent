@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import uuid
 from typing import Any, Dict, Tuple
+from agent.i18n import t
 
 
 VALID_REQUEST_TYPES = frozenset({

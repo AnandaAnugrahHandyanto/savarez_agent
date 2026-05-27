@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from agent.lsp.workspace import nearest_root, normalize_path
+from agent.i18n import t
 
 logger = logging.getLogger("agent.lsp.servers")
 

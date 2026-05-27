@@ -20,6 +20,7 @@ import logging
 from typing import Optional, Tuple
 
 import requests
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

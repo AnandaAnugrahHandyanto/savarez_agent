@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from hermes_constants import get_hermes_home, display_hermes_home
+from agent.i18n import t
 
 # Known log files (name → filename)
 LOG_FILES = {

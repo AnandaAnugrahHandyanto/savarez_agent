@@ -25,6 +25,7 @@ import threading
 from typing import Dict, List, Optional
 
 from agent.image_gen_provider import ImageGenProvider
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

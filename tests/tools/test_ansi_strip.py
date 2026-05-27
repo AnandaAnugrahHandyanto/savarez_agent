@@ -6,6 +6,7 @@ It must strip ALL terminal escape sequences while preserving legitimate text.
 """
 
 from tools.ansi_strip import strip_ansi
+from agent.i18n import t
 
 
 class TestStripAnsiBasicSGR:

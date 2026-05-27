@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from gateway.platforms.qqbot.constants import FILE_UPLOAD_TIMEOUT
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

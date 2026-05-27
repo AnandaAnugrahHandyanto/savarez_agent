@@ -13,6 +13,7 @@ from typing import Any
 
 from providers import register_provider
 from providers.base import ProviderProfile
+from agent.i18n import t
 
 
 def _flat_model_name(model: str | None) -> str:

@@ -29,6 +29,7 @@ Override via ``HERMES_GATEWAY_HTTPX_KEEPALIVE_EXPIRY`` /
 from __future__ import annotations
 
 import os
+from agent.i18n import t
 
 try:
     import httpx

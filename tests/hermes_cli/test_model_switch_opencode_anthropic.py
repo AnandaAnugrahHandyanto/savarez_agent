@@ -20,6 +20,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli.model_switch import switch_model
+from agent.i18n import t
 
 
 _MOCK_VALIDATION = {

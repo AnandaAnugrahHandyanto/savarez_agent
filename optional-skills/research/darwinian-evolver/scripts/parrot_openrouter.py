@@ -31,6 +31,7 @@ from darwinian_evolver.problem import Evaluator
 from darwinian_evolver.problem import Mutator
 from darwinian_evolver.problem import Organism
 from darwinian_evolver.problem import Problem
+from agent.i18n import t
 
 DEFAULT_MODEL = os.environ.get("EVOLVER_MODEL", "openai/gpt-4o-mini")
 

@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
 from agent.model_metadata import estimate_request_tokens_rough
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

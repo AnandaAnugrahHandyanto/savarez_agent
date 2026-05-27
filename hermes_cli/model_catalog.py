@@ -54,6 +54,7 @@ from typing import Any
 
 from hermes_cli import __version__ as _HERMES_VERSION
 from utils import atomic_replace
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

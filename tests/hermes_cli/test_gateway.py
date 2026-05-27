@@ -7,6 +7,7 @@ from unittest.mock import patch, call
 import pytest
 
 import hermes_cli.gateway as gateway
+from agent.i18n import t
 
 
 def _install_fake_gateway_run(monkeypatch, start_gateway):

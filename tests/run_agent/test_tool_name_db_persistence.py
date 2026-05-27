@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent
 from agent.tool_dispatch_helpers import make_tool_result_message
+from agent.i18n import t
 
 
 def _make_agent(session_db):

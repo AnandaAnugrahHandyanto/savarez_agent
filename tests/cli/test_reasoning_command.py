@@ -12,6 +12,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import re
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

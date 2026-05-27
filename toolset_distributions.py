@@ -11,6 +11,7 @@ Probabilities should sum to 100, but the system will normalize if they don't.
 
 Usage:
     from toolset_distributions import get_distribution, list_distributions
+from agent.i18n import t
     
     # Get a specific distribution
     dist = get_distribution("image_gen")

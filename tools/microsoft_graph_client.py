@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable
 import httpx
 
 from tools.microsoft_graph_auth import GraphCredentials, MicrosoftGraphTokenProvider
+from agent.i18n import t
 
 
 DEFAULT_GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"

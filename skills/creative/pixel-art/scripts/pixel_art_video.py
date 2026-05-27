@@ -10,6 +10,7 @@ The generative/Pollinations code is intentionally dropped — Hermes uses
 
 Usage (import):
     from pixel_art_video import pixel_art_video
+from agent.i18n import t
     pixel_art_video("frame.png", "out.mp4", scene="night", duration=6)
 
 Usage (CLI):

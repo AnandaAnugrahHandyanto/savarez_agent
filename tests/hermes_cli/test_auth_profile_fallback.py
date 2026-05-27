@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 
 import pytest
+from agent.i18n import t
 
 
 def _make_auth_store(pool: dict | None = None, providers: dict | None = None) -> dict:

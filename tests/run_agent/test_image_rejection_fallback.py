@@ -7,6 +7,7 @@ require, and that the phrase detector fires on the expected error bodies.
 """
 
 from run_agent import _strip_images_from_messages
+from agent.i18n import t
 
 
 class TestStripImagesPreservesAlternation:

@@ -13,6 +13,7 @@ No external dependencies — stdlib only.
 """
 import sys
 import math
+from agent.i18n import t
 
 
 def bmi(weight_kg, height_cm):

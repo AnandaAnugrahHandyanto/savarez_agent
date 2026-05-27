@@ -47,6 +47,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
 from typing import Dict, List, Tuple
+from agent.i18n import t
 
 
 # Default test discovery roots.

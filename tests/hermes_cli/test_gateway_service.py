@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from agent.i18n import t
 
 pwd = pytest.importorskip("pwd")
 

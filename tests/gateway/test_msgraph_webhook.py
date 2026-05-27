@@ -7,6 +7,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig, _apply_env_overrides
 from gateway.platforms.msgraph_webhook import AIOHTTP_AVAILABLE, MSGraphWebhookAdapter
+from agent.i18n import t
 
 
 def _make_adapter(**extra_overrides) -> MSGraphWebhookAdapter:

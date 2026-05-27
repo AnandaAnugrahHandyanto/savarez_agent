@@ -21,6 +21,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, SendResult
 from gateway.session import SessionEntry, SessionSource, build_session_key
+from agent.i18n import t
 
 E2E_MESSAGE_SETTLE_DELAY = 0.3
 

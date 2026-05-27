@@ -32,6 +32,7 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 from typing import Any, Optional
+from agent.i18n import t
 
 
 def _deterministic_call_id(item_type: str, item_id: str) -> str:

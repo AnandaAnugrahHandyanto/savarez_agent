@@ -17,6 +17,7 @@ import logging
 import socket as _socket
 import time
 from typing import Any, Dict, List, Optional
+from agent.i18n import t
 # Security: parse untrusted, pre-auth request bodies (WeCom callbacks) with
 # defusedxml to block billion-laughs / entity-expansion (and XXE) DoS. The
 # parsing API (fromstring) is a drop-in for the stdlib calls used below;

@@ -10,6 +10,7 @@ import os
 from unittest.mock import MagicMock, patch
 
 import hermes_cli.gateway as gateway_mod
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

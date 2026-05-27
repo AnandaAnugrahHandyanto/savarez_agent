@@ -1,5 +1,6 @@
 from pathlib import Path
 from unittest.mock import patch
+from agent.i18n import t
 
 
 def test_ensure_dependency_skips_when_present():

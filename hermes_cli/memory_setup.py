@@ -14,6 +14,7 @@ from pathlib import Path
 
 from hermes_constants import get_hermes_home
 from hermes_cli.secret_prompt import masked_secret_prompt
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

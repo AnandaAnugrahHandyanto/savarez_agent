@@ -22,6 +22,7 @@ import pytest
 
 from gateway.config import PlatformConfig
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
+from agent.i18n import t
 
 _ntfy = load_plugin_adapter("ntfy")
 

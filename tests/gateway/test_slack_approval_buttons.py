@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from agent.i18n import t
 
 # ---------------------------------------------------------------------------
 # Ensure the repo root is importable

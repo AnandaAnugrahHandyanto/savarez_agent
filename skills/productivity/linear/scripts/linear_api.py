@@ -52,6 +52,7 @@ import sys
 import urllib.error
 import urllib.request
 from typing import Any
+from agent.i18n import t
 
 API_URL = "https://api.linear.app/graphql"
 

@@ -37,6 +37,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from agent.i18n import t
 
 try:
     from aiohttp import web

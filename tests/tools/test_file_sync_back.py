@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 import pytest
+from agent.i18n import t
 
 fcntl = pytest.importorskip("fcntl")
 

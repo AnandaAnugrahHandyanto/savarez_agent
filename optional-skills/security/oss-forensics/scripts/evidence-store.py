@@ -27,6 +27,7 @@ import os
 import datetime
 import hashlib
 import sys
+from agent.i18n import t
 
 EVIDENCE_TYPES = [
     "git",           # Local git repository data (commits, reflog, fsck)

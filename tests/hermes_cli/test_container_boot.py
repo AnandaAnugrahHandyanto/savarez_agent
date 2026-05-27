@@ -1,6 +1,7 @@
 """Tests for hermes_cli.container_boot — the cont-init.d-time
 reconciliation that recreates per-profile gateway s6 service slots
 from the persistent profiles directory.
+from agent.i18n import t
 
 These tests run against a fake $HERMES_HOME under tmp_path; no real
 s6 supervision tree is required. The in-container integration test

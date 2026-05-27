@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

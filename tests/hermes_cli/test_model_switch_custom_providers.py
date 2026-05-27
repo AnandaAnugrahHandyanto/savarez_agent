@@ -8,6 +8,7 @@ only looked at `providers:`.
 import hermes_cli.providers as providers_mod
 from hermes_cli.model_switch import list_authenticated_providers, switch_model
 from hermes_cli.providers import resolve_provider_full
+from agent.i18n import t
 
 
 _MOCK_VALIDATION = {

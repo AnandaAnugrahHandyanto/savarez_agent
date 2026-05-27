@@ -14,6 +14,7 @@ import wave
 from unittest.mock import MagicMock, patch
 
 import pytest
+from agent.i18n import t
 
 if "faster_whisper" not in sys.modules:
     faster_whisper_stub = types.ModuleType("faster_whisper")

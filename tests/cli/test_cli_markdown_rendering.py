@@ -4,6 +4,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 
 from cli import _render_final_assistant_content
+from agent.i18n import t
 
 
 def _render_to_text(renderable) -> str:

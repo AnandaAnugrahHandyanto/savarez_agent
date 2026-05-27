@@ -22,6 +22,7 @@ import time
 import pytest
 
 from tests.docker.conftest import docker_exec, docker_exec_sh
+from agent.i18n import t
 
 
 def _docker(*args: str, **kw) -> subprocess.CompletedProcess[str]:

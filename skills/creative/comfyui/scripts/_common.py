@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import urlparse
+from agent.i18n import t
 
 # Optional: prefer `requests` if installed (better redirects, streaming, header handling)
 try:

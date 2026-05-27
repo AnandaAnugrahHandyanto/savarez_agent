@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from agent.i18n import t
 
 DEFAULT_UA = (
     "hermes-osint-investigation/0.2 "

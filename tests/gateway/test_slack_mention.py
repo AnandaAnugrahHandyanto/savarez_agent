@@ -8,6 +8,7 @@ import sys
 from unittest.mock import MagicMock
 
 from gateway.config import Platform, PlatformConfig
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

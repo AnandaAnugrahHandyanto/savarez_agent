@@ -7,6 +7,7 @@ through a stateful scrubber.
 """
 
 from agent.memory_manager import StreamingContextScrubber, sanitize_context
+from agent.i18n import t
 
 
 class TestStreamingContextScrubberBasics:

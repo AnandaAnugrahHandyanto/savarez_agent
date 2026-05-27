@@ -21,6 +21,7 @@ from types import SimpleNamespace
 import pytest
 
 from tools.environments.local import LocalEnvironment
+from agent.i18n import t
 
 
 @pytest.fixture(autouse=True)

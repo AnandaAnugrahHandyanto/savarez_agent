@@ -15,6 +15,7 @@ Features:
 
 Usage:
     from run_agent import AIAgent
+from agent.i18n import t
     
     agent = AIAgent(base_url="http://localhost:30000/v1", model="claude-opus-4-20250514")
     response = agent.run_conversation("Tell me about the latest Python updates")

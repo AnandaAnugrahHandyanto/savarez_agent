@@ -22,6 +22,7 @@ server-side.
 from __future__ import annotations
 
 import pytest
+from agent.i18n import t
 
 
 class TestKimiCodingSkipsAnthropicThinking:

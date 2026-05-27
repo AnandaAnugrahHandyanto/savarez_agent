@@ -35,6 +35,7 @@ import time
 import urllib.request
 
 from hermes_constants import get_hermes_home
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

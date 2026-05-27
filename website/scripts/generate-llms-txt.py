@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from agent.i18n import t
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 WEBSITE = SCRIPT_DIR.parent

@@ -13,6 +13,7 @@ import os
 import sys
 import shutil
 from pathlib import Path
+from agent.i18n import t
 
 # Resolve project root
 SCRIPT_DIR = Path(__file__).resolve().parent

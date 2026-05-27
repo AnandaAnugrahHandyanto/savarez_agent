@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 
 from agent.think_scrubber import StreamingThinkScrubber
+from agent.i18n import t
 
 
 def _drive(scrubber: StreamingThinkScrubber, deltas: list[str]) -> str:

@@ -23,6 +23,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from agent.i18n import t
 
 NUM_WORKERS = 10
 NUM_TASKS = 500

@@ -29,6 +29,7 @@ import logging
 import os
 from typing import Any, Dict, Optional
 from urllib.parse import quote
+from agent.i18n import t
 
 # httpx is imported lazily — only the ``_write_summary_via_incoming_webhook``
 # code path actually constructs an ``AsyncClient``. Top-level import here

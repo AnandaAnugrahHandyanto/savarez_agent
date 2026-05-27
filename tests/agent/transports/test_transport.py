@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 from agent.transports import get_transport, register_transport, _REGISTRY
+from agent.i18n import t
 
 
 # ── ABC contract tests ──────────────────────────────────────────────────

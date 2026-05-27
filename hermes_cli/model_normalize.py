@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import re
 from typing import Optional
+from agent.i18n import t
 
 # ---------------------------------------------------------------------------
 # Vendor prefix mapping

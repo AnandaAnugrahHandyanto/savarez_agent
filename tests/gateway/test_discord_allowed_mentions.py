@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from agent.i18n import t
 
 
 class _FakeAllowedMentions:

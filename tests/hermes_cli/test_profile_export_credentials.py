@@ -9,6 +9,7 @@ import tarfile
 from pathlib import Path
 
 from hermes_cli.profiles import export_profile, _DEFAULT_EXPORT_EXCLUDE_ROOT
+from agent.i18n import t
 
 
 class TestCredentialExclusion:

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from cli import _detect_file_drop
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

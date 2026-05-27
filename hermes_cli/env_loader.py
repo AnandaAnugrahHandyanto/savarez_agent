@@ -8,6 +8,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from utils import atomic_replace
+from agent.i18n import t
 
 
 # Env var name suffixes that indicate credential values.  These are the

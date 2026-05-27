@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli.models import get_copilot_model_context
+from agent.i18n import t
 
 
 # Sample catalog items mimicking the Copilot /models API response

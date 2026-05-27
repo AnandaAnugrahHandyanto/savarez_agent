@@ -19,6 +19,7 @@ import yaml
 from utils import base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

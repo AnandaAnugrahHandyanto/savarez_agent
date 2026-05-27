@@ -12,6 +12,7 @@ See issue #507 (Roo Code deep-dive, item 2f).
 import json
 
 import pytest
+from agent.i18n import t
 
 
 @pytest.fixture

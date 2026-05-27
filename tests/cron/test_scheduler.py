@@ -10,6 +10,7 @@ import pytest
 from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
+from agent.i18n import t
 
 
 class TestResolveOrigin:

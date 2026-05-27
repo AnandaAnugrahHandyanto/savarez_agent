@@ -11,6 +11,7 @@ import statistics
 import time
 
 import pytest
+from agent.i18n import t
 
 # ---------------------------------------------------------------------------
 # Backend fixtures

@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 import hermes_logging
+from agent.i18n import t
 
 
 @pytest.fixture(autouse=True)

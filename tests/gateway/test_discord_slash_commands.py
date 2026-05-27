@@ -7,6 +7,7 @@ import sys
 import pytest
 
 from gateway.config import PlatformConfig
+from agent.i18n import t
 
 
 def _ensure_discord_mock():

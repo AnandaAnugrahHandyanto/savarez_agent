@@ -12,6 +12,7 @@ Covers:
 import json
 
 import requests
+from agent.i18n import t
 
 
 class _FakeResponse:

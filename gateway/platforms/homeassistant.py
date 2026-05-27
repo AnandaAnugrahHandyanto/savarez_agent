@@ -20,6 +20,7 @@ import time
 import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional, Set
+from agent.i18n import t
 
 try:
     import aiohttp

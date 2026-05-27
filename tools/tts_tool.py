@@ -30,6 +30,7 @@ The user chooses the provider and voice; the model just sends text.
 
 Usage:
     from tools.tts_tool import text_to_speech_tool, check_tts_requirements
+from agent.i18n import t
 
     result = text_to_speech_tool(text="Hello world")
 """

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 from unittest.mock import MagicMock, patch
+from agent.i18n import t
 
 
 class TestInstallCuaDriverUpgrade:

@@ -16,6 +16,7 @@ Design:
 
 import json
 from typing import Dict, Any, List, Optional
+from agent.i18n import t
 
 
 # Valid status values for todo items

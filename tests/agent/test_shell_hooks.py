@@ -17,6 +17,7 @@ from typing import Any, Dict
 import pytest
 
 from agent import shell_hooks
+from agent.i18n import t
 
 
 # ── helpers ───────────────────────────────────────────────────────────────

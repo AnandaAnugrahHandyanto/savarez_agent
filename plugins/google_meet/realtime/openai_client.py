@@ -19,6 +19,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
+from agent.i18n import t
 
 
 REALTIME_URL = "wss://api.openai.com/v1/realtime"

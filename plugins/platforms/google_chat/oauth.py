@@ -67,6 +67,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
+from agent.i18n import t
 
 # Pin the legacy logger name so operator-side log filters keep matching
 # after the in-tree → plugin migration. See adapter.py for context.

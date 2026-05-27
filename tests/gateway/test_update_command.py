@@ -14,6 +14,7 @@ import pytest
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
+from agent.i18n import t
 
 
 def _make_event(text="/update", platform=Platform.TELEGRAM,

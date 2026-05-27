@@ -6,6 +6,7 @@ import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
 from gateway.config import Platform, PlatformConfig
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

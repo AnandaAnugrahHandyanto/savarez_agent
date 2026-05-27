@@ -12,6 +12,7 @@ Or with pytest if available:
 import sys
 import os
 import unittest
+from agent.i18n import t
 
 # Ensure project root is on the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))

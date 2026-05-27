@@ -12,6 +12,7 @@ import json
 import os
 
 import pytest
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

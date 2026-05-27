@@ -9,6 +9,7 @@ import shutil
 import subprocess
 
 from hermes_constants import get_hermes_home
+from agent.i18n import t
 
 
 DEFAULT_BROWSER_CDP_PORT = 9222

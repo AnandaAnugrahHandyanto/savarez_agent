@@ -23,6 +23,7 @@ import tempfile
 import pytest
 
 from tools.file_operations import ShellFileOperations
+from agent.i18n import t
 
 
 class _FakeEnv:

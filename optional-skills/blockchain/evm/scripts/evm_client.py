@@ -12,6 +12,7 @@ import time
 import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
+from agent.i18n import t
 
 # ---------------------------------------------------------------------------
 # Chain registry

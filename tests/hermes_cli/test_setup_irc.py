@@ -9,6 +9,7 @@ import os
 import pytest
 
 from gateway.platform_registry import PlatformEntry, platform_registry
+from agent.i18n import t
 
 
 def _register_irc_platform(**overrides):

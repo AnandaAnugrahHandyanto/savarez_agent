@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from tools.skills_hub import BrowseShSource, SkillMeta, SkillBundle
+from agent.i18n import t
 
 
 # Catalog shape mirrors the real ``GET https://browse.sh/api/skills`` response:

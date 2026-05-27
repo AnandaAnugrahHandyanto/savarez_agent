@@ -18,6 +18,7 @@ import pytest
 
 import run_agent
 from agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
+from agent.i18n import t
 
 
 @pytest.fixture

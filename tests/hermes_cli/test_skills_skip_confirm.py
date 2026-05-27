@@ -13,6 +13,7 @@ Updated for PR #3586 (cache-aware install/uninstall).
 from unittest.mock import patch, MagicMock
 
 import pytest
+from agent.i18n import t
 
 
 class TestHandleSkillsSlashInstallFlags:

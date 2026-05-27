@@ -22,6 +22,7 @@ import copy
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.fallback_config import get_fallback_chain
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

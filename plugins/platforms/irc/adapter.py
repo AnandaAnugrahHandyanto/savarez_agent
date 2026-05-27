@@ -34,6 +34,7 @@ import re
 import ssl
 import time
 from typing import Any, Dict, List, Optional
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

@@ -17,6 +17,7 @@ import json
 from unittest.mock import MagicMock
 
 import pytest
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

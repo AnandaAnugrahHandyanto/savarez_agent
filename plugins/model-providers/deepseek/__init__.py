@@ -23,6 +23,7 @@ from typing import Any
 
 from providers import register_provider
 from providers.base import ProviderProfile
+from agent.i18n import t
 
 
 def _model_supports_thinking(model: str | None) -> bool:

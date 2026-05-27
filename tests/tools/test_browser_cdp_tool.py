@@ -18,6 +18,7 @@ import websockets
 from websockets.asyncio.server import serve
 
 from tools import browser_cdp_tool
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

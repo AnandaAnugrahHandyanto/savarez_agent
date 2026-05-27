@@ -31,6 +31,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from agent.i18n import t
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]

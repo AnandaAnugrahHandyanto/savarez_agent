@@ -8,6 +8,7 @@ from typing import Any, Dict, Literal, Optional
 
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata
 from utils import base_url_host_matches
+from agent.i18n import t
 
 DEFAULT_PRICING = {"input": 0.0, "output": 0.0}
 

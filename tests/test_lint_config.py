@@ -21,6 +21,7 @@ from __future__ import annotations
 import pathlib
 
 import pytest
+from agent.i18n import t
 
 try:
     import tomllib  # Python 3.11+

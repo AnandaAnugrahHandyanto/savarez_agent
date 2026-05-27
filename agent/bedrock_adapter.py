@@ -33,6 +33,7 @@ import os
 import re
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

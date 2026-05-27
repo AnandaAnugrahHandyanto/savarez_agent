@@ -5,6 +5,7 @@ pixel-art-studio (MIT) — see ATTRIBUTION.md.
 
 Usage (import):
     from pixel_art import pixel_art
+from agent.i18n import t
     pixel_art("in.png", "out.png", preset="arcade")
     pixel_art("in.png", "out.png", preset="nes")
     pixel_art("in.png", "out.png", palette="PICO_8", block=6)

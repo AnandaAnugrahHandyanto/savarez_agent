@@ -10,6 +10,7 @@ import pytest
 from tools.environments import ssh as ssh_env
 from tools.environments.file_sync import quoted_mkdir_command, unique_parent_dirs
 from tools.environments.ssh import SSHEnvironment
+from agent.i18n import t
 
 
 def _mock_proc(*, returncode=0, poll_return=0, communicate_return=(b"", b""),

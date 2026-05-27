@@ -53,6 +53,7 @@ import requests
 
 from tools.registry import registry, tool_error
 from tools.xai_http import hermes_xai_user_agent, resolve_xai_http_credentials
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

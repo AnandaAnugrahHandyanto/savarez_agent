@@ -14,6 +14,7 @@ This test pins the hydration behavior added at the top of run_conversation().
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 
 def _make_minimal_agent():

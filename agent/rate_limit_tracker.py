@@ -25,6 +25,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
+from agent.i18n import t
 
 
 @dataclass

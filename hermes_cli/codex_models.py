@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import os
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

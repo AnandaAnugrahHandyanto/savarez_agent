@@ -2,6 +2,7 @@
 
 import os
 import sys
+from agent.i18n import t
 
 
 def should_use_color() -> bool:

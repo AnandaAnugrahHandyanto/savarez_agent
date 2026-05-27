@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from tests.gateway.restart_test_helpers import make_restart_runner
+from agent.i18n import t
 
 
 @pytest.fixture

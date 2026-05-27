@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 import yaml
+from agent.i18n import t
 
 
 def _write_auth_store(tmp_path, payload: dict) -> None:

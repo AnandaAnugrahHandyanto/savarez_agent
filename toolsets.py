@@ -5,6 +5,7 @@ Toolsets Module
 This module provides a flexible system for defining and managing tool aliases/toolsets.
 Toolsets allow you to group tools together for specific scenarios and can be composed
 from individual tools or other toolsets.
+from agent.i18n import t
 
 Features:
 - Define custom toolsets with specific tools

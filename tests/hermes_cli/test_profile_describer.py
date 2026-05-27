@@ -12,6 +12,7 @@ import pytest
 
 from hermes_cli import profiles as profiles_mod
 from hermes_cli import profile_describer as describer
+from agent.i18n import t
 
 
 @pytest.fixture

@@ -43,6 +43,7 @@ import tempfile
 import threading
 import time
 import uuid
+from agent.i18n import t
 
 _IS_WINDOWS = platform.system() == "Windows"
 from typing import Any, Dict, List, Optional

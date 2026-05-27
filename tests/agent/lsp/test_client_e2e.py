@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from agent.lsp.client import LSPClient
+from agent.i18n import t
 
 
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")

@@ -60,6 +60,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from hermes_constants import get_hermes_home, secure_parent_dir
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

@@ -5,6 +5,7 @@ from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 from hermes_cli import setup as setup_mod
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

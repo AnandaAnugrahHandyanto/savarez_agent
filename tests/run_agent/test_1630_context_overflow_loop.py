@@ -11,6 +11,7 @@ Verifies that:
 import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

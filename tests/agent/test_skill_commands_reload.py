@@ -16,6 +16,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from agent.i18n import t
 
 
 def _write_skill(skills_dir: Path, name: str, description: str = "") -> Path:

@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+from agent.i18n import t
 
 if TYPE_CHECKING:
     from .store import MemoryStore

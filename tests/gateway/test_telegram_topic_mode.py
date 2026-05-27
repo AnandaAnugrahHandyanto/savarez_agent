@@ -14,6 +14,7 @@ from hermes_state import SessionDB
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
+from agent.i18n import t
 
 
 def _make_source(*, thread_id: str | None = None) -> SessionSource:

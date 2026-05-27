@@ -12,6 +12,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 import yaml
+from agent.i18n import t
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 

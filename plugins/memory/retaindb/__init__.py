@@ -35,6 +35,7 @@ from urllib.parse import quote
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

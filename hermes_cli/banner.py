@@ -20,6 +20,7 @@ from rich.table import Table
 
 from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

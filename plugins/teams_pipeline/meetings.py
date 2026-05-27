@@ -9,6 +9,7 @@ from urllib.parse import quote
 
 from plugins.teams_pipeline.models import MeetingArtifact, TeamsMeetingRef
 from tools.microsoft_graph_client import MicrosoftGraphAPIError, MicrosoftGraphClient
+from agent.i18n import t
 
 
 class TeamsMeetingError(RuntimeError):

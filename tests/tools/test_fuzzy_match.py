@@ -1,6 +1,7 @@
 """Tests for the fuzzy matching module."""
 
 from tools.fuzzy_match import fuzzy_find_and_replace
+from agent.i18n import t
 
 
 class TestExactMatch:

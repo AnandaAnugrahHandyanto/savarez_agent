@@ -10,6 +10,7 @@ rows), recall falls through to content-match.
 """
 from gateway.session import SessionStore
 from gateway.config import GatewayConfig
+from agent.i18n import t
 
 
 def _pin_db(monkeypatch, tmp_path):

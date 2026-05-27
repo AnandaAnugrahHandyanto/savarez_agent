@@ -28,6 +28,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from agent.i18n import t
 
 # Resolve the worktree path robustly.
 _THIS = Path(__file__).resolve()

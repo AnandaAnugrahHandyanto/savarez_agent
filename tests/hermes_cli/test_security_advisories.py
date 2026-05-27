@@ -15,6 +15,7 @@ from typing import Iterator
 import pytest
 
 import hermes_cli.security_advisories as adv
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

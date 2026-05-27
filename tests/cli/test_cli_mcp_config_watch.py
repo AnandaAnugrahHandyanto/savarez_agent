@@ -2,6 +2,7 @@
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from agent.i18n import t
 
 
 def _make_cli(tmp_path, mcp_servers=None):

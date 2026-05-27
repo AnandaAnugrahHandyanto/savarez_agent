@@ -22,6 +22,7 @@ import run_agent
 from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

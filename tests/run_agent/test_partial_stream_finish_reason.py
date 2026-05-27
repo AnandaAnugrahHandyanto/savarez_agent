@@ -22,6 +22,7 @@ import pytest
 
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.conversation_loop import _get_continuation_prompt
+from agent.i18n import t
 
 
 # ── Helpers (mirrors test_streaming.py) ────────────────────────────────────

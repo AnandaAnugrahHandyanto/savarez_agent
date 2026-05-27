@@ -13,6 +13,7 @@ import os
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
+from agent.i18n import t
 
 
 def _write_env(path: Path, contents: str) -> None:

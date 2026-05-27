@@ -26,6 +26,7 @@ from typing import Optional
 
 from hermes_constants import get_hermes_home
 from utils import atomic_replace
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

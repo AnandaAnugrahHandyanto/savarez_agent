@@ -24,6 +24,7 @@ import sys
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta
+from agent.i18n import t
 
 
 def hermes_available() -> bool:

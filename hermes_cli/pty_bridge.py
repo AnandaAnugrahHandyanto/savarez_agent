@@ -38,6 +38,7 @@ import sys
 import termios
 import time
 from typing import Optional, Sequence
+from agent.i18n import t
 
 try:
     import ptyprocess  # type: ignore

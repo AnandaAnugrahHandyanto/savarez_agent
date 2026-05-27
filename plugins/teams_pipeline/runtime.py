@@ -9,6 +9,7 @@ from gateway.config import Platform
 from plugins.teams_pipeline.pipeline import TeamsMeetingPipeline
 from plugins.teams_pipeline.store import TeamsPipelineStore, resolve_teams_pipeline_store_path
 from plugins.teams_pipeline.subscriptions import build_graph_client
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

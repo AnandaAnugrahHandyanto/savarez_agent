@@ -9,6 +9,7 @@ import threading
 from typing import Callable, Optional
 
 from agent.auxiliary_client import call_llm
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

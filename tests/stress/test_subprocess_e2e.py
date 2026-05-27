@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from agent.i18n import t
 
 WT = str(Path(__file__).resolve().parents[2])
 FAKE_WORKER = str(Path(__file__).parent / "_fake_worker.py")

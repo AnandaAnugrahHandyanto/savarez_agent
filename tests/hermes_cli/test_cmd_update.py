@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli.main import cmd_update, PROJECT_ROOT
+from agent.i18n import t
 
 
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):

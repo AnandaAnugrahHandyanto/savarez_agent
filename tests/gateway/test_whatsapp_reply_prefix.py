@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

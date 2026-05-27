@@ -22,6 +22,7 @@ from hermes_constants import get_hermes_home
 
 from plugins.google_meet import process_manager as pm
 from plugins.google_meet.meet_bot import _is_safe_meet_url
+from agent.i18n import t
 
 
 def _auth_state_path() -> Path:

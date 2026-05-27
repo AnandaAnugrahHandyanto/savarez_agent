@@ -16,6 +16,7 @@ from email.utils import formatdate
 from typing import Dict, Optional
 
 from agent.redact import redact_sensitive_text
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

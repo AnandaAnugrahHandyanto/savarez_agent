@@ -5,6 +5,7 @@ from typing import Any
 from agent.portal_tags import nous_portal_tags
 from providers import register_provider
 from providers.base import ProviderProfile
+from agent.i18n import t
 
 
 class NousProfile(ProviderProfile):

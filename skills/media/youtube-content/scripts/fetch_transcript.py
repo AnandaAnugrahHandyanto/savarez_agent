@@ -21,6 +21,7 @@ import argparse
 import json
 import re
 import sys
+from agent.i18n import t
 
 
 def extract_video_id(url_or_id: str) -> str:

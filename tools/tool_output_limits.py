@@ -32,6 +32,7 @@ fail because of a malformed config.
 from __future__ import annotations
 
 from typing import Any, Dict
+from agent.i18n import t
 
 # Hardcoded defaults — these match the pre-existing values, so adding
 # this module is behaviour-preserving for users who don't set

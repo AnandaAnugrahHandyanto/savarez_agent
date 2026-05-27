@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Iterable
 
 from hermes_cli.commands import SlashCommandCompleter
+from agent.i18n import t
 
 
 def _run(tmp_path: Path, word: str) -> list[tuple[str, str]]:

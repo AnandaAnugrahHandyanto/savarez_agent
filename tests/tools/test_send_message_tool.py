@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from agent.i18n import t
 
 # python-telegram-bot is an optional dep — skip the entire module when
 # it isn't installed (e.g. CI bare env). Tests that patch telegram.Bot

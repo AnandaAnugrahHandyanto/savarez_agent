@@ -9,6 +9,7 @@ import os
 from unittest.mock import patch
 
 import pytest
+from agent.i18n import t
 
 
 class TestDiscordThreadPersistence:

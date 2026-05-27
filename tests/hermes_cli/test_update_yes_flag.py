@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from hermes_cli.main import cmd_update
+from agent.i18n import t
 
 
 def _make_run_side_effect(

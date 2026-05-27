@@ -9,6 +9,7 @@ OpenCode's ``lsp/diagnostic.ts`` and Claude Code's
 from __future__ import annotations
 
 from typing import Any, Dict, List
+from agent.i18n import t
 
 # Severity-1 only by default — warnings/info/hints would flood the
 # agent.  Lift this in config under ``lsp.severities`` if needed.

@@ -28,6 +28,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Any, Iterable, Optional
+from agent.i18n import t
 
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
 _SEP = " · "

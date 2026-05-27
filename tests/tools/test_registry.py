@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tools.registry import ToolRegistry, _module_registers_tools, discover_builtin_tools
+from agent.i18n import t
 
 
 def _dummy_handler(args, **kwargs):

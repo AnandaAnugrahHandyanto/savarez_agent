@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any, Dict, List, Optional
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

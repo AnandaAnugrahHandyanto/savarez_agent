@@ -39,6 +39,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

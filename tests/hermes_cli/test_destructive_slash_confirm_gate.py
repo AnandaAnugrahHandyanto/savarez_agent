@@ -12,6 +12,7 @@ cli.py::_confirm_destructive_slash for the runtime gate.
 from __future__ import annotations
 
 from hermes_cli.config import DEFAULT_CONFIG
+from agent.i18n import t
 
 
 class TestDestructiveSlashConfirmDefault:

@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 from cli import HermesCLI
+from agent.i18n import t
 
 
 class TestCLILoadingIndicator:

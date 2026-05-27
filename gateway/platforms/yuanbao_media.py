@@ -28,6 +28,7 @@ import urllib.parse
 from typing import Optional, Any
 
 import httpx
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

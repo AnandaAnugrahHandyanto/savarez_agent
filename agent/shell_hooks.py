@@ -69,6 +69,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
+from agent.i18n import t
 
 try:
     import fcntl  # POSIX only; Windows falls back to best-effort without flock.

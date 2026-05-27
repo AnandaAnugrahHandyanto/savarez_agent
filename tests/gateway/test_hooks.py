@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from gateway.hooks import HookRegistry
+from agent.i18n import t
 
 
 def _create_hook(hooks_dir, hook_name, events, handler_code):

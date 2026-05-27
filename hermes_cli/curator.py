@@ -14,6 +14,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from agent.i18n import t
 
 
 def _fmt_ts(ts: Optional[str]) -> str:

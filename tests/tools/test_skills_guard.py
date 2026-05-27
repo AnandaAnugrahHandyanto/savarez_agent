@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from agent.i18n import t
 
 
 def _can_symlink():

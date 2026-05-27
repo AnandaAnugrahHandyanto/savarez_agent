@@ -22,6 +22,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from agent.i18n import t
 
 
 # Make the worktree importable without depending on the installed wheel.

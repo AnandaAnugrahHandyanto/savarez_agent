@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from tools import mcp_tool
+from agent.i18n import t
 
 
 class _FakeContentBlock:

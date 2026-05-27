@@ -34,6 +34,7 @@ import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
 from tools.registry import registry
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

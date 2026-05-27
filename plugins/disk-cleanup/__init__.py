@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
 from . import disk_cleanup as dg
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

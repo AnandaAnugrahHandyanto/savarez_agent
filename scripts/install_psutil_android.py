@@ -31,6 +31,7 @@ import tarfile
 import tempfile
 import urllib.request
 from pathlib import Path
+from agent.i18n import t
 
 # Pin a version we know patches cleanly. Update when a newer psutil
 # changes the marker line shape and we need to follow upstream.

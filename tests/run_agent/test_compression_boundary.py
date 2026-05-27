@@ -8,6 +8,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from agent.context_compressor import ContextCompressor
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

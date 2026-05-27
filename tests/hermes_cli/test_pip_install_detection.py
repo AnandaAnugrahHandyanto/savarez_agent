@@ -1,5 +1,6 @@
 from pathlib import Path
 from unittest.mock import patch
+from agent.i18n import t
 
 
 def test_pip_install_detected_when_no_git_dir(tmp_path):

@@ -3,6 +3,7 @@ import types
 
 
 from hermes_cli.main import _prompt_reasoning_effort_selection
+from agent.i18n import t
 
 
 class _FakeTerminalMenu:

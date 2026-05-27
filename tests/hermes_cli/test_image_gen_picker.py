@@ -12,6 +12,7 @@ import pytest
 
 from agent import image_gen_registry
 from agent.image_gen_provider import ImageGenProvider
+from agent.i18n import t
 
 
 class _FakeProvider(ImageGenProvider):

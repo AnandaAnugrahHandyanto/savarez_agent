@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 from acp_adapter import session as acp_session
 from acp_adapter.session import SessionManager, SessionState
 from hermes_state import SessionDB
+from agent.i18n import t
 
 
 def _mock_agent():

@@ -10,6 +10,7 @@ from typing import Any, Union
 from urllib.parse import urlparse
 
 import yaml
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

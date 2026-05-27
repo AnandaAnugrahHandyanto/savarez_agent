@@ -9,6 +9,7 @@ times per reply. (Regression test for #160)
 
 import pytest
 import re
+from agent.i18n import t
 
 
 def extract_media_tags_fixed(result_messages, history_len):

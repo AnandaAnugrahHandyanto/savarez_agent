@@ -21,6 +21,7 @@ import pytest
 
 from gateway.config import PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
+from agent.i18n import t
 
 
 def _run(coro):

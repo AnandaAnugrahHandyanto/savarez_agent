@@ -15,6 +15,7 @@ from typing import Any, Mapping
 
 from utils import safe_json_loads
 from agent.tool_result_classification import file_mutation_result_landed
+from agent.i18n import t
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset(

@@ -13,6 +13,7 @@ import pytest
 # Minimal stubs so we can import gateway code without heavy deps
 # ---------------------------------------------------------------------------
 import sys, types
+from agent.i18n import t
 
 _tg = types.ModuleType("telegram")
 _tg.constants = types.ModuleType("telegram.constants")

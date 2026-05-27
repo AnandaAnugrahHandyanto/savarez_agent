@@ -30,6 +30,7 @@ import socket
 from urllib.parse import urlparse
 
 from utils import is_truthy_value
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

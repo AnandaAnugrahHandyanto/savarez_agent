@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Optional
+from agent.i18n import t
 
 
 TERMINAL_SETUP_AUTH_METHOD_ID = "hermes-setup"

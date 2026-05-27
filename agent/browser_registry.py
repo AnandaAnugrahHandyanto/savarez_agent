@@ -41,6 +41,7 @@ import threading
 from typing import Dict, List, Optional
 
 from agent.browser_provider import BrowserProvider
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

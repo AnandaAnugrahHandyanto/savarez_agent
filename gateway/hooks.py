@@ -27,6 +27,7 @@ from typing import Any, Callable, Dict, List, Optional
 import yaml
 
 from hermes_cli.config import get_hermes_home
+from agent.i18n import t
 
 
 HOOKS_DIR = get_hermes_home() / "hooks"

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from utils import is_truthy_value
+from agent.i18n import t
 
 
 _DEFAULT_BROWSER_PROVIDER = "local"

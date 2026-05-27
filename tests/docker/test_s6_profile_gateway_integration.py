@@ -23,6 +23,7 @@ import subprocess
 import time
 
 from tests.docker.conftest import docker_exec
+from agent.i18n import t
 
 
 _REGISTER_SCRIPT = """

@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from unittest.mock import MagicMock, patch
 
 import pytest
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import sys
 from typing import Optional
+from agent.i18n import t
 
 
 def register_subparser(subparsers: argparse._SubParsersAction) -> None:

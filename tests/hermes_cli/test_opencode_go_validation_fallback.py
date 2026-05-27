@@ -15,6 +15,7 @@ These tests cover the catalog-fallback path: when ``fetch_api_models`` returns
 from unittest.mock import patch
 
 from hermes_cli.models import validate_requested_model
+from agent.i18n import t
 
 
 _UNREACHABLE_PROBE = {

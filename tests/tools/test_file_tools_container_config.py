@@ -2,6 +2,7 @@
 
 from unittest.mock import patch, MagicMock
 import tools.file_tools as file_tools
+from agent.i18n import t
 
 
 def _make_env_config(**overrides):

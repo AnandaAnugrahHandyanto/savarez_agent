@@ -16,6 +16,7 @@ from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import LoraConfig
 from trl import GRPOTrainer, GRPOConfig
+from agent.i18n import t
 
 # ==================== CONFIGURATION ====================
 

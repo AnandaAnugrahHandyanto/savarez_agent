@@ -38,6 +38,7 @@ from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple
 import sys
 
 import httpx
+from agent.i18n import t
 
 try:
     import websockets

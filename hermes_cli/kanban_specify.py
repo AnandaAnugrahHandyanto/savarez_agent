@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from hermes_cli import kanban_db as kb
+from agent.i18n import t
 
 HERMES_KANBAN_SPECIFY_MAX_TOKENS = max(
     1500,

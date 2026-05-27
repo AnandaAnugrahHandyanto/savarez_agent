@@ -23,6 +23,7 @@ import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path
+from agent.i18n import t
 
 # ---------------------------------------------------------------------------
 # Import AUTHOR_MAP and resolve_author from the sibling release.py module

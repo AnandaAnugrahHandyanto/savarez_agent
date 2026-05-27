@@ -1,6 +1,7 @@
 """Regression tests for browser session cleanup and screenshot recovery."""
 
 from unittest.mock import patch
+from agent.i18n import t
 
 
 class TestScreenshotPathRecovery:

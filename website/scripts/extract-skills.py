@@ -24,6 +24,7 @@ from collections import Counter
 from datetime import datetime, timezone
 
 import yaml
+from agent.i18n import t
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LOCAL_SKILL_DIRS = [

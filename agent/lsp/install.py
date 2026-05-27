@@ -34,6 +34,7 @@ import sys
 import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
+from agent.i18n import t
 
 logger = logging.getLogger("agent.lsp.install")
 

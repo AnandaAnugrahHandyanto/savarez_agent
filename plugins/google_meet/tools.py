@@ -17,6 +17,7 @@ import json
 from typing import Any, Dict, Optional
 
 from plugins.google_meet import process_manager as pm
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

@@ -25,6 +25,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+from agent.i18n import t
 
 log = logging.getLogger(__name__)
 

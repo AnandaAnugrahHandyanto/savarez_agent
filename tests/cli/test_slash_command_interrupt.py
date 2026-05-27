@@ -14,6 +14,7 @@ through a thin wrapper that mirrors the real dispatch shape.
 from unittest.mock import MagicMock, patch
 
 from cli import HermesCLI
+from agent.i18n import t
 
 
 def _make_cli():

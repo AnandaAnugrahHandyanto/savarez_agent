@@ -13,6 +13,7 @@ import gateway.run as gateway_run
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
+from agent.i18n import t
 
 
 class _CapturingAgent:

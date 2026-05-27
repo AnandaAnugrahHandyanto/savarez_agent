@@ -10,6 +10,7 @@ import time
 import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from agent.i18n import t
 
 
 def _ensure_discord_mock():

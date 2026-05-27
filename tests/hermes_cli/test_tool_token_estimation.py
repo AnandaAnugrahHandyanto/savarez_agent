@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 import pytest
+from agent.i18n import t
 
 # tiktoken is not in core/[all] deps — skip estimation tests when unavailable
 _has_tiktoken = True

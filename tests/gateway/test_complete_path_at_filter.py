@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from tui_gateway import server
+from agent.i18n import t
 
 
 def _fixture(tmp_path: Path):

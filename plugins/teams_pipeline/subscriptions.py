@@ -9,6 +9,7 @@ from plugins.teams_pipeline.models import GraphSubscription
 from plugins.teams_pipeline.store import TeamsPipelineStore, resolve_teams_pipeline_store_path
 from tools.microsoft_graph_auth import MicrosoftGraphTokenProvider
 from tools.microsoft_graph_client import MicrosoftGraphClient
+from agent.i18n import t
 
 
 def build_graph_client() -> MicrosoftGraphClient:

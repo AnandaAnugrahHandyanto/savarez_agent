@@ -10,6 +10,7 @@ cap pathological lengths.
 from __future__ import annotations
 
 from model_tools import _sanitize_tool_error, _TOOL_ERROR_MAX_LEN
+from agent.i18n import t
 
 
 class TestRoleTagStripping:

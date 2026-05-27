@@ -37,6 +37,7 @@ import os
 import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

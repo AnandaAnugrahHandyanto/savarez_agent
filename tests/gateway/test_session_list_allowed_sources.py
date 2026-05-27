@@ -16,6 +16,7 @@ History:
 from __future__ import annotations
 
 from tui_gateway import server
+from agent.i18n import t
 
 
 class _StubDB:

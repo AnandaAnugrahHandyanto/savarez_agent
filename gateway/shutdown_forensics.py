@@ -25,6 +25,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from agent.i18n import t
 
 
 _SIGNAL_NAME_BY_NUM: Dict[int, str] = {}

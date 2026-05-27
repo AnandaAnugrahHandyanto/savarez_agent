@@ -8,6 +8,7 @@ import threading
 import time
 import sys
 import os
+from agent.i18n import t
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

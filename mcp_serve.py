@@ -39,6 +39,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
+from agent.i18n import t
 
 logger = logging.getLogger("hermes.mcp_serve")
 

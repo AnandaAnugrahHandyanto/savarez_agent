@@ -22,6 +22,7 @@ from typing import Dict
 from hermes_constants import display_hermes_home
 from utils import atomic_replace
 from hermes_cli.config import cfg_get
+from agent.i18n import t
 
 
 _SUBSCRIPTIONS_FILENAME = "webhook_subscriptions.json"

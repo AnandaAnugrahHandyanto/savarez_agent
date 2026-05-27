@@ -14,6 +14,7 @@ from unittest.mock import patch
 import pytest
 
 from agent import shell_hooks
+from agent.i18n import t
 
 
 @pytest.fixture(autouse=True)

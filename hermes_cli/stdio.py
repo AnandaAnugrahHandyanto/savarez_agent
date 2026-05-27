@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import os
 import sys
+from agent.i18n import t
 
 __all__ = ["configure_windows_stdio", "is_windows"]
 

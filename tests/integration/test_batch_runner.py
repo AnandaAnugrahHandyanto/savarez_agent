@@ -7,6 +7,7 @@ to verify functionality before running large batches.
 """
 
 import pytest
+from agent.i18n import t
 pytestmark = pytest.mark.integration
 
 import json

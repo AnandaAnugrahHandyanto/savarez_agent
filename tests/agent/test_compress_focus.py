@@ -7,6 +7,7 @@ parameter correctly.  Inspired by Claude Code's /compact <focus>.
 from unittest.mock import MagicMock, patch
 
 from agent.context_compressor import ContextCompressor
+from agent.i18n import t
 
 
 def _make_compressor():

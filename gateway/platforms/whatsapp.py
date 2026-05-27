@@ -24,6 +24,7 @@ import re
 import shutil
 import signal
 import subprocess
+from agent.i18n import t
 
 _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path

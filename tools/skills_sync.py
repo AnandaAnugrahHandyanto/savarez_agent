@@ -30,6 +30,7 @@ from hermes_constants import get_bundled_skills_dir, get_hermes_home
 from agent.skill_utils import is_excluded_skill_path
 from typing import Dict, List, Tuple
 from utils import atomic_replace
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

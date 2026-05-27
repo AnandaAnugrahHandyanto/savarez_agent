@@ -11,6 +11,7 @@ every ``free_response`` / ``ignored`` check to fail open.
 """
 
 import unittest
+from agent.i18n import t
 
 
 def _channel_is_allowed(channel_id: str, allowed_channels_raw: str) -> bool:

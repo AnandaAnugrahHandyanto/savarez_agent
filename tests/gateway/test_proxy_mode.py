@@ -11,6 +11,7 @@ from gateway.config import Platform, StreamingConfig
 from gateway.platforms.base import resolve_proxy_url
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
+from agent.i18n import t
 
 
 def _make_runner(proxy_url=None):

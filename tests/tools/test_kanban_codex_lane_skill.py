@@ -5,6 +5,7 @@ from pathlib import Path
 
 from tools import skills_tool
 from tools.skill_manager_tool import _validate_frontmatter
+from agent.i18n import t
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

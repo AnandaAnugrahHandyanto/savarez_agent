@@ -16,6 +16,7 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
+from agent.i18n import t
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

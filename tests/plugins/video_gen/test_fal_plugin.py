@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from agent import video_gen_registry
+from agent.i18n import t
 
 
 @pytest.fixture(autouse=True)

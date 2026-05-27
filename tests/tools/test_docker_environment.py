@@ -7,6 +7,7 @@ import types
 import pytest
 
 from tools.environments import docker as docker_env
+from agent.i18n import t
 
 
 def _mock_subprocess_run(monkeypatch):

@@ -33,6 +33,7 @@ import re
 from typing import List
 
 from wcwidth import wcswidth
+from agent.i18n import t
 
 __all__ = [
     "is_table_divider",

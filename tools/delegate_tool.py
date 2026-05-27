@@ -19,6 +19,7 @@ never the child's intermediate tool calls or reasoning.
 import enum
 import json
 import logging
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 import os

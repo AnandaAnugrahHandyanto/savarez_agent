@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from agent.context_compressor import ContextCompressor, SUMMARY_PREFIX
+from agent.i18n import t
 
 
 @pytest.fixture()

@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import pytest
 
 import cli
+from agent.i18n import t
 
 
 @pytest.fixture(autouse=True)

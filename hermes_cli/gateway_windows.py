@@ -37,6 +37,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from agent.i18n import t
 
 # Short timeouts: schtasks occasionally wedges and we don't want to hang forever.
 _SCHTASKS_TIMEOUT_S = 15

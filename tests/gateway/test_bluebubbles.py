@@ -2,6 +2,7 @@
 import pytest
 
 from gateway.config import Platform, PlatformConfig
+from agent.i18n import t
 
 
 def _make_adapter(monkeypatch, **extra):

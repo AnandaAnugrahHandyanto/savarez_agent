@@ -6,6 +6,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from toolsets import resolve_toolset, get_toolset, validate_toolset
+from agent.i18n import t
 
 
 class TestHermesApiServerToolset:

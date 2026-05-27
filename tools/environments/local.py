@@ -13,6 +13,7 @@ from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
+from agent.i18n import t
 
 _IS_WINDOWS = platform.system() == "Windows"
 

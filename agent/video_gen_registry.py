@@ -26,6 +26,7 @@ import threading
 from typing import Dict, List, Optional
 
 from agent.video_gen_provider import VideoGenProvider
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

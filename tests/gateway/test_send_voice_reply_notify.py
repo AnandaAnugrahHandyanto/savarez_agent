@@ -19,6 +19,7 @@ from gateway.config import Platform
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
+from agent.i18n import t
 
 
 def _make_event(thread_id=None):

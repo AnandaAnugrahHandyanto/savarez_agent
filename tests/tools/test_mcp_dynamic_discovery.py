@@ -8,6 +8,7 @@ import pytest
 
 from tools.mcp_tool import MCPServerTask, _register_server_tools
 from tools.registry import ToolRegistry
+from agent.i18n import t
 
 
 def _make_mcp_tool(name: str, desc: str = ""):

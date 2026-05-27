@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from unittest.mock import patch
+from agent.i18n import t
 
 
 def test_clamp_collision_emits_warning_naming_both_skills(

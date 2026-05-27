@@ -21,6 +21,7 @@ import os
 from pathlib import Path
 
 import pytest
+from agent.i18n import t
 
 
 # Load ~/.hermes/.env so live runs pick up OPENROUTER_API_KEY without

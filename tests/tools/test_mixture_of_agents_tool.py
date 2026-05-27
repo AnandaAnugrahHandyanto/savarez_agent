@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from agent.i18n import t
 
 moa = importlib.import_module("tools.mixture_of_agents_tool")
 

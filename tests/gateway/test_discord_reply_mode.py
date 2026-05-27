@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, AsyncMock, patch
 import pytest
 
 from gateway.config import PlatformConfig, GatewayConfig, Platform, _apply_env_overrides, load_gateway_config
+from agent.i18n import t
 
 
 def _ensure_discord_mock():

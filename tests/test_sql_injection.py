@@ -3,6 +3,7 @@
 import re
 
 from agent.insights import InsightsEngine
+from agent.i18n import t
 
 
 def test_session_cols_no_injection_chars():

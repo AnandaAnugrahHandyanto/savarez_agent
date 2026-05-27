@@ -10,6 +10,7 @@ import types
 
 from run_agent import AIAgent
 from tools.delegate_tool import _get_max_concurrent_children
+from agent.i18n import t
 
 MAX_CONCURRENT_CHILDREN = _get_max_concurrent_children()
 

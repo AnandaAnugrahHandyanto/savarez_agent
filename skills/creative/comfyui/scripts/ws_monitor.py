@@ -33,6 +33,7 @@ import struct
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
+from agent.i18n import t
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _common import (  # noqa: E402

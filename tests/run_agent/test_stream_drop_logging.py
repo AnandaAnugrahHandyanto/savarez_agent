@@ -25,6 +25,7 @@ import pytest
 
 import run_agent
 from run_agent import AIAgent
+from agent.i18n import t
 
 
 def _make_agent() -> AIAgent:

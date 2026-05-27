@@ -13,6 +13,7 @@ import sys
 import cli as cli_mod
 from cli import HermesCLI
 from rich.console import Console
+from agent.i18n import t
 
 
 def _run(cli: HermesCLI, command: str) -> str:

@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from tools.environments import docker as docker_mod
+from agent.i18n import t
 
 
 @pytest.fixture(autouse=True)

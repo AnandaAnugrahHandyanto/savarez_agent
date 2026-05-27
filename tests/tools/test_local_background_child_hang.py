@@ -17,6 +17,7 @@ import time
 import pytest
 
 from tools.environments.local import LocalEnvironment
+from agent.i18n import t
 
 
 def _pkill(pattern: str) -> None:

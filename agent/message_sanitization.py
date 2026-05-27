@@ -18,6 +18,7 @@ import json
 import logging
 import re
 from typing import Any
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

@@ -21,6 +21,7 @@ from textwrap import dedent
 from typing import Any
 
 import yaml
+from agent.i18n import t
 
 REPO = Path(__file__).resolve().parent.parent.parent
 DOCS = REPO / "website" / "docs"

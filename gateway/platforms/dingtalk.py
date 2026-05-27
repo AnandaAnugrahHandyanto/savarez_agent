@@ -35,6 +35,7 @@ import traceback
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
+from agent.i18n import t
 
 try:
     import dingtalk_stream

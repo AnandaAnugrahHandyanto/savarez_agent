@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pytest
+from agent.i18n import t
 
 PLUGIN_MODULE_PATH = (
     Path(__file__).resolve().parents[2]

@@ -14,6 +14,7 @@ from typing import Any
 
 from providers import register_provider
 from providers.base import ProviderProfile
+from agent.i18n import t
 
 
 class GeminiProfile(ProviderProfile):

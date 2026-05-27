@@ -4,6 +4,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from agent.i18n import t
 
 
 @pytest.fixture(autouse=True)

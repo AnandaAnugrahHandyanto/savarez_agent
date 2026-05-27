@@ -13,6 +13,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from agent.i18n import t
 
 
 def _clear_clarify_state():

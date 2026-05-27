@@ -17,6 +17,7 @@ import time
 import urllib.request
 import urllib.parse
 import urllib.error
+from agent.i18n import t
 
 API_KEY = os.environ.get("USDA_API_KEY", "DEMO_KEY")
 BASE = "https://api.nal.usda.gov/fdc/v1"

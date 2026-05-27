@@ -8,6 +8,7 @@ Rules:
 
 import os
 import pytest
+from agent.i18n import t
 
 _CWD_PLACEHOLDERS = (".", "auto", "cwd")
 

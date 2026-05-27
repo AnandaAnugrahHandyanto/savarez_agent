@@ -11,6 +11,7 @@ import httpx
 import pytest
 
 from hermes_cli.auth import AuthError, get_provider_auth_state, resolve_nous_runtime_credentials
+from agent.i18n import t
 
 
 # =============================================================================

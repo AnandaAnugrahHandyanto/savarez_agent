@@ -16,6 +16,7 @@ import sys
 from typing import Any
 
 import pytest
+from agent.i18n import t
 
 
 LIVE = os.environ.get("HERMES_LIVE_TESTS") == "1"

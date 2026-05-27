@@ -14,6 +14,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from tests.tools.conftest import register_all_web_providers
+from agent.i18n import t
 
 
 # ─── _tavily_request ─────────────────────────────────────────────────────────

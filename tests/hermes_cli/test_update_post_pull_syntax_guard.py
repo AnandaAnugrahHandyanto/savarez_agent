@@ -18,6 +18,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from hermes_cli import main as hermes_main
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

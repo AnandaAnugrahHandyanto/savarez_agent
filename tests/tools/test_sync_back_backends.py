@@ -11,6 +11,7 @@ from tools.environments import ssh as ssh_env
 from tools.environments import modal as modal_env
 from tools.environments import daytona as daytona_env
 from tools.environments.ssh import SSHEnvironment
+from agent.i18n import t
 
 
 # ── SSH helpers ──────────────────────────────────────────────────────

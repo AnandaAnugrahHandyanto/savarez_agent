@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 import pytest
 
 from gateway.config import Platform, PlatformConfig
+from agent.i18n import t
 
 
 class _FakeDingTalkModel:

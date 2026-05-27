@@ -29,6 +29,7 @@ import sys
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
+from agent.i18n import t
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = REPO_ROOT / "hermes_cli" / "__init__.py"

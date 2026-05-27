@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import get_config_path, get_skills_dir, is_termux
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

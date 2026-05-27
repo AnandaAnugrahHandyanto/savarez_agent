@@ -28,6 +28,7 @@ import json
 import os
 import sys
 import time
+from agent.i18n import t
 
 
 def read_message():

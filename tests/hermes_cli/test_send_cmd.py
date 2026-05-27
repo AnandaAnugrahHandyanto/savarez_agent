@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import send_cmd
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

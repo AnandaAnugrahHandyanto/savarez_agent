@@ -14,6 +14,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from http.cookiejar import CookieJar
+from agent.i18n import t
 
 # ---------------------------------------------------------------------------
 # Constants

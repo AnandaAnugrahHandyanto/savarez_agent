@@ -3,6 +3,7 @@
 from unittest.mock import Mock
 
 from tools.tts_tool import _apply_xai_auto_speech_tags, _generate_xai_tts
+from agent.i18n import t
 
 
 def test_apply_xai_auto_speech_tags_adds_light_pause_after_first_sentence():

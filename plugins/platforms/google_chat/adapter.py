@@ -45,6 +45,7 @@ import random
 import re
 from pathlib import Path as _Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from agent.i18n import t
 
 # Heavy google-cloud + googleapiclient imports are deferred to first
 # adapter use. Importing them eagerly here added ~110ms wall and ~33MB

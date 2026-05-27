@@ -4,6 +4,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from agent.i18n import t
 
 
 SCRIPT_PATH = (

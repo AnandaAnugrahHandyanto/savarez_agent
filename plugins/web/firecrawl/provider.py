@@ -52,6 +52,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from agent.web_search_provider import WebSearchProvider
 from tools.website_policy import check_website_access
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

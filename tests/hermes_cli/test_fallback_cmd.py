@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 import yaml
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

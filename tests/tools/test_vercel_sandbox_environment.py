@@ -15,6 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from agent.i18n import t
 
 
 class _FakeRunResult:

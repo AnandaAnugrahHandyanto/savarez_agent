@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 from hermes_constants import is_wsl as _is_wsl
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"

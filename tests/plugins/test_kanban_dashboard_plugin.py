@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db as kb
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

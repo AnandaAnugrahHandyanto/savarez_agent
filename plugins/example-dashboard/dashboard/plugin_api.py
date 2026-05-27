@@ -7,6 +7,7 @@ GET endpoint to verify that plugin API routes work with auth.
 """
 
 from fastapi import APIRouter
+from agent.i18n import t
 
 router = APIRouter()
 

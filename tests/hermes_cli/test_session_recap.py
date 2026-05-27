@@ -6,6 +6,7 @@ import json
 import pytest
 
 from hermes_cli.session_recap import build_recap
+from agent.i18n import t
 
 
 def _user(text):

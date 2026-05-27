@@ -39,6 +39,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli import web_server
+from agent.i18n import t
 
 
 @pytest.fixture(autouse=True)

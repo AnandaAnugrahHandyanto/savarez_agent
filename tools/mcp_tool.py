@@ -92,6 +92,7 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

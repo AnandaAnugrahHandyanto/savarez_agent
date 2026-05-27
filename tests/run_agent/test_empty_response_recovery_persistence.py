@@ -1,6 +1,7 @@
 """Regression tests for empty-response recovery transcript persistence."""
 
 from run_agent import AIAgent
+from agent.i18n import t
 
 
 def _agent_with_stubbed_persistence():

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import PlatformConfig
+from agent.i18n import t
 
 
 class _FakeAllowedMentions:

@@ -26,6 +26,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
+from agent.i18n import t
 
 
 def _fmt_bytes(n: int) -> str:

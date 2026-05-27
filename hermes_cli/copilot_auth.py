@@ -26,6 +26,7 @@ import subprocess
 import time
 from pathlib import Path
 from typing import Optional
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

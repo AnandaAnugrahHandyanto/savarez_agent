@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import MagicMock, patch, PropertyMock
 
 from tools.interrupt import set_interrupt, is_interrupted, _interrupt_event
+from agent.i18n import t
 
 
 class TestInterruptPropagationToChild(unittest.TestCase):

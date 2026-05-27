@@ -13,6 +13,7 @@ Contract:
 Import and use from any custom watcher script:
 
     from _watermark import Watermark
+from agent.i18n import t
 
     wm = Watermark.load("my-feed-name")
     new_items = wm.filter_new(fetched_items, id_key="id")

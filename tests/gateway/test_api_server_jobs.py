@@ -20,6 +20,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter, cors_middleware
+from agent.i18n import t
 
 _MOD = "gateway.platforms.api_server"
 

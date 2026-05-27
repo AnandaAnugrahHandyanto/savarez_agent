@@ -16,6 +16,7 @@ import subprocess
 import time
 
 from tests.docker.conftest import docker_exec, docker_exec_sh
+from agent.i18n import t
 
 
 def test_orphan_zombies_reaped(

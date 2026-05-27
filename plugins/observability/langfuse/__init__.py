@@ -30,6 +30,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

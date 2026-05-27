@@ -36,6 +36,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
+from agent.i18n import t
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 

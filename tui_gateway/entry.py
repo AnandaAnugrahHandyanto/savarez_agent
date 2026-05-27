@@ -1,5 +1,6 @@
 import os
 import sys
+from agent.i18n import t
 
 # Guard against a local utils/ (or other package) in CWD shadowing installed
 # hermes modules.  hermes_cli sets HERMES_PYTHON_SRC_ROOT before spawning this

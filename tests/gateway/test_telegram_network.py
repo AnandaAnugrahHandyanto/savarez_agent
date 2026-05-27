@@ -4,6 +4,7 @@ Background
 ----------
 api.telegram.org resolves to an IP (e.g. 149.154.166.110) that is unreachable
 from some networks.  The workaround: route TCP through a different IP in the
+from agent.i18n import t
 same Telegram-owned 149.154.160.0/20 block (e.g. 149.154.167.220) while
 keeping TLS SNI and the Host header as api.telegram.org so Telegram's edge
 servers still accept the request.  This is the programmatic equivalent of:

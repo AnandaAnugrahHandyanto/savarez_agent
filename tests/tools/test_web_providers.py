@@ -14,6 +14,7 @@ from typing import Any, Dict, List
 import pytest
 
 from tests.tools.conftest import register_all_web_providers
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

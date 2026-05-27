@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 from tools.skills_ast_audit import ast_scan_path, format_ast_report
+from agent.i18n import t
 
 
 def _pids(findings):

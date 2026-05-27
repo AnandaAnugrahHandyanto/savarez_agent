@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import unittest
+from agent.i18n import t
 
 
 class TestRedirectStdoutIsProcessWide(unittest.TestCase):

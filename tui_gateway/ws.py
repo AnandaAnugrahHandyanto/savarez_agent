@@ -15,6 +15,7 @@ Mounting
 --------
     from fastapi import WebSocket
     from tui_gateway.ws import handle_ws
+from agent.i18n import t
 
     @app.websocket("/api/ws")
     async def ws(ws: WebSocket):

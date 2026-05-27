@@ -13,6 +13,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli import security_audit as sa
+from agent.i18n import t
 
 
 # ─── Parsers ──────────────────────────────────────────────────────────────────

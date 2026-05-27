@@ -38,6 +38,7 @@ import urllib.request
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
+from agent.i18n import t
 
 
 USER_AGENT = "HermesAgent/1.0"

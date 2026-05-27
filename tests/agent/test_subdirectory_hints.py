@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent.subdirectory_hints import SubdirectoryHintTracker
+from agent.i18n import t
 
 
 @pytest.fixture

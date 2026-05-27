@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import yaml
+from agent.i18n import t
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

@@ -1,5 +1,6 @@
 """Tests for gateway.display_config — per-platform display/verbosity resolver."""
 import pytest
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

@@ -27,6 +27,7 @@ import time
 import urllib.request
 import urllib.error
 from typing import Any, Dict, List, Optional
+from agent.i18n import t
 
 RPC_URL = os.environ.get(
     "SOLANA_RPC_URL",

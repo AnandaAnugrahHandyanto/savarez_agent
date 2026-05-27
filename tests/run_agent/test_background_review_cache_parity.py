@@ -12,6 +12,7 @@ Sonnet 4.5 per the contributor's measurement).
 """
 
 from unittest.mock import patch
+from agent.i18n import t
 
 
 def _make_agent_stub(agent_cls):

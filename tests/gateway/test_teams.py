@@ -15,6 +15,7 @@ import pytest
 from gateway.config import Platform, PlatformConfig, HomeChannel
 from plugins.teams_pipeline.models import TeamsMeetingRef, TeamsMeetingSummaryPayload
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

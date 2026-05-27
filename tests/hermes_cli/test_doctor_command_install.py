@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import hermes_cli.doctor as doctor_mod
+from agent.i18n import t
 
 
 def _setup_doctor_env(monkeypatch, tmp_path, venv_name="venv"):

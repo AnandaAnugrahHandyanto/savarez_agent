@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from agent.i18n import t
 
 
 def _normalized_base_url(value: Any) -> str:

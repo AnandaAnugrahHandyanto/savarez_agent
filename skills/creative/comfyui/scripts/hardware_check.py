@@ -31,6 +31,7 @@ import shutil
 import subprocess
 import sys
 from typing import Any
+from agent.i18n import t
 
 
 # Thresholds (GiB).

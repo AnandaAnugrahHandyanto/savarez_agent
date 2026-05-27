@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import os
+from agent.i18n import t
 
 # Force stderr logging so redirect_stdout doesn't swallow it
 logging.basicConfig(level=logging.DEBUG, stream=sys.stderr,

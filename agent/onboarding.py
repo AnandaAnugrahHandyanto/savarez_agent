@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import Any, Mapping, Optional
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

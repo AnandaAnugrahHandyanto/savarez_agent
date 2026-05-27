@@ -20,6 +20,7 @@ import subprocess
 from collections.abc import Iterator
 
 import pytest
+from agent.i18n import t
 
 IMAGE_TAG = os.environ.get("HERMES_TEST_IMAGE", "hermes-agent-harness:latest")
 

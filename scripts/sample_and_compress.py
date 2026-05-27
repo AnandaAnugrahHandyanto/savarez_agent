@@ -23,6 +23,7 @@ import fire
 
 # Load environment variables
 from dotenv import load_dotenv
+from agent.i18n import t
 load_dotenv()
 
 

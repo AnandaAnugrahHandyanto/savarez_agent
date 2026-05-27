@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 import json
 import time
+from agent.i18n import t
 
 
 # Severity rungs, ordered least → most urgent. The UI colors them

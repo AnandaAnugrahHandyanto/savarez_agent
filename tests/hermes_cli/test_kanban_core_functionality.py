@@ -24,6 +24,7 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban import run_slash
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

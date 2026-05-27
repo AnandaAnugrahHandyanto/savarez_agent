@@ -33,6 +33,7 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 
 from hermes_constants import get_hermes_home
 from tools import skill_usage
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

@@ -50,6 +50,7 @@ from agent.retry_utils import jittered_backoff
 
 # Load .env from HERMES_HOME first, then project root as a dev fallback.
 from hermes_cli.env_loader import load_hermes_dotenv
+from agent.i18n import t
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / ".env"

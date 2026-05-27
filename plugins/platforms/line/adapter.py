@@ -78,6 +78,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote as _urlquote
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

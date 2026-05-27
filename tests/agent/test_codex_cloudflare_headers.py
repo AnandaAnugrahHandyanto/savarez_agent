@@ -18,6 +18,7 @@ These tests pin:
 - the User-Agent shape (codex_cli_rs-prefixed)
 - ``ChatGPT-Account-ID`` extraction from the OAuth JWT (canonical casing,
   from codex-rs ``auth.rs``)
+from agent.i18n import t
 - graceful handling of malformed tokens (drop the account-ID header, don't
   raise)
 - primary-client wiring at both entry points in ``run_agent.py``

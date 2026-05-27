@@ -39,6 +39,7 @@ import logging
 import mimetypes
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

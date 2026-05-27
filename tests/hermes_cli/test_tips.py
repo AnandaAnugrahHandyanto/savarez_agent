@@ -2,6 +2,7 @@
 
 import pytest
 from hermes_cli.tips import TIPS, get_random_tip
+from agent.i18n import t
 
 
 class TestTipsCorpus:

@@ -2,6 +2,7 @@
 
 Usage:
     from agent.transports import get_transport
+from agent.i18n import t
     transport = get_transport("anthropic_messages")
     result = transport.normalize_response(raw_response)
 """

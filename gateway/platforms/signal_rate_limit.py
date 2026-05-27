@@ -20,6 +20,7 @@ import logging
 import re
 import time
 from typing import Any, Optional
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

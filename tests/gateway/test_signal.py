@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch, AsyncMock
 from urllib.parse import quote
 
 from gateway.config import Platform, PlatformConfig
+from agent.i18n import t
 
 
 @pytest.fixture(autouse=True)

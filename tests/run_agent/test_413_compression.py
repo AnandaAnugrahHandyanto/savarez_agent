@@ -20,6 +20,7 @@ import pytest
 from agent.context_compressor import SUMMARY_PREFIX
 from run_agent import AIAgent
 import run_agent
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

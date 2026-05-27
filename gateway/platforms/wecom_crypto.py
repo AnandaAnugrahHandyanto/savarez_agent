@@ -17,6 +17,7 @@ from xml.etree import ElementTree as ET
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from agent.i18n import t
 
 
 class WeComCryptoError(Exception):

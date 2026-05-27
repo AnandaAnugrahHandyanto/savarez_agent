@@ -17,6 +17,7 @@ network or auth state is required.
 
 import pytest
 from hermes_cli import model_switch
+from agent.i18n import t
 
 
 def _make_provider(slug, name=None, models=None, *, is_current=False,

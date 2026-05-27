@@ -19,6 +19,7 @@ import tempfile
 import time
 from typing import Any, Mapping, Optional
 from utils import atomic_replace
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

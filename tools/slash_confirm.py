@@ -28,6 +28,7 @@ import logging
 import threading
 import time
 from typing import Any, Awaitable, Callable, Dict, Optional
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

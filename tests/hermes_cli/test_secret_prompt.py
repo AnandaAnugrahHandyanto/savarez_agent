@@ -1,6 +1,7 @@
 import pytest
 
 from hermes_cli.secret_prompt import _collect_masked_input, masked_secret_prompt
+from agent.i18n import t
 
 
 def _run_collect(chars: str):

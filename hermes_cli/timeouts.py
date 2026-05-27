@@ -1,4 +1,5 @@
 from __future__ import annotations
+from agent.i18n import t
 
 
 def _coerce_timeout(raw: object) -> float | None:

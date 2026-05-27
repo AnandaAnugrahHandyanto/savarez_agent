@@ -27,6 +27,7 @@ import datetime
 import threading
 import uuid
 from typing import Any, Dict, Optional
+from agent.i18n import t
 
 # fal_client is imported lazily — see _load_fal_client(). Pulling it
 # eagerly added ~64 ms to every CLI cold start because

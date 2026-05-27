@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import websockets
 from websockets.asyncio.client import ClientConnection
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

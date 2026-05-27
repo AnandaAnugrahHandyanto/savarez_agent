@@ -32,6 +32,7 @@ support.
 import json
 import logging
 from typing import Any, Dict, List, Optional, Union
+from agent.i18n import t
 
 # Sources that are excluded from session browsing/searching by default.
 # Third-party integrations tag their sessions with HERMES_SESSION_SOURCE=tool

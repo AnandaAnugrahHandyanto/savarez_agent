@@ -3,6 +3,7 @@ import json
 import pytest
 from pathlib import Path
 import importlib.util
+from agent.i18n import t
 
 # Load the hyphenated script name dynamically
 repo_root = Path(__file__).parent.parent

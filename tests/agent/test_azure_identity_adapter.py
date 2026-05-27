@@ -26,6 +26,7 @@ from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
+from agent.i18n import t
 
 # Ensure we always import a fresh adapter module — credential caches in
 # the adapter persist across tests otherwise, polluting assertions

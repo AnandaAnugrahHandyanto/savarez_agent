@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from agent.i18n import t
 
 
 def _non_wsl_proc_version(real_open):

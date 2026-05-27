@@ -7,6 +7,7 @@ anchor, the call returns goal (bookend_start) + match (window) + resolution
 import pytest
 
 from hermes_state import SessionDB
+from agent.i18n import t
 
 
 @pytest.fixture

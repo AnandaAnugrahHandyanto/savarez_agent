@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 from hermes_constants import secure_parent_dir
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

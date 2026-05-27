@@ -32,6 +32,7 @@ import csv
 import json
 from collections import defaultdict
 from pathlib import Path
+from agent.i18n import t
 
 CONFIDENCE_ORDER = {"high": 0, "medium": 1, "low": 2}
 SEVERITY_ORDER = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}

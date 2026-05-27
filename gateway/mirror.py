@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Optional
 
 from hermes_cli.config import get_hermes_home
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

@@ -6,6 +6,7 @@ import os
 import pytest
 
 from agent.redact import redact_sensitive_text, RedactingFormatter
+from agent.i18n import t
 
 
 @pytest.fixture(autouse=True)

@@ -6,6 +6,7 @@ import urllib.request
 
 from providers import register_provider
 from providers.base import ProviderProfile
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

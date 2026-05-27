@@ -36,6 +36,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, FrozenSet, Iterable, Optional, Tuple
+from agent.i18n import t
 
 
 # Slash commands that MUST stay reachable for any allowed user, even when

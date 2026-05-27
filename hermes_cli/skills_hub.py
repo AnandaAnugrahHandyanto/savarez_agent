@@ -24,6 +24,7 @@ from rich.table import Table
 # tools.skills_hub and tools.skills_guard are imported inside functions.
 from hermes_constants import display_hermes_home
 from agent.skill_utils import is_excluded_skill_path
+from agent.i18n import t
 
 _console = Console()
 

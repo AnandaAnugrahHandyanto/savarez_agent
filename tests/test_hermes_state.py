@@ -5,6 +5,7 @@ import pytest
 from pathlib import Path
 
 from hermes_state import SessionDB
+from agent.i18n import t
 
 
 @pytest.fixture()

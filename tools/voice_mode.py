@@ -21,6 +21,7 @@ import threading
 import time
 import wave
 from typing import Any, Dict, List, Optional
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

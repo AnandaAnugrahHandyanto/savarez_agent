@@ -34,6 +34,7 @@ from typing import Any, Dict
 import requests
 
 from agent.browser_provider import BrowserProvider
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

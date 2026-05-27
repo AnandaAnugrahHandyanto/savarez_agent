@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from agent.i18n import t
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "scripts"

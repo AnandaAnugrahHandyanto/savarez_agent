@@ -49,6 +49,7 @@ from __future__ import annotations
 import abc
 import logging
 from typing import Any, Dict, List, Optional
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

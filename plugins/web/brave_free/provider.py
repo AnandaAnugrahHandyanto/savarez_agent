@@ -24,6 +24,7 @@ import os
 from typing import Any, Dict
 
 from agent.web_search_provider import WebSearchProvider
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

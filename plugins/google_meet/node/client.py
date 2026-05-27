@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from plugins.google_meet.node import protocol as _proto
+from agent.i18n import t
 
 
 class NodeClient:

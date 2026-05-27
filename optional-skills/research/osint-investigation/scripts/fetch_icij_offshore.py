@@ -26,6 +26,7 @@ import time
 import urllib.request
 import zipfile
 from pathlib import Path
+from agent.i18n import t
 
 BULK_URL = "https://offshoreleaks-data.icij.org/offshoreleaks/csv/full-oldb.LATEST.zip"
 

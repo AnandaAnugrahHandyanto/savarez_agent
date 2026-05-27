@@ -2,6 +2,7 @@
 import pytest
 from unittest.mock import MagicMock, patch, mock_open
 import yaml
+from agent.i18n import t
 
 
 # ── CLI tests ──────────────────────────────────────────────────────────────

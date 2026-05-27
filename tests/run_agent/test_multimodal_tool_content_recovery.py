@@ -28,6 +28,7 @@ from __future__ import annotations
 import pytest
 
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.i18n import t
 
 
 class _FakeApiError(Exception):

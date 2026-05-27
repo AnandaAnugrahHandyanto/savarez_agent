@@ -11,6 +11,7 @@ Usage:
 """
 import sys
 import json
+from agent.i18n import t
 
 def extract_text(path, pages=None):
     import pymupdf

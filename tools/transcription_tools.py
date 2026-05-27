@@ -20,6 +20,7 @@ Supported input formats: mp3, mp4, mpeg, mpga, m4a, wav, webm, ogg, aac
 Usage::
 
     from tools.transcription_tools import transcribe_audio
+from agent.i18n import t
 
     result = transcribe_audio("/path/to/audio.ogg")
     if result["success"]:

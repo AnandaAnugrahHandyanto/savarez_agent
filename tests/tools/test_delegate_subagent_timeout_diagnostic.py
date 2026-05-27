@@ -24,6 +24,7 @@ from typing import Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
+from agent.i18n import t
 
 
 @pytest.fixture

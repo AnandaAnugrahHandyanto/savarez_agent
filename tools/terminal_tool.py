@@ -25,6 +25,7 @@ Cloud sandbox note:
 
 Usage:
     from terminal_tool import terminal_tool
+from agent.i18n import t
 
     # Execute a simple command
     result = terminal_tool("ls -la")

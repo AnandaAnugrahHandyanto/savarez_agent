@@ -20,6 +20,7 @@ Multi-occurrence matching is handled via the replace_all flag.
 
 Usage:
     from tools.fuzzy_match import fuzzy_find_and_replace
+from agent.i18n import t
     
     new_content, match_count, strategy, error = fuzzy_find_and_replace(
         content="def foo():\\n    pass",

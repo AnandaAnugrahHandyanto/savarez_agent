@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Optional, Dict, List, Any, Union
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

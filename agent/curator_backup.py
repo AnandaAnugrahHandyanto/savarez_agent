@@ -51,6 +51,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
 from agent.skill_utils import is_excluded_skill_path
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

@@ -11,6 +11,7 @@ from typing import Any
 
 from providers import register_provider
 from providers.base import OMIT_TEMPERATURE, ProviderProfile
+from agent.i18n import t
 
 
 class KimiProfile(ProviderProfile):

@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch, AsyncMock
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageType
+from agent.i18n import t
 
 
 def _make_fake_mautrix():

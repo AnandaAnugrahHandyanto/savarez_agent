@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
+from agent.i18n import t
 
 
 class BedrockTransport(ProviderTransport):

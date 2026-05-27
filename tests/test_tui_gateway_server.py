@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tui_gateway import server
+from agent.i18n import t
 
 
 class _ChunkyStdout:

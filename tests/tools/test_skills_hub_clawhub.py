@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from tools.skills_hub import ClawHubSource, SkillMeta
+from agent.i18n import t
 
 
 class _MockResponse:

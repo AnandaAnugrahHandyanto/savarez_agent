@@ -14,6 +14,7 @@ import pytest
 
 from agent import video_gen_registry
 from agent.video_gen_provider import VideoGenProvider
+from agent.i18n import t
 
 
 class _FakeVideoProvider(VideoGenProvider):

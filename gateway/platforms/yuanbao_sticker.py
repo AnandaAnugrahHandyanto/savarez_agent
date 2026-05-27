@@ -23,6 +23,7 @@ import random
 import re
 import unicodedata
 from typing import Optional
+from agent.i18n import t
 
 # ---------------------------------------------------------------------------
 # Sticker catalogue – ported from builtin-stickers.json

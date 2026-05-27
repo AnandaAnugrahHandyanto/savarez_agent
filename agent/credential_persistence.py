@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import re
 from typing import Any, Dict, Mapping
+from agent.i18n import t
 
 
 # Sources Hermes owns and can intentionally persist in auth.json.  Everything

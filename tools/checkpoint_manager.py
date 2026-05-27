@@ -59,6 +59,7 @@ import time
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, List, Optional, Set, Tuple
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

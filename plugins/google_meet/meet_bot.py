@@ -2,6 +2,7 @@
 
 Runs as a standalone subprocess spawned by ``process_manager.py``. Reads config
 from env vars, writes status + transcript to files under
+from agent.i18n import t
 ``$HERMES_HOME/workspace/meetings/<meeting-id>/``. The main hermes process
 reads those files via the ``meet_*`` tools — no IPC beyond filesystem.
 

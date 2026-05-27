@@ -15,6 +15,7 @@ import pytest
 
 from gateway.config import Platform
 from gateway.run import GatewayRunner
+from agent.i18n import t
 
 
 class TestVoiceKeyHelper:

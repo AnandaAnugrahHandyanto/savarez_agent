@@ -17,6 +17,7 @@ import sys
 from unittest.mock import patch
 
 import pytest
+from agent.i18n import t
 
 
 def _build_parser():

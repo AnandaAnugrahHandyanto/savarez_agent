@@ -9,6 +9,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
 from gateway.run import GatewayRunner
+from agent.i18n import t
 
 
 class StubAdapter(BasePlatformAdapter):

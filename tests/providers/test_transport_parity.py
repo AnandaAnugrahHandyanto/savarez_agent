@@ -9,6 +9,7 @@ a behavioral regression.
 import pytest
 from agent.transports.chat_completions import ChatCompletionsTransport
 from providers import get_provider_profile
+from agent.i18n import t
 
 
 @pytest.fixture

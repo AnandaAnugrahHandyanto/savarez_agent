@@ -10,6 +10,7 @@ Bedrock client path, and that it survives the MiniMax bearer-auth strip.
 """
 
 from unittest.mock import MagicMock, patch
+from agent.i18n import t
 
 
 class TestBedrockContext1MBeta:

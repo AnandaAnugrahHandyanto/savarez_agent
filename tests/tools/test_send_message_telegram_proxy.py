@@ -21,6 +21,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from agent.i18n import t
 
 
 def _install_telegram_mock_with_request(

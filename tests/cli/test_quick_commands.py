@@ -4,6 +4,7 @@ import subprocess
 from unittest.mock import MagicMock, patch, AsyncMock
 from rich.text import Text
 import pytest
+from agent.i18n import t
 
 
 # ── CLI tests ──────────────────────────────────────────────────────────────

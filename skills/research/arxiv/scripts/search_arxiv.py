@@ -14,6 +14,7 @@ import sys
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
+from agent.i18n import t
 
 NS = {'a': 'http://www.w3.org/2005/Atom'}
 

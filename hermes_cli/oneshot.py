@@ -28,6 +28,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from typing import Optional
 
 from hermes_cli.fallback_config import get_fallback_chain
+from agent.i18n import t
 
 
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:

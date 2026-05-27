@@ -36,6 +36,7 @@ from typing import Optional
 
 from hermes_cli import profiles as profiles_mod
 from agent.skill_utils import is_excluded_skill_path
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

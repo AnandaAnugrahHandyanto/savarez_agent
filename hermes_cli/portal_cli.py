@@ -17,6 +17,7 @@ from typing import Optional
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import load_config
+from agent.i18n import t
 
 DEFAULT_PORTAL_URL = "https://portal.nousresearch.com"
 SUBSCRIPTION_URL = "https://portal.nousresearch.com/manage-subscription"

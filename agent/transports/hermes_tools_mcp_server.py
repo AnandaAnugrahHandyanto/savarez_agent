@@ -49,6 +49,7 @@ import logging
 import os
 import sys
 from typing import Any, Optional
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

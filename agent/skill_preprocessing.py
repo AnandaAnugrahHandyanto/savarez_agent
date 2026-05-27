@@ -4,6 +4,7 @@ import logging
 import re
 import subprocess
 from pathlib import Path
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

@@ -27,6 +27,7 @@ import textwrap
 import unittest.mock as mock
 
 import pytest
+from agent.i18n import t
 
 
 # Import the module under test via an import-time side-effect check path.

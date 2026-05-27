@@ -7,6 +7,7 @@ provider/base_url/api_key empty in AIAgent, causing HTTP 404.
 
 import os
 from unittest.mock import MagicMock, patch
+from agent.i18n import t
 
 
 def test_make_agent_passes_resolved_provider():

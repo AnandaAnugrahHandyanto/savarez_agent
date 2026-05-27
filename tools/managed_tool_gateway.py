@@ -8,6 +8,7 @@ import os
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Callable, Optional
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

@@ -16,6 +16,7 @@ Requirements:
 """
 
 import pytest
+from agent.i18n import t
 pytestmark = pytest.mark.integration
 
 import json

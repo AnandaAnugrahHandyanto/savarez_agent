@@ -3,6 +3,7 @@
 A distribution is a Hermes profile published as a git repository (or
 installed from a local directory for development). Install with one command
 from a git URL, update in place, and keep your local memories / sessions /
+from agent.i18n import t
 credentials untouched.
 
 Where this fits relative to the existing pieces:

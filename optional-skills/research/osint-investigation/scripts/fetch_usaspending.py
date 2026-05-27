@@ -12,6 +12,7 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
+from agent.i18n import t
 
 ENDPOINT = "https://api.usaspending.gov/api/v2/search/spending_by_award/"
 COLUMNS = [

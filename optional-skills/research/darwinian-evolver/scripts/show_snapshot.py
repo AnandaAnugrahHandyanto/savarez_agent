@@ -14,6 +14,7 @@ import argparse
 import pickle
 import sys
 from pathlib import Path
+from agent.i18n import t
 
 
 def main() -> int:

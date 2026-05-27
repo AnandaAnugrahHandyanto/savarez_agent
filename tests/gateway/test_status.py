@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from gateway import status
+from agent.i18n import t
 
 
 class TestGatewayPidState:

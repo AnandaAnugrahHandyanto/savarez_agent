@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
 from plugins.memory.honcho.client import get_honcho_client
+from agent.i18n import t
 
 if TYPE_CHECKING:
     from honcho import Honcho

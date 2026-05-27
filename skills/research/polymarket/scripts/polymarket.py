@@ -17,6 +17,7 @@ import sys
 import urllib.request
 import urllib.parse
 import urllib.error
+from agent.i18n import t
 
 GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"

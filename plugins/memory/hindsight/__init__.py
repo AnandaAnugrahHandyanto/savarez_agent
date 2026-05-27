@@ -44,6 +44,7 @@ from agent.memory_provider import MemoryProvider
 from hermes_constants import get_hermes_home
 from tools.registry import tool_error
 from hermes_cli.config import cfg_get
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

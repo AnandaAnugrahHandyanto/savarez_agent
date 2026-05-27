@@ -24,6 +24,7 @@ import os
 import sys
 from collections import Counter
 from pathlib import Path
+from agent.i18n import t
 
 
 def _load_json(path: Path | None) -> list[dict]:

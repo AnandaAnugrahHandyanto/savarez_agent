@@ -11,6 +11,7 @@ so we wrap the terminal backend's execute() interface to provide a unified file 
 Usage:
     from tools.file_operations import ShellFileOperations
     from tools.terminal_tool import _active_environments
+from agent.i18n import t
     
     # Get file operations for a terminal environment
     file_ops = ShellFileOperations(terminal_env)

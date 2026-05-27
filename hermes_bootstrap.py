@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import os
 import sys
+from agent.i18n import t
 
 _IS_WINDOWS = sys.platform == "win32"
 _bootstrap_applied = False

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 import pytest
+from agent.i18n import t
 
 
 def _bump_view_many(hermes_home: str, skill_name: str, iterations: int) -> None:

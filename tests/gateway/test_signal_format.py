@@ -9,6 +9,7 @@ import pytest
 
 from gateway.config import PlatformConfig
 from gateway.platforms.signal import SignalAdapter
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

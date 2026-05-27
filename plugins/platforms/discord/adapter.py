@@ -8,6 +8,7 @@ Uses discord.py library for:
 - Sending responses back
 - Handling threads and channels
 """
+from agent.i18n import t
 
 import asyncio
 import hashlib

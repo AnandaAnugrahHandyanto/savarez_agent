@@ -17,6 +17,7 @@ import tempfile
 import time
 import urllib.request
 import json
+from agent.i18n import t
 
 
 def _find_chrome() -> str:

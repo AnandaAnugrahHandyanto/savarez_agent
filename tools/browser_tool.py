@@ -38,6 +38,7 @@ Environment Variables:
 
 Usage:
     from tools.browser_tool import browser_navigate, browser_snapshot, browser_click
+from agent.i18n import t
 
     # Navigate to a page
     result = browser_navigate("https://example.com", task_id="task_123")

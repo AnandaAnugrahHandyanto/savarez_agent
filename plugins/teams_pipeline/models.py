@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal
+from agent.i18n import t
 
 
 ArtifactType = Literal["transcript", "recording", "call_record"]

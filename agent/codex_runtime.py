@@ -22,6 +22,7 @@ import os
 import time
 from types import SimpleNamespace
 from typing import Any, Dict, List
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

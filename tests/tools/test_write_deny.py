@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tools.file_operations import _is_write_denied
+from agent.i18n import t
 
 
 class TestWriteDenyExactPaths:

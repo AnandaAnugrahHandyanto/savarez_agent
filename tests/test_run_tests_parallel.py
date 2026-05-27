@@ -29,6 +29,7 @@ import time
 from pathlib import Path
 
 import pytest
+from agent.i18n import t
 
 
 # Both tests share the same handoff file: the leaker writes here, the

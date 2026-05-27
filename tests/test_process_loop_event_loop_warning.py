@@ -11,6 +11,7 @@ import asyncio
 import sys
 import threading
 import warnings
+from agent.i18n import t
 
 
 class TestGetRunningLoopReplacement:

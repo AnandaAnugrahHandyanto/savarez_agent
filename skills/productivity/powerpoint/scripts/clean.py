@@ -22,6 +22,7 @@ import defusedxml.minidom
 
 
 import re
+from agent.i18n import t
 
 
 def get_slides_in_sldidlst(unpacked_dir: Path) -> set[str]:

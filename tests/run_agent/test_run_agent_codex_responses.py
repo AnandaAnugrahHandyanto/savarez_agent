@@ -3,6 +3,7 @@ import types
 from types import SimpleNamespace
 
 import pytest
+from agent.i18n import t
 
 
 sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))

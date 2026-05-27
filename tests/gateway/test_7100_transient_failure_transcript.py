@@ -16,6 +16,7 @@ The gateway classifier must distinguish:
 """
 
 import pytest
+from agent.i18n import t
 
 
 def _classify(agent_result: dict, history_len: int) -> tuple[bool, bool]:

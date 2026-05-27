@@ -6,6 +6,7 @@ import pytest
 
 from plugins.spotify import client as spotify_mod
 from plugins.spotify import tools as spotify_tool
+from agent.i18n import t
 
 
 class _FakeResponse:

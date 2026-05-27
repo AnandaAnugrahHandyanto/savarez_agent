@@ -23,6 +23,7 @@ import hashlib
 import logging
 import struct
 import math
+from agent.i18n import t
 
 try:
     import numpy as np

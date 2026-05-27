@@ -1,6 +1,7 @@
 import textwrap
 
 from hermes_cli.config import load_config, save_config
+from agent.i18n import t
 
 
 def _write_config(tmp_path, body: str):

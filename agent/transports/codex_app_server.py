@@ -24,6 +24,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
+from agent.i18n import t
 
 # Default minimum codex version we test against. The PR sets this from the
 # `codex --version` parsed at install time; bumping is a one-line change here.

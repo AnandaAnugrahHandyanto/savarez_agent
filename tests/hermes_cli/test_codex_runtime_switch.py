@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli import codex_runtime_switch as crs
+from agent.i18n import t
 
 
 class TestParseArgs:

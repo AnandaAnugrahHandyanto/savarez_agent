@@ -24,6 +24,7 @@ import tempfile
 import time
 
 import pytest
+from agent.i18n import t
 
 
 pytestmark = pytest.mark.skipif(

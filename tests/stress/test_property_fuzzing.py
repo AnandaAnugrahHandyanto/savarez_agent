@@ -29,6 +29,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from agent.i18n import t
 
 WT = str(Path(__file__).resolve().parents[2])
 NUM_SEQUENCES = 500

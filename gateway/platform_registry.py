@@ -12,6 +12,7 @@ the legacy code path.
 Usage (plugin side):
 
     from gateway.platform_registry import platform_registry, PlatformEntry
+from agent.i18n import t
 
     platform_registry.register(PlatformEntry(
         name="irc",

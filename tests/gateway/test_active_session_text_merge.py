@@ -15,6 +15,7 @@ import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from agent.i18n import t
 
 # Minimal telegram stub so importing gateway.platforms.base does not pull
 # in the real python-telegram-bot dependency.

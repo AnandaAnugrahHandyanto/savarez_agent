@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from html import escape as _html_escape
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
+from agent.i18n import t
 
 try:
     from mautrix.types import (

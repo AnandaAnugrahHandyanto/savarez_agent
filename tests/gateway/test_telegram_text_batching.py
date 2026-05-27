@@ -12,6 +12,7 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+from agent.i18n import t
 
 
 def _make_adapter():

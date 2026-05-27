@@ -14,6 +14,7 @@ import sys
 import os
 import json
 import asyncio
+from agent.i18n import t
 
 # Ensure project root is on the path
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

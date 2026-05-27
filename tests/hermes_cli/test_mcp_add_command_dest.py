@@ -22,6 +22,7 @@ real builder, mirroring ``test_argparse_flag_propagation.py`` and
 """
 
 import argparse
+from agent.i18n import t
 
 
 def _build_parser():

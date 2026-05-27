@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from agent.i18n import t
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 

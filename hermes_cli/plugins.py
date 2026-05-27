@@ -50,6 +50,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Union
 from hermes_constants import get_hermes_home
 from utils import env_var_enabled
 from hermes_cli.config import cfg_get
+from agent.i18n import t
 
 
 def get_bundled_plugins_dir() -> Path:

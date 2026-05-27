@@ -3,6 +3,7 @@
 import pytest
 
 from agent.copilot_acp_client import _is_gh_copilot_deprecation_message
+from agent.i18n import t
 
 
 class TestDeprecationPatternDetection:

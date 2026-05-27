@@ -2,6 +2,7 @@ import json
 from unittest.mock import AsyncMock
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
+from agent.i18n import t
 
 
 def _make_adapter(require_mention=None, mention_patterns=None, free_response_chats=None,

@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
+from agent.i18n import t
 
 # Platform uses _missing_() for dynamic members, so "google_chat" is
 # resolvable via Platform("google_chat") even without a static

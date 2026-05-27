@@ -3,6 +3,7 @@ from argparse import Namespace
 from unittest.mock import patch
 
 from hermes_cli.tools_config import tools_disable_enable_command
+from agent.i18n import t
 
 
 # ── Built-in toolset disable ────────────────────────────────────────────────

@@ -11,6 +11,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
+from agent.i18n import t
 
 try:
     from hermes_constants import get_hermes_home

@@ -31,6 +31,7 @@ from email.utils import parsedate_to_datetime
 from html import escape as xml_escape
 from pathlib import Path
 from typing import Any
+from agent.i18n import t
 
 TWILIO_API_BASE = "https://api.twilio.com/2010-04-01/Accounts"
 VAPI_API_BASE = "https://api.vapi.ai"

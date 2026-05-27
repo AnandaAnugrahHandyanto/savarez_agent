@@ -29,6 +29,7 @@ Debug Mode:
 
 Usage:
     from web_tools import web_search_tool, web_extract_tool, web_crawl_tool
+from agent.i18n import t
     
     # Search the web
     results = web_search_tool("Python machine learning libraries", limit=3)

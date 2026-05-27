@@ -10,6 +10,7 @@ from argparse import Namespace
 from unittest.mock import patch
 
 import pytest
+from agent.i18n import t
 
 if "dotenv" not in sys.modules:
     fake_dotenv = types.ModuleType("dotenv")

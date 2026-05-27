@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 import aiohttp
 from aiohttp import web
 from aiohttp.test_utils import TestServer
+from agent.i18n import t
 
 
 # -- Sample entity data -------------------------------------------------------

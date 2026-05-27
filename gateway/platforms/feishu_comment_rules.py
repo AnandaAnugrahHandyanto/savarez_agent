@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_constants import get_hermes_home
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

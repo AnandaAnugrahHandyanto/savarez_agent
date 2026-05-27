@@ -21,6 +21,7 @@ import sys
 import textwrap
 from io import BytesIO
 from pathlib import Path
+from agent.i18n import t
 
 try:
     import requests as _requests

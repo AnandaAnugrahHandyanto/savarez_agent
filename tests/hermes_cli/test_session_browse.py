@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch, call
 import pytest
 
 from hermes_cli.main import _session_browse_picker
+from agent.i18n import t
 
 
 # ─── Sample session data ──────────────────────────────────────────────────────

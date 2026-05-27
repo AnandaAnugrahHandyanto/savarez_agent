@@ -14,6 +14,7 @@ import sys
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
+from agent.i18n import t
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 

@@ -18,6 +18,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from agent.i18n import t
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _http import get, get_json  # noqa: E402

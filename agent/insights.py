@@ -11,6 +11,7 @@ breakdown capabilities.
 
 Usage:
     from agent.insights import InsightsEngine
+from agent.i18n import t
     engine = InsightsEngine(db)
     report = engine.generate(days=30)
     print(engine.format_terminal(report))

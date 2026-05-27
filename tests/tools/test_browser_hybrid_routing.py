@@ -15,6 +15,7 @@ from unittest.mock import Mock
 import pytest
 
 import tools.browser_tool as browser_tool
+from agent.i18n import t
 
 
 @pytest.fixture(autouse=True)

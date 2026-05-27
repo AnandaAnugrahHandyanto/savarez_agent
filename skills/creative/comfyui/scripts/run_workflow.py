@@ -56,6 +56,7 @@ import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlparse
+from agent.i18n import t
 
 # Local import — _common.py sits next to this script.
 sys.path.insert(0, str(Path(__file__).resolve().parent))

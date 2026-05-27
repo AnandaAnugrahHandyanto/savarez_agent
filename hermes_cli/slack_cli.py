@@ -21,6 +21,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from agent.i18n import t
 
 
 def _build_full_manifest(bot_name: str, bot_description: str) -> dict:

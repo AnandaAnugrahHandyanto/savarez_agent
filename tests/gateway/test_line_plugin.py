@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
+from agent.i18n import t
 
 # Load plugins/platforms/line/adapter.py under plugin_adapter_line so it
 # cannot collide with sibling platform-plugin tests in the same xdist worker.

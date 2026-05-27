@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 
 import pytest
+from agent.i18n import t
 
 # ---------------------------------------------------------------------------
 # Fixtures

@@ -7,6 +7,7 @@ import sys
 from typing import Any, Dict, List
 
 from .constants import QQBOT_VERSION
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

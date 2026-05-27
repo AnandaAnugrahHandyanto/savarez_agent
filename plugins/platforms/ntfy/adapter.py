@@ -52,6 +52,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from agent.i18n import t
 
 try:
     import httpx

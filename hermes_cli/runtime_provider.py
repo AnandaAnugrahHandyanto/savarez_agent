@@ -6,6 +6,7 @@ import logging
 import os
 import re
 from typing import Any, Dict, Optional
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

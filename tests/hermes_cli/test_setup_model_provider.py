@@ -2,6 +2,7 @@
 
 Since setup_model_provider delegates to select_provider_and_model()
 from hermes_cli.main, these tests mock the delegation point and verify
+from agent.i18n import t
 that the setup wizard correctly syncs config from disk after the call.
 """
 

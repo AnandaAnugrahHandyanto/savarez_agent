@@ -20,6 +20,7 @@ Features:
 Usage:
     from vision_tools import vision_analyze_tool
     import asyncio
+from agent.i18n import t
     
     # Analyze an image
     result = await vision_analyze_tool(

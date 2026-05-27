@@ -8,6 +8,7 @@ import sys
 import json
 from pathlib import Path
 from typing import Optional
+from agent.i18n import t
 
 
 class DCFModelValidator:

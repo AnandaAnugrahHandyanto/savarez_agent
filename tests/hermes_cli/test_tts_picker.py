@@ -13,6 +13,7 @@ import pytest
 from agent import tts_registry
 from agent.tts_provider import TTSProvider
 from hermes_cli import tools_config
+from agent.i18n import t
 
 
 class _FakeTTSProvider(TTSProvider):

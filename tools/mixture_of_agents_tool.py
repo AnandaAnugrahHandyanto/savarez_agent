@@ -38,6 +38,7 @@ Configuration:
 Usage:
     from mixture_of_agents_tool import mixture_of_agents_tool
     import asyncio
+from agent.i18n import t
     
     # Process a complex query
     result = await mixture_of_agents_tool(

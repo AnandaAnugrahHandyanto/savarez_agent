@@ -6,6 +6,7 @@ No external dependencies.
 """
 import sys, json, time, argparse
 import urllib.request, urllib.parse, urllib.error
+from agent.i18n import t
 
 BASE = "https://www.ebi.ac.uk/chembl/api/data"
 

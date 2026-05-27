@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from agent.memory_provider import MemoryProvider
 from agent.memory_manager import MemoryManager
+from agent.i18n import t
 
 # ---------------------------------------------------------------------------
 # Concrete test provider

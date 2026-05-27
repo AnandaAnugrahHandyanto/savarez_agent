@@ -6,6 +6,7 @@ from acp.schema import TextContentBlock
 
 from acp_adapter.server import HermesACPAgent
 from acp_adapter.session import SessionManager
+from agent.i18n import t
 
 
 class FakeAgent:

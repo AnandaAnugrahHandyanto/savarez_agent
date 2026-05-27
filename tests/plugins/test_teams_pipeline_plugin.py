@@ -15,6 +15,7 @@ from plugins.teams_pipeline import register
 from plugins.teams_pipeline.pipeline import TeamsMeetingPipeline
 from plugins.teams_pipeline.store import TeamsPipelineStore
 from plugins.teams_pipeline.models import MeetingArtifact
+from agent.i18n import t
 
 
 class FakeGraphClient:

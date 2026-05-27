@@ -20,6 +20,7 @@ V4A Format:
 
 Usage:
     from tools.patch_parser import parse_v4a_patch, apply_v4a_operations
+from agent.i18n import t
     
     operations, error = parse_v4a_patch(patch_content)
     if error:

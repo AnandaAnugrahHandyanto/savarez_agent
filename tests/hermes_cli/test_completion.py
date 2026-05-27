@@ -10,6 +10,7 @@ import tempfile
 import pytest
 
 from hermes_cli.completion import _walk, generate_bash, generate_zsh, generate_fish
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

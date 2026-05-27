@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tools.skills_tool import skill_view
+from agent.i18n import t
 
 
 @pytest.fixture()

@@ -23,6 +23,7 @@ from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
 
 from gateway.platforms.base import SendResult
+from agent.i18n import t
 
 
 class TestConfigEnvOverrides(unittest.TestCase):

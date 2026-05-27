@@ -16,6 +16,7 @@ import socket
 from typing import Iterable, Optional
 
 import httpx
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

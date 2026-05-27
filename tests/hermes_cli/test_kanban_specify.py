@@ -17,6 +17,7 @@ import pytest
 from hermes_cli import kanban as kanban_cli
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_specify as spec
+from agent.i18n import t
 
 
 @pytest.fixture

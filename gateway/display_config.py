@@ -22,6 +22,7 @@ config migration (version bump) automatically moves the old format into the new
 from __future__ import annotations
 
 from typing import Any
+from agent.i18n import t
 
 # ---------------------------------------------------------------------------
 # Overrideable display settings and their global defaults

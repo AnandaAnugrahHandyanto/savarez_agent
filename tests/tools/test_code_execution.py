@@ -17,6 +17,7 @@ import pytest
 
 import json
 import os
+from agent.i18n import t
 
 os.environ["TERMINAL_ENV"] = "local"
 

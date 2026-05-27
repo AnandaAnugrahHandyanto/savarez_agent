@@ -20,6 +20,7 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.session import SessionSource
+from agent.i18n import t
 
 
 class ProgressCaptureAdapter(BasePlatformAdapter):

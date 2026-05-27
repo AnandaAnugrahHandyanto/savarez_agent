@@ -15,6 +15,7 @@ from gateway.platforms.base import SendResult
 from gateway.platforms import weixin
 from gateway.platforms.weixin import ContextTokenStore, WeixinAdapter
 from tools.send_message_tool import _parse_target_ref, _send_to_platform
+from agent.i18n import t
 
 
 def _make_adapter() -> WeixinAdapter:

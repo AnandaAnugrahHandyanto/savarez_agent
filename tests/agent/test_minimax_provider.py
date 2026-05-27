@@ -1,6 +1,7 @@
 """Tests for MiniMax provider hardening — context lengths, thinking, catalog, beta headers, transport."""
 
 from unittest.mock import patch
+from agent.i18n import t
 
 
 class TestMinimaxContextLengths:

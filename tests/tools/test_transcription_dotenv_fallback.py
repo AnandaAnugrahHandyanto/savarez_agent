@@ -10,6 +10,7 @@ selection gate (``_get_provider``) do the same.
 from unittest.mock import MagicMock, patch
 
 import pytest
+from agent.i18n import t
 
 
 pytestmark = pytest.mark.usefixtures("disable_lazy_stt_install")

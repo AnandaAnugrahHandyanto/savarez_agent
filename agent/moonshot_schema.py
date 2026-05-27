@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import copy
 from typing import Any, Dict, List
+from agent.i18n import t
 
 # Keys whose values are maps of name → schema (not schemas themselves).
 # When we recurse, we walk the values of these maps as schemas, but we do

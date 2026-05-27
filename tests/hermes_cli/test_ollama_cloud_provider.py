@@ -9,6 +9,7 @@ from hermes_cli.models import _PROVIDER_MODELS, _PROVIDER_LABELS, _PROVIDER_ALIA
 from hermes_cli.model_normalize import normalize_model_for_provider
 from agent.model_metadata import _URL_TO_PROVIDER, _PROVIDER_PREFIXES
 from agent.models_dev import PROVIDER_TO_MODELS_DEV, list_agentic_models
+from agent.i18n import t
 
 
 # ── Provider Registry ──

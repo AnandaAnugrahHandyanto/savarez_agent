@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from utils import atomic_json_write
 
 import requests
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

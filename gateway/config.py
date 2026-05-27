@@ -18,6 +18,7 @@ from enum import Enum
 
 from hermes_cli.config import get_hermes_home
 from utils import is_truthy_value
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

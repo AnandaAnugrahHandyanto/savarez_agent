@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import Platform, PlatformConfig
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

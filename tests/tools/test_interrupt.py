@@ -7,6 +7,7 @@ import queue
 import threading
 import time
 import pytest
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

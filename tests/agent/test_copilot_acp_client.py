@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent.copilot_acp_client import CopilotACPClient
+from agent.i18n import t
 
 
 class _FakeProcess:

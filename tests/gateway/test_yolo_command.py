@@ -9,6 +9,7 @@ from gateway.config import Platform
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
 from tools.approval import disable_session_yolo, is_session_yolo_enabled
+from agent.i18n import t
 
 
 @pytest.fixture(autouse=True)

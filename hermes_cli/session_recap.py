@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 from collections import Counter
 from typing import Any, Iterable, List, Mapping, Optional, Sequence, Tuple
+from agent.i18n import t
 
 # How many recent user/assistant turns we consider "recent activity".
 _RECENT_TURN_WINDOW = 20

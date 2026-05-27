@@ -18,6 +18,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from agent.i18n import t
 
 
 def _make_anthropic_text_block(text: str) -> SimpleNamespace:

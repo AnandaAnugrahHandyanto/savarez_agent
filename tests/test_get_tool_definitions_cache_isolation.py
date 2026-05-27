@@ -19,6 +19,7 @@ from __future__ import annotations
 import pytest
 
 import model_tools
+from agent.i18n import t
 
 
 @pytest.fixture(autouse=True)

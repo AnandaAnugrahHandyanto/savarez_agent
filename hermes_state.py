@@ -26,6 +26,7 @@ from pathlib import Path
 from agent.memory_manager import sanitize_context
 from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

@@ -35,6 +35,7 @@ from __future__ import annotations
 import concurrent.futures
 import contextvars
 import threading
+from agent.i18n import t
 
 
 def test_executor_submit_without_copy_context_does_not_propagate():

@@ -19,6 +19,7 @@ import asyncio
 import json
 import logging
 from typing import Any, Optional, Tuple
+from agent.i18n import t
 
 logger = logging.getLogger("agent.lsp.protocol")
 

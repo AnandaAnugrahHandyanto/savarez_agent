@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 
 import pytest
+from agent.i18n import t
 
 
 @pytest.fixture()

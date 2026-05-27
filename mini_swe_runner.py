@@ -39,6 +39,7 @@ from typing import List, Dict, Any, Optional, Literal
 import fire
 from dotenv import load_dotenv
 from agent.tool_dispatch_helpers import make_tool_result_message
+from agent.i18n import t
 
 # Load environment variables
 load_dotenv()

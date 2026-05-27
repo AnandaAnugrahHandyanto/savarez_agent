@@ -8,6 +8,7 @@ Fix: allow optional extra words with `(?:\\w+\\s+)*` groups.
 """
 
 from tools.cronjob_tools import _scan_cron_prompt
+from agent.i18n import t
 
 
 class TestMultiWordInjectionBypass:

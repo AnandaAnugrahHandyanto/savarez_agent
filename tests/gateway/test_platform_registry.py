@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from gateway.platform_registry import PlatformRegistry, PlatformEntry, platform_registry
 from gateway.config import Platform, PlatformConfig, GatewayConfig
+from agent.i18n import t
 
 
 # ── Platform enum dynamic members ─────────────────────────────────────────

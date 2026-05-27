@@ -46,6 +46,7 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

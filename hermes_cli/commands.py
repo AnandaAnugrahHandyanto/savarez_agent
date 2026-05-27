@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from utils import is_truthy_value
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

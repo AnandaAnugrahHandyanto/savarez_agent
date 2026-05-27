@@ -12,6 +12,7 @@ from typing import Dict
 from unittest.mock import AsyncMock, Mock, patch
 
 from gateway.platforms.base import ProcessingOutcome
+from agent.i18n import t
 
 try:
     import lark_oapi

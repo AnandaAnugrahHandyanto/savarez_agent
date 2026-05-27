@@ -15,6 +15,7 @@ resolved through :func:`_ra` so those patches keep working.
 """
 
 from __future__ import annotations
+from agent.i18n import t
 
 import json
 import logging

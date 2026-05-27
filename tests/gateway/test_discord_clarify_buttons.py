@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from agent.i18n import t
 
 # Repo root importable
 _repo = str(Path(__file__).resolve().parents[2])

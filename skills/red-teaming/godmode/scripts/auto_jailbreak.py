@@ -20,6 +20,7 @@ import json
 import time
 import yaml
 from pathlib import Path
+from agent.i18n import t
 
 try:
     from openai import OpenAI

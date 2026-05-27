@@ -25,6 +25,7 @@ import sys
 from typing import Any, Dict, List
 
 import pytest
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

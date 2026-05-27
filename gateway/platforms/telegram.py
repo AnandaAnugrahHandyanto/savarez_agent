@@ -17,6 +17,7 @@ import html as _html
 import re
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

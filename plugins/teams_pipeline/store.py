@@ -13,6 +13,7 @@ from tempfile import NamedTemporaryFile
 from typing import Any, Dict, Optional
 
 from hermes_constants import get_hermes_home
+from agent.i18n import t
 
 
 DEFAULT_TEAMS_PIPELINE_STORE_FILENAME = "teams_pipeline_store.json"

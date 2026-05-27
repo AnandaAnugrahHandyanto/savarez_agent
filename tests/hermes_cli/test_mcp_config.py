@@ -14,6 +14,7 @@ from typing import Any, Dict, List
 from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

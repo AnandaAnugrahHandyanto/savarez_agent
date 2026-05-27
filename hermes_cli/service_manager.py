@@ -5,6 +5,7 @@ Scheduled Task (native Windows host), and s6 (container) backends behind
 a common Protocol. Only the s6 backend supports runtime registration
 (for per-profile gateways) — host backends raise NotImplementedError
 from those methods, and callers MUST check supports_runtime_registration()
+from agent.i18n import t
 before invoking them.
 
 Host-side call sites (setup wizard, uninstall, status) continue to use

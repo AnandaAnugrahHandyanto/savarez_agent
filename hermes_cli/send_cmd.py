@@ -31,6 +31,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Optional
+from agent.i18n import t
 
 
 _USAGE_EXIT = 2

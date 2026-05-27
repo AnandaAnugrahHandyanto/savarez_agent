@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from cli import HermesCLI
 from hermes_cli.commands import resolve_command
+from agent.i18n import t
 
 
 def _make_cli():

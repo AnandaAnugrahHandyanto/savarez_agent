@@ -7,6 +7,7 @@ finishes the interrupted work before addressing the new input.
 """
 
 import pytest
+from agent.i18n import t
 
 
 def _simulate_auto_continue(agent_history: list, user_message: str) -> str:

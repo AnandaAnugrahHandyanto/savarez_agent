@@ -5,6 +5,7 @@ import sys
 import types
 
 import pytest
+from agent.i18n import t
 
 
 def _args(**overrides):

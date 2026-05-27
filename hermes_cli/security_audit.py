@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from hermes_constants import get_hermes_home
+from agent.i18n import t
 
 OSV_BATCH_URL = "https://api.osv.dev/v1/querybatch"
 OSV_VULN_URL = "https://api.osv.dev/v1/vulns/{vid}"

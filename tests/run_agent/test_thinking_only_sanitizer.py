@@ -12,6 +12,7 @@ backstory on why the alternative — fabricating "." stub text — was rejected.
 """
 
 from run_agent import AIAgent
+from agent.i18n import t
 
 
 # ---------------------------------------------------------------------------

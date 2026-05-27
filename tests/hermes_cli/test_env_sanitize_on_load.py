@@ -3,6 +3,7 @@
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
+from agent.i18n import t
 
 
 def test_load_env_sanitizes_concatenated_lines():

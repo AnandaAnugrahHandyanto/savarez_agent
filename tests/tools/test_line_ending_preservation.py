@@ -13,6 +13,7 @@ import os
 import tempfile
 
 import pytest
+from agent.i18n import t
 
 
 @pytest.fixture

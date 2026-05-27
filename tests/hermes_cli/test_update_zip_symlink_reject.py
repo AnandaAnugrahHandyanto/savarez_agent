@@ -15,6 +15,7 @@ import zipfile
 from unittest.mock import patch
 
 import pytest
+from agent.i18n import t
 
 
 def _build_zip_with_symlink_member(zip_path: str, link_name: str, target: str) -> None:

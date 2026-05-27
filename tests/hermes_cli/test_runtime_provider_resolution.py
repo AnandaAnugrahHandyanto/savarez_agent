@@ -1,6 +1,7 @@
 import pytest
 
 from hermes_cli import runtime_provider as rp
+from agent.i18n import t
 
 
 def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):

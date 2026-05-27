@@ -45,6 +45,7 @@ from typing import Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import profiles as profiles_mod
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 

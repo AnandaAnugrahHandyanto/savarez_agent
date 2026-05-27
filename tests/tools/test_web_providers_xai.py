@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from unittest.mock import MagicMock, patch
+from agent.i18n import t
 
 
 def _creds(api_key: str = "xai-test-key", base_url: str = "https://api.x.ai/v1") -> dict:

@@ -88,6 +88,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from toolsets import get_toolset_names
+from agent.i18n import t
 
 _log = logging.getLogger(__name__)
 

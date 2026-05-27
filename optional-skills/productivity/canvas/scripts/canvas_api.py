@@ -15,6 +15,7 @@ import os
 import sys
 
 import requests
+from agent.i18n import t
 
 CANVAS_API_TOKEN = os.environ.get("CANVAS_API_TOKEN", "")
 CANVAS_BASE_URL = os.environ.get("CANVAS_BASE_URL", "").rstrip("/")

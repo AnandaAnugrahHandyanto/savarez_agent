@@ -16,6 +16,7 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from agent.i18n import t
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GENERATOR = REPO_ROOT / "website" / "scripts" / "generate-skill-docs.py"

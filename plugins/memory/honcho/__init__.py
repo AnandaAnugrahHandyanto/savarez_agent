@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional
 from agent.memory_manager import sanitize_context
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
+from agent.i18n import t
 
 logger = logging.getLogger(__name__)
 
