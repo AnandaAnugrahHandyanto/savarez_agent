@@ -15,7 +15,7 @@ import { Toast } from "@/components/Toast";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useI18n } from "@/i18n";
+import { dashboardText, useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { cn, themedBody } from "@/lib/utils";
@@ -103,6 +103,7 @@ export default function CronPage() {
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
+  const td = dashboardText(t);
   const { setEnd } = usePageHeader();
 
   // New job modal state
@@ -140,7 +141,11 @@ export default function CronPage() {
 
   const handleCreate = async () => {
     if (!prompt.trim() || !schedule.trim()) {
-      showToast(`${t.cron.prompt} & ${t.cron.schedule} required`, "error");
+      showToast(
+        t.cron.promptScheduleRequired ??
+          `${t.cron.prompt} / ${t.cron.schedule}`,
+        "error",
+      );
       return;
     }
     setCreating(true);
@@ -289,7 +294,7 @@ export default function CronPage() {
               size="icon"
               onClick={() => setCreateModalOpen(false)}
               className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              aria-label={t.common.close}
             >
               <X />
             </Button>
@@ -305,7 +310,7 @@ export default function CronPage() {
 
             <div className="p-5 grid gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="cron-profile">Profile</Label>
+                <Label htmlFor="cron-profile">{td.cron.profile}</Label>
                 <Select
                   id="cron-profile"
                   value={createProfile}
@@ -405,13 +410,13 @@ export default function CronPage() {
           </H2>
 
           <div className="grid gap-1 min-w-[220px]">
-            <Label htmlFor="cron-profile-filter">Profile</Label>
+            <Label htmlFor="cron-profile-filter">{td.cron.profile}</Label>
             <Select
               id="cron-profile-filter"
               value={selectedProfile}
               onValueChange={(v) => setSelectedProfile(v)}
             >
-              <SelectOption value="all">All profiles</SelectOption>
+              <SelectOption value="all">{td.cron.allProfiles}</SelectOption>
               {profiles.map((profile) => (
                 <SelectOption key={profile.name} value={profile.name}>
                   {profileLabel(profile.name)}

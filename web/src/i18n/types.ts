@@ -227,6 +227,7 @@ export interface Translations {
     nameOptional: string;
     namePlaceholder: string;
     prompt: string;
+    promptScheduleRequired?: string;
     promptPlaceholder: string;
     schedule: string;
     schedulePlaceholder: string;
@@ -451,6 +452,126 @@ export interface Translations {
   theme: {
     title: string;
     switchTheme: string;
+  };
+
+  // ── Dashboard-specific UI not shared with CLI/TUI ──
+  dashboard?: {
+    auth: {
+      loggedInAs: string;
+      via: string;
+      logOut: string;
+      statusUnavailable: string;
+    };
+    chat: {
+      model: string;
+      switchModel: string;
+      reconnect: string;
+      tools: string;
+      noToolCallsYet: string;
+      states: {
+        idle: string;
+        connecting: string;
+        live: string;
+        closed: string;
+        error: string;
+      };
+    };
+    toolCall: {
+      running: string;
+      error: string;
+      done: string;
+      context: string;
+      streaming: string;
+      diff: string;
+      result: string;
+    };
+    modelPicker: {
+      close: string;
+      current: string;
+      unknown: string;
+      filterPlaceholder: string;
+      savesToConfig: string;
+      persistGlobally: string;
+      switchModel: string;
+      loading: string;
+      noMatches: string;
+      noAuthenticatedProviders: string;
+      modelsCount: string;
+      pickProvider: string;
+      noModelsMatch: string;
+      noModelsListed: string;
+      currentTag: string;
+      title: string;
+    };
+    models: {
+      modelSettings: string;
+      appliesToNewSessions: string;
+      mainModel: string;
+      auxiliaryTasks: string;
+      configure: string;
+      change: string;
+      setMainModel: string;
+      setAuxiliary: string;
+      resetAuxiliaryModels: string;
+      resetEveryAuxiliaryTask: string;
+      resetAll: string;
+      resetAllToAuto: string;
+      auxDescription: string;
+      autoUseMainModel: string;
+      providerDefault: string;
+      unset: string;
+      override: string;
+      overrides: string;
+      tasksAllAuto: string;
+      tasksAuto: string;
+      auxiliarySummaryWithOverrides: string;
+      useAs: string;
+      auxiliaryTask: string;
+      allAuxiliaryTasks: string;
+      current: string;
+      missingProviderModel: string;
+      tokenAnalyticsShort: string;
+      tokenAnalyticsHiddenTitle: string;
+      tokenAnalyticsHiddenP1: string;
+      tokenAnalyticsHiddenP2: string;
+      tokenAnalyticsHiddenP3: string;
+      configLink: string;
+      capabilityTools: string;
+      capabilityVision: string;
+      capabilityReasoning: string;
+      cacheRead: string;
+      auxTasks: Record<string, { label: string; hint: string }>;
+    };
+    modelInfo: {
+      loading: string;
+      contextWindow: string;
+      overrideAuto: string;
+      autoDetected: string;
+      maxOutput: string;
+      tools: string;
+      vision: string;
+      reasoning: string;
+    };
+    oauth: {
+      loadFailed: string;
+      disconnectFailed: string;
+      disconnected: string;
+      openDocs: string;
+      disconnectConfirmTitle: string;
+      disconnectConfirmDescription: string;
+      token: string;
+    };
+    analytics: {
+      hiddenTitle: string;
+      hiddenP1: string;
+      hiddenP2: string;
+      hiddenP3: string;
+      configLink: string;
+    };
+    cron: {
+      profile: string;
+      allProfiles: string;
+    };
   };
 
   // ── Achievements plugin (plugins/hermes-achievements) ──

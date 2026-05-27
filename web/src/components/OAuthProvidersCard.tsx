@@ -20,7 +20,7 @@ import {
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { OAuthLoginModal } from "@/components/OAuthLoginModal";
-import { useI18n } from "@/i18n";
+import { dashboardText, useI18n } from "@/i18n";
 
 interface Props {
   onError?: (msg: string) => void;
@@ -57,21 +57,29 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
   const [disconnectTarget, setDisconnectTarget] =
     useState<OAuthProvider | null>(null);
   const { t } = useI18n();
+  const td = dashboardText(t);
 
   const onErrorRef = useRef(onError);
-  onErrorRef.current = onError;
+
+  useEffect(() => {
+    onErrorRef.current = onError;
+  }, [onError]);
 
   const refresh = useCallback(() => {
     setLoading(true);
     api
       .getOAuthProviders()
       .then((resp) => setProviders(resp.providers))
-      .catch((e) => onErrorRef.current?.(`Failed to load providers: ${e}`))
+      .catch((e) =>
+        onErrorRef.current?.(
+          td.oauth.loadFailed.replace("{error}", String(e)),
+        ),
+      )
       .finally(() => setLoading(false));
-  }, []);
+  }, [td.oauth.loadFailed]);
 
   useEffect(() => {
-    refresh();
+    queueMicrotask(refresh);
   }, [refresh]);
 
   const handleDisconnect = async (provider: OAuthProvider) => {
@@ -79,10 +87,12 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
     setDisconnectTarget(null);
     try {
       await api.disconnectOAuthProvider(provider.id);
-      onSuccess?.(`${provider.name} ${t.oauth.disconnect.toLowerCase()}ed`);
+      onSuccess?.(
+        td.oauth.disconnected.replace("{provider}", provider.name),
+      );
       refresh();
     } catch (e) {
-      onError?.(`${t.oauth.disconnect} failed: ${e}`);
+      onError?.(td.oauth.disconnectFailed.replace("{error}", String(e)));
     } finally {
       setBusyId(null);
     }
@@ -175,7 +185,9 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                     </div>
                     {p.status.logged_in && p.status.token_preview && (
                       <span className="truncate text-xs font-mono-ui text-text-secondary">
-                        <span className="text-text-tertiary">token </span>
+                        <span className="text-text-tertiary">
+                          {td.oauth.token}{" "}
+                        </span>
                         {p.status.token_preview}
                         {p.status.source_label && (
                           <span className="text-text-tertiary">
@@ -220,7 +232,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex"
-                      title={`Open ${p.name} docs`}
+                      title={td.oauth.openDocs.replace("{provider}", p.name)}
                     >
                       <Button ghost size="icon">
                         <ExternalLink />
@@ -277,8 +289,14 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
         onConfirm={() => {
           if (disconnectTarget) void handleDisconnect(disconnectTarget);
         }}
-        title={`${t.oauth.disconnect} ${disconnectTarget?.name ?? ""}?`}
-        description={`This will remove the stored OAuth tokens for ${disconnectTarget?.name ?? "this provider"}. You will need to re-authenticate to use it again.`}
+        title={td.oauth.disconnectConfirmTitle.replace(
+          "{provider}",
+          disconnectTarget?.name ?? t.common.unknown,
+        )}
+        description={td.oauth.disconnectConfirmDescription.replace(
+          "{provider}",
+          disconnectTarget?.name ?? t.common.unknown,
+        )}
         destructive
         confirmLabel={t.oauth.disconnect}
       />

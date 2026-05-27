@@ -23,7 +23,7 @@ import { Stats } from "@nous-research/ui/ui/components/stats";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { usePageHeader } from "@/contexts/usePageHeader";
-import { useI18n } from "@/i18n";
+import { dashboardText, useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
 
 const PERIODS = [
@@ -403,6 +403,7 @@ export default function AnalyticsPage() {
   // they diverge from provider billing in ways that mislead users.
   const [showTokens, setShowTokens] = useState<boolean | null>(null);
   const { t } = useI18n();
+  const td = dashboardText(t);
   const { setAfterTitle, setEnd } = usePageHeader();
 
   useEffect(() => {
@@ -475,7 +476,7 @@ export default function AnalyticsPage() {
   }, [days, loading, load, setAfterTitle, setEnd, t.common.refresh, showTokens]);
 
   useEffect(() => {
-    load();
+    queueMicrotask(load);
   }, [load]);
 
   return (
@@ -487,32 +488,16 @@ export default function AnalyticsPage() {
           <CardContent className="py-12">
             <div className="mx-auto flex max-w-2xl flex-col gap-3 text-sm text-muted-foreground">
               <h2 className="font-mondwest text-display text-base tracking-wider text-foreground">
-                Token analytics hidden
+                {td.analytics.hiddenTitle}
               </h2>
               <p>
-                The token, cost, and per-day analytics on this page are a
-                local debug estimate. They only count successful main-agent
-                responses with a usable <span className="font-mono">usage</span>{" "}
-                block, and silently exclude auxiliary calls (context
-                compression, title generation, vision, session search, web
-                extract, smart approvals, MCP routing, plugin LLM access)
-                plus provider-side retries and fallback attempts. Cache
-                writes are missing entirely.
+                {td.analytics.hiddenP1}
               </p>
               <p>
-                On models with heavy auxiliary traffic (Kimi K2.6, MiniMax
-                M2.7) the local total can be 10x–100x lower than what your
-                provider bills. Hiding these numbers is safer than letting
-                them look authoritative.
+                {td.analytics.hiddenP2}
               </p>
               <p>
-                Check your provider dashboard (OpenRouter, Anthropic, etc.)
-                for actual usage and billing. To re-enable the local debug
-                estimate anyway, set{" "}
-                <span className="font-mono">
-                  dashboard.show_token_analytics: true
-                </span>{" "}
-                in <a href="/config" className="underline">Config</a>.
+                {td.analytics.hiddenP3}
               </p>
             </div>
           </CardContent>

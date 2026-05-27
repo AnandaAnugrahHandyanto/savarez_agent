@@ -9,6 +9,7 @@ import { Check, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn, themedBody } from "@/lib/utils";
+import { dashboardText, useI18n } from "@/i18n";
 
 /**
  * Two-stage model picker modal.
@@ -67,6 +68,8 @@ interface Props {
 }
 
 export function ModelPickerDialog(props: Props) {
+  const { t } = useI18n();
+  const td = dashboardText(t);
   const {
     gw,
     sessionId,
@@ -74,7 +77,7 @@ export function ModelPickerDialog(props: Props) {
     loader,
     onApply,
     onClose,
-    title = "Switch Model",
+    title = td.modelPicker.title,
     alwaysGlobal = false,
   } = props;
   const standalone = !!loader && !!onApply;
@@ -219,7 +222,7 @@ export function ModelPickerDialog(props: Props) {
           size="icon"
           onClick={onClose}
           className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-          aria-label="Close"
+          aria-label={td.modelPicker.close}
         >
           <X />
         </Button>
@@ -232,7 +235,7 @@ export function ModelPickerDialog(props: Props) {
             {title}
           </h2>
           <p className="text-xs text-muted-foreground mt-1 font-mono">
-            current: {currentModel || "(unknown)"}
+            {td.modelPicker.current}: {currentModel || td.modelPicker.unknown}
             {currentProviderSlug && ` · ${currentProviderSlug}`}
           </p>
         </header>
@@ -242,7 +245,7 @@ export function ModelPickerDialog(props: Props) {
             <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
             <Input
               autoFocus
-              placeholder="Filter providers and models…"
+              placeholder={td.modelPicker.filterPlaceholder}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               className="pl-7 h-8 text-sm"
@@ -262,6 +265,7 @@ export function ModelPickerDialog(props: Props) {
               setSelectedSlug(slug);
               setSelectedModel("");
             }}
+            strings={td.modelPicker}
           />
 
           <ModelColumn
@@ -277,13 +281,14 @@ export function ModelPickerDialog(props: Props) {
               // Confirm on next tick so state settles.
               window.setTimeout(confirm, 0);
             }}
+            strings={td.modelPicker}
           />
         </div>
 
         <footer className="border-t border-border p-3 flex items-center justify-between gap-3 flex-wrap">
           {alwaysGlobal ? (
             <span className="text-xs text-muted-foreground">
-              Saves to config.yaml — applies to new sessions.
+              {td.modelPicker.savesToConfig}
             </span>
           ) : (
             <div className="flex items-center gap-2">
@@ -299,17 +304,17 @@ export function ModelPickerDialog(props: Props) {
                 className="font-mondwest normal-case tracking-normal text-xs text-muted-foreground cursor-pointer"
                 htmlFor="model-picker-persist-global"
               >
-                Persist globally (otherwise this session only)
+                {td.modelPicker.persistGlobally}
               </Label>
             </div>
           )}
 
           <div className="flex items-center gap-2 ml-auto">
             <Button outlined onClick={onClose} disabled={applying}>
-              Cancel
+              {t.common.cancel}
             </Button>
             <Button onClick={confirm} disabled={!canConfirm}>
-              {applying ? <Spinner /> : "Switch"}
+              {applying ? <Spinner /> : td.modelPicker.switchModel}
             </Button>
           </div>
         </footer>
@@ -331,6 +336,7 @@ function ProviderColumn({
   selectedSlug,
   query,
   onSelect,
+  strings,
 }: {
   loading: boolean;
   error: string | null;
@@ -339,12 +345,13 @@ function ProviderColumn({
   selectedSlug: string;
   query: string;
   onSelect(slug: string): void;
+  strings: NonNullable<ReturnType<typeof dashboardText>["modelPicker"]>;
 }) {
   return (
     <div className="border-r border-border overflow-y-auto">
       {loading && (
         <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground">
-          <Spinner className="text-xs" /> loading…
+          <Spinner className="text-xs" /> {strings.loading}
         </div>
       )}
 
@@ -353,10 +360,10 @@ function ProviderColumn({
       {!loading && !error && providers.length === 0 && (
         <div className="p-4 text-xs text-muted-foreground italic">
           {query
-            ? "no matches"
+            ? strings.noMatches
             : total === 0
-              ? "no authenticated providers"
-              : "no matches"}
+              ? strings.noAuthenticatedProviders
+              : strings.noMatches}
         </div>
       )}
 
@@ -374,10 +381,13 @@ function ProviderColumn({
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-1.5">
                 <span className="font-medium truncate">{p.name}</span>
-                {p.is_current && <CurrentTag />}
+                {p.is_current && <CurrentTag label={strings.currentTag} />}
               </div>
               <div className="text-xs text-text-secondary font-mono truncate">
-                {p.slug} · {p.total_models ?? p.models?.length ?? 0} models
+                {p.slug} · {strings.modelsCount.replace(
+                  "{count}",
+                  String(p.total_models ?? p.models?.length ?? 0),
+                )}
               </div>
             </div>
           </ListItem>
@@ -400,6 +410,7 @@ function ModelColumn({
   currentProviderSlug,
   onSelect,
   onConfirm,
+  strings,
 }: {
   provider: ModelOptionProvider | null;
   models: string[];
@@ -409,12 +420,13 @@ function ModelColumn({
   currentProviderSlug: string;
   onSelect(model: string): void;
   onConfirm(model: string): void;
+  strings: NonNullable<ReturnType<typeof dashboardText>["modelPicker"]>;
 }) {
   if (!provider) {
     return (
       <div className="overflow-y-auto">
         <div className="p-4 text-xs text-muted-foreground italic">
-          pick a provider →
+          {strings.pickProvider}
         </div>
       </div>
     );
@@ -431,8 +443,8 @@ function ModelColumn({
       {models.length === 0 ? (
         <div className="p-4 text-xs text-muted-foreground italic">
           {allModels.length
-            ? "no models match your filter"
-            : "no models listed for this provider"}
+            ? strings.noModelsMatch
+            : strings.noModelsListed}
         </div>
       ) : (
         models.map((m) => {
@@ -452,7 +464,7 @@ function ModelColumn({
                 className={`h-3 w-3 shrink-0 ${active ? "text-primary" : "text-transparent"}`}
               />
               <span className="flex-1 truncate">{m}</span>
-              {isCurrent && <CurrentTag />}
+              {isCurrent && <CurrentTag label={strings.currentTag} />}
             </ListItem>
           );
         })
@@ -461,10 +473,10 @@ function ModelColumn({
   );
 }
 
-function CurrentTag() {
+function CurrentTag({ label }: { label: string }) {
   return (
     <span className="text-display text-xs tracking-wider text-primary shrink-0">
-      current
+      {label}
     </span>
   );
 }
