@@ -1042,6 +1042,25 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             agent._transport_cache.clear()
         agent._fallback_activated = True
 
+        # Local patch (issue #33088, applied 2026-05-27):
+        # Realign the in-memory credential pool to the fallback provider so
+        # later rotations don't mark the *primary's* credentials exhausted
+        # from a *fallback's* 401/429, and so we don't swap a primary-provider
+        # OAuth (e.g. ``sk-ant-...``) into a fallback-provider client (e.g.
+        # openai-codex). If the fallback provider has no pool configured,
+        # clear ``_credential_pool`` outright — that is safer than leaving
+        # the stale primary pool attached.
+        try:
+            from agent.credential_pool import load_pool as _load_pool
+            _fb_pool = _load_pool(fb_provider)
+            agent._credential_pool = _fb_pool if _fb_pool.has_credentials() else None
+        except Exception as _pool_err:
+            logger.warning(
+                "Could not realign credential pool to fallback provider %s: %s",
+                fb_provider, _pool_err,
+            )
+            agent._credential_pool = None
+
         # Honor per-provider / per-model request_timeout_seconds for the
         # fallback target (same knob the primary client uses).  None = use
         # SDK default.

@@ -560,6 +560,23 @@ def recover_with_credential_pool(
     if pool is None:
         return False, has_retried_429
 
+    # Local patch (issue #33088, applied 2026-05-27):
+    # Defense in depth: if the in-memory pool's provider has somehow drifted
+    # from the agent's current provider (e.g. fallback didn't realign the
+    # pool), refuse to mutate the pool with a foreign provider's error.
+    # Without this, a 401/429 from the fallback provider would mark *primary*
+    # credentials exhausted, and ``_swap_credential`` would then write a
+    # primary-provider OAuth into a fallback-provider client.
+    _pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
+    _current_provider = (getattr(agent, "provider", "") or "").strip().lower()
+    if _pool_provider and _current_provider and _pool_provider != _current_provider:
+        _ra().logger.warning(
+            "Credential pool provider %s != agent provider %s — "
+            "skipping pool mutation to avoid cross-provider contamination",
+            _pool_provider, _current_provider,
+        )
+        return False, has_retried_429
+
     effective_reason = classified_reason
     if effective_reason is None:
         if status_code == 402:
