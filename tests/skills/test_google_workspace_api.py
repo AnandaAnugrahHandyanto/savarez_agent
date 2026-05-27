@@ -428,9 +428,9 @@ def test_api_gmail_draft_list_tolerates_enrichment_failure(api_module, monkeypat
     }]
 
 
-def test_api_gmail_send_still_builds_raw_after_refactor(api_module):
-    """Regression guard: gmail_send still builds a valid raw MIME via the
-    shared _build_message_raw helper extracted during the draft work."""
+def test_api_gmail_send_includes_headers_in_raw_mime(api_module):
+    """gmail send builds the messages.send body from a base64url raw MIME that
+    carries the recipient and subject headers."""
     captured = {}
 
     def capture_run(cmd, **kwargs):
@@ -448,8 +448,9 @@ def test_api_gmail_send_still_builds_raw_after_refactor(api_module):
     cmd = captured["cmd"]
     assert "messages" in cmd
     assert "send" in cmd
-    body = json.loads(cmd[cmd.index("--json") + 1])
-    assert "user@example.com" in _decode_raw(body["raw"])
+    decoded = _decode_raw(json.loads(cmd[cmd.index("--json") + 1])["raw"])
+    assert "user@example.com" in decoded
+    assert "Hi" in decoded
 
 
 def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, monkeypatch):
