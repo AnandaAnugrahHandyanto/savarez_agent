@@ -113,3 +113,21 @@ class TestLintWorkflow:
             pytest.fail(f"lint.yml is not valid YAML: {exc}")
         assert isinstance(parsed, dict)
         assert "jobs" in parsed
+
+class TestToolsLintRegression:
+    """Guards against new lint violations in tools/."""
+
+    def test_tools_delegate_tool_has_zero_f541_violations(self):
+        """tools/delegate_tool.py must have zero F541 violations."""
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F541",
+             "--output-format=concise", "tools/delegate_tool.py"],
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
+        )
+
+        assert result.returncode == 0, (
+            f"tools/delegate_tool.py has F541 violation(s):\n{result.stdout}"
+        )
