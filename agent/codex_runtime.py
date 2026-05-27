@@ -26,6 +26,36 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _codex_partial_response_from_stream(
+    agent,
+    *,
+    collected_output_items: list,
+    has_tool_calls: bool,
+) -> Any:
+    """Build a minimal response from items/text already observed on a stream."""
+    if collected_output_items:
+        return SimpleNamespace(
+            output=list(collected_output_items),
+            status="completed",
+            model=getattr(agent, "model", None),
+        )
+    if agent._codex_streamed_text_parts and not has_tool_calls:
+        assembled = "".join(agent._codex_streamed_text_parts)
+        return SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    role="assistant",
+                    status="completed",
+                    content=[SimpleNamespace(type="output_text", text=assembled)],
+                )
+            ],
+            status="completed",
+            model=getattr(agent, "model", None),
+        )
+    return None
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -271,6 +301,24 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                             len(agent._codex_streamed_text_parts), len(assembled),
                         )
                 return final_response
+        except TypeError as exc:
+            err_text = str(exc)
+            if "'NoneType' object is not iterable" in err_text:
+                partial_response = _codex_partial_response_from_stream(
+                    agent,
+                    collected_output_items=collected_output_items,
+                    has_tool_calls=has_tool_calls,
+                )
+                if partial_response is not None:
+                    logger.warning(
+                        "Codex Responses stream parser received terminal response with output=None; "
+                        "recovered from %d collected item(s), streamed_chars=%d. %s",
+                        len(collected_output_items),
+                        sum(len(p) for p in agent._codex_streamed_text_parts),
+                        agent._client_log_context(),
+                    )
+                    return partial_response
+            raise
         except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
             if attempt < max_stream_retries:
                 logger.debug(
