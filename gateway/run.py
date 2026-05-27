@@ -66,6 +66,49 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_SIDEQUEST_COMPACT_SLASH_RE = re.compile(r"^/(sq|sidequest)(\d+)(?:@[^\s]+)?(?:\s+(.*))?$", re.IGNORECASE)
+_SIDEQUEST_HASHTAG_RE = re.compile(r"^#sq(\d+)\b(?:\s+(.*))?$", re.IGNORECASE)
+_SIDEQUEST_BARE_RE = re.compile(r"^sq(\d+)\b(?:\s+(.*))?$", re.IGNORECASE)
+
+
+def _normalize_sidequest_shortcut_text(text: str) -> str:
+    """Expand compact sidequest shorthands to the canonical /sq form.
+
+    Keep the rewrite intentionally narrow: only a message-leading `sq<digits>`,
+    `/sq<digits>`, `/sidequest<digits>`, or `#sq<digits>` with a word boundary
+    is rewritten, so paths, hashtags like `#sqlite`, and commands like `/sqldb`
+    keep their normal meaning. Bare `sq<digits>` is a resume shortcut, not a
+    status shortcut.
+    """
+    raw = text or ""
+    stripped = raw.strip()
+    if not stripped:
+        return raw
+    match = _SIDEQUEST_COMPACT_SLASH_RE.match(stripped)
+    if not match:
+        match = _SIDEQUEST_HASHTAG_RE.match(stripped)
+    if not match:
+        match = _SIDEQUEST_BARE_RE.match(stripped)
+    if not match:
+        return raw
+    if stripped.startswith("/"):
+        alias = match.group(2)
+        rest = match.group(3)
+    else:
+        alias = match.group(1)
+        rest = match.group(2)
+        if not rest and stripped.lower().startswith("sq"):
+            rest = "resume"
+    return f"/sq {alias}" + (f" {rest.strip()}" if rest and rest.strip() else "")
+
+
+def _normalize_sidequest_shortcut_event(event: "MessageEvent") -> "MessageEvent":
+    if event.message_type != MessageType.TEXT:
+        return event
+    normalized = _normalize_sidequest_shortcut_text(event.text)
+    if normalized == event.text:
+        return event
+    return dataclasses.replace(event, text=normalized)
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
@@ -6816,6 +6859,9 @@ class GatewayRunner:
                     break
                 if _action == "allow":
                     break
+
+        event = _normalize_sidequest_shortcut_event(event)
+        source = event.source
 
         if is_internal:
             pass
