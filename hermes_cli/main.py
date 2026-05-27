@@ -1632,6 +1632,22 @@ def cmd_chat(args):
     """Run interactive chat CLI."""
     use_tui = getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1"
 
+    # Catch the common single-dash typo: `hermes -tui` is parsed by argparse as
+    # `-t ui` (toolsets="ui", tui=False), which silently loads zero tools
+    # because "ui" is not a valid toolset name.  Only trigger when the toolsets
+    # value is exactly "ui" and the TUI flag was not set by any other means.
+    _raw_toolsets = getattr(args, "toolsets", None)
+    if _raw_toolsets and not use_tui:
+        _ts_items = [t.strip() for t in str(_raw_toolsets).split(",") if t.strip()]
+        if _ts_items == ["ui"]:
+            sys.stderr.write(
+                "\033[1;31mError:\033[0m '-tui' was interpreted as '-t ui' by the "
+                "argument parser.  The -t flag is --toolsets; there is no toolset "
+                "named 'ui'.\n"
+                "To launch the TUI, use double-dash:  \033[1mhermes --tui\033[0m\n"
+            )
+            sys.exit(2)
+
     # Resolve --continue into --resume with the latest session or by name
     continue_val = getattr(args, "continue_last", None)
     if continue_val and not getattr(args, "resume", None):
