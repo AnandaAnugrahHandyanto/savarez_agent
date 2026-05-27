@@ -772,7 +772,17 @@ class TestMemoryContextFencing:
         assert result.startswith("<memory-context>")
         assert result.rstrip().endswith("</memory-context>")
         assert "NOT new user input" in result
+        assert "advisory historical context" in result
+        assert "verify current status" in result
         assert "user likes dark mode" in result
+
+
+    def test_build_memory_context_block_does_not_mark_memory_as_live_truth(self):
+        from agent.memory_manager import build_memory_context_block
+        block = build_memory_context_block("health was green on 2026-05-26")
+        assert "authoritative reference data" not in block
+        assert "not live operational truth" in block
+        assert "verify current status" in block
 
     def test_build_memory_context_block_empty_input(self):
         from agent.memory_manager import build_memory_context_block

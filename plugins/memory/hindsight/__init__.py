@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 
 from datetime import datetime, timezone
@@ -59,6 +60,7 @@ _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # unique document_id fallback for older APIs.
 _MIN_VERSION_FOR_UPDATE_MODE_APPEND = "0.5.0"
 _VALID_BUDGETS = {"low", "mid", "high"}
+_DEFAULT_RECALL_MAX_RESULTS = 8
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5",
@@ -381,6 +383,81 @@ def _utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+_TASK_LOG_PATTERNS = [
+    re.compile(r"\bjob\s+id\b", re.IGNORECASE),
+    re.compile(r"\bPR\s*#\s*\d+\b", re.IGNORECASE),
+    re.compile(r"\bcommit\s+SHA\b", re.IGNORECASE),
+    re.compile(r"\blast\s+run\b.*\b(?:ok|error|failed|green|red)\b", re.IGNORECASE | re.DOTALL),
+    re.compile(r"\breminder\s+set\b", re.IGNORECASE),
+    re.compile(r"\bhealth\s+was\s+(?:green|red|healthy|unhealthy)\b", re.IGNORECASE),
+    re.compile(r"\bassistant\s+updated\b", re.IGNORECASE),
+    re.compile(r"\bno\s+memory\s+update\s+was\s+required\b", re.IGNORECASE),
+]
+_STABLE_MEMORY_CUES = re.compile(
+    r"\b(?:prefers?|preference|always|never|canonical|stable|durable|workflow|convention|rule|remember|likes?|wants?|use\s+.+\s+for)\b",
+    re.IGNORECASE,
+)
+_VOLATILE_STATUS_RE = re.compile(
+    r"\b(?:health\s+was\s+(?:green|red|healthy|unhealthy)|last\s+run\b.*\b(?:ok|error|failed|green|red)|job\s+id\b|PR\s*#\s*\d+)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_WHITESPACE_RE = re.compile(r"\s+")
+_HEX_SHA_RE = re.compile(r"\b[0-9a-f]{7,40}\b", re.IGNORECASE)
+_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}(?:[T ][0-9:.+-Z]+)?\b")
+
+
+def _canonicalize_memory_text(text: str) -> str:
+    """Normalize memory text for duplicate suppression, not display."""
+    normalized = _WHITESPACE_RE.sub(" ", str(text or "").strip().lower())
+    normalized = _HEX_SHA_RE.sub("<sha>", normalized)
+    normalized = _DATE_RE.sub("<date>", normalized)
+    normalized = normalized.replace("better complete answers", "better answers")
+    normalized = normalized.replace("better answer quality", "better answers")
+    normalized = normalized.replace("better reasoning/synthesis", "better reasoning and synthesis")
+    return normalized
+
+
+def _memory_similarity_key(text: str) -> str:
+    """Return a coarse key that collapses repeated variants of one durable fact."""
+    canonical = _canonicalize_memory_text(text)
+    if "qwen3" in canonical and "14b" in canonical:
+        return "model:qwen3-14b-quality"
+    return canonical
+
+
+def _is_task_log_memory(text: str) -> bool:
+    """True for obvious temporary task/status facts that should not become durable memory."""
+    compact = _WHITESPACE_RE.sub(" ", str(text or "").strip())
+    if not compact:
+        return True
+    if _STABLE_MEMORY_CUES.search(compact):
+        return False
+    return any(pattern.search(compact) for pattern in _TASK_LOG_PATTERNS)
+
+
+def _is_stale_operational_status(text: str) -> bool:
+    """True when a recalled item is historical operational state, not live truth."""
+    return bool(_VOLATILE_STATUS_RE.search(str(text or "")))
+
+
+def _dedupe_memory_lines(lines: List[str], *, limit: int | None = None) -> List[str]:
+    """Preserve order while removing exact and near-duplicate memory lines."""
+    deduped: List[str] = []
+    seen: set[str] = set()
+    for line in lines:
+        text = str(line or "").strip()
+        if not text:
+            continue
+        key = _memory_similarity_key(text)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(text)
+        if limit is not None and len(deduped) >= limit:
+            break
+    return deduped
+
+
 def _embedded_profile_name(config: dict[str, Any]) -> str:
     """Return the Hindsight embedded profile name for this Hermes config."""
     profile = config.get("profile", "hermes")
@@ -579,6 +656,7 @@ class HindsightMemoryProvider(MemoryProvider):
         # Recall controls
         self._auto_recall = True
         self._recall_max_tokens = 4096
+        self._recall_max_results = _DEFAULT_RECALL_MAX_RESULTS
         self._recall_types: list[str] | None = None
         self._recall_prompt_preamble = ""
         self._recall_max_input_chars = 800
@@ -862,6 +940,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "retain_async","description": "Process retain asynchronously on the Hindsight server", "default": True},
             {"key": "retain_context", "description": "Context label for retained memories", "default": "conversation between Hermes Agent and the User"},
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
+            {"key": "recall_max_results", "description": "Maximum recalled memory bullets injected into context", "default": _DEFAULT_RECALL_MAX_RESULTS},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
@@ -1187,6 +1266,7 @@ class HindsightMemoryProvider(MemoryProvider):
         # Recall controls
         self._auto_recall = self._config.get("auto_recall", True)
         self._recall_max_tokens = int(self._config.get("recall_max_tokens", 4096))
+        self._recall_max_results = max(1, int(self._config.get("recall_max_results", _DEFAULT_RECALL_MAX_RESULTS)))
         self._recall_types = self._config.get("recall_types") or None
         self._recall_prompt_preamble = self._config.get("recall_prompt_preamble", "")
         self._recall_max_input_chars = int(self._config.get("recall_max_input_chars", 800))
@@ -1278,6 +1358,19 @@ class HindsightMemoryProvider(MemoryProvider):
             f"hindsight_retain to store facts."
         )
 
+    def _format_recall_results(self, results: Any, *, numbered: bool = False) -> str:
+        """Format recall results for prompt/tool use with hygiene and dedupe."""
+        raw_lines = []
+        for result in results or []:
+            text = getattr(result, "text", "")
+            if not text or _is_stale_operational_status(text):
+                continue
+            raw_lines.append(str(text).strip())
+        lines = _dedupe_memory_lines(raw_lines, limit=self._recall_max_results)
+        if numbered:
+            return "\n".join(f"{i}. {line}" for i, line in enumerate(lines, 1))
+        return "\n".join(f"- {line}" for line in lines)
+
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             logger.debug("Prefetch: waiting for background thread to complete")
@@ -1290,9 +1383,9 @@ class HindsightMemoryProvider(MemoryProvider):
             return ""
         logger.debug("Prefetch: returning %d chars of context", len(result))
         header = self._recall_prompt_preamble or (
-            "# Hindsight Memory (persistent cross-session context)\n"
-            "Use this to answer questions about the user and prior sessions. "
-            "Do not call tools to look up information that is already present here."
+            "# Hindsight Memory (advisory historical context)\n"
+            "Use this as potentially relevant background about the user and prior sessions. "
+            "Do not treat recalled operational status as live truth; verify current state with tools or source-of-truth systems."
         )
         return f"{header}\n\n{result}"
 
@@ -1331,7 +1424,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
                     num_results = len(resp.results) if resp.results else 0
                     logger.debug("Prefetch: recall returned %d results", num_results)
-                    text = "\n".join(f"- {r.text}" for r in resp.results if r.text) if resp.results else ""
+                    text = self._format_recall_results(resp.results) if resp.results else ""
                 if text:
                     with self._prefetch_lock:
                         self._prefetch_result = text
@@ -1431,6 +1524,11 @@ class HindsightMemoryProvider(MemoryProvider):
         if session_id:
             self._session_id = str(session_id).strip()
 
+        combined_turn = f"{user_content}\n{assistant_content}"
+        if _is_task_log_memory(combined_turn):
+            logger.debug("sync_turn: skipped non-durable task/status memory")
+            return
+
         turn = json.dumps(self._build_turn_messages(user_content, assistant_content), ensure_ascii=False)
         self._session_turns.append(turn)
         self._turn_counter += 1
@@ -1500,6 +1598,8 @@ class HindsightMemoryProvider(MemoryProvider):
             content = args.get("content", "")
             if not content:
                 return tool_error("Missing required parameter: content")
+            if _is_task_log_memory(content):
+                return json.dumps({"result": "Skipped non-durable task/status memory."})
             context = args.get("context")
             try:
                 retain_kwargs = self._build_retain_kwargs(
@@ -1537,8 +1637,10 @@ class HindsightMemoryProvider(MemoryProvider):
                 logger.debug("Tool hindsight_recall: %d results", num_results)
                 if not resp.results:
                     return json.dumps({"result": "No relevant memories found."})
-                lines = [f"{i}. {r.text}" for i, r in enumerate(resp.results, 1)]
-                return json.dumps({"result": "\n".join(lines)})
+                formatted = self._format_recall_results(resp.results, numbered=True)
+                if not formatted:
+                    return json.dumps({"result": "No durable relevant memories found."})
+                return json.dumps({"result": formatted})
             except Exception as e:
                 logger.warning("hindsight_recall failed: %s", e, exc_info=True)
                 return tool_error(f"Failed to search memory: {e}")
