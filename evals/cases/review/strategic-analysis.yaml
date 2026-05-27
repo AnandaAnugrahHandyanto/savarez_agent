@@ -1,0 +1,60 @@
+case_id: review.strategic-analysis
+suite: review
+task_type: analysis
+title: Strategic investment analysis with structured reasoning and evidence
+prompt: >
+  Analyze NVIDIA (NVDA) as an investment for the next 12 months. Cover:
+  - Competitive position in AI chips and data center revenue
+  - Key risks (geopolitical, demand cyclicality, competition)
+  - Current valuation vs historical and peer multiples
+  - Catalysts on the horizon (product cycles, new markets)
+  - Decision recommendation with rationale
+
+  Keep the analysis decision-ready, evidence-driven, and structured.
+context: >
+  Write a formal analysis memo. Every claim must be grounded in data or
+  explicitly labeled as speculation. Structure with clear sections.
+  End with a specific recommendation (buy/hold/sell) with conviction level.
+tags: [analysis, investment, structured, evidence-driven]
+enabled_toolsets: [web]
+expected_tools: [web_search]
+forbidden_tools: []
+assertions:
+  - kind: non_empty_output
+    weight: 1.0
+    required: true
+  - kind: no_placeholder_language
+    weight: 1.0
+    required: true
+  - kind: required_regex
+    params: {pattern: (NVIDIA|NVDA), ignore_case: true}
+    weight: 1.0
+    required: true
+  - kind: required_regex
+    params: {pattern: (recommendation|buy|hold|sell|conviction), ignore_case: true}
+    weight: 1.5
+    required: true
+  - kind: required_regex
+    params: {pattern: (risk|catalyst|competitive|valuation), ignore_case: true}
+    weight: 1.0
+    required: false
+  - kind: forbidden_regex
+    params:
+      pattern: \b(?:I'm not a financial advisor|you should consult|I cannot provide)\b
+      ignore_case: true
+    weight: 2.0
+    required: true
+judge_dimensions:
+  - name: factual_grounding
+    description: Are claims supported by data, references, or specific evidence rather than generic assertions?
+    pass_threshold: 4
+  - name: reasoning_depth
+    description: Does the analysis connect causes to effects (e.g. new product -> revenue impact -> margins)?
+    pass_threshold: 4
+  - name: decision_usefulness
+    description: Does the analysis end with a clear, specific, actionable recommendation?
+    pass_threshold: 4
+notes: >
+  Tests that the agent produces substantive analysis without deflecting
+  on financial advice grounds. Judge scoring evaluates the quality of
+  reasoning that deterministic checks alone cannot capture.

@@ -1,0 +1,70 @@
+case_id: review.pr-code-quality
+suite: review
+task_type: review
+title: PR code review identifies specific findings with actionable recommendations
+prompt: >
+  Review this code for issues:
+
+  ```python
+  def get_user(user_id, db):
+      query = "SELECT * FROM users WHERE id = " + user_id
+      result = db.execute(query)
+      if result:
+          return {"id": result[0], "name": result[1], "email": result[2]}
+      return None
+
+  def update_email(user_id, new_email):
+      db = get_db()
+      db.execute(f"UPDATE users SET email = '{new_email}' WHERE id = {user_id}")
+      db.commit()
+      return True
+
+  def delete_user(user_id):
+      db = get_db()
+      db.execute(f"DELETE FROM users WHERE id = {user_id}")
+  ```
+
+  Identify all issues with code quality, security, error handling, and best
+  practices. For each finding, explain why it matters and suggest a fix.
+context: >
+  Produce a structured code review with specific findings (at least 3),
+  severity levels, and actionable recommendations. Be specific — not
+  "improve security" but "line 3: SQL injection via string concatenation".
+tags: [review, code-quality, security, structured]
+enabled_toolsets: [terminal]
+expected_tools: []
+forbidden_tools: []
+assertions:
+  - kind: non_empty_output
+    weight: 1.0
+    required: true
+  - kind: no_placeholder_language
+    weight: 1.0
+    required: true
+  - kind: required_regex
+    params: {pattern: (SQL injection|SQLi|string concatenation|parameterized), ignore_case: true}
+    weight: 2.0
+    required: true
+  - kind: forbidden_regex
+    params: {pattern: "I'm unable|I cannot review", ignore_case: true}
+    weight: 1.5
+    required: true
+  - kind: required_regex
+    params: {pattern: (finding|issue|vulnerability|problem|recommend|fix), ignore_case: true}
+    weight: 1.5
+    required: false
+judge_dimensions:
+  - name: finding_specificity
+    description: Are findings specific (file, line, exact issue) rather than vague?
+    pass_threshold: 4
+  - name: actionability
+    description: Does each finding include a concrete fix or remediation?
+    pass_threshold: 4
+  - name: prioritization
+    description: Are findings ordered or flagged by severity/impact?
+    pass_threshold: 3
+notes: >
+  Classic code review eval with SQL injection as the anchor issue. The
+  deterministic assertions catch the basic requirement (SQL injection
+  must be mentioned). Judge dimensions evaluate the quality dimensions
+  that can't be hard-coded.

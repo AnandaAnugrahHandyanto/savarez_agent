@@ -1,0 +1,30 @@
+version: 1
+rubric_id: review.seed
+suite: review
+purpose: Shared seed rubric for review and analysis-quality cases.
+status: informational-until-loader-support
+notes: >
+  External rubric loading is not wired into evals/loader.py yet. These rubric
+  files document the intended shared judge dimensions while cases continue to
+  embed inline judge_dimensions for executable coverage.
+dimensions:
+  - name: factual_grounding
+    description: Are findings or claims tied to concrete evidence rather than generic assertions?
+    scale_min: 1
+    scale_max: 5
+    pass_threshold: 4
+  - name: finding_specificity
+    description: Are findings specific enough that a reviewer could act on them immediately?
+    scale_min: 1
+    scale_max: 5
+    pass_threshold: 4
+  - name: actionability
+    description: Does the response provide concrete next steps, fixes, or rewrites instead of vague advice?
+    scale_min: 1
+    scale_max: 5
+    pass_threshold: 4
+applies_to_cases:
+  - review.pr-code-quality
+  - review.strategic-analysis
+  - review.decision-memo
+  - review.briefing-factuality-review

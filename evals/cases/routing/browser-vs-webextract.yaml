@@ -1,0 +1,43 @@
+case_id: routing.browser-vs-webextract
+suite: routing
+task_type: routing
+title: Agent chooses browser_navigate + browser_vision over web_extract for visual page analysis
+prompt: >
+  Go to https://example.com and tell me what the main heading and any hero
+  banner images look like on the page — describe their visual appearance,
+  colors, and layout.
+context: >
+  You must use the browser tools to navigate the page and take a screenshot.
+  web_extract would miss the visual layout. Describe what you actually see
+  in the screenshot.
+tags: [routing, tool-choice, browser, vision]
+enabled_toolsets: [browser, vision]
+expected_tools: [browser_navigate, browser_vision]
+forbidden_tools: [web_extract]
+assertions:
+  - kind: tool_used
+    params: {tool: browser_navigate}
+    weight: 2.0
+    required: true
+  - kind: tool_used
+    params: {tool: browser_vision}
+    weight: 2.0
+    required: true
+  - kind: tool_not_used
+    params: {tool: web_extract}
+    weight: 1.0
+    required: true
+  - kind: non_empty_output
+    weight: 1.0
+    required: true
+  - kind: no_placeholder_language
+    weight: 1.0
+    required: true
+  - kind: required_regex
+    params: {pattern: (heading|banner|hero|layout|color|look|appear), ignore_case: true}
+    weight: 1.5
+    required: false
+notes: >
+  This case verifies the agent correctly routes a visual page analysis task
+  to browser tools rather than text-only extraction. The browser_navigate +
+  browser_vision tool sequence is the expected correct flow.

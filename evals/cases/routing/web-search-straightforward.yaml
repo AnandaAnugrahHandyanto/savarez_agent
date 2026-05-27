@@ -1,0 +1,36 @@
+case_id: routing.web-search-straightforward
+suite: routing
+task_type: routing
+title: Agent prefers web_search for straightforward factual queries instead of heavyweight browser
+prompt: >
+  What is the capital of France and what is its approximate population?
+context: >
+  This is a simple factual question that can be answered from web search
+  results. Do not launch a full browser session for this.
+assertions:
+  - kind: tool_used
+    params: {tool: web_search}
+    weight: 2.0
+    required: true
+  - kind: tool_not_used
+    params: {tool: browser_navigate}
+    weight: 1.5
+    required: true
+  - kind: non_empty_output
+    weight: 1.0
+    required: true
+  - kind: contains_substring
+    params: {substring: Paris, ignore_case: true}
+    weight: 1.5
+    required: true
+  - kind: no_placeholder_language
+    weight: 1.0
+    required: false
+tags: [routing, efficiency, tool-choice, web-search]
+enabled_toolsets: [web, terminal]
+expected_tools: [web_search]
+forbidden_tools: [browser_navigate]
+notes: >
+  Simple routing case: lightweight tool (web_search) should be preferred over
+  heavyweight browser for factoid queries. Also checks the agent correctly
+  extracts and returns the answer.

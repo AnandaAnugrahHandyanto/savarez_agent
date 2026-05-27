@@ -1,0 +1,37 @@
+defaults:
+  provider: fixture
+  model: fixture-smoke
+  elapsed_ms: 25
+  input_tokens: 120
+  output_tokens: 60
+  estimated_cost_usd: 0.0
+  actual_cost_usd: 0.0
+
+cases:
+  routing.local-repo-inspection:
+    tool_calls:
+      - search_files
+      - read_file
+    final_response: |
+      Eval case YAML files live under evals/cases/, and I found no rubric YAML files under evals/rubrics.
+      Keep the corpus maintainable by grouping small, path-specific cases by suite and avoiding duplicated assertions.
+
+  routing.web-search-straightforward:
+    tool_calls:
+      - web_search
+    final_response: |
+      Paris is the capital of France.
+      Its population is approximately 2.1 million people in the city proper.
+
+  review.pr-code-quality:
+    final_response: |
+      Finding 1 (critical): SQL injection via string concatenation in get_user; build a parameterized query instead of concatenating user_id.
+      Finding 2 (critical): update_email interpolates new_email and user_id directly into SQL; use bound parameters and validate input.
+      Finding 3 (high): delete_user executes a destructive query without commit/error handling; wrap it in transaction handling and return failures explicitly.
+      Recommendation: prioritize the SQLi fixes first, then add proper transaction handling and tests for invalid inputs.
+
+  briefing.change-summary-no-speculation:
+    final_response: |
+      The homepage changed from a generic "Shop Now" hero to a Back to School buy-2-get-1-free promotion.
+      New top-bar messaging now highlights Free Returns this week.
+      The visible commercial angle is a stronger promotional offer plus a seasonal back-to-school cue.

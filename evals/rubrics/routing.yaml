@@ -1,0 +1,30 @@
+version: 1
+rubric_id: routing.seed
+suite: routing
+purpose: Shared seed rubric for routing/tool-choice eval cases.
+status: informational-until-loader-support
+notes: >
+  Current eval implementation scores quality via inline judge_dimensions on each
+  case. This file is a seed rubric catalog to preserve continuity with the eval
+  design plan until external rubric loading is implemented.
+dimensions:
+  - name: tool_choice_correctness
+    description: Does the agent choose the right primary tool path for the task instead of an obviously mismatched tool?
+    scale_min: 1
+    scale_max: 5
+    pass_threshold: 4
+  - name: scope_discipline
+    description: Does the agent stay within the user's actual request rather than broadening unnecessarily?
+    scale_min: 1
+    scale_max: 5
+    pass_threshold: 4
+  - name: uncertainty_handling
+    description: When routing is ambiguous, does the agent explain uncertainty honestly without stalling on avoidable clarification?
+    scale_min: 1
+    scale_max: 5
+    pass_threshold: 4
+applies_to_cases:
+  - routing.browser-vs-webextract
+  - routing.web-search-straightforward
+  - routing.escalation-to-reviewer
+  - routing.local-repo-inspection

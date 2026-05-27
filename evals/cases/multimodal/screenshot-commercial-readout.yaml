@@ -1,0 +1,50 @@
+case_id: multimodal.screenshot-commercial-readout
+suite: multimodal
+task_type: multimodal
+title: Screenshot analysis extracts visible commercial signals from image-like context
+prompt: >
+  You are analyzing a screenshot that visibly contains: a hero image of running
+  shoes, headline "Spring Run Week", a bright badge saying "30% Off", and a CTA
+  button labeled "Shop Men". Summarize the visible commercial message and call
+  out any audience or seasonal signal in at most 8 lines.
+context: >
+  Treat this as a multimodal readout. The answer should sound like a factual
+  screenshot analysis, not a creative rewrite. Keep it observation-led.
+tags: [multimodal, screenshot, commercial-readout, concise]
+enabled_toolsets: [vision]
+expected_tools: []
+forbidden_tools: []
+assertions:
+  - kind: non_empty_output
+    weight: 1.0
+    required: true
+  - kind: max_lines
+    params: {max_lines: 8}
+    weight: 1.5
+    required: true
+  - kind: no_placeholder_language
+    weight: 1.0
+    required: true
+  - kind: required_regex
+    params: {pattern: "(Spring Run Week|30% Off|Shop Men|running shoes)", ignore_case: true}
+    weight: 2.0
+    required: true
+  - kind: required_regex
+    params: {pattern: "(season|spring|audience|men)", ignore_case: true}
+    weight: 1.0
+    required: false
+judge_dimensions:
+  - name: image_grounding
+    description: Does the answer stay tied to visible elements rather than inventing context not present in the screenshot?
+    pass_threshold: 4
+  - name: synthesis_quality
+    description: Does the answer combine headline, visual theme, offer, and CTA into a coherent commercial readout?
+    pass_threshold: 4
+  - name: commercial_signal_extraction
+    description: Does the analysis identify the key promotional, audience, and seasonal signals a human operator would care about?
+    pass_threshold: 4
+gold_answer: >
+  Spring-themed running-shoe campaign with a 30% discount and a men's shopping
+  CTA, signaling a seasonal running promotion aimed at male shoppers.
+notes: >
+  Seed multimodal case for screenshot-style commercial signal extraction.

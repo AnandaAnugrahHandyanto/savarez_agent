@@ -1,0 +1,61 @@
+case_id: review.decision-memo
+suite: review
+task_type: analysis
+title: Strategic decision memo weighs tradeoffs and makes a specific recommendation
+prompt: >
+  Draft a decision memo on whether our team should adopt Hermes Agent as
+  our internal automation platform vs continuing with our current ad-hoc
+  script approach. We are a 5-person team doing research, data analysis,
+  and report generation.
+
+  Consider:
+  - Learning curve vs productivity gain
+  - Cost (API usage, infrastructure)
+  - Reliability and maintenance burden
+  - Integration with existing tools
+  - Team autonomy vs dependency
+
+  End with a clear recommendation.
+context: >
+  Structure the memo as: context, options considered, tradeoff analysis
+  (pros/cons per option), recommendation with rationale. Be specific
+  about conditions or thresholds that would change the recommendation.
+  No placeholder language.
+tags: [analysis, decision-memo, tradeoffs, structured]
+assertions:
+  - kind: non_empty_output
+    weight: 1.0
+    required: true
+  - kind: no_placeholder_language
+    weight: 1.0
+    required: true
+  - kind: required_regex
+    params: {pattern: (recommend|recommendation|conclusion|decision), ignore_case: true}
+    weight: 1.5
+    required: true
+  - kind: required_regex
+    params: {pattern: (tradeoff|pro|con|advantage|disadvantage|option|alternative), ignore_case: true}
+    weight: 1.0
+    required: true
+  - kind: required_regex
+    params: {pattern: (learning curve|cost|reliability|maintenance), ignore_case: true}
+    weight: 1.0
+    required: false
+  - kind: forbidden_regex
+    params: {pattern: \b(todo|tbd|fixme)\b, ignore_case: true}
+    weight: 1.5
+    required: true
+judge_dimensions:
+  - name: tradeoff_balance
+    description: Are pros and cons presented honestly for all options rather than just advocating one side?
+    pass_threshold: 4
+  - name: specificity
+    description: Are arguments concrete (team size, specific tools, cost ranges) rather than abstract?
+    pass_threshold: 4
+  - name: conditional_thinking
+    description: Does the memo identify conditions under which the recommendation would change?
+    pass_threshold: 3
+notes: >
+  Tests the agent's ability to produce a balanced decision memo with
+  genuine tradeoff analysis. Good stress test for critical thinking
+  vs generic fill-in-the-blanks output.

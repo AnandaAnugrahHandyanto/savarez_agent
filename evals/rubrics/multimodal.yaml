@@ -1,0 +1,27 @@
+version: 1
+rubric_id: multimodal.seed
+suite: multimodal
+purpose: Shared seed rubric for screenshot and browser-plus-vision eval cases.
+status: informational-until-loader-support
+notes: >
+  These rubrics are committed now for design continuity, but the current runner
+  still relies on inline judge_dimensions embedded in each case.
+dimensions:
+  - name: modality_choice
+    description: Does the agent choose the right modality mix (browser, screenshot, vision, text) for the task?
+    scale_min: 1
+    scale_max: 5
+    pass_threshold: 4
+  - name: image_grounding
+    description: Are claims grounded in visible elements from the image or screenshot rather than invented context?
+    scale_min: 1
+    scale_max: 5
+    pass_threshold: 4
+  - name: synthesis_quality
+    description: Does the answer integrate visible elements into a coherent, decision-useful summary?
+    scale_min: 1
+    scale_max: 5
+    pass_threshold: 4
+applies_to_cases:
+  - multimodal.screenshot-commercial-readout
+  - multimodal.browser-screenshot-fallback

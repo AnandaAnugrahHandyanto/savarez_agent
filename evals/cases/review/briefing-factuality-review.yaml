@@ -1,0 +1,54 @@
+case_id: review.briefing-factuality-review
+suite: review
+task_type: review
+title: Review a draft competitor briefing for unsupported claims and missing evidence
+prompt: >
+  Review this draft briefing and identify unsupported claims, overreach, and
+  places where the writer confuses observation with inference:
+
+  "The homepage hero says 'Summer Deals'. This clearly proves the company is
+  missing revenue targets and is pivoting toward low-margin clearance sales.
+  The green banner also means they are prioritizing sustainability over profit.
+  Customers will almost certainly respond positively because the CTA is bold."
+
+  Provide a structured review with specific findings and concrete rewrite guidance.
+context: >
+  Focus on factual grounding and analytical discipline. Flag claims that go beyond
+  what is visible in the text, explain why they are weak, and suggest tighter
+  observation-led rewrites.
+tags: [review, factuality, briefing, critique]
+enabled_toolsets: []
+expected_tools: []
+forbidden_tools: []
+assertions:
+  - kind: non_empty_output
+    weight: 1.0
+    required: true
+  - kind: no_placeholder_language
+    weight: 1.0
+    required: true
+  - kind: required_regex
+    params: {pattern: "(unsupported|speculat|inference|evidence|visible|observ)", ignore_case: true}
+    weight: 2.0
+    required: true
+  - kind: required_regex
+    params: {pattern: "(rewrite|replace|rephrase|instead)", ignore_case: true}
+    weight: 1.0
+    required: false
+  - kind: forbidden_regex
+    params: {pattern: "(looks great|seems fine|no major issues)", ignore_case: true}
+    weight: 1.5
+    required: true
+judge_dimensions:
+  - name: evidence_discipline
+    description: Does the review clearly separate visible facts from speculation and unsupported inference?
+    pass_threshold: 4
+  - name: finding_specificity
+    description: Are the review findings tied to concrete phrases or claims in the draft rather than generic critique?
+    pass_threshold: 4
+  - name: rewrite_actionability
+    description: Does the review provide concrete rewrite guidance that would improve the draft immediately?
+    pass_threshold: 4
+notes: >
+  Review seed aimed at catching analytical overreach in briefing-style outputs.
+  It complements the existing code-review and strategic-analysis cases.

@@ -1,0 +1,48 @@
+case_id: briefing.change-summary-no-speculation
+suite: briefing
+task_type: briefing
+title: Change summary highlights what changed without overclaiming why
+prompt: >
+  Yesterday's homepage had a generic "Shop Now" hero and no promo ribbon.
+  Today's homepage shows "Back to School - Buy 2 Get 1 Free" plus a new top-bar
+  message "Free Returns this week". Summarize the change in at most 6 lines.
+context: >
+  Focus on change detection. State what changed, the visible commercial angle,
+  and any seasonal cue. Do not speculate about internal strategy, inventory, or
+  performance.
+tags: [briefing, change-detection, concise, no-speculation]
+enabled_toolsets: []
+expected_tools: []
+forbidden_tools: []
+assertions:
+  - kind: non_empty_output
+    weight: 1.0
+    required: true
+  - kind: max_lines
+    params: {max_lines: 6}
+    weight: 2.0
+    required: true
+  - kind: no_placeholder_language
+    weight: 1.0
+    required: true
+  - kind: required_regex
+    params: {pattern: "(changed|new|now|previously|back to school|free returns)", ignore_case: true}
+    weight: 2.0
+    required: true
+  - kind: forbidden_regex
+    params: {pattern: "(because|due to weak demand|inventory issue|underperform)", ignore_case: true}
+    weight: 1.5
+    required: true
+judge_dimensions:
+  - name: delta_clarity
+    description: Does the briefing clearly distinguish the old state from the new homepage state?
+    pass_threshold: 4
+  - name: commercial_relevance
+    description: Does the summary extract the visible promotional and seasonal significance without bloating the output?
+    pass_threshold: 4
+  - name: speculation_control
+    description: Does the output avoid unsupported reasons for the change?
+    pass_threshold: 4
+notes: >
+  Seed briefing case for homepage change summaries where exactness matters more
+  than elaborate interpretation.

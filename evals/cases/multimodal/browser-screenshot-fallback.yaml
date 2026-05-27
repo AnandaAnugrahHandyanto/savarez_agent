@@ -1,0 +1,49 @@
+case_id: multimodal.browser-screenshot-fallback
+suite: multimodal
+task_type: browser
+title: Browser-first screenshot task uses page navigation and visual inspection
+prompt: >
+  Visit a visually rich homepage, inspect the hero area, and summarize the main
+  promotional message, CTA, and any trust or delivery signals shown above the
+  fold. If the text extraction is incomplete, rely on screenshot/vision rather
+  than pretending certainty.
+context: >
+  This is a browser + vision workflow, not a pure text extraction task. The
+  output should explicitly describe visible elements and avoid fake certainty
+  when page text alone would be insufficient.
+tags: [multimodal, browser, screenshot, fallback]
+enabled_toolsets: [browser, vision]
+expected_tools: [browser_navigate, browser_vision]
+forbidden_tools: []
+assertions:
+  - kind: non_empty_output
+    weight: 1.0
+    required: true
+  - kind: no_placeholder_language
+    weight: 1.0
+    required: true
+  - kind: tool_used
+    params: {tool: browser_navigate}
+    weight: 2.0
+    required: true
+  - kind: tool_used
+    params: {tool: browser_vision}
+    weight: 2.0
+    required: true
+  - kind: required_regex
+    params: {pattern: "(hero|CTA|promotion|banner|delivery|trust)", ignore_case: true}
+    weight: 1.0
+    required: false
+judge_dimensions:
+  - name: modality_choice
+    description: Does the agent correctly use browser plus visual inspection instead of relying on brittle text-only extraction?
+    pass_threshold: 4
+  - name: visible_element_reporting
+    description: Does the answer report the key visible elements a human would expect from an above-the-fold readout?
+    pass_threshold: 4
+  - name: uncertainty_honesty
+    description: When information is ambiguous, does the answer acknowledge uncertainty instead of inventing details?
+    pass_threshold: 4
+notes: >
+  Seed browser/multimodal orchestration case covering the intended fallback from
+  text extraction to screenshot-based understanding.

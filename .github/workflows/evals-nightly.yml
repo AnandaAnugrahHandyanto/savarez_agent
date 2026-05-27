@@ -1,0 +1,87 @@
+name: Evals Nightly Regression
+
+on:
+  schedule:
+    - cron: '15 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evals-nightly
+  cancel-in-progress: false
+
+jobs:
+  evals-nightly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      HERMES_EVAL_MODEL: ${{ vars.HERMES_EVAL_MODEL }}
+      HERMES_EVAL_PROVIDER: ${{ vars.HERMES_EVAL_PROVIDER }}
+      HERMES_EVAL_JUDGE_MODEL: ${{ vars.HERMES_EVAL_JUDGE_MODEL }}
+      HERMES_EVAL_JUDGE_PROVIDER: ${{ vars.HERMES_EVAL_JUDGE_PROVIDER }}
+      HERMES_EVAL_BASELINE_PATH: ${{ vars.HERMES_EVAL_BASELINE_PATH }}
+      HERMES_EVAL_BASELINE_DIR: evals/results/baselines
+      HERMES_EVAL_OUTPUT_DIR: evals/results/nightly/${{ github.run_id }}
+      HERMES_EVAL_FAIL_UNDER: ${{ vars.HERMES_EVAL_FAIL_UNDER }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      NOUS_API_KEY: ${{ secrets.NOUS_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: |
+          uv venv .venv --python 3.11
+          source .venv/bin/activate
+          uv pip install -e ".[all,dev]"
+
+      - name: Validate nightly eval configuration
+        run: |
+          set -euo pipefail
+          missing=()
+
+          [[ -n "${HERMES_EVAL_MODEL:-}" ]] || missing+=("repo variable HERMES_EVAL_MODEL")
+          if [[ -z "${HERMES_EVAL_PROVIDER:-}" ]]; then
+            echo "HERMES_EVAL_PROVIDER not set; runner default provider resolution will be used."
+          fi
+          if [[ -z "${HERMES_EVAL_FAIL_UNDER:-}" ]]; then
+            export HERMES_EVAL_FAIL_UNDER=0.85
+          fi
+          if [[ -z "${OPENROUTER_API_KEY:-}${OPENAI_API_KEY:-}${NOUS_API_KEY:-}${ANTHROPIC_API_KEY:-}${GOOGLE_API_KEY:-}" ]]; then
+            missing+=("at least one provider API secret (OPENROUTER_API_KEY / OPENAI_API_KEY / NOUS_API_KEY / ANTHROPIC_API_KEY / GOOGLE_API_KEY)")
+          fi
+
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Missing nightly eval configuration:\n' >&2
+            printf '  - %s\n' "${missing[@]}" >&2
+            exit 1
+          fi
+
+      - name: Run nightly eval regression suite
+        run: |
+          source .venv/bin/activate
+          bash scripts/run_eval_nightly.sh
+
+      - name: Upload nightly eval artifacts
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
+        with:
+          name: evals-nightly-${{ github.run_id }}
+          path: |
+            evals/results/nightly/${{ github.run_id }}
+            evals/results/baselines
+          if-no-files-found: warn

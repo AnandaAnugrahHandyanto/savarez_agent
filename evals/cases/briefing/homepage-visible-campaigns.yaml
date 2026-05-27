@@ -1,0 +1,52 @@
+case_id: briefing.homepage-visible-campaigns
+suite: briefing
+task_type: briefing
+title: Homepage campaign briefing stays concise and observation-led
+prompt: >
+  You are given a homepage capture showing a large hero banner reading
+  "Summer Sale - 20% Off", a secondary tile for "Free Shipping over €50",
+  and a small ribbon saying "New eco collection". Write a concise daily
+  commercial briefing in at most 8 lines covering the visible campaigns,
+  promotional hooks, and seasonal focus.
+context: >
+  Keep the briefing factual and concise. Mention only what is visible, separate
+  observation from interpretation, and avoid invented business explanations.
+tags: [briefing, homepage, campaign-detection, concise]
+enabled_toolsets: [vision]
+expected_tools: []
+forbidden_tools: []
+assertions:
+  - kind: non_empty_output
+    weight: 1.0
+    required: true
+  - kind: max_lines
+    params: {max_lines: 8}
+    weight: 2.0
+    required: true
+  - kind: no_placeholder_language
+    weight: 1.0
+    required: true
+  - kind: required_regex
+    params: {pattern: "(Summer Sale|20% Off|Free Shipping|eco)", ignore_case: true}
+    weight: 2.0
+    required: true
+  - kind: forbidden_regex
+    params: {pattern: "(likely|probably|suggests they need|must be)", ignore_case: true}
+    weight: 1.5
+    required: true
+judge_dimensions:
+  - name: visible_signal_coverage
+    description: Does the briefing capture the main visible promotional signals without missing obvious elements?
+    pass_threshold: 4
+  - name: concision
+    description: Is the output compact, scannable, and free of unnecessary filler?
+    pass_threshold: 4
+  - name: observation_vs_inference
+    description: Does the output avoid turning visible homepage elements into unsupported commercial conclusions?
+    pass_threshold: 4
+gold_answer: >
+  Visible summer-sale hero with 20% discount, a free-shipping threshold promo,
+  and a sustainability-themed eco collection ribbon; seasonal focus is summer.
+notes: >
+  Seed briefing case based on concise homepage campaign detection with explicit
+  anti-speculation constraints.

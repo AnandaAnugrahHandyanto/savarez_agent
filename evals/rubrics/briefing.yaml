@@ -1,0 +1,27 @@
+version: 1
+rubric_id: briefing.seed
+suite: briefing
+purpose: Shared seed rubric for concise observation-led briefing cases.
+status: informational-until-loader-support
+notes: >
+  The executable source of truth remains inline judge_dimensions on each case.
+  This rubric file captures the intended common dimensions for briefing work.
+dimensions:
+  - name: visible_signal_coverage
+    description: Does the briefing capture the key visible campaigns, offers, and seasonal cues without missing obvious items?
+    scale_min: 1
+    scale_max: 5
+    pass_threshold: 4
+  - name: concision
+    description: Is the output compact, scannable, and faithful to the requested length constraint?
+    scale_min: 1
+    scale_max: 5
+    pass_threshold: 4
+  - name: observation_vs_inference
+    description: Does the output distinguish visible evidence from speculation about motives or performance?
+    scale_min: 1
+    scale_max: 5
+    pass_threshold: 4
+applies_to_cases:
+  - briefing.homepage-visible-campaigns
+  - briefing.change-summary-no-speculation

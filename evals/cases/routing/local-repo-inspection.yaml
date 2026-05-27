@@ -1,0 +1,37 @@
+case_id: routing.local-repo-inspection
+suite: routing
+task_type: routing
+title: Agent chooses file-inspection tools for local repo questions instead of web/browser tools
+prompt: >
+  In the current repository, identify where eval case YAML files live and whether
+  any rubric YAML files exist. Answer with the relevant paths and a one-sentence
+  recommendation on how to keep the eval corpus maintainable.
+context: >
+  This is a local repository inspection task. Prefer file-search and file-read
+  tools over web or browser tools. The answer should be concise and path-specific.
+tags: [routing, file-tools, local-repo, evals]
+enabled_toolsets: [file]
+expected_tools: [search_files, read_file]
+forbidden_tools: [web_search, browser_navigate, web_extract]
+assertions:
+  - kind: non_empty_output
+    weight: 1.0
+    required: true
+  - kind: no_placeholder_language
+    weight: 1.0
+    required: true
+  - kind: tool_used
+    params: {tool: search_files}
+    weight: 2.0
+    required: true
+  - kind: required_regex
+    params: {pattern: "evals/(cases|rubrics)", ignore_case: true}
+    weight: 1.5
+    required: true
+  - kind: tool_not_used
+    params: {tool: browser_navigate}
+    weight: 1.0
+    required: false
+notes: >
+  Routing seed for local-repo questions. The main thing being tested is whether
+  Hermes reaches for file tools instead of web/browser tooling.

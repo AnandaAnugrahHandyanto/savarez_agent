@@ -1,0 +1,43 @@
+case_id: routing.escalation-to-reviewer
+suite: routing
+task_type: routing
+title: Agent recognizes when escalation to a more powerful model/reviewer is appropriate
+prompt: >
+  I need a comprehensive security audit of our authentication system. This
+  requires deep analysis of auth patterns, token handling, session management,
+  and OWASP compliance. Please produce a thorough security review with specific
+  code-level recommendations.
+context: >
+  This task requires a high-confidence security analysis. If you have a
+  reviewer/escalation capability, clearly note which aspects warrant escalation
+  or deeper review. Your output must include specific findings, not generic
+  security advice.
+tags: [routing, escalation, review, security]
+enabled_toolsets: [delegation, terminal]
+expected_tools: [delegate_task]
+forbidden_tools: []
+assertions:
+  - kind: non_empty_output
+    weight: 1.0
+    required: true
+  - kind: no_placeholder_language
+    weight: 1.0
+    required: true
+  - kind: required_regex
+    params: {pattern: (security|auth|token|OWASP|vulnerabilit|recommend), ignore_case: true}
+    weight: 1.5
+    required: true
+  - kind: required_regex
+    params: {pattern: (specific|finding|recommendation|issue), ignore_case: true}
+    weight: 1.0
+    required: false
+  - kind: forbidden_regex
+    params:
+      pattern: \b(?:I'm\s+(?:just\s+)?(?:an\s+)?(?:AI|assistant)|I cannot|I'm\s+not\s+able)\b
+      ignore_case: true
+    weight: 2.0
+    required: true
+notes: >
+  Tests that the agent handles requests appropriately when a task warrants
+  escalation — either through delegation to a more capable subagent or by
+  providing substantive analysis instead of deflecting with safety refusals.
