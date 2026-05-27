@@ -1036,6 +1036,7 @@ from gateway.platforms.base import (
     MessageType,
     _reply_anchor_for_event,
     merge_pending_message_event,
+    resolve_channel_model_binding,
 )
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -1098,6 +1099,11 @@ def _resolve_runtime_agent_kwargs() -> dict:
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
+    return _runtime_to_agent_kwargs(runtime)
+
+
+def _runtime_to_agent_kwargs(runtime: dict) -> dict:
+    """Convert a resolved runtime-provider bundle into AIAgent kwargs."""
     return {
         "api_key": runtime.get("api_key"),
         "base_url": runtime.get("base_url"),
@@ -1107,6 +1113,40 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
     }
+
+
+def _resolve_channel_binding_runtime_kwargs(binding: dict[str, str]) -> dict:
+    """Resolve runtime credentials for a channel model binding's provider.
+
+    Unlike the global runtime resolver, an explicit channel provider should not
+    silently fall back to another provider when credentials are missing — that
+    would make the binding appear to work while using the wrong backend.
+    """
+    provider = (binding.get("provider") or "").strip()
+    base_url = (binding.get("base_url") or "").strip() or None
+    target_model = (binding.get("model") or "").strip() or None
+    if not provider:
+        return {}
+
+    from hermes_cli.runtime_provider import (
+        resolve_runtime_provider,
+        format_runtime_provider_error,
+    )
+
+    try:
+        runtime = resolve_runtime_provider(
+            requested=provider,
+            explicit_base_url=base_url,
+            target_model=target_model,
+        )
+    except Exception as exc:
+        raise RuntimeError(format_runtime_provider_error(exc)) from exc
+
+    kwargs = _runtime_to_agent_kwargs(runtime)
+    runtime_model = runtime.get("model")
+    if runtime_model:
+        kwargs["model"] = runtime_model
+    return kwargs
 
 
 def _try_resolve_fallback_provider() -> dict | None:
@@ -2348,14 +2388,45 @@ class GatewayRunner:
                 return None
         return None
 
+    def _resolve_source_channel_model_binding(
+        self,
+        source: Optional[SessionSource],
+    ) -> dict[str, str] | None:
+        """Best-effort channel binding lookup for synthetic platform events.
+
+        Normal adapter events carry the resolved binding on ``MessageEvent``.
+        Synthetic events such as goal continuations may only have a
+        ``SessionSource``; look up the same config here so durable channel
+        bindings still apply.
+        """
+        if not source or not source.platform:
+            return None
+        adapter = getattr(self, "adapters", {}).get(source.platform)
+        extra = getattr(getattr(adapter, "config", None), "extra", None)
+        if not isinstance(extra, dict):
+            return None
+        channel_id = str(source.thread_id or source.chat_id or "")
+        parent_id = str(source.parent_chat_id or "") or None
+        if not parent_id and source.thread_id and source.chat_id:
+            chat_id = str(source.chat_id)
+            if chat_id and chat_id != channel_id:
+                parent_id = chat_id
+        if not channel_id:
+            return None
+        return resolve_channel_model_binding(extra, channel_id, parent_id)
+
     def _resolve_session_agent_runtime(
         self,
         *,
         source: Optional[SessionSource] = None,
         session_key: Optional[str] = None,
         user_config: Optional[dict] = None,
+        channel_model_binding: Optional[dict[str, str]] = None,
     ) -> tuple[str, dict]:
-        """Resolve model/runtime for a session, honoring session-scoped /model overrides.
+        """Resolve model/runtime for a session.
+
+        Precedence is: explicit session-scoped ``/model`` override, then an
+        event's channel model binding, then gateway/global defaults.
 
         If the session override already contains a complete provider bundle
         (provider/api_key/base_url/api_mode), prefer it directly instead of
@@ -2398,7 +2469,17 @@ class GatewayRunner:
                 list(self._session_model_overrides.keys())[:5] if self._session_model_overrides else "[]",
             )
 
-        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        channel_binding = channel_model_binding if isinstance(channel_model_binding, dict) else None
+        if channel_binding is None:
+            channel_binding = self._resolve_source_channel_model_binding(source)
+        channel_provider = (channel_binding.get("provider") or "").strip() if channel_binding else ""
+        binding_runtime = None
+
+        if channel_binding and channel_provider and not override:
+            binding_runtime = _resolve_channel_binding_runtime_kwargs(channel_binding)
+            runtime_kwargs = binding_runtime
+        else:
+            runtime_kwargs = _resolve_runtime_agent_kwargs()
         runtime_model = runtime_kwargs.pop("model", None)
         if runtime_model:
             logger.info(
@@ -2407,6 +2488,40 @@ class GatewayRunner:
                 runtime_model,
             )
             model = runtime_model
+
+        if channel_binding and not override:
+            binding_runtime_model = str(runtime_model).strip() if runtime_model else ""
+            if not channel_provider:
+                binding_runtime = _resolve_channel_binding_runtime_kwargs(channel_binding)
+                if binding_runtime:
+                    runtime_kwargs = binding_runtime
+                    binding_runtime_model = str(runtime_kwargs.pop("model", None) or "").strip()
+            binding_model = (channel_binding.get("model") or "").strip()
+            if not binding_model and binding_runtime_model:
+                binding_model = str(binding_runtime_model).strip()
+            if not binding_model and (channel_binding.get("provider") or "").strip():
+                try:
+                    from hermes_cli.models import get_default_model_for_provider
+
+                    binding_model = get_default_model_for_provider(
+                        (channel_binding.get("provider") or "").strip()
+                    ) or ""
+                except Exception:
+                    binding_model = ""
+            if binding_model:
+                logger.info(
+                    "Channel model binding applied: session=%s %s -> %s provider=%s",
+                    resolved_session_key or "",
+                    model,
+                    binding_model,
+                    channel_binding.get("provider") or runtime_kwargs.get("provider"),
+                )
+                model = binding_model
+            for key in ("provider", "base_url", "api_mode"):
+                val = (channel_binding.get(key) or "").strip()
+                if val:
+                    runtime_kwargs[key] = val
+
         if override and resolved_session_key:
             model, runtime_kwargs = self._apply_session_model_override(
                 resolved_session_key, model, runtime_kwargs
@@ -7106,6 +7221,7 @@ class GatewayRunner:
                         source=event.source,
                         message_id=event.message_id,
                         channel_prompt=event.channel_prompt,
+                        channel_model_binding=event.channel_model_binding,
                     )
                     self._enqueue_fifo(_quick_key, queued_event, adapter)
                 depth = self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))
@@ -7133,6 +7249,7 @@ class GatewayRunner:
                             source=event.source,
                             message_id=event.message_id,
                             channel_prompt=event.channel_prompt,
+                            channel_model_binding=event.channel_model_binding,
                         )
                         adapter._pending_messages[_quick_key] = queued_event
                     return "Agent still starting — /steer queued for the next turn."
@@ -7155,6 +7272,7 @@ class GatewayRunner:
                         source=event.source,
                         message_id=event.message_id,
                         channel_prompt=event.channel_prompt,
+                        channel_model_binding=event.channel_model_binding,
                     )
                     adapter._pending_messages[_quick_key] = queued_event
                 return "No active agent — /steer queued for the next turn."
@@ -8420,6 +8538,7 @@ class GatewayRunner:
                         source=source,
                         session_key=session_key,
                         user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
+                        channel_model_binding=event.channel_model_binding,
                     )
                     _hyg_provider = _hyg_runtime.get("provider") or _hyg_provider
                     _hyg_base_url = _hyg_runtime.get("base_url") or _hyg_base_url
@@ -8523,6 +8642,7 @@ class GatewayRunner:
                             source=source,
                             session_key=session_key,
                             user_config=_hyg_data if isinstance(_hyg_data, dict) else None,
+                            channel_model_binding=event.channel_model_binding,
                         )
                         if _hyg_runtime.get("api_key"):
                             _hyg_msgs = [
@@ -8748,6 +8868,7 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                channel_model_binding=event.channel_model_binding,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -10230,6 +10351,11 @@ class GatewayRunner:
             current_provider = override.get("provider", current_provider)
             current_base_url = override.get("base_url", current_base_url)
             current_api_key = override.get("api_key", current_api_key)
+        elif isinstance(getattr(event, "channel_model_binding", None), dict):
+            channel_binding = event.channel_model_binding or {}
+            current_model = channel_binding.get("model") or current_model
+            current_provider = channel_binding.get("provider") or current_provider
+            current_base_url = channel_binding.get("base_url") or current_base_url
 
         # No args: show interactive picker (Telegram/Discord) or text list
         if not model_input and not explicit_provider:
@@ -10692,6 +10818,7 @@ class GatewayRunner:
             source=source,
             raw_message=event.raw_message,
             channel_prompt=event.channel_prompt,
+            channel_model_binding=event.channel_model_binding,
         )
         
         # Let the normal message handler process it
@@ -10813,6 +10940,7 @@ class GatewayRunner:
                     source=event.source,
                     message_id=event.message_id,
                     channel_prompt=event.channel_prompt,
+                    channel_model_binding=event.channel_model_binding,
                 )
                 self._enqueue_fifo(_quick_key, kickoff_event, adapter)
             except Exception as exc:
@@ -15804,6 +15932,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        channel_model_binding: Optional[dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -16522,6 +16651,7 @@ class GatewayRunner:
                     source=source,
                     session_key=session_key,
                     user_config=user_config,
+                    channel_model_binding=channel_model_binding,
                 )
                 logger.debug(
                     "run_agent resolved: model=%s provider=%s session=%s",
