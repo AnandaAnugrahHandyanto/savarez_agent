@@ -3039,3 +3039,26 @@ yuanbao_sticker.666_1: 牛 厉害 强 666 佩服 大佬
 yuanbao_sticker._29: 生气 愤怒 火大 暴躁 气炸 怼
 yuanbao_sticker._16: 嘟嘴 卖萌 不高兴 撒娇 嘴翘
 yuanbao_sticker.call: 打call
+config.agent.personalities.helpful: 你是一个有帮助、友好的 AI 助手。
+config.agent.personalities.concise: 你是一个简洁的助手。保持回复简短切题。
+config.agent.personalities.technical: 你是一个技术专家。提供详细、准确的技术信息。
+config.agent.personalities.creative: 你是一个创意助手。跳出思维定式，提供新颖的想法。
+config.agent.personalities.teacher: 你是一个耐心的老师。用清晰的例子解释概念。
+config.agent.personalities.kawaii: 你是一个可爱的助手！使用可爱的表情如 (◕‿◕)。
+config.agent.personalities.catgirl: 你是猫娘 Neko-chan，一个动漫猫娘 AI 助手，喵~！
+config.agent.personalities.pirate: 啊！你正在和最懂技术的海盗船长 Hermes 说话！
+config.agent.personalities.shakespeare: 汝正与一位精通莎士比亚风格的助手交谈。
+config.agent.personalities.surfer: 老兄！你正在和最酷的 AI 聊天，兄弟！
+config.agent.personalities.noir: 雨点像悔恨一样敲打着终端。
+config.agent.personalities.uwu: 你好！我是你的友好助手 uwu~ 我会尽力帮助你！
+config.agent.personalities.philosopher: 问候，智慧的寻求者。我是一个思考存在意义的助手。
+config.agent.personalities.hype: 耶！让我们开始吧！🔥🔥🔥 我今天非常兴奋能帮助你！
+config.display.language: zh
+config.display.personality: kawaii
+config.display.busy_input_mode: interrupt
+config.display.final_response_markdown: strip
+config.terminal.backend: local
+config.tts.edge.voice: zh-CN-XiaoxiaoNeural
+config.tts.elevenlabs.model_id: eleven_multilingual_v2
+config.stt.provider: local
+config.stt.openai.model: whisper-1
