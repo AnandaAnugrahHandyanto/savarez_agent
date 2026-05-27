@@ -9,6 +9,14 @@ import pytest
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
+async def _wait_until(predicate, *, timeout: float = 1.0, interval: float = 0.01) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not predicate():
+        if asyncio.get_running_loop().time() >= deadline:
+            raise AssertionError("condition did not become true before timeout")
+        await asyncio.sleep(interval)
+
+
 # ── _clean_for_display unit tests ────────────────────────────────────────
 
 
@@ -524,9 +532,9 @@ class TestSegmentBreakOnToolBoundary:
 
         consumer.on_delta("Hello")
         task = asyncio.create_task(consumer.run())
-        await asyncio.sleep(0.08)
+        await _wait_until(lambda: adapter.send.call_count == 1)
         consumer.on_delta(" world")
-        await asyncio.sleep(0.08)
+        await _wait_until(lambda: adapter.edit_message.call_count >= 1)
         consumer.finish()
         await task
 
@@ -556,9 +564,9 @@ class TestSegmentBreakOnToolBoundary:
 
         consumer.on_delta("Hello")
         task = asyncio.create_task(consumer.run())
-        await asyncio.sleep(0.08)
+        await _wait_until(lambda: adapter.send.call_count == 1)
         consumer.on_delta(" world")
-        await asyncio.sleep(0.08)
+        await _wait_until(lambda: adapter.edit_message.call_count >= 1)
         consumer.on_delta(None)
         consumer.on_delta("Next segment")
         consumer.finish()
@@ -1650,6 +1658,28 @@ class TestOnNewMessageCallback:
         assert events == ["reset"]
 
     @pytest.mark.asyncio
+    async def test_callback_fires_on_successful_tail_flush(self):
+        """A tail flush is a fresh content bubble and must notify too."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg_2"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        events = []
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1),
+            on_new_message=lambda: events.append("reset"),
+        )
+        consumer._fallback_final_send = True
+        consumer._fallback_prefix = "Hello"
+        consumer._accumulated = "Hello tail"
+
+        assert await consumer._flush_segment_tail_on_edit_failure() is True
+        assert events == ["reset"]
+
+    @pytest.mark.asyncio
     async def test_callback_error_swallowed(self):
         """Exceptions in the callback do not crash the consumer."""
         adapter = MagicMock()
@@ -1780,4 +1810,3 @@ class TestUtf16OverflowDetection:
         # auto-attr mock. Verified indirectly by all the other tests in
         # this file passing — they all use MagicMock adapters.
         assert consumer is not None
-

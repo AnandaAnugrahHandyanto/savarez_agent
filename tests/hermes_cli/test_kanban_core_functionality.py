@@ -35,6 +35,13 @@ def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    for var in (
+        "HERMES_KANBAN_DB",
+        "HERMES_KANBAN_WORKSPACES_ROOT",
+        "HERMES_KANBAN_HOME",
+        "HERMES_KANBAN_BOARD",
+    ):
+        monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home
@@ -347,6 +354,131 @@ def test_workspace_resolution_failure_also_counts(kanban_home, all_assignees_spa
         assert tid in res.auto_blocked
         task = kb.get_task(conn, tid)
         assert task.status == "blocked"
+    finally:
+        conn.close()
+
+
+def test_dispatch_blocks_legacy_checkout_workspace_authority(
+    kanban_home, all_assignees_spawnable,
+):
+    """Active tasks must not spawn workers from the frozen legacy checkout."""
+    spawned: list[str] = []
+
+    def _spawn(task, ws):
+        spawned.append(task.id)
+        return 12345
+
+    legacy_workspace = (
+        "/home/jeremy/work/repos/hermes-agent-kanban-v2026.5.7/.worktrees/t_bad"
+    )
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="old workspace",
+            assignee="worker",
+            workspace_kind="worktree",
+            workspace_path=legacy_workspace,
+        )
+
+        res = kb.dispatch_once(conn, spawn_fn=_spawn)
+
+        assert spawned == []
+        assert [item[0] for item in res.workspace_authority_blocked] == [tid]
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.last_failure_error
+        assert "workspace_authority" in task.last_failure_error
+        assert "legacy checkout" in task.last_failure_error
+    finally:
+        conn.close()
+
+
+def test_dispatch_allows_private_release_worktree_root(
+    kanban_home, tmp_path, monkeypatch, all_assignees_spawnable,
+):
+    """A worktree under the private release checkout's .worktrees root is valid."""
+    release_repo = tmp_path / "private-release"
+    workspace = release_repo / ".worktrees" / "t_good"
+    monkeypatch.setenv("HERMES_AGENT_REPO", str(release_repo))
+    spawned: list[tuple[str, str]] = []
+
+    def _spawn(task, ws):
+        spawned.append((task.id, ws))
+        return 12345
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="safe workspace",
+            assignee="worker",
+            workspace_kind="worktree",
+            workspace_path=str(workspace),
+        )
+
+        res = kb.dispatch_once(conn, spawn_fn=_spawn)
+
+        assert res.workspace_authority_blocked == []
+        assert spawned == [(tid, str(workspace))]
+        assert kb.get_task(conn, tid).status == "running"
+    finally:
+        conn.close()
+
+
+def test_dispatch_blocks_bodyless_synthetic_proja_card(
+    kanban_home, all_assignees_spawnable,
+):
+    """Bodyless proja/projb cards are invalid-spec test noise, not worker work."""
+    spawned: list[str] = []
+
+    def _spawn(task, ws):
+        spawned.append(task.id)
+        return 12345
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="proja", body=None, assignee="worker")
+
+        res = kb.dispatch_once(conn, spawn_fn=_spawn)
+
+        assert spawned == []
+        assert [item[0] for item in res.invalid_spec_blocked] == [tid]
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.last_failure_error
+        assert "invalid_spec_test_noise" in task.last_failure_error
+    finally:
+        conn.close()
+
+
+def test_workspace_authority_scan_warns_for_historical_legacy_residue(
+    kanban_home,
+):
+    """Completed legacy workspace paths are residue warnings, not active P0s."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="done old ws", assignee="worker")
+        kb.claim_task(conn, tid)
+        assert kb.complete_task(conn, tid, summary="done")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET workspace_path = ? WHERE id = ?",
+                (
+                    "/home/jeremy/work/repos/hermes-agent-kanban-v2026.5.7/"
+                    ".worktrees/t_done",
+                    tid,
+                ),
+            )
+
+        findings = kb.scan_workspace_authority(conn)
+
+        assert len(findings) == 1
+        finding = findings[0]
+        assert finding.task_id == tid
+        assert finding.severity == "warning"
+        assert finding.classification == "historical_legacy_residue"
+        assert finding.blocks_dispatch is False
     finally:
         conn.close()
 
@@ -2194,6 +2326,13 @@ def test_cli_create_on_fresh_home_auto_inits(tmp_path, monkeypatch):
     worktree_root = Path(__file__).resolve().parents[2]
     env = {**os.environ, "HERMES_HOME": str(home),
            "PYTHONPATH": str(worktree_root)}
+    for var in (
+        "HERMES_KANBAN_DB",
+        "HERMES_KANBAN_WORKSPACES_ROOT",
+        "HERMES_KANBAN_HOME",
+        "HERMES_KANBAN_BOARD",
+    ):
+        env.pop(var, None)
     r = _sp.run(
         [_sys.executable, "-m", "hermes_cli.main", "kanban",
          "create", "smoke", "--assignee", "worker", "--json"],
@@ -2444,7 +2583,7 @@ def test_pid_alive_detects_zombie(kanban_home):
         time.sleep(0.3)
         # Verify /proc reports zombie state so the test is actually
         # exercising the zombie path and not some other liveness failure
-        with open(f"/proc/{pid}/status") as f:
+        with open(f"/proc/{pid}/status", encoding="utf-8") as f:
             state_line = next(
                 (l for l in f if l.startswith("State:")), ""
             )

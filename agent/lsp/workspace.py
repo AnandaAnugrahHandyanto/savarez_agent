@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 from pathlib import Path
 from typing import Iterable, Optional, Tuple
 
@@ -28,6 +29,9 @@ logger = logging.getLogger("agent.lsp.workspace")
 # Cleared on shutdown.  Keyed by absolute resolved path so symlink
 # folds collapse to one entry.
 _workspace_cache: dict = {}
+_BROAD_TEMP_ROOTS = frozenset(
+    Path(p) for p in ("/tmp", "/var/tmp") if os.path.isabs(p)
+)
 
 
 def normalize_path(path: str) -> str:
@@ -66,13 +70,23 @@ def find_git_worktree(start: str) -> Optional[str]:
         return root
 
     cur = start_path
+    temp_root = Path(normalize_path(tempfile.gettempdir()))
     # Defensive cap: the deepest reasonable monorepo is well under 64
     # levels.  Caps the walk so a pathological cwd or a symlink cycle
     # we somehow traverse can't keep us looping.
     for _ in range(64):
         git_marker = cur / ".git"
         try:
-            if git_marker.exists():
+            # Parallel test/sandbox tools can transiently create a `.git`
+            # marker directly at the system temp root. Do not let that
+            # classify every unrelated temp file as part of a repository, but
+            # keep walking so custom TMPDIR values nested inside real repos do
+            # not hide the actual repo root above the temp directory.
+            if (
+                git_marker.exists()
+                and cur != temp_root
+                and cur not in _BROAD_TEMP_ROOTS
+            ):
                 resolved = str(cur)
                 _workspace_cache[str(start_path)] = (resolved, True)
                 return resolved

@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,6 +16,22 @@ from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
 )
+
+
+def _watchdog_runtime_payload(**overrides):
+    payload = {
+        "gateway_state": "running",
+        "pid": 1234,
+        "gateway_status_schema_version": 2,
+        "process_heartbeat_mono": 100.0,
+        "last_forward_progress_mono": 100.0,
+        "forward_progress_counter": 1,
+        "work_active": False,
+        "run_lifecycle_count": 1,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    payload.update(overrides)
+    return payload
 
 
 class TestUserSystemdPrivateSocketPreflight:
@@ -234,6 +251,42 @@ class TestSystemdServiceRefresh:
         assert unit_path.read_text(encoding="utf-8") == "new unit\n"
         assert ["systemctl", "--user", "daemon-reload"] in calls
 
+    def test_refresh_rewrites_replace_unit_to_foreground_execstart(
+        self, tmp_path, monkeypatch
+    ):
+        """Refreshing an old systemd unit must remove manual --replace semantics."""
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text(
+            "[Unit]\n"
+            "Description=Hermes Gateway\n"
+            "[Service]\n"
+            "ExecStart=/old/python -m hermes_cli.main gateway run --replace\n",
+            encoding="utf-8",
+        )
+        daemon_reload_calls = []
+
+        monkeypatch.setattr(
+            gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path
+        )
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/venv/bin/python")
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: Path("/venv"))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: Path("/home/test/.hermes"))
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: None)
+        monkeypatch.setattr(gateway_cli, "is_wsl", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_run_systemctl",
+            lambda args, **kwargs: daemon_reload_calls.append(args),
+        )
+
+        result = gateway_cli.refresh_systemd_unit_if_needed(system=False)
+
+        refreshed = unit_path.read_text(encoding="utf-8")
+        assert result is True
+        assert "gateway run" in refreshed
+        assert "--replace" not in refreshed
+        assert ["daemon-reload"] in daemon_reload_calls
+
     def test_refresh_refuses_to_bake_pytest_tmpdir_into_real_user_unit(
         self, tmp_path, monkeypatch
     ):
@@ -324,6 +377,8 @@ class TestGeneratedSystemdUnits:
         unit = gateway_cli.generate_systemd_unit(system=False)
 
         assert "ExecStart=" in unit
+        assert "gateway run" in unit
+        assert "--replace" not in unit
         assert "ExecStop=" not in unit
         assert "ExecReload=/bin/kill -USR1 $MAINPID" in unit
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
@@ -385,6 +440,8 @@ class TestGeneratedSystemdUnits:
         unit = gateway_cli.generate_systemd_unit(system=True)
 
         assert "ExecStart=" in unit
+        assert "gateway run" in unit
+        assert "--replace" not in unit
         assert "ExecStop=" not in unit
         assert "ExecReload=/bin/kill -USR1 $MAINPID" in unit
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
@@ -493,11 +550,16 @@ class TestLaunchdServiceRecovery:
 
         label = gateway_cli.get_launchd_label()
         domain = gateway_cli._launchd_domain()
-        assert "--replace" in plist_path.read_text(encoding="utf-8")
+        assert "--replace" not in plist_path.read_text(encoding="utf-8")
         assert calls[:2] == [
             ["launchctl", "bootout", f"{domain}/{label}"],
             ["launchctl", "bootstrap", domain, str(plist_path)],
         ]
+
+    def test_launchd_and_profile_run_args_do_not_replace_running_gateways(self):
+        assert "--replace" not in gateway_cli.generate_launchd_plist()
+        assert "--replace" not in gateway_cli._gateway_run_args_for_profile("default")
+        assert "--replace" not in gateway_cli._gateway_run_args_for_profile("worker")
 
     def test_launchd_start_reloads_unloaded_job_and_retries(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"
@@ -694,6 +756,93 @@ class TestGatewayServiceDetection:
         monkeypatch.setattr(gateway_cli.shutil, "which", lambda name: "/usr/bin/systemctl")
 
         assert gateway_cli.supports_systemd_services() is True
+
+    def test_runtime_snapshot_uses_fresh_state_when_systemd_is_inaccessible(self, monkeypatch):
+        user_unit = SimpleNamespace(exists=lambda: True)
+        system_unit = SimpleNamespace(exists=lambda: False)
+
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda: [1234])
+        monkeypatch.setattr(gateway_cli.watchdog_check.time, "monotonic", lambda: 110.0)
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_systemd_unit_path",
+            lambda system=False: system_unit if system else user_unit,
+        )
+        monkeypatch.setattr(
+            status,
+            "read_runtime_status",
+            lambda: _watchdog_runtime_payload(),
+        )
+
+        snapshot = gateway_cli.get_gateway_runtime_snapshot()
+
+        assert snapshot.running is True
+        assert snapshot.status_unknown is False
+        assert snapshot.service_installed is True
+        assert snapshot.service_running is False
+        assert snapshot.gateway_pids == (1234,)
+        assert snapshot.runtime_state_running is True
+        assert snapshot.authority == "fresh gateway_state.json"
+        assert snapshot.has_process_service_mismatch is False
+
+    def test_runtime_snapshot_rejects_watchdog_stale_state_when_systemd_is_inaccessible(self, monkeypatch):
+        user_unit = SimpleNamespace(exists=lambda: True)
+        system_unit = SimpleNamespace(exists=lambda: False)
+
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda: [])
+        monkeypatch.setattr(gateway_cli.watchdog_check.time, "monotonic", lambda: 200.0)
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_systemd_unit_path",
+            lambda system=False: system_unit if system else user_unit,
+        )
+        monkeypatch.setattr(
+            status,
+            "read_runtime_status",
+            lambda: _watchdog_runtime_payload(process_heartbeat_mono=100.0),
+        )
+
+        snapshot = gateway_cli.get_gateway_runtime_snapshot()
+
+        assert snapshot.running is False
+        assert snapshot.status_unknown is True
+        assert snapshot.authority == "systemd inaccessible"
+
+    def test_runtime_snapshot_reports_unknown_for_stale_state_when_systemd_is_inaccessible(self, monkeypatch):
+        user_unit = SimpleNamespace(exists=lambda: True)
+        system_unit = SimpleNamespace(exists=lambda: False)
+        stale = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda: [])
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_systemd_unit_path",
+            lambda system=False: system_unit if system else user_unit,
+        )
+        monkeypatch.setattr(
+            status,
+            "read_runtime_status",
+            lambda: {"gateway_state": "running", "pid": 1234, "updated_at": stale},
+        )
+
+        snapshot = gateway_cli.get_gateway_runtime_snapshot()
+
+        assert snapshot.running is False
+        assert snapshot.status_unknown is True
+        assert snapshot.service_installed is True
+        assert snapshot.authority == "systemd inaccessible"
 
     def test_is_service_running_checks_system_scope_when_user_scope_is_inactive(self, monkeypatch):
         user_unit = SimpleNamespace(exists=lambda: True)
@@ -1076,6 +1225,64 @@ class TestGatewaySystemServiceRouting:
         assert "service stopped" in out
         assert "Gateway process is running for this profile" in out
         assert "PID(s): 4321" in out
+
+    def test_gateway_status_reports_runtime_authority_when_systemd_is_inaccessible(self, monkeypatch, capsys):
+        user_unit = SimpleNamespace(exists=lambda: True)
+        system_unit = SimpleNamespace(exists=lambda: False)
+
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_systemd_unit_path",
+            lambda system=False: system_unit if system else user_unit,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_gateway_runtime_snapshot",
+            lambda system=False: gateway_cli.GatewayRuntimeSnapshot(
+                manager="systemd (user, inaccessible)",
+                service_installed=True,
+                service_running=False,
+                gateway_pids=(70604,),
+                service_scope="user",
+                runtime_state_running=True,
+                runtime_state_fresh=True,
+                authority="fresh gateway_state.json",
+                status_detail="systemd is not accessible from this process",
+            ),
+        )
+
+        gateway_cli.gateway_command(SimpleNamespace(gateway_command="status", deep=False, system=False))
+
+        out = capsys.readouterr().out
+        assert "Gateway is running" in out
+        assert "Authority: fresh gateway_state.json" in out
+        assert "systemd is not accessible from this process" in out
+        assert "Running manually" not in out
+        assert "Gateway is not running" not in out
+
+    def test_systemd_inaccessible_hint_uses_scope_and_service_name(
+        self, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(gateway_cli, "get_service_name", lambda: "hermes-gateway-prod")
+
+        gateway_cli._print_systemd_inaccessible_status(
+            gateway_cli.GatewayRuntimeSnapshot(
+                manager="systemd (system, inaccessible)",
+                service_installed=True,
+                service_running=False,
+                service_scope="system",
+                status_unknown=True,
+                authority="systemd inaccessible",
+            )
+        )
+
+        out = capsys.readouterr().out
+        assert "systemctl status hermes-gateway-prod.service" in out
+        assert "systemctl --user status hermes-gateway.service" not in out
 
     def test_gateway_status_on_termux_shows_manual_guidance(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
@@ -1618,7 +1825,8 @@ class TestProfileArg:
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
         unit = gateway_cli.generate_systemd_unit(system=False)
         assert "--profile mybot" in unit
-        assert "gateway run --replace" in unit
+        assert "gateway run" in unit
+        assert "--replace" not in unit
 
     def test_launchd_plist_includes_profile(self, tmp_path, monkeypatch):
         """generate_launchd_plist should include --profile in ProgramArguments for named profiles."""

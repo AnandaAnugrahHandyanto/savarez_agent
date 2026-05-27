@@ -12,6 +12,7 @@ import contextvars
 import logging
 import os
 import re
+import shlex
 import sys
 import threading
 import time
@@ -236,6 +237,102 @@ HARDLINE_PATTERNS_COMPILED = [
     for pattern, description in HARDLINE_PATTERNS
 ]
 
+GATEWAY_SELF_RESTART_DESCRIPTION = (
+    "gateway self-restart from inside hermes-gateway.service"
+)
+
+GATEWAY_SELF_RESTART_PATTERNS_COMPILED = [
+    re.compile(
+        r'\bsystemctl\b'
+        r'(?=[^\n;&|]*\b(?:stop|restart)\b)'
+        r'(?=[^\n;&|]*\bhermes-gateway(?:\.service)?\b)',
+        _RE_FLAGS,
+    ),
+    re.compile(r'\bhermes\s+gateway\s+(?:stop|restart)\b', _RE_FLAGS),
+]
+
+_SHELL_WRAPPER_BASENAMES = {"bash", "dash", "ksh", "sh", "zsh"}
+_GATEWAY_RESTART_ACTIONS = {"restart", "stop"}
+
+
+def _is_running_inside_gateway_service_cgroup() -> bool:
+    """Return True when this process is owned by hermes-gateway.service."""
+    try:
+        with open("/proc/self/cgroup", "r", encoding="utf-8", errors="replace") as fh:
+            return "hermes-gateway.service" in fh.read()
+    except OSError:
+        return False
+
+
+def _is_gateway_self_restart_command(normalized_command: str) -> bool:
+    def _tokens(segment: str) -> list[str]:
+        try:
+            return shlex.split(segment, posix=True)
+        except ValueError:
+            return []
+
+    def _basename(token: str) -> str:
+        return os.path.basename(token)
+
+    def _is_gateway_unit(token: str) -> bool:
+        unit = token.strip().strip("'\"")
+        return (
+            unit == "hermes-gateway"
+            or unit == "hermes-gateway.service"
+            or (
+                unit.startswith("hermes-gateway-")
+                and (unit.endswith(".service") or ".service" not in unit)
+            )
+        )
+
+    def _matches_tokens(tokens: list[str]) -> bool:
+        if not tokens:
+            return False
+
+        cmd = _basename(tokens[0])
+        if cmd in {"sudo", "doas"}:
+            idx = 1
+            while idx < len(tokens) and tokens[idx].startswith("-"):
+                idx += 1
+            return _matches_tokens(tokens[idx:])
+
+        if cmd == "env":
+            idx = 1
+            while idx < len(tokens) and (
+                "=" in tokens[idx] or tokens[idx].startswith("-")
+            ):
+                idx += 1
+            return _matches_tokens(tokens[idx:])
+
+        if cmd in _SHELL_WRAPPER_BASENAMES:
+            for idx, token in enumerate(tokens[1:], start=1):
+                if token in {"-c", "-lc"} and idx + 1 < len(tokens):
+                    return _is_gateway_self_restart_command(tokens[idx + 1])
+            return False
+
+        if cmd == "systemctl":
+            action_idx = next(
+                (
+                    idx
+                    for idx, token in enumerate(tokens[1:], start=1)
+                    if token in _GATEWAY_RESTART_ACTIONS
+                ),
+                None,
+            )
+            if action_idx is None:
+                return False
+            return any(_is_gateway_unit(token) for token in tokens[action_idx + 1:])
+
+        if cmd == "hermes" and len(tokens) >= 3:
+            return tokens[1] == "gateway" and tokens[2] in _GATEWAY_RESTART_ACTIONS
+
+        return False
+
+    for segment in re.split(r"\s*(?:&&|\|\||;|\|)\s*", normalized_command):
+        if _matches_tokens(_tokens(segment)):
+            return True
+    return False
+
 
 # =========================================================================
 # Sudo stdin guard — block password guessing via "sudo -S"
@@ -278,6 +375,11 @@ def detect_hardline_command(command: str) -> tuple:
         (is_hardline, description) or (False, None)
     """
     normalized = _normalize_command_for_detection(command).lower()
+    if (
+        _is_gateway_self_restart_command(normalized)
+        and _is_running_inside_gateway_service_cgroup()
+    ):
+        return (True, GATEWAY_SELF_RESTART_DESCRIPTION)
     for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
         if pattern_re.search(normalized):
             return (True, description)

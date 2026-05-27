@@ -46,6 +46,33 @@ def test_find_git_worktree_handles_dotgit_file(tmp_path: Path):
     assert find_git_worktree(str(repo)) == str(repo)
 
 
+def test_find_git_worktree_ignores_git_marker_at_temp_root(tmp_path: Path, monkeypatch):
+    """A transient `.git` at the temp root must not classify all temp files as repos."""
+    temp_root = tmp_path / "tmp-root"
+    temp_root.mkdir()
+    (temp_root / ".git").mkdir()
+    sub = temp_root / "pytest-case" / "sub"
+    sub.mkdir(parents=True)
+    monkeypatch.setattr("agent.lsp.workspace.tempfile.gettempdir", lambda: str(temp_root))
+
+    assert find_git_worktree(str(sub)) is None
+
+
+def test_find_git_worktree_continues_above_custom_tmpdir_inside_repo(
+    tmp_path: Path, monkeypatch
+):
+    """A custom TMPDIR nested under a repo must not stop repo discovery."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    temp_root = repo / "tmp"
+    sub = temp_root / "pytest-case" / "sub"
+    sub.mkdir(parents=True)
+    monkeypatch.setattr("agent.lsp.workspace.tempfile.gettempdir", lambda: str(temp_root))
+
+    assert find_git_worktree(str(sub)) == str(repo)
+
+
 def test_is_inside_workspace_true_for_subpath(tmp_path: Path):
     root = tmp_path / "p"
     root.mkdir()

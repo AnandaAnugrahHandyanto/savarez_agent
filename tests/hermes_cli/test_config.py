@@ -825,6 +825,8 @@ class TestEnvWriteDenylist:
             "HERMES_PROFILE",
             "HERMES_CONFIG",
             "HERMES_ENV",
+            "path",
+            "Editor",
         ],
     )
     def test_denylisted_keys_rejected(self, denied_key):
@@ -892,4 +894,3 @@ class TestEnvWriteDenylist:
         # But the write path still refuses to update it
         with pytest.raises(ValueError, match="denylist"):
             save_env_value("LD_PRELOAD", "/tmp/evil.so")
-
