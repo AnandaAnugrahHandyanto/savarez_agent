@@ -1392,10 +1392,19 @@ class WeixinAdapter(BasePlatformAdapter):
         item_list = message.get("item_list") or []
         text = _extract_text(item_list)
         if text:
-            content_key = f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"
-            if self._dedup.is_duplicate(content_key):
-                logger.debug("[%s] Content-dedup: skipping duplicate message from %s", self.name, sender_id)
-                return
+            # Skip content dedup for approval commands — user may send
+            # duplicate /approve or /deny in quick succession for sequential
+            # dangerous commands and we must not silently eat the second one.
+            stripped = text.strip().lower()
+            is_approval_cmd = any(
+                stripped == cmd or stripped.startswith(cmd + " ")
+                for cmd in ("/approve", "/deny", "/always", "/cancel")
+            )
+            if not is_approval_cmd:
+                content_key = f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"
+                if self._dedup.is_duplicate(content_key):
+                    logger.debug("[%s] Content-dedup: skipping duplicate message from %s", self.name, sender_id)
+                    return
 
         chat_type, effective_chat_id = _guess_chat_type(message, self._account_id)
         if chat_type == "group":
