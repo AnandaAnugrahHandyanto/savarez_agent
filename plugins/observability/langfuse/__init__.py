@@ -19,6 +19,7 @@ Optional env vars:
   HERMES_LANGFUSE_SAMPLE_RATE - sampling rate 0.0–1.0 (default: 1.0)
   HERMES_LANGFUSE_MAX_CHARS   - max chars per field (default: 12000)
   HERMES_LANGFUSE_DEBUG       - set to "true" for verbose logging
+  HERMES_LANGFUSE_HOST_HEADER - optional Host header for local reverse proxies
 """
 from __future__ import annotations
 
@@ -58,6 +59,7 @@ _LANGFUSE_CLIENT = None
 _READ_FILE_LINE_RE = re.compile(r"^\s*(\d+)\|(.*)$")
 _READ_FILE_HEAD_LINES = 25
 _READ_FILE_TAIL_LINES = 15
+_HOST_HEADER_RE = re.compile(r"^[A-Za-z0-9.-]+(?::\d{1,5})?$")
 
 # Langfuse-issued keys always carry these prefixes (cloud or self-hosted —
 # the prefix is baked into the server-side issuance flow, not a UI hint).
@@ -137,6 +139,29 @@ def _validate_langfuse_key(env_name: str, value: str) -> Optional[str]:
     )
 
 
+def _additional_headers() -> Optional[Dict[str, str]]:
+    """Build optional SDK headers from env, defensively.
+
+    Jay's self-hosted Langfuse can sit behind a local edge-nginx vhost while
+    the public hostname is protected by Cloudflare Access. In that topology the
+    SDK should post to the local listener (for example ``http://127.0.0.1:8080``)
+    while still sending ``Host: langfuse.example.com`` so nginx routes to the
+    Langfuse container. Keep this intentionally narrow: only a syntactically safe
+    Host header is supported, which avoids turning env config into a generic
+    credential/header exfiltration channel.
+    """
+    host_header = _env("HERMES_LANGFUSE_HOST_HEADER") or _env("LANGFUSE_HOST_HEADER")
+    if not host_header:
+        return None
+    if not _HOST_HEADER_RE.match(host_header):
+        logger.warning(
+            "Invalid HERMES_LANGFUSE_HOST_HEADER=%r; ignoring Langfuse Host header override.",
+            _redact_key_preview(host_header),
+        )
+        return None
+    return {"Host": host_header}
+
+
 def _get_langfuse() -> Optional[Langfuse]:
     """Return a cached Langfuse client, or ``None`` if unavailable.
 
@@ -199,6 +224,9 @@ def _get_langfuse() -> Optional[Langfuse]:
         "secret_key": secret_key,
         "base_url": base_url,
     }
+    additional_headers = _additional_headers()
+    if additional_headers:
+        kwargs["additional_headers"] = additional_headers
     if environment:
         kwargs["environment"] = environment
     if release:

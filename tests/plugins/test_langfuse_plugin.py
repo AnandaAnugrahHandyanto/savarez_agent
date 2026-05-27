@@ -433,16 +433,49 @@ class TestPlaceholderKeyDetection:
         wanted."""
         self._clear_env(monkeypatch)
         monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz")
-        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-real-secret-xyz")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-...-xyz")
         plugin = self._fresh_plugin(monkeypatch)
         with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
             client = plugin._get_langfuse()
         assert isinstance(client, _FakeLangfuse)
         assert client.kwargs["public_key"] == "pk-lf-real-public-xyz"
-        assert client.kwargs["secret_key"] == "sk-lf-real-secret-xyz"
+        assert client.kwargs["secret_key"] == "sk-lf-...-xyz"
         assert "placeholders" not in caplog.text.lower(), (
             f"Valid Langfuse keys tripped the placeholder guard: {caplog.text!r}"
         )
+
+    def test_host_header_override_is_passed_to_sdk(self, monkeypatch):
+        """Self-hosted installs behind local vhost proxies need a Host header.
+
+        This lets Hermes post to a local listener that bypasses Cloudflare Access
+        while nginx still routes the request to the Langfuse container.
+        """
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-...-xyz")
+        monkeypatch.setenv("HERMES_LANGFUSE_BASE_URL", "http://127.0.0.1:8080")
+        monkeypatch.setenv("HERMES_LANGFUSE_HOST_HEADER", "langfuse.example.com")
+        plugin = self._fresh_plugin(monkeypatch)
+
+        client = plugin._get_langfuse()
+
+        assert isinstance(client, _FakeLangfuse)
+        assert client.kwargs["base_url"] == "http://127.0.0.1:8080"
+        assert client.kwargs["additional_headers"] == {"Host": "langfuse.example.com"}
+
+    def test_invalid_host_header_override_is_ignored(self, monkeypatch, caplog):
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-...-xyz")
+        monkeypatch.setenv("HERMES_LANGFUSE_HOST_HEADER", "bad.example\r\nX-Injected: yes")
+        plugin = self._fresh_plugin(monkeypatch)
+
+        with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
+            client = plugin._get_langfuse()
+
+        assert isinstance(client, _FakeLangfuse)
+        assert "additional_headers" not in client.kwargs
+        assert "Invalid HERMES_LANGFUSE_HOST_HEADER" in caplog.text
 
 
 class TestRequestMessageCoercion:
