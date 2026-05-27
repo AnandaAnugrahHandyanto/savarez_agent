@@ -14,6 +14,7 @@ import contextvars
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -122,12 +123,27 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.jobs import advance_next_run, get_due_jobs, mark_job_run, save_job_output, update_job
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
+
+_TERMINAL_WORKFLOW_STATUSES = frozenset(
+    {
+        "completed",
+        "completed_with_degradation",
+        "queued_for_review",
+        "published",
+        "failed",
+        "error",
+        "operator_blocked",
+        "cancelled",
+        "skipped_queue_pressure",
+        "stalled_unobserved",
+    }
+)
 
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _hermes_home: Path | None = None
@@ -143,6 +159,56 @@ def _get_lock_paths() -> tuple[Path, Path]:
     hermes_home = _get_hermes_home()
     lock_dir = hermes_home / "cron"
     return lock_dir, lock_dir / ".tick.lock"
+
+
+def _looks_like_completion_watcher(job: dict) -> bool:
+    """Best-effort guard for recurring workflow watcher jobs.
+
+    These jobs are meant to poll until a watched workflow reaches a terminal
+    state. Once they have delivered that terminal report, continuing to poll
+    only repeats the same completion message.
+    """
+    if job.get("stop_after_terminal"):
+        return True
+
+    text = " ".join(
+        str(job.get(key) or "").lower()
+        for key in ("name", "prompt", "script")
+    )
+    if "completion watcher" in text:
+        return True
+    watch_terms = (
+        "run_watch",
+        "run.watch",
+        "run_progress_digest",
+        "run.progress_digest",
+    )
+    if any(term in text for term in watch_terms) and "terminal" in text:
+        return True
+    return "workflow run" in text and "watch" in text and "terminal" in text
+
+
+def _terminal_completion_watcher_report(job: dict, output: str, final_response: str) -> bool:
+    """Return True when a recurring completion watcher has reported terminal state."""
+    if job.get("schedule", {}).get("kind") not in {"cron", "interval"}:
+        return False
+    if not _looks_like_completion_watcher(job):
+        return False
+
+    text = f"{output or ''}\n{final_response or ''}"
+    if re.search(
+        r'"?action_posture"?\s*:\s*"?terminal[_a-z0-9-]*"?',
+        text,
+        re.IGNORECASE,
+    ):
+        return True
+
+    status_pattern = r"\b(?:terminal\s+status|status)\s*[:=]\s*`?([a-z0-9_ -]+)`?"
+    for match in re.finditer(status_pattern, text, re.IGNORECASE):
+        status = match.group(1).strip().lower().replace(" ", "_").replace("-", "_")
+        if status in _TERMINAL_WORKFLOW_STATUSES:
+            return True
+    return False
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -1814,7 +1880,22 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     success = False
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
+                complete_recurring_watcher = success and _terminal_completion_watcher_report(
+                    job,
+                    output,
+                    final_response,
+                )
                 mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+                if complete_recurring_watcher:
+                    update_job(
+                        job["id"],
+                        {
+                            "enabled": False,
+                            "state": "completed",
+                            "next_run_at": None,
+                            "completed_reason": "terminal_workflow_report_delivered",
+                        },
+                    )
                 return True
 
             except Exception as e:

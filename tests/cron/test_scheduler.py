@@ -1849,6 +1849,62 @@ class TestSilentDelivery:
         save_mock.assert_called_once_with("monitor-job", "# full output")
         deliver_mock.assert_not_called()
 
+    def test_recurring_completion_watcher_stops_after_terminal_report(self):
+        job = self._make_job()
+        job.update(
+            {
+                "id": "watcher-job",
+                "name": "KB sync completion watcher gen-test",
+                "prompt": (
+                    "Watch production KB workflow run gen-test. Call run_watch. "
+                    "If terminal, call run_summary and publication_status."
+                ),
+                "schedule": {"kind": "interval", "minutes": 5},
+            }
+        )
+        output = '{"action_posture": "terminal_degraded_report"}'
+        final_response = "KB workflow finished with degradation.\nStatus: completed_with_degradation"
+
+        with patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.run_job", return_value=(True, output, final_response, None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result"), \
+             patch("cron.scheduler.mark_job_run"), \
+             patch("cron.scheduler.update_job", create=True) as update_mock:
+            from cron.scheduler import tick
+            tick(verbose=False)
+
+        update_mock.assert_called_once()
+        assert update_mock.call_args.args[0] == "watcher-job"
+        assert update_mock.call_args.args[1]["enabled"] is False
+        assert update_mock.call_args.args[1]["state"] == "completed"
+        assert update_mock.call_args.args[1]["next_run_at"] is None
+
+    def test_recurring_completion_watcher_keeps_running_until_terminal(self):
+        job = self._make_job()
+        job.update(
+            {
+                "id": "watcher-job",
+                "name": "KB sync completion watcher gen-test",
+                "prompt": (
+                    "Watch production KB workflow run gen-test. Call run_watch. "
+                    "If terminal, call run_summary and publication_status."
+                ),
+                "schedule": {"kind": "interval", "minutes": 5},
+            }
+        )
+
+        with patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT]", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result"), \
+             patch("cron.scheduler.mark_job_run"), \
+             patch("cron.scheduler.update_job", create=True) as update_mock:
+            from cron.scheduler import tick
+            tick(verbose=False)
+
+        update_mock.assert_not_called()
+
 
 class TestBuildJobPromptSilentHint:
     """Verify _build_job_prompt always injects [SILENT] guidance."""
