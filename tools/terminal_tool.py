@@ -953,7 +953,13 @@ def _get_env_config() -> Dict[str, Any]:
     # remote home, and everything else starts in the backend's default
     # root-like cwd.
     if env_type == "local":
-        default_cwd = os.getcwd()
+        try:
+            default_cwd = os.getcwd()
+        except (FileNotFoundError, OSError):
+            # CWD may have been deleted (e.g. tmpfs cleanup on Arch Linux).
+            # Fall back to the home directory so the cleanup thread does not
+            # spam errors.log every 60 seconds.  See #33367.
+            default_cwd = os.path.expanduser("~")
     elif env_type == "ssh":
         default_cwd = "~"
     else:
