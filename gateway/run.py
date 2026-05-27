@@ -4564,9 +4564,117 @@ class GatewayRunner:
         # turn so the agent kicks off the new chat.
         asyncio.create_task(self._handoff_watcher())
 
+        # Start Judy calendar watcher — claims due voluntary appointments and
+        # wakes the agent through the configured home channel.
+        asyncio.create_task(self._calendar_wakeup_watcher())
+
         logger.info("Press Ctrl+C to stop")
         
         return True
+
+    def _calendar_wakeup_interval_seconds(self) -> int:
+        """Poll frequently during waking hours, slowly at night."""
+        hour = datetime.now().hour
+        if 7 <= hour < 23:
+            return 60
+        return 15 * 60
+
+    def _calendar_wakeup_prompt(self, event: Dict[str, Any]) -> str:
+        title = str(event.get("title") or "").strip()
+        description = str(event.get("description") or "").strip()
+        context = event.get("context") or {}
+        tags = event.get("tags") or []
+        event_id = event.get("id")
+        context_text = json.dumps(context, ensure_ascii=False, indent=2)
+        tags_text = ", ".join(str(t) for t in tags) if tags else "(aucun)"
+        return (
+            f"REVEIL PLANIFIE - {title}\n"
+            f"Event id: {event_id}\n"
+            f"Description: {description or '(aucune)'}\n"
+            f"Tags: {tags_text}\n"
+            f"Contexte JSON:\n{context_text}\n\n"
+            "Le contexte est un objet JSON libre. Exemples: priority, "
+            "depends_on, related_files, notes.\n"
+            "Fais ce que tu as a faire, puis marque l'evenement done avec "
+            f"calendar_done(id={event_id})."
+        )
+
+    def _calendar_home_source(self):
+        """Return the configured home source for calendar wakeups."""
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+
+        candidates = [Platform.TELEGRAM] + [
+            p for p in self.adapters.keys() if p != Platform.TELEGRAM
+        ]
+        for platform in candidates:
+            adapter = self.adapters.get(platform)
+            if not adapter:
+                continue
+            home = self.config.get_home_channel(platform)
+            if not home or not home.chat_id:
+                continue
+            return adapter, SessionSource(
+                platform=platform,
+                chat_id=str(home.chat_id),
+                chat_name=home.name,
+                chat_type="dm",
+                user_id="system:calendar",
+                user_name="Calendar",
+                thread_id=str(home.thread_id) if home.thread_id else None,
+            )
+        return None, None
+
+    async def _calendar_wakeup_watcher(self) -> None:
+        """Poll the Judy calendar and inject due wakeups into the Gateway."""
+        await asyncio.sleep(5)
+        while self._running:
+            interval = self._calendar_wakeup_interval_seconds()
+            try:
+                from hermes_cli import calendar_db
+
+                requeued = calendar_db.requeue_stale_firing()
+                if requeued:
+                    logger.info("Calendar wakeup requeued %d stale firing event(s)", requeued)
+                events = calendar_db.claim_due_events(limit=5)
+                for event in events:
+                    await self._dispatch_calendar_wakeup(event)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("Calendar wakeup watcher tick error: %s", exc, exc_info=True)
+            await asyncio.sleep(interval)
+
+    async def _dispatch_calendar_wakeup(self, event: Dict[str, Any]) -> None:
+        from gateway.platforms.base import MessageEvent, MessageType
+        from hermes_cli import calendar_db
+
+        adapter, source = self._calendar_home_source()
+        event_id = event.get("id")
+        if not adapter or not source:
+            logger.warning("Calendar wakeup %s has no configured home channel", event_id)
+            if event_id is not None:
+                calendar_db.release_claim(int(event_id))
+            return
+        try:
+            synth_event = MessageEvent(
+                text=self._calendar_wakeup_prompt(event),
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+            logger.info(
+                "Calendar wakeup %s dispatching to %s chat=%s thread=%s",
+                event_id,
+                source.platform.value,
+                source.chat_id,
+                source.thread_id,
+            )
+            await adapter.handle_message(synth_event)
+        except Exception:
+            logger.exception("Calendar wakeup %s dispatch failed", event_id)
+            if event_id is not None:
+                calendar_db.release_claim(int(event_id))
 
     async def _handoff_watcher(self, interval: float = 2.0) -> None:
         """Background task that processes pending CLI→gateway session handoffs.
