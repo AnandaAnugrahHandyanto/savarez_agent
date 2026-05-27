@@ -29,12 +29,15 @@ import os
 import re
 import tempfile
 import time
+import hashlib
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
 from utils import atomic_replace
+from tools.memory_types import MetadataStore, MemoryType
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 msvcrt = None
@@ -127,6 +130,12 @@ class MemoryStore:
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        
+        self.metadata_stores = {
+            "memory": MetadataStore("memory"),
+            "user": MetadataStore("user")
+        }
+        
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
@@ -158,17 +167,40 @@ class MemoryStore:
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
         self.user_entries = list(dict.fromkeys(self.user_entries))
 
+        self.metadata_stores["memory"].purge_orphans(self.memory_entries)
+        self.metadata_stores["user"].purge_orphans(self.user_entries)
+
+        filtered_mem = self._filter_and_sort_for_snapshot(self.memory_entries, "memory")
+        filtered_usr = self._filter_and_sort_for_snapshot(self.user_entries, "user")
+
         # Sanitize entries for the system-prompt snapshot only.  Live state
         # (memory_entries / user_entries) keeps the raw text so the user
         # can see + remove poisoned entries via the memory tool.
-        sanitized_memory = self._sanitize_entries_for_snapshot(self.memory_entries, "MEMORY.md")
-        sanitized_user = self._sanitize_entries_for_snapshot(self.user_entries, "USER.md")
+        sanitized_memory = self._sanitize_entries_for_snapshot(filtered_mem, "MEMORY.md")
+        sanitized_user = self._sanitize_entries_for_snapshot(filtered_usr, "USER.md")
 
         # Capture frozen snapshot for system prompt injection
         self._system_prompt_snapshot = {
             "memory": self._render_block("memory", sanitized_memory),
             "user": self._render_block("user", sanitized_user),
         }
+
+    def _filter_and_sort_for_snapshot(self, entries: List[str], target: str) -> List[str]:
+        meta_store = self.metadata_stores[target]
+        now = datetime.now(timezone.utc).isoformat()
+        valid = []
+        for e in entries:
+            eh = hashlib.sha256(e.encode("utf-8")).hexdigest()[:12]
+            m = meta_store.get(eh)
+            if m and m.expires_at and m.expires_at < now:
+                continue
+            valid.append(e)
+            
+        valid.sort(
+            key=lambda e: meta_store.get(hashlib.sha256(e.encode("utf-8")).hexdigest()[:12]).importance if meta_store.get(hashlib.sha256(e.encode("utf-8")).hexdigest()[:12]) else 0.5,
+            reverse=True
+        )
+        return valid
 
     @staticmethod
     def _sanitize_entries_for_snapshot(entries: List[str], filename: str) -> List[str]:
@@ -295,7 +327,7 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
-    def add(self, target: str, content: str) -> Dict[str, Any]:
+    def add(self, target: str, content: str, **kwargs) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()
         if not content:
@@ -305,6 +337,16 @@ class MemoryStore:
         scan_error = _scan_memory_content(content)
         if scan_error:
             return {"success": False, "error": scan_error}
+
+        # Check contradiction BEFORE acquiring lock using current live state to avoid holding lock during network I/O
+        if target == "user" and kwargs.get("mem_type") == MemoryType.USER_PREFERENCE.value:
+            from agent.memory_contradiction import check_contradiction
+            conflict = check_contradiction(content, self._entries_for(target))
+            if conflict:
+                return {
+                    "success": False,
+                    "error": f"Contradiction detected: {conflict}. Use replace or remove if this is a change."
+                }
 
         with self._file_lock(self._path_for(target)):
             # Re-read from disk under lock to pick up writes from other sessions.
@@ -339,13 +381,15 @@ class MemoryStore:
                     "usage": f"{current:,}/{limit:,}",
                 }
 
+
             entries.append(content)
             self._set_entries(target, entries)
             self.save_to_disk(target)
+            self.metadata_stores[target].upsert(content, **kwargs)
 
         return self._success_response(target, "Entry added.")
 
-    def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
+    def replace(self, target: str, old_text: str, new_content: str, **kwargs) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
         old_text = old_text.strip()
         new_content = new_content.strip()
@@ -399,9 +443,12 @@ class MemoryStore:
                     ),
                 }
 
+            old_entry_str = entries[idx]
             entries[idx] = new_content
             self._set_entries(target, entries)
             self.save_to_disk(target)
+            self.metadata_stores[target].remove(old_entry_str)
+            self.metadata_stores[target].upsert(new_content, **kwargs)
 
         return self._success_response(target, "Entry replaced.")
 
@@ -435,9 +482,11 @@ class MemoryStore:
                 # All identical -- safe to remove just the first
 
             idx = matches[0][0]
+            old_entry_str = entries[idx]
             entries.pop(idx)
             self._set_entries(target, entries)
             self.save_to_disk(target)
+            self.metadata_stores[target].remove(old_entry_str)
 
         return self._success_response(target, "Entry removed.")
 
@@ -606,6 +655,10 @@ def memory_tool(
     content: str = None,
     old_text: str = None,
     store: Optional[MemoryStore] = None,
+    mem_type: str = None,
+    importance: float = 0.5,
+    confidence: float = 0.5,
+    expires_at: str = None,
 ) -> str:
     """
     Single entry point for the memory tool. Dispatches to MemoryStore methods.
@@ -621,14 +674,20 @@ def memory_tool(
     if action == "add":
         if not content:
             return tool_error("Content is required for 'add' action.", success=False)
-        result = store.add(target, content)
+        result = store.add(
+            target, content,
+            mem_type=mem_type, importance=importance, confidence=confidence, expires_at=expires_at
+        )
 
     elif action == "replace":
         if not old_text:
             return tool_error("old_text is required for 'replace' action.", success=False)
         if not content:
             return tool_error("content is required for 'replace' action.", success=False)
-        result = store.replace(target, old_text, content)
+        result = store.replace(
+            target, old_text, content,
+            mem_type=mem_type, importance=importance, confidence=confidence, expires_at=expires_at
+        )
 
     elif action == "remove":
         if not old_text:
@@ -696,6 +755,23 @@ MEMORY_SCHEMA = {
                 "type": "string",
                 "description": "Short unique substring identifying the entry to replace or remove."
             },
+            "mem_type": {
+                "type": "string",
+                "enum": ["user_preference", "environment", "convention", "failure_pattern", "temporary", "episodic"],
+                "description": "Classification of the memory entry."
+            },
+            "importance": {
+                "type": "number",
+                "description": "How critical this memory is (0.0 to 1.0)."
+            },
+            "confidence": {
+                "type": "number",
+                "description": "Confidence level in this memory (0.0 to 1.0)."
+            },
+            "expires_at": {
+                "type": "string",
+                "description": "ISO8601 UTC timestamp when this memory should expire, if applicable."
+            }
         },
         "required": ["action", "target"],
     },
@@ -714,6 +790,10 @@ registry.register(
         target=args.get("target", "memory"),
         content=args.get("content"),
         old_text=args.get("old_text"),
+        mem_type=args.get("mem_type"),
+        importance=args.get("importance", 0.5),
+        confidence=args.get("confidence", 0.5),
+        expires_at=args.get("expires_at"),
         store=kw.get("store")),
     check_fn=check_memory_requirements,
     emoji="🧠",
