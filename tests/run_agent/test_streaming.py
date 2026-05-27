@@ -811,6 +811,77 @@ class TestCodexStreamCallbacks:
         response = agent._run_codex_stream({}, client=mock_client)
         assert "Hello from Codex!" in deltas
 
+    def test_codex_stream_typeerror_during_completed_event_backfills_output_item(self):
+        from run_agent import AIAgent
+
+        done_item = SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text="OK")],
+        )
+
+        def event_iter():
+            yield SimpleNamespace(type="response.output_item.done", item=done_item)
+            raise TypeError("'NoneType' object is not iterable")
+
+        mock_stream = MagicMock()
+        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
+        mock_stream.__exit__ = MagicMock(return_value=False)
+        mock_stream.__iter__ = MagicMock(return_value=event_iter())
+
+        mock_client = MagicMock()
+        mock_client.responses.stream.return_value = mock_stream
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "codex_responses"
+        agent._interrupt_requested = False
+
+        response = agent._run_codex_stream({}, client=mock_client)
+
+        assert response.status == "completed"
+        assert response.output == [done_item]
+
+    def test_codex_stream_typeerror_in_get_final_response_synthesizes_delta_text(self):
+        from run_agent import AIAgent
+
+        events = [
+            SimpleNamespace(type="response.output_text.delta", delta="O"),
+            SimpleNamespace(type="response.output_text.delta", delta="K"),
+        ]
+
+        mock_stream = MagicMock()
+        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
+        mock_stream.__exit__ = MagicMock(return_value=False)
+        mock_stream.__iter__ = MagicMock(return_value=iter(events))
+        mock_stream.get_final_response.side_effect = TypeError(
+            "'NoneType' object is not iterable"
+        )
+
+        mock_client = MagicMock()
+        mock_client.responses.stream.return_value = mock_stream
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "codex_responses"
+        agent._interrupt_requested = False
+
+        response = agent._run_codex_stream({}, client=mock_client)
+
+        assert response.status == "completed"
+        assert response.output[0].content[0].text == "OK"
+
     def test_codex_stream_refreshes_activity_on_every_event(self):
         from run_agent import AIAgent
 
