@@ -3306,14 +3306,30 @@ class BasePlatformAdapter(ABC):
                     gateway_session_id=session_key,
                     orchestrator_session_key=session_key,
                 )
-                if _qg.get("action") == "quality_gate":
+                if _qg.get("action") == "quality_gate_reject":
+                    _qg_score = _qg.get("route_detail", {}).get("score")
+                    _qg_flags = _qg.get("route_detail", {}).get("flags", [])
+                    logger.warning(
+                        "🚫 [%s] Quality gate REJECTED response (score=%s/10) for session %s — flags: %s. Response suppressed.",
+                        self.name, _qg_score, session_key, _qg_flags,
+                    )
+                    response = None
+                elif _qg.get("action") == "quality_gate":
+                    # Advisory mode: log warning but allow delivery
                     _qg_score = _qg.get("route_detail", {}).get("score")
                     _qg_flags = _qg.get("route_detail", {}).get("flags", [])
                     if _qg_score and _qg_score < 5:
                         logger.warning(
-                            "[%s] Quality gate low score (%s/10) for session %s — flags: %s",
+                            "⚠️ [%s] Quality gate low score (%s/10) for session %s — flags: %s (advisory mode)",
                             self.name, _qg_score, session_key, _qg_flags,
                         )
+                elif _qg.get("action") == "route":
+                    # Response was routed elsewhere (e.g., search) — suppress original
+                    logger.info(
+                        "🔀 [%s] Quality gate routed response for session %s — %s",
+                        self.name, session_key, _qg.get("reason", "unknown"),
+                    )
+                    response = None
 
             # Send response if any.  A None/empty response is normal when
             # streaming already delivered the text (already_sent=True) or
