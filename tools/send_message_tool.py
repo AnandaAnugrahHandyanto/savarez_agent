@@ -41,6 +41,11 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # downstream adapters (signal, etc.) expect.
 _PHONE_PLATFORMS = frozenset({"signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
+# DingTalk openConversationId — the base64-ish "cid...==" value carried on
+# incoming stream messages and surfaced by send_message(action='list'). Marking
+# it explicit lets the OpenAPI group-send path (_send_dingtalk) route to ANY
+# group the robot belongs to, without depending on the channel directory cache.
+_DINGTALK_CONVERSATION_RE = re.compile(r"^\s*(cid[A-Za-z0-9+/]+={0,2})\s*$")
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
@@ -375,6 +380,10 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             return trimmed[:split_idx], trimmed[split_idx + 1 :], True
     if platform_name == "weixin":
         match = _WEIXIN_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), None, True
+    if platform_name == "dingtalk":
+        match = _DINGTALK_CONVERSATION_RE.fullmatch(target_ref)
         if match:
             return match.group(1), None, True
     if platform_name == "yuanbao":
@@ -1484,22 +1493,54 @@ async def _send_homeassistant(token, extra, chat_id, message):
 
 
 async def _send_dingtalk(extra, chat_id, message):
-    """Send via DingTalk robot webhook.
+    """Send via DingTalk, choosing between two delivery modes.
 
-    Note: The gateway's DingTalk adapter uses per-session webhook URLs from
-    incoming messages (dingtalk-stream SDK).  For cross-platform send_message
-    delivery we use a static robot webhook URL instead, which must be
-    configured via ``DINGTALK_WEBHOOK_URL`` env var or ``webhook_url`` in the
-    platform's extra config.
+    1. **OpenAPI group send (preferred).** When the target is a group
+       ``openConversationId`` (the ``cid...`` value carried on incoming stream
+       messages and shown by ``send_message(action='list')``) and app
+       credentials are configured, deliver via the robot ``OrgGroupSend`` API
+       (``POST /v1.0/robot/groupMessages/send``). This routes the message to
+       *any* group the robot belongs to — solving the long-standing limitation
+       that a custom-robot webhook only reaches one hard-wired group. Requires
+       ``client_id``/``client_secret`` (AppKey/AppSecret); ``robot_code``
+       defaults to the AppKey, matching the gateway's DingTalk adapter.
+
+    2. **Static custom-robot webhook (fallback).** The legacy behavior, used
+       when no app credentials are set, or when the target isn't a recognizable
+       group conversation id. A custom-robot webhook is bound to a single group,
+       so it ignores ``chat_id``. Configured via ``DINGTALK_WEBHOOK_URL`` env
+       var or ``webhook_url`` in the platform's extra config.
+
+    Note: the gateway's DingTalk adapter replies to *incoming* messages via the
+    per-session webhook URL (dingtalk-stream SDK); that path is unavailable for
+    proactive ``send_message`` delivery, which is what this function covers.
     """
     try:
         import httpx
     except ImportError:
         return {"error": "httpx not installed"}
+
+    client_id = extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID", "")
+    client_secret = extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET", "")
+    robot_code = extra.get("robot_code") or os.getenv("DINGTALK_ROBOT_CODE", "") or client_id
+
+    # Mode 1: OpenAPI group send when we have app credentials and a group cid.
+    if client_id and client_secret and _is_dingtalk_group_conversation(chat_id):
+        return await _send_dingtalk_group_openapi(
+            httpx, client_id, client_secret, robot_code, chat_id, message
+        )
+
+    # Mode 2: static custom-robot webhook (single group, ignores chat_id).
     try:
         webhook_url = extra.get("webhook_url") or os.getenv("DINGTALK_WEBHOOK_URL", "")
         if not webhook_url:
-            return {"error": "DingTalk not configured. Set DINGTALK_WEBHOOK_URL env var or webhook_url in dingtalk platform extra config."}
+            return {"error": (
+                "DingTalk not configured. To send to a specific group, set app "
+                "credentials (DINGTALK_CLIENT_ID/DINGTALK_CLIENT_SECRET) and target "
+                "the group's openConversationId. Otherwise set DINGTALK_WEBHOOK_URL "
+                "(or webhook_url in the dingtalk platform extra config) for "
+                "single-group custom-robot delivery."
+            )}
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 webhook_url,
@@ -1512,6 +1553,58 @@ async def _send_dingtalk(extra, chat_id, message):
         return {"success": True, "platform": "dingtalk", "chat_id": chat_id}
     except Exception as e:
         return _error(f"DingTalk send failed: {e}")
+
+
+def _is_dingtalk_group_conversation(chat_id) -> bool:
+    """True when *chat_id* looks like a DingTalk group openConversationId."""
+    return bool(chat_id) and bool(_DINGTALK_CONVERSATION_RE.fullmatch(str(chat_id)))
+
+
+async def _dingtalk_access_token(httpx, client_id, client_secret):
+    """Fetch an app access token via the DingTalk OAuth2 endpoint."""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            "https://api.dingtalk.com/v1.0/oauth2/accessToken",
+            json={"appKey": client_id, "appSecret": client_secret},
+        )
+        resp.raise_for_status()
+        return resp.json().get("accessToken", "")
+
+
+async def _send_dingtalk_group_openapi(httpx, client_id, client_secret, robot_code, conversation_id, message):
+    """Send a text message to a group via the robot OrgGroupSend OpenAPI."""
+    try:
+        token = await _dingtalk_access_token(httpx, client_id, client_secret)
+        if not token:
+            return _error("DingTalk: failed to obtain access token (check DINGTALK_CLIENT_ID/SECRET).")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                "https://api.dingtalk.com/v1.0/robot/groupMessages/send",
+                headers={"x-acs-dingtalk-access-token": token},
+                json={
+                    "robotCode": robot_code,
+                    "openConversationId": conversation_id,
+                    "msgKey": "sampleText",
+                    "msgParam": json.dumps({"content": message}),
+                },
+            )
+            if resp.status_code >= 400:
+                # DingTalk returns a JSON error body ({code, message}) on 4xx/5xx.
+                try:
+                    err = resp.json()
+                    detail = err.get("message") or err.get("errmsg") or resp.text
+                except Exception:
+                    detail = resp.text
+                return _error(f"DingTalk group send failed ({resp.status_code}): {detail}")
+            data = resp.json() if resp.content else {}
+        return {
+            "success": True,
+            "platform": "dingtalk",
+            "chat_id": conversation_id,
+            "message_id": data.get("processQueryKey"),
+        }
+    except Exception as e:
+        return _error(f"DingTalk group send failed: {e}")
 
 
 async def _send_wecom(extra, chat_id, message):
