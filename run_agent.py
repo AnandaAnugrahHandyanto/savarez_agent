@@ -1002,13 +1002,14 @@ class AIAgent:
         if not re.search(r"(?:^|[/\-_])gpt-5\.5(?:$|[\-_])", model_lower):
             return None
         return (
-            f"Codex backend appears to be silently rejecting {eff_model!r} "
-            "on chatgpt.com/backend-api/codex (no stream events, no error). "
-            "This is a known backend-side pattern that has affected ChatGPT "
-            "Plus accounts intermittently. "
-            "Workaround: try `gpt-5.4-codex` on the same OAuth profile, "
-            "or switch to a different model/provider in your fallback chain. "
-            "See hermes-agent#21444 for symptom history."
+            f"Codex backend did not return any stream events for {eff_model!r} "
+            "on chatgpt.com/backend-api/codex within the stale-call timeout. "
+            "This pattern has been observed intermittently with `gpt-5.5` on "
+            "ChatGPT Plus accounts (see hermes-agent#21444) but may also "
+            "indicate transient backend latency. "
+            "Workaround: retry, or switch to a different model via `/model` "
+            "(e.g. `gpt-5.4` on the same OAuth profile, or any model in "
+            "your fallback chain)."
         )
 
     def _is_openrouter_url(self) -> bool:
