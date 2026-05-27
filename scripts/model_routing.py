@@ -24,6 +24,7 @@ except ImportError:
 # ─── MODEL REGISTRY ────────────────────────────────────────────
 
 MODELS = {
+    "mac-ollama:qwen3:8b": {
         "provider": "mac-ollama",
         "model": "qwen3:8b",
         "context_length": 32768,
@@ -43,6 +44,7 @@ MODELS = {
         "strengths": ["code_generation", "reasoning", "review", "long_context", "best_local"],
         "max_tokens": 8192,
     },
+    "linux-ollama:qwen3:8b": {
         "provider": "linux-ollama",
         "model": "qwen3:8b",
         "context_length": 32768,
