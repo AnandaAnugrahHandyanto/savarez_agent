@@ -394,6 +394,17 @@ def _consume_codex_event_stream(
     else:
         output = []
 
+    # If the stream ended without any terminal event AND produced no usable
+    # content (no items, no text deltas), surface that as a RuntimeError so
+    # callers can distinguish "stream truncated mid-flight / provider rejected
+    # the call" from "stream completed with empty body".  This preserves the
+    # signal the SDK's high-level helper used to raise as
+    # ``RuntimeError("Didn't receive a `response.completed` event.")``.
+    if not saw_terminal and not output:
+        raise RuntimeError(
+            "Codex Responses stream did not emit a terminal response"
+        )
+
     assembled_text = "".join(collected_text_deltas)
 
     final = SimpleNamespace(
