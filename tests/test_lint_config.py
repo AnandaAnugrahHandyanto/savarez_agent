@@ -175,3 +175,23 @@ class TestAcpAdapterF541Regression:
         assert result.returncode == 0, (
             f"{self.TARGET.name} has {count} F541 violation(s)\n{result.stdout}"
         )
+
+class TestScriptsF541Regression:
+    """scripts/ must have zero F541 violations."""
+
+    SCRIPTS_DIR = REPO_ROOT / "scripts"
+
+    def test_scripts_dir_has_zero_f541_violations(self) -> None:
+        """scripts/ should have no f-strings without placeholders."""
+        import subprocess, sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F541",
+             "--output-format=concise", str(self.SCRIPTS_DIR)],
+            capture_output=True, text=True, check=False,
+        )
+
+        count = result.stdout.count("error[F541]")
+        assert result.returncode == 0, (
+            f"scripts/ has {count} F541 violation(s)\n{result.stdout}"
+        )
