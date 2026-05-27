@@ -980,11 +980,28 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 fb_model, fb_provider, _norm_err,
             )
 
-        # Determine api_mode from provider / base URL / model
-        fb_api_mode = "chat_completions"
+        # Determine api_mode from provider / base URL / model.  If the
+        # fallback entry declares api_mode explicitly, respect it the same way
+        # primary model initialization respects an explicit api_mode.  Model
+        # name heuristics are only defaults.
+        valid_api_modes = {
+            "chat_completions",
+            "codex_responses",
+            "anthropic_messages",
+            "bedrock_converse",
+            "codex_app_server",
+        }
+        explicit_fb_api_mode = str(fb.get("api_mode") or "").strip()
+        fb_api_mode = (
+            explicit_fb_api_mode
+            if explicit_fb_api_mode in valid_api_modes
+            else "chat_completions"
+        )
         fb_base_url = str(fb_client.base_url)
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
-        if fb_provider == "openai-codex":
+        if explicit_fb_api_mode in valid_api_modes:
+            pass
+        elif fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
         elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
             fb_api_mode = "anthropic_messages"

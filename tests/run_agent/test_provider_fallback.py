@@ -182,6 +182,33 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback() is True
             assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
 
+    def test_custom_gpt5_fallback_respects_explicit_chat_completions(self):
+        """Explicit fallback api_mode must override GPT-5 name heuristics."""
+        fbs = [
+            {
+                "provider": "custom",
+                "model": "gpt-5.4",
+                "base_url": "https://custom.example/v1",
+                "api_mode": "chat_completions",
+            }
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(
+                    _mock_client(base_url="https://custom.example/v1"),
+                    "gpt-5.4",
+                ),
+            ),
+            patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.provider == "custom"
+        assert agent.model == "gpt-5.4"
+        assert agent.api_mode == "chat_completions"
+
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
 
