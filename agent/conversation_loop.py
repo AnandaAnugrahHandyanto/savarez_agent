@@ -2212,6 +2212,16 @@ def run_conversation(
                     agent._client_log_context(),
                     _error_summary,
                 )
+                # Unexpected internal errors (TypeError, AttributeError,
+                # ValueError) almost always indicate a code bug rather than
+                # a provider/transport issue.  Log a full traceback so the
+                # call site is visible; ordinary network/HTTP errors don't
+                # need this (they're well-summarized above).
+                if isinstance(api_error, (TypeError, AttributeError, ValueError, KeyError, IndexError)):
+                    logger.warning(
+                        "Unexpected internal error in API call path — full traceback follows:",
+                        exc_info=api_error,
+                    )
 
                 _provider = getattr(agent, "provider", "unknown")
                 _base = getattr(agent, "base_url", "unknown")

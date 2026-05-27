@@ -25,6 +25,60 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _install_openai_parse_response_none_guard() -> None:
+    """Tolerate ``response.output is None`` in the OpenAI SDK's stream parser.
+
+    ChatGPT's Codex backend (https://chatgpt.com/backend-api/codex) emits a
+    ``response.completed`` event whose payload sets ``response.output`` to
+    ``null`` instead of an empty list when the model produced output items
+    via ``response.output_item.done`` but the final accumulation came back
+    empty.  The OpenAI SDK's ``parse_response`` blindly iterates
+    ``response.output`` (openai/lib/_parsing/_responses.py:61) and raises
+    ``TypeError: 'NoneType' object is not iterable``, which bubbles out of
+    every ``for event in stream:`` consumer and kills the entire turn —
+    before our existing empty-output backfill at line ~247 below can run.
+
+    This installs a one-time wrapper that coerces ``response.output`` to
+    ``[]`` when it is ``None``.  The downstream backfill in
+    :func:`run_codex_stream` then synthesizes the real output from the
+    streamed ``response.output_item.done`` items (or text deltas).
+    """
+    try:
+        from openai.lib._parsing import _responses as _sdk_parse
+        from openai.lib.streaming.responses import _responses as _sdk_stream
+    except Exception:  # pragma: no cover — SDK shape changed
+        return
+
+    if getattr(_sdk_parse, "_hermes_none_output_guard_installed", False):
+        return
+
+    _original_parse_response = _sdk_parse.parse_response
+
+    def _parse_response_none_guard(**kwargs: Any):
+        response = kwargs.get("response")
+        if response is not None and getattr(response, "output", None) is None:
+            try:
+                response.output = []
+            except Exception:
+                pass
+        return _original_parse_response(**kwargs)
+
+    _sdk_parse.parse_response = _parse_response_none_guard
+    # The streaming module imported parse_response by name at import time,
+    # so rebind it there too — otherwise accumulate_event keeps calling
+    # the unpatched original.
+    if hasattr(_sdk_stream, "parse_response"):
+        _sdk_stream.parse_response = _parse_response_none_guard
+    _sdk_parse._hermes_none_output_guard_installed = True
+    logger.debug(
+        "Installed OpenAI SDK parse_response None-output guard "
+        "(Codex chatgpt.com backend compatibility)."
+    )
+
+
+_install_openai_parse_response_none_guard()
+
+
 def run_codex_app_server_turn(
     agent,
     *,
