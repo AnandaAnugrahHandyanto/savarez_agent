@@ -155,9 +155,10 @@ def _codex_ack_message_response(text: str):
 
 
 class _FakeResponsesStream:
-    def __init__(self, *, final_response=None, final_error=None):
+    def __init__(self, *, final_response=None, final_error=None, events=None):
         self._final_response = final_response
         self._final_error = final_error
+        self._events = list(events or [])
 
     def __enter__(self):
         return self
@@ -166,7 +167,7 @@ class _FakeResponsesStream:
         return False
 
     def __iter__(self):
-        return iter(())
+        return iter(self._events)
 
     def get_final_response(self):
         if self._final_error is not None:
@@ -397,6 +398,27 @@ def test_build_api_kwargs_copilot_responses_omits_reasoning_for_non_reasoning_mo
     assert "prompt_cache_key" not in kwargs
 
 
+def test_build_api_kwargs_omits_tools_when_no_tools(monkeypatch):
+    """openai-python 2.24 crashes if Responses.stream receives tools=None."""
+    _patch_agent_bootstrap(monkeypatch)
+    monkeypatch.setattr(run_agent, "get_tool_definitions", lambda **kwargs: [])
+
+    agent = run_agent.AIAgent(
+        model="gpt-5-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="codex-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+    assert "tools" not in kwargs
+    assert "tool_choice" not in kwargs
+    assert "parallel_tool_calls" not in kwargs
+
+
 def test_run_codex_stream_retries_when_completed_event_missing(monkeypatch):
     agent = _build_agent(monkeypatch)
     calls = {"stream": 0}
@@ -446,6 +468,33 @@ def test_run_codex_stream_falls_back_to_create_after_stream_completion_error(mon
     assert calls["stream"] == 2
     assert calls["create"] == 1
     assert response.output[0].content[0].text == "create fallback ok"
+
+
+def test_run_codex_stream_recovers_output_items_after_sdk_output_none_typeerror(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    done_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="recovered ok")],
+    )
+
+    def _fake_stream(**kwargs):
+        return _FakeResponsesStream(
+            events=[
+                SimpleNamespace(type="response.output_item.done", item=done_item),
+            ],
+            final_error=TypeError("'NoneType' object is not iterable"),
+        )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=lambda **kwargs: _codex_message_response("unused"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response.output[0].content[0].text == "recovered ok"
 
 
 def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):

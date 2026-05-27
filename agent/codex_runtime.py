@@ -271,6 +271,32 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                             len(agent._codex_streamed_text_parts), len(assembled),
                         )
                 return final_response
+        except TypeError as exc:
+            # openai-python 2.24 can crash while accumulating a
+            # response.completed event from chatgpt.com/backend-api/codex when
+            # that terminal event carries response.output=null. The useful
+            # output has already arrived in response.output_item.done/text
+            # deltas, so recover from the stream data we collected above.
+            if str(exc) == "'NoneType' object is not iterable":
+                if collected_output_items:
+                    logger.debug(
+                        "Codex stream: recovered %d output items after SDK output=None TypeError",
+                        len(collected_output_items),
+                    )
+                    return SimpleNamespace(output=list(collected_output_items))
+                if agent._codex_streamed_text_parts and not has_tool_calls:
+                    assembled = "".join(agent._codex_streamed_text_parts)
+                    logger.debug(
+                        "Codex stream: recovered %d text deltas after SDK output=None TypeError",
+                        len(agent._codex_streamed_text_parts),
+                    )
+                    return SimpleNamespace(output=[SimpleNamespace(
+                        type="message",
+                        role="assistant",
+                        status="completed",
+                        content=[SimpleNamespace(type="output_text", text=assembled)],
+                    )])
+            raise
         except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
             if attempt < max_stream_retries:
                 logger.debug(
