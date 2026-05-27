@@ -319,11 +319,12 @@ def compress_context(
         # focus_topic / force — fall back to calling without them.
         compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens)
 
-    # If compression aborted (aux LLM failed to produce a usable summary)
-    # the compressor returns the input messages unchanged.  Surface the
-    # error to the user, skip the session-rotation work entirely (no
-    # session has logically ended), and let auto-compress callers detect
-    # the no-op via len(returned) == len(input).
+    # If compression aborted (all LLM and local fallback paths failed or were
+    # disabled), the compressor returns the input messages unchanged. Surface
+    # the error to the user, skip the session-rotation work entirely (no
+    # session has logically ended), and let auto-compress callers detect the
+    # no-op via len(returned) == len(input).  The default local extractive
+    # fallback should prevent this path for ordinary provider failures.
     if getattr(agent.context_compressor, "_last_compress_aborted", False):
         _err = getattr(agent.context_compressor, "_last_summary_error", None) or "unknown error"
         if getattr(agent, "_last_compression_summary_warning", None) != _err:

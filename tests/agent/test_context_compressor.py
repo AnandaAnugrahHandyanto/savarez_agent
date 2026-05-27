@@ -3,7 +3,14 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
-from agent.context_compressor import ContextCompressor, SUMMARY_PREFIX
+from agent.context_compressor import (
+    ContextCompressor,
+    LEGACY_SUMMARY_PREFIX,
+    SUMMARY_PREFIX,
+    _FALLBACK_PREVIOUS_SUMMARY_CHAR_LIMIT,
+    _FALLBACK_PREVIOUS_SUMMARY_HEADING,
+    _FALLBACK_PREVIOUS_SUMMARY_TRUNCATION_MARKER,
+)
 
 
 @pytest.fixture()
@@ -268,8 +275,10 @@ class TestSummaryFailureCooldown:
             first = c._generate_summary(messages)
             second = c._generate_summary(messages)
 
-        assert first is None
-        assert second is None
+        assert first is not None
+        assert second is not None
+        assert "## Active Task" in first
+        assert "## Active Task" in second
         assert mock_call.call_count == 1
 
 
@@ -379,7 +388,8 @@ class TestSummaryFallbackToMainModel:
 
         # Only one attempt — retry gate blocks fallback when models match
         assert mock_call.call_count == 1
-        assert result is None
+        assert result is not None
+        assert "## Active Task" in result
         # Not flagged as fallen back — the retry condition was never met
         assert getattr(c, "_summary_model_fallen_back", False) is False
 
@@ -404,7 +414,8 @@ class TestSummaryFallbackToMainModel:
 
         # Exactly 2 calls: initial + one retry on main.  No further retries.
         assert mock_call.call_count == 2
-        assert result is None
+        assert result is not None
+        assert "## Active Task" in result
         assert c._summary_model_fallen_back is True
 
     def test_json_decode_error_falls_back_to_main_and_succeeds(self):
@@ -501,7 +512,8 @@ class TestSummaryFallbackToMainModel:
         ), patch("agent.context_compressor.time.monotonic", return_value=1000.0):
             result = c._generate_summary(self._msgs())
 
-        assert result is None
+        assert result is not None
+        assert "## Active Task" in result
         # Short JSON-decode cooldown is 30s, not the default 60s.
         assert c._summary_failure_cooldown_until == 1030.0
 
@@ -603,7 +615,8 @@ class TestStreamingClosedFallback:
         ), patch("agent.context_compressor.time.monotonic", return_value=1000.0):
             result = c._generate_summary(self._msgs())
 
-        assert result is None
+        assert result is not None
+        assert "## Active Task" in result
         # Streaming-closed should use the 30s short cooldown.
         assert c._summary_failure_cooldown_until == 1030.0
 
@@ -627,7 +640,8 @@ class TestStreamingClosedFallback:
         ), patch("agent.context_compressor.time.monotonic", return_value=1000.0):
             result = c._generate_summary(self._msgs())
 
-        assert result is None
+        assert result is not None
+        assert "## Active Task" in result
         assert c._summary_failure_cooldown_until == 1060.0
 
 
@@ -723,10 +737,8 @@ class TestAuxModelFallbackSurfacedToCallers:
 
 
 class TestSummaryFailureTrackingForGatewayWarning:
-    """Default behavior (compression.abort_on_summary_failure=False):
-    summary-generation failure inserts a static fallback placeholder and
-    records dropped count + fallback flag so gateway hygiene & /compress
-    can surface a visible warning."""
+    """Default behavior: failed LLM summary uses a structured local fallback
+    and records fallback state so gateway hygiene & /compress can warn."""
 
     def test_compress_records_fallback_and_dropped_count_on_summary_failure(self):
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
@@ -747,11 +759,15 @@ class TestSummaryFailureTrackingForGatewayWarning:
             result = c.compress(msgs)
 
         assert c._last_summary_fallback_used is True
-        assert c._last_summary_dropped_count > 0
+        assert c._last_summary_dropped_count == 0
         assert c._last_summary_error is not None
         # Default mode: abort flag must NOT fire.
         assert c._last_compress_aborted is False
         assert any(
+            isinstance(m.get("content"), str) and "## Active Task" in m["content"]
+            for m in result
+        )
+        assert not any(
             isinstance(m.get("content"), str) and "Summary generation was unavailable" in m["content"]
             for m in result
         )
@@ -787,10 +803,8 @@ class TestSummaryFailureTrackingForGatewayWarning:
 
 
 class TestAbortOnSummaryFailure:
-    """Opt-in behavior (compression.abort_on_summary_failure=True):
-    summary-generation failure ABORTS compression entirely — returns the
-    original messages unchanged and sets _last_compress_aborted=True so
-    gateway hygiene & /compress can surface a visible warning."""
+    """The local extractive fallback takes precedence over abort mode when
+    extractive_fallback_enabled=True, so compression still shrinks context."""
 
     def _make_msgs(self):
         return [
@@ -814,19 +828,21 @@ class TestAbortOnSummaryFailure:
                 abort_on_summary_failure=True,
             )
 
-    def test_compress_aborts_and_preserves_messages_on_summary_failure(self):
+    def test_compress_uses_extractive_fallback_on_summary_failure(self):
         c = self._make_compressor()
         msgs = self._make_msgs()
         with patch("agent.context_compressor.call_llm", side_effect=Exception("404 model not found")):
             result = c.compress(msgs)
 
-        assert c._last_compress_aborted is True
+        assert c._last_compress_aborted is False
         assert c._last_summary_error is not None
-        # No fallback inserted, no messages dropped
-        assert c._last_summary_fallback_used is False
+        assert c._last_summary_fallback_used is True
         assert c._last_summary_dropped_count == 0
-        # Original messages preserved byte-for-byte.
-        assert result == msgs
+        assert len(result) < len(msgs)
+        assert any(
+            isinstance(m.get("content"), str) and "## Active Task" in m["content"]
+            for m in result
+        )
         # No "Summary generation was unavailable" placeholder leaked in.
         assert not any(
             isinstance(m.get("content"), str) and "Summary generation was unavailable" in m["content"]
@@ -843,7 +859,8 @@ class TestAbortOnSummaryFailure:
 
         with patch("agent.context_compressor.call_llm", side_effect=Exception("boom")):
             c.compress(msgs)
-        assert c._last_compress_aborted is True
+        assert c._last_compress_aborted is False
+        assert c._last_summary_fallback_used is True
 
         c._summary_failure_cooldown_until = 0.0
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
@@ -854,7 +871,7 @@ class TestAbortOnSummaryFailure:
 
     def test_force_true_bypasses_failure_cooldown(self):
         """Manual /compress passes force=True so it can retry immediately
-        after an auto-compress abort instead of waiting out the 30-60s
+        after a summary failure/fallback instead of waiting out the 30-60s
         cooldown."""
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
@@ -2084,3 +2101,238 @@ class TestSummarySafeRetryAndExtractiveFallback:
         assert "## Active Task" in result
         assert "长期方案怎么设计" in result
         assert c._last_summary_fallback_used is True
+
+    def test_safe_retry_scrubs_assistant_tool_call_arguments(self):
+        import json as _json
+
+        err = Exception("Your request was blocked.")
+        ok = self._mock_summary("## Active Task\ncontinue")
+        base64_blob = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=" * 20
+        write_content = "SECRET_WRITE_CONTENT_SHOULD_NOT_LEAK\n" + "line\n" * 30
+        traceback_arg = (
+            "Traceback (most recent call last):\n"
+            "  File \"/tmp/run.py\", line 1, in <module>\n"
+            "ValueError: SHOULD_NOT_LEAK_TRACEBACK"
+        )
+        messages = [
+            {"role": "user", "content": "compress this safely"},
+            {"role": "assistant", "content": "working", "tool_calls": [
+                {
+                    "id": "call_terminal",
+                    "function": {
+                        "name": "terminal",
+                        "arguments": _json.dumps({
+                            "command": "pytest tests/unit.py",
+                            "cwd": "/workspace/project",
+                            "timeout": 60,
+                        }),
+                    },
+                },
+                {
+                    "id": "call_write",
+                    "function": {
+                        "name": "write_file",
+                        "arguments": _json.dumps({
+                            "path": "src/app.py",
+                            "content": write_content,
+                        }),
+                    },
+                },
+                {
+                    "id": "call_image",
+                    "function": {
+                        "name": "vision_analyze",
+                        "arguments": _json.dumps({
+                            "path": "screenshots/fail.png",
+                            "image_url": "data:image/png;base64," + base64_blob,
+                            "question": "what failed?",
+                        }),
+                    },
+                },
+                {
+                    "id": "call_unknown",
+                    "function": {
+                        "name": "custom_tool",
+                        "arguments": _json.dumps({
+                            "path": "logs/current.log",
+                            "payload": traceback_arg,
+                            "note": "short useful metadata",
+                        }),
+                    },
+                },
+            ]},
+            {"role": "tool", "tool_call_id": "call_terminal", "content": "ok"},
+            {"role": "user", "content": "continue"},
+        ]
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="main-model", quiet_mode=True)
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, ok]) as mock_call:
+            result = c._generate_summary(messages)
+
+        assert result is not None
+        safe_prompt = mock_call.call_args_list[1].kwargs["messages"][0]["content"]
+        assert "pytest tests/unit.py" in safe_prompt
+        assert "/workspace/project" in safe_prompt
+        assert "src/app.py" in safe_prompt
+        assert "screenshots/fail.png" in safe_prompt
+        assert "logs/current.log" in safe_prompt
+        assert "SECRET_WRITE_CONTENT_SHOULD_NOT_LEAK" not in safe_prompt
+        assert base64_blob not in safe_prompt
+        assert "data:image/png;base64" not in safe_prompt
+        assert "SHOULD_NOT_LEAK_TRACEBACK" not in safe_prompt
+        assert "Traceback (most recent call last)" not in safe_prompt
+        assert '"chars"' in safe_prompt
+        assert '"sha256"' in safe_prompt
+
+    def test_extractive_fallback_preserves_previous_summary_after_provider_failure(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="main-model", quiet_mode=True)
+        c._previous_summary = (
+            "## Completed Actions\n"
+            "1. Patched agent/context_compressor.py to preserve old key action.\n"
+            "\n## Relevant Files\n- agent/context_compressor.py"
+        )
+
+        messages = [
+            {"role": "user", "content": "now fix the retry path"},
+            {"role": "assistant", "content": "checking"},
+        ]
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("HTTP 502 Bad Gateway")):
+            result = c._generate_summary(messages)
+
+        assert result is not None
+        assert "## Previous Summary / Existing Context" in result
+        assert "agent/context_compressor.py" in result
+        assert "preserve old key action" in result
+        assert c._previous_summary is not None
+        assert "preserve old key action" in c._previous_summary
+
+    def test_repeated_extractive_fallback_does_not_nest_previous_summary(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="main-model", quiet_mode=True)
+        c._previous_summary = (
+            f"{SUMMARY_PREFIX}\n"
+            f"{_FALLBACK_PREVIOUS_SUMMARY_HEADING}\n"
+            "## Completed Actions\n"
+            "1. Patched agent/context_compressor.py to preserve old key action.\n"
+            "\n## Relevant Files\n- agent/context_compressor.py"
+        )
+
+        messages = [
+            {"role": "user", "content": "retry fallback without nesting"},
+            {"role": "assistant", "content": "checking retry path"},
+        ]
+        lengths = []
+        for _ in range(4):
+            result = c._generate_extractive_fallback_summary(messages, error="provider failed")
+            lengths.append(len(c._previous_summary or ""))
+            assert result.count(_FALLBACK_PREVIOUS_SUMMARY_HEADING) <= 1
+            assert (c._previous_summary or "").count(_FALLBACK_PREVIOUS_SUMMARY_HEADING) <= 1
+
+        assert max(lengths) < _FALLBACK_PREVIOUS_SUMMARY_CHAR_LIMIT + 4_000
+        assert "agent/context_compressor.py" in c._previous_summary
+        assert "preserve old key action" in c._previous_summary
+
+    def test_extractive_fallback_preserves_previous_summary_during_cooldown(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="main-model", quiet_mode=True)
+        c._previous_summary = (
+            "## Completed Actions\n"
+            "1. Updated tests/agent/test_context_compressor.py for old key action."
+        )
+        c._summary_failure_cooldown_until = 2000.0
+
+        messages = [
+            {"role": "user", "content": "retry compression"},
+            {"role": "assistant", "content": "will retry"},
+        ]
+        with patch("agent.context_compressor.time.monotonic", return_value=1000.0):
+            result = c._generate_summary(messages)
+
+        assert result is not None
+        assert "tests/agent/test_context_compressor.py" in result
+        assert "old key action" in result
+        assert c._last_summary_error == "summary retry cooldown active"
+
+    def test_repeated_cooldown_fallback_does_not_nest_previous_summary(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="main-model", quiet_mode=True)
+        c._previous_summary = (
+            f"{_FALLBACK_PREVIOUS_SUMMARY_HEADING}\n"
+            "## Completed Actions\n"
+            "1. Updated tests/agent/test_context_compressor.py for old key action."
+        )
+        c._summary_failure_cooldown_until = 2000.0
+
+        messages = [
+            {"role": "user", "content": "retry compression"},
+            {"role": "assistant", "content": "will retry"},
+        ]
+        lengths = []
+        with patch("agent.context_compressor.time.monotonic", return_value=1000.0), \
+             patch("agent.context_compressor.call_llm") as mock_call:
+            for _ in range(4):
+                result = c._generate_summary(messages)
+                lengths.append(len(c._previous_summary or ""))
+                assert result.count(_FALLBACK_PREVIOUS_SUMMARY_HEADING) <= 1
+                assert (c._previous_summary or "").count(_FALLBACK_PREVIOUS_SUMMARY_HEADING) <= 1
+
+        mock_call.assert_not_called()
+        assert max(lengths) < _FALLBACK_PREVIOUS_SUMMARY_CHAR_LIMIT + 4_000
+        assert "tests/agent/test_context_compressor.py" in c._previous_summary
+        assert "old key action" in c._previous_summary
+
+    def test_extractive_fallback_caps_long_previous_summary_preserving_edges(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="main-model", quiet_mode=True)
+
+        c._previous_summary = (
+            f"{LEGACY_SUMMARY_PREFIX}\n"
+            "## Completed Actions\n"
+            "1. Patched agent/context_compressor.py to preserve old key action.\n"
+            "\n## Relevant Files\n- agent/context_compressor.py\n"
+            + ("MIDDLE_SHOULD_BE_TRUNCATED\n" * 800)
+            + "\n## Active State\nRECENT_FALLBACK_CONTEXT_TAIL: cooldown fallback was active."
+        )
+
+        messages = [
+            {"role": "user", "content": "new retry after capped summary"},
+            {"role": "assistant", "content": "capturing recent fallback context"},
+        ]
+        result = c._generate_extractive_fallback_summary(messages, error="provider failed again")
+
+        assert len(c._previous_summary or "") < _FALLBACK_PREVIOUS_SUMMARY_CHAR_LIMIT + 4_000
+        assert _FALLBACK_PREVIOUS_SUMMARY_TRUNCATION_MARKER.strip() in result
+        assert "agent/context_compressor.py" in result
+        assert "preserve old key action" in result
+        assert "RECENT_FALLBACK_CONTEXT_TAIL" in result
+        assert "new retry after capped summary" in result
+        assert result.count(_FALLBACK_PREVIOUS_SUMMARY_HEADING) <= 1
+        assert LEGACY_SUMMARY_PREFIX not in result
+
+    def test_extractive_fallback_preserves_error_type_without_raw_output(self):
+        huge_noise = "RAW_OUTPUT_SHOULD_BE_OMITTED\n" * 200
+        tool_output = (
+            "Traceback (most recent call last):\n"
+            "  File \"/workspace/app.py\", line 10, in run\n"
+            f"{huge_noise}"
+            "ValueError: invalid widget id\n"
+        )
+        messages = [
+            {"role": "user", "content": "fix the failing run"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call_1", "function": {"name": "terminal", "arguments": "{\"command\": \"python app.py\"}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "call_1", "content": tool_output},
+        ]
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="main-model", quiet_mode=True)
+
+        result = c._generate_extractive_fallback_summary(messages, error="blocked")
+
+        assert "ValueError: invalid widget id" in result
+        assert "Traceback (most recent call last)" in result
+        assert "RAW_OUTPUT_SHOULD_BE_OMITTED" not in result
+        assert "[raw output omitted in extractive fallback]" in result

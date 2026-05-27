@@ -74,6 +74,12 @@ _IMAGE_TOKEN_ESTIMATE = 1600
 # for tail-cut decisions.
 _IMAGE_CHAR_EQUIVALENT = _IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
+_FALLBACK_PREVIOUS_SUMMARY_HEADING = "## Previous Summary / Existing Context"
+_FALLBACK_PREVIOUS_SUMMARY_CHAR_LIMIT = 10_000
+_FALLBACK_PREVIOUS_SUMMARY_TRUNCATION_MARKER = (
+    "\n\n[Previous summary truncated: middle omitted by local extractive fallback; "
+    "beginning and recent ending preserved without inference.]\n\n"
+)
 
 
 def _content_length_for_budget(raw_content: Any) -> int:
@@ -219,6 +225,175 @@ def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
     shrunken = _shrink(parsed)
     # ensure_ascii=False preserves CJK/emoji instead of bloating with \uXXXX
     return json.dumps(shrunken, ensure_ascii=False)
+
+
+def _text_stats(value: str) -> Dict[str, Any]:
+    text = value or ""
+    return {
+        "chars": len(text),
+        "lines": text.count("\n") + 1 if text else 0,
+        "sha256": hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()[:16],
+    }
+
+
+_BASE64ISH_RE = re.compile(r"^[A-Za-z0-9+/=\s_-]{120,}$")
+_ERROR_LINE_RE = re.compile(
+    r"\b(?:[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)|TimeoutError|HTTP\s+[45]\d\d)\b"
+    r"|(?:\bfailed\b|\btimed out\b|\btimeout\b|\bbad gateway\b|\bservice unavailable\b)",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_risky_blob(value: str) -> bool:
+    text = value or ""
+    stripped = text.strip()
+    if not stripped:
+        return False
+    lower = stripped.lower()
+    if lower.startswith("data:") or ";base64," in lower:
+        return True
+    if "traceback (most recent call last)" in lower:
+        return True
+    if stripped.count("\n") >= 8 and _ERROR_LINE_RE.search(stripped):
+        return True
+    compact = re.sub(r"\s+", "", stripped)
+    return bool(len(compact) >= 160 and _BASE64ISH_RE.match(compact))
+
+
+def _safe_short_scalar(value: Any, *, max_chars: int = 120) -> Any:
+    if isinstance(value, (bool, int, float)) or value is None:
+        return value
+    if not isinstance(value, str):
+        return None
+    text = redact_sensitive_text(value.strip())
+    if _looks_like_risky_blob(text) or len(text) > max_chars:
+        stats = _text_stats(text)
+        stats["omitted"] = True
+        return stats
+    return text
+
+
+def _safe_media_metadata(args: Dict[str, Any]) -> Dict[str, Any]:
+    safe: Dict[str, Any] = {}
+    for key in ("path", "file", "filename", "name", "size", "mime", "mime_type", "type", "width", "height"):
+        if key not in args:
+            continue
+        value = args.get(key)
+        scalar = _safe_short_scalar(value, max_chars=180)
+        if scalar is not None:
+            safe[key] = scalar
+    return safe
+
+
+def _safe_tool_args_for_summary(tool_name: str, raw_args: Any) -> str:
+    """Return JSON-safe, low-risk tool args for safe summary retries."""
+    raw_text = ""
+    if isinstance(raw_args, str):
+        try:
+            parsed = json.loads(raw_args) if raw_args else {}
+        except (TypeError, ValueError):
+            parsed = {}
+            raw_text = redact_sensitive_text(raw_args)
+    elif isinstance(raw_args, dict):
+        parsed = raw_args
+    else:
+        parsed = {}
+        raw_text = redact_sensitive_text(str(raw_args or ""))
+
+    if not isinstance(parsed, dict):
+        parsed = {"value": parsed}
+
+    name = tool_name or "unknown"
+
+    def keep(keys: tuple[str, ...], *, max_chars: int = 220) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        for key in keys:
+            if key in parsed:
+                value = _safe_short_scalar(parsed.get(key), max_chars=max_chars)
+                if value is not None:
+                    out[key] = value
+        return out
+
+    if name == "terminal":
+        safe = keep(("command", "cmd", "workdir", "cwd", "timeout", "background", "pty"), max_chars=500)
+    elif name in {"read_file", "search_files"}:
+        safe = keep(("path", "pattern", "offset", "limit", "file_glob", "output_mode", "target"), max_chars=260)
+    elif name == "write_file":
+        safe = keep(("path",), max_chars=260)
+        content = parsed.get("content")
+        if isinstance(content, str):
+            safe["content"] = _text_stats(redact_sensitive_text(content))
+            safe["content"]["omitted"] = True
+    elif name == "patch":
+        safe = keep(("path", "mode"), max_chars=260)
+        for key in ("old", "new", "old_string", "new_string", "patch", "body", "content"):
+            value = parsed.get(key)
+            if isinstance(value, str):
+                safe[key] = _text_stats(redact_sensitive_text(value))
+                safe[key]["omitted"] = True
+    elif any(marker in name.lower() for marker in ("image", "file", "media", "audio", "video", "vision")):
+        safe = _safe_media_metadata(parsed)
+    else:
+        safe = {"arg_keys": sorted(str(k) for k in parsed.keys())[:20]}
+        short_values: Dict[str, Any] = {}
+        for key, value in parsed.items():
+            scalar = _safe_short_scalar(value, max_chars=120)
+            if scalar is not None:
+                short_values[str(key)] = scalar
+            if len(short_values) >= 8:
+                break
+        if short_values:
+            safe["short_values"] = short_values
+        if raw_text:
+            safe["raw_arguments"] = _text_stats(raw_text)
+            safe["raw_arguments"]["omitted"] = True
+
+    return json.dumps(safe, ensure_ascii=False, sort_keys=True)
+
+
+def _safe_error_summary_from_tool_output(value: Any) -> str:
+    text = redact_sensitive_text(_content_text_for_contains(value))
+    if not text:
+        return ""
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return ""
+
+    selected: list[str] = []
+    lower = text.lower()
+    if "traceback (most recent call last)" in lower:
+        for line in lines:
+            if line.lower().startswith("traceback"):
+                selected.append(line)
+                break
+        for line in reversed(lines):
+            if _ERROR_LINE_RE.search(line):
+                selected.append(line)
+                break
+    else:
+        for line in lines:
+            if _ERROR_LINE_RE.search(line):
+                selected.append(line)
+            if len(selected) >= 4:
+                break
+        if not selected:
+            for line in reversed(lines):
+                if "error" in line.lower() or "exception" in line.lower():
+                    selected.append(line)
+                    break
+
+    deduped: list[str] = []
+    for line in selected:
+        if line not in deduped:
+            deduped.append(line[:220])
+        if len(deduped) >= 5:
+            break
+
+    summary = "\n".join(deduped)
+    if len(summary) > 600:
+        summary = summary[:597].rstrip() + "..."
+    return summary
 
 
 _IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})
@@ -540,10 +715,11 @@ class ContextCompressor(ContextEngine):
         self.protect_last_n = protect_last_n
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
-        # When True, summary-generation failure aborts compression entirely
-        # (returns messages unchanged, sets _last_compress_aborted=True).
-        # When False (default = historical behavior), insert a static
-        # "summary unavailable" placeholder and drop the middle window.
+        # Legacy escape hatch for deployments that disable the local
+        # extractive fallback.  With the default
+        # extractive_fallback_enabled=True, summary-generation failure still
+        # produces a structured local summary and compression proceeds instead
+        # of returning the raw overlong context unchanged.
         self.abort_on_summary_failure = abort_on_summary_failure
         self.safe_retry_enabled = bool(safe_retry_enabled)
         self.chunked_summary_enabled = bool(chunked_summary_enabled)
@@ -605,11 +781,9 @@ class ContextCompressor(ContextEngine):
         self._last_summary_dropped_count: int = 0
         self._last_summary_fallback_used: bool = False
         self._last_summary_recovery_stage: Optional[str] = None
-        # When summary generation fails we now ABORT compression entirely
-        # and return the original messages unchanged instead of dropping
-        # the middle window with a static placeholder.  Callers inspect
-        # this flag to know "compression was attempted but aborted, freeze
-        # the chat until the user manually retries via /compress".
+        # Set only when every summary/fallback path is disabled or unusable
+        # and compression returns the original messages unchanged.  The
+        # default local extractive fallback should keep this False.
         self._last_compress_aborted: bool = False
         # When a user-configured summary model fails and we recover by
         # retrying on the main model, record the failure so gateway /
@@ -860,6 +1034,25 @@ class ContextCompressor(ContextEngine):
             )
         )
 
+    @staticmethod
+    def _looks_dirty_provider_error(exc: Exception) -> bool:
+        """Return True for malformed/dirty provider responses worth scrubbing around."""
+        text = str(exc or "").lower()
+        return any(
+            marker in text
+            for marker in (
+                "dirty content",
+                "dirty response",
+                "malformed response",
+                "invalid response",
+                "invalid json",
+                "non-json response",
+                "bad gateway",
+                "upstream error",
+                "provider error",
+            )
+        )
+
     def _serialize_for_summary(
         self,
         turns: List[Dict[str, Any]],
@@ -910,10 +1103,16 @@ class ContextCompressor(ContextEngine):
                         if isinstance(tc, dict):
                             fn = tc.get("function", {})
                             name = fn.get("name", "?")
-                            args = redact_sensitive_text(fn.get("arguments", ""))
-                            # Truncate long arguments but keep enough for context
-                            if len(args) > self._TOOL_ARGS_MAX:
-                                args = args[:self._TOOL_ARGS_HEAD] + "..."
+                            if safe_mode:
+                                args = _safe_tool_args_for_summary(
+                                    name,
+                                    fn.get("arguments", ""),
+                                )
+                            else:
+                                args = redact_sensitive_text(fn.get("arguments", ""))
+                                # Truncate long arguments but keep enough for context
+                                if len(args) > self._TOOL_ARGS_MAX:
+                                    args = args[:self._TOOL_ARGS_HEAD] + "..."
                             tc_parts.append(f"  {name}({args})")
                         else:
                             fn = getattr(tc, "function", None)
@@ -972,9 +1171,13 @@ class ContextCompressor(ContextEngine):
         user_asks: list[str] = []
         actions: list[str] = []
         blockers: list[str] = []
+        commands: list[str] = []
+        branches: set[str] = set()
         files: set[str] = set()
+        existing_summary = (self._previous_summary or "").strip()
 
         path_re = re.compile(r"(?:^|[\s`'\"])(/[\w./@+-]+|[\w.-]+/[\w./@+-]+)")
+        branch_re = re.compile(r"\b(?:branch|checkout|switch)\s+([A-Za-z0-9._/@+-]+)")
         for msg in turns:
             role = msg.get("role", "unknown")
             raw = redact_sensitive_text(msg.get("content") or "")
@@ -995,9 +1198,20 @@ class ContextCompressor(ContextEngine):
                         args = tc.get("function", {}).get("arguments", "")
                         if name:
                             tool_names.append(name)
+                        try:
+                            parsed_args = json.loads(args) if args else {}
+                        except (TypeError, ValueError):
+                            parsed_args = {}
+                        if name == "terminal" and isinstance(parsed_args, dict):
+                            command = parsed_args.get("command") or parsed_args.get("cmd")
+                            if isinstance(command, str) and command.strip():
+                                commands.append(redact_sensitive_text(command.strip()))
                         for match in path_re.findall(str(args)):
                             if len(files) < 20 and not match.startswith("http"):
                                 files.add(match)
+                        for match in branch_re.findall(str(args)):
+                            if len(branches) < 10:
+                                branches.add(match)
                 if tool_names:
                     actions.append(f"Called tools: {', '.join(tool_names)}")
                 if text:
@@ -1006,53 +1220,86 @@ class ContextCompressor(ContextEngine):
                 tool_id = msg.get("tool_call_id", "?")
                 raw_len = len(_content_text_for_contains(raw))
                 line_count = _content_text_for_contains(raw).count("\n") + 1 if raw else 0
+                safe_error = _safe_error_summary_from_tool_output(raw)
                 tool_summary = (
                     f"Tool result {tool_id}: [raw output omitted in extractive fallback] "
                     f"chars={raw_len:,} lines={line_count}"
                 )
-                if "traceback" in text.lower() or "error" in text.lower() or "failed" in text.lower():
+                if safe_error:
+                    tool_summary = f"{tool_summary}; error summary: {safe_error}"
+                    blockers.append(tool_summary)
+                elif "traceback" in text.lower() or "error" in text.lower() or "failed" in text.lower():
                     blockers.append(tool_summary)
                 actions.append(tool_summary)
+            for match in branch_re.findall(text):
+                if len(branches) < 10:
+                    branches.add(match)
+
+        def _normalize_previous_summary(summary: str) -> str:
+            text = self._strip_summary_prefix(summary)
+            if not text:
+                return ""
+
+            # Previous local fallbacks already include this wrapper heading.
+            # Remove every occurrence before embedding the text under a single
+            # fresh wrapper in the new fallback body.
+            lines = [
+                line for line in text.splitlines()
+                if line.strip() != _FALLBACK_PREVIOUS_SUMMARY_HEADING
+            ]
+            text = "\n".join(lines).strip()
+            if len(text) <= _FALLBACK_PREVIOUS_SUMMARY_CHAR_LIMIT:
+                return text
+
+            marker = _FALLBACK_PREVIOUS_SUMMARY_TRUNCATION_MARKER
+            remaining = max(_FALLBACK_PREVIOUS_SUMMARY_CHAR_LIMIT - len(marker), 0)
+            head_len = int(remaining * 0.6)
+            tail_len = remaining - head_len
+            return f"{text[:head_len].rstrip()}{marker}{text[-tail_len:].lstrip()}"
 
         def _bullets(items: list[str], limit: int = 8) -> str:
             kept = [i for i in items if i][:limit]
             return "\n".join(f"{idx}. {item}" for idx, item in enumerate(kept, 1)) or "None."
 
-        body = f"""## Active Task
+        previous_section = ""
+        existing_summary = _normalize_previous_summary(existing_summary)
+        if existing_summary:
+            previous_section = f"""## Previous Summary / Existing Context
+{existing_summary}
+
+"""
+
+        body = f"""{previous_section}## Active Task
 User asked: {last_user!r}
 
-## Goal
-Continue the conversation after LLM context summarization failed.
-
-## Constraints & Preferences
-Preserve user language and avoid repeating completed work. Secrets are redacted.
+## User Constraints & Preferences
+Preserve user language and avoid repeating completed work. Secrets are redacted. Do not infer facts not present in the retained conversation.
 
 ## Completed Actions
 {_bullets(actions)}
 
+## Files, Branches & Commands
+Files:
+{chr(10).join(f'- {p}' for p in sorted(files)) if files else '- None found in compressed window.'}
+Branches:
+{chr(10).join(f'- {b}' for b in sorted(branches)) if branches else '- None found in compressed window.'}
+Commands:
+{chr(10).join(f'- `{cmd}`' for cmd in commands[:12]) if commands else '- None found in compressed window.'}
+
 ## Active State
 Summary was generated locally without an LLM after provider summary failure: {redact_sensitive_text(error)}
 
-## In Progress
-Context compression recovery was underway.
-
-## Blocked
+## Blockers
 {_bullets(blockers, limit=5)}
-
-## Key Decisions
-Use extractive fallback because normal summary and safe retry were unavailable.
-
-## Resolved Questions
-None.
 
 ## Pending User Asks
 {_bullets(user_asks[-5:], limit=5)}
 
-## Relevant Files
-{chr(10).join(f'- {p}' for p in sorted(files)) if files else 'None.'}
-
-## Remaining Work
+## Next / Remaining Work
 Continue from the latest live messages below this summary.
+
+## Unknowns
+Anything not listed here could not be inferred locally after LLM compression failed.
 
 ## Critical Context
 This fallback is lossy but preserves recent asks, tool actions, errors, and file paths without sending more risky content to a provider."""
@@ -1135,7 +1382,17 @@ Use this exact structure:
 """
         if focus_topic:
             merge_prompt += f"\nFocus topic: {focus_topic}\n"
-        summary = self._call_summary_llm(merge_prompt, merge_budget)
+        try:
+            summary = self._call_summary_llm(merge_prompt, merge_budget)
+        except Exception as merge_exc:
+            err_text = str(merge_exc).strip() or merge_exc.__class__.__name__
+            if len(err_text) > 220:
+                err_text = err_text[:217].rstrip() + "..."
+            self._last_summary_error = f"extractive fallback after chunked merge failure: {err_text}"
+            return self._generate_extractive_fallback_summary(
+                turns_to_summarize,
+                error=err_text,
+            )
         self._last_summary_recovery_stage = "chunked"
         self._previous_summary = summary
         self._summary_failure_cooldown_until = 0.0
@@ -1191,9 +1448,9 @@ Use this exact structure:
                 related to this topic and is more aggressive about compressing
                 everything else.  Inspired by Claude Code's ``/compact``.
 
-        Returns None if all attempts fail — the caller should drop
-        the middle turns without a summary rather than inject a useless
-        placeholder.
+        Returns a prefixed summary when the LLM path or local extractive
+        fallback succeeds.  Returns None only when fallbacks are disabled; the
+        caller may then take the legacy abort/static-marker path.
         """
         now = time.monotonic()
         if now < self._summary_failure_cooldown_until:
@@ -1201,6 +1458,12 @@ Use this exact structure:
                 "Skipping context summary during cooldown (%.0fs remaining)",
                 self._summary_failure_cooldown_until - now,
             )
+            if getattr(self, "extractive_fallback_enabled", True):
+                self._last_summary_error = "summary retry cooldown active"
+                return self._generate_extractive_fallback_summary(
+                    turns_to_summarize,
+                    error="summary retry cooldown active",
+                )
             return None
 
         summary_budget = self._compute_summary_budget(turns_to_summarize)
@@ -1330,7 +1593,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             self._summary_model_fallen_back = False
             self._last_summary_error = None
             return self._with_summary_prefix(summary)
-        except RuntimeError:
+        except RuntimeError as e:
             # No provider configured — long cooldown, unlikely to self-resolve
             self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
             self._last_summary_error = "no auxiliary LLM provider configured"
@@ -1338,6 +1601,12 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                             "summary. Middle turns will be dropped without summary "
                             "for %d seconds.",
                             _SUMMARY_FAILURE_COOLDOWN_SECONDS)
+            if getattr(self, "extractive_fallback_enabled", True):
+                self._last_summary_error = "extractive fallback after summary failure: no auxiliary LLM provider configured"
+                return self._generate_extractive_fallback_summary(
+                    turns_to_summarize,
+                    error=str(e).strip() or "no auxiliary LLM provider configured",
+                )
             return None
         except Exception as e:
             # If the summary model is different from the main model and the
@@ -1353,8 +1622,11 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 or "no available channel" in _err_str
             )
             _is_timeout = (
-                _status in {408, 429, 502, 504}
+                _status in {408, 429, 500, 502, 503, 504}
                 or "timeout" in _err_str
+                or "timed out" in _err_str
+                or "temporarily unavailable" in _err_str
+                or "rate limit" in _err_str
             )
             # Non-JSON / malformed-body responses from misconfigured providers
             # or proxies (e.g. an HTML 502 page returned with
@@ -1376,6 +1648,14 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             # back to the main model instead of entering a 60-second cooldown.
             # See issue #18458.
             _is_streaming_closed = _is_connection_error(e)
+            _is_dirty_provider = self._looks_dirty_provider_error(e)
+            _needs_safe_recovery = (
+                self._looks_filter_blocked_error(e)
+                or _is_timeout
+                or _is_json_decode
+                or _is_streaming_closed
+                or _is_dirty_provider
+            )
             if _is_json_decode and not _is_model_not_found and not _is_timeout:
                 logger.error(
                     "Context compression failed: auxiliary LLM returned a "
@@ -1425,15 +1705,17 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             if len(err_text) > 220:
                 err_text = err_text[:217].rstrip() + "..."
 
-            # Provider safety blocks are often caused by one raw log/tool blob
-            # inside the summary prompt. Retry once with high-risk content
-            # scrubbed. If even the scrubbed prompt is blocked, return a local
-            # extractive summary instead of inserting a useless marker.
-            if self._looks_filter_blocked_error(e):
+            # Provider safety blocks, timeouts/transient provider failures,
+            # dirty/malformed provider responses, and connection closures are
+            # often caused or amplified by one raw log/tool blob inside the
+            # summary prompt. Retry once with high-risk content scrubbed. If
+            # even the scrubbed prompt fails, try scrubbed chunks before the
+            # local extractive fallback.
+            if _needs_safe_recovery:
                 if not _safe_retry and getattr(self, "safe_retry_enabled", True):
                     self._last_summary_recovery_stage = "safe_retry"
                     logging.warning(
-                        "Context summary was blocked; retrying once with safe-scrubbed input."
+                        "Context summary failed; retrying once with safe-scrubbed input."
                     )
                     return self._generate_summary(
                         turns_to_summarize,
@@ -1443,7 +1725,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 if _safe_retry and getattr(self, "chunked_summary_enabled", True):
                     self._last_summary_recovery_stage = "chunked"
                     logging.warning(
-                        "Context summary safe retry was blocked; attempting chunked summary."
+                        "Context summary safe retry failed; attempting chunked summary."
                     )
                     chunked = self._generate_chunked_summary_after_block(
                         turns_to_summarize,
@@ -1465,7 +1747,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     )
                 self._last_summary_error = err_text
                 logging.warning(
-                    "Context summary blocked and recovery fallbacks are disabled: %s",
+                    "Context summary failed and recovery fallbacks are disabled: %s",
                     err_text,
                 )
                 return None
@@ -1482,6 +1764,13 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 e,
                 _transient_cooldown,
             )
+            if getattr(self, "extractive_fallback_enabled", True):
+                self._last_summary_recovery_stage = "extractive_fallback"
+                self._last_summary_error = f"extractive fallback after summary failure: {err_text}"
+                return self._generate_extractive_fallback_summary(
+                    turns_to_summarize,
+                    error=err_text,
+                )
             return None
 
     @staticmethod
