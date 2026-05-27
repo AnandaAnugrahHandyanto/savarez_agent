@@ -253,11 +253,11 @@ def _enforce_size_limit():
     if os.path.getsize(DB_PATH) <= MAX_DB_SIZE_BYTES:
         return
     conn = get_db()
-    # Delete oldest low-importance episodes first
+    # Delete oldest low-importance episodes first (batch of 100)
     conn.execute(
         "DELETE FROM episodic_memory WHERE importance < 5 "
         "AND rowid IN (SELECT rowid FROM episodic_memory "
-        "WHERE importance < 5 ORDER BY timestamp ASC LIMIT 50)"
+        "WHERE importance < 5 ORDER BY timestamp ASC LIMIT 100)"
     )
     # If still over, clear working memory non-essentials
     if os.path.getsize(DB_PATH) > MAX_DB_SIZE_BYTES:
