@@ -2041,3 +2041,84 @@ def test_preflight_codex_input_deduplicates_reasoning_ids(monkeypatch):
     # IDs must be stripped — with store=False the API 404s on id lookups.
     for it in reasoning_items:
         assert "id" not in it
+
+
+class _CreateStreamTypeError:
+    """Like _FakeCreateStream but raises TypeError partway through iteration."""
+
+    def __init__(self, events_before_error):
+        self._events = list(events_before_error)
+        self.closed = False
+
+    def __iter__(self):
+        for event in self._events:
+            yield event
+        raise TypeError("'NoneType' object is not iterable")
+
+    def close(self):
+        self.closed = True
+
+
+def test_run_codex_create_stream_fallback_typeerror_recovers_with_deltas(monkeypatch):
+    """Fallback path itself hits SDK TypeError but has collected deltas to recover from."""
+    agent = _build_agent(monkeypatch)
+    output_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="recovered text")],
+    )
+    create_stream = _CreateStreamTypeError([
+        SimpleNamespace(type="response.output_item.done", item=output_item),
+    ])
+
+    def _fake_create(**kwargs):
+        return create_stream
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=_fake_create),
+    )
+
+    response = agent._run_codex_create_stream_fallback(_codex_request_kwargs())
+    assert response.output == [output_item]
+    assert response.status == "completed"
+    assert create_stream.closed is True
+
+
+def test_run_codex_create_stream_fallback_typeerror_no_data_raises_runtime(monkeypatch):
+    """Fallback path hits SDK TypeError with no collected events — must raise RuntimeError."""
+    agent = _build_agent(monkeypatch)
+    create_stream = _CreateStreamTypeError([])
+
+    def _fake_create(**kwargs):
+        return create_stream
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=_fake_create),
+    )
+
+    with pytest.raises(RuntimeError, match="null output"):
+        agent._run_codex_create_stream_fallback(_codex_request_kwargs())
+    assert create_stream.closed is True
+
+
+def test_run_codex_stream_no_deltas_typeerror_falls_back_to_create(monkeypatch):
+    """When run_codex_stream gets TypeError with no collected deltas, it should
+    fall back to create(stream=True) instead of re-raising."""
+    agent = _build_agent(monkeypatch)
+    calls = {"stream": 0, "create": 0}
+
+    def _fake_stream(**kwargs):
+        calls["stream"] += 1
+        return _IteratorTypeErrorStream([])
+
+    def _fake_create(**kwargs):
+        calls["create"] += 1
+        return _codex_message_response("create fallback recovered")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(stream=_fake_stream, create=_fake_create),
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert calls["create"] == 1
+    assert response.output[0].content[0].text == "create fallback recovered"

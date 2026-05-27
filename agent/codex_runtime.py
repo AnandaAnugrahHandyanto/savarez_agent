@@ -484,6 +484,28 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
                             len(collected_text_deltas),
                         )
                 return terminal_response
+    except TypeError as exc:
+        if not _responses_null_output_iterable_error(exc):
+            raise
+        recovered = _codex_backfilled_response(
+            collected_output_items,
+            collected_text_deltas,
+            has_tool_calls=has_tool_calls,
+            model=fallback_kwargs.get("model"),
+        )
+        if recovered is not None:
+            logger.warning(
+                "Codex fallback stream: SDK TypeError recovered from "
+                "collected events (items=%d, text_parts=%d). error=%s",
+                len(collected_output_items),
+                len(collected_text_deltas),
+                exc,
+            )
+            return recovered
+        raise RuntimeError(
+            f"Codex fallback stream failed with null output and no "
+            f"collected events to recover from: {exc}"
+        ) from exc
     finally:
         close_fn = getattr(stream_or_response, "close", None)
         if callable(close_fn):

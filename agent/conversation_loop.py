@@ -2822,6 +2822,10 @@ def run_conversation(
                 # provider/network failure (malformed response body,
                 # truncated stream, routing layer corruption), not a
                 # local programming bug, and should be retried (#14782).
+                _is_sdk_nonetype_bug = (
+                    isinstance(api_error, TypeError)
+                    and "'NoneType' object is not iterable" in str(api_error)
+                )
                 is_local_validation_error = (
                     isinstance(api_error, (ValueError, TypeError))
                     and not isinstance(
@@ -2835,6 +2839,7 @@ def run_conversation(
                     # ssl.SSLError explicitly so the error classifier's
                     # retryable=True mapping takes effect instead.
                     and not isinstance(api_error, ssl.SSLError)
+                    and not _is_sdk_nonetype_bug
                 )
                 # ``FailoverReason.billing`` (HTTP 402) is NOT in this
                 # exclusion set.  By the time we reach this block:
