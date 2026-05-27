@@ -386,6 +386,47 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 )
                 return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
             raise
+        except TypeError as exc:
+            # OpenAI SDK bug: ``parse_response`` does
+            # ``for output in response.output`` without a None guard, so when
+            # the ChatGPT Codex backend emits a ``response.completed`` event
+            # whose ``output`` field is None (not [] — None), the SDK raises
+            # ``TypeError("'NoneType' object is not iterable")`` mid-stream
+            # before our existing empty-output workarounds can fire.
+            # Recover by synthesizing a response from the deltas we already
+            # accumulated up to this point.
+            if "NoneType" not in str(exc) or "iterable" not in str(exc):
+                raise
+            if has_tool_calls or not agent._codex_streamed_text_parts:
+                # No safe recovery: tool-call streams need structured args
+                # (not text deltas), and zero accumulated text means we
+                # have nothing to synthesize. Try the non-streaming fallback.
+                logger.debug(
+                    "Codex stream parse_response TypeError with no recoverable text "
+                    "(tool_calls=%s, deltas=%s); falling back to create(stream=True). %s err=%s",
+                    has_tool_calls,
+                    len(agent._codex_streamed_text_parts),
+                    agent._client_log_context(),
+                    exc,
+                )
+                return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+            assembled = "".join(agent._codex_streamed_text_parts)
+            logger.warning(
+                "Codex stream parse_response TypeError (SDK bug on output=None) — "
+                "recovered by synthesizing response from %d streamed deltas (%d chars). %s",
+                len(agent._codex_streamed_text_parts), len(assembled),
+                agent._client_log_context(),
+            )
+            return SimpleNamespace(
+                output=[SimpleNamespace(
+                    type="message",
+                    role="assistant",
+                    status="completed",
+                    content=[SimpleNamespace(type="output_text", text=assembled)],
+                )],
+                status="completed",
+                output_text=assembled,
+            )
 
 
 
