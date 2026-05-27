@@ -53,6 +53,39 @@ def _empty_prd(slug: str, title: str | None = None) -> dict[str, Any]:
     }
 
 
+def _state_readme(slug: str) -> str:
+    return f"""# Hermes Loop: {slug}
+
+This directory is local Fruit-Loop state for `/loop {slug}`.
+
+Seed stories by editing `prd.json`:
+
+```json
+{{
+  "project": "{slug}",
+  "description": "What this loop is trying to ship.",
+  "userStories": [
+    {{
+      "id": "S1",
+      "title": "First small slice",
+      "priority": 1,
+      "description": "Do one bounded piece of work.",
+      "acceptanceCriteria": ["Focused verification passes"]
+    }}
+  ]
+}}
+```
+
+Commands:
+
+- `/loop status {slug}` — show current state.
+- `/loop run {slug}` — queue/run the first pending story.
+- `/loop complete {slug} S1 <note>` — mark a story passed and append progress.
+- `/loop block {slug} S1 <reason>` — block a story and append progress.
+- `/loop close {slug}` — close and archive current state.
+"""
+
+
 def _load_prd(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -126,6 +159,10 @@ def init_loop(slug: str | None = None, *, root: str | Path | None = None, title:
     progress = path / "progress.md"
     if not progress.exists():
         progress.write_text("## Codebase Patterns\n\n## Progress\n")
+
+    readme = path / "README.md"
+    if not readme.exists():
+        readme.write_text(_state_readme(name), encoding="utf-8")
 
     text = _render(name, path, prd, status="initialized")
     (path / "status.md").write_text(text + "\n")
@@ -330,7 +367,7 @@ def close_loop(slug: str | None = None, *, root: str | Path | None = None) -> Lo
     prd_path.write_text(json.dumps(prd, indent=2) + "\n")
     archive_dir = path / "archive" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     archive_dir.mkdir(parents=True, exist_ok=True)
-    for filename in ("prd.json", "progress.md", "status.md"):
+    for filename in ("prd.json", "progress.md", "status.md", "README.md"):
         source = path / filename
         if source.exists():
             copy2(source, archive_dir / filename)

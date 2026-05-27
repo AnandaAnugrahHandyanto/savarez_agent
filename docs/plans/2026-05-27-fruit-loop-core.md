@@ -37,6 +37,12 @@ Latest hardening slice:
 - Closed loops now refuse `run`, `complete`, and `block` mutations and render as `Status: closed`.
 - Close archives use microsecond timestamps to avoid same-second archive collisions.
 
+Latest prep slice:
+
+- V1 keeps the minimal editable `prd.json` state contract for this PR. Migrating to `prd.md` + `stories.json` is deferred to a separate compatibility slice so the command spine can be reviewed cleanly.
+- `/loop init` writes a local `.hermes/loops/<slug>/README.md` with a tiny `userStories` schema and command examples.
+- `/loop close` archives that README alongside `prd.json`, `progress.md`, and `status.md`.
+
 Known gap:
 
 - The core state model still uses the minimal `prd.json` shape from the first slice. It should eventually converge with the richer PRD/story manifest shape from the project-loop skill, but not before the V1 command spine is reviewed.
@@ -54,10 +60,20 @@ Known gap:
 
 Prepare the branch for PR/review:
 
-1. Inspect the full branch diff against `origin/main` as a single product slice.
-2. Decide whether to keep the minimal `prd.json` shape for the first PR, or migrate toward `prd.md` + `stories.json` before review.
-3. If keeping the minimal shape for this PR, add a short docs note/command help example so users know how to seed `userStories`.
-4. Run the focused verification suite and a broader command/TUI smoke if the diff still touches `tui_gateway/server.py`.
+1. Run the focused verification suite and a broader command/TUI smoke if the diff still touches `tui_gateway/server.py`.
+2. Inspect the final branch diff against `origin/main` as a single product slice.
+3. Commit the prep docs slice if verification stays green.
+
+Completed prep slice:
+
+1. Storage contract decision:
+   - Keep minimal editable `prd.json` for the first PR.
+   - Defer `prd.md` + `stories.json` migration to a separate backward-compatible slice.
+2. Local state help:
+   - Create `.hermes/loops/<slug>/README.md` during `/loop init`.
+   - Include story schema and lifecycle command examples.
+3. Archive completeness:
+   - Include `README.md` in close archives.
 
 Completed hardening slice:
 

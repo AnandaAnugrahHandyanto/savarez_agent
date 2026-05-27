@@ -23,6 +23,10 @@ def test_init_loop_creates_simple_aaron_style_state(tmp_path):
     assert (root / "prd.json").exists()
     assert (root / "progress.md").exists()
     assert (root / "status.md").exists()
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    assert "Seed stories by editing `prd.json`" in readme
+    assert '"acceptanceCriteria"' in readme
+    assert "/loop run fruit-loop" in readme
     assert (root / "archive").is_dir()
 
     prd = json.loads((root / "prd.json").read_text(encoding="utf-8"))
@@ -149,6 +153,7 @@ def test_close_loop_marks_closed_and_archives_state(tmp_path):
     assert "Archive:" in result.text
     assert len(archives) == 1
     assert (archives[0] / "prd.json").exists()
+    assert (archives[0] / "README.md").exists()
 
 
 def test_closed_loop_does_not_run_complete_or_block_stories(tmp_path):
