@@ -17,7 +17,49 @@ from gateway.restart import (
 )
 
 
-class TestUserSystemdPrivateSocketPreflight:
+class TestGatewayRuntimeSnapshotPrecedence:
+    def test_systemd_main_pid_match_is_authoritative(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr("hermes_constants.is_container", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_probe_systemd_service_running",
+            lambda system=False: (False, True),
+        )
+        monkeypatch.setattr(gateway_cli, "_service_scope_label", lambda system=False: "user")
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: tmp_path / "hermes-gateway.service")
+        monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda: [4321, 9999])
+        monkeypatch.setattr(gateway_cli, "_systemd_main_pid", lambda system=False: 4321)
+
+        snapshot = gateway_cli.get_gateway_runtime_snapshot()
+
+        assert snapshot.manager == "systemd (user)"
+        assert snapshot.service_running is True
+        assert snapshot.gateway_pids == (4321,)
+
+    def test_systemd_keeps_discovered_gateway_pids_when_main_pid_differs(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr("hermes_constants.is_container", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_probe_systemd_service_running",
+            lambda system=False: (False, True),
+        )
+        monkeypatch.setattr(gateway_cli, "_service_scope_label", lambda system=False: "user")
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: tmp_path / "hermes-gateway.service")
+        monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda: [9999])
+        monkeypatch.setattr(gateway_cli, "_systemd_main_pid", lambda system=False: 4321)
+
+        snapshot = gateway_cli.get_gateway_runtime_snapshot()
+
+        assert snapshot.manager == "systemd (user)"
+        assert snapshot.service_running is True
+        assert snapshot.gateway_pids == (9999,)
+
     def test_preflight_accepts_private_socket_without_dbus_bus(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "_ensure_user_systemd_env", lambda: None)
         monkeypatch.setattr(gateway_cli, "_user_dbus_socket_path", lambda: Path("/tmp/missing-bus"))
@@ -961,6 +1003,78 @@ class TestGatewaySystemServiceRouting:
 
         out = capsys.readouterr().out
         assert "Planned restart is stuck in systemd failed state" in out
+
+    def test_runtime_snapshot_treats_active_systemd_main_pid_as_managed(self, monkeypatch):
+        """systemd MainPID is authoritative: matching gateway PID is not manual."""
+        user_unit = SimpleNamespace(exists=lambda: True)
+
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr("hermes_constants.is_container", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: user_unit)
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_service_scope_label", lambda system=False: "user")
+        monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda exclude_pids=None, all_profiles=False: [4242])
+
+        def fake_run_systemctl(args, **kwargs):
+            if args[0] == "is-active":
+                # Regression shape: systemctl is-active can be stale/unhelpful,
+                # but systemd's active MainPID below still owns the gateway.
+                return SimpleNamespace(stdout="inactive\n", stderr="", returncode=3)
+            if args[0] == "show":
+                return SimpleNamespace(
+                    stdout="ActiveState=active\nSubState=running\nResult=success\nExecMainStatus=0\nMainPID=4242\n",
+                    stderr="",
+                    returncode=0,
+                )
+            raise AssertionError(f"Unexpected systemctl call: {args}")
+
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", fake_run_systemctl)
+
+        snapshot = gateway_cli.get_gateway_runtime_snapshot()
+
+        assert snapshot.manager == "systemd (user)"
+        assert snapshot.service_installed is True
+        assert snapshot.service_running is True
+        assert snapshot.gateway_pids == (4242,)
+        assert snapshot.running is True
+        assert snapshot.has_process_service_mismatch is False
+
+    def test_runtime_snapshot_treats_systemd_main_pid_discovered_via_port_as_managed(self, monkeypatch):
+        """If the port owner is the active systemd MainPID, status must not report manual."""
+        user_unit = SimpleNamespace(exists=lambda: True)
+
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr("hermes_constants.is_container", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: user_unit)
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_service_scope_label", lambda system=False: "user")
+        monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda exclude_pids=None, all_profiles=False: [5151])
+        monkeypatch.setattr(gateway_cli, "_gateway_port_owner_pid", lambda: 5151, raising=False)
+
+        def fake_run_systemctl(args, **kwargs):
+            if args[0] == "is-active":
+                return SimpleNamespace(stdout="inactive\n", stderr="", returncode=3)
+            if args[0] == "show":
+                return SimpleNamespace(
+                    stdout="ActiveState=active\nSubState=running\nResult=success\nExecMainStatus=0\nMainPID=5151\n",
+                    stderr="",
+                    returncode=0,
+                )
+            raise AssertionError(f"Unexpected systemctl call: {args}")
+
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", fake_run_systemctl)
+
+        snapshot = gateway_cli.get_gateway_runtime_snapshot()
+
+        assert snapshot.manager == "systemd (user)"
+        assert snapshot.service_installed is True
+        assert snapshot.service_running is True
+        assert snapshot.gateway_pids == (5151,)
+        assert snapshot.has_process_service_mismatch is False
 
     def test_gateway_status_dispatches_full_flag(self, monkeypatch):
         user_unit = SimpleNamespace(exists=lambda: True)

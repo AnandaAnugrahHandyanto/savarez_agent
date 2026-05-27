@@ -660,7 +660,53 @@ def _probe_systemd_service_running(system: bool = False) -> tuple[bool, bool]:
         )
     except (RuntimeError, subprocess.TimeoutExpired):
         return selected_system, False
-    return selected_system, result.stdout.strip() == "active"
+    if result.stdout.strip() == "active":
+        return selected_system, True
+
+    # Authoritative fallback: when systemd reports an active MainPID that
+    # matches a discovered gateway process, the gateway is service-managed.
+    # This prevents weaker PID/port-owner heuristics from misclassifying the
+    # same process as a manual run when `is-active` is stale or unavailable.
+    props = _read_systemd_unit_properties(system=selected_system)
+    if props.get("ActiveState") == "active":
+        main_pid = _systemd_main_pid_from_props(props)
+        if main_pid:
+            try:
+                discovered_pids = set(find_gateway_pids())
+            except Exception:
+                discovered_pids = set()
+            port_owner = _gateway_port_owner_pid()
+            if main_pid in discovered_pids or main_pid == port_owner:
+                return selected_system, True
+
+    return selected_system, False
+
+
+def _gateway_port_owner_pid() -> int | None:
+    """Best-effort PID that owns the local gateway API port, if discoverable."""
+    port = str(os.getenv("HERMES_GATEWAY_API_PORT") or os.getenv("GATEWAY_API_PORT") or "18789")
+    commands = (
+        ["ss", "-H", "-ltnp", f"sport = :{port}"],
+        ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+    )
+    for cmd in commands:
+        if shutil.which(cmd[0]) is None:
+            continue
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode != 0:
+            continue
+        import re
+        match = re.search(r"pid=(\d+)", result.stdout)
+        if match:
+            return int(match.group(1))
+        for line in result.stdout.splitlines():
+            stripped = line.strip()
+            if stripped.isdigit():
+                return int(stripped)
+    return None
 
 
 def _read_systemd_unit_environment(system: bool = False) -> dict[str, str]:
@@ -1001,9 +1047,17 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
     if supports_systemd_services():
         selected_system, service_running = _probe_systemd_service_running(system=system)
         scope_label = _service_scope_label(selected_system)
+        service_installed = get_systemd_unit_path(system=selected_system).exists()
+        if service_running:
+            main_pid = _systemd_main_pid(system=selected_system)
+            # systemd MainPID is authoritative when it matches one of the
+            # discovered gateway PIDs; don't let weaker process/port scans make
+            # the same service-owned process look like an extra manual gateway.
+            if main_pid and main_pid in gateway_pids:
+                gateway_pids = (main_pid,)
         return GatewayRuntimeSnapshot(
             manager=f"systemd ({scope_label})",
-            service_installed=get_systemd_unit_path(system=selected_system).exists(),
+            service_installed=service_installed,
             service_running=service_running,
             gateway_pids=gateway_pids,
             service_scope=scope_label,
