@@ -638,7 +638,7 @@ def _build_table_card_payload(content: str) -> str:
 
             elements.append({
                 "tag": "table",
-                "page_size": min(len(rows), 20),
+                "page_size": min(len(rows), 10),
                 "row_height": "auto",
                 "row_max_height": "300px",
                 "header_style": {
