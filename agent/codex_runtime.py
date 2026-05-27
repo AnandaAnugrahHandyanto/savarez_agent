@@ -271,6 +271,36 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                             len(agent._codex_streamed_text_parts), len(assembled),
                         )
                 return final_response
+        except TypeError as exc:
+            # Some Responses-compatible backends (notably chatgpt.com/backend-api/codex
+            # through OpenAI SDK >= 2.24) can emit a terminal response.completed
+            # frame whose response.output is null while the useful message has
+            # already arrived via response.output_item.done / output_text deltas.
+            # The SDK raises while parsing that terminal frame, before
+            # get_final_response() can run.  Recover from the collected stream
+            # evidence instead of routing a successful turn to fallback.
+            if "NoneType" in str(exc) and "iterable" in str(exc):
+                if collected_output_items:
+                    return SimpleNamespace(
+                        output=list(collected_output_items),
+                        output_text="".join(agent._codex_streamed_text_parts),
+                        status="completed",
+                        model=api_kwargs.get("model"),
+                    )
+                if agent._codex_streamed_text_parts and not has_tool_calls:
+                    assembled = "".join(agent._codex_streamed_text_parts)
+                    return SimpleNamespace(
+                        output=[SimpleNamespace(
+                            type="message",
+                            role="assistant",
+                            status="completed",
+                            content=[SimpleNamespace(type="output_text", text=assembled)],
+                        )],
+                        output_text=assembled,
+                        status="completed",
+                        model=api_kwargs.get("model"),
+                    )
+            raise
         except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
             if attempt < max_stream_retries:
                 logger.debug(

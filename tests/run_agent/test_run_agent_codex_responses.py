@@ -155,9 +155,10 @@ def _codex_ack_message_response(text: str):
 
 
 class _FakeResponsesStream:
-    def __init__(self, *, final_response=None, final_error=None):
+    def __init__(self, *, final_response=None, final_error=None, events=None):
         self._final_response = final_response
         self._final_error = final_error
+        self._events = list(events or [])
 
     def __enter__(self):
         return self
@@ -166,7 +167,7 @@ class _FakeResponsesStream:
         return False
 
     def __iter__(self):
-        return iter(())
+        return iter(self._events)
 
     def get_final_response(self):
         if self._final_error is not None:
@@ -482,6 +483,42 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert calls["create"] == 1
     assert create_stream.closed is True
     assert response.output[0].content[0].text == "streamed create ok"
+
+
+def test_run_codex_stream_recovers_when_sdk_parse_response_sees_null_output(monkeypatch):
+    """Regression: chatgpt.com Codex may stream a valid output_item.done,
+    then OpenAI SDK parsing raises TypeError when terminal response.output is null.
+    Hermes should return the collected item instead of treating the turn as failed.
+    """
+    agent = _build_agent(monkeypatch)
+    item = SimpleNamespace(
+        type="message",
+        role="assistant",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="sdk recovered")],
+    )
+    events = [
+        SimpleNamespace(type="response.output_text.delta", delta="sdk recovered"),
+        SimpleNamespace(type="response.output_item.done", item=item),
+    ]
+
+    def _fake_stream(**kwargs):
+        return _FakeResponsesStream(
+            events=events,
+            final_error=TypeError("'NoneType' object is not iterable"),
+        )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=lambda **kwargs: _codex_message_response("fallback should not run"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response is not None
+    assert response.output[0].content[0].text == "sdk recovered"
+    assert response.output_text == "sdk recovered"
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):
