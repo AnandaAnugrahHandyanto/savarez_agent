@@ -330,6 +330,19 @@ class TestExtractMedia:
         assert media == [("/tmp/Jane Doe/speech.flac", False)]
         assert cleaned == ""
 
+    def test_media_tag_supports_markdown_documents(self):
+        content = "Plan attached:\nMEDIA:/tmp/JTR_Phase_3_PROJECT_PLAN.md"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/JTR_Phase_3_PROJECT_PLAN.md", False)]
+        assert "MEDIA:" not in cleaned
+        assert "Plan attached" in cleaned
+
+    def test_media_tag_supports_markdown_extension_name(self):
+        content = "MEDIA:/tmp/PLAN.markdown"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/PLAN.markdown", False)]
+        assert cleaned == ""
+
     def test_as_document_directive_stripped_from_cleaned_text(self):
         """[[as_document]] is a routing directive — strip it from
         user-visible text just like [[audio_as_voice]]. Callers detect the
