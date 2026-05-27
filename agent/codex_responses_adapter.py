@@ -23,6 +23,44 @@ from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Monkey-patch: OpenAI SDK parse_response fails when response.output is None
+# ---------------------------------------------------------------------------
+# The chatgpt.com/backend-api/codex endpoint sends response.completed events
+# with ``output: null`` instead of ``output: []``. The OpenAI SDK's
+# ``parse_response`` (lib/_parsing/_responses.py) iterates over
+# ``response.output`` without a None guard, raising:
+#   TypeError: 'NoneType' object is not iterable
+#
+# We wrap the original function and coerce ``output = None`` to ``[]`` before
+# delegating. This is applied once at module import time and is idempotent.
+# ---------------------------------------------------------------------------
+def _apply_codex_output_none_patch() -> None:
+    try:
+        from openai.lib._parsing import _responses as _responses_parsing
+    except Exception:
+        return
+
+    _original = getattr(_responses_parsing, "parse_response", None)
+    if _original is None:
+        return
+
+    # Avoid double-wrapping if this module is reloaded.
+    if getattr(_original, "_codex_none_patched", False):
+        return
+
+    def _patched_parse_response(*, text_format, input_tools, response):
+        if hasattr(response, "output") and response.output is None:
+            response.output = []
+        return _original(text_format=text_format, input_tools=input_tools, response=response)
+
+    _patched_parse_response._codex_none_patched = True  # type: ignore[attr-defined]
+    _responses_parsing.parse_response = _patched_parse_response
+
+
+_apply_codex_output_none_patch()
+
+
 # Matches Codex/Harmony tool-call serialization that occasionally leaks into
 # assistant-message content when the model fails to emit a structured
 # ``function_call`` item.  Accepts the common forms:
