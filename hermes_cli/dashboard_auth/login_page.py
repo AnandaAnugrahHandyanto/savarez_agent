@@ -350,15 +350,18 @@ auth gate (not recommended on untrusted networks).</p>
 """
 
 
-def render_login_html(*, next_path: str = "") -> str:
+def render_login_html(*, next_path: str = "", prefix: str = "") -> str:
     """Return the full HTML for ``GET /login``.
 
-    ``next_path`` — when set, the post-login landing path the user
-    originally requested. Threaded into each provider button's ``href``
-    as a ``next=`` query parameter so the OAuth round trip carries it
-    end-to-end. The caller (``routes.login_page``) is responsible for
-    validating ``next_path`` against the same-origin rules before we
-    emit it; we still HTML-escape it as defence in depth.
+    Args:
+        next_path: When set, the post-login landing path the user
+            originally requested. Threaded into each provider button's ``href``
+            as a ``next=`` query parameter so the OAuth round trip carries it
+            end-to-end. The caller (``routes.login_page``) is responsible for
+            validating ``next_path`` against the same-origin rules before we
+            emit it; we still HTML-escape it as defence in depth.
+        prefix: The X-Forwarded-Prefix (e.g., "/hermes") to prepend to URLs.
+            Used when the dashboard is behind a reverse proxy.
     """
     providers = list_providers()
     if not providers:
@@ -374,11 +377,15 @@ def render_login_html(*, next_path: str = "") -> str:
     else:
         next_qs = ""
 
+    # Normalise the prefix (ensure it starts with "/" and has no trailing slash)
+    from hermes_cli.dashboard_auth.prefix import normalise_prefix
+    normalized_prefix = normalise_prefix(prefix)
+
     buttons = []
     for p in providers:
         buttons.append(
             f'      <a class="provider-btn" '
-            f'href="/auth/login?provider={html.escape(p.name, quote=True)}{next_qs}">'
+            f'href="{html.escape(normalized_prefix, quote=True)}/auth/login?provider={html.escape(p.name, quote=True)}{next_qs}">'
             f'Sign in with {html.escape(p.display_name)}</a>'
         )
     return _LOGIN_HTML_TEMPLATE.format(provider_buttons="\n".join(buttons))
