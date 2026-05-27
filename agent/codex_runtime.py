@@ -176,11 +176,41 @@ def run_codex_app_server_turn(
 
 
 
+def _strip_sdk_none_iterables(api_kwargs: dict) -> dict:
+    """Drop keys whose ``None`` value would trip the openai SDK's
+    ``Iterable``-typed parameters.
+
+    The openai SDK's ``responses.stream()`` and ``responses.parse()``
+    call ``_make_tools(tools)`` eagerly, which iterates ``tools``
+    without a None guard.  Passing ``tools=None`` raises
+    ``TypeError: 'NoneType' object is not iterable`` before any HTTP
+    request is issued (openai==2.24.0, #32892).  Preflight already
+    strips ``tools=None``, but this defensive shim guarantees the
+    invariant even if a future code path bypasses preflight or a
+    plugin re-injects the key.  We mutate in-place rather than copy
+    so the dict the caller still holds matches what we sent.
+    """
+    if not isinstance(api_kwargs, dict):
+        return api_kwargs
+    # ``tools`` is the only param the SDK iterates eagerly enough to
+    # crash on None; the rest (``include``, ``reasoning``, etc.) flow
+    # through ``maybe_transform`` which tolerates None.
+    if api_kwargs.get("tools", "missing") is None:
+        api_kwargs.pop("tools", None)
+        # ``tool_choice`` / ``parallel_tool_calls`` are meaningless
+        # without tools and can themselves 400 on some backends, so
+        # drop them in lockstep.
+        api_kwargs.pop("tool_choice", None)
+        api_kwargs.pop("parallel_tool_calls", None)
+    return api_kwargs
+
+
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
     """Execute one streaming Responses API request and return the final response."""
     import httpx as _httpx
 
     active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
+    _strip_sdk_none_iterables(api_kwargs)
     max_stream_retries = 1
     has_tool_calls = False
     first_delta_fired = False
@@ -344,6 +374,11 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
     fallback_kwargs = dict(api_kwargs)
     fallback_kwargs["stream"] = True
     fallback_kwargs = agent._get_transport().preflight_kwargs(fallback_kwargs, allow_stream=True)
+    # Belt-and-braces: ``responses.create`` tolerates ``tools=None`` today,
+    # but the streaming fallback is the recovery path for an already-failing
+    # turn — keep the kwargs invariant identical to ``run_codex_stream`` so
+    # any future SDK tightening doesn't reintroduce #32892 here.
+    _strip_sdk_none_iterables(fallback_kwargs)
     stream_or_response = active_client.responses.create(**fallback_kwargs)
 
     # Compatibility shim for mocks or providers that still return a concrete response.
@@ -448,6 +483,7 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
 
 
 __all__ = [
+    "_strip_sdk_none_iterables",
     "run_codex_app_server_turn",
     "run_codex_stream",
     "run_codex_create_stream_fallback",
