@@ -4899,6 +4899,21 @@ class AIAgent:
         prefix = f"HTTP {status_code}: " if status_code else ""
         return f"{prefix}{raw[:500]}"
 
+    @staticmethod
+    def _nonretryable_error_kind(status_code, api_error) -> str:
+        """Short label for a non-retryable failure.
+
+        Returns ``"HTTP <code>"`` when the provider returned a status code,
+        otherwise the exception class name. Transport- and parse-level failures
+        (e.g. a ``TypeError`` raised while decoding a streamed response) carry
+        no status code; labelling them ``"HTTP None"`` hid their true nature and
+        led to them being mistaken for transport errors. Surfacing the exception
+        class keeps the non-retryable warning honest.
+        """
+        if status_code:
+            return f"HTTP {status_code}"
+        return type(api_error).__name__
+
     def _mask_api_key_for_logs(self, key: Optional[str]) -> Optional[str]:
         if not key:
             return None
@@ -14195,7 +14210,14 @@ class AIAgent:
                     if is_client_error:
                         # Try fallback before aborting — a different provider
                         # may not have the same issue (rate limit, auth, etc.)
-                        self._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
+                        # Label with the exception class (not "HTTP None") when
+                        # there is no HTTP status, and include the error message,
+                        # so transport/parse failures aren't masked as transport.
+                        _err_kind = self._nonretryable_error_kind(status_code, api_error)
+                        self._emit_status(
+                            f"⚠️ Non-retryable error ({_err_kind}): "
+                            f"{self._summarize_api_error(api_error)} — trying fallback..."
+                        )
                         if self._try_activate_fallback():
                             retry_count = 0
                             compression_attempts = 0
@@ -14206,10 +14228,10 @@ class AIAgent:
                                 api_kwargs, reason="non_retryable_client_error", error=api_error,
                             )
                         self._emit_status(
-                            f"❌ Non-retryable error (HTTP {status_code}): "
+                            f"❌ Non-retryable error ({_err_kind}): "
                             f"{self._summarize_api_error(api_error)}"
                         )
-                        self._vprint(f"{self.log_prefix}❌ Non-retryable client error (HTTP {status_code}). Aborting.", force=True)
+                        self._vprint(f"{self.log_prefix}❌ Non-retryable client error ({_err_kind}). Aborting.", force=True)
                         self._vprint(f"{self.log_prefix}   🔌 Provider: {_provider}  Model: {_model}", force=True)
                         self._vprint(f"{self.log_prefix}   🌐 Endpoint: {_base}", force=True)
                         # Actionable guidance for common auth errors

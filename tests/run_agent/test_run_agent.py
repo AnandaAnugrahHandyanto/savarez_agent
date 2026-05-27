@@ -5305,3 +5305,20 @@ class TestMemoryProviderTurnStart:
         import inspect
         src = inspect.getsource(AIAgent.run_conversation)
         assert "on_turn_start(self._user_turn_count" in src
+
+
+def test_nonretryable_error_kind_surfaces_exception_type_without_status():
+    """Non-retryable failures with no HTTP status (transport- or parse-level
+    errors such as a TypeError raised while decoding a streamed response) must
+    be labelled with the exception class, not the misleading "HTTP None" that
+    previously masked them as transport failures and derailed diagnosis.
+    """
+    # No status code -> surface the exception class name.
+    assert (
+        AIAgent._nonretryable_error_kind(None, TypeError("'NoneType' object is not iterable"))
+        == "TypeError"
+    )
+    # A falsy status (0) is treated as "no status" too.
+    assert AIAgent._nonretryable_error_kind(0, ValueError("bad")) == "ValueError"
+    # A real HTTP status is preserved unchanged.
+    assert AIAgent._nonretryable_error_kind(404, RuntimeError("nope")) == "HTTP 404"
