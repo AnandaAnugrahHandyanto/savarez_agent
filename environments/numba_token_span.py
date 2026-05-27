@@ -54,9 +54,25 @@ else:
         return -1
 
 
+def _normalized_prepared_full_tokens(
+    prepared_full_tokens: Optional["np.ndarray"], full_len: int
+) -> Optional["np.ndarray"]:
+    if np is None or not isinstance(prepared_full_tokens, np.ndarray):
+        return None
+    if len(prepared_full_tokens) != full_len:
+        return None
+    if prepared_full_tokens.dtype != np.int64:
+        return prepared_full_tokens.astype(np.int64, copy=False)
+    return prepared_full_tokens
+
+
 def prepare_token_span_full(full_tokens: List[int]) -> Optional["np.ndarray"]:
     """Prepare a reusable array for repeated span searches on one rollout."""
-    if not NUMBA_TOKEN_SPAN_AVAILABLE or not full_tokens:
+    if (
+        not NUMBA_TOKEN_SPAN_AVAILABLE
+        or not full_tokens
+        or len(full_tokens) < MIN_NUMBA_FULL_LEN
+    ):
         return None
     return np.asarray(full_tokens, dtype=np.int64)
 
@@ -90,7 +106,7 @@ def find_token_span(
     if not NUMBA_TOKEN_SPAN_AVAILABLE or full_len < MIN_NUMBA_FULL_LEN or work < MIN_NUMBA_WORK:
         return _find_token_span_python(full_tokens, sub_tokens, tail_stop, -1)
 
-    full_arr = prepared_full_tokens
+    full_arr = _normalized_prepared_full_tokens(prepared_full_tokens, full_len)
     if full_arr is None:
         full_arr = np.asarray(full_tokens, dtype=np.int64)
     sub_arr = np.asarray(sub_tokens, dtype=np.int64)
