@@ -30,7 +30,7 @@ def test_default_kanban_store_accepts_explicit_sqlite_backend(monkeypatch):
 
 
 def test_default_kanban_store_rejects_unknown_backend(monkeypatch):
-    monkeypatch.setenv("HERMES_KANBAN_BACKEND", "postgres")
+    monkeypatch.setenv("HERMES_KANBAN_BACKEND", "mysql")
 
     from hermes_cli.kanban_store_factory import get_default_kanban_store
 
