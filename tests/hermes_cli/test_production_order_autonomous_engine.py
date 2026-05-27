@@ -275,6 +275,90 @@ def test_invoke_profile_task_accepts_fake_runner_and_collects_single_packet(conn
     assert packet["source_state"] == envelope.source_state
 
 
+def test_extracts_one_raw_json_object_from_stdout(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    envelope = build_profile_task_envelope(conn, po.production_order_id)
+    packet = devos_build_packet(po.production_order_id)
+
+    invocation = invoke_profile_task(
+        envelope,
+        runner=lambda payload: {
+            "stdout": json.dumps(packet),
+            "stderr": "",
+            "exit_code": 0,
+            "duration_ms": 5,
+        },
+        timeout_seconds=30,
+    )
+
+    result = collect_profile_result_packet(invocation, envelope)
+    assert result["production_order_id"] == po.production_order_id
+
+
+def test_extracts_one_json_object_from_markdown_code_fence(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    envelope = build_profile_task_envelope(conn, po.production_order_id)
+    packet = devos_build_packet(po.production_order_id)
+    fenced = "Some commentary.```json\n" + json.dumps(packet) + "\n```"
+
+    invocation = invoke_profile_task(
+        envelope,
+        runner=lambda payload: {
+            "stdout": fenced,
+            "stderr": "",
+            "exit_code": 0,
+            "duration_ms": 5,
+        },
+        timeout_seconds=30,
+    )
+
+    result = collect_profile_result_packet(invocation, envelope)
+    assert result["packet_type"] == "devos_build_packet"
+
+
+def test_extracts_one_json_object_surrounded_by_prose(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    envelope = build_profile_task_envelope(conn, po.production_order_id)
+    packet = devos_build_packet(po.production_order_id)
+    prose = "Result below:\n" + json.dumps(packet) + "\nEnd of message."
+
+    invocation = invoke_profile_task(
+        envelope,
+        runner=lambda payload: {
+            "stdout": prose,
+            "stderr": "",
+            "exit_code": 0,
+            "duration_ms": 5,
+        },
+        timeout_seconds=30,
+    )
+
+    result = collect_profile_result_packet(invocation, envelope)
+    assert result["packet_type"] == "devos_build_packet"
+
+
+def test_rejects_multiple_json_objects_embedded_in_text(conn, sample_brief):
+    po = create_ready_for_dev_order(conn, sample_brief)
+    envelope = build_profile_task_envelope(conn, po.production_order_id)
+    p1 = devos_build_packet(po.production_order_id)
+    p2 = devos_build_packet(po.production_order_id)
+    multi = json.dumps(p1) + "\n" + json.dumps(p2)
+
+    invocation = invoke_profile_task(
+        envelope,
+        runner=lambda payload: {
+            "stdout": multi,
+            "stderr": "",
+            "exit_code": 0,
+            "duration_ms": 5,
+        },
+        timeout_seconds=30,
+    )
+
+    with pytest.raises(ValueError, match="multiple competing packets"):
+        collect_profile_result_packet(invocation, envelope)
+
+
 @pytest.mark.parametrize(
     ("runner_payload", "error_match"),
     [

@@ -7,6 +7,7 @@ import contextlib
 from dataclasses import asdict, dataclass, field
 import io
 import json
+import re
 import os
 import sqlite3
 import time
@@ -506,12 +507,60 @@ def _extract_single_packet(invocation_result: ProfileInvocationResult) -> dict[s
 def _parse_packet_text(text: str) -> Any:
     if not text:
         raise ValueError("profile invocation returned no structured result packet")
+    stripped = text.strip()
+    if not stripped:
+        raise ValueError("profile invocation returned no structured result packet")
+
+    # Preferred: entire text is a JSON value
     try:
-        return json.loads(text)
-    except json.JSONDecodeError as exc:
-        if any(ch in text for ch in "{}[]"):
-            raise ValueError("profile invocation returned malformed JSON") from exc
-        raise ValueError("profile invocation returned free-text-only output") from exc
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+
+    # Next: look for a single fenced code block containing JSON
+    fence_re = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.S | re.I)
+    fence_matches = fence_re.findall(text)
+    successes: list[Any] = []
+    if fence_matches:
+        for match in fence_matches:
+            try:
+                parsed = json.loads(match)
+            except json.JSONDecodeError as exc:
+                raise ValueError("profile invocation returned malformed JSON") from exc
+            successes.append(parsed)
+        if len(successes) == 1:
+            return successes[0]
+        raise ValueError("profile invocation returned multiple competing packets")
+
+    # Next: defensively extract top-level JSON object substrings (balanced braces)
+    objs: list[Any] = []
+    depth = 0
+    start_idx: int | None = None
+    for idx, ch in enumerate(text):
+        if ch == '{':
+            if depth == 0:
+                start_idx = idx
+            depth += 1
+        elif ch == '}' and depth > 0:
+            depth -= 1
+            if depth == 0 and start_idx is not None:
+                candidate = text[start_idx: idx + 1]
+                try:
+                    parsed = json.loads(candidate)
+                except json.JSONDecodeError as exc:
+                    raise ValueError("profile invocation returned malformed JSON") from exc
+                objs.append(parsed)
+                start_idx = None
+
+    if len(objs) == 1:
+        return objs[0]
+    if len(objs) > 1:
+        raise ValueError("profile invocation returned multiple competing packets")
+
+    # No JSON objects found; determine if there were any JSON-like characters
+    if any(ch in text for ch in "{}[]"):
+        raise ValueError("profile invocation returned malformed JSON")
+    raise ValueError("profile invocation returned free-text-only output")
 
 
 def _maybe_int(value: Any) -> int | None:
@@ -861,13 +910,17 @@ def _build_profile_runtime_prompt(envelope: ProfileTaskEnvelope) -> str:
         "rules": [
             "Accept exactly one profile task envelope.",
             "Use the explicit target profile already selected.",
-            "Return exactly one JSON object result packet.",
-            "Do not return free text outside the JSON object.",
+            "FINAL ANSWER REQUIREMENTS: The final assistant output MUST be exactly one raw JSON object only — no surrounding prose, no explanation, no Markdown, no code fences, and no leading or trailing text.",
+            "The JSON must be a single JSON object (top-level {}). It must parse with json.loads(...) without error.",
+            "The JSON object must match the expected result packet schema (fields/semantics) for this task and MUST NOT include workflow-mutation fields such as 'current_owner_profile' or 'current_state'.",
+            "If you are blocked or cannot complete, still RETURN exactly one well-formed JSON object using the rejected/blocked result packet shape compatible with validation (do not return free-text).",
             "Do not mutate production-order state directly.",
             "Do not rely on chat memory.",
             "Do not perform hidden retries.",
-            "If blocked, return a structured blocked packet that still satisfies the expected packet contract.",
         ],
+        "final_output_instructions": (
+            "Return only the single JSON object. Any deviation (multiple JSON objects, malformed JSON, or any non-JSON text) will be treated as a rejection."
+        ),
     }
     return json.dumps(contract, indent=2, sort_keys=True)
 
