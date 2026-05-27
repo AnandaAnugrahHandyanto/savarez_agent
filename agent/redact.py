@@ -425,7 +425,29 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _redact_form_body(text)
 
     # Discord user/role mentions (<@snowflake_id>)
-    if "<@" in text:
+    #
+    # DISABLED-BY-DEFAULT 2026-05-26 (writer_ai#125): Discord user/role
+    # mention IDs are PUBLIC mention syntax — visible to every member of
+    # the channel by design, the same as @-handles on Twitter or
+    # usernames on GitHub. Masking them to `<@***>` breaks the actual
+    # Discord mention system (the wire-level message that the platform
+    # delivers loses the ID, so the ping never fires), and serves no
+    # security purpose since the IDs are already visible to the entire
+    # channel.
+    #
+    # The damage was: model emits `<@123456789012345678> Fury — ...`,
+    # this function rewrote it to `<@***> Fury — ...` BEFORE the
+    # assistant content landed in history / was delivered to the
+    # platform, so cross-bot @-mentions silently broke. Affected
+    # gateway/run.py persistence boundary via
+    # chat_completion_helpers.py:731-733.
+    #
+    # Restored as an OPT-IN export-only path: when the operator genuinely
+    # needs mention-ID redaction (e.g. dumping conversation logs for an
+    # untrusted audience), set HERMES_REDACT_DISCORD_MENTIONS=1 to
+    # re-enable. Do NOT set this on the persistence boundary; it will
+    # silently break inter-agent mentions again.
+    if "<@" in text and os.environ.get("HERMES_REDACT_DISCORD_MENTIONS", "").lower() in {"1", "true", "yes", "on"}:
         text = _DISCORD_MENTION_RE.sub(lambda m: f"<@{'!' if '!' in m.group(0) else ''}***>", text)
 
     # E.164 phone numbers (Signal, WhatsApp)

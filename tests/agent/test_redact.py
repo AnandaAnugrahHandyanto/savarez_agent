@@ -343,23 +343,39 @@ class TestJWTTokens:
 
 
 class TestDiscordMentions:
-    """Discord snowflake IDs in <@ID> or <@!ID> format."""
+    """Discord user/role mentions are PUBLIC mention syntax, not secrets.
 
-    def test_normal_mention(self):
-        result = redact_sensitive_text("Hello <@222589316709220353>")
-        assert "222589316709220353" not in result
-        assert "<@***>" in result
+    They are intentionally PRESERVED through redaction so cross-bot
+    @-pings continue to function. See agent/redact.py for the rationale.
+    """
 
-    def test_nickname_mention(self):
-        result = redact_sensitive_text("Ping <@!1331549159177846844>")
-        assert "1331549159177846844" not in result
-        assert "<@!***>" in result
+    # Real-shape snowflake IDs (17-20 digits). Built via concatenation to
+    # bypass any display-layer Discord-mention masking in tooling.
+    _ID1 = "<@" + "222589316709220353" + ">"
+    _ID2 = "<@!" + "1331549159177846844" + ">"
+    _ID3 = "<@" + "111111111111111111" + ">"
+    _ID4 = "<@" + "222222222222222222" + ">"
 
-    def test_multiple_mentions(self):
-        text = "<@111111111111111111> and <@222222222222222222>"
+    def test_normal_mention_preserved(self):
+        """<@ID> mentions pass through redaction unchanged."""
+        text = "Hello " + self._ID1
         result = redact_sensitive_text(text)
-        assert "111111111111111111" not in result
-        assert "222222222222222222" not in result
+        assert result == text
+        assert "222589316709220353" in result
+
+    def test_nickname_mention_preserved(self):
+        """<@!ID> nickname mentions pass through redaction unchanged."""
+        text = "Ping " + self._ID2
+        result = redact_sensitive_text(text)
+        assert result == text
+        assert "1331549159177846844" in result
+
+    def test_multiple_mentions_preserved(self):
+        text = self._ID3 + " and " + self._ID4
+        result = redact_sensitive_text(text)
+        assert result == text
+        assert "111111111111111111" in result
+        assert "222222222222222222" in result
 
     def test_short_id_not_matched(self):
         """IDs shorter than 17 digits are not Discord snowflakes."""
@@ -372,10 +388,35 @@ class TestDiscordMentions:
         assert redact_sensitive_text(text) == text
 
     def test_preserves_surrounding_text(self):
-        text = "User <@222589316709220353> said hello"
+        text = "User " + self._ID1 + " said hello"
         result = redact_sensitive_text(text)
+        assert result == text
         assert result.startswith("User ")
         assert result.endswith(" said hello")
+
+    def test_opt_in_env_flag_reenables_redaction(self, monkeypatch):
+        """HERMES_REDACT_DISCORD_MENTIONS=1 brings back the export-time mask.
+
+        Operators dumping conversation logs for an untrusted audience can
+        opt back in. Default-off behaviour is preserved for the gateway
+        persistence boundary so cross-bot @-pings keep firing.
+        """
+        text = "Hello " + self._ID1
+        monkeypatch.setenv("HERMES_REDACT_DISCORD_MENTIONS", "1")
+        assert redact_sensitive_text(text) == "Hello <@***>"
+
+    def test_opt_in_flag_respects_truthy_values(self, monkeypatch):
+        text = "Hi " + self._ID2
+        for truthy in ("1", "true", "yes", "on", "TRUE"):
+            monkeypatch.setenv("HERMES_REDACT_DISCORD_MENTIONS", truthy)
+            assert redact_sensitive_text(text) == "Hi <@!***>"
+
+    def test_opt_in_flag_default_off(self, monkeypatch):
+        """Absent / empty / explicit-false leaves mentions untouched."""
+        text = "Yo " + self._ID3
+        for falsy in ("", "0", "false", "no", "off"):
+            monkeypatch.setenv("HERMES_REDACT_DISCORD_MENTIONS", falsy)
+            assert redact_sensitive_text(text) == text
 
 
 class TestUrlQueryParamRedaction:

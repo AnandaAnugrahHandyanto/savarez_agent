@@ -2875,8 +2875,30 @@ class DiscordAdapter(BasePlatformAdapter):
         Format message for Discord.
 
         Discord uses its own markdown variant.
+
+        Side-effect: scan for malformed `<@…>` mentions and log a
+        structured warning when any are found. We do NOT rewrite the
+        payload — silent rewriting at the persistence boundary is what
+        caused writer_ai#125 in the first place. The send proceeds as
+        the agent authored it; the log surfaces the bug for triage.
+
+        Role mentions (`<@&…>`) are tolerated here because Discord
+        channels may legitimately reference real roles. Durable-artifact
+        write paths (cron prompt / skill_manage) reject them.
         """
-        # Discord markdown is fairly standard, no special escaping needed
+        try:
+            from agent.mention_lint import find_malformed_mentions
+            findings = find_malformed_mentions(content, allow_roles=True)
+            if findings:
+                logger.warning(
+                    "[Discord] malformed mention(s) detected in outbound "
+                    "content (warn-and-pass): count=%d, samples=%s. See "
+                    "agent/mention_lint.py and writer_ai#125.",
+                    len(findings),
+                    [f"{f.raw}:{f.kind}" for f in findings[:5]],
+                )
+        except Exception as exc:
+            logger.debug("[Discord] mention-lint scan failed: %s", exc)
         return content
 
     async def _run_simple_slash(

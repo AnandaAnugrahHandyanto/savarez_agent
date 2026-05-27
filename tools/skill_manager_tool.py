@@ -56,6 +56,30 @@ except ImportError:
     _GUARD_AVAILABLE = False
 
 
+def _scan_for_malformed_mentions(text: str, source_label: str) -> Optional[str]:
+    """Run the Discord mention-lint guardrail on durable skill content.
+
+    Returns a formatted error string when malformed Discord mentions are
+    detected; ``None`` when the content is clean (or the linter is
+    unavailable). Centralized here so create/edit/patch/write_file share
+    the same enforcement policy. See ``agent/mention_lint.py`` and
+    writer_ai#125 for incident context.
+    """
+    if not isinstance(text, str) or not text:
+        return None
+    try:
+        from agent.mention_lint import find_malformed_mentions, format_findings
+        findings = find_malformed_mentions(text)
+        if not findings:
+            return None
+        return "Blocked: " + format_findings(findings, source_label=source_label)
+    except Exception:
+        # Never let a linter import / scan failure block durable writes
+        # outright — the outbound Discord warn-and-pass is the runtime
+        # safety net.
+        return None
+
+
 def _guard_agent_created_enabled() -> bool:
     """Read skills.guard_agent_created from config (default False).
 
@@ -833,11 +857,17 @@ def skill_manage(
     if action == "create":
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
+        mention_err = _scan_for_malformed_mentions(content, "SKILL.md content")
+        if mention_err:
+            return tool_error(mention_err, success=False)
         result = _create_skill(name, content, category)
 
     elif action == "edit":
         if not content:
             return tool_error("content is required for 'edit'. Provide the full updated SKILL.md text.", success=False)
+        mention_err = _scan_for_malformed_mentions(content, "SKILL.md content")
+        if mention_err:
+            return tool_error(mention_err, success=False)
         result = _edit_skill(name, content)
 
     elif action == "patch":
@@ -845,6 +875,9 @@ def skill_manage(
             return tool_error("old_string is required for 'patch'. Provide the text to find.", success=False)
         if new_string is None:
             return tool_error("new_string is required for 'patch'. Use empty string to delete matched text.", success=False)
+        mention_err = _scan_for_malformed_mentions(new_string, "patch new_string")
+        if mention_err:
+            return tool_error(mention_err, success=False)
         result = _patch_skill(name, old_string, new_string, file_path, replace_all)
 
     elif action == "delete":
@@ -855,6 +888,9 @@ def skill_manage(
             return tool_error("file_path is required for 'write_file'. Example: 'references/api-guide.md'", success=False)
         if file_content is None:
             return tool_error("file_content is required for 'write_file'.", success=False)
+        mention_err = _scan_for_malformed_mentions(file_content, f"file_content for {file_path}")
+        if mention_err:
+            return tool_error(mention_err, success=False)
         result = _write_file(name, file_path, file_content)
 
     elif action == "remove_file":

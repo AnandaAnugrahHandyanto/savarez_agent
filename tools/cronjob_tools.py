@@ -202,6 +202,19 @@ def _scan_cron_prompt(prompt: str) -> str:
     for pattern, pid in _CRON_EXFIL_COMMAND_PATTERNS:
         if re.search(pattern, prompt_to_scan, re.IGNORECASE):
             return f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."
+    # Discord mention-lint: durable cron prompts must not bake in masked
+    # placeholder mentions (<@***>), role-syntax mentions for agent IDs,
+    # or other malformed Discord ID literals. See agent/mention_lint.py
+    # and writer_ai#125 for the production-incident history.
+    try:
+        from agent.mention_lint import find_malformed_mentions, format_findings
+        findings = find_malformed_mentions(prompt)
+        if findings:
+            return "Blocked: " + format_findings(findings, source_label="cron prompt")
+    except Exception:
+        # Linter failures must never become DoS on cron creation. The
+        # outbound warn-and-pass path is the runtime safety net.
+        pass
     return ""
 
 
