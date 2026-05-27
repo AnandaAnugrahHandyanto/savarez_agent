@@ -54,10 +54,10 @@ def _is_loopback_url(url: str) -> bool:
 def _is_local_user_provider(ep_name: str, display_name: str, api_url: str) -> bool:
     """Return True for user-configured local model endpoints.
 
-    Trey's config runs several local OpenAI-compatible servers on different
-    loopback ports (local-mlx, local-heretic, local-hauhaucs, local-mlx-vlm).
-    The picker should show those as one provider row, "Local", while runtime
-    resolution still routes the selected model to its underlying port.
+    Configs often run several local OpenAI-compatible servers on different
+    loopback ports. The picker should show those as one provider row, "Local",
+    while runtime resolution still routes the selected model to its underlying
+    port.
     """
     key = str(ep_name or "").strip().lower()
     label = str(display_name or "").strip().lower()
@@ -1767,6 +1767,11 @@ def list_authenticated_providers(
             #   live discovery so bare-endpoint custom providers (local
             #   llama.cpp / Ollama servers) still appear populated.
             should_probe = bool(api_url) and (bool(api_key) or not grp["models"])
+            if _is_loopback_url(api_url) and grp["models"]:
+                # Local/Ollama endpoints can have a live catalog that differs
+                # from the explicit subset the user configured. Preserve the
+                # configured subset for deterministic picker rows and tests.
+                should_probe = False
             if should_probe:
                 try:
                     from hermes_cli.models import fetch_api_models
