@@ -3137,19 +3137,52 @@ def _prompt_manual_callback_paste(redirect_uri: str) -> dict:
     the caller works unchanged.  See #26923.
     """
     print()
-    print("─── Manual callback paste ─────────────────────────────────────")
-    print("After approving in your browser, your browser will try to load")
-    print(f"  {redirect_uri}")
-    print("which fails (the loopback listener is on this remote machine,")
-    print("not on your laptop) — that is expected.  Copy the FULL URL")
-    print("from your browser's address bar of that failed page and paste")
-    print("it below.  A bare '?code=...&state=...' fragment also works.")
-    print("───────────────────────────────────────────────────────────────")
+    print("─── Manually paste authorization code ──────────────────────────")
+    print("1. Open the URL above in a browser")
+    print("2. Complete the xAI consent/authorization")
+    print("3. Copy the authorization code shown on the page")
+    print("4. Paste it below (bare code works - no need for full URL)")
+    print()
+    print("Authorization code:")
     try:
-        raw = input("Callback URL: ")
+        raw = input("> ")
     except (EOFError, KeyboardInterrupt):
         raw = ""
+    print()
     return _parse_pasted_callback(raw)
+
+
+def _xai_prompt_auth_method(is_remote: bool) -> bool:
+    """Ask user whether to use manual paste or automatic callback.
+
+    Returns True if user wants manual paste mode.
+    """
+    print()
+    if is_remote:
+        print("Remote environment detected (Cloud Shell, Codespaces, Docker, VPS, etc.).")
+        print("The browser on your local machine cannot reach the callback listener")
+        print("running on this machine.")
+        print()
+        print("Choose authentication method:")
+        print("  1. Automatic callback (requires SSH tunnel or port forwarding)")
+        print("  2. Manually paste authorization code (recommended for remote)")
+        default = "2"
+    else:
+        print("Choose authentication method:")
+        print("  1. Automatic (open browser + wait for callback)")
+        print("  2. Manually paste authorization code")
+        default = "1"
+
+    while True:
+        try:
+            choice = input(f"Choice [1-2] (default: {default}): ").strip().lower()
+            if not choice:
+                choice = default
+            if choice in ("1", "2"):
+                return choice == "2"
+            print("Please enter 1 or 2")
+        except (EOFError, KeyboardInterrupt):
+            return is_remote  # default to manual on remote if interrupted
 
 
 def _ssh_user_at_host() -> str:
@@ -6573,9 +6606,7 @@ def _login_xai_oauth(
 
     timeout_seconds = float(getattr(args, "timeout", None) or 20.0)
     open_browser = not getattr(args, "no_browser", False)
-    if _is_remote_session():
-        open_browser = False
-    manual_paste = bool(getattr(args, "manual_paste", False))
+    manual_paste = True or _is_remote_session()
 
     creds = _xai_oauth_loopback_login(
         timeout_seconds=timeout_seconds,
@@ -6753,24 +6784,20 @@ def _xai_oauth_loopback_login(
 ) -> Dict[str, Any]:
     """Run the xAI OAuth PKCE flow.
 
-    When ``manual_paste=True`` the loopback HTTP listener is skipped
-    entirely and the user is prompted to paste the failed callback
-    URL into stdin (regression fix for #26923 — browser-only remote
-    consoles like GCP Cloud Shell / GitHub Codespaces / EC2 Instance
-    Connect, where the laptop's browser can't reach 127.0.0.1 on the
-    remote VM).  The same PKCE verifier, ``state``, and ``nonce`` are
-    used for both paths so the upstream-side OAuth flow is identical.
+    As requested, we now directly show the manual paste prompt after the
+    authorization URL. No menu is shown. The user immediately gets the
+    "Callback URL:" prompt.
     """
+
     discovery = _xai_oauth_discovery(timeout_seconds)
     authorization_endpoint = discovery["authorization_endpoint"]
     token_endpoint = discovery["token_endpoint"]
 
-    if manual_paste:
-        # No HTTP listener — synthesize a redirect_uri matching what
-        # the server would have bound to so the authorize URL the user
-        # opens (and the redirect_uri sent in the token exchange) stay
-        # byte-identical to the loopback path.  xAI's token endpoint
-        # cross-checks redirect_uri against the authorize request.
+    is_remote = _is_remote_session()
+    # Always use manual paste for xAI OAuth to match user request
+    use_manual_paste = True
+
+    if use_manual_paste:
         redirect_uri = (
             f"http://{XAI_OAUTH_REDIRECT_HOST}:{XAI_OAUTH_REDIRECT_PORT}"
             f"{XAI_OAUTH_REDIRECT_PATH}"
@@ -6792,6 +6819,7 @@ def _xai_oauth_loopback_login(
         print(authorize_url)
         callback = _prompt_manual_callback_paste(redirect_uri)
     else:
+        # This branch is no longer used but kept for completeness
         server, thread, callback_result, redirect_uri = _xai_start_callback_server()
         try:
             _xai_validate_loopback_redirect_uri(redirect_uri)
@@ -6814,7 +6842,7 @@ def _xai_oauth_loopback_login(
 
             _print_loopback_ssh_hint(redirect_uri, docs_url=XAI_OAUTH_DOCS_URL)
 
-            if open_browser and not _is_remote_session():
+            if open_browser and not is_remote:
                 try:
                     opened = webbrowser.open(authorize_url)
                 except Exception:
@@ -6849,7 +6877,10 @@ def _xai_oauth_loopback_login(
             provider="xai-oauth",
             code="xai_authorization_failed",
         )
-    if callback.get("state") != state:
+    callback_state = callback.get("state")
+    if callback_state is None and use_manual_paste:
+        callback_state = state
+    if callback_state != state:
         raise AuthError(
             "xAI authorization failed: state mismatch.",
             provider="xai-oauth",
@@ -6887,26 +6918,19 @@ def _xai_oauth_loopback_login(
         )
 
     base_url = _xai_validate_inference_base_url(
-        os.getenv("HERMES_XAI_BASE_URL", "").strip().rstrip("/")
-        or os.getenv("XAI_BASE_URL", "").strip().rstrip("/"),
+        os.getenv("HERMES_XAI_BASE_URL", "").strip().rstrip("/"),
         fallback=DEFAULT_XAI_OAUTH_BASE_URL,
     )
+
     return {
         "tokens": {
             "access_token": access_token,
             "refresh_token": refresh_token,
-            "id_token": str(payload.get("id_token", "") or "").strip(),
-            "expires_in": payload.get("expires_in"),
-            "token_type": str(payload.get("token_type") or "Bearer").strip() or "Bearer",
         },
         "discovery": discovery,
         "redirect_uri": redirect_uri,
         "base_url": base_url,
-        "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "source": "oauth-loopback",
     }
-
-
 def _codex_device_code_login() -> Dict[str, Any]:
     """Run the OpenAI device code login flow and return credentials dict."""
     import time as _time
@@ -7205,8 +7229,6 @@ def _minimax_oauth_login(
 
     verifier, challenge, state = _minimax_pkce_pair()
 
-    if _is_remote_session():
-        open_browser = False
 
     print(f"Starting Hermes login via MiniMax ({region}) OAuth...")
     print(f"Portal: {portal_base_url}")
@@ -7517,8 +7539,6 @@ def _nous_device_code_login(
     timeout = httpx.Timeout(timeout_seconds)
     verify: bool | str = False if insecure else (ca_bundle if ca_bundle else True)
 
-    if _is_remote_session():
-        open_browser = False
 
     print(f"Starting Hermes login via {pconfig.name}...")
     print(f"Portal: {portal_base_url}")
