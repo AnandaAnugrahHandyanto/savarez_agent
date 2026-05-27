@@ -186,6 +186,24 @@ class _FakeCreateStream:
         self.closed = True
 
 
+class _FakeNullOutputCrashStream:
+    def __init__(self, events):
+        self._events = list(events)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def __iter__(self):
+        yield from self._events
+        raise TypeError("'NoneType' object is not iterable")
+
+    def get_final_response(self):
+        raise AssertionError("stream iteration should fail before final parsing")
+
+
 def _codex_request_kwargs():
     return {
         "model": "gpt-5-codex",
@@ -482,6 +500,32 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert calls["create"] == 1
     assert create_stream.closed is True
     assert response.output[0].content[0].text == "streamed create ok"
+
+
+def test_run_codex_stream_recovers_when_terminal_output_null_crashes_parser(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    streamed_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="stream recovered")],
+    )
+
+    def _fake_stream(**kwargs):
+        return _FakeNullOutputCrashStream([
+            SimpleNamespace(type="response.output_item.done", item=streamed_item),
+        ])
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=lambda **kwargs: _codex_message_response("fallback"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.status == "completed"
+    assert response.output == [streamed_item]
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):

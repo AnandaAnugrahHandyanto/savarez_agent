@@ -2210,6 +2210,42 @@ class TestAuxiliaryPoolRotationRetry:
         mock_fallback.assert_not_called()
 
 
+class TestCodexAuxiliaryClientStreamRecovery:
+    def test_stream_parser_null_output_error_backfills_output_items(self):
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+
+        streamed_item = SimpleNamespace(
+            type="message",
+            status="completed",
+            content=[SimpleNamespace(type="output_text", text="stream recovered")],
+        )
+
+        class FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                yield SimpleNamespace(type="response.output_item.done", item=streamed_item)
+                raise TypeError("'NoneType' object is not iterable")
+
+            def get_final_response(self):
+                raise AssertionError("stream iteration should fail before final parsing")
+
+        class FakeResponses:
+            def stream(self, **kwargs):
+                return FakeStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "hi"}])
+
+        assert response.choices[0].message.content == "stream recovered"
+
+
 class TestCodexAdapterReasoningTranslation:
     """Verify _CodexCompletionsAdapter translates extra_body.reasoning
     into the Responses API's top-level reasoning + include fields, matching
