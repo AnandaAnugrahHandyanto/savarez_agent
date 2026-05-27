@@ -59,6 +59,7 @@ import time
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, List, Optional, Set, Tuple
+import contextlib
 
 logger = logging.getLogger(__name__)
 
@@ -559,12 +560,10 @@ def _init_shadow_repo(shadow_repo: Path, working_dir: str) -> Optional[str]:
     _register_project(shadow_repo, working_dir)
     # Compat marker for tests that look at HERMES_WORKDIR
     # (write in addition to the JSON metadata).
-    try:
+    with contextlib.suppress(OSError):
         (shadow_repo / "HERMES_WORKDIR").write_text(
             str(_normalize_path(working_dir)) + "\n", encoding="utf-8"
         )
-    except OSError:
-        pass
     return None
 
 
@@ -664,7 +663,7 @@ class CheckpointManager:
 
         ref = _ref_name(_project_hash(abs_dir))
         ok, stdout, _ = _run_git(
-            ["log", ref, f"--format=%H|%h|%aI|%s", "-n", str(self.max_snapshots)],
+            ["log", ref, "--format=%H|%h|%aI|%s", "-n", str(self.max_snapshots)],
             store, abs_dir,
             allowed_returncodes={128, 129},
         )
@@ -875,10 +874,8 @@ class CheckpointManager:
                     allowed_returncodes={128},
                 )
             else:
-                try:
+                with contextlib.suppress(OSError):
                     index_file.unlink()
-                except OSError:
-                    pass
         else:
             # First snapshot for this project.
             index_file.parent.mkdir(parents=True, exist_ok=True)

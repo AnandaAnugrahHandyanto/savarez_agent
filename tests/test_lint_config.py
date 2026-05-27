@@ -113,3 +113,282 @@ class TestLintWorkflow:
             pytest.fail(f"lint.yml is not valid YAML: {exc}")
         assert isinstance(parsed, dict)
         assert "jobs" in parsed
+
+class TestScriptsLintDiff:
+    """scripts/lint_diff.py must have zero SIM105 and RUF001 violations."""
+
+    TARGET = REPO_ROOT / "scripts" / "lint_diff.py"
+
+    def test_lint_diff_has_zero_sim105(self):
+        """scripts/lint_diff.py must have zero SIM105 (try-except-pass -> contextlib.suppress) violations."""
+        import subprocess as _subprocess
+        import sys as _sys
+
+        result = _subprocess.run(
+            [_sys.executable, "-m", "ruff", "check", "--select=SIM105",
+             "--output-format=concise", str(self.TARGET)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            f"scripts/lint_diff.py has SIM105 violation(s):\n"
+            f"{result.stdout}\n{result.stderr}\n"
+        )
+
+    def test_lint_diff_has_zero_ruf001(self):
+        """scripts/lint_diff.py must have zero RUF001 (ambiguous unicode character) violations."""
+        import subprocess as _subprocess
+        import sys as _sys
+
+        result = _subprocess.run(
+            [_sys.executable, "-m", "ruff", "check", "--select=RUF001",
+             "--output-format=concise", str(self.TARGET)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            f"scripts/lint_diff.py has RUF001 violation(s):\n"
+            f"{result.stdout}\n{result.stderr}\n"
+        )
+
+
+class TestScriptsProfileTui:
+    """scripts/profile-tui.py must have zero SIM105 violations."""
+
+    TARGET = REPO_ROOT / "scripts" / "profile-tui.py"
+
+    def test_profile_tui_has_zero_sim105(self):
+        """scripts/profile-tui.py must have zero SIM105 (try-except-pass -> contextlib.suppress) violations."""
+        import subprocess as _subprocess
+        import sys as _sys
+
+        result = _subprocess.run(
+            [_sys.executable, "-m", "ruff", "check", "--select=SIM105",
+             "--output-format=concise", str(self.TARGET)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            f"scripts/profile-tui.py has SIM105 violation(s):\n"
+            f"{result.stdout}\n{result.stderr}\n"
+        )
+
+class TestScriptsRunTestsParallel:
+    """scripts/run_tests_parallel.py must have zero SIM105 violations."""
+
+    TARGET = REPO_ROOT / "scripts" / "run_tests_parallel.py"
+
+    def test_run_tests_parallel_has_zero_sim105(self):
+        """scripts/run_tests_parallel.py must have zero SIM105 (try-except-pass -> contextlib.suppress) violations."""
+        import subprocess as _subprocess
+        import sys as _sys
+
+        result = _subprocess.run(
+            [_sys.executable, "-m", "ruff", "check", "--select=SIM105",
+             "--output-format=concise", str(self.TARGET)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            f"scripts/run_tests_parallel.py has SIM105 violation(s):\n"
+            f"{result.stdout}\n{result.stderr}\n"
+        )
+
+    def test_run_tests_parallel_has_zero_f541(self):
+        """scripts/run_tests_parallel.py must have zero F541 (f-string without placeholders) violations."""
+        import subprocess as _subprocess
+        import sys as _sys
+
+        result = _subprocess.run(
+            [_sys.executable, "-m", "ruff", "check", "--select=F541",
+             "--output-format=concise", str(self.TARGET)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            f"scripts/run_tests_parallel.py has F541 violation(s):\n"
+            f"{result.stdout}\n{result.stderr}\n"
+        )
+
+
+class TestScriptsCheckWindowsFootguns:
+    """scripts/check-windows-footguns.py must have zero SIM103 violations."""
+
+    TARGET = REPO_ROOT / "scripts" / "check-windows-footguns.py"
+
+    def test_check_windows_footguns_has_zero_sim103(self):
+        """scripts/check-windows-footguns.py must have zero SIM103 (return-condition-directly) violations."""
+        import subprocess as _subprocess
+        import sys as _sys
+
+        result = _subprocess.run(
+            [_sys.executable, "-m", "ruff", "check", "--select=SIM103",
+             "--output-format=concise", str(self.TARGET)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            f"scripts/check-windows-footguns.py has SIM103 violation(s):\n"
+            f"{result.stdout}\n{result.stderr}\n"
+        )
+
+class TestToolsSendMessage:
+    """tools/send_message_tool.py must have zero F811 violations."""
+
+    TARGET = REPO_ROOT / "tools" / "send_message_tool.py"
+
+    def test_send_message_tool_has_zero_f811(self):
+        """tools/send_message_tool.py must have zero F811 (redefined-while-unused) violations."""
+        import subprocess as _subprocess
+        import sys as _sys
+
+        result = _subprocess.run(
+            [_sys.executable, "-m", "ruff", "check", "--select=F811",
+             "--output-format=concise", str(self.TARGET)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            f"tools/send_message_tool.py has F811 violation(s):\n"
+            f"{result.stdout}\n{result.stderr}\n"
+        )
+
+
+class TestToolsPatchParser:
+    """tools/patch_parser.py must have zero F821 violations."""
+
+    TARGET = REPO_ROOT / "tools" / "patch_parser.py"
+
+    def test_patch_parser_has_zero_f821(self):
+        """tools/patch_parser.py must have zero F821 (undefined-name) violations."""
+        import subprocess as _subprocess
+        import sys as _sys
+
+        result = _subprocess.run(
+            [_sys.executable, "-m", "ruff", "check", "--select=F821",
+             "--output-format=concise", str(self.TARGET)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            f"tools/patch_parser.py has F821 violation(s):\n"
+            f"{result.stdout}\n{result.stderr}\n"
+        )
+class TestBrowserCdpTool:
+    """tools/browser_cdp_tool.py must have zero F401 violations."""
+
+    TARGET = REPO_ROOT / "tools" / "browser_cdp_tool.py"
+
+    def test_browser_cdp_tool_has_zero_f401(self):
+        """tools/browser_cdp_tool.py must have zero F401 (unused-import) violations."""
+        import subprocess as _subprocess
+        import sys as _sys
+
+        result = _subprocess.run(
+            [_sys.executable, "-m", "ruff", "check", "--select=F401",
+             "--output-format=concise", str(self.TARGET)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            f"tools/browser_cdp_tool.py has F401 violation(s):\n"
+            f"{result.stdout}\n{result.stderr}\n"
+        )
+
+class TestToolsF541:
+    """tools/ must have zero F541 (f-string-without-placeholders) violations."""
+
+    TARGET = REPO_ROOT / "tools"
+
+    def test_tools_has_zero_f541_violations(self):
+        """tools/ must have zero F541 violations."""
+        import subprocess as _subprocess
+        import sys as _sys
+
+        result = _subprocess.run(
+            [_sys.executable, "-m", "ruff", "check", "--select=F541",
+             "--output-format=concise", str(self.TARGET)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            f"tools/ has F541 violation(s):\n"
+            f"{result.stdout}\n{result.stderr}\n"
+        )
+
+
+def test_cronjob_tools_has_zero_f401() -> None:
+    """tools/cronjob_tools.py must have zero F401 (unused-import) violations."""
+    import subprocess, sys
+    result = subprocess.run(
+        [sys.executable, "-m", "ruff", "check", "--select=F401",
+         "--output-format=concise", "tools/cronjob_tools.py"],
+        capture_output=True, text=True, cwd=REPO_ROOT,
+    )
+    assert result.returncode == 0, (
+        f"tools/cronjob_tools.py has F401 violations:\n{result.stdout}"
+    )
+
+
+class TestToolsCheckpointManager:
+    """tools/checkpoint_manager.py must have zero SIM105 violations."""
+
+    TARGET = REPO_ROOT / "tools" / "checkpoint_manager.py"
+
+    def test_checkpoint_manager_has_zero_sim105(self):
+        """tools/checkpoint_manager.py must have zero SIM105 violations."""
+        import subprocess as _subprocess
+        import sys as _sys
+
+        result = _subprocess.run(
+            [_sys.executable, "-m", "ruff", "check", "--select=SIM105",
+             "--output-format=concise", str(self.TARGET)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            f"tools/checkpoint_manager.py has SIM105 violation(s):\n"
+            f"{result.stdout}\n{result.stderr}\n"
+        )
+
+class TestCodeExecutionToolF401:
+    """tools/code_execution_tool.py must have zero F401 (unused-import) violations."""
+
+    TARGET = REPO_ROOT / "tools" / "code_execution_tool.py"
+
+    def test_code_execution_tool_has_zero_f401(self):
+        """tools/code_execution_tool.py must have zero F401 violations."""
+        import subprocess as _subprocess
+        import sys as _sys
+
+        result = _subprocess.run(
+            [_sys.executable, "-m", "ruff", "check", "--select=F401",
+             "--output-format=concise", str(self.TARGET)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            f"tools/code_execution_tool.py has F401 violation(s):\n"
+            f"{result.stdout}\n{result.stderr}\n"
+        )
+
+class TestToolsPatchParserE741:
+    """tools/patch_parser.py must have zero E741 (ambiguous variable name) violations."""
+
+    TARGET = REPO_ROOT / "tools" / "patch_parser.py"
+
+    def test_patch_parser_has_zero_e741(self):
+        """tools/patch_parser.py must have zero E741 (ambiguous `l` etc.) violations."""
+        import subprocess as _subprocess
+        import sys as _sys
+
+        result = _subprocess.run(
+            [_sys.executable, "-m", "ruff", "check", "--select=E741",
+             "--output-format=concise", str(self.TARGET)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            f"tools/patch_parser.py has E741 violation(s):\n"
+            f"{result.stdout}\n{result.stderr}\n"
+        )
