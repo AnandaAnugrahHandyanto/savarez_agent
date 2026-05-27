@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import json
 
-from hermes_cli.loops import close_loop, init_loop, loop_dir, run_loop, status_loop
+from hermes_cli.loops import (
+    block_story,
+    close_loop,
+    complete_story,
+    init_loop,
+    loop_dir,
+    run_loop,
+    status_loop,
+)
 
 
 def test_init_loop_creates_simple_aaron_style_state(tmp_path):
@@ -77,6 +85,54 @@ def test_run_loop_selects_first_pending_story_and_returns_execution_prompt(tmp_p
     updated = json.loads(path.read_text(encoding="utf-8"))
     assert updated["userStories"][1]["status"] == "running"
     assert "Running: S1 — first" in (loop_dir("ship", root=tmp_path) / "status.md").read_text(encoding="utf-8")
+
+
+def test_complete_story_marks_running_story_passed_and_updates_progress(tmp_path):
+    init_loop("ship", root=tmp_path, title="Ship feature")
+    path = loop_dir("ship", root=tmp_path)
+    prd_path = path / "prd.json"
+    prd = json.loads(prd_path.read_text(encoding="utf-8"))
+    prd["userStories"] = [
+        {"id": "S1", "title": "first", "priority": 1, "passes": False, "status": "running"},
+        {"id": "S2", "title": "second", "priority": 2, "passes": False},
+    ]
+    prd_path.write_text(json.dumps(prd, indent=2) + "\n", encoding="utf-8")
+
+    result = complete_story("ship", root=tmp_path, note="verified with focused tests")
+
+    updated = json.loads(prd_path.read_text(encoding="utf-8"))
+    assert updated["userStories"][0]["passes"] is True
+    assert updated["userStories"][0]["status"] == "passed"
+    assert "completedAt" in updated["userStories"][0]
+    assert "Stories: 2 total / 1 pending / 1 passed" in result.text
+    progress = (path / "progress.md").read_text(encoding="utf-8")
+    assert "### Completed: S1 — first" in progress
+    assert "verified with focused tests" in progress
+
+
+def test_block_story_marks_story_blocked_and_run_skips_it(tmp_path):
+    init_loop("ship", root=tmp_path, title="Ship feature")
+    path = loop_dir("ship", root=tmp_path)
+    prd_path = path / "prd.json"
+    prd = json.loads(prd_path.read_text(encoding="utf-8"))
+    prd["userStories"] = [
+        {"id": "S1", "title": "blocked first", "priority": 1, "passes": False},
+        {"id": "S2", "title": "next runnable", "priority": 2, "passes": False},
+    ]
+    prd_path.write_text(json.dumps(prd, indent=2) + "\n", encoding="utf-8")
+
+    blocked = block_story("ship", root=tmp_path, story_id="S1", note="waiting on API key")
+    run = run_loop("ship", root=tmp_path)
+
+    updated = json.loads(prd_path.read_text(encoding="utf-8"))
+    assert updated["userStories"][0]["status"] == "blocked"
+    assert updated["userStories"][0]["blockReason"] == "waiting on API key"
+    assert "Blocked: 1" in blocked.text
+    assert "Stories: 2 total / 1 pending / 0 passed" in blocked.text
+    assert "Story: S2 — next runnable" in run.text
+    progress = (path / "progress.md").read_text(encoding="utf-8")
+    assert "### Blocked: S1 — blocked first" in progress
+    assert "waiting on API key" in progress
 
 
 def test_close_loop_marks_closed_and_archives_state(tmp_path):

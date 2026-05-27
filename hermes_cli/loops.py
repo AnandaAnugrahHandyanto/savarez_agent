@@ -63,7 +63,15 @@ def _counts(prd: dict[str, Any]) -> tuple[int, int, int]:
         return 0, 0, 0
     total = len(stories)
     passed = sum(1 for story in stories if isinstance(story, dict) and story.get("passes") is True)
-    return total, total - passed, passed
+    blocked = sum(1 for story in stories if isinstance(story, dict) and story.get("status") == "blocked")
+    return total, total - passed - blocked, passed
+
+
+def _blocked_count(prd: dict[str, Any]) -> int:
+    stories = prd.get("userStories")
+    if not isinstance(stories, list):
+        return 0
+    return sum(1 for story in stories if isinstance(story, dict) and story.get("status") == "blocked")
 
 
 def _render(slug: str, path: Path, prd: dict[str, Any], status: str = "active") -> str:
@@ -82,6 +90,9 @@ def _render(slug: str, path: Path, prd: dict[str, Any], status: str = "active") 
         f"Project: {project}",
         f"Stories: {total} total / {pending} pending / {passed} passed",
     ]
+    blocked = _blocked_count(prd)
+    if blocked:
+        lines.append(f"Blocked: {blocked}")
     if isinstance(running, dict):
         lines.append(f"Running: {running.get('id', '?')} — {running.get('title', 'untitled')}")
     lines.extend([
@@ -144,7 +155,43 @@ def _pending_stories(prd: dict[str, Any]) -> list[dict[str, Any]]:
     stories = prd.get("userStories")
     if not isinstance(stories, list):
         return []
-    return [story for story in stories if isinstance(story, dict) and story.get("passes") is not True]
+    return [
+        story
+        for story in stories
+        if isinstance(story, dict)
+        and story.get("passes") is not True
+        and story.get("status") != "blocked"
+    ]
+
+
+def _all_stories(prd: dict[str, Any]) -> list[dict[str, Any]]:
+    stories = prd.get("userStories")
+    if not isinstance(stories, list):
+        return []
+    return [story for story in stories if isinstance(story, dict)]
+
+
+def _select_story(prd: dict[str, Any], story_id: str | None = None) -> dict[str, Any] | None:
+    stories = _all_stories(prd)
+    if story_id:
+        wanted = story_id.casefold()
+        return next((story for story in stories if str(story.get("id", "")).casefold() == wanted), None)
+    running = next((story for story in stories if story.get("status") == "running"), None)
+    if running is not None:
+        return running
+    pending = sorted(_pending_stories(prd), key=lambda s: (s.get("priority", 999), str(s.get("id", ""))))
+    return pending[0] if pending else None
+
+
+def _append_progress(path: Path, heading: str, story: dict[str, Any], note: str) -> None:
+    progress = path / "progress.md"
+    if not progress.exists():
+        progress.write_text("## Codebase Patterns\n\n## Progress\n", encoding="utf-8")
+    story_ref = f"{story.get('id', '?')} — {story.get('title', 'untitled')}"
+    message = note.strip() if note.strip() else "No note provided."
+    with progress.open("a", encoding="utf-8") as handle:
+        handle.write(f"\n### {heading}: {story_ref}\n")
+        handle.write(f"- {_now()}: {message}\n")
 
 
 def _story_prompt(slug: str, path: Path, prd: dict[str, Any], story: dict[str, Any]) -> str:
@@ -188,6 +235,73 @@ def run_loop(slug: str | None = None, *, root: str | Path | None = None) -> Loop
     return LoopResult(name, path, _story_prompt(name, path, prd, story))
 
 
+def complete_story(
+    slug: str | None = None,
+    *,
+    root: str | Path | None = None,
+    story_id: str | None = None,
+    note: str = "",
+) -> LoopResult:
+    name = slugify(slug)
+    path = loop_dir(name, root=root)
+    prd_path = path / "prd.json"
+    if not prd_path.exists():
+        return status_loop(name, root=root)
+
+    prd = _load_prd(prd_path)
+    story = _select_story(prd, story_id)
+    if story is None:
+        text = _render(name, path, prd, status="no runnable story")
+        (path / "status.md").write_text(text + "\n", encoding="utf-8")
+        return LoopResult(name, path, text)
+
+    story["passes"] = True
+    story["status"] = "passed"
+    story.pop("blockReason", None)
+    story.pop("blockedAt", None)
+    story["completedAt"] = _now()
+    prd["updatedAt"] = _now()
+    prd_path.write_text(json.dumps(prd, indent=2) + "\n", encoding="utf-8")
+    _append_progress(path, "Completed", story, note)
+    status = "complete" if not _pending_stories(prd) and _blocked_count(prd) == 0 else "active"
+    text = _render(name, path, prd, status=status)
+    (path / "status.md").write_text(text + "\n", encoding="utf-8")
+    return LoopResult(name, path, text)
+
+
+def block_story(
+    slug: str | None = None,
+    *,
+    root: str | Path | None = None,
+    story_id: str | None = None,
+    note: str = "",
+) -> LoopResult:
+    name = slugify(slug)
+    path = loop_dir(name, root=root)
+    prd_path = path / "prd.json"
+    if not prd_path.exists():
+        return status_loop(name, root=root)
+
+    prd = _load_prd(prd_path)
+    story = _select_story(prd, story_id)
+    if story is None:
+        text = _render(name, path, prd, status="no runnable story")
+        (path / "status.md").write_text(text + "\n", encoding="utf-8")
+        return LoopResult(name, path, text)
+
+    reason = note.strip() or "Blocked without a note."
+    story["passes"] = False
+    story["status"] = "blocked"
+    story["blockReason"] = reason
+    story["blockedAt"] = _now()
+    prd["updatedAt"] = _now()
+    prd_path.write_text(json.dumps(prd, indent=2) + "\n", encoding="utf-8")
+    _append_progress(path, "Blocked", story, reason)
+    text = _render(name, path, prd, status="blocked")
+    (path / "status.md").write_text(text + "\n", encoding="utf-8")
+    return LoopResult(name, path, text)
+
+
 def close_loop(slug: str | None = None, *, root: str | Path | None = None) -> LoopResult:
     name = slugify(slug)
     path = loop_dir(name, root=root)
@@ -220,6 +334,14 @@ def loop_text(args: str, *, root: str | Path | None = None) -> str:
         return status_loop(slug, root=root).text
     if command == "run":
         return run_loop(slug, root=root).text
+    if command == "complete":
+        story_id = parts[2] if len(parts) > 2 else None
+        note = " ".join(parts[3:]) if len(parts) > 3 else ""
+        return complete_story(slug, root=root, story_id=story_id, note=note).text
+    if command == "block":
+        story_id = parts[2] if len(parts) > 2 else None
+        note = " ".join(parts[3:]) if len(parts) > 3 else ""
+        return block_story(slug, root=root, story_id=story_id, note=note).text
     if command == "close":
         return close_loop(slug, root=root).text
     return "Usage: /loop [init|run|status|close] <slug>"
