@@ -1284,7 +1284,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 else str(delivery_target["thread_id"])
             )
 
-        # Model resolution: job.model > HERMES_MODEL env var > config.yaml default
+        # Model resolution: job.model > config.yaml default > HERMES_MODEL env var
         model = job.get("model")  # May be None if not persisted
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
