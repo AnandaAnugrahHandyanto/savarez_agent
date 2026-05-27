@@ -350,3 +350,25 @@ class TestToolsCheckpointManager:
             f"tools/checkpoint_manager.py has SIM105 violation(s):\n"
             f"{result.stdout}\n{result.stderr}\n"
         )
+
+class TestCodeExecutionToolF401:
+    """tools/code_execution_tool.py must have zero F401 (unused-import) violations."""
+
+    TARGET = REPO_ROOT / "tools" / "code_execution_tool.py"
+
+    def test_code_execution_tool_has_zero_f401(self):
+        """tools/code_execution_tool.py must have zero F401 violations."""
+        import subprocess as _subprocess
+        import sys as _sys
+
+        result = _subprocess.run(
+            [_sys.executable, "-m", "ruff", "check", "--select=F401",
+             "--output-format=concise", str(self.TARGET)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            f"tools/code_execution_tool.py has F401 violation(s):\n"
+            f"{result.stdout}\n{result.stderr}\n"
+        )
+
