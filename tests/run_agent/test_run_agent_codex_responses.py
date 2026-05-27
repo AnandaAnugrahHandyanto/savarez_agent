@@ -118,6 +118,50 @@ def _codex_incomplete_message_response(text: str):
             )
         ],
         usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+
+def test_normalize_codex_response_with_output_none(monkeypatch):
+    """Test that _normalize_codex_response handles response.output=None.
+    
+    Regression test for issue #32991: The Codex Responses API can
+    return response.output=None (not an empty list), which previously
+    caused 'NoneType object is not iterable' crashes.
+    """
+    from agent.codex_responses_adapter import _normalize_codex_response
+    
+    # Create a mock response with output=None
+    response = SimpleNamespace(
+        output=None,  # The bug: output is None, not []
+        output_text="test output",  # Fallback text
+        status="completed",
+        model="gpt-5-codex",
+        usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+    )
+    
+    # This should not crash
+    msg, finish_reason = _normalize_codex_response(response)
+    
+    # Verify it synthesized output from output_text
+    assert msg is not None
+    assert msg.content == "test output"
+
+
+def test_normalize_codex_response_with_output_none_no_fallback(monkeypatch):
+    """Test that _normalize_codex_response raises when output=None and no output_text."""
+    from agent.codex_responses_adapter import _normalize_codex_response
+    
+    response = SimpleNamespace(
+        output=None,
+        output_text=None,  # No fallback text
+        status="completed",
+        model="gpt-5-codex",
+    )
+    
+    # Should raise RuntimeError (existing behavior)
+    import pytest
+    with pytest.raises(RuntimeError, match="Responses API returned no output items"):
+        _normalize_codex_response(response)
+
+
         status="in_progress",
         model="gpt-5-codex",
     )

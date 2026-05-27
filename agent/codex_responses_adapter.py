@@ -878,7 +878,7 @@ def _extract_responses_reasoning_text(item: Any) -> str:
 
 def _normalize_codex_response(response: Any) -> tuple[Any, str]:
     """Normalize a Responses API object to an assistant_message-like object."""
-    output = getattr(response, "output", None)
+    output = getattr(response, "output", None) or []
     if not isinstance(output, list) or not output:
         # The Codex backend can return empty output when the answer was
         # delivered entirely via stream events. Check output_text as a
