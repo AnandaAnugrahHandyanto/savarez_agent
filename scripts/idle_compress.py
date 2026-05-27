@@ -78,7 +78,7 @@ def _load_config() -> dict:
 
 def _get_most_recent_session(hermes_home: Path) -> dict | None:
     """Query the session DB for the most recently updated session."""
-    db_path = hermes_home / "sessions.db"
+    db_path = hermes_home / "state.db"
     if not db_path.exists():
         logger.warning("No session database at %s", db_path)
         return None
@@ -88,7 +88,7 @@ def _get_most_recent_session(hermes_home: Path) -> dict | None:
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
         cur = conn.execute(
-            "SELECT * FROM sessions ORDER BY updated_at DESC LIMIT 1"
+            "SELECT * FROM sessions ORDER BY started_at DESC LIMIT 1"
         )
         row = cur.fetchone()
         conn.close()
@@ -99,16 +99,15 @@ def _get_most_recent_session(hermes_home: Path) -> dict | None:
 
 
 def _estimate_tokens_from_db(session: dict) -> int:
-    """Rough token estimate from the session's message count or transcript."""
-    # Try transcript length first
-    transcript = session.get("transcript", "") or ""
-    if transcript:
-        # ~4 chars per token (rough)
-        return len(transcript) // 4
+    """Rough token estimate from the session's recorded token usage."""
+    # Use DB-tracked input tokens if available
+    input_tokens = session.get("input_tokens", 0) or 0
+    if input_tokens > 0:
+        return input_tokens
 
     # Fallback: message count * avg tokens per message
     msg_count = session.get("message_count", 0) or 0
-    return msg_count * 200  # ~200 tokens per message average
+    return msg_count * 200
 
 
 def run_compression(
@@ -131,7 +130,7 @@ def run_compression(
     if session_id:
         logger.info("Targeting session: %s", session_id)
         session = None
-        db_path = hermes_home / "sessions.db"
+        db_path = hermes_home / "state.db"
         if db_path.exists():
             import sqlite3
             conn = sqlite3.connect(str(db_path))
