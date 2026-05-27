@@ -196,7 +196,7 @@ class KreaImageGenProvider(ImageGenProvider):
                 {
                     "key": "KREA_API_KEY",
                     "prompt": "Krea API key",
-                    "url": "https://www.krea.ai/api-keys",
+                    "url": "https://www.krea.ai/settings/api-tokens",
                 },
             ],
         }
@@ -229,7 +229,7 @@ class KreaImageGenProvider(ImageGenProvider):
                 error=(
                     "KREA_API_KEY not set. Run `hermes tools` → Image "
                     "Generation → Krea to configure, or get a key at "
-                    "https://www.krea.ai/api-keys."
+                    "https://www.krea.ai/settings/api-tokens."
                 ),
                 error_type="auth_required",
                 provider="krea",
