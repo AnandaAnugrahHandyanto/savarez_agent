@@ -32,12 +32,15 @@ Config keys this provider responds to::
       backend: "firecrawl"            # shared fallback (default)
       use_gateway: false              # prefer managed gateway when both
                                       # direct + gateway credentials exist
+      firecrawl:
+        scrape_max_age_ms: 604800000  # optional Firecrawl cache maxAge
 
 Env vars::
 
     FIRECRAWL_API_KEY=...            # direct cloud auth
     FIRECRAWL_API_URL=...            # self-hosted Firecrawl
     FIRECRAWL_GATEWAY_URL=...        # Nous tool-gateway (subscribers)
+    FIRECRAWL_SCRAPE_MAX_AGE_MS=...  # optional Firecrawl scrape maxAge in ms
     TOOL_GATEWAY_DOMAIN=...          # alternate gateway env
     TOOL_GATEWAY_SCHEME=...
     TOOL_GATEWAY_USER_TOKEN=...
@@ -270,6 +273,29 @@ def _reset_client_for_tests() -> None:
     _wt._firecrawl_client_config = None
 
 
+def _get_scrape_max_age_ms() -> Optional[int]:
+    """Return optional Firecrawl scrape ``maxAge`` in milliseconds."""
+    raw_value: Any = os.getenv("FIRECRAWL_SCRAPE_MAX_AGE_MS", "").strip()
+
+    if not raw_value:
+        try:
+            import tools.web_tools as _wt
+
+            web_config = _wt._load_web_config()
+            firecrawl_config = web_config.get("firecrawl", {})
+            if isinstance(firecrawl_config, dict):
+                raw_value = firecrawl_config.get("scrape_max_age_ms", "")
+        except Exception:  # noqa: BLE001
+            raw_value = ""
+
+    try:
+        max_age_ms = int(raw_value)
+    except (TypeError, ValueError):
+        return None
+
+    return max_age_ms if max_age_ms > 0 else None
+
+
 # ---------------------------------------------------------------------------
 # Response shape normalization (SDK / direct / gateway differ)
 # ---------------------------------------------------------------------------
@@ -482,11 +508,18 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
             try:
                 logger.info("Firecrawl scraping: %s", url)
                 try:
+                    scrape_kwargs: Dict[str, Any] = {
+                        "url": url,
+                        "formats": formats,
+                    }
+                    scrape_max_age_ms = _get_scrape_max_age_ms()
+                    if scrape_max_age_ms is not None:
+                        scrape_kwargs["max_age"] = scrape_max_age_ms
+
                     scrape_result = await asyncio.wait_for(
                         asyncio.to_thread(
                             _get_firecrawl_client().scrape,
-                            url=url,
-                            formats=formats,
+                            **scrape_kwargs,
                         ),
                         timeout=60,
                     )

@@ -107,6 +107,21 @@ FIRECRAWL_API_URL=http://localhost:3002
 
 When `FIRECRAWL_API_URL` is set, the API key is optional (disable server auth with `USE_DB_AUTHENTICATION=false`).
 
+**Cache age for repeated scrapes:** Firecrawl can reuse recently cached
+scrape results. Set a positive `web.firecrawl.scrape_max_age_ms` value in
+milliseconds to pass Firecrawl's `maxAge` equivalent to scrape requests:
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  extract_backend: "firecrawl"
+  firecrawl:
+    scrape_max_age_ms: 604800000  # 7 days
+```
+
+You can also override it with `FIRECRAWL_SCRAPE_MAX_AGE_MS`. Leave the
+setting unset, zero, or invalid to preserve Firecrawl's default behavior.
+
 ---
 
 ### SearXNG (free, self-hosted)
