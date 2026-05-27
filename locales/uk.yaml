@@ -165,6 +165,8 @@ gateway:
   no_active_goal: Немає активної цілі.
   config_read_failed: '⚠️ Не вдалося прочитати config.yaml: {error}'
   config_save_failed: '⚠️ Не вдалося зберегти конфігурацію: {error}'
+  status:
+    elapsed_min: 'Минуло {min} хв'
   model:
     error_prefix: 'Помилка: {error}'
     switched: Модель змінено на `{model}`

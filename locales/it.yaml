@@ -166,6 +166,8 @@ gateway:
   no_active_goal: Nessun obiettivo attivo.
   config_read_failed: '⚠️ Impossibile leggere config.yaml: {error}'
   config_save_failed: '⚠️ Impossibile salvare la configurazione: {error}'
+  status:
+    elapsed_min: '{min} min trascorsi'
   model:
     error_prefix: 'Errore: {error}'
     switched: Modello cambiato a `{model}`

@@ -164,6 +164,8 @@ gateway:
   no_active_goal: 当前没有活跃的目标。
   config_read_failed: ⚠️ 无法读取 config.yaml：{error}
   config_save_failed: ⚠️ 无法保存配置：{error}
+  status:
+    elapsed_min: '已运行 {min} 分钟'
   interrupting: ⚡ 正在中断当前任务{detail}。我很快会回复你的消息。
   model:
     error_prefix: 错误：{error}

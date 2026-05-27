@@ -166,6 +166,8 @@ gateway:
   no_active_goal: Níl aon sprioc ghníomhach ann.
   config_read_failed: '⚠️ Níorbh fhéidir config.yaml a léamh: {error}'
   config_save_failed: '⚠️ Níorbh fhéidir an chumraíocht a shábháil: {error}'
+  status:
+    elapsed_min: '{min} nóim. caite'
   model:
     error_prefix: 'Earráid: {error}'
     switched: Athraíodh an tsamhail go `{model}`

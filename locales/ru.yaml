@@ -78,6 +78,8 @@ gateway:
   no_active_goal: Нет активной цели.
   config_read_failed: '⚠️ Ошибка чтения конфигурации: {error}'
   config_save_failed: '⚠️ Ошибка сохранения конфигурации: {error}'
+  status:
+    elapsed_min: 'Прошло {min} мин'
   model:
     error_prefix: 'Ошибка: {error}'
     switched: Модель изменена на `{model}`

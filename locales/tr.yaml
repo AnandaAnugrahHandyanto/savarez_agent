@@ -78,6 +78,8 @@ gateway:
   no_active_goal: Aktif hedef yok.
   config_read_failed: '⚠️ Yapılandırma okuma hatası: {error}'
   config_save_failed: '⚠️ Yapılandırma kaydetme hatası: {error}'
+  status:
+    elapsed_min: '{min} dk geçti'
   model:
     error_prefix: 'Hata: {error}'
     switched: Model `{model}` olarak değiştirildi

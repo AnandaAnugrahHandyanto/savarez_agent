@@ -162,6 +162,8 @@ gateway:
   no_active_goal: アクティブなゴールはありません。
   config_read_failed: '⚠️ config.yaml を読み込めませんでした: {error}'
   config_save_failed: '⚠️ 設定を保存できませんでした: {error}'
+  status:
+    elapsed_min: '経過 {min} 分'
   model:
     error_prefix: 'エラー: {error}'
     switched: モデルが `{model}` に切り替わりました

@@ -78,6 +78,8 @@ gateway:
   no_active_goal: 활성 목표가 없습니다.
   config_read_failed: '⚠️ 설정 읽기 실패: {error}'
   config_save_failed: '⚠️ 설정 저장 실패: {error}'
+  status:
+    elapsed_min: '{min}분 경과'
   model:
     error_prefix: '오류: {error}'
     switched: 모델이 `{model}`(으)로 전환되었습니다

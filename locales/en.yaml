@@ -78,6 +78,8 @@ gateway:
   no_active_goal: No active goal.
   config_read_failed: '⚠️ Could not read config.yaml: {error}'
   config_save_failed: '⚠️ Could not save config: {error}'
+  status:
+    elapsed_min: '{min} min elapsed'
   model:
     error_prefix: 'Error: {error}'
     switched: Model switched to `{model}`

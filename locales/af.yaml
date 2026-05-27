@@ -165,6 +165,8 @@ gateway:
   no_active_goal: Geen aktiewe doelwit nie.
   config_read_failed: '⚠️ Kon nie config.yaml lees nie: {error}'
   config_save_failed: '⚠️ Kon nie konfigurasie stoor nie: {error}'
+  status:
+    elapsed_min: '{min} min verloop'
   model:
     error_prefix: 'Fout: {error}'
     switched: Model verander na `{model}`

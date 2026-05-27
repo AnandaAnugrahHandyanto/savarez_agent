@@ -78,6 +78,8 @@ gateway:
   no_active_goal: Brak aktywnego celu.
   config_read_failed: '⚠️ Nie udało się odczytać config.yaml: {error}'
   config_save_failed: '⚠️ Nie udało się zapisać konfiguracji: {error}'
+  status:
+    elapsed_min: 'Minęło {min} min'
   model:
     error_prefix: 'Błąd: {error}'
     switched: Przełączono model na `{model}`

@@ -165,6 +165,8 @@ gateway:
   no_active_goal: Nincs aktív cél.
   config_read_failed: '⚠️ Nem sikerült olvasni a config.yaml fájlt: {error}'
   config_save_failed: '⚠️ Nem sikerült menteni a konfigurációt: {error}'
+  status:
+    elapsed_min: '{min} perc eltelt'
   model:
     error_prefix: 'Hiba: {error}'
     switched: 'Modell átváltva: `{model}`'

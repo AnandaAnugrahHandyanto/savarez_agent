@@ -78,6 +78,8 @@ gateway:
   no_active_goal: Nenhum objetivo ativo.
   config_read_failed: '⚠️ Falha ao ler configuração: {error}'
   config_save_failed: '⚠️ Falha ao salvar configuração: {error}'
+  status:
+    elapsed_min: '{min} min decorridos'
   model:
     error_prefix: 'Erro: {error}'
     switched: Modelo alterado para `{model}`

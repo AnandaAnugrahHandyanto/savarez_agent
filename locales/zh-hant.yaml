@@ -165,6 +165,8 @@ gateway:
   no_active_goal: 目前沒有作用中的目標。
   config_read_failed: ⚠️ 無法讀取 config.yaml：{error}
   config_save_failed: ⚠️ 無法儲存設定：{error}
+  status:
+    elapsed_min: '已運行 {min} 分鐘'
   model:
     error_prefix: 錯誤：{error}
     switched: 已切換模型為 `{model}`

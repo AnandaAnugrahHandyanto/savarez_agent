@@ -78,6 +78,8 @@ gateway:
   no_active_goal: कोई सक्रिय लक्ष्य नहीं।
   config_read_failed: '⚠️ config.yaml नहीं पढ़ सका: {error}'
   config_save_failed: '⚠️ कॉन्फ़िग सेव नहीं कर सका: {error}'
+  status:
+    elapsed_min: '{min} मिनट बीता'
   busy_queued: ⏳ गेटवे {action} है — अगले मोड़ के लिए कतार में।
   busy_rejecting: ⏳ गेटवे {action} है और अभी एक और मोड़ स्वीकार नहीं कर रहा।
   busy_queued_detail: ⏳ अगले मोड़ के लिए कतार में{detail}।
