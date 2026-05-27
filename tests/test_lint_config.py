@@ -146,3 +146,17 @@ class TestToolsLintRegression:
         assert result.returncode == 0, (
             f"tools/ has F541 violation(s):\n{result.stdout}"
         )
+    def test_tools_dir_has_zero_f821_violations(self):
+        """tools/ must have zero F821 (undefined name) violations."""
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F821",
+             "--output-format=concise", "tools/"],
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
+        )
+
+        assert result.returncode == 0, (
+            f"tools/ has F821 violation(s):\n{result.stdout}"
+        )
