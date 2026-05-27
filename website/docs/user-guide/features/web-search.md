@@ -37,7 +37,7 @@ Hermes selects **Perplexity Search API** as the default web search backend when 
 :::
 
 :::tip Nous Subscribers
-If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, web search and extract are available through the **[Tool Gateway](tool-gateway.md)** via managed Firecrawl — no API key needed. Run `hermes tools` to enable it.
+If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, web search and extract are available through the **[Tool Gateway](tool-gateway.md)** via managed Firecrawl — no API key needed. New installs can run `hermes setup --portal` to log in and turn on all gateway tools at once; existing installs can flip just web via `hermes tools`.
 :::
 
 ---
@@ -72,7 +72,7 @@ auxiliary:
 
 Or pick interactively: `hermes model` → **Configure auxiliary models** → `web_extract`.
 
-See [Auxiliary Models](/docs/user-guide/configuration#auxiliary-models) for the full reference and per-task override patterns.
+See [Auxiliary Models](/user-guide/configuration#auxiliary-models) for the full reference and per-task override patterns.
 
 ### When summarization gets in the way
 
