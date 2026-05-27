@@ -271,6 +271,36 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                             len(agent._codex_streamed_text_parts), len(assembled),
                         )
                 return final_response
+        except TypeError as exc:
+            err_text = str(exc)
+            if "NoneType" in err_text and "iterable" in err_text:
+                if collected_output_items:
+                    logger.warning(
+                        "Codex stream finalization raised %r; recovering from %d collected output item(s).",
+                        err_text, len(collected_output_items),
+                    )
+                    return SimpleNamespace(
+                        output=list(collected_output_items),
+                        status="completed",
+                        output_text="",
+                    )
+                if agent._codex_streamed_text_parts and not has_tool_calls:
+                    assembled = "".join(agent._codex_streamed_text_parts)
+                    logger.warning(
+                        "Codex stream finalization raised %r; recovering from %d streamed text delta(s).",
+                        err_text, len(agent._codex_streamed_text_parts),
+                    )
+                    return SimpleNamespace(
+                        output=[SimpleNamespace(
+                            type="message",
+                            role="assistant",
+                            status="completed",
+                            content=[SimpleNamespace(type="output_text", text=assembled)],
+                        )],
+                        status="completed",
+                        output_text=assembled,
+                    )
+            raise
         except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
             if attempt < max_stream_retries:
                 logger.debug(
