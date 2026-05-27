@@ -11,12 +11,20 @@ import yaml
 
 from hermes_cli.auth import (
     AuthError,
+    CODEX_ACCESS_TOKEN_MAX_AGE_SECONDS,
+    CODEX_SHARED_STORE_FILENAME,
     DEFAULT_CODEX_BASE_URL,
     PROVIDER_REGISTRY,
+    _codex_access_token_is_expiring,
+    _codex_shared_auth_dir,
+    _codex_shared_store_path,
+    _merge_shared_codex_state,
     _read_codex_tokens,
+    _read_shared_codex_state,
     _save_codex_tokens,
     _import_codex_cli_tokens,
     _login_openai_codex,
+    _write_shared_codex_state,
     get_codex_auth_status,
     get_provider_auth_state,
     refresh_codex_oauth_pure,
@@ -25,8 +33,22 @@ from hermes_cli.auth import (
 )
 
 
-def _setup_hermes_auth(hermes_home: Path, *, access_token: str = "access", refresh_token: str = "refresh"):
-    """Write Codex tokens into the Hermes auth store."""
+def _setup_hermes_auth(
+    hermes_home: Path,
+    *,
+    access_token: str = "access",
+    refresh_token: str = "refresh",
+    last_refresh: str | None = None,
+):
+    """Write Codex tokens into the Hermes auth store.
+
+    ``last_refresh`` defaults to ``now`` so callers get a fresh-by-default
+    fixture.  Tests that need to exercise stale-token behaviour should pass an
+    explicit ISO-8601 UTC timestamp older than CODEX_ACCESS_TOKEN_MAX_AGE_SECONDS.
+    """
+    from datetime import datetime, timezone
+    if last_refresh is None:
+        last_refresh = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     hermes_home.mkdir(parents=True, exist_ok=True)
     auth_store = {
         "version": 1,
@@ -37,7 +59,7 @@ def _setup_hermes_auth(hermes_home: Path, *, access_token: str = "access", refre
                     "access_token": access_token,
                     "refresh_token": refresh_token,
                 },
-                "last_refresh": "2026-02-26T00:00:00Z",
+                "last_refresh": last_refresh,
                 "auth_mode": "chatgpt",
             },
         },
@@ -579,3 +601,303 @@ def test_login_openai_codex_force_new_login_skips_existing_reuse_prompt(monkeypa
 
     assert called["device_login"] == 1
     assert called["tokens"]["access_token"] == "fresh-at"
+
+
+# -----------------------------------------------------------------------------
+# _codex_access_token_is_expiring — wall-clock floor on top of JWT exp.
+#
+# The JWT-exp-only predicate is insufficient because chatgpt.com's Cloudflare
+# layer enforces a server-side TTL much shorter than the JWT's declared exp
+# (observed in production: JWT exp ~10 days out, server starts silently
+# dropping requests after a few hours).  Adding ``last_refresh`` lets the
+# predicate trigger refresh on wall-clock age, regardless of what the JWT
+# claims.
+# -----------------------------------------------------------------------------
+
+def _jwt_no_exp() -> str:
+    """Return a JWT whose payload omits the ``exp`` claim entirely."""
+    encoded = base64.urlsafe_b64encode(json.dumps({"sub": "u"}).encode("utf-8")).rstrip(b"=").decode("utf-8")
+    return f"h.{encoded}.s"
+
+
+def _iso_now_minus(seconds: int) -> str:
+    """Return an ISO-8601 UTC timestamp ``seconds`` in the past."""
+    from datetime import datetime, timezone, timedelta
+    return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def test_codex_access_token_is_expiring_jwt_exp_in_past_returns_true():
+    """Legacy: JWT exp in the past still triggers refresh (regression guard)."""
+    token = _jwt_with_exp(int(time.time()) - 60)
+    assert _codex_access_token_is_expiring(token, 0) is True
+
+
+def test_codex_access_token_is_expiring_jwt_exp_far_future_no_last_refresh_returns_false():
+    """Backward compat: callers that don't pass last_refresh see the original JWT-only behavior."""
+    token = _jwt_with_exp(int(time.time()) + 10 * 24 * 3600)  # 10 days out, matches real Codex JWTs
+    assert _codex_access_token_is_expiring(token, 120) is False
+
+
+def test_codex_access_token_is_expiring_fresh_last_refresh_returns_false():
+    """30-min-old last_refresh is under the 45-min default cap → no refresh."""
+    token = _jwt_with_exp(int(time.time()) + 10 * 24 * 3600)
+    assert _codex_access_token_is_expiring(
+        token, 120, last_refresh=_iso_now_minus(30 * 60)
+    ) is False
+
+
+def test_codex_access_token_is_expiring_stale_last_refresh_overrides_jwt_exp():
+    """THE PRODUCTION FIX.  JWT exp far future, but last_refresh is 50 min old → refresh.
+
+    Repro: JWTs from chatgpt.com/backend-api/codex carry exp ~10 days out,
+    so the legacy JWT-only predicate returns False forever.  Cloudflare
+    nevertheless silently drops requests once its server-side TTL elapses
+    (observed somewhere between a few hours and several days post-refresh).
+    The wall-clock floor on ``last_refresh`` catches this case.
+    """
+    token = _jwt_with_exp(int(time.time()) + 10 * 24 * 3600)
+    assert _codex_access_token_is_expiring(
+        token, 120, last_refresh=_iso_now_minus(50 * 60)
+    ) is True
+
+
+def test_codex_access_token_is_expiring_no_exp_but_stale_last_refresh_returns_true():
+    """JWT lacks exp; wall-clock alone triggers refresh."""
+    assert _codex_access_token_is_expiring(
+        _jwt_no_exp(), 120, last_refresh=_iso_now_minus(60 * 60)
+    ) is True
+
+
+def test_codex_access_token_is_expiring_no_exp_no_last_refresh_returns_false():
+    """Both signals absent → preserve original conservative behavior (no spurious refresh)."""
+    assert _codex_access_token_is_expiring(_jwt_no_exp(), 120) is False
+
+
+def test_codex_access_token_is_expiring_malformed_last_refresh_falls_through_to_jwt():
+    """Garbage in last_refresh must not crash; predicate falls through to JWT-exp path."""
+    fresh_token = _jwt_with_exp(int(time.time()) + 3600)
+    assert _codex_access_token_is_expiring(
+        fresh_token, 120, last_refresh="not-an-iso-timestamp"
+    ) is False
+    expired_token = _jwt_with_exp(int(time.time()) - 60)
+    assert _codex_access_token_is_expiring(
+        expired_token, 0, last_refresh="not-an-iso-timestamp"
+    ) is True
+
+
+def test_codex_access_token_is_expiring_env_var_overrides_max_age(monkeypatch):
+    """HERMES_CODEX_TOKEN_MAX_AGE_SECONDS env var tightens / loosens the cap."""
+    token = _jwt_with_exp(int(time.time()) + 10 * 24 * 3600)
+    last_refresh = _iso_now_minus(40 * 60)  # under 45-min default, over a 30-min override
+    assert _codex_access_token_is_expiring(token, 120, last_refresh=last_refresh) is False
+    monkeypatch.setenv("HERMES_CODEX_TOKEN_MAX_AGE_SECONDS", "1800")  # 30 min
+    assert _codex_access_token_is_expiring(token, 120, last_refresh=last_refresh) is True
+
+
+def test_codex_access_token_is_expiring_explicit_max_age_kwarg_overrides_default():
+    """Explicit ``max_age_seconds`` kwarg takes precedence over default; 0 disables wall-clock floor."""
+    token = _jwt_with_exp(int(time.time()) + 10 * 24 * 3600)
+    stale = _iso_now_minus(60 * 60)
+    assert _codex_access_token_is_expiring(
+        token, 120, last_refresh=stale, max_age_seconds=0
+    ) is False
+    assert _codex_access_token_is_expiring(
+        token, 120, last_refresh=stale, max_age_seconds=600
+    ) is True
+
+
+def test_codex_access_token_max_age_default_is_45_minutes():
+    """Documented value: 45 min.  Guard against silent default changes."""
+    assert CODEX_ACCESS_TOKEN_MAX_AGE_SECONDS == 45 * 60
+
+
+# -----------------------------------------------------------------------------
+# Shared Codex auth store — cross-profile coordination via a single file.
+#
+# Use case: multiple Hermes profiles (e.g. a Docker fleet of agents) all
+# authenticate against the same ChatGPT account.  Without shared state, the
+# first profile to rotate the single-use refresh_token invalidates every
+# sibling's local copy and they trip ``refresh_token_reused`` on next refresh.
+# The shared store gives them a single source of truth.
+# -----------------------------------------------------------------------------
+
+def test_codex_shared_auth_dir_honors_env_override(tmp_path, monkeypatch):
+    """HERMES_SHARED_AUTH_DIR redirects the shared-store directory."""
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared"))
+    assert _codex_shared_auth_dir() == tmp_path / "shared"
+
+
+def test_codex_shared_auth_dir_defaults_to_hermes_root_shared(tmp_path, monkeypatch):
+    """Default location is ``<hermes-root>/shared/`` when env var is unset."""
+    monkeypatch.delenv("HERMES_SHARED_AUTH_DIR", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    expected = _codex_shared_auth_dir()
+    # We don't assert the exact path (depends on platform & hermes_constants)
+    # but it must end in /shared and live somewhere under or alongside HERMES_HOME.
+    assert expected.name == "shared"
+
+
+def test_codex_shared_store_path_seat_belt_blocks_real_home(tmp_path, monkeypatch):
+    """Under pytest, refuse to touch the real user's shared store without override."""
+    monkeypatch.delenv("HERMES_SHARED_AUTH_DIR", raising=False)
+    # Force the default-resolution path to match the seat-belt target.
+    # We use a monkeypatch on get_default_hermes_root via the auth module's
+    # cached import — both sides need to agree for the seat-belt guard to fire.
+    from hermes_constants import get_default_hermes_root as real_get_root  # noqa: F401
+    with pytest.raises(RuntimeError, match="Refusing to touch real user shared Codex"):
+        _codex_shared_store_path()
+
+
+def test_codex_shared_store_path_with_override(tmp_path, monkeypatch):
+    """Override path bypasses the seat belt."""
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared_override"))
+    path = _codex_shared_store_path()
+    assert path == tmp_path / "shared_override" / CODEX_SHARED_STORE_FILENAME
+
+
+def test_read_shared_codex_state_returns_none_when_missing(tmp_path, monkeypatch):
+    """Missing shared file returns None, not an error."""
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared"))
+    assert _read_shared_codex_state() is None
+
+
+def test_read_shared_codex_state_returns_dict(tmp_path, monkeypatch):
+    """Populated shared file is read back as a dict."""
+    shared_dir = tmp_path / "shared"
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(shared_dir))
+    shared_dir.mkdir()
+    payload = {
+        "access_token": "at-1",
+        "refresh_token": "rt-1",
+        "last_refresh": "2026-05-28T10:00:00.000000Z",
+    }
+    (shared_dir / CODEX_SHARED_STORE_FILENAME).write_text(json.dumps(payload))
+    state = _read_shared_codex_state()
+    assert state["access_token"] == "at-1"
+    assert state["refresh_token"] == "rt-1"
+
+
+def test_write_shared_codex_state_persists(tmp_path, monkeypatch):
+    """Writing shared state produces a readable file under HERMES_SHARED_AUTH_DIR."""
+    shared_dir = tmp_path / "shared"
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(shared_dir))
+    _write_shared_codex_state(
+        {"access_token": "at-w", "refresh_token": "rt-w"},
+        "2026-05-28T11:00:00.000000Z",
+    )
+    written = json.loads((shared_dir / CODEX_SHARED_STORE_FILENAME).read_text())
+    assert written["access_token"] == "at-w"
+    assert written["refresh_token"] == "rt-w"
+    assert written["last_refresh"] == "2026-05-28T11:00:00.000000Z"
+    assert written["auth_mode"] == "chatgpt"
+
+
+def test_write_shared_codex_state_skips_when_tokens_empty(tmp_path, monkeypatch):
+    """No-op write when either token is missing — don't pollute shared with garbage."""
+    shared_dir = tmp_path / "shared"
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(shared_dir))
+    _write_shared_codex_state({"access_token": "at-only", "refresh_token": ""}, None)
+    assert not (shared_dir / CODEX_SHARED_STORE_FILENAME).exists()
+
+
+def test_merge_shared_codex_state_adopts_fresher(tmp_path, monkeypatch):
+    """Local state with stale last_refresh adopts fresher shared tokens."""
+    shared_dir = tmp_path / "shared"
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(shared_dir))
+    shared_dir.mkdir()
+    (shared_dir / CODEX_SHARED_STORE_FILENAME).write_text(json.dumps({
+        "access_token": "at-fresh",
+        "refresh_token": "rt-fresh",
+        "last_refresh": "2026-05-28T12:00:00.000000Z",
+    }))
+    local = {
+        "tokens": {"access_token": "at-stale", "refresh_token": "rt-stale"},
+        "last_refresh": "2026-05-28T10:00:00.000000Z",
+    }
+    assert _merge_shared_codex_state(local) is True
+    assert local["tokens"]["access_token"] == "at-fresh"
+    assert local["tokens"]["refresh_token"] == "rt-fresh"
+    assert local["last_refresh"] == "2026-05-28T12:00:00.000000Z"
+
+
+def test_merge_shared_codex_state_skips_when_local_is_newer(tmp_path, monkeypatch):
+    """Local fresher than shared → no merge, no mutation."""
+    shared_dir = tmp_path / "shared"
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(shared_dir))
+    shared_dir.mkdir()
+    (shared_dir / CODEX_SHARED_STORE_FILENAME).write_text(json.dumps({
+        "access_token": "at-old",
+        "refresh_token": "rt-old",
+        "last_refresh": "2026-05-28T10:00:00.000000Z",
+    }))
+    local = {
+        "tokens": {"access_token": "at-new", "refresh_token": "rt-new"},
+        "last_refresh": "2026-05-28T12:00:00.000000Z",
+    }
+    assert _merge_shared_codex_state(local) is False
+    assert local["tokens"]["access_token"] == "at-new"
+
+
+def test_merge_shared_codex_state_returns_false_when_shared_missing(tmp_path, monkeypatch):
+    """No shared store configured → merge is a clean no-op."""
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-none"))
+    local = {
+        "tokens": {"access_token": "at", "refresh_token": "rt"},
+        "last_refresh": "2026-05-28T12:00:00.000000Z",
+    }
+    assert _merge_shared_codex_state(local) is False
+
+
+def test_save_codex_tokens_propagates_to_shared_store(tmp_path, monkeypatch):
+    """Saving local tokens also writes them to the shared store (if configured)."""
+    hermes_home = tmp_path / "hermes"
+    shared_dir = tmp_path / "shared"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(shared_dir))
+    _save_codex_tokens(
+        {"access_token": "at-saved", "refresh_token": "rt-saved"},
+        last_refresh="2026-05-28T13:00:00.000000Z",
+    )
+    written = json.loads((shared_dir / CODEX_SHARED_STORE_FILENAME).read_text())
+    assert written["access_token"] == "at-saved"
+    assert written["refresh_token"] == "rt-saved"
+    assert written["last_refresh"] == "2026-05-28T13:00:00.000000Z"
+
+
+def test_resolve_adopts_shared_tokens_and_skips_refresh(tmp_path, monkeypatch):
+    """End-to-end: stale local + fresh shared → adopt shared, no network refresh."""
+    from datetime import datetime, timezone, timedelta
+    hermes_home = tmp_path / "hermes"
+    shared_dir = tmp_path / "shared"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(shared_dir))
+
+    # Stale local — older than the 45-min wall-clock floor.
+    stale_ago = (datetime.now(timezone.utc) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    _setup_hermes_auth(
+        hermes_home,
+        access_token=_jwt_with_exp(int(time.time()) + 10 * 24 * 3600),
+        refresh_token="stale-rt",
+        last_refresh=stale_ago,
+    )
+    # Fresh shared — written by a "sibling profile" 5 seconds ago.
+    fresh_ago = (datetime.now(timezone.utc) - timedelta(seconds=5)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    shared_dir.mkdir()
+    (shared_dir / CODEX_SHARED_STORE_FILENAME).write_text(json.dumps({
+        "access_token": _jwt_with_exp(int(time.time()) + 10 * 24 * 3600),
+        "refresh_token": "fresh-rt-from-sibling",
+        "last_refresh": fresh_ago,
+    }))
+
+    # If the code under test calls the network, the test fails noisily.
+    def _explode(*a, **kw):
+        raise AssertionError("refresh should NOT fire when shared store has fresh tokens")
+    monkeypatch.setattr("hermes_cli.auth._refresh_codex_auth_tokens", _explode)
+
+    resolved = resolve_codex_runtime_credentials()
+    assert resolved["api_key"]  # non-empty
+    # Local store should now hold the sibling's tokens.
+    local_after = json.loads((hermes_home / "auth.json").read_text())
+    state = local_after["providers"]["openai-codex"]
+    assert state["tokens"]["refresh_token"] == "fresh-rt-from-sibling"
+    assert state["last_refresh"] == fresh_ago
