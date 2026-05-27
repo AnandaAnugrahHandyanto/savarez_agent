@@ -335,6 +335,26 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 )
                 return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
             raise
+        except TypeError as exc:
+            # The OpenAI SDK Responses accumulator (parse_response) raises
+            # ``TypeError("'NoneType' object is not iterable")`` when a backend
+            # emits a stream event whose ``response.output`` is ``None`` rather
+            # than ``[]`` — observed on chatgpt.com/backend-api/codex with
+            # gpt-5.5.  ``parse_response`` runs ``for output in response.output``
+            # without guarding ``None``.  The raw ``create(stream=True)``
+            # fallback parses events manually and never calls the accumulator,
+            # so it recovers the real output.  Narrowly match the accumulator's
+            # message so genuine TypeErrors in our own callbacks still propagate
+            # (mirrors how the RuntimeError handler above re-raises unrelated
+            # errors).
+            if "is not iterable" not in str(exc):
+                raise
+            logger.debug(
+                "Responses stream accumulator raised TypeError (%s); "
+                "falling back to create(stream=True). %s",
+                exc, agent._client_log_context(),
+            )
+            return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
 
 
 
@@ -412,9 +432,13 @@ def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None
             if terminal_response is None and isinstance(event, dict):
                 terminal_response = event.get("response")
             if terminal_response is not None:
-                # Backfill empty output from collected stream events
+                # Backfill empty output from collected stream events.
+                # The chatgpt.com/backend-api/codex backend can send
+                # ``output: null`` (not ``[]``) on the terminal event, so treat
+                # None like an empty list and synthesize from the items/deltas
+                # we collected above.
                 _out = getattr(terminal_response, "output", None)
-                if isinstance(_out, list) and not _out:
+                if _out is None or (isinstance(_out, list) and not _out):
                     if collected_output_items:
                         terminal_response.output = list(collected_output_items)
                         logger.debug(
