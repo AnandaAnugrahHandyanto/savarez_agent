@@ -18324,6 +18324,18 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # `hermes gateway stop` and interactive Ctrl+C are handled above as
     # planned stops and should not trigger service-manager revival.
     if _signal_initiated_shutdown and not runner._restart_requested:
+        # WAL checkpoint before exit — prevents state.db corruption
+        # on unclean shutdown (the #1 overnight killer)
+        try:
+            import sqlite3, os
+            import hermes_constants
+            db_path = os.path.join(hermes_constants.get_hermes_home(), "state.db")
+            if os.path.exists(db_path):
+                conn = sqlite3.connect(db_path, timeout=10)
+                conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                conn.close()
+        except Exception:
+            pass
         logger.info(
             "Exiting with code 1 (signal-initiated shutdown without restart "
             "request) so systemd Restart=on-failure can revive the gateway."
