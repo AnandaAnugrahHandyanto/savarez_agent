@@ -5,7 +5,7 @@ from argparse import Namespace
 import pytest
 
 from cron.jobs import create_job, get_job, list_jobs
-from hermes_cli.cron import cron_command
+from hermes_cli.cron import cron_command, cron_list
 
 
 @pytest.fixture()
@@ -88,6 +88,24 @@ class TestCronCommandLifecycle:
 
         out = capsys.readouterr().out
         assert "Updated job" in out
+
+    def test_list_handles_null_deliver_in_legacy_job(self, tmp_cron_dir, monkeypatch, capsys):
+        legacy_job = {
+            "id": "legacy123",
+            "name": "Legacy job",
+            "schedule_display": "every 1h",
+            "deliver": None,
+        }
+        monkeypatch.setattr(
+            "cron.jobs.list_jobs",
+            lambda include_disabled=False: [legacy_job],
+        )
+
+        cron_list(show_all=True)
+
+        out = capsys.readouterr().out
+        assert "Legacy job" in out
+        assert "Deliver:   local" in out
 
     def test_create_with_multiple_skills(self, tmp_cron_dir, capsys):
         cron_command(
