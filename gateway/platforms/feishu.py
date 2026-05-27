@@ -603,7 +603,7 @@ def _build_table_card_payload(content: str) -> str:
 
     Non-table text becomes markdown elements; each table becomes a table element.
     Headings are converted to bold (card markdown has no heading support).
-    Formatting is stripped from table cells (``data_type: "text"`` is plain text).
+    Cells use ``data_type: "lark_md"`` so partial markdown (bold, links) renders.
     """
     elements: list[dict] = []
     last_end = 0
@@ -624,21 +624,23 @@ def _build_table_card_payload(content: str) -> str:
                 {
                     "name": f"c{i}",
                     "display_name": re.sub(r"\*\*(.+?)\*\*", r"\1", h),
-                    "data_type": "text",
+                    "data_type": "lark_md",
                     "width": "auto",
                 }
                 for i, h in enumerate(table["headers"])
             ]
-            # Build rows — strip markdown formatting from cells
+            # Build rows — keep markdown formatting for lark_md cells,
+            # but convert headings to bold (lark_md has no heading support).
             rows = []
             for row in table["rows"]:
                 padded = (row + [""] * col_count)[:col_count]
-                rows.append({f"c{i}": _strip_cell_md(cell) for i, cell in enumerate(padded)})
+                rows.append({f"c{i}": _headings_to_bold(cell) for i, cell in enumerate(padded)})
 
             elements.append({
                 "tag": "table",
                 "page_size": min(len(rows), 20),
-                "row_height": "low",
+                "row_height": "auto",
+                "row_max_height": "300px",
                 "header_style": {
                     "text_align": "center",
                     "text_size": "normal",
@@ -661,7 +663,11 @@ def _build_table_card_payload(content: str) -> str:
     if not elements:
         elements.append({"tag": "markdown", "content": _headings_to_bold(content)})
 
-    card: dict = {"config": {"wide_screen_mode": True}, "elements": elements}
+    card: dict = {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "body": {"elements": elements},
+    }
     return json.dumps(card, ensure_ascii=False)
 
 
