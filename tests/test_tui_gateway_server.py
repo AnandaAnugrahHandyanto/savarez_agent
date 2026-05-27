@@ -59,6 +59,33 @@ def test_write_json_returns_false_on_broken_pipe(monkeypatch):
     assert server.write_json({"ok": True}) is False
 
 
+def test_env_for_child_process_preserves_explicit_hermes_home(monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", "/tmp/hermes-explicit")
+
+    assert server._env_for_child_process()["HERMES_HOME"] == "/tmp/hermes-explicit"
+
+
+def test_env_for_child_process_pins_active_non_default_profile(tmp_path, monkeypatch):
+    root = tmp_path / ".hermes"
+    profile_home = root / "profiles" / "bob"
+    profile_home.mkdir(parents=True)
+    (root / "active_profile").write_text("bob", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+
+    assert server._env_for_child_process()["HERMES_HOME"] == str(profile_home)
+
+
+def test_env_for_child_process_defaults_to_root_when_profile_missing(tmp_path, monkeypatch):
+    root = tmp_path / ".hermes"
+    root.mkdir(parents=True)
+    (root / "active_profile").write_text("missing", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+
+    assert server._env_for_child_process()["HERMES_HOME"] == str(root)
+
+
 def test_tui_verbose_tool_details_fail_closed_when_redaction_fails(monkeypatch):
     redact_module = types.ModuleType("agent.redact")
 

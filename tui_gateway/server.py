@@ -181,6 +181,34 @@ sys.stdout = sys.stderr
 _stdio_transport = StdioTransport(lambda: _real_stdout, _stdout_lock)
 
 
+def _env_for_child_process() -> dict[str, str]:
+    """Return a subprocess env with HERMES_HOME pinned.
+
+    TUI users can launch the Node app directly, bypassing hermes_cli.main's
+    early profile bootstrap. If the sticky active_profile is non-default and
+    HERMES_HOME is absent, child Python processes must still inherit the
+    profile home or imports that call get_hermes_home() fall back to ~/.hermes.
+    """
+    env = os.environ.copy()
+    if env.get("HERMES_HOME", "").strip():
+        return env
+
+    root = Path.home() / ".hermes"
+    try:
+        active = (root / "active_profile").read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        active = ""
+
+    if active and active != "default":
+        profile_home = root / "profiles" / active
+        if profile_home.is_dir():
+            env["HERMES_HOME"] = str(profile_home)
+            return env
+
+    env["HERMES_HOME"] = str(root)
+    return env
+
+
 class _SlashWorker:
     """Persistent HermesCLI subprocess for slash commands."""
 
@@ -208,7 +236,7 @@ class _SlashWorker:
             text=True,
             bufsize=1,
             cwd=os.getcwd(),
-            env=os.environ.copy(),
+            env=_env_for_child_process(),
         )
         threading.Thread(target=self._drain_stdout, daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()
