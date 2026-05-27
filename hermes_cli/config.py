@@ -1437,6 +1437,11 @@ DEFAULT_CONFIG = {
         # dashboard. Set false to suppress the hint.
         "tui_agents_nudge": True,
         "bell_on_complete": False,
+        "answer_bell": {
+            "enabled": False,
+            "command": "~/.local/bin/hermes-discord-bell",
+            "message": "끝",
+        },
         "show_reasoning": False,
         # Background self-improvement review notifications surfaced in chat.
         #   "off"     — no chat notification (the review still runs and writes)
