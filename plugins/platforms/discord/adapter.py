@@ -3571,15 +3571,37 @@ class DiscordAdapter(BasePlatformAdapter):
         await interaction.response.defer(ephemeral=True)
 
         channel = getattr(interaction, "channel", None)
-        is_thread = channel is not None and (
-            (discord is not None and isinstance(channel, discord.Thread)) or
-            (
-                # Unit tests and some Discord shims use lightweight thread-like
-                # objects.  Require the close-only capabilities instead of a broad
-                # id/name duck type so ordinary text channels are still rejected.
-                hasattr(channel, "edit") and hasattr(channel, "parent")
+
+        def _is_thread_channel(candidate: Any) -> bool:
+            return candidate is not None and (
+                (discord is not None and isinstance(candidate, discord.Thread)) or
+                (
+                    # Unit tests and some Discord shims use lightweight thread-like
+                    # objects.  Require the close-only capabilities instead of a broad
+                    # id/name duck type so ordinary text channels are still rejected.
+                    hasattr(candidate, "edit") and hasattr(candidate, "parent")
+                )
             )
-        )
+
+        is_thread = _is_thread_channel(channel)
+        interaction_channel_id = getattr(interaction, "channel_id", None)
+        current_channel_id = getattr(channel, "id", None)
+        if not is_thread and interaction_channel_id and interaction_channel_id != current_channel_id and self._client:
+            try:
+                resolved = self._client.get_channel(int(interaction_channel_id))
+                if not resolved:
+                    resolved = await self._client.fetch_channel(int(interaction_channel_id))
+                if _is_thread_channel(resolved):
+                    channel = resolved
+                    is_thread = True
+            except Exception:
+                logger.debug(
+                    "[%s] Could not resolve Discord slash channel_id %s as a thread",
+                    self.name,
+                    interaction_channel_id,
+                    exc_info=True,
+                )
+
         if not is_thread:
             await interaction.followup.send(
                 "/close-thread can only be used inside a Discord thread.",

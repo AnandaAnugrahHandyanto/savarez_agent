@@ -516,6 +516,45 @@ async def test_handle_close_thread_slash_does_not_archive_when_closeout_blocks(a
 
 
 @pytest.mark.asyncio
+async def test_handle_close_thread_slash_resolves_thread_from_interaction_channel_id(adapter):
+    """Discord slash interactions can expose the parent channel object while
+    channel_id still points at the active thread.  /close-thread should resolve
+    that channel ID before rejecting the command as non-thread."""
+    parent = _FakeTextChannel(channel_id=123, name="engineering-office")
+    thread = _FakeThreadChannel(channel_id=555, name="Close-thread isn't working", parent_id=123)
+    thread.edit = AsyncMock()
+    adapter._client.get_channel = MagicMock(return_value=thread)
+    adapter._client.fetch_channel = AsyncMock()
+    interaction = SimpleNamespace(
+        channel=parent,
+        channel_id=555,
+        user=SimpleNamespace(display_name="Jezza", id=42),
+        guild=SimpleNamespace(id=1, name="TestGuild"),
+        followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
+        id=999,
+    )
+
+    with patch(
+        "plugins.platforms.discord.adapter.run_close_thread",
+        return_value="CLOSE_THREAD_PACKET\nStatus: GREEN\nArtifact: /tmp/closeout.json",
+    ) as closeout:
+        await adapter._handle_close_thread_slash(interaction, "done")
+
+    adapter._client.get_channel.assert_called_once_with(555)
+    adapter._client.fetch_channel.assert_not_awaited()
+    closeout.assert_called_once()
+    source = closeout.call_args.kwargs["source"]
+    assert source["channel_id"] == "123"
+    assert source["thread_id"] == "555"
+    assert source["thread_name"] == "Close-thread isn't working"
+    thread.edit.assert_not_awaited()
+    args, kwargs = interaction.followup.send.await_args
+    assert "Closeout packet written" in args[0]
+    assert kwargs["ephemeral"] is True
+
+
+@pytest.mark.asyncio
 async def test_handle_close_thread_slash_rejects_non_thread_channels(adapter):
     interaction = SimpleNamespace(
         channel=_FakeTextChannel(channel_id=123, name="general"),
