@@ -3242,11 +3242,9 @@ class BasePlatformAdapter(ABC):
                 gateway_session_id=session_key,
             )
 
-            # Context orchestrator: trim check before model call
-            _orch_trim = gateway_trim_check(
-                current_tokens=_orch_start.get("est_tokens", 0),
-                gateway_session_id=session_key,
-            )
+            # Context orchestrator: trim check deferred to _schedule_message
+            # (before _run_agent) to avoid re-entrant recursion via trim
+            # side-effects that can re-trigger on_message.
 
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
