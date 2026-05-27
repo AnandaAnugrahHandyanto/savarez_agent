@@ -438,6 +438,71 @@ class TestRenderLoginHtmlNext:
 
 
 # ---------------------------------------------------------------------------
+# Unit-level coverage: render_login_html respects X-Forwarded-Prefix
+# ---------------------------------------------------------------------------
+
+
+class TestRenderLoginHtmlPrefix:
+    """Cover ``render_login_html`` prefix parameter for reverse proxy deployments.
+
+    When the dashboard is served behind a reverse proxy at a path prefix
+    (e.g. /hermes), the X-Forwarded-Prefix header tells the backend the prefix.
+    The login page buttons must include this prefix in their hrefs so the OAuth
+    flow stays under the same path.
+    """
+
+    def setup_method(self):
+        clear_providers()
+        register_provider(StubAuthProvider())
+
+    def teardown_method(self):
+        clear_providers()
+
+    def test_no_prefix_emits_root_path(self):
+        """Empty prefix produces root-relative /auth/login (unchanged behaviour)."""
+        from hermes_cli.dashboard_auth.login_page import render_login_html
+        html_out = render_login_html()
+        assert 'href="/auth/login?provider=stub"' in html_out
+
+    def test_valid_prefix_prepended(self):
+        """A valid prefix like /hermes is prepended to the button href."""
+        from hermes_cli.dashboard_auth.login_page import render_login_html
+        html_out = render_login_html(prefix="/hermes")
+        assert 'href="/hermes/auth/login?provider=stub"' in html_out
+
+    def test_prefix_without_leading_slash_normalised(self):
+        """Prefix without leading slash is normalised to have one."""
+        from hermes_cli.dashboard_auth.login_page import render_login_html
+        html_out = render_login_html(prefix="hermes")
+        assert 'href="/hermes/auth/login?provider=stub"' in html_out
+
+    def test_prefix_with_trailing_slash_normalised(self):
+        """Prefix with trailing slash has it stripped."""
+        from hermes_cli.dashboard_auth.login_page import render_login_html
+        html_out = render_login_html(prefix="/hermes/")
+        assert 'href="/hermes/auth/login?provider=stub"' in html_out
+
+    def test_malicious_prefix_normalised_to_empty(self):
+        """Malicious prefix values are rejected and fall back to no prefix."""
+        from hermes_cli.dashboard_auth.login_page import render_login_html
+
+        # Path traversal attempt
+        html_out = render_login_html(prefix="/../etc/passwd")
+        assert 'href="/auth/login?provider=stub"' in html_out
+
+        # Double slash attempt
+        html_out = render_login_html(prefix="//injected")
+        assert 'href="/auth/login?provider=stub"' in html_out
+
+    def test_prefix_with_next_path(self):
+        """Prefix works together with next_path parameter."""
+        from hermes_cli.dashboard_auth.login_page import render_login_html
+        html_out = render_login_html(prefix="/hermes", next_path="/sessions")
+        assert "provider=stub&next=%2Fsessions" in html_out
+        assert 'href="/hermes/auth/login?' in html_out
+
+
+# ---------------------------------------------------------------------------
 # Unit-level coverage: /auth/login persists next= into the PKCE cookie
 # ---------------------------------------------------------------------------
 
