@@ -2855,7 +2855,7 @@ def run_conversation(
                         retry_count = 0
                         continue
                     # Try fallback before giving up entirely
-                    agent._emit_status(t("gateway.max_retries_exhausted", max=max_retries))
+                    agent._emit_status(t("activity.max_retries_exhausted", max=max_retries))
                     if agent._try_activate_fallback():
                         retry_count = 0
                         compression_attempts = 0
@@ -2865,7 +2865,7 @@ def run_conversation(
                     if is_rate_limited:
                         agent._emit_status(t("gateway.rate_limited_retries", max=max_retries, summary=_final_summary))
                     else:
-                        agent._emit_status(t("gateway.api_failed_retries", max=max_retries, summary=_final_summary))
+                        agent._emit_status(t("activity.api_failed_retries", max=max_retries, summary=_final_summary))
                     agent._vprint(f"{agent.log_prefix}   💀 Final error: {_final_summary}", force=True)
 
                     # Detect SSE stream-drop pattern (e.g. "Network
@@ -2941,7 +2941,7 @@ def run_conversation(
                 if is_rate_limited:
                     agent._emit_status(t("gateway.rate_limited_waiting", time=f"{wait_time:.1f}", current=retry_count + 1, max=max_retries))
                 else:
-                    agent._emit_status(t("gateway.retrying_in", time=f"{wait_time:.1f}", current=retry_count, max=max_retries))
+                    agent._emit_status(t("activity.retrying_in", time=f"{wait_time:.1f}", current=retry_count, max=max_retries))
                 logger.warning(
                     "Retrying API call in %ss (attempt %s/%s) %s error=%s",
                     wait_time,

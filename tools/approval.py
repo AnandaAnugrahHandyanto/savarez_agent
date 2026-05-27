@@ -280,6 +280,80 @@ def detect_hardline_command(command: str) -> tuple:
     return (False, None)
 
 
+# Reverse mapping: English description → i18n key for _localize_reason()
+_REASON_I18N_MAP: dict[str, str] = {
+    'SQL DELETE without WHERE': "approval.reason.sql_delete_no_where",
+    'SQL DROP': "approval.reason.sql_drop",
+    'SQL TRUNCATE': "approval.reason.sql_truncate",
+    'Security scan': "approval.reason.security_scan_prefix",
+    'chmod +x followed by immediate execution': "approval.reason.chmod_exec",
+    'copy/move file into system config path': "approval.reason.copy_into_system_config",
+    'dd to raw block device': "approval.reason.dd_block_device",
+    'delete in root path': "approval.reason.delete_root_path",
+    'disk copy': "approval.reason.disk_copy",
+    'execute remote script via process substitution': "approval.reason.exec_remote_substitution",
+    'find -delete': "approval.reason.find_delete",
+    'find -exec/-execdir rm': "approval.reason.find_exec_rm",
+    'force kill processes': "approval.reason.force_kill",
+    'force kill processes (killall -KILL)': "approval.reason.force_kill_killall",
+    'force kill processes (killall -s KILL)': "approval.reason.force_kill_killall_s",
+    'fork bomb': "approval.reason.fork_bomb",
+    'format filesystem': "approval.reason.format_filesystem",
+    'format filesystem (mkfs)': "approval.reason.format_filesystem_mkfs",
+    'git branch force delete': "approval.reason.git_branch_force_delete",
+    'git clean with force (deletes uncommitted files)': "approval.reason.git_clean_force",
+    'git force push (rewrites remote history)': "approval.reason.git_force_push",
+    'git force push short flag (rewrites remote history)': "approval.reason.git_force_push_short",
+    'git reset --hard (destroys uncommitted changes)': "approval.reason.git_reset_hard",
+    'hermes update (restarts gateway, kills running agents)': "approval.reason.hermes_update",
+    'in-place edit of system config': "approval.reason.inplace_edit_system",
+    'in-place edit of system config (long flag)': "approval.reason.inplace_edit_system_long",
+    'kill all processes': "approval.reason.kill_all_processes",
+    'kill hermes/gateway process (self-termination)': "approval.reason.kill_gateway",
+    'kill process via backtick pgrep expansion (self-termination)': "approval.reason.kill_pgrep_backtick",
+    'kill process via pgrep expansion (self-termination)': "approval.reason.kill_pgrep",
+    'kill processes by regex (killall -r)': "approval.reason.kill_by_regex",
+    'overwrite project env/config file': "approval.reason.overwrite_project_file",
+    'overwrite project env/config via redirection': "approval.reason.overwrite_project_redirect",
+    'overwrite project env/config via tee': "approval.reason.overwrite_project_tee",
+    'overwrite system config': "approval.reason.overwrite_system_config",
+    'overwrite system file via redirection': "approval.reason.overwrite_system_redirect",
+    'overwrite system file via tee': "approval.reason.overwrite_system_tee",
+    'pipe remote content to shell': "approval.reason.pipe_remote_shell",
+    'recursive chown to root': "approval.reason.recursive_chown_root",
+    'recursive chown to root (long flag)': "approval.reason.recursive_chown_root_long",
+    'recursive delete': "approval.reason.recursive_delete",
+    'recursive delete (long flag)': "approval.reason.recursive_delete_long",
+    'recursive delete of home directory': "approval.reason.recursive_delete_home",
+    'recursive delete of root filesystem': "approval.reason.recursive_delete_root",
+    'recursive delete of system directory': "approval.reason.recursive_delete_system",
+    'recursive world/other-writable (long flag)': "approval.reason.recursive_world_writable",
+    'redirect to raw block device': "approval.reason.redirect_block_device",
+    'script execution via -e/-c flag': "approval.reason.script_execution_flag",
+    'script execution via heredoc': "approval.reason.script_heredoc",
+    'security issue detected': "approval.reason.security_issue_detected",
+    'shell command via -c/-lc flag': "approval.reason.shell_c_flag",
+    "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')": "approval.reason.gateway_outside_systemd",
+    'stop/restart hermes gateway (kills running agents)': "approval.reason.stop_restart_gateway",
+    'stop/restart system service': "approval.reason.stop_restart_service",
+    'sudo with combined-flag privilege escalation': "approval.reason.sudo_combined_flag",
+    'sudo with privilege flag (stdin/askpass/shell/list)': "approval.reason.sudo_privilege_flag",
+    'world/other-writable permissions': "approval.reason.world_writable",
+    'write to block device': "approval.reason.write_block_device",
+    'xargs with rm': "approval.reason.xargs_rm",
+}
+
+
+def _localize_reason(description: str) -> str:
+    """Translate a hardcoded English reason string to the current UI language.
+
+    Falls back to the original English string if no i18n key is mapped.
+    """
+    key = _REASON_I18N_MAP.get(description)
+    if key:
+        return _t(key)
+    return description
+
 def _hardline_block_result(description: str) -> dict:
     """Build the standard block result for a hardline match."""
     return {

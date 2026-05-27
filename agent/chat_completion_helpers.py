@@ -2024,7 +2024,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             _last_heartbeat = _hb_now
             _waiting_secs = int(_hb_now - last_chunk_time["t"])
             agent._touch_activity(
-                f"waiting for stream response ({_waiting_secs}s, no chunks yet)"
+                _t("stream.waiting_for_response", secs=_waiting_secs)
             )
 
         # Detect stale streams: connections kept alive by SSE pings
