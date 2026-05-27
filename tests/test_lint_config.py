@@ -328,3 +328,25 @@ def test_cronjob_tools_has_zero_f401() -> None:
     assert result.returncode == 0, (
         f"tools/cronjob_tools.py has F401 violations:\n{result.stdout}"
     )
+
+
+class TestToolsCheckpointManager:
+    """tools/checkpoint_manager.py must have zero SIM105 violations."""
+
+    TARGET = REPO_ROOT / "tools" / "checkpoint_manager.py"
+
+    def test_checkpoint_manager_has_zero_sim105(self):
+        """tools/checkpoint_manager.py must have zero SIM105 violations."""
+        import subprocess as _subprocess
+        import sys as _sys
+
+        result = _subprocess.run(
+            [_sys.executable, "-m", "ruff", "check", "--select=SIM105",
+             "--output-format=concise", str(self.TARGET)],
+            cwd=str(REPO_ROOT), capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            f"tools/checkpoint_manager.py has SIM105 violation(s):\n"
+            f"{result.stdout}\n{result.stderr}\n"
+        )
