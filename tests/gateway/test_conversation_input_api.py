@@ -175,6 +175,37 @@ async def test_gateway_runner_inject_session_input_starts_idle_platform_delivery
 
 
 @pytest.mark.asyncio
+async def test_gateway_runner_conversation_input_escapes_leading_slash_as_plain_text():
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.session_store = _FakeSessionStore(_entry())
+    platform_adapter = _FakeAdapter()
+    runner.adapters = {Platform.MATRIX: platform_adapter}
+    runner._running_agents = {}
+    runner._queued_events = {}
+
+    result = await GatewayRunner.inject_session_input(
+        runner,
+        session_key="matrix:room:user",
+        text="/new should be discussed, not executed",
+        mode="auto",
+        fallback="message",
+        source_label="pi-worker-smoke",
+    )
+
+    assert result["ok"] is True
+    assert result["action"] == "started"
+    session_key, event = platform_adapter.started[0]
+    assert session_key == "matrix:room:user"
+    assert event.message_type == MessageType.TEXT
+    assert event.internal is True
+    assert event.text == "\u200b/new should be discussed, not executed"
+    assert event.get_command() is None
+    assert event.raw_message["slash_escaped"] is True
+
+
+@pytest.mark.asyncio
 async def test_gateway_runner_inject_session_input_steers_without_queueing():
     from gateway.run import GatewayRunner
 

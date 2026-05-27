@@ -2758,8 +2758,17 @@ class GatewayRunner:
         if mode == "steer" and fallback == "reject":
             return {"ok": False, "status": 409, "code": "not_steerable", "message": "Conversation has no active steerable run."}
 
+        event_text = text
+        slash_escaped = False
+        if event_text.startswith("/"):
+            # External conversation input is peer text, not operator control.
+            # Preserve the visible slash while preventing gateway slash-command
+            # dispatch when the synthetic message falls back to a normal turn.
+            event_text = "\u200b" + event_text
+            slash_escaped = True
+
         event = MessageEvent(
-            text=text,
+            text=event_text,
             message_type=MessageType.TEXT,
             source=entry.origin,
             internal=True,
@@ -2770,6 +2779,8 @@ class GatewayRunner:
                 "fallback": fallback,
                 "input_visibility": input_visibility,
                 "output_delivery": output_delivery,
+                "slash_escaped": slash_escaped,
+                "original_text": text if slash_escaped else None,
             },
         )
         action = self._queue_or_start_session_input(session_key=session_key, event=event, adapter=adapter)
