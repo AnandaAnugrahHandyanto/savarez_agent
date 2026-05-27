@@ -91,9 +91,6 @@ class TermuxAdapter(BasePlatformAdapter):
     MAX_RECV_HISTORY = 50      # inbound messages to buffer
 
     def __init__(self, config: PlatformConfig):
-        # Dynamically register Platform.TERMUX if not already present
-        # This allows the adapter to work before the enum is updated centrally
-        _ensure_termux_platform()
         super().__init__(config, Platform.TERMUX)
         self._host: str = config.extra.get("host", _DEFAULT_HOST)
         self._port: int = int(config.extra.get("port", _DEFAULT_PORT))
@@ -320,26 +317,38 @@ class TermuxAdapter(BasePlatformAdapter):
         )
 
 
-# ── Platform registration helper ─────────────────────────────
-# Marks Termux as a known platform so the gateway can discover it
-# even before it's formally added to the Platform enum.
+# ── Register with platform_registry ───────────────────────────
+# This lets the gateway discover the Termux adapter via the
+# plugin-registered path, which handles auth, delivery routing,
+# and connected-state checks automatically through PlatformEntry.
+# The registry is checked BEFORE the hardcoded if/elif chain so
+# this entry is picked up first even though we also have an elif
+# in _create_adapter() for backward compat with direct imports.
 
-_TERMUX_REGISTERED = False
-
-
-def _ensure_termux_platform() -> None:
-    """Dynamically ensure Platform.TERMUX exists.
-
-    Uses the same mechanism as _missing_() so the platform is recognized
-    by the gateway without requiring an enum modification at import time.
-    """
-    global _TERMUX_REGISTERED
-    if _TERMUX_REGISTERED:
-        return
+def _register_termux() -> None:
+    """Register TermuxAdapter with the global platform registry."""
     try:
-        # Create a dynamic member if it doesn't exist
-        if not hasattr(Platform, "TERMUX"):
-            Platform._value2member_map_["termux"] = None  # placeholder
+        from gateway.platform_registry import platform_registry, PlatformEntry
+
+        platform_registry.register(PlatformEntry(
+            name="termux",
+            label="Termux (Android SMS)",
+            adapter_factory=lambda cfg: TermuxAdapter(cfg),
+            check_fn=check_termux_requirements,
+            validate_config=lambda cfg: True,
+            is_connected=lambda cfg: True,
+            required_env=["TERMUX_ALLOWED_USERS", "TERMUX_HOME_CHANNEL"],
+            install_hint="Run within Termux on Android",
+            allowed_users_env="TERMUX_ALLOWED_USERS",
+            allow_all_env="TERMUX_ALLOW_ALL_USERS",
+            cron_deliver_env_var="TERMUX_HOME_CHANNEL",
+            emoji="📱",
+            platform_hint="You are on Android via Termux (SMS). "
+                          "Keep responses concise — SMS has a 160-char "
+                          "limit per segment, though the adapter will "
+                          "auto-chunk longer messages.",
+        ))
     except Exception:
-        pass
-    _TERMUX_REGISTERED = True
+        pass  # Registry not available during early import or test
+
+_register_termux()
