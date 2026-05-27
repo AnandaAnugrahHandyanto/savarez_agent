@@ -260,10 +260,9 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "ok" > $out/result
         '';
 
-        # Verify the messaging variant actually ships discord.py — regression
-        # guard for the lazy-install / [all] migration (2026-05-12): messaging
-        # deps were dropped from [all], so nix profile install users would get
-        # ImportError at runtime unless they use the #messaging or #full variant.
+        # Regression guard: messaging deps live outside [all], so the
+        # #messaging variant must actually ship discord.py — otherwise
+        # `nix profile install .#messaging` regresses to the broken default.
         messaging-variant = pkgs.runCommand "hermes-messaging-variant" { } ''
           set -e
           echo "=== Checking discord.py importable from messaging variant ==="

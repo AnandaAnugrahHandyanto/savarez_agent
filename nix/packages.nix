@@ -16,20 +16,35 @@
       packages = {
         default = hermesAgent;
 
-        # +33 MB over default — ships discord.py, python-telegram-bot, slack-sdk
-        # so `nix profile install .#messaging` users get them out-of-the-box
-        # without hitting the read-only /nix/store lazy-install path.
+        # Ships discord.py + python-telegram-bot + slack-sdk so a plain
+        # `nix profile install .#messaging` connects to Discord/Telegram/Slack
+        # on first run — lazy-install can't write to the read-only /nix/store.
         messaging = hermesAgent.override {
           extraDependencyGroups = [ "messaging" ];
         };
 
-        # +704 MB over default — all optional integrations pre-built.
-        # matrix is excluded on Darwin (oqs/liboqs lacks aarch64-darwin wheels).
+        # All platform-portable optional integrations pre-built.
+        # matrix is Linux-only (oqs/liboqs lacks aarch64-darwin wheels).
         full = hermesAgent.override {
           extraDependencyGroups = [
-            "messaging" "dingtalk" "feishu" "anthropic" "bedrock" "azure-identity"
-            "edge-tts" "tts-premium" "voice" "exa" "firecrawl" "parallel-web" "fal"
-            "honcho" "hindsight" "modal" "daytona" "vercel"
+            "anthropic"
+            "azure-identity"
+            "bedrock"
+            "daytona"
+            "dingtalk"
+            "edge-tts"
+            "exa"
+            "fal"
+            "feishu"
+            "firecrawl"
+            "hindsight"
+            "honcho"
+            "messaging"
+            "modal"
+            "parallel-web"
+            "tts-premium"
+            "vercel"
+            "voice"
           ] ++ lib.optionals pkgs.stdenv.isLinux [ "matrix" ];
         };
 
