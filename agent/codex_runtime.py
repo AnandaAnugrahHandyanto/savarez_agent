@@ -281,6 +281,47 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 exc,
             )
             return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+        except TypeError as exc:
+            # OpenAI SDK 2.24.0 can raise from its Responses stream parser
+            # when chatgpt.com/backend-api/codex sends a final
+            # response.completed frame with response.output=null, even though
+            # the stream already emitted valid response.output_item.done and
+            # text delta events. Recover from the locally collected stream
+            # items instead of failing over to a slower fallback provider.
+            if "'NoneType' object is not iterable" in str(exc):
+                if collected_output_items:
+                    logger.warning(
+                        "Codex stream parser hit null response.output; "
+                        "synthesizing response from %d collected output items. %s",
+                        len(collected_output_items),
+                        agent._client_log_context(),
+                    )
+                    return SimpleNamespace(
+                        status="completed",
+                        output=list(collected_output_items),
+                        model=api_kwargs.get("model"),
+                    )
+                if agent._codex_streamed_text_parts and not has_tool_calls:
+                    assembled = "".join(agent._codex_streamed_text_parts)
+                    logger.warning(
+                        "Codex stream parser hit null response.output; "
+                        "synthesizing response from %d text deltas (%d chars). %s",
+                        len(agent._codex_streamed_text_parts),
+                        len(assembled),
+                        agent._client_log_context(),
+                    )
+                    return SimpleNamespace(
+                        status="completed",
+                        output=[SimpleNamespace(
+                            type="message",
+                            role="assistant",
+                            status="completed",
+                            content=[SimpleNamespace(type="output_text", text=assembled)],
+                        )],
+                        output_text=assembled,
+                        model=api_kwargs.get("model"),
+                    )
+            raise
         except RuntimeError as exc:
             err_text = str(exc)
             missing_completed = "response.completed" in err_text
