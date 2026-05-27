@@ -2296,6 +2296,190 @@ class GatewayRunner:
             session_id=session_entry.session_id,
         )
 
+    def _compression_tip_for_session(self, session_id: str) -> str:
+        """Return the live compression continuation for a session id."""
+        if not session_id:
+            return session_id
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None:
+            return session_id
+        try:
+            tip = session_db.get_compression_tip(session_id)
+        except Exception:
+            logger.debug("Failed to resolve compression tip", exc_info=True)
+            return session_id
+        return str(tip or session_id)
+
+    def _session_descends_from(
+        self,
+        session_id: str,
+        ancestor_session_id: str,
+    ) -> bool:
+        """Return True when session_id is in ancestor_session_id's child chain."""
+        if not session_id or not ancestor_session_id or session_id == ancestor_session_id:
+            return False
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None:
+            return False
+        current = str(session_id)
+        ancestor = str(ancestor_session_id)
+        for _ in range(100):
+            try:
+                row = session_db.get_session(current)
+            except Exception:
+                logger.debug("Failed to inspect session parent chain", exc_info=True)
+                return False
+            if not row:
+                return False
+            parent = str(row.get("parent_session_id") or "")
+            if not parent:
+                return False
+            if parent == ancestor:
+                return True
+            current = parent
+        return False
+
+    def _rebind_telegram_topic_binding_to_session(
+        self,
+        source: SessionSource,
+        binding: Dict[str, Any],
+        *,
+        session_key: str,
+        session_id: str,
+    ) -> bool:
+        """Rewrite one Telegram topic binding to a new session id."""
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None or not binding or not session_id:
+            return False
+        chat_id = str(binding.get("chat_id") or source.chat_id or "")
+        thread_id = str(binding.get("thread_id") or source.thread_id or "")
+        if not chat_id or not thread_id:
+            return False
+        try:
+            session_db.bind_telegram_topic(
+                chat_id=chat_id,
+                thread_id=thread_id,
+                user_id=str(binding.get("user_id") or source.user_id or ""),
+                session_key=str(binding.get("session_key") or session_key or ""),
+                session_id=str(session_id),
+                managed_mode=str(binding.get("managed_mode") or "auto"),
+            )
+            return True
+        except Exception:
+            logger.debug("Failed to rewrite Telegram topic binding", exc_info=True)
+            return False
+
+    def _evict_cached_agent_on_session_mismatch(
+        self,
+        session_key: str,
+        canonical_session_id: str,
+    ) -> None:
+        """Evict cached agents that disagree with the canonical route session."""
+        if not session_key or not canonical_session_id:
+            return
+        cache = getattr(self, "_agent_cache", None)
+        lock = getattr(self, "_agent_cache_lock", None)
+        if cache is None or lock is None:
+            return
+        with lock:
+            cached = cache.get(session_key)
+            agent = cached[0] if isinstance(cached, tuple) and cached else cached
+            cached_session_id = (
+                getattr(agent, "session_id", None) if agent is not None else None
+            )
+            if (
+                isinstance(cached_session_id, str)
+                and cached_session_id
+                and cached_session_id != canonical_session_id
+            ):
+                logger.warning(
+                    "Evicting cached agent for %s after session mismatch: agent=%s canonical=%s",
+                    session_key,
+                    cached_session_id,
+                    canonical_session_id,
+                )
+                cache.pop(session_key, None)
+
+    def _repair_telegram_topic_compression_routes(self) -> int:
+        """Repair stale Telegram topic bindings left on compression ancestors."""
+        if self._session_db is None or getattr(self, "session_store", None) is None:
+            return 0
+        repaired = 0
+        try:
+            self.session_store._ensure_loaded()
+        except Exception:
+            logger.debug("Failed to load session store for Telegram topic repair", exc_info=True)
+            return 0
+
+        entries = list(getattr(self.session_store, "_entries", {}).items())
+        for session_key, entry in entries:
+            parsed = _parse_session_key(session_key)
+            if not parsed:
+                continue
+            if parsed.get("platform") != Platform.TELEGRAM.value:
+                continue
+            if parsed.get("chat_type") != "dm" or not parsed.get("thread_id"):
+                continue
+
+            try:
+                binding = self._session_db.get_telegram_topic_binding(
+                    chat_id=str(parsed["chat_id"]),
+                    thread_id=str(parsed["thread_id"]),
+                )
+            except Exception:
+                logger.debug("Failed to read Telegram topic binding during repair", exc_info=True)
+                continue
+            if not binding:
+                continue
+
+            bound_session_id = str(binding.get("session_id") or "")
+            route_session_id = str(getattr(entry, "session_id", "") or "")
+            if not bound_session_id or not route_session_id:
+                continue
+
+            target_session_id = self._compression_tip_for_session(bound_session_id)
+            if (
+                target_session_id == bound_session_id
+                and route_session_id != bound_session_id
+                and self._session_descends_from(route_session_id, bound_session_id)
+            ):
+                target_session_id = route_session_id
+            elif (
+                target_session_id != route_session_id
+                and self._session_descends_from(route_session_id, target_session_id)
+            ):
+                target_session_id = route_session_id
+
+            if target_session_id == bound_session_id:
+                continue
+
+            source = SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id=str(parsed["chat_id"]),
+                chat_type="dm",
+                thread_id=str(parsed["thread_id"]),
+                user_id=str(binding.get("user_id") or ""),
+            )
+            if self._rebind_telegram_topic_binding_to_session(
+                source,
+                binding,
+                session_key=session_key,
+                session_id=target_session_id,
+            ):
+                repaired += 1
+                logger.info(
+                    "Repaired Telegram topic compression binding for %s: %s -> %s",
+                    session_key,
+                    bound_session_id,
+                    target_session_id,
+                )
+                self._evict_cached_agent_on_session_mismatch(
+                    session_key,
+                    target_session_id,
+                )
+
+        return repaired
+
     def _recover_telegram_topic_thread_id(
         self,
         source: SessionSource,
@@ -4120,6 +4304,16 @@ class GatewayRunner:
                 logger.warning("Auto-suspended %d stuck-loop session(s)", stuck)
         except Exception as e:
             logger.debug("Stuck-loop detection failed: %s", e)
+
+        try:
+            repaired_topic_routes = self._repair_telegram_topic_compression_routes()
+            if repaired_topic_routes:
+                logger.info(
+                    "Repaired %d Telegram topic compression route binding(s)",
+                    repaired_topic_routes,
+                )
+        except Exception as e:
+            logger.debug("Telegram topic compression route repair failed: %s", e)
 
         connected_count = 0
         enabled_platform_count = 0
@@ -8177,7 +8371,57 @@ class GatewayRunner:
                 binding = None
             if binding:
                 bound_session_id = str(binding.get("session_id") or "")
-                if bound_session_id and bound_session_id != session_entry.session_id:
+                compression_tip = self._compression_tip_for_session(bound_session_id)
+                route_session_id = session_entry.session_id
+                if (
+                    compression_tip == bound_session_id
+                    and bound_session_id
+                    and route_session_id
+                    and route_session_id != bound_session_id
+                    and self._session_descends_from(route_session_id, bound_session_id)
+                ):
+                    compression_tip = route_session_id
+                followed_compression_tip = False
+                if compression_tip and compression_tip != bound_session_id:
+                    followed_compression_tip = True
+                    if self._rebind_telegram_topic_binding_to_session(
+                        source,
+                        binding,
+                        session_key=session_key,
+                        session_id=compression_tip,
+                    ):
+                        logger.info(
+                            "Telegram topic binding followed compression: %s -> %s",
+                            bound_session_id,
+                            compression_tip,
+                        )
+                    if compression_tip != route_session_id:
+                        try:
+                            advanced_entry = self.session_store.advance_session_after_compression(
+                                session_key,
+                                route_session_id,
+                                compression_tip,
+                            )
+                            if advanced_entry is not None:
+                                session_entry = advanced_entry
+                        except Exception:
+                            logger.debug(
+                                "Failed to advance Telegram topic route after compression",
+                                exc_info=True,
+                            )
+                            session_entry.session_id = compression_tip
+                        if getattr(session_entry, "session_id", None) != compression_tip:
+                            session_entry.session_id = compression_tip
+                    bound_session_id = compression_tip
+                    self._evict_cached_agent_on_session_mismatch(
+                        session_key,
+                        session_entry.session_id,
+                    )
+                if (
+                    bound_session_id
+                    and bound_session_id != session_entry.session_id
+                    and not followed_compression_tip
+                ):
                     # Route the override through SessionStore so the session_key
                     # → session_id mapping is persisted to disk and the previous
                     # lane session is ended cleanly. Mutating session_entry in
@@ -16665,16 +16909,31 @@ class GatewayRunner:
                 with _cache_lock:
                     cached = _cache.get(session_key)
                     if cached and cached[1] == _sig:
-                        agent = cached[0]
-                        # Refresh LRU order so the cap enforcement evicts
-                        # truly-oldest entries, not the one we just used.
-                        if hasattr(_cache, "move_to_end"):
-                            try:
-                                _cache.move_to_end(session_key)
-                            except KeyError:
-                                pass
-                        self._init_cached_agent_for_turn(agent, _interrupt_depth)
-                        logger.debug("Reusing cached agent for session %s", session_key)
+                        cached_agent = cached[0]
+                        cached_session_id = getattr(cached_agent, "session_id", None)
+                        if (
+                            isinstance(cached_session_id, str)
+                            and cached_session_id
+                            and cached_session_id != session_id
+                        ):
+                            logger.warning(
+                                "Evicting cached agent for %s before turn: agent=%s canonical=%s",
+                                session_key,
+                                cached_session_id,
+                                session_id,
+                            )
+                            _cache.pop(session_key, None)
+                        else:
+                            agent = cached_agent
+                            # Refresh LRU order so the cap enforcement evicts
+                            # truly-oldest entries, not the one we just used.
+                            if hasattr(_cache, "move_to_end"):
+                                try:
+                                    _cache.move_to_end(session_key)
+                                except KeyError:
+                                    pass
+                            self._init_cached_agent_for_turn(agent, _interrupt_depth)
+                            logger.debug("Reusing cached agent for session %s", session_key)
 
             if agent is None:
                 # Config changed or first message — create fresh agent
@@ -17228,10 +17487,53 @@ class GatewayRunner:
                     "Session split detected: %s → %s (compression)",
                     session_id, agent.session_id,
                 )
-                entry = self.session_store._entries.get(session_key)
-                if entry:
-                    entry.session_id = agent.session_id
-                    self.session_store._save()
+                try:
+                    self.session_store.advance_session_after_compression(
+                        session_key,
+                        session_id,
+                        agent.session_id,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to advance session route after compression",
+                        exc_info=True,
+                    )
+                    entry = self.session_store._entries.get(session_key)
+                    if entry:
+                        entry.session_id = agent.session_id
+                        self.session_store._save()
+
+                if (
+                    getattr(source, "platform", None) == Platform.TELEGRAM
+                    and getattr(source, "chat_type", None) == "dm"
+                    and self._session_db is not None
+                ):
+                    try:
+                        binding = None
+                        if source.thread_id:
+                            binding = self._session_db.get_telegram_topic_binding(
+                                chat_id=str(source.chat_id),
+                                thread_id=str(source.thread_id),
+                            )
+                        if binding is None and hasattr(
+                            self._session_db,
+                            "get_telegram_topic_binding_by_session",
+                        ):
+                            binding = self._session_db.get_telegram_topic_binding_by_session(
+                                session_id=session_id,
+                            )
+                        if binding and str(binding.get("session_id") or "") == session_id:
+                            self._rebind_telegram_topic_binding_to_session(
+                                source,
+                                binding,
+                                session_key=session_key,
+                                session_id=agent.session_id,
+                            )
+                    except Exception:
+                        logger.debug(
+                            "Failed to advance Telegram topic binding after compression",
+                            exc_info=True,
+                        )
 
                 # If this is a Telegram DM and source.thread_id was lost during
                 # the session split (synthetic / recovered event), restore it
