@@ -841,13 +841,13 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
     """Normalize a Responses API object to an assistant_message-like object."""
     output = getattr(response, "output", None)
     if not isinstance(output, list) or not output:
-        # The Codex backend can return empty output when the answer was
-        # delivered entirely via stream events. Check output_text as a
-        # last-resort fallback before raising.
-        out_text = getattr(response, "output_text", None)
+        # The Codex backend can return empty/missing output when the answer
+        # was delivered entirely via stream events. Check output_text and
+        # text as last-resort fallbacks before raising.
+        out_text = getattr(response, "output_text", None) or getattr(response, "text", None)
         if isinstance(out_text, str) and out_text.strip():
             logger.debug(
-                "Codex response has empty output but output_text is present (%d chars); "
+                "Codex response has empty output but plain text is present (%d chars); "
                 "synthesizing output item.", len(out_text.strip()),
             )
             output = [SimpleNamespace(

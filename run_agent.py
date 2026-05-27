@@ -6998,12 +6998,46 @@ class AIAgent:
                                 sum(len(p) for p in self._codex_streamed_text_parts),
                                 self._client_log_context(),
                             )
-                    final_response = stream.get_final_response()
+                    try:
+                        final_response = stream.get_final_response()
+                    except TypeError:
+                        # SDK parse_response() crashed because the Codex API
+                        # response.completed event no longer includes `output`.
+                        # Recover from collected stream events or text deltas.
+                        if collected_output_items:
+                            final_response = SimpleNamespace(
+                                output=list(collected_output_items),
+                                status="completed",
+                            )
+                            logger.debug(
+                                "Codex stream: SDK parse_response() failed; "
+                                "synthesized from %d collected output items",
+                                len(collected_output_items),
+                            )
+                            return final_response
+                        if self._codex_streamed_text_parts and not has_tool_calls:
+                            assembled = "".join(self._codex_streamed_text_parts)
+                            final_response = SimpleNamespace(
+                                output=[SimpleNamespace(
+                                    type="message",
+                                    role="assistant",
+                                    status="completed",
+                                    content=[SimpleNamespace(type="output_text", text=assembled)],
+                                )],
+                                status="completed",
+                            )
+                            logger.debug(
+                                "Codex stream: SDK parse_response() failed; "
+                                "synthesized from %d text deltas (%d chars)",
+                                len(self._codex_streamed_text_parts), len(assembled),
+                            )
+                            return final_response
+                        raise
                     # PATCH: ChatGPT Codex backend streams valid output items
-                    # but get_final_response() can return an empty output list.
+                    # but get_final_response() can return a None or empty output list.
                     # Backfill from collected items or synthesize from deltas.
                     _out = getattr(final_response, "output", None)
-                    if isinstance(_out, list) and not _out:
+                    if not isinstance(_out, list) or not _out:
                         if collected_output_items:
                             final_response.output = list(collected_output_items)
                             logger.debug(
@@ -7103,9 +7137,9 @@ class AIAgent:
                 if terminal_response is None and isinstance(event, dict):
                     terminal_response = event.get("response")
                 if terminal_response is not None:
-                    # Backfill empty output from collected stream events
+                    # Backfill missing/empty output from collected stream events
                     _out = getattr(terminal_response, "output", None)
-                    if isinstance(_out, list) and not _out:
+                    if not isinstance(_out, list) or not _out:
                         if collected_output_items:
                             terminal_response.output = list(collected_output_items)
                             logger.debug(
