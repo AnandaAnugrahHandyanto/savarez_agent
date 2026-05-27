@@ -2836,3 +2836,329 @@ conversation.model.returned.content.after: ❌ Model returned no content after a
 conversation.fallback.providers.configured: . No fallback providers configured.
 conversation.iteration.budget.exhausted: 'Iteration budget exhausted '
 conversation.failed.call.kanbanblock.after: 'Failed to call kanban_block after iteration '
+_http_client_limits.lingering.closewait.window.can: s lingering CLOSE_WAIT window
+  can
+api_server.both.conversationhistory.previousresponseid.provided: Both conversation_history
+  and previous_response_id provided; using conversation_history
+api_server.invalidcontentpartimage.detail.nonempty.string: invalid_content_part:Image
+  detail must be a non-empty string when provided.
+api_server.invalid.approval.choice.expected: 'Invalid approval choice; expected one
+  of: once, session, always, deny'
+api_server.invalidimageurlimage.parts.include.nonempty: invalid_image_url:Image parts
+  must include a non-empty image URL.
+api_server.authorization.contenttype.idempotencykey: Authorization, Content-Type,
+  Idempotency-Key
+api_server.agent.run.produce.response: Agent run did not produce a response.
+api_server.maxage31536000.includesubdomains: max-age=31536000; includeSubDomains
+api_server.user.message.found.messages: No user message found in messages
+api_server.repeat.positive.integer: Repeat must be a positive integer
+api_server.invalid.contentlength.header: Invalid Content-Length header.
+api_server.user.message.found.input: No user message found in input
+api_server.invalid.json.request.body: Invalid JSON in request body
+api_server.get.post.delete.options: GET, POST, DELETE, OPTIONS
+api_server.cron.module.available: Cron module not available
+api_server.valid.fields.update: No valid fields to update
+api_server.request.body.too.large: Request body too large.
+api_server.invalid.job.format: Invalid job ID format
+api_server.session.key.too.long: Session key too long
+api_server.schedule.required: Schedule is required
+api_server.invalid.session.key: Invalid session key
+api_server.invalid.session: Invalid session ID
+api_server.name.required: Name is required
+api_server.invalid.api.key: Invalid API key
+api_server.job.found: Job not found
+api_server.invalid.json: Invalid JSON
+api_server.api.server: API Server
+api_server.bearer: 'Bearer '
+base.reply.number.option.text: Reply with the number, the option text, or your own
+  answer.
+base.skipping.unsafe.media.directive: Skipping unsafe MEDIA directive path outside
+  allowed roots
+base.skipping.unsafe.local.file: Skipping unsafe local file path outside allowed roots
+base.empty.text.after.markdown: Empty text after markdown cleanup
+base.stop.other.gateway.first: . Stop the other gateway first.
+base.postdelivery.callback.failed: Post-delivery callback failed
+base.interrupting.current.task: Interrupting current task...
+base.meeting.agenda: Meeting agenda
+base.not.supported: Not supported
+bluebubbles.bluebubbles.send.requires.text: BlueBubbles send requires text
+bluebubbles.attachment.upload.failed: Attachment upload failed
+bluebubbles.not.connected: Not connected
+dingtalk.valid.sessionwebhook.available.reply: No valid session_webhook available.
+  Reply must follow an incoming message.
+dingtalk.timeout.sending.message.dingtalk: Timeout sending message to DingTalk
+dingtalk.http.client.initialized: HTTP client not initialized
+dingtalk.access.token: No access token
+email.hermes.agent: Hermes Agent
+feishu.stop.other.gateway.before: ' Stop the other gateway before starting a second
+  Feishu websocket client.'
+feishu.feishu.configurewithoverrides.called.originalconfigure: Feishu _configure_with_overrides
+  called but original_configure is None
+feishu.another.local.hermes.gateway: Another local Hermes gateway is already using
+  this Feishu app_id
+feishu.feishu.lark.registration.return: Feishu / Lark registration did not return
+  a device_code
+feishu.feishu.image.upload.missing: Feishu image upload missing image_key
+feishu.failed.build.feishu.event: failed to build Feishu event handler
+feishu.feishu.file.upload.missing: Feishu file upload missing file_key
+feishu.fetching.configuration.results: '  Fetching configuration results...'
+feishu.fetching.configuration.results_1: Fetching configuration results...
+feishu.connecting.feishu.lark: '  Connecting to Feishu / Lark...'
+feishu.command.approval.required: ⚠️ Command Approval Required
+feishu.invalid.verification.token: Invalid verification token
+feishu.update.needs.input: ⚕ Update Needs Your Input
+feishu.unsupported.media.type: Unsupported Media Type
+feishu.request.body.too.large: Request body too large
+feishu.approved.session: Approved for session
+feishu.approved.permanently: Approved permanently
+feishu.feishu.send.failed: Feishu send failed
+feishu.too.many.requests: Too Many Requests
+feishu.invalid.signature: Invalid signature
+feishu.request.timeout: Request Timeout
+feishu.approved.once: Approved once
+feishu.not.connected: Not connected
+feishu.allow.once: ✅ Allow Once
+feishu.session: ✅ Session
+feishu.always: ✅ Always
+feishu.deny: ❌ Deny
+feishu.yes: ✓ Yes
+feishu_comment.referenced.documents.comments: 'Referenced documents in comments:'
+feishu_comment.wholedocument.comment: This is a whole-document comment.
+feishu_comment.current.commented.document: 'Current commented document:'
+feishu_comment.you: ' <-- YOU'
+feishu_comment.i.will: I will
+feishu_comment.let.me: Let me
+feishu_comment_rules.resolved.rule: 'Resolved rule:'
+homeassistant.timeout.sending.notification: Timeout sending notification to HA
+homeassistant.home.assistant.events: Home Assistant Events
+homeassistant.home.assistant: Home Assistant
+homeassistant.hermes.agent: Hermes Agent
+matrix.matrix.neither.matrixaccesstoken.nor: 'Matrix: neither MATRIX_ACCESS_TOKEN
+  nor MATRIX_PASSWORD set'
+matrix.matrix.device.keys.missing: 'Matrix: device keys missing from server — re-uploading'
+matrix.matrix.crosssigning.verified.via: 'Matrix: cross-signing verified via recovery
+  key'
+matrix.matrix.client.read.receipt: 'Matrix: client has no read receipt method'
+matrix.matrix.homeserver.url.configured: 'Matrix: homeserver URL not configured'
+matrix.matrix.matrixhomeserver.set: 'Matrix: MATRIX_HOMESERVER not set'
+matrix.client.empty.text: No client or empty text
+matrix.matrix.disconnected: 'Matrix: disconnected'
+matrix.not.connected: Not connected
+matrix.hermes.agent: Hermes Agent
+msgraph_webhook.microsoft.graph: Microsoft Graph
+signal.signal.signalhttpurl.signalaccount.required: 'Signal: SIGNAL_HTTP_URL and SIGNAL_ACCOUNT
+  are required'
+signal.signal.sse.idle.0fs: 'Signal: SSE idle for %.0fs, checking daemon health'
+signal.signal.rpc.called.client: 'Signal: RPC called but client not connected'
+signal.signal.ignoring.envelope.sender: 'Signal: ignoring envelope with no sender'
+signal.signal.sse.error.handling: 'Signal SSE: error handling event'
+signal.signal.daemon.healthy.sse: 'Signal: daemon healthy, SSE idle'
+signal.rpc.send.attachment.failed: RPC send with attachment failed
+signal.signal.sse.connected: 'Signal SSE: connected'
+signal.signal.disconnected: 'Signal: disconnected'
+signal.image.file.found: Image file not found
+signal.rpc.send.failed: RPC send failed
+signal.signal.account: Signal account
+signal_rate_limit.retry.after.seconds: Retry after N seconds
+slack.update.slack.app.scopessettings: ' Update the Slack app scopes/settings and
+  reinstall the app to the workspace.'
+slack.blocked.redirect.privateinternal.address: Blocked redirect to private/internal
+  address
+slack.slack.returned.html.instead: Slack returned HTML instead of media
+slack.missing.required.slack.scope: Missing required Slack scope.
+slack.only.visible: Only visible to you
+slack.slack.app.token: Slack app token
+slack.always.approve: Always Approve
+slack.running.cmd: Running /cmd…
+slack.not.connected: Not connected
+slack.allow.session: Allow Session
+slack.always.allow: Always Allow
+slack.approve.once: Approve Once
+slack.allow.once: Allow Once
+telegram.telegram.topic.delivery.requires: Telegram DM topic delivery requires a reply
+  anchor; refusing to send outside the requested topic
+telegram.authorized.answer.update.prompts: ⛔ You are not authorized to answer update
+  prompts.
+telegram.authorized.answer.prompt: ⛔ You are not authorized to answer this prompt.
+telegram.authorized.act.email: ⛔ You are not authorized to act on this email.
+telegram.updater.running.after.reconnect: Updater not running after reconnect heartbeat
+telegram.authorized.approve.commands: ⛔ You are not authorized to approve commands.
+telegram.approval.already.resolved: This approval has already been resolved.
+telegram.prompt.already.resolved: This prompt has already been resolved.
+telegram.picker.expired.use.model: Picker expired — use /model again.
+telegram.type.answer.chat: ✏️ Type your answer in the chat.
+telegram.model.selection.cancelled: Model selection cancelled.
+telegram.invalid.gmailtriage.data: Invalid gmail-triage data.
+telegram.message.thread.found: Message thread not found
+telegram.invalid.approval.data: Invalid approval data.
+telegram.approved.session: ✅ Approved for session
+telegram.approved.permanently: ✅ Approved permanently
+telegram.accessibility.auditor: Accessibility Auditor
+telegram.invalid.model.index: Invalid model index.
+telegram.provider.found: Provider not found.
+telegram.marked.vip.domain: ✓ marked VIP domain
+telegram.telegram.bot.token: Telegram bot token
+telegram.invalid.selection: Invalid selection.
+telegram.always.approve: 🔒 Always Approve
+telegram.always.approve_1: 🔒 Always approve
+telegram.picker.expired: Picker expired.
+telegram.model.switched: Model switched!
+telegram.approved.once: ✅ Approved once
+telegram.invalid.choice: Invalid choice.
+telegram.approve.once: ✅ Approve Once
+telegram.not.connected: Not connected
+telegram.invalid.page: Invalid page.
+telegram.allow.once: ✅ Allow Once
+telegram.marked.vip: ✓ marked VIP
+telegram.cancelled: ❌ Cancelled
+telegram.session: ✅ Session
+telegram.url.photo: URL photo
+telegram.always: ✅ Always
+telegram.cancel: ❌ Cancel
+telegram.cancel_1: ✗ Cancel
+telegram.denied: ❌ Denied
+telegram.deny: ❌ Deny
+telegram.prev: ◀ Prev
+telegram.next: Next ▶
+telegram.back: ◀ Back
+telegram.yes: ✓ Yes
+telegram_network.all.telegram.fallback.ips: All Telegram fallback IPs exhausted but
+  no error was recorded
+telegram_network.telegramapihost: ': _TELEGRAM_API_HOST, '
+webhook.gateway.runner.crossplatform.delivery: No gateway runner for cross-platform
+  delivery
+webhook.webhook.route.missing.hmac: Webhook route is missing an HMAC secret
+webhook.missing.repo.prnumber: Missing repo or pr_number
+webhook.cli.installed: gh CLI not installed
+webhook.rate.limit.exceeded: Rate limit exceeded
+webhook.payload.too.large: Payload too large
+webhook.invalid.signature: Invalid signature
+webhook.cannot.parse.body: Cannot parse body
+webhook.delivery.failed: Delivery failed
+webhook.bad.request: Bad request
+wecom.wecom.startup.failed.wecombotid: 'WeCom startup failed: WECOM_BOT_ID and WECOM_SECRET
+  are required'
+wecom.timed.out.waiting.wecom: Timed out waiting for WeCom subscribe acknowledgement
+wecom.cryptography.required.wecom.media: cryptography is required for WeCom media
+  decryption
+wecom.invalid.pkcs7.padding.padding: 'Invalid PKCS#7 padding: padding bytes mismatch'
+wecom.wecom.websocket.closed.during: WeCom websocket closed during authentication
+wecom.wecom.startup.failed.aiohttp: 'WeCom startup failed: aiohttp not installed'
+wecom.wecom.startup.failed.httpx: 'WeCom startup failed: httpx not installed'
+wecom.urllib.required.wecom.scan: urllib is required for WeCom QR scan
+wecom.fetching.configuration.results: '  Fetching configuration results...'
+wecom.fetching.configuration.results_1: Fetching configuration results...
+wecom.wecom.websocket.connected: WeCom websocket is not connected
+wecom.timeout.sending.message.wecom: Timeout sending message to WeCom
+wecom.timeout.sending.media.wecom: Timeout sending media to WeCom
+wecom.wecom.connection.interrupted: WeCom connection interrupted
+wecom.wecom.adapter.disconnected: WeCom adapter disconnected
+wecom.websocket.initialized: WebSocket not initialized
+wecom.cannot.upload.empty.media: Cannot upload empty media
+wecom.connecting.wecom: '  Connecting to WeCom...'
+wecom.websocket.connected: WebSocket not connected
+wecom.wecom.websocket.closed: WeCom websocket closed
+wecom_crypto.malformed.pkcs7.padding: malformed PKCS7 padding
+wecom_crypto.invalid.pkcs7.padding: invalid PKCS7 padding
+weixin.weixin.account.missing.configure: Weixin account ID missing. Configure WEIXIN_ACCOUNT_ID
+  or platforms.weixin.extra.account_id.
+weixin.weixin.token.missing.configure: Weixin token missing. Configure WEIXIN_TOKEN
+  or platforms.weixin.token.
+weixin.weixin.startup.failed.aiohttp: 'Weixin startup failed: aiohttp and cryptography
+  are required'
+weixin.weixin.confirmed.credential.payload: 'weixin: QR confirmed but credential payload
+  was incomplete'
+weixin.weixin.startup.failed.weixinaccountid: 'Weixin startup failed: WEIXIN_ACCOUNT_ID
+  is required'
+weixin.weixin.startup.failed.weixintoken: 'Weixin startup failed: WEIXIN_TOKEN is
+  required'
+weixin.aiohttp.required.weixin.login: aiohttp is required for Weixin QR login
+weixin.weixin.response.missing.qrcode: 'weixin: QR response missing qrcode'
+weixin.weixin.bot.token: Weixin bot token
+weixin.itemtext: ': ITEM_TEXT, '
+weixin.not.connected: Not connected
+whatsapp.nodejs.installed.install.nodejs: Node.js is not installed — install Node.js
+  and re-run `hermes gateway`.
+whatsapp.whatsapp.enabled.paired.run: WhatsApp enabled but not paired — run `hermes
+  whatsapp` to pair.
+whatsapp.whatsapp.session: WhatsApp session
+whatsapp.not.connected: Not connected
+yuanbao.deliverable.text.media.remained: No deliverable text or media remained after
+  processing
+yuanbao.command.only.available.group: This command is only available in group chats
+yuanbao.resourcev1download.return.url: resource/v1/download did not return a URL
+yuanbao.resourcev1download.missing.urlrealurl: resource/v1/download missing url/realUrl
+yuanbao.sign.token.failed.max: 'Sign token failed: max retries exceeded'
+yuanbao.message.recalled: The message has been recalled.\
+yuanbao.access.denied.user: DM access denied for this user
+yuanbao.failed.query.group.members: Failed to query group members
+yuanbao.yuanbaoadapter.disconnected: YuanbaoAdapter disconnected
+yuanbao.failed.query.group.info: Failed to query group info
+yuanbao.branch.content.match: 'branch A2: content match'
+yuanbao.: 任务有点复杂，正在努力处理中，请耐心等待...
+yuanbao.mention.name: 'Mention with @name: '
+yuanbao.branch.match: 'branch A1: id match'
+yuanbao.cronjob.response: 'Cronjob Response: '
+yuanbao.yuanbao.app.key: Yuanbao app key
+yuanbao.not.connected: Not connected
+yuanbao.unknown.error: Unknown error
+yuanbao_sticker.love.heart: 笔芯 爱你 爱心手势 love heart 喜欢你
+yuanbao_sticker.whatever: 无奈 没办法 耸肩 随便 那咋整 whatever
+yuanbao_sticker.hello.deal: 合作 你好 商务 hello deal 成交 友好
+yuanbao_sticker.666.awesome: 666 厉害 牛 棒 绝了 好强 awesome
+yuanbao_sticker.zzz.sleepy: 睡觉 困 zzZ 打盹 躺平 休眠 sleepy
+yuanbao_sticker.sleepy: 想睡 倦 打哈欠 睁不开眼 好困啊 sleepy
+yuanbao_sticker.doge: 滑稽 坏笑 doge 意味深长 阴阳怪气 嘿嘿嘿
+yuanbao_sticker.night.moon: 好梦 睡了 night 早点休息 安啦 moon
+yuanbao_sticker.cool.swagger: 帅 墨镜 cool 高冷 有型 swagger
+yuanbao_sticker.morning: 晴天 早上好 阳光 morning 好天气 日
+yuanbao_sticker.good.like: 赞 认同 好棒 good like 大拇指 顶
+yuanbao_sticker.cringe: 看不下去 cringe 毁三观 太丑了 瞎了
+yuanbao_sticker.doge_1: doge 保命 开玩笑 滑稽 反讽 懂的都懂
+yuanbao_sticker.okay: 好的 收到 没问题 okay 行 可以 懂了
+yuanbao_sticker.omg: 震惊 哇 不敢相信 OMG 居然 这么离谱
+yuanbao_sticker.salute: salute 尊重 收到 遵命 致敬 报告
+yuanbao_sticker._28: 倒霉 吃亏 自嘲 好心没好报 背锅 工具人
+yuanbao_sticker.yue: 恶心 yue 受不了 嫌弃 想吐 生理不适
+yuanbao_sticker.fight: 加油 干 冲 fight 力量 击拳 硬气
+yuanbao_sticker._2: 难过 想哭 可怜巴巴 瘪嘴 受伤 被欺负
+yuanbao_sticker.mua.kiss: 么么 mua 亲一下 kiss 飞吻 啵
+yuanbao_sticker._4: 卖萌 求饶 委屈巴巴 弱小 拜托 眼巴巴
+yuanbao_sticker._11: 窥屏 潜水 偷偷看 角落 围观 屏住呼吸
+yuanbao_sticker._12: 嫉妒 柠檬精 羡慕 吃柠檬 眼红 恰柠檬
+yuanbao_sticker._17: 大哭 伤心 破防 感动哭 泪流满面 呜呜
+yuanbao_sticker._20: 难受 痛苦 煎熬 蚌埠住了 受不了 要命
+yuanbao_sticker._25: 红包 谢谢老板 发财 开心 抢到了 欧气
+yuanbao_sticker.love: 心 love 喜欢你 红心 示爱 么么哒
+yuanbao_sticker.: 想开 佛系 释怀 顿悟 看淡了 无所谓
+yuanbao_sticker._1: 腼腆 不好意思 脸红 娇羞 羞涩 捂脸
+yuanbao_sticker._9: 坏笑 猥琐笑 偷笑 憨笑 得意 你懂的
+yuanbao_sticker._10: 程序员 加班 焦虑 没头发 秃了 肝爆
+yuanbao_sticker.call_1: 应援 加油 支持 喝彩 助威 call
+yuanbao_sticker.party: 祝贺 开心 耶 party 胜利 干杯
+yuanbao_sticker._14: 问号 不懂 啥 为什么 啥情况 懵逼问
+yuanbao_sticker._15: 思考 推敲 认真 研究 琢磨 让我想想
+yuanbao_sticker._18: 真的假的 真假 可爱问 你骗我 是不是
+yuanbao_sticker._3: 懵 愣住 放空 呆滞 出神 脑子空白
+yuanbao_sticker._5: 头疼 烦恼 郁闷 难搞 崩溃 一团乱
+yuanbao_sticker._7: 无语 崩溃 被雷 内伤 一口老血 屮
+yuanbao_sticker._21: 不屑 无聊 淡定 无所谓 鄙视 挖鼻
+yuanbao_sticker.666: 拍手 叫好 赞同 666 喝彩 掌声
+yuanbao_sticker._23: 围观 看戏 八卦 路人 看热闹 板凳
+yuanbao_sticker._24: 知道了 明白 敷衍 嗯 这样啊 收到
+yuanbao_sticker._26: 抱抱 亲昵 蹭蹭 亲密 靠靠 撒娇贴
+yuanbao_sticker._27: 酸 嫉妒 柠檬精 羡慕 我酸 恰柠檬
+yuanbao_sticker._30: 花 示爱 表白 浪漫 送你花 情人节
+yuanbao_sticker._33: 过年 喜庆 爆竹 春节 噼里啪啦 红
+yuanbao_sticker._34: 庆典 漂亮 新年 嘭 绽放 节日快乐
+yuanbao_sticker._6: 害怕 惊恐 震惊 吓一跳 恐怖 怂
+yuanbao_sticker._8: 傲娇 生气 不满 撇嘴 不理 赌气
+yuanbao_sticker._13: 努力 加油 拼搏 冲 干劲 卷起来
+yuanbao_sticker._19: 调皮 吐舌 不服 略 气死你 鬼脸
+yuanbao_sticker._22: 惊讶 起哄 哇哦 有戏 不简单 哟
+yuanbao_sticker._31: 花谢 失恋 难过 枯萎 心碎 凉了
+yuanbao_sticker._32: 谢谢 失敬 江湖 承让 拜托 有礼
+yuanbao_sticker.666_1: 牛 厉害 强 666 佩服 大佬
+yuanbao_sticker._29: 生气 愤怒 火大 暴躁 气炸 怼
+yuanbao_sticker._16: 嘟嘴 卖萌 不高兴 撒娇 嘴翘
+yuanbao_sticker.call: 打call

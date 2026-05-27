@@ -78,7 +78,7 @@ def _extract_retry_after_seconds(err: Any) -> Optional[float]:
     1. ``error.data.response.results[*].retryAfterSeconds`` — the
        structured field signal-cli ≥ v0.14.3 surfaces for plain
        RateLimitException.
-    2. ``"Retry after N seconds"`` parsed out of the message — covers
+    2. ``t('signal_rate_limit.retry.after.seconds')`` parsed out of the message — covers
        libsignal-net's RetryLaterException that gets wrapped as
        AttachmentInvalidException during attachment upload, where the
        structured field stays null.

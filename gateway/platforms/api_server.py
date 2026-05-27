@@ -240,7 +240,7 @@ def _normalize_multimodal_content(content: Any) -> Any:
             else:
                 url_value = image_ref
             if not isinstance(url_value, str) or not url_value.strip():
-                raise ValueError("invalid_image_url:Image parts must include a non-empty image URL.")
+                raise ValueError(t('api_server.invalidimageurlimage.parts.include.nonempty'))
             url_value = url_value.strip()
             lowered = url_value.lower()
             if lowered.startswith("data:"):
@@ -256,7 +256,7 @@ def _normalize_multimodal_content(content: Any) -> Any:
             image_part: Dict[str, Any] = {"type": "image_url", "image_url": {"url": url_value}}
             if detail is not None:
                 if not isinstance(detail, str) or not detail.strip():
-                    raise ValueError("invalid_content_part:Image detail must be a non-empty string when provided.")
+                    raise ValueError(t('api_server.invalidcontentpartimage.detail.nonempty.string'))
                 image_part["image_url"]["detail"] = detail.strip()
             normalized_parts.append(image_part)
             continue
@@ -479,8 +479,8 @@ class ResponseStore:
 # ---------------------------------------------------------------------------
 
 _CORS_HEADERS = {
-    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key",
+    "Access-Control-Allow-Methods": t('api_server.get.post.delete.options'),
+    "Access-Control-Allow-Headers": t('api_server.authorization.contenttype.idempotencykey'),
 }
 
 
@@ -530,9 +530,9 @@ if AIOHTTP_AVAILABLE:
             if cl is not None:
                 try:
                     if int(cl) > MAX_REQUEST_BYTES:
-                        return web.json_response(_openai_error("Request body too large.", code="body_too_large"), status=413)
+                        return web.json_response(_openai_error(t('api_server.request.body.too.large'), code="body_too_large"), status=413)
                 except ValueError:
-                    return web.json_response(_openai_error("Invalid Content-Length header.", code="invalid_content_length"), status=400)
+                    return web.json_response(_openai_error(t('api_server.invalid.contentlength.header'), code="invalid_content_length"), status=400)
         return await handler(request)
 else:
     body_limit_middleware = None  # type: ignore[assignment]
@@ -540,7 +540,7 @@ else:
 _SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
-    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+    "Strict-Transport-Security": t('api_server.maxage31536000.includesubdomains'),
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "X-XSS-Protection": "0",
@@ -831,7 +831,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return None  # No key configured — allow all (local-only use)
 
         auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
+        if auth_header.startswith(t('api_server.bearer')):
             token = auth_header[7:].strip()
             if hmac.compare_digest(token, self._api_key):
                 return None  # Auth OK
@@ -841,7 +841,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._request_audit_log_suffix(request),
         )
         return web.json_response(
-            {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
+            {"error": {"message": t('api_server.invalid.api.key'), "type": "invalid_request_error", "code": "invalid_api_key"}},
             status=401,
         )
 
@@ -898,13 +898,13 @@ class APIServerAdapter(BasePlatformAdapter):
         # the echo path.
         if re.search(r'[\r\n\x00]', raw):
             return None, web.json_response(
-                {"error": {"message": "Invalid session key", "type": "invalid_request_error"}},
+                {"error": {"message": t('api_server.invalid.session.key'), "type": "invalid_request_error"}},
                 status=400,
             )
 
         if len(raw) > self._MAX_SESSION_HEADER_LEN:
             return None, web.json_response(
-                {"error": {"message": "Session key too long", "type": "invalid_request_error"}},
+                {"error": {"message": t('api_server.session.key.too.long'), "type": "invalid_request_error"}},
                 status=400,
             )
 
@@ -1114,7 +1114,7 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             body = await request.json()
         except (json.JSONDecodeError, Exception):
-            return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+            return web.json_response(_openai_error(t('api_server.invalid.json.request.body')), status=400)
 
         messages = body.get("messages")
         if not messages or not isinstance(messages, list):
@@ -1156,7 +1156,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         if not _content_has_visible_payload(user_message):
             return web.json_response(
-                {"error": {"message": "No user message found in messages", "type": "invalid_request_error"}},
+                {"error": {"message": t('api_server.user.message.found.messages'), "type": "invalid_request_error"}},
                 status=400,
             )
 
@@ -1194,7 +1194,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # Sanitize: reject control characters that could enable header injection.
             if re.search(r'[\r\n\x00]', provided_session_id):
                 return web.json_response(
-                    {"error": {"message": "Invalid session ID", "type": "invalid_request_error"}},
+                    {"error": {"message": t('api_server.invalid.session'), "type": "invalid_request_error"}},
                     status=400,
                 )
             session_id = provided_session_id
@@ -1373,7 +1373,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # silently rendering the internal failure string as message.content.
         if not final_response and (is_failed or is_partial):
             err_body = _openai_error(
-                err_msg or "Agent run did not produce a response.",
+                err_msg or t('api_server.agent.run.produce.response'),
                 err_type="server_error",
                 code="agent_incomplete",
             )
@@ -2253,7 +2253,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     return _multimodal_validation_error(exc, param=f"conversation_history[{i}].content")
                 conversation_history.append({"role": str(entry["role"]), "content": entry_content})
             if previous_response_id:
-                logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
+                logger.debug(t('api_server.both.conversationhistory.previousresponseid.provided'))
 
         stored_session_id = None
         if not conversation_history and previous_response_id:
@@ -2273,7 +2273,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # Last input message is the user_message
         user_message: Any = input_messages[-1].get("content", "") if input_messages else ""
         if not _content_has_visible_payload(user_message):
-            return web.json_response(_openai_error("No user message found in input"), status=400)
+            return web.json_response(_openai_error(t('api_server.user.message.found.input')), status=400)
 
         # Truncation support
         if body.get("truncation") == "auto" and len(conversation_history) > 100:
@@ -2502,7 +2502,7 @@ class APIServerAdapter(BasePlatformAdapter):
         """Return error response if cron module isn't available."""
         if not _CRON_AVAILABLE:
             return web.json_response(
-                {"error": "Cron module not available"}, status=501,
+                {"error": t('api_server.cron.module.available')}, status=501,
             )
         return None
 
@@ -2516,7 +2516,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._request_audit_log_suffix(request),
             )
             return job_id, web.json_response(
-                {"error": "Invalid job ID format"}, status=400,
+                {"error": t('api_server.invalid.job.format')}, status=400,
             )
         return job_id, None
 
@@ -2553,19 +2553,19 @@ class APIServerAdapter(BasePlatformAdapter):
             repeat = body.get("repeat")
 
             if not name:
-                return web.json_response({"error": "Name is required"}, status=400)
+                return web.json_response({"error": t('api_server.name.required')}, status=400)
             if len(name) > self._MAX_NAME_LENGTH:
                 return web.json_response(
                     {"error": f"Name must be ≤ {self._MAX_NAME_LENGTH} characters"}, status=400,
                 )
             if not schedule:
-                return web.json_response({"error": "Schedule is required"}, status=400)
+                return web.json_response({"error": t('api_server.schedule.required')}, status=400)
             if len(prompt) > self._MAX_PROMPT_LENGTH:
                 return web.json_response(
                     {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"}, status=400,
                 )
             if repeat is not None and (not isinstance(repeat, int) or repeat < 1):
-                return web.json_response({"error": "Repeat must be a positive integer"}, status=400)
+                return web.json_response({"error": t('api_server.repeat.positive.integer')}, status=400)
 
             kwargs = {
                 "prompt": prompt,
@@ -2598,7 +2598,7 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             job = _cron_get(job_id)
             if not job:
-                return web.json_response({"error": "Job not found"}, status=404)
+                return web.json_response({"error": t('api_server.job.found')}, status=404)
             return web.json_response({"job": job})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -2619,7 +2619,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # Whitelist allowed fields to prevent arbitrary key injection
             sanitized = {k: v for k, v in body.items() if k in self._UPDATE_ALLOWED_FIELDS}
             if not sanitized:
-                return web.json_response({"error": "No valid fields to update"}, status=400)
+                return web.json_response({"error": t('api_server.valid.fields.update')}, status=400)
             # Validate lengths if present
             if "name" in sanitized and len(sanitized["name"]) > self._MAX_NAME_LENGTH:
                 return web.json_response(
@@ -2970,7 +2970,7 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             body = await request.json()
         except Exception:
-            return web.json_response(_openai_error("Invalid JSON"), status=400)
+            return web.json_response(_openai_error(t('api_server.invalid.json')), status=400)
 
         raw_input = body.get("input")
         if not raw_input:
@@ -3336,7 +3336,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if choice not in allowed:
             return web.json_response(
                 _openai_error(
-                    "Invalid approval choice; expected one of: once, session, always, deny",
+                    t('api_server.invalid.approval.choice.expected'),
                     code="invalid_approval_choice",
                 ),
                 status=400,
@@ -3607,7 +3607,7 @@ class APIServerAdapter(BasePlatformAdapter):
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about the API server."""
         return {
-            "name": "API Server",
+            "name": t('api_server.api.server'),
             "type": "api",
             "host": self._host,
             "port": self._port,

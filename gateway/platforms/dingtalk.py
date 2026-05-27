@@ -845,12 +845,12 @@ class DingTalkAdapter(BasePlatformAdapter):
                 )
                 return SendResult(
                     success=False,
-                    error="No valid session_webhook available. Reply must follow an incoming message.",
+                    error=t('dingtalk.valid.sessionwebhook.available.reply'),
                 )
             session_webhook, _ = webhook_info
 
         if not self._http_client:
-            return SendResult(success=False, error="HTTP client not initialized")
+            return SendResult(success=False, error=t('dingtalk.http.client.initialized'))
 
         # Look up the inbound message for this chat (for AI Card routing)
         current_message = self._message_contexts.get(chat_id)
@@ -920,7 +920,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             )
         except httpx.TimeoutException:
             return SendResult(
-                success=False, error="Timeout sending message to DingTalk"
+                success=False, error=t('dingtalk.timeout.sending.message.dingtalk')
             )
         except Exception as e:
             logger.error("[%s] Send error: %s", self.name, e)
@@ -1153,7 +1153,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="message_id required")
         token = await self._get_access_token()
         if not token:
-            return SendResult(success=False, error="No access token")
+            return SendResult(success=False, error=t('dingtalk.access.token'))
 
         try:
             await self._stream_card_content(

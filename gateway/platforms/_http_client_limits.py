@@ -20,7 +20,7 @@ adapter factories use instead of the httpx default.  The values chosen:
 * ``max_keepalive_connections=10`` — plenty for any single adapter;
   platform APIs rarely parallelise beyond this.
 * ``keepalive_expiry=2.0`` — close idle sockets aggressively so a
-  proxy's lingering CLOSE_WAIT window can't starve the process.
+  proxyt('_http_client_limits.lingering.closewait.window.can')t starve the process.
 
 Override via ``HERMES_GATEWAY_HTTPX_KEEPALIVE_EXPIRY`` /
 ``HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE`` env vars when tuning under load.

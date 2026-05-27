@@ -301,10 +301,10 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         # Build MessageEvent and forward to handler
         source = self.build_source(
             chat_id="ha_events",
-            chat_name="Home Assistant Events",
+            chat_name=t('homeassistant.home.assistant.events'),
             chat_type="channel",
             user_id="homeassistant",
-            user_name="Home Assistant",
+            user_name=t('homeassistant.home.assistant'),
         )
 
         msg_event = MessageEvent(
@@ -401,7 +401,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
             "Content-Type": "application/json",
         }
         payload = {
-            "title": "Hermes Agent",
+            "title": t('homeassistant.hermes.agent'),
             "message": content[:self.MAX_MESSAGE_LENGTH],
         }
 
@@ -433,7 +433,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
                             return SendResult(success=False, error=f"HTTP {resp.status}: {body}")
 
         except asyncio.TimeoutError:
-            return SendResult(success=False, error="Timeout sending notification to HA")
+            return SendResult(success=False, error=t('homeassistant.timeout.sending.notification'))
         except Exception as e:
             return SendResult(success=False, error=str(e))
 

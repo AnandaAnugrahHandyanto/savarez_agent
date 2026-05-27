@@ -423,7 +423,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     ) -> SendResult:
         text = self.format_message(content)
         if not text:
-            return SendResult(success=False, error="BlueBubbles send requires text")
+            return SendResult(success=False, error=t('bluebubbles.bluebubbles.send.requires.text'))
         # Split on paragraph breaks first (double newlines) so each thought
         # becomes its own iMessage bubble, then truncate any that are still
         # too long.
@@ -481,7 +481,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a file attachment via BlueBubbles multipart upload."""
         if not self.client:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error=t('bluebubbles.not.connected'))
         if not os.path.isfile(file_path):
             return SendResult(success=False, error=f"File not found: {file_path}")
 
@@ -520,7 +520,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 )
             return SendResult(
                 success=False,
-                error=result.get("message", "Attachment upload failed"),
+                error=result.get("message", t('bluebubbles.attachment.upload.failed')),
             )
         except Exception as e:
             return SendResult(success=False, error=str(e))

@@ -52,9 +52,9 @@ class PKCS7Encoder:
             raise DecryptError("empty decrypted payload")
         pad = decrypted[-1]
         if pad < 1 or pad > cls.block_size:
-            raise DecryptError("invalid PKCS7 padding")
+            raise DecryptError(t('wecom_crypto.invalid.pkcs7.padding'))
         if decrypted[-pad:] != bytes([pad]) * pad:
-            raise DecryptError("malformed PKCS7 padding")
+            raise DecryptError(t('wecom_crypto.malformed.pkcs7.padding'))
         return decrypted[:-pad]
 
 

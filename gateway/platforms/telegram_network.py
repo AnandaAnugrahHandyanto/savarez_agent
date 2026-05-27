@@ -28,7 +28,7 @@ _DOH_TIMEOUT = 4.0  # seconds — bounded so connect() isn't noticeably delayed
 _DOH_PROVIDERS: list[dict] = [
     {
         "url": "https://dns.google/resolve",
-        "params": {"name": _TELEGRAM_API_HOST, "type": "A"},
+        "params": {"namet('telegram_network.telegramapihost')type": "A"},
         "headers": {},
     },
     {
@@ -120,7 +120,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                 continue
 
         if last_error is None:
-            raise RuntimeError("All Telegram fallback IPs exhausted but no error was recorded")
+            raise RuntimeError(t('telegram_network.all.telegram.fallback.ips'))
         raise last_error
 
     async def aclose(self) -> None:

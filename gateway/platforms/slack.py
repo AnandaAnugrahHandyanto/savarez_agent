@@ -361,11 +361,11 @@ class SlackAdapter(BasePlatformAdapter):
         file_label = str((file_obj or {}).get("name") or (file_obj or {}).get("id") or "this attachment")
         needed = str(response.get("needed", "") or "").strip()
         provided = str(response.get("provided", "") or "").strip()
-        reinstall_hint = " Update the Slack app scopes/settings and reinstall the app to the workspace."
+        reinstall_hint = t('slack.update.slack.app.scopessettings')
         provided_hint = f" Current bot scopes: {provided}." if provided else ""
 
         if error == "missing_scope":
-            needed_hint = f"Missing scope: {needed}." if needed else "Missing required Slack scope."
+            needed_hint = f"Missing scope: {needed}." if needed else t('slack.missing.required.slack.scope')
             return f"Slack attachment access failed for {file_label}. {needed_hint}{provided_hint}{reinstall_hint}"
         if error in {"not_authed", "invalid_auth", "account_inactive", "token_revoked"}:
             return f"Slack attachment access failed for {file_label} because the bot token is not authorized ({error}). Refresh the token/reinstall the app."
@@ -399,7 +399,7 @@ class SlackAdapter(BasePlatformAdapter):
                 return f"Slack attachment {file_label} returned HTTP 404 and is no longer reachable."
 
         message = str(exc)
-        if "Slack returned HTML instead of media" in message or "non-image data" in message:
+        if t('slack.slack.returned.html.instead') in message or "non-image data" in message:
             return (
                 f"Slack attachment access failed for {file_label}: Slack returned an HTML/login or non-media response. "
                 "This usually means a scope, auth, or file-permission problem."
@@ -462,8 +462,8 @@ class SlackAdapter(BasePlatformAdapter):
 
         Slack's ``response_url`` accepts a POST with ``replace_original``
         for up to 30 minutes after the slash command was invoked.  This
-        lets us swap the "Running /cmd…" placeholder with the real reply,
-        and the message stays ephemeral ("Only visible to you").
+        lets us swap the t('slack.running.cmd') placeholder with the real reply,
+        and the message stays ephemeral (t('slack.only.visible')).
 
         Falls back to a simple ``True`` SendResult if the POST fails —
         the user already saw the initial ack, so a delivery failure here
@@ -545,7 +545,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         lock_acquired = False
         try:
-            if not self._acquire_platform_lock('slack-app-token', app_token, 'Slack app token'):
+            if not self._acquire_platform_lock('slack-app-token', app_token, t('slack.slack.app.token')):
                 return False
             lock_acquired = True
 
@@ -764,7 +764,7 @@ class SlackAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a message to a Slack channel or DM."""
         if not self._app:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error=t('slack.not.connected'))
 
         try:
             # Check for a pending slash-command context.  When the user ran a
@@ -1434,7 +1434,7 @@ class SlackAdapter(BasePlatformAdapter):
                 if response.is_redirect and response.next_request:
                     redirect_url = str(response.next_request.url)
                     if not is_safe_url(redirect_url):
-                        raise ValueError("Blocked redirect to private/internal address")
+                        raise ValueError(t('slack.blocked.redirect.privateinternal.address'))
 
             # Download the image first
             async with httpx.AsyncClient(
@@ -2273,20 +2273,20 @@ class SlackAdapter(BasePlatformAdapter):
                     "elements": [
                         {
                             "type": "button",
-                            "text": {"type": "plain_text", "text": "Allow Once"},
+                            "text": {"type": "plain_text", "text": t('slack.allow.once')},
                             "style": "primary",
                             "action_id": "hermes_approve_once",
                             "value": session_key,
                         },
                         {
                             "type": "button",
-                            "text": {"type": "plain_text", "text": "Allow Session"},
+                            "text": {"type": "plain_text", "text": t('slack.allow.session')},
                             "action_id": "hermes_approve_session",
                             "value": session_key,
                         },
                         {
                             "type": "button",
-                            "text": {"type": "plain_text", "text": "Always Allow"},
+                            "text": {"type": "plain_text", "text": t('slack.always.allow')},
                             "action_id": "hermes_approve_always",
                             "value": session_key,
                         },
@@ -2347,14 +2347,14 @@ class SlackAdapter(BasePlatformAdapter):
                     "elements": [
                         {
                             "type": "button",
-                            "text": {"type": "plain_text", "text": "Approve Once"},
+                            "text": {"type": "plain_text", "text": t('slack.approve.once')},
                             "style": "primary",
                             "action_id": "hermes_confirm_once",
                             "value": value,
                         },
                         {
                             "type": "button",
-                            "text": {"type": "plain_text", "text": "Always Approve"},
+                            "text": {"type": "plain_text", "text": t('slack.always.approve')},
                             "action_id": "hermes_confirm_always",
                             "value": value,
                         },

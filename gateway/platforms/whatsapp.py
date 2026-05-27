@@ -495,7 +495,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             logger.warning("[%s] Node.js not found. WhatsApp requires Node.js.", self.name)
             self._set_fatal_error(
                 "whatsapp_node_missing",
-                "Node.js is not installed — install Node.js and re-run `hermes gateway`.",
+                t('whatsapp.nodejs.installed.install.nodejs'),
                 retryable=False,
             )
             return False
@@ -527,7 +527,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             )
             self._set_fatal_error(
                 "whatsapp_not_paired",
-                "WhatsApp enabled but not paired — run `hermes whatsapp` to pair.",
+                t('whatsapp.whatsapp.enabled.paired.run'),
                 retryable=False,
             )
             return False
@@ -537,7 +537,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         # Acquire scoped lock to prevent duplicate sessions
         lock_acquired = False
         try:
-            if not self._acquire_platform_lock('whatsapp-session', str(self._session_path), 'WhatsApp session'):
+            if not self._acquire_platform_lock('whatsapp-session', str(self._session_path), t('whatsapp.whatsapp.session')):
                 return False
             lock_acquired = True
         except Exception as e:
@@ -878,7 +878,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         that preserve code block boundaries, and sends each chunk sequentially.
         """
         if not self._running or not self._http_session:
-            return SendResult(success=False, error="Not connected")
+            return SendResult(success=False, error=t('whatsapp.not.connected'))
         bridge_exit = await self._check_managed_bridge_exit()
         if bridge_exit:
             return SendResult(success=False, error=bridge_exit)
