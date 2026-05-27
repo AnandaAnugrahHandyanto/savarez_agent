@@ -810,13 +810,57 @@ class _CodexCompletionsAdapter:
                 # new failure mode for auxiliary calls.
                 pass
 
+        collected_output_items: List[Any] = []
+        collected_text_deltas: List[str] = []
+        has_function_calls = False
+        final = None
+
+        def _recover_null_output_response(reason: str):
+            if collected_output_items:
+                output = list(collected_output_items)
+            elif collected_text_deltas and not has_function_calls:
+                assembled = "".join(collected_text_deltas)
+                output = [SimpleNamespace(
+                    type="message", role="assistant", status="completed",
+                    content=[SimpleNamespace(type="output_text", text=assembled)],
+                )]
+            else:
+                return None
+            def _item_get(obj: Any, key: str, default: Any = None) -> Any:
+                val = getattr(obj, key, None)
+                if val is None and isinstance(obj, dict):
+                    val = obj.get(key, default)
+                return val if val is not None else default
+
+            for item in output:
+                item_type = _item_get(item, "type")
+                if item_type == "message":
+                    for part in (_item_get(item, "content") or []):
+                        ptype = _item_get(part, "type")
+                        if ptype in {"output_text", "text"}:
+                            text_parts.append(_item_get(part, "text", ""))
+                elif item_type == "function_call":
+                    tool_calls_raw.append(SimpleNamespace(
+                        id=_item_get(item, "call_id", ""),
+                        type="function",
+                        function=SimpleNamespace(
+                            name=_item_get(item, "name", ""),
+                            arguments=_item_get(item, "arguments", "{}"),
+                        ),
+                    ))
+            logger.debug(
+                "Codex auxiliary recovered from null response.output (%s): "
+                "items=%d streamed_chars=%d",
+                reason,
+                len(collected_output_items),
+                sum(len(p) for p in collected_text_deltas),
+            )
+            return SimpleNamespace(output=output, usage=None)
+
         try:
             # Collect output items and text deltas during streaming —
             # the Codex backend can return empty response.output from
             # get_final_response() even when items were streamed.
-            collected_output_items: List[Any] = []
-            collected_text_deltas: List[str] = []
-            has_function_calls = False
             if total_timeout:
                 timeout_timer = threading.Timer(float(total_timeout), _close_client_on_timeout)
                 timeout_timer.daemon = True
@@ -915,11 +959,30 @@ class _CodexCompletionsAdapter:
         except Exception as exc:
             if timed_out.is_set():
                 raise TimeoutError(_timeout_message()) from exc
-            logger.debug("Codex auxiliary Responses API call failed: %s", exc)
-            raise
+            if isinstance(exc, TypeError):
+                err_text = str(exc)
+                if "NoneType" in err_text and "not iterable" in err_text:
+                    recovered = _recover_null_output_response(err_text)
+                    if recovered is not None:
+                        final = recovered
+                    else:
+                        logger.debug(
+                            "Codex auxiliary hit null output parser error with "
+                            "no recoverable events: %s", exc,
+                        )
+                        raise
+                else:
+                    logger.debug("Codex auxiliary Responses API call failed: %s", exc)
+                    raise
+            else:
+                logger.debug("Codex auxiliary Responses API call failed: %s", exc)
+                raise
         finally:
             if timeout_timer is not None:
                 timeout_timer.cancel()
+
+        if final is None:
+            raise RuntimeError("Codex auxiliary Responses stream did not produce a final response")
 
         content = "".join(text_parts).strip() or None
 
