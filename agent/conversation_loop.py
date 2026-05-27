@@ -1125,8 +1125,17 @@ def run_conversation(
                                 error_details.append(f"response.status={_codex_resp_status}: {_codex_error_msg}")
                             else:
                                 # output_text fallback: stream backfill may have failed
-                                # but normalize can still recover from output_text
-                                _out_text = getattr(response, "output_text", None)
+                                # but normalize can still recover from output_text.
+                                # The SDK's Response.output_text property iterates
+                                # self.output without a None guard (openai/types/
+                                # responses/response.py), so calling it when output
+                                # is None raises TypeError instead of returning the
+                                # documented empty string.  getattr() only catches
+                                # AttributeError, not arbitrary getter exceptions.
+                                try:
+                                    _out_text = getattr(response, "output_text", None)
+                                except TypeError:
+                                    _out_text = None
                                 _out_text_stripped = _out_text.strip() if isinstance(_out_text, str) else ""
                                 if _out_text_stripped:
                                     logger.debug(
