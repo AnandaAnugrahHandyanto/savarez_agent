@@ -90,7 +90,8 @@ agent:
   trajectory_enabled: 📝 轨迹保存已启用
   init:
     initialized: '🤖 AI Agent 已初始化，模型: {model}'
-    initialized_bedrock_sdk: '🤖 AI Agent 已初始化，模型: {model} (AWS Bedrock + AnthropicBedrock SDK, {region})'
+    initialized_bedrock_sdk: '🤖 AI Agent 已初始化，模型: {model} (AWS Bedrock + AnthropicBedrock
+      SDK, {region})'
     initialized_anthropic: '🤖 AI Agent 已初始化，模型: {model} (Anthropic 原生)'
     initialized_bedrock: '🤖 AI Agent 已初始化，模型: {model} (AWS Bedrock, {region}{guardrails})'
     using_entra: '🔑 使用凭据: Microsoft Entra ID'
@@ -165,7 +166,17 @@ gateway:
   config_read_failed: ⚠️ 无法读取 config.yaml：{error}
   config_save_failed: ⚠️ 无法保存配置：{error}
   status:
-    elapsed_min: '已运行 {min} 分钟'
+    header: 📊 **Hermes 网关状态**
+    session_id: '**会话 ID：** `{session_id}`'
+    title: '**标题：** {title}'
+    created: '**创建时间：** {timestamp}'
+    last_activity: '**最近活动：** {timestamp}'
+    tokens: '**Token 数：** {tokens}'
+    agent_running: '**代理运行中：** {state}'
+    state_yes: 是 ⚡
+    state_no: 否
+    queued: '**排队的后续：** {count}'
+    platforms: '**已连接平台：** {platforms}'
   interrupting: ⚡ 正在中断当前任务{detail}。我很快会回复你的消息。
   model:
     error_prefix: 错误：{error}
@@ -248,9 +259,12 @@ gateway:
     no_provider: 未配置提供方 — 无法压缩。
     nothing_to_do: 暂无可压缩内容（对话记录仍全部为受保护上下文）。
     focus_line: 聚焦："{topic}"
-    summary_failed: ⚠️ 摘要生成失败（{error}）。{count} 条历史消息已被移除并替换为占位符；之前的上下文已无法恢复。建议检查 auxiliary.compression 模型配置。
-    aborted: ⚠️ 压缩已中止 ({error})。未删除任何消息 — 对话保持不变。运行 /compress 重试，运行 /reset 开始新会话，或检查你的 auxiliary.compression 模型配置。
-    aux_failed: ℹ️ 配置的压缩模型 `{model}` 失败（{error}）。已使用主模型恢复 — 上下文完好 — 但您可能想检查 config.yaml 中的 `auxiliary.compression.model`。
+    summary_failed: ⚠️ 摘要生成失败（{error}）。{count} 条历史消息已被移除并替换为占位符；之前的上下文已无法恢复。建议检查 auxiliary.compression
+      模型配置。
+    aborted: ⚠️ 压缩已中止 ({error})。未删除任何消息 — 对话保持不变。运行 /compress 重试，运行 /reset 开始新会话，或检查你的
+      auxiliary.compression 模型配置。
+    aux_failed: ℹ️ 配置的压缩模型 `{model}` 失败（{error}）。已使用主模型恢复 — 上下文完好 — 但您可能想检查 config.yaml
+      中的 `auxiliary.compression.model`。
     failed: 压缩失败：{error}
   debug:
     upload_failed: ✗ 无法上传调试报告：{error}
@@ -379,7 +393,8 @@ gateway:
 
       在 **{platform}** 上每次响应前将显示模型的思考过程。'
     display_set_off: 🧠 ✓ **{platform}** 上的推理显示：**关闭**
-    reset_global_unsupported: ⚠️ 不支持 `/reasoning reset --global`。请使用 `/reasoning <level> --global` 修改全局默认值。
+    reset_global_unsupported: ⚠️ 不支持 `/reasoning reset --global`。请使用 `/reasoning <level>
+      --global` 修改全局默认值。
     reset_done: 🧠 ✓ 已清除本会话的推理覆盖；回退到全局配置。
     unknown_arg: '⚠️ 未知参数：`{arg}`
 
@@ -400,7 +415,8 @@ gateway:
       _（下一条消息生效）_'
   reload_mcp:
     cancelled: 🟡 已取消 /reload-mcp。MCP 工具未更改。
-    always_followup: 'ℹ️ 后续 `/reload-mcp` 调用将不再确认。可在 `config.yaml` 中将 `approvals.mcp_reload_confirm: true` 重新启用。'
+    always_followup: 'ℹ️ 后续 `/reload-mcp` 调用将不再确认。可在 `config.yaml` 中将 `approvals.mcp_reload_confirm:
+      true` 重新启用。'
     confirm_prompt: '⚠️ **确认 /reload-mcp**
 
 
@@ -469,7 +485,7 @@ gateway:
     shutting_down: ⚠️ 网关正在关闭 — 当前任务将被中断。
     restarting_hint: ⚠️ 网关正在重启 — 当前任务将被中断。重启后发送任意消息，我会尝试继续之前的工作。
   online: ♻️ 网关已上线 — Hermes 准备就绪。
-  provider_auth_failed: ⚠️ Provider 认证失败。请检查已配置的凭据；原始 provider 详情请查看网关日志。
+  provider_auth_failed: ⚠️ 提供商认证失败：{error}
   provider_rejected: ⚠️ 模型 provider 拒绝了请求。我已将原始 provider 错误信息排除在聊天之外；详情请查看网关日志或尝试换个说法。
   provider_rate_limited: ⏱️ 模型 provider 正在限流。请稍等片刻后重试。
   provider_failed: ⚠️ 模型 provider 在多次重试后失败。我已将原始 provider 详情排除在聊天之外；诊断信息请查看网关日志。
@@ -499,9 +515,23 @@ gateway:
   no_response_after_tools: ⚠️ 模型在处理工具后未返回响应。这可能发生在非常长的会话中 — 请尝试发送另一条消息。
   bg_task_no_creds: ❌ 后台任务 {task_id} 失败：未配置 provider 凭据。
   bg_task_failed: ❌ 后台任务 {task_id} 失败：{error}
-  update_finished: ✅ Hermes 更新完成。
+  update_finished: '✅ Hermes 更新完成。
+
+
+    ```
+
+    {output}
+
+    ```'
   update_failed_code: ❌ Hermes 更新失败（退出码 {code}）。
-  update_failed: ❌ Hermes 更新失败。请查看网关日志或手动运行 `hermes update` 获取详情。
+  update_failed: '❌ Hermes 更新失败。
+
+
+    ```
+
+    {output}
+
+    ```'
   update_finished_output: '✅ Hermes 更新完成。
 
 
@@ -539,7 +569,7 @@ gateway:
 
 
     （无响应生成）'
-  compression_summary: 🗜️ 上下文已压缩 — {headline}
+  compression_summary: 🗜️ {headline}
   already_running: '
 
     ❌ Gateway 已在运行（PID {pid}）。
@@ -564,9 +594,9 @@ gateway:
 
 
     _文字回复方式：回复 `/approve`、`/always` 或 `/cancel`。_'
-  detail_new: '这将开启一个新会话并丢弃当前对话历史。'
-  detail_undo: '这将移除最后一组用户/助手对话。'
-  steer_failed: ⚠️ Steer 失败：{error}
+  detail_new: 这将开启一个新会话并丢弃当前对话历史。
+  detail_undo: 这将移除最后一组用户/助手对话。
+  steer_failed: ⚠️ 转向失败：{error}
   resume:
     db_unavailable: 会话数据库不可用。
     no_named_sessions: '未找到已命名的会话。
@@ -589,10 +619,18 @@ gateway:
     resumed_one: ↻ 已恢复会话 **{title}**（{count} 条消息）。对话已还原。
     resumed_many: ↻ 已恢复会话 **{title}**（{count} 条消息）。对话已还原。
     resumed_no_count: ↻ 已恢复会话 **{title}**。对话已还原。
+    list_footer_numbered: '
+
+      用法：`/resume <会话名称>` 或 `/resume <编号>`（例如 `/resume 1` 恢复最近的会话）'
+    list_item_numbered: '{index}. **{title}**{preview_part}'
+    out_of_range: '恢复索引 {index} 超出范围。
+
+      使用不带参数的 `/resume` 查看可用会话。'
   retry:
     no_previous: 没有可重试的上一条消息。
   rollback:
-    not_enabled: "检查点未启用。\n请在 config.yaml 中启用：\n```\ncheckpoints:\n  enabled: true\n```"
+    not_enabled: "检查点未启用。\n请在 config.yaml 中启用：\n```\ncheckpoints:\n  enabled: true\n\
+      ```"
     none_found: 未找到 {cwd} 的检查点
     invalid_number: 无效的检查点编号。请使用 1-{max}。
     restored: '✅ 已恢复到检查点 {hash}：{reason}
@@ -604,18 +642,6 @@ gateway:
     success: '✅ 主频道已设置为 **{name}**（ID：{chat_id}）。
 
       定时任务和跨平台消息将发送到此处。'
-  status:
-    header: 📊 **Hermes 网关状态**
-    session_id: '**会话 ID：** `{session_id}`'
-    title: '**标题：** {title}'
-    created: '**创建时间：** {timestamp}'
-    last_activity: '**最近活动：** {timestamp}'
-    tokens: '**Token 数：** {tokens}'
-    agent_running: '**代理运行中：** {state}'
-    state_yes: 是 ⚡
-    state_no: 否
-    queued: '**排队的后续：** {count}'
-    platforms: '**已连接平台：** {platforms}'
   stop:
     stopped_pending: ⚡ 已停止。代理尚未启动 — 你可以继续此会话。
     stopped: ⚡ 已停止。你可以继续此会话。
@@ -636,7 +662,8 @@ gateway:
     not_telegram_dm: /topic 命令仅在 Telegram 私聊中可用。
     no_session_db: 会话数据库不可用。
     unauthorized: 您无权在此 bot 上使用 /topic。
-    restore_needs_topic: 若要恢复会话，请先创建或打开一个 Telegram topic，然后在该 topic 中发送 /topic <session-id>。要创建新 topic，请打开 All Messages 并在其中发送任意消息。
+    restore_needs_topic: 若要恢复会话，请先创建或打开一个 Telegram topic，然后在该 topic 中发送 /topic <session-id>。要创建新
+      topic，请打开 All Messages 并在其中发送任意消息。
     topics_disabled: '此 bot 尚未启用 Telegram topics。
 
 
@@ -655,7 +682,8 @@ gateway:
     topics_user_disallowed: 'Telegram topics 已启用，但不允许用户创建 topics。
 
 
-      打开 @BotFather → 选择您的 bot → Bot Settings → Threads Settings，然后关闭 ''Disallow users to create new threads''。
+      打开 @BotFather → 选择您的 bot → Bot Settings → Threads Settings，然后关闭 ''Disallow users
+      to create new threads''。
 
 
       然后再次发送 /topic。'
@@ -673,7 +701,8 @@ gateway:
     thread_ready: 'Telegram 多会话 topics 已启用。
 
 
-      此 topic 将作为独立的 Hermes 会话使用。使用 /new 替换此 topic 的当前会话。如需并行工作，请打开 All Messages 并在其中发送消息以创建另一个 topic。'
+      此 topic 将作为独立的 Hermes 会话使用。使用 /new 替换此 topic 的当前会话。如需并行工作，请打开 All Messages 并在其中发送消息以创建另一个
+      topic。'
     untitled_session: 未命名会话
   undo:
     nothing: 没有可撤销的内容。
@@ -683,7 +712,8 @@ gateway:
   update:
     platform_not_messaging: ✗ /update 仅在消息平台可用。请在终端运行 `hermes update`。
     not_git_repo: ✗ 不是 git 仓库 — 无法更新。
-    hermes_cmd_not_found: ✗ 无法找到 `hermes` 命令。Hermes 正在运行，但更新命令无法在 PATH 上或通过当前 Python 解释器找到可执行文件。请尝试在终端中手动运行 `hermes update`。
+    hermes_cmd_not_found: ✗ 无法找到 `hermes` 命令。Hermes 正在运行，但更新命令无法在 PATH 上或通过当前 Python
+      解释器找到可执行文件。请尝试在终端中手动运行 `hermes update`。
     start_failed: ✗ 启动更新失败：{error}
     starting: ⚕ 正在启动 Hermes 更新…… 进度将在此处显示。
   usage:
@@ -706,7 +736,8 @@ gateway:
     detailed_after_first: _（首次代理响应后可查看详细使用情况）_
     no_data: 此会话暂无使用数据。
   verbose:
-    not_enabled: "`/verbose` 命令未在消息平台启用。\n\n请在 `config.yaml` 中启用：\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
+    not_enabled: "`/verbose` 命令未在消息平台启用。\n\n请在 `config.yaml` 中启用：\n```yaml\ndisplay:\n\
+      \  tool_progress_command: true\n```"
     mode_off: ⚙️ 工具进度：**OFF** — 不显示任何工具活动。
     mode_new: ⚙️ 工具进度：**NEW** — 工具变化时显示（预览长度：`display.tool_preview_length`，默认 40）。
     mode_all: ⚙️ 工具进度：**ALL** — 显示每次工具调用（预览长度：`display.tool_preview_length`，默认 40）。
@@ -765,20 +796,71 @@ gateway:
   usage_cmd:
     platform: 用法：/platform {action} <名称>
     subgoal_remove: 用法：/subgoal remove <n>
+  processing_completed_no_response: ⚠️ 处理完成但未生成响应。这可能是临时错误 — 请尝试重新发送消息。
+  steered_into_run: ⏩ 已转向当前运行{status_detail}。您的消息将在下一个工具调用后到达。
+  subagent_working: ⏳ 子代理正在工作{status_detail} — 您的消息已排队等待完成（使用 /stop 取消所有操作）。
+  queued_for_next_turn: ⏳ 已排队等待下一轮{status_detail}。
+  interrupting_current_task: ⚡ 正在中断当前任务{status_detail}。我会尽快回复您的消息。
+  queued_next_turn: ⏳ 网关{action} — 排队等待下一轮。
+  not_accepting: ⏳ 网关正在{action}，目前不接受新的请求。
+  action_hint: ⚠️ 网关{action} — {hint}
+  agent_running_cant_run: ⏳ Agent 正在运行 — `/{command}` 目前无法执行。请在当前轮次完成后重试。
+  not_accepting_new: ⏳ 网关正在{action}，目前不接受新任务。
+  config_compression_model: ℹ️ 配置的压缩模型 `{model}` 在此提供商不可用，回退到主模型。
+  reasoning_label: '💭 **推理过程：**
+
+    ```
+
+    {reasoning}
+
+    ```
+
+
+    {response}'
+  session_info_model: ◆ 模型：`{model}`
+  session_info_provider: ◆ 提供商：{provider}
+  session_info_context: ◆ 上下文：{tokens} tokens（{source}）
+  session_info_endpoint: ◆ 端点：{url}
+  config_load_failed: ❌ 无法加载配置：{error}
+  background_task_no_credentials: ❌ 后台任务 {task_id} 失败：未配置提供商凭据。
+  background_task_complete: '✅ 后台任务完成
+
+    提示词："{preview}"'
+  background_task_no_response: '✅ 后台任务完成
+
+    提示词："{preview}"
+
+
+    （未生成响应 — 请检查日志）'
+  background_task_failed: ❌ 后台任务 {task_id} 失败：{error}
+  confirm_command: '⚠️ **确认 /{command}**
+
+
+    '
+  dangerous_command_approval: '⚠️ **危险命令需要审批：**
+
+    '
+  agent_inactive_timeout: ⏱️ Agent 已闲置 {minutes} 分钟 — 未检测到工具调用。Agent 可能已卡住。
 run_agent:
   self_improvement_review: 💾 自我改进审查：{summary}
   compacting_context: 🗜️ 压缩上下文 — 正在总结早期对话以便继续……
   preflight_compression: 📦 预检压缩：约 {tokens} 个 token >= {threshold} 阈值，可能需要一些时间。
   compression_aborted: ⚠️ 压缩已中止：{error}。未丢失任何消息 — 对话继续不变。运行 /compress 重试，或 /new 开始新会话。
   compression_failed: ⚠️ 压缩摘要失败：{error}。已插入回退上下文标记。
-  aux_model_failed: ℹ️ 配置的压缩模型 '{model}' 失败（{error}）。已使用主模型恢复 — 请检查 config.yaml 中的 auxiliary.compression.model。
+  aux_model_failed: ℹ️ 配置的压缩模型 '{model}' 失败（{error}）。已使用主模型恢复 — 请检查 config.yaml 中的
+    auxiliary.compression.model。
   interrupting: ⚡ 正在中断当前任务{detail}。我很快会回复你的消息。
 onboarding:
-  busy_queue: 💡 首次提示 — 我将你的消息排队而非中断当前任务。发送 `/busy interrupt` 让新消息立即停止当前任务，或 `/busy status` 查看状态。此提示不再显示。
-  busy_steer: 💡 首次提示 — 我将你的消息引导至当前运行；它将在下一次工具调用后到达而非中断。发送 `/busy interrupt` 或 `/busy queue` 更改此设置，或 `/busy status` 查看状态。此提示不再显示。
-  busy_interrupt: 💡 首次提示 — 我刚刚中断了当前任务来回复你。发送 `/busy queue` 将后续消息排队到当前任务之后，`/busy steer` 在不中断的情况下注入运行中，或 `/busy status` 查看状态。此提示不再显示。
-  busy_queue_cli: （提示）你的消息已排队等待下一轮。使用 /busy interrupt 让 Enter 键停止当前运行，或 /busy steer 在运行中注入。此提示仅显示一次。
-  busy_steer_cli: （提示）你的消息已引导至当前运行；它将在下一次工具调用后到达。使用 /busy interrupt 或 /busy queue 更改此设置。此提示仅显示一次。
+  busy_queue: 💡 首次提示 — 我将你的消息排队而非中断当前任务。发送 `/busy interrupt` 让新消息立即停止当前任务，或 `/busy
+    status` 查看状态。此提示不再显示。
+  busy_steer: 💡 首次提示 — 我将你的消息引导至当前运行；它将在下一次工具调用后到达而非中断。发送 `/busy interrupt` 或 `/busy
+    queue` 更改此设置，或 `/busy status` 查看状态。此提示不再显示。
+  busy_interrupt: 💡 首次提示 — 我刚刚中断了当前任务来回复你。发送 `/busy queue` 将后续消息排队到当前任务之后，`/busy steer`
+    在不中断的情况下注入运行中，或 `/busy status` 查看状态。此提示不再显示。
+  busy_queue_cli: （提示）你的消息已排队等待下一轮。使用 /busy interrupt 让 Enter 键停止当前运行，或 /busy steer
+    在运行中注入。此提示仅显示一次。
+  busy_steer_cli: （提示）你的消息已引导至当前运行；它将在下一次工具调用后到达。使用 /busy interrupt 或 /busy queue
+    更改此设置。此提示仅显示一次。
   busy_interrupt_cli: （提示）你的消息中断了当前运行。使用 /busy queue 将消息排队到下一轮，或 /busy steer 在运行中注入。此提示仅显示一次。
   tool_progress_gateway: 💡 首次提示 — 该工具运行较久，我正在流式输出每一步。如果进度消息太嘈杂，发送 `/verbose` 循环切换模式（全部→仅新→关闭）。此提示不再显示。
   tool_progress_cli: （提示）该工具运行较久 — 我正在流式输出每一步。使用 /verbose 循环切换进度模式（全部→仅新→关闭）。此提示仅显示一次。
@@ -786,7 +868,8 @@ onboarding:
 
     要将配置、记忆和技能迁移到 Hermes，请运行 `hermes claw migrate`。
 
-    如果已迁移并想归档旧目录，请运行 `hermes claw cleanup`（重命名为 ~/.openclaw.pre-migration — 之后 OpenClaw 将停止工作）。
+    如果已迁移并想归档旧目录，请运行 `hermes claw cleanup`（重命名为 ~/.openclaw.pre-migration — 之后 OpenClaw
+    将停止工作）。
 
     此提示仅显示一次。'
 activity:
@@ -839,7 +922,8 @@ activity:
   iteration_exhausted_cli: ⚠️ 迭代预算已用尽（{current}/{max}）— 正在请求摘要...
   agent_inactive: ⏱️ 智能体已空闲 {minutes} 分钟 — 无工具调用或 API 响应。
   agent_stuck_tool: 智能体似乎卡在工具 `{tool}` 上（距上次活动 {seconds} 秒，迭代 {current}/{max}）。
-  agent_last_activity: 上次活动：{desc}（{seconds} 秒前，迭代 {current}/{max}）。智能体可能正在等待 API 响应。
+  agent_last_activity: 上次活动：{desc}（{seconds} 秒前，迭代 {current}/{max}）。智能体可能正在等待 API
+    响应。
 platform:
   approve_once: ✅ 批准一次
   approve_session: ✅ 本次会话批准
@@ -859,7 +943,8 @@ platform:
     原因：{reason}
 
 
-    回复 `/approve` 执行，`/approve session` 为本次会话批准此模式，`/approve always` 永久批准，或 `/deny` 取消。
+    回复 `/approve` 执行，`/approve session` 为本次会话批准此模式，`/approve always` 永久批准，或 `/deny`
+    取消。
 
 
     也可以点击表情符号来批准：
@@ -1085,6 +1170,17 @@ setup:
   complete_gateway: 运行网关：hermes gateway run
   complete_docs: 查看文档：hermes help
   run_agent.compending_context: 🗜️ 正在压缩上下文——总结之前的对话以便继续...
-
 stream:
   waiting_for_response: 等待流式响应（已等{secs}秒，无数据块）
+steer: {}
+config: {}
+reasoning: {}
+session: {}
+background: {}
+compression: {}
+confirm: {}
+update: {}
+proxy: {}
+provider: {}
+dangerous: {}
+'no': {}
