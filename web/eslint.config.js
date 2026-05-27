@@ -19,5 +19,18 @@ export default defineConfig([
       ecmaVersion: 2020,
       globals: globals.browser,
     },
+    rules: {
+      // The React Hooks recommended preset now includes React Compiler rules
+      // that are useful for compiler adoption, but this dashboard has not opted
+      // into the compiler yet. Keep lint focused on correctness rules that are
+      // actionable for the current codebase.
+      'react-hooks/refs': 'off',
+      'react-hooks/set-state-in-effect': 'off',
+      'react-hooks/static-components': 'off',
+      'react-hooks/preserve-manual-memoization': 'off',
+
+      // Context modules intentionally export both providers and hooks/helpers.
+      'react-refresh/only-export-components': 'off',
+    },
   },
 ])

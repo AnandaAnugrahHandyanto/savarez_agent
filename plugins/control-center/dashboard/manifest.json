@@ -1,0 +1,14 @@
+{
+  "name": "control-center",
+  "label": "Control Center",
+  "description": "Hermes operations dashboard with project Kanban, prompt library, and LLM wiki management tabs",
+  "icon": "Database",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/control-center",
+    "position": "after:kanban"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}
