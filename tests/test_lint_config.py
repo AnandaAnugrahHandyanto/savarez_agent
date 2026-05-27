@@ -113,3 +113,32 @@ class TestLintWorkflow:
             pytest.fail(f"lint.yml is not valid YAML: {exc}")
         assert isinstance(parsed, dict)
         assert "jobs" in parsed
+
+
+class TestGatewayLintRegression:
+    """Gateway-level lint regression guards.
+
+    Each test asserts zero violations of a *specific* rule in a *specific*
+    gateway file.  See test-driven-development skill for the pattern.
+    """
+
+    TARGET = REPO_ROOT / "gateway" / "runtime_footer.py"
+
+    def test_runtime_footer_zero_f401_violations(self):
+        """gateway/runtime_footer.py must have zero F401 (unused-import) violations."""
+        import subprocess
+        import sys
+
+        assert self.TARGET.exists(), f"Target file not found: {self.TARGET}"
+
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F401",
+             "--output-format=concise", str(self.TARGET)],
+            capture_output=True, text=True, check=False,
+        )
+
+        assert result.returncode == 0, (
+            f"{self.TARGET} has F401 violation(s):\n{result.stdout}" + (
+                f"\n{result.stderr}" if result.stderr else ""
+            )
+        )
