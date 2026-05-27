@@ -53,6 +53,11 @@ from typing import Dict, Optional, Any, List, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
+from gateway.approval_routing import (
+    approval_target_for_adapter,
+    format_approval_prompt,
+    source_label_from_source,
+)
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -1450,6 +1455,38 @@ def _load_gateway_runtime_config() -> dict:
 
     expanded = _expand_env_vars(cfg)
     return expanded if isinstance(expanded, dict) else {}
+
+
+def _gateway_approval_delivery_context(
+    *,
+    source: Any,
+    default_chat_id: str,
+    default_metadata: Dict[str, Any] | None,
+    command: str,
+    description: str,
+    html_mode: bool = False,
+) -> tuple[str, Dict[str, Any] | None, str]:
+    """Resolve chat/thread + prompt text for a gateway approval request."""
+    cfg = _load_gateway_runtime_config()
+    approvals_config = cfg_get(cfg, "approvals", default={}) or {}
+    source_platform = getattr(source, "platform", "")
+    adapter_name = getattr(source_platform, "value", str(source_platform)).lower()
+    if adapter_name == "local":
+        adapter_name = "cli"
+    chat_id, metadata = approval_target_for_adapter(
+        adapter_name=adapter_name,
+        default_chat_id=default_chat_id,
+        default_metadata=default_metadata,
+        approvals_config=approvals_config,
+    )
+    prompt = format_approval_prompt(
+        command=command,
+        description=description,
+        source_label=source_label_from_source(source),
+        language=str(approvals_config.get("prompt_language") or "en"),
+        html_mode=html_mode,
+    )
+    return chat_id, metadata, prompt
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:
@@ -17019,20 +17056,43 @@ class GatewayRunner:
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
+                _approval_chat_id, _approval_metadata, _approval_prompt_html = _gateway_approval_delivery_context(
+                    source=source,
+                    default_chat_id=_status_chat_id,
+                    default_metadata=_status_thread_metadata,
+                    command=cmd,
+                    description=desc,
+                    html_mode=True,
+                )
+                _, _, _approval_prompt_text = _gateway_approval_delivery_context(
+                    source=source,
+                    default_chat_id=_status_chat_id,
+                    default_metadata=_status_thread_metadata,
+                    command=cmd,
+                    description=desc,
+                    html_mode=False,
+                )
 
                 # Prefer button-based approval when the adapter supports it.
                 # Check the *class* for the method, not the instance — avoids
                 # false positives from MagicMock auto-attribute creation in tests.
                 if getattr(type(_status_adapter), "send_exec_approval", None) is not None:
                     try:
+                        _approval_kwargs = dict(
+                            chat_id=_approval_chat_id,
+                            command=cmd,
+                            session_key=_approval_session_key,
+                            description=desc,
+                            metadata=_approval_metadata,
+                        )
+                        try:
+                            _approval_sig = inspect.signature(type(_status_adapter).send_exec_approval)
+                            if "prompt_text" in _approval_sig.parameters:
+                                _approval_kwargs["prompt_text"] = _approval_prompt_html
+                        except (TypeError, ValueError):
+                            pass
                         _approval_fut = safe_schedule_threadsafe(
-                            _status_adapter.send_exec_approval(
-                                chat_id=_status_chat_id,
-                                command=cmd,
-                                session_key=_approval_session_key,
-                                description=desc,
-                                metadata=_status_thread_metadata,
-                            ),
+                            _status_adapter.send_exec_approval(**_approval_kwargs),
                             _loop_for_step,
                             logger=logger,
                             log_message="send_exec_approval scheduling error",
@@ -17052,20 +17112,12 @@ class GatewayRunner:
                         )
 
                 # Fallback: plain text approval prompt
-                cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
-                msg = (
-                    f"⚠️ **Dangerous command requires approval:**\n"
-                    f"```\n{cmd_preview}\n```\n"
-                    f"Reason: {desc}\n\n"
-                    f"Reply `/approve` to execute, `/approve session` to approve this pattern "
-                    f"for the session, `/approve always` to approve permanently, or `/deny` to cancel."
-                )
                 try:
                     _approval_send_fut = safe_schedule_threadsafe(
                         _status_adapter.send(
-                            _status_chat_id,
-                            msg,
-                            metadata=_status_thread_metadata,
+                            _approval_chat_id,
+                            _approval_prompt_text,
+                            metadata=_approval_metadata,
                         ),
                         _loop_for_step,
                         logger=logger,

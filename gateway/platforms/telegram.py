@@ -105,7 +105,7 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
 }
 
 
-MAX_COMMANDS_PER_SCOPE = 30
+MAX_COMMANDS_PER_SCOPE = 100
 
 
 def check_telegram_requirements() -> bool:
@@ -962,6 +962,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, attempt,
             )
             self._polling_network_error_count = 0
+            # start_polling() has successfully re-established polling, so do not
+            # keep outbound replies blocked for the full deferred heartbeat
+            # window. The heartbeat below still catches a wedged poller and
+            # re-enters the reconnect ladder if the pool is actually broken.
+            self._send_path_degraded = False
             # start_polling() returning is necessary but not sufficient:
             # PTB's Updater can be left in a state where `running` is True
             # but the underlying long-poll task is wedged on a stale httpx
@@ -2582,6 +2587,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
+        prompt_text: Optional[str] = None,
     ) -> SendResult:
         """Send an inline-keyboard approval prompt with interactive buttons.
 
@@ -2593,7 +2599,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
-            text = (
+            text = prompt_text or (
                 f"⚠️ <b>Command Approval Required</b>\n\n"
                 f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
                 f"Reason: {_html.escape(description)}"
