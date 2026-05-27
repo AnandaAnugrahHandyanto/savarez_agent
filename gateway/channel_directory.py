@@ -8,6 +8,7 @@ action="list" and for resolving human-friendly channel names to numeric IDs.
 
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -17,6 +18,8 @@ from utils import atomic_json_write
 logger = logging.getLogger(__name__)
 
 DIRECTORY_PATH = get_hermes_home() / "channel_directory.json"
+_LEGACY_NUMERIC_TOPIC_ID_RE = re.compile(r"^\s*(-?\d+):(\d+)\s*$")
+_LEGACY_SLACK_THREAD_ID_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,}):([^\s:]+)\s*$")
 
 
 def _normalize_channel_query(value: str) -> str:
@@ -264,6 +267,36 @@ def lookup_channel_type(platform_name: str, chat_id: str) -> Optional[str]:
     return None
 
 
+def _split_legacy_composite_id(
+    platform_name: str,
+    entry_id: str,
+) -> Tuple[str, Optional[str]]:
+    """Split old directory ids that encoded thread_id in ``id`` only.
+
+    New directory entries carry a dedicated ``thread_id`` field, but users may
+    still have cached ``channel_directory.json`` files created before that
+    field existed.
+    """
+    platform_key = (platform_name or "").lower()
+    if platform_key in {"telegram", "discord"}:
+        match = _LEGACY_NUMERIC_TOPIC_ID_RE.fullmatch(entry_id)
+        if match:
+            return match.group(1), match.group(2)
+    if platform_key == "slack":
+        match = _LEGACY_SLACK_THREAD_ID_RE.fullmatch(entry_id)
+        if match:
+            return match.group(1), match.group(2)
+    if platform_key == "matrix":
+        split_idx = entry_id.rfind(":$")
+        if split_idx > 0:
+            return entry_id[:split_idx], entry_id[split_idx + 1 :]
+    if platform_key == "feishu" and entry_id.count(":") == 1:
+        chat_id, thread_id = entry_id.split(":", 1)
+        if chat_id.startswith(("oc_", "ou_", "on_", "chat_", "open_")) and thread_id:
+            return chat_id, thread_id
+    return entry_id, None
+
+
 def resolve_channel_name(
     platform_name: str, name: str
 ) -> Optional[Tuple[str, Optional[str]]]:
@@ -280,12 +313,13 @@ def resolve_channel_name(
     """
 
     def _result(ch: Dict[str, Any]) -> Tuple[str, Optional[str]]:
-        entry_id = ch["id"]
+        entry_id = str(ch["id"])
         thread_id = ch.get("thread_id")
         if thread_id and entry_id.endswith(f":{thread_id}"):
             chat_id = entry_id[: -(len(thread_id) + 1)]
         else:
-            chat_id = entry_id
+            chat_id, inferred_thread_id = _split_legacy_composite_id(platform_name, entry_id)
+            thread_id = thread_id or inferred_thread_id
         return (chat_id, thread_id)
 
     directory = load_directory()

@@ -237,7 +237,7 @@ class TestSendMessageTool:
             "updated_at": "2026-01-01T00:00:00",
             "platforms": {
                 "telegram": [
-                    {"id": "-1001:17585", "name": "Coaching Chat / topic 17585", "type": "group", "thread_id": "17585"}
+                    {"id": "-1001:17585", "name": "Coaching Chat / topic 17585", "type": "group"}
                 ]
             },
         }))
@@ -2597,6 +2597,46 @@ class TestSendViaAdapterStandaloneFallback:
         assert "error" in result
         assert "only supported for" in result["error"]
         assert called is False
+
+    @pytest.mark.asyncio
+    async def test_send_to_platform_plugin_text_with_media_without_capability_sends_text_warning(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        """Text delivery should still work when unsupported plugin MEDIA is omitted."""
+        from tools.send_message_tool import _send_to_platform
+        from gateway.platforms.base import SendResult
+
+        image_path = tmp_path / "image.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+        platform = _FakePlatform("fakeplatform")
+
+        class TextOnlyAdapter:
+            def __init__(self):
+                self.calls = []
+
+            async def send(self, chat_id, content, metadata=None):
+                self.calls.append((chat_id, content, metadata))
+                return SendResult(success=True, message_id="text-1")
+
+        adapter = TextOnlyAdapter()
+        runner = SimpleNamespace(adapters={platform: adapter})
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
+
+        result = await _send_to_platform(
+            platform,
+            SimpleNamespace(extra={}),
+            "chat-1",
+            "hello",
+            media_files=[(str(image_path), False)],
+        )
+
+        assert result["success"] is True
+        assert result["message_id"] == "text-1"
+        assert "warnings" in result
+        assert "MEDIA attachments were omitted" in result["warnings"][0]
+        assert adapter.calls == [("chat-1", "hello", None)]
 
     @pytest.mark.asyncio
     async def test_standalone_sender_fn_absent_returns_helpful_error(self, monkeypatch):

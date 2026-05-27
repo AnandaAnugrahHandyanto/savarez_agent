@@ -147,6 +147,31 @@ class TestResolveChannelName:
         with self._setup(tmp_path, platforms):
             assert resolve_channel_name("telegram", "Coaching Chat / topic 17585") == ("-1001", "17585")
 
+    def test_legacy_topic_composite_id_without_thread_field_resolves(self, tmp_path):
+        platforms = {
+            "telegram": [
+                {"id": "-1001:17585", "name": "Coaching Chat / topic 17585", "type": "group"}
+            ]
+        }
+        with self._setup(tmp_path, platforms):
+            assert resolve_channel_name("telegram", "Coaching Chat / topic 17585") == ("-1001", "17585")
+
+    def test_legacy_matrix_thread_composite_id_without_thread_field_resolves(self, tmp_path):
+        platforms = {
+            "matrix": [
+                {
+                    "id": "!roomid:matrix.example.org:$thread123:matrix.example.org",
+                    "name": "Ops / topic $thread123",
+                    "type": "group",
+                }
+            ]
+        }
+        with self._setup(tmp_path, platforms):
+            assert resolve_channel_name("matrix", "Ops / topic $thread123") == (
+                "!roomid:matrix.example.org",
+                "$thread123:matrix.example.org",
+            )
+
     def test_id_match_takes_precedence_over_name(self, tmp_path):
         """A raw channel ID resolves to itself, even when a different
         channel happens to be named the same string. Case-sensitive: Slack
