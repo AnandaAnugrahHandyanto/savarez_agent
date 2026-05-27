@@ -2315,6 +2315,54 @@ class TestCodexAdapterReasoningTranslation:
         assert "reasoning" not in captured
         assert "include" not in captured
 
+    def test_null_output_typeerror_recovers_from_text_deltas(self):
+        """Regression for Responses streams whose terminal response has output=None.
+
+        The OpenAI SDK raises TypeError while processing response.completed;
+        the adapter should still recover from text deltas already streamed.
+        """
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+
+        class _FakeStream:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def __iter__(self):
+                yield SimpleNamespace(type="response.output_text.delta", delta="hello ")
+                yield SimpleNamespace(type="response.output_text.delta", delta="again")
+                raise TypeError("'NoneType' object is not iterable")
+            def get_final_response(self):  # pragma: no cover - iteration raises first
+                raise AssertionError("get_final_response should not be reached")
+
+        real_client = MagicMock()
+        real_client.responses.stream = lambda **kwargs: _FakeStream()
+        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.3-codex")
+
+        response = adapter.create(messages=[{"role": "user", "content": "hi"}])
+
+        message = response.choices[0].message
+        assert message.content == "hello again"
+        assert message.tool_calls is None
+
+    def test_null_final_output_recovers_from_text_deltas(self):
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+
+        class _FakeStream:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def __iter__(self):
+                yield SimpleNamespace(type="response.output_text.delta", delta="terminal ")
+                yield SimpleNamespace(type="response.output_text.delta", delta="null ok")
+            def get_final_response(self):
+                return SimpleNamespace(output=None, usage=None)
+
+        real_client = MagicMock()
+        real_client.responses.stream = lambda **kwargs: _FakeStream()
+        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.3-codex")
+
+        response = adapter.create(messages=[{"role": "user", "content": "hi"}])
+
+        assert response.choices[0].message.content == "terminal null ok"
+
     def test_extra_body_without_reasoning_key_is_noop(self):
         adapter, captured = self._build_adapter()
         adapter.create(

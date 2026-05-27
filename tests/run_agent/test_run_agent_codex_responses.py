@@ -186,6 +186,24 @@ class _FakeCreateStream:
         self.closed = True
 
 
+class _TypeErrorAfterEventsStream:
+    def __init__(self, events):
+        self._events = list(events)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def __iter__(self):
+        yield from self._events
+        raise TypeError("'NoneType' object is not iterable")
+
+    def get_final_response(self):  # pragma: no cover - iteration raises first
+        raise AssertionError("get_final_response should not be reached")
+
+
 def _codex_request_kwargs():
     return {
         "model": "gpt-5-codex",
@@ -482,6 +500,54 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert calls["create"] == 1
     assert create_stream.closed is True
     assert response.output[0].content[0].text == "streamed create ok"
+
+
+def test_run_codex_stream_recovers_when_sdk_crashes_on_null_output(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    def _fake_stream(**kwargs):
+        return _TypeErrorAfterEventsStream(
+            [
+                SimpleNamespace(type="response.output_text.delta", delta="null "),
+                SimpleNamespace(type="response.output_text.delta", delta="output ok"),
+            ]
+        )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=lambda **kwargs: _codex_message_response("fallback"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response.output[0].content[0].text == "null output ok"
+
+
+def test_run_codex_create_stream_fallback_backfills_null_terminal_output(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    create_stream = _FakeCreateStream(
+        [
+            SimpleNamespace(type="response.output_text.delta", delta="terminal "),
+            SimpleNamespace(type="response.output_text.delta", delta="null ok"),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    output=None,
+                    usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+                    status="completed",
+                    model="gpt-5-codex",
+                ),
+            ),
+        ]
+    )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **kwargs: create_stream)
+    )
+
+    response = agent._run_codex_create_stream_fallback(_codex_request_kwargs())
+    assert response.output[0].content[0].text == "terminal null ok"
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):
