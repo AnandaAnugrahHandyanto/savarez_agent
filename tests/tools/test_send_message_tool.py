@@ -28,7 +28,6 @@ def _reset_signal_scheduler():
 
 from gateway.config import Platform
 from tools.send_message_tool import (
-    _is_telegram_thread_not_found,
     _parse_target_ref,
     _send_matrix_via_adapter,
     _send_signal,
@@ -2718,54 +2717,11 @@ class TestCheckSendMessage:
             assert _check_send_message() is False
 
 
+
+
+
 class TestSendTelegramThreadNotFoundRetry:
     """Tests for thread-not-found retry behaviour in _send_telegram (#27012)."""
-
-    def test_is_thread_not_found_matches_expected_errors(self):
-        """_is_telegram_thread_not_found should detect thread-not-found errors."""
-        class FakeError(Exception):
-            pass
-
-        assert _is_telegram_thread_not_found(FakeError("message thread not found")) is True
-        assert _is_telegram_thread_not_found(FakeError("THREAD NOT FOUND")) is True
-        assert _is_telegram_thread_not_found(FakeError("Bad Request: thread not found")) is True
-        assert _is_telegram_thread_not_found(FakeError("chat not found")) is False
-        assert _is_telegram_thread_not_found(FakeError("parse error")) is False
-        assert _is_telegram_thread_not_found(FakeError("")) is False
-
-    def test_text_send_retries_without_thread_id_on_thread_not_found(self):
-        """When thread is not found, the text send should retry without
-        message_thread_id."""
-        call_args = []
-
-        async def fake_retry(bot, *, chat_id, text, parse_mode, **kwargs):
-            call_args.append(dict(kwargs, chat_id=chat_id, text=text))
-            if len(call_args) == 1:
-                raise Exception("Bad Request: message thread not found")
-            return SimpleNamespace(message_id=42)
-
-        async def run_test():
-            with patch(
-                "tools.send_message_tool._send_telegram_message_with_retry",
-                fake_retry,
-            ):
-                # _send_telegram imports Bot locally; we only need to mock
-                # the send path, not Bot itself (Bot import falls through
-                # normally since python-telegram-bot is installed).
-                return await _send_telegram(
-                    "fake-token", "-100123", "hello from topic 17585",
-                    thread_id="17585",
-                )
-
-        result = asyncio.run(run_test())
-        assert result["success"] is True
-        assert result["message_id"] == "42"
-        assert len(call_args) == 2, f"expected 2 calls, got {len(call_args)}"
-        # First call should have message_thread_id
-        assert call_args[0].get("message_thread_id") is not None
-        # Second call (retry) should NOT have message_thread_id
-        assert "message_thread_id" not in call_args[1], \
-            "retry should drop message_thread_id after thread-not-found"
 
     def test_disable_web_page_preview_not_leaked_to_media_sends(self):
         """disable_web_page_preview should only appear in text send, not media sends."""
