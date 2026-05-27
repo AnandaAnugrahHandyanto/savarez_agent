@@ -182,6 +182,33 @@ def _responses_null_output_iterable_error(exc: BaseException) -> bool:
     return isinstance(exc, TypeError) and "NoneType" in text and "not iterable" in text
 
 
+def _recover_responses_null_output(agent, exc, collected_output_items, has_tool_calls, api_kwargs, active_client):
+    """Recover SDK null-output parser failures from already streamed events."""
+    if not _responses_null_output_iterable_error(exc):
+        raise exc
+    recovered = _codex_backfilled_response(
+        collected_output_items,
+        agent._codex_streamed_text_parts,
+        has_tool_calls=has_tool_calls,
+        model=api_kwargs.get("model"),
+    )
+    if recovered is not None:
+        logger.debug(
+            "Codex Responses stream parser hit response.output=None; "
+            "recovered from streamed events (items=%d, text_parts=%d). %s",
+            len(collected_output_items),
+            len(agent._codex_streamed_text_parts),
+            agent._client_log_context(),
+        )
+        return recovered
+    logger.debug(
+        "Codex Responses stream parser hit response.output=None without "
+        "recoverable events; falling back to create(stream=True). %s",
+        agent._client_log_context(),
+    )
+    return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+
+
 def _codex_backfilled_response(output_items: list, text_parts: list, *, has_tool_calls: bool, model: str = None):
     """Build a minimal Responses-like object from events already streamed."""
     if output_items:
@@ -225,7 +252,21 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         collected_output_items: list = []
         try:
             with active_client.responses.stream(**api_kwargs) as stream:
-                for event in stream:
+                stream_iter = iter(stream)
+                while True:
+                    try:
+                        event = next(stream_iter)
+                    except StopIteration:
+                        break
+                    except TypeError as exc:
+                        return _recover_responses_null_output(
+                            agent,
+                            exc,
+                            collected_output_items,
+                            has_tool_calls,
+                            api_kwargs,
+                            active_client,
+                        )
                     # Mark stream activity for the TTFB watchdog in
                     # interruptible_api_call. The Codex backend can accept the
                     # connection but never emit a single event; this timestamp
@@ -277,7 +318,17 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                             sum(len(p) for p in agent._codex_streamed_text_parts),
                             agent._client_log_context(),
                         )
-                final_response = stream.get_final_response()
+                try:
+                    final_response = stream.get_final_response()
+                except TypeError as exc:
+                    return _recover_responses_null_output(
+                        agent,
+                        exc,
+                        collected_output_items,
+                        has_tool_calls,
+                        api_kwargs,
+                        active_client,
+                    )
                 # PATCH: ChatGPT Codex backend streams valid output items
                 # but get_final_response() can return an empty output list.
                 # Backfill from collected items or synthesize from deltas.
@@ -314,30 +365,6 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 exc,
             )
             return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
-        except TypeError as exc:
-            if _responses_null_output_iterable_error(exc):
-                recovered = _codex_backfilled_response(
-                    collected_output_items,
-                    agent._codex_streamed_text_parts,
-                    has_tool_calls=has_tool_calls,
-                    model=api_kwargs.get("model"),
-                )
-                if recovered is not None:
-                    logger.debug(
-                        "Codex Responses stream parser hit response.output=None; "
-                        "recovered from streamed events (items=%d, text_parts=%d). %s",
-                        len(collected_output_items),
-                        len(agent._codex_streamed_text_parts),
-                        agent._client_log_context(),
-                    )
-                    return recovered
-                logger.debug(
-                    "Codex Responses stream parser hit response.output=None without "
-                    "recoverable events; falling back to create(stream=True). %s",
-                    agent._client_log_context(),
-                )
-                return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
-            raise
         except RuntimeError as exc:
             err_text = str(exc)
             missing_completed = "response.completed" in err_text

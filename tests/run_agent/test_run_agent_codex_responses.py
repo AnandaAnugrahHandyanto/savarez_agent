@@ -207,6 +207,27 @@ class _IteratorTypeErrorStream:
         raise AssertionError("get_final_response should not be reached")
 
 
+class _FakeResponsesStreamFinalResponseAfterEvents:
+    def __init__(self, events, final_response=None, final_error=None):
+        self._events = list(events)
+        self._final_response = final_response
+        self._final_error = final_error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def __iter__(self):
+        return iter(self._events)
+
+    def get_final_response(self):
+        if self._final_error is not None:
+            raise self._final_error
+        return self._final_response
+
+
 def _codex_request_kwargs():
     return {
         "model": "gpt-5-codex",
@@ -537,6 +558,60 @@ def test_run_codex_stream_falls_back_when_stream_iteration_parses_null_output(mo
     assert calls["stream"] == 1
     assert response.output == [output_item]
     assert response.status == "completed"
+
+
+def test_run_codex_stream_recovers_when_final_response_parses_null_output(monkeypatch):
+    """Recover SDK null-output parser failures from get_final_response only."""
+    agent = _build_agent(monkeypatch)
+    output_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="final parser item survived")],
+    )
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeResponsesStreamFinalResponseAfterEvents(
+                [
+                    SimpleNamespace(type="response.output_item.done", item=output_item),
+                ],
+                final_error=TypeError("'NoneType' object is not iterable"),
+            ),
+            create=lambda **kwargs: (_ for _ in ()).throw(
+                AssertionError("create fallback should not run")
+            ),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.output == [output_item]
+    assert response.status == "completed"
+
+
+def test_run_codex_stream_does_not_recover_callback_type_error(monkeypatch):
+    """Only SDK null-output parser failures should trigger Codex stream recovery."""
+    agent = _build_agent(monkeypatch)
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeResponsesStreamFinalResponseAfterEvents(
+                [
+                    SimpleNamespace(type="response.output_text.delta", delta="callback text"),
+                ],
+                _codex_message_response("unused final"),
+            ),
+            create=lambda **kwargs: (_ for _ in ()).throw(
+                AssertionError("create fallback should not run")
+            ),
+        )
+    )
+
+    def _raise_callback_type_error(_text):
+        raise TypeError("'NoneType' object is not iterable")
+
+    agent._fire_stream_delta = _raise_callback_type_error
+
+    with pytest.raises(TypeError, match="NoneType"):
+        agent._run_codex_stream(_codex_request_kwargs())
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):
