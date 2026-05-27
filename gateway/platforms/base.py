@@ -1416,6 +1416,13 @@ _RETRYABLE_ERROR_PATTERNS = (
 MessageHandler = Callable[[MessageEvent], Awaitable[Optional[Union[str, "EphemeralReply"]]]]
 
 
+# Type for reaction handlers. Receives a normalised event dict describing
+# the reaction (platform, user_id, item info, optional permalink) and is
+# expected to fan-out to the gateway hook system. Always async; returns
+# nothing.
+ReactionHandler = Callable[[Dict[str, Any]], Awaitable[None]]
+
+
 def resolve_channel_prompt(
     config_extra: dict,
     channel_id: str,
@@ -1516,6 +1523,7 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
+        self._reaction_handler: Optional["ReactionHandler"] = None
         self._running = False
         self._fatal_error_code: Optional[str] = None
         self._fatal_error_message: Optional[str] = None
@@ -1774,6 +1782,21 @@ class BasePlatformAdapter(ABC):
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
+
+    def set_reaction_handler(self, handler: Optional["ReactionHandler"]) -> None:
+        """
+        Set the handler for emoji reactions on platform messages.
+
+        Currently emitted by adapters that subscribe to platform-native
+        reaction events (Slack ``reaction_added``/``reaction_removed``).
+        The handler receives a normalised event dict — see
+        ``website/docs/user-guide/features/hooks.md`` for the schema —
+        and is expected to fan-out via ``HookRegistry.emit("reaction:added", ...)``.
+
+        Adapters that don't support reactions simply never call the
+        handler; this setter is a no-op for them.
+        """
+        self._reaction_handler = handler
     
     def set_session_store(self, session_store: Any) -> None:
         """

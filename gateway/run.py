@@ -2464,6 +2464,24 @@ class GatewayRunner:
         route["request_overrides"] = overrides or {}
         return route
 
+    async def _handle_reaction_event(self, ctx: Dict[str, Any]) -> None:
+        """Forward a normalised reaction event to the HookRegistry.
+
+        Adapters call this via ``set_reaction_handler`` for every
+        platform-native reaction event they choose to surface. We map
+        the adapter-supplied ``event_name`` ("reaction:added" /
+        "reaction:removed") onto a hook event so user hooks can subscribe
+        with the same name scheme as the existing ``agent:*`` family.
+
+        Errors are swallowed at the HookRegistry layer per the
+        non-blocking hook contract.
+        """
+        event_name = ctx.get("event_name", "reaction:added")
+        try:
+            await self.hooks.emit(event_name, ctx)
+        except Exception as e:
+            logger.exception("[Gateway] reaction hook emit failed: %s", e)
+
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
         """React to an adapter failure after startup.
 
@@ -4130,6 +4148,7 @@ class GatewayRunner:
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+            adapter.set_reaction_handler(self._handle_reaction_event)
             adapter._busy_text_mode = self._busy_text_mode
             
             # Try to connect
@@ -5743,6 +5762,7 @@ class GatewayRunner:
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+                    adapter.set_reaction_handler(self._handle_reaction_event)
                     adapter._busy_text_mode = self._busy_text_mode
 
                     success = await self._connect_adapter_with_timeout(adapter, platform)

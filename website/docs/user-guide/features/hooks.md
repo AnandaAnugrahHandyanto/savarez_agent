@@ -81,6 +81,8 @@ async def handle(event_type: str, context: dict):
 | `agent:start` | Agent begins processing a message | `platform`, `user_id`, `session_id`, `message` |
 | `agent:step` | Each iteration of the tool-calling loop | `platform`, `user_id`, `session_id`, `iteration`, `tool_names` |
 | `agent:end` | Agent finishes processing | `platform`, `user_id`, `session_id`, `message`, `response` |
+| `reaction:added` | A reaction was added to a message the bot can see (Slack adapter currently). Requires `reactions:read` scope + `reaction_added` bot event subscription. Bot must be in the channel. | `platform`, `reaction`, `user_id`, `item_user_id`, `item_type`, `channel_id`, `message_ts`, `permalink`, `event_ts`, `raw_event` |
+| `reaction:removed` | A reaction was removed from a message the bot can see. Requires `reactions:read` scope + `reaction_removed` bot event subscription. | same shape as `reaction:added` |
 | `command:*` | Any slash command executed | `platform`, `user_id`, `command`, `args` |
 
 #### Wildcard Matching
@@ -121,6 +123,54 @@ async def handle(event_type: str, context: dict):
                 json={"chat_id": CHAT_ID, "text": text},
             )
 ```
+
+#### Slack Reaction Capture
+
+Turn a `:task:` reaction in Slack into a task in your tracker. The hook
+receives the message permalink — fetch the message body separately if
+you need the text.
+
+```yaml
+# ~/.hermes/hooks/slack-task-reaction/HOOK.yaml
+name: slack-task-reaction
+description: Capture messages reacted with :task: into an external tracker
+events:
+  - reaction:added
+```
+
+```python
+# ~/.hermes/hooks/slack-task-reaction/handler.py
+import logging
+import os
+
+import httpx
+
+logger = logging.getLogger(__name__)
+
+CAPTURE_EMOJI = "task"
+TRACKER_WEBHOOK = os.getenv("TRACKER_WEBHOOK_URL")
+
+async def handle(event_type: str, context: dict):
+    if context.get("reaction") != CAPTURE_EMOJI:
+        return
+    permalink = context.get("permalink")
+    if not (permalink and TRACKER_WEBHOOK):
+        return
+    payload = {
+        "source": "slack",
+        "actor_user_id": context.get("user_id"),
+        "permalink": permalink,
+    }
+    async with httpx.AsyncClient() as client:
+        try:
+            await client.post(TRACKER_WEBHOOK, json=payload, timeout=10)
+        except httpx.HTTPError as exc:
+            logger.warning("Tracker webhook failed: %s", exc)
+```
+
+Requires the bot OAuth scope `reactions:read` and the `reaction_added`
+bot event subscription in your Slack app config. The bot must be a member
+of the channel where the reaction occurs (DMs work without an `/invite`).
 
 #### Command Usage Logger
 
