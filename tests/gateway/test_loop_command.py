@@ -7,7 +7,12 @@ import pytest
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.run import GatewayRunner
-from gateway.session import SessionSource
+from gateway.session import SessionSource, build_session_key
+
+
+class _Adapter:
+    def __init__(self) -> None:
+        self._pending_messages = {}
 
 
 def _event(text: str) -> MessageEvent:
@@ -61,3 +66,37 @@ async def test_loop_gateway_command_can_mark_story_complete(tmp_path, monkeypatc
     assert updated["userStories"][0]["passes"] is True
     assert updated["userStories"][0]["status"] == "passed"
     assert "Stories: 1 total / 0 pending / 1 passed" in result
+
+
+@pytest.mark.asyncio
+async def test_loop_gateway_run_queues_story_prompt_as_next_turn(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    runner = GatewayRunner.__new__(GatewayRunner)
+    adapter = _Adapter()
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    await runner._handle_loop_command(_event("/loop init demo"))
+    prd_path = tmp_path / ".hermes" / "loops" / "demo" / "prd.json"
+    prd = json.loads(prd_path.read_text(encoding="utf-8"))
+    prd["userStories"] = [
+        {
+            "id": "S1",
+            "title": "first",
+            "priority": 1,
+            "description": "Build the first slice.",
+            "acceptanceCriteria": ["focused tests pass"],
+        }
+    ]
+    prd_path.write_text(json.dumps(prd, indent=2) + "\n", encoding="utf-8")
+    event = _event("/loop run demo")
+
+    result = await runner._handle_loop_command(event)
+
+    session_key = build_session_key(event.source)
+    queued = adapter._pending_messages[session_key]
+    updated = json.loads(prd_path.read_text(encoding="utf-8"))
+    assert "Status: queued" in result
+    assert "Story: S1 — first" in result
+    assert queued.text.startswith("Loop: demo")
+    assert "Story: S1 — first" in queued.text
+    assert queued.message_type == MessageType.TEXT
+    assert updated["userStories"][0]["status"] == "running"

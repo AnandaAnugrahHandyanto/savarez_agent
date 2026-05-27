@@ -8636,10 +8636,23 @@ class HermesCLI:
         elif canonical == "goal":
             self._handle_goal_command(cmd_original)
         elif canonical == "loop":
-            from hermes_cli.loops import loop_text
+            from hermes_cli.loops import loop_text, run_loop
             parts = cmd_original.split(None, 1)
             payload = parts[1] if len(parts) > 1 else "status"
-            _cprint(loop_text(payload))
+            loop_parts = payload.split()
+            if loop_parts and loop_parts[0].lower() == "run":
+                result = run_loop(loop_parts[1] if len(loop_parts) > 1 else None)
+                if "\nStory:" in result.text and hasattr(self, "_pending_input"):
+                    self._pending_input.put(result.text)
+                    story_line = next(
+                        (line for line in result.text.splitlines() if line.startswith("Story: ")),
+                        "Story queued",
+                    )
+                    _cprint(f"Loop: {result.slug}\nStatus: queued\n{story_line}\nNext: queued story will run as the next turn.")
+                else:
+                    _cprint(result.text)
+            else:
+                _cprint(loop_text(payload))
         elif canonical == "subgoal":
             self._handle_subgoal_command(cmd_original)
         elif canonical == "skin":

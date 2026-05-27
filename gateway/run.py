@@ -10750,7 +10750,31 @@ class GatewayRunner:
         """Handle /loop for gateway platforms using the core file-backed loop state."""
         args = (event.get_command_args() or "").strip()
         try:
-            from hermes_cli.loops import loop_text
+            from hermes_cli.loops import loop_text, run_loop
+            parts = args.split()
+            command = parts[0].lower() if parts else "status"
+            if command == "run":
+                slug = parts[1] if len(parts) > 1 else None
+                result = run_loop(slug)
+                if "\nStory:" not in result.text:
+                    return result.text
+                adapter = getattr(self, "adapters", {}).get(event.source.platform) if event.source else None
+                session_key = self._session_key_for_source(event.source) if event.source else None
+                if adapter is not None and session_key:
+                    queued_event = MessageEvent(
+                        text=result.text,
+                        message_type=MessageType.TEXT,
+                        source=event.source,
+                        message_id=event.message_id,
+                        channel_prompt=event.channel_prompt,
+                    )
+                    self._enqueue_fifo(session_key, queued_event, adapter)
+                    story_line = next(
+                        (line for line in result.text.splitlines() if line.startswith("Story: ")),
+                        "Story queued",
+                    )
+                    return f"Loop: {result.slug}\nStatus: queued\n{story_line}\nNext: queued story will run as the next turn."
+                return result.text
             return loop_text(args or "status")
         except Exception as exc:
             logger.debug("loop command failed: %s", exc)
