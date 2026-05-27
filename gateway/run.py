@@ -5429,20 +5429,36 @@ class GatewayRunner:
         # surface as "database disk image is malformed" for one tick.
         CORRUPT_BOARD_RETRY_AFTER_SECONDS = 300
         disabled_corrupt_boards: dict[
-            str, tuple[tuple[str, int | None, int | None], float]
+            str,
+            tuple[
+                tuple[str, tuple[tuple[str, bool, int | None, int | None], ...]],
+                float,
+            ],
         ] = {}
 
-        def _board_db_fingerprint(slug: str) -> tuple[str, int | None, int | None]:
+        def _board_db_fingerprint(
+            slug: str,
+        ) -> tuple[str, tuple[tuple[str, bool, int | None, int | None], ...]]:
             path = _kb.kanban_db_path(slug)
             try:
-                resolved = str(path.expanduser().resolve())
+                resolved_path = path.expanduser().resolve()
+                resolved = str(resolved_path)
             except Exception:
+                resolved_path = path
                 resolved = str(path)
-            try:
-                stat = path.stat()
-            except OSError:
-                return (resolved, None, None)
-            return (resolved, stat.st_mtime_ns, stat.st_size)
+            artifacts = []
+            for label, artifact in (
+                ("db", resolved_path),
+                ("wal", resolved_path.parent / f"{resolved_path.name}-wal"),
+                ("shm", resolved_path.parent / f"{resolved_path.name}-shm"),
+            ):
+                try:
+                    stat = artifact.stat()
+                except OSError:
+                    artifacts.append((label, False, None, None))
+                else:
+                    artifacts.append((label, True, stat.st_mtime_ns, stat.st_size))
+            return (resolved, tuple(artifacts))
 
         def _is_corrupt_board_db_error(exc: Exception) -> bool:
             corrupt_guard_error = getattr(_kb, "KanbanDbCorruptError", None)
@@ -5454,6 +5470,31 @@ class GatewayRunner:
             return (
                 "file is not a database" in msg
                 or "database disk image is malformed" in msg
+            )
+
+        def _board_disabled_same_fingerprint(slug: str) -> bool:
+            disabled_entry = disabled_corrupt_boards.get(slug)
+            if disabled_entry is None:
+                return False
+            disabled_fingerprint, _disabled_at = disabled_entry
+            return disabled_fingerprint == _board_db_fingerprint(slug)
+
+        def _pause_corrupt_board(
+            slug: str,
+            fingerprint: tuple[
+                str,
+                tuple[tuple[str, bool, int | None, int | None], ...],
+            ],
+        ) -> None:
+            disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())
+            logger.error(
+                "kanban dispatcher: board %s database %s is not a valid "
+                "SQLite database; pausing dispatch for this board until "
+                "the file changes, the gateway restarts, or the "
+                "quarantine timer expires. Move or restore the file, "
+                "then run `hermes kanban init` if you need a fresh board.",
+                slug,
+                fingerprint[0],
             )
 
         def _tick_once_for_board(slug: str) -> "Optional[object]":
@@ -5507,31 +5548,13 @@ class GatewayRunner:
                 )
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):
-                    disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())
-                    logger.error(
-                        "kanban dispatcher: board %s database %s is not a valid "
-                        "SQLite database; pausing dispatch for this board until "
-                        "the file changes, the gateway restarts, or the "
-                        "quarantine timer expires. Move or restore the file, "
-                        "then run `hermes kanban init` if you need a fresh board.",
-                        slug,
-                        fingerprint[0],
-                    )
+                    _pause_corrupt_board(slug, fingerprint)
                     return None
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)
                 return None
             except Exception as exc:
                 if _is_corrupt_board_db_error(exc):
-                    disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())
-                    logger.error(
-                        "kanban dispatcher: board %s database %s is not a valid "
-                        "SQLite database; pausing dispatch for this board until "
-                        "the file changes, the gateway restarts, or the "
-                        "quarantine timer expires. Move or restore the file, "
-                        "then run `hermes kanban init` if you need a fresh board.",
-                        slug,
-                        fingerprint[0],
-                    )
+                    _pause_corrupt_board(slug, fingerprint)
                     return None
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)
                 return None
@@ -5577,6 +5600,8 @@ class GatewayRunner:
                 boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
+                if _board_disabled_same_fingerprint(slug):
+                    continue
                 conn = None
                 try:
                     conn = _kb.connect(board=slug)
@@ -5584,7 +5609,9 @@ class GatewayRunner:
                         return True
                     if _kb.has_spawnable_review(conn):
                         return True
-                except Exception:
+                except Exception as exc:
+                    if _is_corrupt_board_db_error(exc):
+                        _pause_corrupt_board(slug, _board_db_fingerprint(slug))
                     continue
                 finally:
                     if conn is not None:
@@ -5630,6 +5657,8 @@ class GatewayRunner:
             successes = 0
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
+                if _board_disabled_same_fingerprint(slug):
+                    continue
                 if attempted >= auto_decompose_per_tick:
                     break
                 # Pin this board for the duration of the call — same
@@ -5642,10 +5671,13 @@ class GatewayRunner:
                     try:
                         triage_ids = _decomp.list_triage_ids()
                     except Exception as exc:
-                        logger.debug(
-                            "kanban auto-decompose: list_triage_ids failed on board %s (%s)",
-                            slug, exc,
-                        )
+                        if _is_corrupt_board_db_error(exc):
+                            _pause_corrupt_board(slug, _board_db_fingerprint(slug))
+                        else:
+                            logger.debug(
+                                "kanban auto-decompose: list_triage_ids failed on board %s (%s)",
+                                slug, exc,
+                            )
                         triage_ids = []
                     for tid in triage_ids:
                         if attempted >= auto_decompose_per_tick:

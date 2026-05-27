@@ -71,6 +71,7 @@ new locking.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -83,7 +84,7 @@ import threading
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -982,6 +983,8 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 _INITIALIZED_PATHS: set[str] = set()
 _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
+_CORRUPT_DB_MARKER_SUFFIX = ".corrupt-quarantine.json"
+_CORRUPT_DB_MARKER_LOCK = threading.RLock()
 
 
 def _looks_like_tls_record_at(data: bytes, offset: int) -> bool:
@@ -1054,8 +1057,278 @@ class KanbanDbCorruptError(RuntimeError):
         )
 
 
-def _backup_corrupt_db(path: Path) -> Optional[Path]:
-    """Copy a corrupt DB (and its WAL/SHM sidecars) to a timestamped backup.
+def _corrupt_db_marker_path(path: Path) -> Path:
+    """Return the durable per-DB corrupt quarantine marker path."""
+    resolved = path.resolve()
+    parent = resolved.parent
+    marker = parent / f"{resolved.name}{_CORRUPT_DB_MARKER_SUFFIX}"
+    # ``resolved.name`` is a basename, so this should always hold. Keep the
+    # containment check explicit because marker writes happen next to user data.
+    if marker.parent != parent:
+        return parent / f"kanban.db{_CORRUPT_DB_MARKER_SUFFIX}"
+    return marker
+
+
+def _corrupt_db_artifact_paths(path: Path) -> dict[str, Path]:
+    """Return the DB plus WAL/SHM sidecar paths that define one fingerprint."""
+    resolved = path.resolve()
+    parent = resolved.parent
+    base = resolved.name
+    return {
+        "db": resolved,
+        "wal": parent / f"{base}-wal",
+        "shm": parent / f"{base}-shm",
+    }
+
+
+def _sha256_file(path: Path) -> Optional[str]:
+    """Return a file sha256 digest, or None if the file cannot be read."""
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def _corrupt_db_snapshot(path: Path) -> dict[str, dict[str, int | bool | str | None]]:
+    """Capture a durable content fingerprint for a corrupt DB and sidecars."""
+    snapshot: dict[str, dict[str, int | bool | str | None]] = {}
+    for label, artifact in _corrupt_db_artifact_paths(path).items():
+        info: dict[str, int | bool | str | None] = {
+            "exists": False,
+            "size": None,
+            "sha256": None,
+        }
+        try:
+            stat = artifact.stat()
+        except OSError:
+            pass
+        else:
+            info["exists"] = True
+            info["size"] = int(stat.st_size)
+            info["sha256"] = _sha256_file(artifact)
+        snapshot[label] = info
+    return snapshot
+
+
+def _corrupt_db_snapshot_token(
+    snapshot: dict[str, dict[str, int | bool | str | None]],
+) -> str:
+    """Stable short token for one corrupt DB/WAL/SHM content fingerprint."""
+    raw = json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def _load_corrupt_db_marker(path: Path) -> Optional[dict[str, Any]]:
+    """Best-effort load of a durable corrupt quarantine marker."""
+    try:
+        marker = _corrupt_db_marker_path(path)
+    except OSError:
+        return None
+    try:
+        raw = marker.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        _log.warning("kanban corrupt marker unreadable at %s: %s", marker, exc)
+        return None
+    try:
+        payload = json.loads(raw)
+    except ValueError as exc:
+        _log.warning("kanban corrupt marker invalid at %s: %s", marker, exc)
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _marker_backup_path(payload: dict[str, Any], db_path: Path) -> Optional[Path]:
+    raw = payload.get("backup_path")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        backup = Path(raw).expanduser().resolve()
+        resolved_db = db_path.resolve()
+        parent = resolved_db.parent
+    except OSError:
+        return None
+    if backup.parent != parent or not backup.name.startswith(f"{resolved_db.name}.corrupt."):
+        return None
+    try:
+        return backup if backup.is_file() else None
+    except OSError:
+        return None
+
+
+def _matching_corrupt_db_marker(
+    path: Path,
+    snapshot: dict[str, dict[str, int | bool | str | None]],
+) -> tuple[Optional[Path], Optional[str]] | None:
+    """Return marker data when the unchanged corrupt bytes were already saved."""
+    payload = _load_corrupt_db_marker(path)
+    if not payload:
+        return None
+    try:
+        resolved = str(path.resolve())
+    except OSError:
+        resolved = str(path)
+    if payload.get("db_path") != resolved:
+        return None
+    if payload.get("snapshot") != snapshot:
+        return None
+    backup = _marker_backup_path(payload, path)
+    if backup is None:
+        return None
+    expected_sha = snapshot.get("db", {}).get("sha256")
+    if isinstance(expected_sha, str) and _sha256_file(backup) != expected_sha:
+        return None
+    for suffix, label in (("-wal", "wal"), ("-shm", "shm")):
+        info = snapshot.get(label, {})
+        if not info.get("exists"):
+            continue
+        sidecar_backup = backup.parent / f"{backup.name}{suffix}"
+        if sidecar_backup.parent != backup.parent:
+            return None
+        if not _backup_matches_snapshot(sidecar_backup, info):
+            return None
+    reason = str(payload.get("reason") or "").strip() or None
+    return (backup, reason)
+
+
+def _write_corrupt_db_marker(
+    path: Path,
+    *,
+    snapshot: dict[str, dict[str, int | bool | str | None]],
+    reason: str,
+    backup_path: Optional[Path],
+) -> None:
+    """Persist the first backup path for one corrupt DB fingerprint."""
+    try:
+        marker = _corrupt_db_marker_path(path)
+        resolved = path.resolve()
+    except OSError as exc:
+        _log.warning("failed resolving kanban corrupt marker path for %s: %s", path, exc)
+        return
+    payload = {
+        "version": 1,
+        "status": "quarantined",
+        "db_path": str(resolved),
+        "snapshot": snapshot,
+        "reason": reason,
+        "backup_path": str(backup_path) if backup_path is not None else None,
+        "quarantined_at": (
+            datetime.now(UTC)
+            .isoformat(timespec="seconds")
+            .replace("+00:00", "Z")
+        ),
+    }
+    tmp = marker.with_name(f"{marker.name}.tmp")
+    with _CORRUPT_DB_MARKER_LOCK:
+        try:
+            with tmp.open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+            tmp.replace(marker)
+        except OSError as exc:
+            _log.warning("failed writing kanban corrupt marker %s: %s", marker, exc)
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+def _clear_corrupt_db_marker(path: Path) -> None:
+    """Remove a stale corrupt marker after the DB opens cleanly."""
+    try:
+        marker = _corrupt_db_marker_path(path)
+    except OSError:
+        return
+    try:
+        marker.unlink()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        _log.debug("failed removing kanban corrupt marker %s: %s", marker, exc)
+
+
+def _backup_corrupt_db_once(path: Path, reason: str) -> tuple[Optional[Path], str]:
+    """Back up a corrupt DB once per unchanged durable fingerprint.
+
+    Multiple gateway profiles, health probes, CLI retries, and restarts can all
+    touch the same malformed board. A timestamp-only backup on every failed
+    open turns one corruption incident into unbounded disk growth. Persist a
+    small marker next to the DB so unchanged bytes reuse the first backup path;
+    if the DB/WAL/SHM fingerprint changes, preserve the new bytes separately.
+    """
+    try:
+        resolved = path.resolve()
+        snapshot = _corrupt_db_snapshot(resolved)
+    except OSError:
+        return (_backup_corrupt_db(path), reason)
+
+    with _CORRUPT_DB_MARKER_LOCK:
+        existing = _matching_corrupt_db_marker(resolved, snapshot)
+        if existing is not None:
+            backup, prior_reason = existing
+            detail = prior_reason or reason
+            if backup is not None:
+                detail = f"{detail} (already quarantined; reusing backup)"
+            else:
+                detail = f"{detail} (already quarantined; previous backup unavailable)"
+            return (backup, detail)
+        backup = _backup_corrupt_db(
+            resolved,
+            backup_token=f"quarantine.{_corrupt_db_snapshot_token(snapshot)}",
+        )
+        if backup is not None:
+            _write_corrupt_db_marker(
+                resolved,
+                snapshot=snapshot,
+                reason=reason,
+                backup_path=backup,
+            )
+        return (backup, reason)
+
+
+def _copy2_atomic(src: Path, dst: Path, expected_sha256: Optional[str] = None) -> bool:
+    """Copy src to dst via a temp file, then atomically publish it."""
+    tmp = dst.with_name(f"{dst.name}.tmp.{os.getpid()}.{threading.get_ident()}.{time.time_ns()}")
+    try:
+        shutil.copy2(src, tmp)
+        if expected_sha256 is not None and _sha256_file(tmp) != expected_sha256:
+            return False
+        with tmp.open("rb") as handle:
+            os.fsync(handle.fileno())
+        os.replace(tmp, dst)
+        return True
+    except OSError:
+        return False
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+
+def _backup_matches_snapshot(backup: Path, snapshot_info: dict[str, int | bool | str | None]) -> bool:
+    if not backup.is_file():
+        return False
+    expected_size = snapshot_info.get("size")
+    expected_sha = snapshot_info.get("sha256")
+    try:
+        if isinstance(expected_size, int) and backup.stat().st_size != expected_size:
+            return False
+    except OSError:
+        return False
+    if isinstance(expected_sha, str) and _sha256_file(backup) != expected_sha:
+        return False
+    return True
+
+def _backup_corrupt_db(path: Path, backup_token: Optional[str] = None) -> Optional[Path]:
+    """Copy a corrupt DB (and its WAL/SHM sidecars) to a backup.
 
     Returns the backup path of the main DB file, or ``None`` if the copy
     itself failed (the caller still raises loudly in that case).
@@ -1070,25 +1343,39 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
     resolved = path.resolve()
     parent = resolved.parent
     base_name = resolved.name  # basename only
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    candidate = parent / f"{base_name}.corrupt.{stamp}.bak"
+    if backup_token and re.fullmatch(r"[A-Za-z0-9_.-]+", backup_token):
+        stamp = backup_token
+        candidate = parent / f"{base_name}.corrupt.{stamp}.bak"
+    else:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        candidate = parent / f"{base_name}.corrupt.{stamp}.bak"
     # Defensive: candidate must still be inside parent after construction.
     # f-string interpolation of ``base_name`` cannot escape ``parent``
     # because ``base_name`` is itself a resolved basename, but assert it
     # anyway so static analyzers can see the containment guarantee.
     if candidate.parent != parent:
         return None
-    counter = 0
-    while candidate.exists():
-        counter += 1
-        candidate = parent / f"{base_name}.corrupt.{stamp}.{counter}.bak"
-        if candidate.parent != parent:
-            return None
+    if not backup_token:
+        counter = 0
+        while candidate.exists():
+            counter += 1
+            candidate = parent / f"{base_name}.corrupt.{stamp}.{counter}.bak"
+            if candidate.parent != parent:
+                return None
     try:
-        shutil.copy2(resolved, candidate)
+        snapshot = _corrupt_db_snapshot(resolved)
+        main_info = snapshot.get("db", {})
+        if not _backup_matches_snapshot(candidate, main_info):
+            expected_sha = main_info.get("sha256")
+            if not _copy2_atomic(
+                resolved,
+                candidate,
+                expected_sha if isinstance(expected_sha, str) else None,
+            ):
+                return None
     except OSError:
         return None
-    for suffix in ("-wal", "-shm"):
+    for suffix, label in (("-wal", "wal"), ("-shm", "shm")):
         sidecar = parent / (base_name + suffix)
         if sidecar.parent != parent or not sidecar.exists():
             continue
@@ -1096,7 +1383,15 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
             sidecar_backup = parent / (candidate.name + suffix)
             if sidecar_backup.parent != parent:
                 continue
-            shutil.copy2(sidecar, sidecar_backup)
+            side_info = snapshot.get(label, {})
+            if _backup_matches_snapshot(sidecar_backup, side_info):
+                continue
+            expected_sha = side_info.get("sha256")
+            _copy2_atomic(
+                sidecar,
+                sidecar_backup,
+                expected_sha if isinstance(expected_sha, str) else None,
+            )
         except OSError:
             pass
     return candidate
@@ -1108,7 +1403,7 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     Opens the probe in read/write mode so SQLite can recover or
     checkpoint a healthy WAL/hot-journal DB before we declare it
     corrupt. If the file is malformed, copy it (and any WAL/SHM
-    sidecars) to a timestamped backup and raise
+    sidecars) to a corrupt backup and raise
     :class:`KanbanDbCorruptError` so callers cannot silently recreate
     the schema on top of a damaged DB.
 
@@ -1155,8 +1450,9 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     except sqlite3.DatabaseError as exc:
         reason = f"sqlite refused to open file: {exc}"
     if reason is None:
+        _clear_corrupt_db_marker(resolved)
         return
-    backup = _backup_corrupt_db(resolved)
+    backup, reason = _backup_corrupt_db_once(resolved, reason)
     raise KanbanDbCorruptError(resolved, backup, reason)
 
 
@@ -1230,6 +1526,7 @@ def connect(
                 conn.executescript(SCHEMA_SQL)
                 _migrate_add_optional_columns(conn)
                 _INITIALIZED_PATHS.add(resolved)
+        _clear_corrupt_db_marker(path)
     except Exception:
         conn.close()
         raise

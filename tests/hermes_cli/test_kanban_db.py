@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import time
@@ -3276,6 +3277,198 @@ def test_connect_refuses_corrupt_existing_file(tmp_path):
 
     with pytest.raises(kb.KanbanDbCorruptError):
         kb.connect(db_path=db_path)
+
+
+def test_repeated_corrupt_existing_file_reuses_durable_backup_marker(tmp_path):
+    """One unchanged corrupt DB fingerprint should not create backup spam."""
+    db_path = tmp_path / "kanban.db"
+    original = _write_corrupt_db(db_path)
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    with pytest.raises(kb.KanbanDbCorruptError) as first:
+        kb.connect(db_path=db_path)
+    # Simulate a fresh caller/process by not relying on any initialized-path
+    # cache. The durable marker next to the DB is the only reuse mechanism.
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with pytest.raises(kb.KanbanDbCorruptError) as second:
+        kb.connect(db_path=db_path)
+
+    for _ in range(100):
+        kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+        with pytest.raises(kb.KanbanDbCorruptError) as repeated:
+            kb.connect(db_path=db_path)
+        assert repeated.value.backup_path == first.value.backup_path
+
+    assert first.value.backup_path == second.value.backup_path
+    assert second.value.backup_path is not None
+    assert second.value.backup_path.read_bytes() == original
+    backups = sorted(tmp_path.glob("kanban.db.corrupt.*.bak"))
+    assert backups == [first.value.backup_path]
+    marker = tmp_path / "kanban.db.corrupt-quarantine.json"
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert payload["backup_path"] == str(first.value.backup_path)
+    assert payload["snapshot"]["db"]["size"] == len(original)
+
+
+def test_metadata_only_touch_reuses_existing_corrupt_backup(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    _write_corrupt_db(db_path)
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    with pytest.raises(kb.KanbanDbCorruptError) as first:
+        kb.connect(db_path=db_path)
+
+    stat = db_path.stat()
+    os.utime(db_path, ns=(stat.st_atime_ns + 1_000_000, stat.st_mtime_ns + 1_000_000))
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with pytest.raises(kb.KanbanDbCorruptError) as second:
+        kb.connect(db_path=db_path)
+
+    assert second.value.backup_path == first.value.backup_path
+    assert len(list(tmp_path.glob("kanban.db.corrupt.*.bak"))) == 1
+
+
+def test_changed_corrupt_existing_file_gets_new_backup(tmp_path):
+    """Changed corrupt bytes are a new incident and deserve their own backup."""
+    db_path = tmp_path / "kanban.db"
+    _write_corrupt_db(db_path)
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    with pytest.raises(kb.KanbanDbCorruptError) as first:
+        kb.connect(db_path=db_path)
+
+    db_path.write_bytes(db_path.read_bytes() + b"changed")
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with pytest.raises(kb.KanbanDbCorruptError) as second:
+        kb.connect(db_path=db_path)
+
+    assert first.value.backup_path != second.value.backup_path
+    backups = set(tmp_path.glob("kanban.db.corrupt.*.bak"))
+    assert backups == {first.value.backup_path, second.value.backup_path}
+
+
+def test_same_size_corrupt_content_change_gets_new_backup(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    original = bytearray(_write_corrupt_db(db_path))
+    stat = db_path.stat()
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    with pytest.raises(kb.KanbanDbCorruptError) as first:
+        kb.connect(db_path=db_path)
+
+    original[-1] ^= 0xFF
+    db_path.write_bytes(original)
+    os.utime(db_path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with pytest.raises(kb.KanbanDbCorruptError) as second:
+        kb.connect(db_path=db_path)
+
+    assert first.value.backup_path != second.value.backup_path
+    assert len(list(tmp_path.glob("kanban.db.corrupt.*.bak"))) == 2
+
+
+def test_changed_corrupt_sidecar_gets_new_backup(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    _write_corrupt_db(db_path)
+    wal_path = tmp_path / "kanban.db-wal"
+    wal_path.write_bytes(b"first wal")
+
+    first_backup, _ = kb._backup_corrupt_db_once(db_path, "first")
+    kb._write_corrupt_db_marker(
+        db_path,
+        snapshot=kb._corrupt_db_snapshot(db_path.resolve()),
+        reason="first",
+        backup_path=first_backup,
+    )
+
+    wal_path.write_bytes(b"second wal")
+    second_backup, _ = kb._backup_corrupt_db_once(db_path, "second")
+
+    assert first_backup != second_backup
+    assert first_backup is not None
+    assert second_backup is not None
+    assert (tmp_path / f"{first_backup.name}-wal").read_bytes() == b"first wal"
+    assert (tmp_path / f"{second_backup.name}-wal").read_bytes() == b"second wal"
+
+
+def test_repeated_corrupt_file_repairs_partial_deterministic_backup(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    original = _write_corrupt_db(db_path)
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    with pytest.raises(kb.KanbanDbCorruptError) as first:
+        kb.connect(db_path=db_path)
+    assert first.value.backup_path is not None
+    first.value.backup_path.write_bytes(b"partial")
+    (tmp_path / "kanban.db.corrupt-quarantine.json").unlink()
+
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with pytest.raises(kb.KanbanDbCorruptError) as second:
+        kb.connect(db_path=db_path)
+
+    assert second.value.backup_path == first.value.backup_path
+    assert second.value.backup_path is not None
+    assert second.value.backup_path.read_bytes() == original
+
+
+def test_matching_marker_without_valid_backup_does_not_suppress_backup(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    _write_corrupt_db(db_path)
+    snapshot = kb._corrupt_db_snapshot(db_path.resolve())
+    marker = tmp_path / "kanban.db.corrupt-quarantine.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "status": "quarantined",
+                "db_path": str(db_path.resolve()),
+                "snapshot": snapshot,
+                "reason": "prior",
+                "backup_path": str(tmp_path / "missing.bak"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    with pytest.raises(kb.KanbanDbCorruptError) as excinfo:
+        kb.connect(db_path=db_path)
+
+    assert excinfo.value.backup_path is not None
+    assert excinfo.value.backup_path.exists()
+
+
+def test_matching_marker_repairs_partial_sidecar_backup(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    _write_corrupt_db(db_path)
+    wal_path = tmp_path / "kanban.db-wal"
+    wal_path.write_bytes(b"full wal")
+
+    first_backup, _ = kb._backup_corrupt_db_once(db_path, "first")
+    assert first_backup is not None
+    wal_backup = tmp_path / f"{first_backup.name}-wal"
+    wal_backup.write_bytes(b"partial")
+
+    second_backup, _ = kb._backup_corrupt_db_once(db_path, "second")
+
+    assert second_backup == first_backup
+    assert wal_backup.read_bytes() == b"full wal"
+
+
+def test_healthy_db_open_clears_stale_corrupt_marker(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    kb.init_db(db_path=db_path)
+    marker = tmp_path / "kanban.db.corrupt-quarantine.json"
+    marker.write_text(
+        json.dumps({"db_path": str(db_path.resolve()), "snapshot": {}, "backup_path": None}),
+        encoding="utf-8",
+    )
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    with kb.connect(db_path=db_path) as conn:
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+    assert not marker.exists()
 
 
 def test_locked_healthy_db_does_not_classify_as_corrupt(tmp_path, monkeypatch):

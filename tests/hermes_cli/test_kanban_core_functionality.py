@@ -3639,6 +3639,7 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
             "kanban": {
                 "dispatch_in_gateway": True,
                 "dispatch_interval_seconds": 1,
+                "auto_decompose": False,
             }
         },
     )
@@ -3699,13 +3700,11 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
     assert sum("not a valid SQLite database" in msg for msg in messages) == 1
     assert not any("tick failed on board" in msg for msg in messages)
     assert not any(record.exc_info for record in caplog.records)
-    # First tick connect (dispatch) + two probes per `_has_ready_work` call
-    # (ready then review, both via _kb.connect). The second dispatch tick
-    # skips the dispatch connect because the corrupt board fingerprint is
-    # disabled, but the ready/review probes still each connect. PR f55d94a1e
-    # added the review-column probe alongside the existing ready-column
-    # probe, bumping this from 3 → 5.
-    assert calls["connect"] == 5
+    # First tick opens the corrupt board once and disables it. Subsequent
+    # dispatch ticks and ready/review health probes skip the same fingerprint,
+    # so the dispatcher does not re-open the bad file just to ask whether there
+    # is ready work.
+    assert calls["connect"] == 1
 
 
 def test_gateway_dispatcher_retries_corrupt_board_after_quarantine(
@@ -3733,6 +3732,7 @@ def test_gateway_dispatcher_retries_corrupt_board_after_quarantine(
             "kanban": {
                 "dispatch_in_gateway": True,
                 "dispatch_interval_seconds": 1,
+                "auto_decompose": False,
             }
         },
     )
@@ -3793,6 +3793,84 @@ def test_gateway_dispatcher_retries_corrupt_board_after_quarantine(
     assert sum("not a valid SQLite database" in msg for msg in messages) == 2
     assert any("database fingerprint unchanged" in msg for msg in messages)
     assert calls["tick"] == 3
+
+
+def test_gateway_dispatcher_retries_corrupt_board_after_sidecar_change(
+    monkeypatch, tmp_path, caplog
+):
+    """A WAL/SHM sidecar change is a new board fingerprint and is retried."""
+    import asyncio
+    import logging
+    import sqlite3
+
+    from gateway.run import GatewayRunner
+    import hermes_cli.config as _cfg_mod
+    import hermes_cli.kanban_db as _kb
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    corrupt_db = tmp_path / "kanban.db"
+    corrupt_db.write_text("not sqlite", encoding="utf-8")
+    wal_path = tmp_path / "kanban.db-wal"
+    wal_path.write_text("first", encoding="utf-8")
+
+    monkeypatch.setattr(
+        _cfg_mod,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "dispatch_in_gateway": True,
+                "dispatch_interval_seconds": 1,
+                "auto_decompose": False,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        _kb,
+        "list_boards",
+        lambda include_archived=False: [{"slug": _kb.DEFAULT_BOARD}],
+    )
+    monkeypatch.setattr(
+        _kb,
+        "read_board_metadata",
+        lambda slug: {"slug": slug},
+    )
+    monkeypatch.setattr(_kb, "kanban_db_path", lambda board=None: corrupt_db)
+
+    calls = {"connect": 0, "tick": 0}
+
+    def _connect(*args, **kwargs):
+        calls["connect"] += 1
+        raise sqlite3.DatabaseError("file is not a database")
+
+    async def _to_thread(fn, *args, **kwargs):
+        result = fn(*args, **kwargs)
+        if getattr(fn, "__name__", "") == "_tick_once":
+            calls["tick"] += 1
+            if calls["tick"] == 1:
+                wal_path.write_text("second", encoding="utf-8")
+            if calls["tick"] >= 2:
+                runner._running = False
+        return result
+
+    async def _sleep(_delay):
+        return None
+
+    monkeypatch.setattr(_kb, "connect", _connect)
+    monkeypatch.setattr("gateway.run.asyncio.to_thread", _to_thread)
+    monkeypatch.setattr("gateway.run.asyncio.sleep", _sleep)
+
+    with caplog.at_level(logging.INFO, logger="gateway.run"):
+        asyncio.run(
+            asyncio.wait_for(
+                runner._kanban_dispatcher_watcher(),
+                timeout=3.0,
+            )
+        )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert sum("not a valid SQLite database" in msg for msg in messages) == 2
+    assert calls["connect"] == 2
 
 
 # ---------------------------------------------------------------------------
