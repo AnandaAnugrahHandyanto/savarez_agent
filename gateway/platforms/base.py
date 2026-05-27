@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
+_MISSING = object()
 
 # Audio file extensions Hermes recognizes for native audio delivery.
 # Kept in sync with tools/send_message_tool.py and cron/scheduler.py via
@@ -1492,16 +1493,32 @@ def resolve_channel_model_binding(
 
     Returns a normalized binding dict, or None if no usable binding exists.
     """
-    bindings = config_extra.get("channel_model_bindings") or {}
+    bindings = config_extra.get("channel_model_bindings", _MISSING)
+    if bindings is _MISSING or bindings is None:
+        return None
     if not isinstance(bindings, dict):
+        logger.warning(
+            "Ignoring malformed channel_model_bindings config: expected mapping, got %s",
+            type(bindings).__name__,
+        )
         return None
 
     for key in (channel_id, parent_id):
         if not key:
             continue
-        binding = _coerce_channel_model_binding(bindings.get(str(key)))
+        binding_key = str(key)
+        raw_binding = bindings.get(binding_key, _MISSING)
+        if raw_binding is _MISSING:
+            continue
+        binding = _coerce_channel_model_binding(raw_binding)
         if binding:
             return binding
+        logger.warning(
+            "Ignoring malformed channel_model_bindings entry for channel %s: "
+            "expected non-empty model string or mapping with model/provider, got %s",
+            binding_key,
+            type(raw_binding).__name__,
+        )
     return None
 
 

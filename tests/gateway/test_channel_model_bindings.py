@@ -1,5 +1,6 @@
 """Tests for channel_model_bindings resolution and runtime application."""
 
+import logging
 import sys
 import types
 from types import SimpleNamespace
@@ -105,11 +106,28 @@ class TestResolveChannelModelBindings:
         adapter.config.extra = {"channel_model_bindings": {"100": "openrouter/auto"}}
         assert adapter._resolve_channel_model_binding("100") == {"model": "openrouter/auto"}
 
-    def test_blank_or_invalid_bindings_are_ignored(self):
+    def test_malformed_bindings_root_warns_and_is_ignored(self, caplog):
+        adapter = _make_adapter()
+        adapter.config.extra = {"channel_model_bindings": ["bad"]}
+
+        with caplog.at_level(logging.WARNING, logger="gateway.platforms.base"):
+            assert adapter._resolve_channel_model_binding("100") is None
+
+        assert "Ignoring malformed channel_model_bindings config" in caplog.text
+        assert "expected mapping, got list" in caplog.text
+
+    def test_blank_or_invalid_bindings_warn_and_are_ignored(self, caplog):
         adapter = _make_adapter()
         adapter.config.extra = {"channel_model_bindings": {"100": "   ", "200": ["bad"]}}
-        assert adapter._resolve_channel_model_binding("100") is None
-        assert adapter._resolve_channel_model_binding("200") is None
+
+        with caplog.at_level(logging.WARNING, logger="gateway.platforms.base"):
+            assert adapter._resolve_channel_model_binding("100") is None
+            assert adapter._resolve_channel_model_binding("200") is None
+
+        assert "Ignoring malformed channel_model_bindings entry for channel 100" in caplog.text
+        assert "got str" in caplog.text
+        assert "Ignoring malformed channel_model_bindings entry for channel 200" in caplog.text
+        assert "got list" in caplog.text
 
     def test_build_slash_event_sets_channel_model_binding(self):
         adapter = _make_adapter()
