@@ -224,12 +224,24 @@ class TestRunJobProfileContext:
         monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0")
 
         import dotenv
+        from hermes_cli import env_loader
 
         def fake_load_dotenv(path, *_a, **_kw):
             observed.setdefault("dotenv_paths", []).append(str(path))
             return True
 
         monkeypatch.setattr(dotenv, "load_dotenv", fake_load_dotenv)
+
+        # Also mock load_hermes_dotenv (cron/scheduler.py now uses this
+        # instead of bare load_dotenv — ref #33465)
+        def fake_load_hermes_dotenv(*, hermes_home=None, project_env=None):
+            from pathlib import Path
+            # Use hermes_home if provided (profile-aware), else HERMES_HOME
+            home = Path(hermes_home) if hermes_home else Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+            observed.setdefault("dotenv_paths", []).append(str(home / ".env"))
+            return [home / ".env"]
+
+        monkeypatch.setattr(env_loader, "load_hermes_dotenv", fake_load_hermes_dotenv)
 
     def test_run_job_sets_and_restores_profile_home(
         self, isolated_cron_profile_home, monkeypatch
@@ -281,6 +293,19 @@ class TestRunJobProfileContext:
             return True
 
         monkeypatch.setattr(dotenv, "load_dotenv", fake_load_dotenv)
+
+        # Also mock load_hermes_dotenv for consistency with the scheduler
+        from hermes_cli import env_loader
+        def fake_load_hermes_dotenv(*, hermes_home=None, project_env=None):
+            from pathlib import Path
+            home = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+            observed.setdefault("dotenv_paths", []).append(str(home / ".env"))
+            os.environ["HERMES_PROFILE_TEST_SHARED"] = "profile-value"
+            os.environ["HERMES_PROFILE_TEST_ONLY"] = "profile-only"
+            os.environ["HERMES_CRON_TIMEOUT"] = "123"
+            return [home / ".env"]
+
+        monkeypatch.setattr(env_loader, "load_hermes_dotenv", fake_load_hermes_dotenv)
 
         job = {
             "id": "env-profile",

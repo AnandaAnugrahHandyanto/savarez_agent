@@ -67,7 +67,9 @@ def cron_list(show_all: bool = False):
         repeat_completed = repeat_info.get("completed", 0)
         repeat_str = f"{repeat_completed}/{repeat_times}" if repeat_times else "∞"
 
-        deliver = job.get("deliver", ["local"])
+        # Guard against null/None deliver value — key may exist with None value
+        # (ref: https://github.com/NousResearch/hermes-agent/issues/32896)
+        deliver = job.get("deliver") or ["local"]
         if isinstance(deliver, str):
             deliver = [deliver]
         deliver_str = ", ".join(deliver)
