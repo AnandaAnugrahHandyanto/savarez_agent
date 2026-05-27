@@ -23,7 +23,15 @@ import time
 from types import SimpleNamespace
 from typing import Any, Dict, List
 
+from agent._openai_sdk_compat import install_codex_responses_output_guard
+
 logger = logging.getLogger(__name__)
+
+# chatgpt.com backend-api/codex emits early streaming snapshots where
+# ``response.output`` is ``null``; openai 2.24.0 iterates it without a
+# None-guard and crashes ``accumulate_event`` mid-``for event in stream``.
+# Patch the SDK's ``parse_response`` so the whole turn no longer aborts.
+install_codex_responses_output_guard()
 
 
 def run_codex_app_server_turn(
