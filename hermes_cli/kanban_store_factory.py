@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 
 from hermes_cli.kanban_store import KanbanStore
+from hermes_cli.kanban_store_postgres import PostgresKanbanStore
 from hermes_cli.kanban_store_sqlite import SQLiteKanbanStore
 
 _BACKEND_ENV = "HERMES_KANBAN_BACKEND"
@@ -24,15 +25,18 @@ def normalize_backend_name(value: str | None) -> str:
 def create_kanban_store(backend: str | None = None) -> KanbanStore:
     """Create a Kanban store for ``backend``.
 
-    Only SQLite is wired today.  Future backends should be added here and pass
-    the shared store contract before any caller switches to them.
+    Only SQLite is runtime-ready today.  PostgreSQL is registered as an
+    explicit placeholder so deployments fail closed until its implementation
+    passes the shared store contract.
     """
     name = normalize_backend_name(backend)
     if name == "sqlite":
         return SQLiteKanbanStore()
+    if name in {"postgres", "postgresql"}:
+        return PostgresKanbanStore()
     raise ValueError(
         f"Unsupported Kanban store backend {name!r}. "
-        "Supported backends: sqlite"
+        "Supported backends: sqlite, postgres"
     )
 
 

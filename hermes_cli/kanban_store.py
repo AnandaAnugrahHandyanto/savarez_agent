@@ -167,6 +167,197 @@ class KanbanStore(Protocol):
         """Run one dispatcher tick against the backend."""
         ...
 
+    @property
+    def DEFAULT_BOARD(self) -> str:
+        """Default board slug for board-aware helpers."""
+        ...
+
+    @property
+    def DEFAULT_CLAIM_TTL_SECONDS(self) -> int:
+        """Default claim lease duration."""
+        ...
+
+    @property
+    def DEFAULT_FAILURE_LIMIT(self) -> int:
+        """Default task retry limit."""
+        ...
+
+    @property
+    def DEFAULT_SPAWN_FAILURE_LIMIT(self) -> int:
+        """Default dispatcher spawn failure limit."""
+        ...
+
+    @property
+    def VALID_INITIAL_STATUSES(self) -> Any:
+        """Statuses accepted for task creation."""
+        ...
+
+    @property
+    def VALID_SORT_ORDERS(self) -> Any:
+        """Supported task list sort orders."""
+        ...
+
+    @property
+    def VALID_STATUSES(self) -> Any:
+        """Supported task statuses."""
+        ...
+
+    def add_notify_sub(self, *args: Any, **kwargs: Any) -> Any:
+        """Register a notification subscription."""
+        ...
+
+    def archive_task(self, *args: Any, **kwargs: Any) -> Any:
+        """Archive a task."""
+        ...
+
+    def assign_task(self, *args: Any, **kwargs: Any) -> Any:
+        """Assign a task to a profile."""
+        ...
+
+    def board_exists(self, *args: Any, **kwargs: Any) -> Any:
+        """Return whether a board exists."""
+        ...
+
+    def board_stats(self, *args: Any, **kwargs: Any) -> Any:
+        """Return aggregate board statistics."""
+        ...
+
+    def build_worker_context(self, *args: Any, **kwargs: Any) -> Any:
+        """Build worker spawn context."""
+        ...
+
+    def child_ids(self, *args: Any, **kwargs: Any) -> Any:
+        """Return child task ids."""
+        ...
+
+    def create_board(self, *args: Any, **kwargs: Any) -> Any:
+        """Create or update board metadata."""
+        ...
+
+    def delete_archived_task(self, *args: Any, **kwargs: Any) -> Any:
+        """Delete an archived task."""
+        ...
+
+    def edit_completed_task_result(self, *args: Any, **kwargs: Any) -> Any:
+        """Edit result metadata for a completed task."""
+        ...
+
+    def gc_events(self, *args: Any, **kwargs: Any) -> Any:
+        """Garbage-collect task events."""
+        ...
+
+    def gc_worker_logs(self, *args: Any, **kwargs: Any) -> Any:
+        """Garbage-collect worker logs."""
+        ...
+
+    def get_current_board(self, *args: Any, **kwargs: Any) -> Any:
+        """Return the current board slug."""
+        ...
+
+    def has_spawnable_ready(self, *args: Any, **kwargs: Any) -> Any:
+        """Return whether spawnable ready work exists."""
+        ...
+
+    def heartbeat_worker(self, *args: Any, **kwargs: Any) -> Any:
+        """Record a dispatcher/worker heartbeat."""
+        ...
+
+    def kanban_db_path(self, *args: Any, **kwargs: Any) -> Any:
+        """Resolve the backend database path for a board."""
+        ...
+
+    def known_assignees(self, *args: Any, **kwargs: Any) -> Any:
+        """Return known assignee profiles."""
+        ...
+
+    def latest_summary(self, *args: Any, **kwargs: Any) -> Any:
+        """Return the latest task summary."""
+        ...
+
+    def link_tasks(self, *args: Any, **kwargs: Any) -> Any:
+        """Link parent/child tasks."""
+        ...
+
+    def list_boards(self, *args: Any, **kwargs: Any) -> Any:
+        """List board metadata."""
+        ...
+
+    def list_notify_subs(self, *args: Any, **kwargs: Any) -> Any:
+        """List notification subscriptions."""
+        ...
+
+    def list_profiles_on_disk(self, *args: Any, **kwargs: Any) -> Any:
+        """List profiles visible to dispatcher spawn."""
+        ...
+
+    def list_runs(self, *args: Any, **kwargs: Any) -> Any:
+        """List task runs."""
+        ...
+
+    def parent_ids(self, *args: Any, **kwargs: Any) -> Any:
+        """Return parent task ids."""
+        ...
+
+    def promote_task(self, *args: Any, **kwargs: Any) -> Any:
+        """Promote a task status."""
+        ...
+
+    def read_board_metadata(self, *args: Any, **kwargs: Any) -> Any:
+        """Read metadata for one board."""
+        ...
+
+    def read_worker_log(self, *args: Any, **kwargs: Any) -> Any:
+        """Read one worker log."""
+        ...
+
+    def reassign_task(self, *args: Any, **kwargs: Any) -> Any:
+        """Reassign a task."""
+        ...
+
+    def reclaim_task(self, *args: Any, **kwargs: Any) -> Any:
+        """Reclaim a running task."""
+        ...
+
+    def remove_board(self, *args: Any, **kwargs: Any) -> Any:
+        """Remove or archive a board."""
+        ...
+
+    def remove_notify_sub(self, *args: Any, **kwargs: Any) -> Any:
+        """Remove a notification subscription."""
+        ...
+
+    def resolve_workspace(self, *args: Any, **kwargs: Any) -> Any:
+        """Resolve workspace path for a task."""
+        ...
+
+    def run_daemon(self, *args: Any, **kwargs: Any) -> Any:
+        """Run the dispatcher daemon loop."""
+        ...
+
+    def schedule_task(self, *args: Any, **kwargs: Any) -> Any:
+        """Schedule a task for future execution."""
+        ...
+
+    def set_current_board(self, *args: Any, **kwargs: Any) -> Any:
+        """Set the current board slug."""
+        ...
+
+    def set_workspace_path(self, *args: Any, **kwargs: Any) -> Any:
+        """Set a task workspace path."""
+        ...
+
+    def unlink_tasks(self, *args: Any, **kwargs: Any) -> Any:
+        """Remove a parent/child link."""
+        ...
+
+    def workspaces_root(self, *args: Any, **kwargs: Any) -> Any:
+        """Resolve the workspaces root."""
+        ...
+
+    def write_board_metadata(self, *args: Any, **kwargs: Any) -> Any:
+        """Write board metadata."""
+        ...
+
 
 __all__ = [
     "Comment",
