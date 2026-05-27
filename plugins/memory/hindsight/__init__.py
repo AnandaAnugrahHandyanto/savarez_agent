@@ -861,6 +861,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._writer_thread: threading.Thread | None = None
         self._shutting_down = threading.Event()
         self._atexit_registered = False
+        self._close_client_after_writer = False
         # Legacy alias — older tests/callers reference _sync_thread directly.
         # Points at _writer_thread once the writer is running.
         self._sync_thread = None
@@ -1296,22 +1297,64 @@ class HindsightMemoryProvider(MemoryProvider):
         Each job() is wrapped so a single failure can't kill the writer.
         task_done() always fires so queue.join() works in tests.
         """
-        while True:
-            try:
-                job = self._retain_queue.get(timeout=1.0)
-            except queue.Empty:
-                if self._shutting_down.is_set():
-                    return
-                continue
-            try:
-                if job is _WRITER_SENTINEL:
-                    return
+        try:
+            while True:
                 try:
-                    job()
-                except Exception as exc:
-                    logger.warning("Hindsight retain failed: %s", exc, exc_info=True)
-            finally:
-                self._retain_queue.task_done()
+                    job = self._retain_queue.get(timeout=1.0)
+                except queue.Empty:
+                    if self._shutting_down.is_set():
+                        return
+                    continue
+                try:
+                    if job is _WRITER_SENTINEL:
+                        return
+                    try:
+                        job()
+                    except Exception as exc:
+                        logger.warning("Hindsight retain failed: %s", exc, exc_info=True)
+                finally:
+                    self._retain_queue.task_done()
+        finally:
+            if self._close_client_after_writer:
+                self._close_client()
+
+    def _writer_shutdown_timeout_secs(self) -> float:
+        """Return how long shutdown should wait for the retain writer."""
+        try:
+            configured = float(self._timeout or _DEFAULT_TIMEOUT)
+        except Exception:
+            configured = float(_DEFAULT_TIMEOUT)
+        return min(max(15.0, configured), 30.0)
+
+    def _close_client(self) -> None:
+        """Close this provider's Hindsight client without stopping the shared loop."""
+        if self._client is None:
+            return
+        try:
+            if self._mode == "local_embedded":
+                # HindsightEmbedded.close() delegates to its sync client.close().
+                # When Hermes created/used that client on the shared async loop,
+                # closing it from this thread can raise "attached to a different
+                # loop" before aiohttp releases the session. Close the embedded
+                # inner async client on the shared loop first, then let the
+                # wrapper clean up daemon/UI bookkeeping.
+                inner_client = getattr(self._client, "_client", None)
+                if inner_client is not None and hasattr(inner_client, "aclose"):
+                    _run_sync(inner_client.aclose())
+                    try:
+                        self._client._client = None
+                    except Exception:
+                        pass
+                try:
+                    self._client.close()
+                except RuntimeError:
+                    pass
+            else:
+                self._run_sync(self._client.aclose())
+        except Exception:
+            pass
+        finally:
+            self._client = None
 
     def _register_atexit(self) -> None:
         """Register an idempotent atexit hook to drain the writer.
@@ -2448,45 +2491,30 @@ class HindsightMemoryProvider(MemoryProvider):
         # the sentinel. Bounded join keeps shutdown predictable even if
         # the daemon is wedged.
         writer = self._writer_thread
-        if writer is not None and writer.is_alive():
+        writer_was_alive = writer is not None and writer.is_alive()
+        if writer_was_alive:
+            # The writer may currently be blocked in aiohttp. Do not close the
+            # client from this shutdown thread while that request is in flight;
+            # doing so turns a slow retain into a forced ServerDisconnectedError.
+            self._close_client_after_writer = True
+            timeout = self._writer_shutdown_timeout_secs()
             try:
                 self._retain_queue.put(_WRITER_SENTINEL)
             except Exception:
                 pass
-            writer.join(timeout=10.0)
+            writer.join(timeout=timeout)
             if writer.is_alive():
+                pending = max(0, self._retain_queue.qsize() - 1)
                 logger.warning(
-                    "Hindsight writer did not stop within 10s; "
-                    "abandoning %d pending retain(s)",
-                    self._retain_queue.qsize(),
+                    "Hindsight writer still running after %.1fs; "
+                    "client close deferred until writer exits (%d queued retain(s))",
+                    timeout,
+                    pending,
                 )
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=5.0)
-        if self._client is not None:
-            try:
-                if self._mode == "local_embedded":
-                    # HindsightEmbedded.close() delegates to its sync client.close().
-                    # When Hermes created/used that client on the shared async loop,
-                    # closing it from this thread can raise "attached to a different
-                    # loop" before aiohttp releases the session. Close the embedded
-                    # inner async client on the shared loop first, then let the
-                    # wrapper clean up daemon/UI bookkeeping.
-                    inner_client = getattr(self._client, "_client", None)
-                    if inner_client is not None and hasattr(inner_client, "aclose"):
-                        _run_sync(inner_client.aclose())
-                        try:
-                            self._client._client = None
-                        except Exception:
-                            pass
-                    try:
-                        self._client.close()
-                    except RuntimeError:
-                        pass
-                else:
-                    self._run_sync(self._client.aclose())
-            except Exception:
-                pass
-            self._client = None
+        if not writer_was_alive:
+            self._close_client()
         # The module-global background event loop (_loop / _loop_thread)
         # is intentionally NOT stopped here. It is shared across every
         # HindsightMemoryProvider instance in the process — the plugin

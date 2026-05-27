@@ -1997,6 +1997,42 @@ class TestSharedEventLoopLifecycle:
 
 
 class TestShutdown:
+    def test_shutdown_defers_client_close_while_writer_in_flight(self, provider):
+        """Shutdown must not close aiohttp client under an active retain.
+
+        Closing the client from the shutdown thread while the writer is blocked
+        inside aretain_batch turns a slow retain into ServerDisconnectedError.
+        The writer should close its own client after the queued work settles.
+        """
+        import threading
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def _slow_retain(**kwargs):
+            entered.set()
+            release.wait(timeout=5.0)
+
+        mock_client = provider._client
+        mock_client.aretain_batch = AsyncMock(side_effect=_slow_retain)
+        provider._writer_shutdown_timeout_secs = lambda: 0.05
+
+        provider.sync_turn("hello", "hi")
+        assert entered.wait(timeout=2.0)
+
+        provider.shutdown()
+
+        assert provider._writer_thread is not None
+        assert provider._writer_thread.is_alive()
+        mock_client.aclose.assert_not_called()
+
+        release.set()
+        provider._writer_thread.join(timeout=2.0)
+
+        assert not provider._writer_thread.is_alive()
+        mock_client.aclose.assert_called_once()
+        assert provider._client is None
+
     def test_local_embedded_shutdown_closes_inner_async_client_on_shared_loop(self, provider):
         inner_client = _make_mock_client()
         embedded = MagicMock()
