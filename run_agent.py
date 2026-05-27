@@ -285,6 +285,18 @@ def _qwen_portal_headers() -> dict:
     }
 
 
+# Python's stock "'<TypeName>' object is not iterable / has no attribute /
+# is not subscriptable" exception messages are unique to bare interpreter
+# errors — real provider HTTP bodies don't emit them.  Matching this
+# signature in `_summarize_api_error` lets us wrap leaked SDK-internal
+# crashes (notably openai 2.24.0's accumulate_event on chatgpt.com codex
+# null-output snapshots) in a stable user-facing category instead of
+# leaking raw Python error text to Telegram/Slack/CLI.
+_PROVIDER_SDK_LEAK_SIGNATURE = re.compile(
+    r"^'[A-Za-z_][\w.]*' object (is not |has no attribute)"
+)
+
+
 class _StreamErrorEvent(Exception):
     """Synthesized provider error surfaced from a Responses ``error`` SSE frame.
 
@@ -1556,6 +1568,27 @@ class AIAgent:
                 status_code = getattr(error, "status_code", None)
                 prefix = f"HTTP {status_code}: " if status_code else ""
                 return f"{prefix}{msg[:300]}"
+
+        # Provider SDK streaming bug envelope.  Bare Python exceptions like
+        # ``TypeError("'NoneType' object is not iterable")`` come from
+        # provider SDK internals (openai 2.24.0's accumulate_event on
+        # chatgpt.com codex snapshots is the canonical case) and look like
+        # nonsense in a Telegram bubble.  Wrap them in a stable category
+        # string so the final reply reads as "provider sent something the
+        # SDK could not parse" instead of leaking raw Python internals.
+        # Pattern is intentionally narrow: status_code unset AND the raw
+        # message matches Python's stock "'<TypeName>' object …" shape that
+        # real provider bodies do not emit.
+        if (
+            isinstance(error, (TypeError, AttributeError))
+            and not getattr(error, "status_code", None)
+            and _PROVIDER_SDK_LEAK_SIGNATURE.match(raw)
+        ):
+            return (
+                "Provider SDK streaming bug — upstream returned a snapshot "
+                f"the SDK could not parse ({raw[:160]}). Raw diagnostics in "
+                "gateway logs."
+            )
 
         # Fallback: truncate the raw string but give more room than 200 chars
         status_code = getattr(error, "status_code", None)
