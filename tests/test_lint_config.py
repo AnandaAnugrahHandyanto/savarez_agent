@@ -113,3 +113,115 @@ class TestLintWorkflow:
             pytest.fail(f"lint.yml is not valid YAML: {exc}")
         assert isinstance(parsed, dict)
         assert "jobs" in parsed
+
+class TestToolsEnvironmentLocalF401:
+    """tools/environments/local.py must have zero F401 violations."""
+
+    def test_local_py_has_zero_f401_violations(self):
+        """tools/environments/local.py must have zero unused-import violations."""
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F401",
+             "--output-format=concise", "tools/environments/local.py"],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, (
+            "tools/environments/local.py has F401 violation(s):\n"
+            f"{result.stdout}"
+        )
+class TestToolsPatchParserF821:
+    """tools/patch_parser.py must have zero F821 (undefined-name) violations."""
+
+    def test_patch_parser_has_zero_f821_violations(self):
+        """tools/patch_parser.py must have zero undefined-name violations."""
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F821",
+             "--output-format=concise", "tools/patch_parser.py"],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, (
+            "tools/patch_parser.py has F821 violation(s):\n"
+            f"{result.stdout}"
+        )
+
+class TestToolsPatchParserE741:
+    """tools/patch_parser.py must have zero E741 (ambiguous-name) violations."""
+
+    def test_patch_parser_has_zero_e741_violations(self):
+        """tools/patch_parser.py must have zero ambiguous-name violations."""
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=E741",
+             "--output-format=concise", "tools/patch_parser.py"],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, (
+            "tools/patch_parser.py has E741 violation(s):\n"
+            f"{result.stdout}"
+        )
+class TestToolsBrowserToolF401:
+    """tools/browser_tool.py must have zero F401 (unused-import) violations."""
+
+    def test_browser_tool_has_zero_f401_violations(self):
+        """tools/browser_tool.py must have zero unused-import violations."""
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F401",
+             "--output-format=concise", "tools/browser_tool.py"],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, (
+            "tools/browser_tool.py has F401 violation(s):\n"
+            f"{result.stdout}"
+        )
+
+class TestToolsCodeExecutionToolF401:
+    """tools/code_execution_tool.py must have zero F401 (unused-import) violations."""
+
+    def test_code_execution_tool_has_zero_f401_violations(self):
+        """tools/code_execution_tool.py must have zero unused-import violations."""
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F401",
+             "--output-format=concise", "tools/code_execution_tool.py"],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, (
+            "tools/code_execution_tool.py has F401 violation(s):\n"
+            f"{result.stdout}"
+        )
+
+
+class TestToolsMemoryToolF401:
+    """tools/memory_tool.py must have zero F401 (unused-import) violations."""
+
+    def test_memory_tool_has_zero_f401_violations(self):
+        """tools/memory_tool.py must have zero unused-import violations."""
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F401",
+             "--output-format=concise", "tools/memory_tool.py"],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, (
+            "tools/memory_tool.py has F401 violation(s):\n"
+            f"{result.stdout}"
+        )
+
+
+class TestToolsBrowserCdpToolF401:
+    """tools/browser_cdp_tool.py must have zero F401 (unused-import) violations."""
+
+    def test_browser_cdp_tool_has_zero_f401_violations(self):
+        """tools/browser_cdp_tool.py must have zero unused-import violations."""
+        import subprocess, sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F401",
+             "--output-format=concise", "tools/browser_cdp_tool.py"],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, (
+            "tools/browser_cdp_tool.py has F401 violation(s):\n"
+            f"{result.stdout}"
+        )
