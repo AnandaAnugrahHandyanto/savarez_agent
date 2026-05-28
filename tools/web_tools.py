@@ -1373,6 +1373,17 @@ def check_web_api_key() -> bool:
     configured = _load_web_config().get("backend", "").lower().strip()
     if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs"}:
         return _is_backend_available(configured)
+    # Check if a plugin-registered web search provider matches the configured
+    # backend name.  This allows third-party plugins (e.g. Kagi) to pass the
+    # tool-availability gate without being hardcoded above.
+    if configured:
+        try:
+            from agent.web_search_registry import get_provider as _get_wsp
+            provider = _get_wsp(configured)
+            if provider is not None and provider.is_available():
+                return True
+        except Exception:
+            pass
     return any(
         _is_backend_available(backend)
         for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs")
