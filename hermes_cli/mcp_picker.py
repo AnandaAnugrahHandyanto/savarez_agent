@@ -59,6 +59,8 @@ class _Row:
     name: str
     description: str
     status: str
+    catalog_label: str
+    trust_label: str
     entry: Optional[CatalogEntry] = None  # None for non-catalog (custom) rows
 
     @property
@@ -84,6 +86,8 @@ def _build_rows() -> List[_Row]:
                 name=entry.name,
                 description=entry.description,
                 status=status,
+                catalog_label=entry.catalog_label,
+                trust_label=entry.trust_label,
                 entry=entry,
             )
         )
@@ -98,13 +102,64 @@ def _build_rows() -> List[_Row]:
         status = _STATUS_CUSTOM_ENABLED if enabled else _STATUS_CUSTOM_DISABLED
         # Use the transport URL/command as the "description" for custom rows
         desc = cfg.get("url") or cfg.get("command") or "(no transport)"
-        rows.append(_Row(name=name, description=str(desc), status=status))
+        rows.append(
+            _Row(
+                name=name,
+                description=str(desc),
+                status=status,
+                catalog_label="custom",
+                trust_label="user-config",
+            )
+        )
 
     return rows
 
 
-def _format_row(row: _Row) -> str:
-    return f"{row.name:<18} {row.status:<24} {row.description}"
+def _format_row(
+    row: _Row,
+    *,
+    name_width: int = 18,
+    status_width: int = 24,
+    catalog_width: int = 12,
+    trust_width: int = 14,
+) -> str:
+    return (
+        f"{row.name:<{name_width}} {row.status:<{status_width}} "
+        f"{row.catalog_label:<{catalog_width}} {row.trust_label:<{trust_width}} "
+        f"{row.description}"
+    )
+
+
+def _print_catalog_diagnostics() -> None:
+    """Print actionable catalog diagnostics captured during list_catalog()."""
+    diags = catalog_diagnostics()
+    if not diags:
+        return
+
+    printed = False
+    future = [d for d in diags if d[1] == "future_manifest"]
+    for name, _, _msg in future:
+        if not printed:
+            print()
+            printed = True
+        print(color(
+            f"  ⚠ '{name}' requires a newer Hermes — run `hermes update` "
+            "to install this entry.",
+            Colors.YELLOW,
+        ))
+
+    other = [d for d in diags if d[1] != "future_manifest"]
+    for name, kind, msg in other:
+        if not printed:
+            print()
+            printed = True
+        print(color(
+            f"  ⚠ MCP catalog '{name}' skipped ({kind}): {msg}",
+            Colors.YELLOW,
+        ))
+
+    if printed:
+        print()
 
 
 # ─── Actions ──────────────────────────────────────────────────────────────────
@@ -234,35 +289,45 @@ def _print_rows_text(rows: List[_Row]) -> None:
     if not rows:
         print()
         print(color("  No MCPs in the catalog or configured.", Colors.DIM))
+        _print_catalog_diagnostics()
         print()
         return
 
     print()
     print(color("  MCP Catalog + configured servers:", Colors.CYAN + Colors.BOLD))
     print()
-    print(f"  {'Name':<18} {'Status':<24} Description")
-    print(f"  {'-' * 18} {'-' * 24} {'-' * 11}")
+    name_width = max(18, *(len(r.name) for r in rows))
+    status_width = max(24, *(len(r.status) for r in rows))
+    catalog_width = max(12, *(len(r.catalog_label) for r in rows))
+    trust_width = max(14, *(len(r.trust_label) for r in rows))
+    print(
+        f"  {'Name':<{name_width}} {'Status':<{status_width}} "
+        f"{'Catalog':<{catalog_width}} {'Trust':<{trust_width}} Description"
+    )
+    print(
+        f"  {'-' * name_width} {'-' * status_width} "
+        f"{'-' * catalog_width} {'-' * trust_width} {'-' * 11}"
+    )
     for row in rows:
-        print(f"  {_format_row(row)}")
+        print(
+            "  "
+            + _format_row(
+                row,
+                name_width=name_width,
+                status_width=status_width,
+                catalog_width=catalog_width,
+                trust_width=trust_width,
+            )
+        )
     print()
     print(color(
         "  Install: hermes mcp install <name>    Picker: hermes mcp",
         Colors.DIM,
     ))
 
-    # Surface manifest-version warnings so users know when their Hermes is
-    # too old to install everything in the catalog.
-    diags = catalog_diagnostics()
-    future = [d for d in diags if d[1] == "future_manifest"]
-    if future:
-        print()
-        for name, _, msg in future:
-            print(color(
-                f"  ⚠ '{name}' requires a newer Hermes — run `hermes update` "
-                "to install this entry.",
-                Colors.YELLOW,
-            ))
-        print()
+    # Surface manifest and configured-path warnings so users know when the
+    # catalog is shorter than their config implies.
+    _print_catalog_diagnostics()
     print()
 
 

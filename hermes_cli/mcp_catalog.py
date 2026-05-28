@@ -6,10 +6,16 @@ entries via ``hermes mcp catalog`` or the interactive ``hermes mcp picker``,
 and install them with ``hermes mcp install <name>`` (or by toggling in the
 picker, which flows them through any required env/OAuth setup).
 
+Hermes can also read user-configured private catalog roots from
+``mcp_catalog_paths`` in config.yaml. Those entries use the same manifest
+schema, but are labeled ``private`` in the picker instead of inheriting the
+Nous-approved trust signal from the shipped ``optional-mcps/`` directory.
+
 Catalog policy:
-- Entries are added only by merging a PR into hermes-agent. Presence in the
-  ``optional-mcps/`` directory = Nous approval. No community tier, no trust
-  signals beyond "it's in the catalog".
+- Official entries are added only by merging a PR into hermes-agent. Presence
+  in the shipped ``optional-mcps/`` directory = Nous approval.
+- Private catalog paths are local/user-configured and show a separate trust
+  label; they do not become Nous-approved just because Hermes can list them.
 - Manifests pin transport details (commands, args, refs). MCPs are never
   auto-updated; users explicitly re-run ``hermes mcp install <name>`` to
   pull a new manifest version after a repo update.
@@ -106,6 +112,22 @@ class ToolsSpec:
     default_enabled: Optional[List[str]] = None
 
 
+@dataclass(frozen=True)
+class CatalogSource:
+    """One directory of MCP catalog manifests.
+
+    ``label`` is the user-facing source prefix accepted by ``get_entry`` and
+    ``hermes mcp install <label>/<name>``. ``trust_label`` is deliberately
+    separate so private/team catalogs can share a clear trust posture without
+    pretending to be Nous-reviewed.
+    """
+
+    label: str
+    path: Path
+    trust_label: str
+    is_official: bool = False
+
+
 @dataclass
 class CatalogEntry:
     name: str
@@ -116,7 +138,13 @@ class CatalogEntry:
     tools: ToolsSpec = field(default_factory=ToolsSpec)
     install: Optional[InstallSpec] = None
     post_install: str = ""
+    catalog_label: str = "official"
+    trust_label: str = "Nous-approved"
     manifest_path: Path = field(default_factory=Path)
+
+    @property
+    def qualified_name(self) -> str:
+        return f"{self.catalog_label}/{self.name}"
 
 
 # ─── Manifest loader ─────────────────────────────────────────────────────────
@@ -131,6 +159,116 @@ def _catalog_root() -> Path:
     # Prefer the env-var override / packaged location; fall back to the repo's
     # optional-mcps/ next to the package (source checkout).
     return get_optional_mcps_dir(Path(__file__).parent.parent / "optional-mcps")
+
+
+def _expand_catalog_path(path_value: str) -> Path:
+    return Path(os.path.expandvars(os.path.expanduser(str(path_value)))).resolve()
+
+
+def _private_catalog_sources_from_config() -> List[CatalogSource]:
+    """Return user-configured private catalog roots.
+
+    Supported config shapes:
+
+    ``mcp_catalog_paths: {team: ~/mcps}``
+      Preferred shape; label is explicit and stable.
+
+    ``mcp_catalog_paths: [~/mcps, {label: team, path: ~/team-mcps}]``
+      Convenience shape for single/local catalogs.
+    """
+    try:
+        cfg = load_config()
+    except Exception as exc:
+        _CATALOG_DIAGNOSTICS.append(("mcp_catalog_paths", "invalid", str(exc)))
+        return []
+
+    raw = cfg.get("mcp_catalog_paths") or []
+    sources: List[CatalogSource] = []
+
+    def add_source(label: str, value: Any, *, index: int = 0) -> None:
+        if value is None or str(value).strip() == "":
+            _CATALOG_DIAGNOSTICS.append((str(label), "invalid", "empty catalog path"))
+            return
+        clean_label = str(label or "").strip() or (
+            "private" if index == 0 else f"private{index + 1}"
+        )
+        if clean_label == "official":
+            clean_label = "private"
+        sources.append(
+            CatalogSource(
+                label=clean_label,
+                path=_expand_catalog_path(str(value)),
+                trust_label="private",
+                is_official=False,
+            )
+        )
+
+    if isinstance(raw, dict):
+        for label, value in sorted(raw.items(), key=lambda item: str(item[0])):
+            add_source(str(label), value)
+    elif isinstance(raw, list):
+        for idx, item in enumerate(raw):
+            if isinstance(item, str):
+                add_source("private" if idx == 0 else f"private{idx + 1}", item, index=idx)
+            elif isinstance(item, dict):
+                label = item.get("label") or item.get("name") or (
+                    "private" if idx == 0 else f"private{idx + 1}"
+                )
+                add_source(str(label), item.get("path"), index=idx)
+            else:
+                _CATALOG_DIAGNOSTICS.append((
+                    f"mcp_catalog_paths[{idx}]",
+                    "invalid",
+                    f"expected string or mapping, got {type(item).__name__}",
+                ))
+    elif isinstance(raw, str):
+        add_source("private", raw)
+    elif raw:
+        _CATALOG_DIAGNOSTICS.append((
+            "mcp_catalog_paths",
+            "invalid",
+            f"expected mapping, list, or string, got {type(raw).__name__}",
+        ))
+
+    return sources
+
+
+def _private_catalog_sources_from_env() -> List[CatalogSource]:
+    """Optional wrapper/runtime hook for private catalogs.
+
+    ``HERMES_MCP_CATALOG_PATHS`` is pathsep-separated (``:`` on Unix,
+    ``;`` on Windows). Config.yaml remains the documented stable surface;
+    this hook keeps package-manager wrappers and tests ergonomic.
+    """
+    raw = os.getenv("HERMES_MCP_CATALOG_PATHS", "").strip()
+    if not raw:
+        return []
+    sources: List[CatalogSource] = []
+    for idx, part in enumerate([p for p in raw.split(os.pathsep) if p.strip()]):
+        label = "env" if idx == 0 else f"env{idx + 1}"
+        sources.append(
+            CatalogSource(
+                label=label,
+                path=_expand_catalog_path(part),
+                trust_label="private",
+                is_official=False,
+            )
+        )
+    return sources
+
+
+def _catalog_sources() -> List[CatalogSource]:
+    sources = [
+        CatalogSource(
+            label="official",
+            path=_catalog_root(),
+            trust_label="Nous-approved",
+            is_official=True,
+        )
+    ]
+    sources.extend(_private_catalog_sources_from_config())
+    sources.extend(_private_catalog_sources_from_env())
+    return sources
 
 
 def _parse_env_spec(raw: Any) -> EnvVarSpec:
@@ -148,8 +286,15 @@ def _parse_env_spec(raw: Any) -> EnvVarSpec:
     )
 
 
-def _parse_manifest(path: Path) -> CatalogEntry:
+def _parse_manifest(path: Path, source_meta: Optional[CatalogSource] = None) -> CatalogEntry:
     """Read and validate a manifest.yaml. Raise CatalogError on any problem."""
+    if source_meta is None:
+        source_meta = CatalogSource(
+            label="official",
+            path=path.parent.parent,
+            trust_label="Nous-approved",
+            is_official=True,
+        )
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
@@ -259,6 +404,8 @@ def _parse_manifest(path: Path) -> CatalogEntry:
         tools=tools_spec,
         install=install,
         post_install=str(data.get("post_install") or ""),
+        catalog_label=source_meta.label,
+        trust_label=source_meta.trust_label,
         manifest_path=path,
     )
 
@@ -271,26 +418,41 @@ def list_catalog() -> List[CatalogEntry]:
     skip is surfaced via :func:`catalog_diagnostics` so the picker / catalog
     UIs can tell the user their Hermes is out of date.
     """
-    root = _catalog_root()
-    if not root.exists():
-        return []
     entries: List[CatalogEntry] = []
     _CATALOG_DIAGNOSTICS.clear()
-    for child in sorted(root.iterdir()):
-        manifest = child / "manifest.yaml"
-        if not manifest.is_file():
+    for source in _catalog_sources():
+        root = source.path
+        if not root.exists():
+            if not source.is_official:
+                _CATALOG_DIAGNOSTICS.append((
+                    source.label,
+                    "missing_catalog_path",
+                    f"configured MCP catalog path does not exist: {root}",
+                ))
             continue
-        try:
-            entries.append(_parse_manifest(manifest))
-        except CatalogError as exc:
-            msg = str(exc)
-            # Recognize the future-manifest error specifically so the UI can
-            # surface a more actionable nudge than "broken manifest".
-            if "manifest_version" in msg and "unsupported" in msg:
-                _CATALOG_DIAGNOSTICS.append((child.name, "future_manifest", msg))
-            else:
-                _CATALOG_DIAGNOSTICS.append((child.name, "invalid", msg))
+        if not root.is_dir():
+            _CATALOG_DIAGNOSTICS.append((
+                source.label,
+                "invalid",
+                f"configured MCP catalog path is not a directory: {root}",
+            ))
             continue
+        for child in sorted(root.iterdir()):
+            manifest = child / "manifest.yaml"
+            if not manifest.is_file():
+                continue
+            try:
+                entries.append(_parse_manifest(manifest, source_meta=source))
+            except CatalogError as exc:
+                msg = str(exc)
+                entry_name = child.name if source.is_official else f"{source.label}/{child.name}"
+                # Recognize the future-manifest error specifically so the UI can
+                # surface a more actionable nudge than "broken manifest".
+                if "manifest_version" in msg and "unsupported" in msg:
+                    _CATALOG_DIAGNOSTICS.append((entry_name, "future_manifest", msg))
+                else:
+                    _CATALOG_DIAGNOSTICS.append((entry_name, "invalid", msg))
+                continue
     return entries
 
 
@@ -308,16 +470,29 @@ def catalog_diagnostics() -> List[tuple]:
         understands. Update Hermes to install this entry.
       - ``invalid`` — manifest is malformed in some other way (caught by
         CI for shipped manifests; user-modified manifests can hit this).
+      - ``missing_catalog_path`` — a configured private catalog path does not
+        exist and was skipped.
     """
     return list(_CATALOG_DIAGNOSTICS)
 
 
 def get_entry(name: str) -> Optional[CatalogEntry]:
-    """Look up a single entry by name. ``official/<name>`` prefix accepted."""
-    if name.startswith("official/"):
-        name = name[len("official/"):]
+    """Look up a single entry by name.
+
+    ``official/<name>`` and private catalog prefixes such as ``team/<name>``
+    are accepted. Unqualified names continue to work when the manifest name is
+    unique enough for the user's configured catalogs.
+    """
+    catalog_prefix: Optional[str] = None
+    entry_name = name
+    if "/" in name:
+        catalog_prefix, entry_name = name.split("/", 1)
     for entry in list_catalog():
-        if entry.name == name:
+        if catalog_prefix is not None:
+            if entry.catalog_label == catalog_prefix and entry.name == entry_name:
+                return entry
+            continue
+        if entry.name == entry_name:
             return entry
     return None
 

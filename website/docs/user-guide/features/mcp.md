@@ -64,19 +64,21 @@ hermes mcp catalog        # plain-text list, scriptable
 hermes mcp install n8n    # install a catalog entry by name
 ```
 
-The picker shows each entry with its current status:
+The picker shows each entry with its current status, catalog source, and trust
+label:
 
 ```
-n8n          available              Manage and inspect n8n workflows from Hermes
-linear       enabled                Linear issue/project management (remote OAuth)
-github       installed (disabled)   GitHub repo + PR tools
+Name         Status                 Catalog    Trust          Description
+n8n          available              official   Nous-approved  Manage and inspect n8n workflows from Hermes
+linear       enabled                official   Nous-approved  Linear issue/project management (remote OAuth)
+james_ops    available              team       private        Team operational MCP pack
 ```
 
 Hit `Enter` on a row to install (and walk through any required credentials),
-enable, disable, or uninstall. Catalog entries are stored under
+enable, disable, or uninstall. Official catalog entries are stored under
 `optional-mcps/` in the hermes-agent repo — presence in that directory means
-Nous approval. There is no community submission tier; entries are added by
-merging a PR.
+Nous approval. There is no community submission tier; official entries are
+added by merging a PR.
 
 Catalog entries can require:
 
@@ -134,6 +136,40 @@ Manifests live at
 on GitHub. The picker also prints the manifest's `source:` URL at install
 time so you can quickly verify the upstream repo.
 
+### Private catalog paths
+
+For team or personal MCP packs, add private catalog roots to `config.yaml`
+under `mcp_catalog_paths`. Private entries use the same
+`manifest.yaml` schema as official entries, but the picker labels them
+`Trust: private` so they are never confused with Nous-reviewed catalog items.
+
+```yaml
+mcp_catalog_paths:
+  team: ~/.hermes/mcp-catalogs/team
+  personal: ~/src/my-hermes-mcps
+```
+
+Each configured path should contain one directory per MCP:
+
+```text
+~/.hermes/mcp-catalogs/team/
+  james_ops/
+    manifest.yaml
+```
+
+Install by normal name if it is unique, or by catalog-qualified name when you
+want to be explicit:
+
+```bash
+hermes mcp install james_ops
+hermes mcp install team/james_ops
+```
+
+For wrapper scripts and packaged installs, `HERMES_MCP_CATALOG_PATHS` can also
+point at additional private catalog roots using the platform path separator
+(`:` on macOS/Linux, `;` on Windows). Config.yaml is the recommended stable
+surface for normal use.
+
 ### Manifest version compatibility
 
 Manifests pin a `manifest_version`. The catalog is forward-compatible: if a
@@ -169,8 +205,10 @@ you want to opt into.
 MCPs are never auto-updated. Re-run `hermes mcp install <name>` to refresh
 after a Hermes update if a manifest version changed.
 
-To add an MCP to the catalog, open a PR against
+To add an MCP to the official Nous-approved catalog, open a PR against
 [`optional-mcps/`](https://github.com/NousResearch/hermes-agent/tree/main/optional-mcps).
+For private/team MCPs, keep the manifest in a configured `mcp_catalog_paths`
+root instead.
 
 ## Two kinds of MCP servers
 

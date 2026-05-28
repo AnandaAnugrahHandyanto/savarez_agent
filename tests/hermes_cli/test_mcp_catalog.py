@@ -200,6 +200,103 @@ class TestManifestParsing:
 
 
 # ---------------------------------------------------------------------------
+# Private catalog paths
+# ---------------------------------------------------------------------------
+
+
+class TestPrivateCatalogPaths:
+    def test_configured_private_catalog_path_is_loaded_with_trust_label(
+        self, catalog_dir, tmp_path
+    ):
+        _write_manifest(catalog_dir, "official-demo", _basic_manifest("official-demo"))
+        private_dir = tmp_path / "private-mcps"
+        private_dir.mkdir()
+        _write_manifest(private_dir, "team-demo", _basic_manifest("team-demo"))
+
+        from hermes_cli.config import load_config, save_config
+        cfg = load_config()
+        cfg["mcp_catalog_paths"] = {"team": str(private_dir)}
+        save_config(cfg)
+
+        from hermes_cli.mcp_catalog import list_catalog
+
+        entries = list_catalog()
+        by_name = {entry.name: entry for entry in entries}
+        assert set(by_name) == {"official-demo", "team-demo"}
+        assert by_name["official-demo"].catalog_label == "official"
+        assert by_name["official-demo"].trust_label == "Nous-approved"
+        assert by_name["team-demo"].catalog_label == "team"
+        assert by_name["team-demo"].trust_label == "private"
+
+    def test_get_entry_accepts_private_catalog_prefix(self, catalog_dir, tmp_path):
+        private_dir = tmp_path / "private-mcps"
+        private_dir.mkdir()
+        _write_manifest(private_dir, "team-demo", _basic_manifest("team-demo"))
+
+        from hermes_cli.config import load_config, save_config
+        cfg = load_config()
+        cfg["mcp_catalog_paths"] = {"team": str(private_dir)}
+        save_config(cfg)
+
+        from hermes_cli.mcp_catalog import get_entry
+
+        assert get_entry("team/team-demo") is not None
+        assert get_entry("team-demo") is not None
+        assert get_entry("other/team-demo") is None
+
+    def test_install_by_prefixed_private_catalog_name(self, catalog_dir, tmp_path):
+        private_dir = tmp_path / "private-mcps"
+        private_dir.mkdir()
+        _write_manifest(private_dir, "team-demo", _basic_manifest("team-demo"))
+
+        from hermes_cli.config import load_config, save_config
+        cfg = load_config()
+        cfg["mcp_catalog_paths"] = {"team": str(private_dir)}
+        save_config(cfg)
+
+        from hermes_cli.mcp_picker import install_by_name
+
+        rc = install_by_name("team/team-demo")
+        assert rc == 0
+        assert "team-demo" in load_config().get("mcp_servers", {})
+
+    def test_picker_text_shows_catalog_trust_column(self, catalog_dir, tmp_path, capsys):
+        _write_manifest(catalog_dir, "official-demo", _basic_manifest("official-demo"))
+        private_dir = tmp_path / "private-mcps"
+        private_dir.mkdir()
+        _write_manifest(private_dir, "team-demo", _basic_manifest("team-demo"))
+
+        from hermes_cli.config import load_config, save_config
+        cfg = load_config()
+        cfg["mcp_catalog_paths"] = {"team": str(private_dir)}
+        save_config(cfg)
+
+        from hermes_cli.mcp_picker import show_catalog
+        show_catalog()
+        out = capsys.readouterr().out
+        assert "Catalog" in out
+        assert "official" in out
+        assert "Nous-approved" in out
+        assert "team" in out
+        assert "private" in out
+        assert "team-demo" in out
+
+    def test_picker_surfaces_missing_private_catalog_path_warning(
+        self, catalog_dir, tmp_path, capsys
+    ):
+        from hermes_cli.config import load_config, save_config
+        cfg = load_config()
+        cfg["mcp_catalog_paths"] = {"team": str(tmp_path / "missing-mcps")}
+        save_config(cfg)
+
+        from hermes_cli.mcp_picker import show_catalog
+        show_catalog()
+        out = capsys.readouterr().out
+        assert "team" in out
+        assert "configured MCP catalog path does not exist" in out
+
+
+# ---------------------------------------------------------------------------
 # Install flow
 # ---------------------------------------------------------------------------
 

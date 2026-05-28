@@ -15,6 +15,10 @@ For conceptual guidance, see:
 ## Root config shape
 
 ```yaml
+mcp_catalog_paths:
+  team: ~/.hermes/mcp-catalogs/team
+  personal: ~/src/my-hermes-mcps
+
 mcp_servers:
   <server_name>:
     command: "..."      # stdio servers
@@ -35,6 +39,32 @@ mcp_servers:
       resources: true
       prompts: true
 ```
+
+## Catalog path keys
+
+`mcp_catalog_paths` adds private/team MCP catalog roots to the built-in
+official catalog. Each configured root uses the same
+`<entry>/manifest.yaml` layout as `optional-mcps/`, but entries are surfaced
+with `Trust: private` in `hermes mcp catalog` and the picker.
+
+Supported shapes:
+
+```yaml
+# Preferred: explicit label -> path
+mcp_catalog_paths:
+  team: ~/.hermes/mcp-catalogs/team
+
+# Also accepted
+mcp_catalog_paths:
+  - ~/.hermes/mcp-catalogs/private
+  - label: team
+    path: ~/src/team-mcps
+```
+
+Use `hermes mcp install <name>` for unique manifest names, or
+`hermes mcp install <label>/<name>` when you want to select a specific catalog
+source. Private catalog entries should use unique manifest names so installing
+them does not collide with official or existing `mcp_servers` keys.
 
 ## Server keys
 
