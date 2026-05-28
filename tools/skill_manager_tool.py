@@ -53,6 +53,9 @@ try:
     from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
     _GUARD_AVAILABLE = True
 except ImportError:
+    scan_skill = None  # type: ignore[assignment]
+    should_allow_install = None  # type: ignore[assignment]
+    format_scan_report = None  # type: ignore[assignment]
     _GUARD_AVAILABLE = False
 
 
@@ -85,16 +88,16 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
     if not _guard_agent_created_enabled():
         return None
     try:
-        result = scan_skill(skill_dir, source="agent-created")
-        allowed, reason = should_allow_install(result)
+        result = scan_skill(skill_dir, source="agent-created")  # type: ignore[operator]
+        allowed, reason = should_allow_install(result)  # type: ignore[operator]
         if allowed is False:
-            report = format_scan_report(result)
+            report = format_scan_report(result)  # type: ignore[operator]
             return f"Security scan blocked this skill ({reason}):\n{report}"
         if allowed is None:
             # "ask" verdict — for agent-created skills this means dangerous
             # findings were detected.  Surface as an error so the agent can
             # retry with the flagged content removed.
-            report = format_scan_report(result)
+            report = format_scan_report(result)  # type: ignore[operator]
             logger.warning("Agent-created skill blocked (dangerous findings): %s", reason)
             return f"Security scan blocked this skill ({reason}):\n{report}"
     except Exception as e:

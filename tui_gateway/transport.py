@@ -205,7 +205,7 @@ class TeeTransport:
             try:
                 sec.write(obj)
             except Exception:
-                pass
+                logger.debug("TeeTransport secondary write failed (best-effort)", exc_info=True)
         return ok
 
     def close(self) -> None:

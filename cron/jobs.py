@@ -226,7 +226,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             raise ValueError("Cron expressions require 'croniter' package. Install with: pip install croniter")
         # Validate cron expression
         try:
-            croniter(schedule)
+            croniter(schedule)  # type: ignore[operator]
         except Exception as e:
             raise ValueError(f"Invalid cron expression '{schedule}': {e}")
         return {
@@ -339,7 +339,7 @@ def _compute_grace_seconds(schedule: dict) -> int:
     if kind == "cron" and HAS_CRONITER:
         try:
             now = _hermes_now()
-            cron = croniter(schedule["expr"], now)
+            cron = croniter(schedule["expr"], now)  # type: ignore[operator]
             first = cron.get_next(datetime)
             second = cron.get_next(datetime)
             period_seconds = int((second - first).total_seconds())
@@ -390,7 +390,7 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         base_time = now
         if last_run_at:
             base_time = _ensure_aware(datetime.fromisoformat(last_run_at))
-        cron = croniter(schedule["expr"], base_time)
+        cron = croniter(schedule["expr"], base_time)  # type: ignore[operator]
         next_run = cron.get_next(datetime)
         return next_run.isoformat()
 

@@ -742,7 +742,7 @@ def _build_child_progress_callback(
         return kw
 
     def _relay(
-        event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs
+        event_type: str, tool_name: str = "", preview: str = "", args=None, **kwargs
     ):
         if not parent_cb:
             return
@@ -754,7 +754,7 @@ def _build_child_progress_callback(
             logger.debug("Parent callback failed: %s", e)
 
     def _callback(
-        event_type, tool_name: str = None, preview: str = None, args=None, **kwargs
+        event_type, tool_name: str = "", preview: str = "", args=None, **kwargs
     ):
         # Lifecycle events emitted by the orchestrator itself — handled
         # before enum normalisation since they are not part of DelegateEvent.
@@ -863,7 +863,7 @@ def _build_child_progress_callback(
             _relay("subagent.progress", preview=f"🔀 {prefix}{summary}")
             _batch.clear()
 
-    _callback._flush = _flush
+    _callback._flush = _flush  # type: ignore[attr-defined]
     return _callback
 
 
@@ -1104,21 +1104,21 @@ def _build_child_agent(
         # provider is overridden — it's a no-op on any other model.
 
     child = AIAgent(
-        base_url=effective_base_url,
-        api_key=effective_api_key,
-        model=effective_model,
-        provider=effective_provider,
-        api_mode=effective_api_mode,
-        acp_command=effective_acp_command,
+        base_url=effective_base_url or "",
+        api_key=effective_api_key or "",
+        model=effective_model or "",
+        provider=effective_provider or "",
+        api_mode=effective_api_mode or "",
+        acp_command=effective_acp_command or "",
         acp_args=effective_acp_args,
         max_iterations=max_iterations,
-        max_tokens=getattr(parent_agent, "max_tokens", None),
-        reasoning_config=child_reasoning,
+        max_tokens=getattr(parent_agent, "max_tokens", None) or None,
+        reasoning_config=child_reasoning or None,
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
-        fallback_model=parent_fallback,
-        enabled_toolsets=child_toolsets,
+        fallback_model=parent_fallback or None,
+        enabled_toolsets=child_toolsets or [],
         quiet_mode=True,
-        ephemeral_system_prompt=child_prompt,
+        ephemeral_system_prompt=child_prompt or "",
         log_prefix=f"[subagent-{task_index}]",
         platform=parent_agent.platform,
         skip_context_files=True,
@@ -1126,7 +1126,7 @@ def _build_child_agent(
         clarify_callback=None,
         thinking_callback=child_thinking_cb,
         session_db=getattr(parent_agent, "_session_db", None),
-        parent_session_id=getattr(parent_agent, "session_id", None),
+        parent_session_id=getattr(parent_agent, "session_id", None) or "",
         providers_allowed=child_providers_allowed,
         providers_ignored=child_providers_ignored,
         providers_order=child_providers_order,
