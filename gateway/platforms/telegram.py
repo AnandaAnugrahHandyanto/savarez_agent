@@ -3106,6 +3106,73 @@ class TelegramAdapter(BasePlatformAdapter):
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
 
+        # --- pre_callback_dispatch plugin hook ---
+        # Fired BEFORE any built-in prefix branch runs so plugins can
+        # short-circuit (e.g. retire a legacy callback prefix with a notice)
+        # or rewrite the data payload. Mirrors the pre_gateway_dispatch
+        # contract: {"action": "skip"|"rewrite"|"allow"}. Fail-open: any
+        # exception from the hook layer falls through to normal dispatch.
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            from gateway.session import SessionSource
+
+            _hook_source = SessionSource(
+                platform=self.platform,
+                chat_id=str(query_chat_id) if query_chat_id is not None else "",
+                chat_type=str(query_chat_type) if query_chat_type is not None else "dm",
+                user_id=str(getattr(query.from_user, "id", "") or "") or None,
+                user_name=query_user_name,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            )
+            _hook_results = _invoke_hook(
+                "pre_callback_dispatch",
+                query=query,
+                data=data,
+                gateway=self._gateway_ref,
+                source=_hook_source,
+            )
+        except Exception as _hook_exc:  # noqa: BLE001 - fail-open
+            logger.warning("pre_callback_dispatch invocation failed: %s", _hook_exc)
+            _hook_results = []
+
+        # First actionable result (skip / rewrite / allow) wins; later hooks
+        # for the same callback are ignored. Plugins SHOULD return None for
+        # cases they do not handle so they don't accidentally veto a later
+        # plugin's skip.
+        for _result in _hook_results:
+            if not isinstance(_result, dict):
+                continue
+            _action = _result.get("action")
+            if _action == "skip":
+                _data_prefix = (
+                    data.split(":", 1)[0]
+                    if isinstance(data, str) and ":" in data
+                    else "<no-prefix>"
+                )
+                logger.info(
+                    "pre_callback_dispatch skip: reason=%s chat=%s data_prefix=%s",
+                    _result.get("reason"),
+                    query_chat_id or "unknown",
+                    _data_prefix,
+                )
+                _answer_text = _result.get("answer_text")
+                if isinstance(_answer_text, str) and _answer_text:
+                    try:
+                        await query.answer(text=_answer_text)
+                    except Exception as _ans_exc:  # noqa: BLE001 - fail-open
+                        logger.warning(
+                            "pre_callback_dispatch skip answer failed: %s",
+                            _ans_exc,
+                        )
+                return
+            if _action == "rewrite":
+                _new_data = _result.get("data")
+                if isinstance(_new_data, str) and _new_data:
+                    data = _new_data
+                break
+            if _action == "allow":
+                break
+
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mm:", "mb", "mx", "mg:")):
             chat_id = str(query.message.chat_id) if query.message else None

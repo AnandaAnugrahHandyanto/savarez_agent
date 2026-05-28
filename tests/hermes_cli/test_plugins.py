@@ -330,6 +330,9 @@ class TestPluginHooks:
     def test_valid_hooks_include_pre_gateway_dispatch(self):
         assert "pre_gateway_dispatch" in VALID_HOOKS
 
+    def test_valid_hooks_include_pre_callback_dispatch(self):
+        assert "pre_callback_dispatch" in VALID_HOOKS
+
     def test_pre_gateway_dispatch_collects_action_dicts(self, tmp_path, monkeypatch):
         """pre_gateway_dispatch callbacks return action dicts (skip/rewrite/allow)."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"
@@ -353,6 +356,32 @@ class TestPluginHooks:
         )
         assert len(results) == 1
         assert results[0] == {"action": "skip", "reason": "test"}
+
+    def test_pre_callback_dispatch_collects_action_dicts(self, tmp_path, monkeypatch):
+        """pre_callback_dispatch callbacks return action dicts mirroring
+        pre_gateway_dispatch (skip / rewrite / allow)."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "precallback_plugin",
+            register_body=(
+                'ctx.register_hook("pre_callback_dispatch", '
+                'lambda **kw: {"action": "skip", "reason": "legacy-prefix"})'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        results = mgr.invoke_hook(
+            "pre_callback_dispatch",
+            query=object(),
+            data="fq:x:abc",
+            gateway=object(),
+            source=object(),
+        )
+        assert len(results) == 1
+        assert results[0] == {"action": "skip", "reason": "legacy-prefix"}
 
     def test_register_and_invoke_hook(self, tmp_path, monkeypatch):
         """Registered hooks are called on invoke_hook()."""

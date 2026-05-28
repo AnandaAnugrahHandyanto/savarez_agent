@@ -4186,8 +4186,9 @@ class GatewayRunner:
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
+            adapter.set_gateway_ref(self)
             adapter._busy_text_mode = self._busy_text_mode
-            
+
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
             self._update_platform_runtime_status(
@@ -5892,6 +5893,7 @@ class GatewayRunner:
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
                     adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
+                    adapter.set_gateway_ref(self)
                     adapter._busy_text_mode = self._busy_text_mode
 
                     success = await self._connect_adapter_with_timeout(adapter, platform)

@@ -150,6 +150,59 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Telegram callback-query pre-dispatch hook. Fired at the TOP of
+    # ``TelegramAdapter._handle_callback_query`` for every inbound callback
+    # query (inline-keyboard button click), BEFORE any of the built-in
+    # prefix branches (model picker, gmail triage, exec approval, slash
+    # confirm, clarify, …) run. Plugins return a dict to influence flow;
+    # action semantics mirror ``pre_gateway_dispatch`` (the payload field is
+    # ``data`` instead of ``text`` because the python-telegram-bot
+    # CallbackQuery payload is named ``data``):
+    #   {"action": "skip",    "reason": "...",       # drop click, no upstream branches run
+    #    "answer_text": "..." (optional)}            # if present, core awaits
+    #                                                # ``query.answer(text=answer_text)``
+    #                                                # before returning so plugins
+    #                                                # do not need an async hook
+    #   {"action": "rewrite", "data":   "..."}       # replace query.data, continue dispatch
+    #   {"action": "allow"}   /   None               # normal dispatch
+    #
+    # Result precedence: hooks are invoked in plugin registration order; the
+    # FIRST result whose ``action`` is one of skip/rewrite/allow wins. Later
+    # hooks for the same callback are ignored. Plugins SHOULD return None for
+    # cases they do not handle.
+    #
+    # Kwargs: query: telegram.CallbackQuery (live PTB object — methods like
+    #         ``query.edit_message_text`` are callable but the recommended
+    #         answer path is the ``answer_text`` skip payload above so the
+    #         core await happens once),
+    #         data: str (current payload, possibly already rewritten by an
+    #         earlier hook),
+    #         gateway: GatewayRunner | None (None in unit-test contexts or
+    #         pre-adapter-registration),
+    #         source: SessionSource (chat_id may be the empty string if the
+    #         callback's chat could not be resolved; chat_type defaults to
+    #         ``"dm"``).
+    #
+    # Exception handling: ordinary ``Exception`` raised by any callback (or
+    # by the invocation layer) fails open — dispatch falls through to the
+    # normal prefix branches. Process-control exceptions
+    # (``KeyboardInterrupt``, ``SystemExit``, ``asyncio.CancelledError``,
+    # other ``BaseException`` subclasses) propagate unchanged.
+    #
+    # Auth note: this hook runs BEFORE any per-branch authorization check,
+    # so plugins handling unauthorized clicks (e.g. legacy-button retirement
+    # adapters) can answer without triggering an "Unauthorized" toast.
+    # Plugins that want auth must check ``source.user_id`` themselves.
+    #
+    # Rewrite warning: the model-picker branch (``mp:``/``mm:``/``mb``/``mx``/
+    # ``mg:``) has NO authorization check today; a malicious or buggy
+    # ``rewrite`` from another prefix into one of those targets could let an
+    # unauthorized clicker change the user's active model. Plugins that
+    # don't strictly need ``rewrite`` SHOULD prefer ``skip`` with
+    # plugin-owned handling for legacy migrations. If using ``rewrite``,
+    # validate the source clicker's auth yourself before producing the new
+    # payload.
+    "pre_callback_dispatch",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs user approval -- fires BOTH for CLI-interactive prompts
     # and for gateway/ACP approvals (Telegram, Discord, Slack, TUI, etc.).

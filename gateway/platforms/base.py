@@ -1588,6 +1588,13 @@ class BasePlatformAdapter(ABC):
         # ``event.source.thread_id`` before session keying. Returns the
         # corrected thread_id or None to leave the source untouched.
         self._topic_recovery_fn: Optional[Callable[[Any], Optional[str]]] = None
+        # Optional back-reference to the GatewayRunner, set by
+        # ``set_gateway_ref`` after the adapter is connected. Used by
+        # hooks fired from inside adapter callbacks (e.g.
+        # ``pre_callback_dispatch``) that need a gateway handle. May
+        # remain None in unit-test contexts where the adapter is
+        # instantiated outside a real gateway runner.
+        self._gateway_ref: Optional[Any] = None
         self._running = False
         self._fatal_error_code: Optional[str] = None
         self._fatal_error_message: Optional[str] = None
@@ -1880,6 +1887,17 @@ class BasePlatformAdapter(ABC):
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
+
+    def set_gateway_ref(self, gateway: Any) -> None:
+        """Bind a back-reference to the GatewayRunner.
+
+        Set once at adapter registration time so adapter callbacks (e.g.
+        ``_handle_callback_query``) that need to invoke plugin hooks with a
+        ``gateway=`` kwarg can do so. Outside a real gateway runner (unit
+        tests, standalone use) this stays None and consumers must treat
+        the kwarg as optional.
+        """
+        self._gateway_ref = gateway
     
     def set_session_store(self, session_store: Any) -> None:
         """
