@@ -142,6 +142,20 @@ async def test_registers_native_thread_slash_command(adapter):
 
 
 @pytest.mark.asyncio
+async def test_registers_native_close_thread_slash_command(adapter):
+    adapter._handle_close_thread_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    command = adapter._client.tree.commands["close-thread"]
+    interaction = SimpleNamespace(response=SimpleNamespace(defer=AsyncMock()))
+
+    await command(interaction, reason="done")
+
+    interaction.response.defer.assert_not_awaited()
+    adapter._handle_close_thread_slash.assert_awaited_once_with(interaction, "done")
+
+
+@pytest.mark.asyncio
 async def test_registers_native_restart_slash_command(adapter):
     adapter._run_simple_slash = AsyncMock()
     adapter._register_slash_commands()
@@ -155,6 +169,22 @@ async def test_registers_native_restart_slash_command(adapter):
         interaction,
         "/restart",
         "Restart requested~",
+    )
+
+
+@pytest.mark.asyncio
+async def test_registers_signoff_slash_command(adapter):
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    assert "signoff" in adapter._client.tree.commands
+    signoff_cmd = adapter._client.tree.commands["signoff"]
+    interaction = SimpleNamespace()
+
+    await signoff_cmd.callback(interaction, args="--since today")
+
+    adapter._run_simple_slash.assert_awaited_once_with(
+        interaction, "/signoff --since today"
     )
 
 
@@ -418,6 +448,127 @@ async def test_handle_thread_create_slash_reports_failure(adapter):
     args, kwargs = interaction.followup.send.await_args
     assert "Failed to create thread:" in args[0]
     assert "nope" in args[0]
+    assert kwargs["ephemeral"] is True
+
+
+@pytest.mark.asyncio
+async def test_handle_close_thread_slash_writes_closeout_without_archiving(adapter):
+    thread = _FakeThreadChannel(channel_id=555, name="[wtupdate] Planning")
+    thread.edit = AsyncMock()
+    interaction = SimpleNamespace(
+        channel=thread,
+        channel_id=555,
+        user=SimpleNamespace(display_name="Jezza", id=42),
+        guild=SimpleNamespace(id=1, name="TestGuild"),
+        followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
+        id=999,
+    )
+
+    with patch(
+        "plugins.platforms.discord.adapter.run_close_thread",
+        return_value="CLOSE_THREAD_PACKET\nStatus: GREEN\nArtifact: /tmp/closeout.json",
+    ) as closeout:
+        await adapter._handle_close_thread_slash(interaction, "done")
+
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+    closeout.assert_called_once()
+    command_text = closeout.call_args.args[0]
+    assert command_text == "/close-thread --mode close"
+    source = closeout.call_args.kwargs["source"]
+    assert source["thread_id"] == "555"
+    assert source["thread_name"] == "[wtupdate] Planning"
+    assert [label["id"] for label in source["thread_labels"]] == ["wtupdate"]
+    thread.edit.assert_not_awaited()
+    interaction.followup.send.assert_awaited_once()
+    args, kwargs = interaction.followup.send.await_args
+    assert "CLOSE_THREAD_PACKET" in args[0]
+    assert "Closeout packet written" in args[0]
+    assert "Live archive/lock was not attempted" in args[0]
+    assert kwargs["ephemeral"] is True
+
+
+@pytest.mark.asyncio
+async def test_handle_close_thread_slash_does_not_archive_when_closeout_blocks(adapter):
+    thread = _FakeThreadChannel(channel_id=555, name="Planning")
+    thread.edit = AsyncMock()
+    interaction = SimpleNamespace(
+        channel=thread,
+        channel_id=555,
+        user=SimpleNamespace(display_name="Jezza", id=42),
+        guild=SimpleNamespace(id=1, name="TestGuild"),
+        followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
+        id=999,
+    )
+
+    with patch(
+        "plugins.platforms.discord.adapter.run_close_thread",
+        return_value="CLOSE_THREAD_PACKET\nStatus: BLOCKED\nDurable anchor: missing durable anchor",
+    ):
+        await adapter._handle_close_thread_slash(interaction, "done")
+
+    thread.edit.assert_not_awaited()
+    args, kwargs = interaction.followup.send.await_args
+    assert "Closeout is BLOCKED" in args[0]
+    assert "missing durable anchor" in args[0]
+    assert kwargs["ephemeral"] is True
+
+
+@pytest.mark.asyncio
+async def test_handle_close_thread_slash_resolves_thread_from_interaction_channel_id(adapter):
+    """Discord slash interactions can expose the parent channel object while
+    channel_id still points at the active thread.  /close-thread should resolve
+    that channel ID before rejecting the command as non-thread."""
+    parent = _FakeTextChannel(channel_id=123, name="engineering-office")
+    thread = _FakeThreadChannel(channel_id=555, name="Close-thread isn't working", parent_id=123)
+    thread.edit = AsyncMock()
+    adapter._client.get_channel = MagicMock(return_value=thread)
+    adapter._client.fetch_channel = AsyncMock()
+    interaction = SimpleNamespace(
+        channel=parent,
+        channel_id=555,
+        user=SimpleNamespace(display_name="Jezza", id=42),
+        guild=SimpleNamespace(id=1, name="TestGuild"),
+        followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
+        id=999,
+    )
+
+    with patch(
+        "plugins.platforms.discord.adapter.run_close_thread",
+        return_value="CLOSE_THREAD_PACKET\nStatus: GREEN\nArtifact: /tmp/closeout.json",
+    ) as closeout:
+        await adapter._handle_close_thread_slash(interaction, "done")
+
+    adapter._client.get_channel.assert_called_once_with(555)
+    adapter._client.fetch_channel.assert_not_awaited()
+    closeout.assert_called_once()
+    source = closeout.call_args.kwargs["source"]
+    assert source["channel_id"] == "123"
+    assert source["thread_id"] == "555"
+    assert source["thread_name"] == "Close-thread isn't working"
+    thread.edit.assert_not_awaited()
+    args, kwargs = interaction.followup.send.await_args
+    assert "Closeout packet written" in args[0]
+    assert kwargs["ephemeral"] is True
+
+
+@pytest.mark.asyncio
+async def test_handle_close_thread_slash_rejects_non_thread_channels(adapter):
+    interaction = SimpleNamespace(
+        channel=_FakeTextChannel(channel_id=123, name="general"),
+        channel_id=123,
+        user=SimpleNamespace(display_name="Jezza", id=42),
+        followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
+    )
+
+    await adapter._handle_close_thread_slash(interaction, "done")
+
+    interaction.followup.send.assert_awaited_once()
+    args, kwargs = interaction.followup.send.await_args
+    assert "/close-thread can only be used inside a Discord thread" in args[0]
     assert kwargs["ephemeral"] is True
 
 
@@ -980,4 +1131,3 @@ def test_register_skill_command_autocomplete_filters_by_name_and_description(ada
     # (covered in other tests). The autocomplete filter itself is exercised
     # via direct function call in the real-discord integration path.
     assert skill_cmd.callback is not None
-
