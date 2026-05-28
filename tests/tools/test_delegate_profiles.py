@@ -94,3 +94,52 @@ class TestResolveProfile:
     def test_no_profiles_section_raises_with_none_configured(self, _mock_cfg):
         with pytest.raises(ValueError, match="none configured"):
             _resolve_profile("coder")
+
+
+class TestBuildChildSystemPrompt:
+    def test_default_prompt_starts_with_focused_subagent(self):
+        result = _build_child_system_prompt("Do something")
+        assert result.startswith("You are a focused subagent")
+
+    def test_profile_system_prompt_replaces_first_line(self):
+        result = _build_child_system_prompt(
+            "Do something",
+            profile_system_prompt="You are a coder.",
+        )
+        assert result.startswith("You are a coder.")
+        assert "focused subagent" not in result
+
+    def test_profile_system_prompt_does_not_duplicate(self):
+        result = _build_child_system_prompt(
+            "Do something",
+            profile_system_prompt="You are a coder.",
+        )
+        assert result.count("You are a coder.") == 1
+
+    def test_profile_constraints_appear_before_complete_instruction(self):
+        result = _build_child_system_prompt(
+            "Do something",
+            profile_constraints="- Tests before code\n- No side effects",
+        )
+        constraints_pos = result.index("CONSTRAINTS:")
+        complete_pos = result.index("Complete this task")
+        assert constraints_pos < complete_pos
+
+    def test_profile_constraints_section_header(self):
+        result = _build_child_system_prompt(
+            "Do something",
+            profile_constraints="- No side effects",
+        )
+        assert "CONSTRAINTS:\n- No side effects" in result
+
+    def test_no_constraints_no_section(self):
+        result = _build_child_system_prompt("Do something")
+        assert "CONSTRAINTS:" not in result
+
+    def test_goal_always_present(self):
+        result = _build_child_system_prompt(
+            "Build login",
+            profile_system_prompt="You are a coder.",
+            profile_constraints="- TDD only",
+        )
+        assert "YOUR TASK:\nBuild login" in result
