@@ -107,6 +107,7 @@ def test_ensure_docker_available_uses_resolved_executable(monkeypatch):
 
     assert calls == [
         (["/opt/homebrew/bin/docker", "version"], {
+            "stdin": subprocess.DEVNULL,
             "capture_output": True,
             "text": True,
             "timeout": 5,

@@ -390,6 +390,7 @@ def _ensure_docker_available() -> None:
     try:
         result = subprocess.run(
             [docker_exe, "version"],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=5,
@@ -712,6 +713,7 @@ class DockerEnvironment(BaseEnvironment):
                     try:
                         subprocess.run(
                             [self._docker_exe, "start", container_id],
+                            stdin=subprocess.DEVNULL,
                             capture_output=True,
                             text=True,
                             timeout=30,
@@ -745,6 +747,7 @@ class DockerEnvironment(BaseEnvironment):
             logger.debug(f"Starting container: {' '.join(run_cmd)}")
             result = subprocess.run(
                 run_cmd,
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=120,  # image pull may take a while
@@ -830,6 +833,7 @@ class DockerEnvironment(BaseEnvironment):
             docker = find_docker() or "docker"
             result = subprocess.run(
                 [docker, "info", "--format", "{{.Driver}}"],
+                stdin=subprocess.DEVNULL,
                 capture_output=True, text=True, timeout=10,
             )
             driver = result.stdout.strip().lower()
@@ -840,6 +844,7 @@ class DockerEnvironment(BaseEnvironment):
             # Probe by attempting a dry-ish run — the fastest reliable check.
             probe = subprocess.run(
                 [docker, "create", "--storage-opt", "size=1m", "hello-world"],
+                stdin=subprocess.DEVNULL,
                 capture_output=True, text=True, timeout=15,
             )
             if probe.returncode == 0:
@@ -847,6 +852,7 @@ class DockerEnvironment(BaseEnvironment):
                 container_id = probe.stdout.strip()
                 if container_id:
                     subprocess.run([docker, "rm", container_id],
+                                   stdin=subprocess.DEVNULL,
                                    capture_output=True, timeout=5)
                 _storage_opt_ok = True
             else:
@@ -878,6 +884,7 @@ class DockerEnvironment(BaseEnvironment):
                     "--filter", f"label=hermes-profile={profile_label}",
                     "--format", "{{.ID}}\t{{.State}}",
                 ],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -997,6 +1004,7 @@ class DockerEnvironment(BaseEnvironment):
                 try:
                     subprocess.run(
                         [docker_exe, "stop", "-t", "10", container_id],
+                        stdin=subprocess.DEVNULL,
                         capture_output=True, timeout=30,
                     )
                 except (subprocess.TimeoutExpired, OSError) as e:
@@ -1005,6 +1013,7 @@ class DockerEnvironment(BaseEnvironment):
                 try:
                     subprocess.run(
                         [docker_exe, "rm", "-f", container_id],
+                        stdin=subprocess.DEVNULL,
                         capture_output=True, timeout=30,
                     )
                 except (subprocess.TimeoutExpired, OSError) as e:
