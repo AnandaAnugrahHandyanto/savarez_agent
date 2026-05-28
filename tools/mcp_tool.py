@@ -2400,6 +2400,146 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
 
 
 # ---------------------------------------------------------------------------
+# Shell-like MCP tool detection + approval gate
+# ---------------------------------------------------------------------------
+#
+# ``tools/approval.py`` (dangerous-command + Smart-mode + hardline floor)
+# is only wired into ``tools/terminal_tool.py``.  MCP wrappers like
+# ``ssh``, ``docker``, the official ``@modelcontextprotocol/server-shell``,
+# and similar exec-style servers spawn subprocesses on their own — without
+# this guard, the agent can route ``rm -rf /``, ``shutdown``, etc. through
+# an MCP tool and bypass the entire approval system (no regex check, no
+# Smart-mode prompt, no audit entry).  See NousResearch/hermes-agent#32877.
+#
+# We can't blanket-gate every MCP call because MCP tools have arbitrary
+# semantics (reading a file, fetching a URL, querying a DB).  Instead we
+# fire the gate only when (a) the tool's name matches a known shell/exec
+# pattern AND (b) the arguments expose a command-shaped field we can scan.
+# That keeps the false-positive surface tiny while closing the most
+# obvious bypass paths reported in the issue.
+
+# Tool-name fragments that indicate shell/exec semantics. Matched as a
+# case-insensitive substring against the underlying MCP tool name (NOT the
+# ``mcp_<server>_<tool>`` registry alias) so e.g. ``run_command``,
+# ``execute_shell``, ``bash_exec``, and ``docker_exec`` all light up.
+_MCP_SHELL_TOOL_NAME_FRAGMENTS = (
+    "shell",
+    "bash",
+    "exec",
+    "run_command",
+    "runcommand",
+    "run_shell",
+    "runshell",
+    "run_script",
+    "runscript",
+    "command_line",
+    "commandline",
+    "subprocess",
+    "system_call",
+    "syscall",
+    "spawn",
+)
+
+# Argument keys (case-insensitive) that an exec-style MCP tool typically
+# uses to carry the actual command string.  When a tool name matches a
+# shell-like fragment we look for these keys and concatenate their values
+# into a single payload for ``check_all_command_guards``.
+_MCP_COMMAND_ARG_KEYS = (
+    "command",
+    "cmd",
+    "commandline",
+    "command_line",
+    "shell_command",
+    "script",
+    "bash",
+    "code",
+    "args",
+    "argv",
+    "arguments",
+)
+
+
+def _is_shell_like_mcp_tool(tool_name: str) -> bool:
+    """True if the MCP tool name suggests shell/exec semantics."""
+    if not tool_name:
+        return False
+    lowered = tool_name.lower()
+    return any(frag in lowered for frag in _MCP_SHELL_TOOL_NAME_FRAGMENTS)
+
+
+def _extract_mcp_command_payload(args: Any) -> Optional[str]:
+    """Pull a command-shaped string out of MCP tool arguments.
+
+    Returns the concatenated payload if one of ``_MCP_COMMAND_ARG_KEYS``
+    is present, otherwise ``None``.  Accepts list/tuple values (joined
+    with spaces) so ``argv``-style inputs are also scanned.
+    """
+    if not isinstance(args, dict):
+        return None
+    parts: List[str] = []
+    for key, value in args.items():
+        if not isinstance(key, str):
+            continue
+        if key.lower() not in _MCP_COMMAND_ARG_KEYS:
+            continue
+        if isinstance(value, str):
+            if value.strip():
+                parts.append(value)
+        elif isinstance(value, (list, tuple)):
+            joined = " ".join(str(v) for v in value if v is not None)
+            if joined.strip():
+                parts.append(joined)
+    if not parts:
+        return None
+    return " ".join(parts)
+
+
+def _check_mcp_command_guard(
+    server_name: str, tool_name: str, args: Any
+) -> Optional[str]:
+    """Run the dangerous-command guard on shell-like MCP tool calls.
+
+    Returns ``None`` when the call is approved (or the tool is not
+    shell-like / has no command-shaped argument).  Returns a JSON error
+    string when the call is blocked — the handler should short-circuit
+    and return that string instead of invoking the MCP server.
+    """
+    if not _is_shell_like_mcp_tool(tool_name):
+        return None
+    command = _extract_mcp_command_payload(args)
+    if not command:
+        return None
+    try:
+        from tools.approval import check_all_command_guards
+    except Exception as exc:  # pragma: no cover — approval is always available
+        logger.debug("MCP approval gate unavailable: %s", exc)
+        return None
+    try:
+        # ``env_type="local"`` — MCP-routed commands can affect the host
+        # (ssh, docker exec, filesystem MCP), so we want the full guard
+        # set rather than the container-bypass branch used by sandboxed
+        # terminal backends.
+        decision = check_all_command_guards(command, env_type="local")
+    except Exception as exc:
+        logger.warning(
+            "MCP approval gate raised for %s/%s: %s",
+            server_name, tool_name, exc,
+        )
+        return None
+    if decision.get("approved"):
+        return None
+    message = decision.get("message") or (
+        f"BLOCKED: MCP tool '{tool_name}' on server '{server_name}' "
+        "was denied by the dangerous-command approval gate."
+    )
+    logger.warning(
+        "MCP approval gate blocked %s/%s: %s",
+        server_name, tool_name, message,
+    )
+    return json.dumps({"error": message}, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
 # Handler / check-fn factories
 # ---------------------------------------------------------------------------
 
@@ -2444,6 +2584,15 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
             }, ensure_ascii=False)
+
+        # Dangerous-command approval gate for shell-like MCP tools.
+        # Routes ssh/docker/exec-style MCP calls through the same
+        # hardline + Smart-mode + manual-approval pipeline that
+        # ``tools/terminal_tool.py`` uses, so the agent can't bypass
+        # the gate by going through an MCP wrapper.  See #32877.
+        guard_block = _check_mcp_command_guard(server_name, tool_name, args)
+        if guard_block is not None:
+            return guard_block
 
         async def _call():
             async with server._rpc_lock:
