@@ -56,6 +56,7 @@ import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
 import { useSystemActions } from "@/contexts/useSystemActions";
 import type { SystemAction } from "@/contexts/system-actions-context";
 import ConfigPage from "@/pages/ConfigPage";
+import LatticeUI from "@/pages/LatticeUI";
 import DocsPage from "@/pages/DocsPage";
 import EnvPage from "@/pages/EnvPage";
 import SessionsPage from "@/pages/SessionsPage";
@@ -118,6 +119,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
+  "/lattice": LatticeUI,
 };
 
 // Route placeholder for /chat.  The persistent ChatPage host (rendered
@@ -160,6 +162,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
     label: "Documentation",
     icon: BookOpen,
   },
+  { path: "/lattice", label: "Lattice UI", icon: Sparkles },
 ];
 
 const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {

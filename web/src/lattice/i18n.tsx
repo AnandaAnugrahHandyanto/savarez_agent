@@ -1,5 +1,5 @@
 // i18n.tsx — language strings + useT hook
-import React, { createContext, useContext } from 'react';
+import { createContext, useContext } from 'react';
 
 const STRINGS: Record<string, Record<string, string>> = {
   en: {

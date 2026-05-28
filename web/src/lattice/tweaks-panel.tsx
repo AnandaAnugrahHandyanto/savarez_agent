@@ -301,7 +301,7 @@ export function TweakRadio({ label, value, options, onChange }: TweakRadioProps)
   valueRef.current = value;
 
   const labelLen = (o: TweakOption) => String(typeof o === 'object' ? (o as any).label : o).length;
-  const maxLen = options.reduce((m, o) => Math.max(m, labelLen(o)), 0);
+  const maxLen = options.reduce<number>((m, o) => Math.max(m, labelLen(o)), 0);
   const optCount = options.length;
   const maxByCount: Record<number, number> = { 2: 16, 3: 10 };
   const fitsAsSegments = maxLen <= (maxByCount[optCount] ?? 0);
