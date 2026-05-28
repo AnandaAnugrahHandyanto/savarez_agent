@@ -2763,6 +2763,17 @@ class APIServerAdapter(BasePlatformAdapter):
         previous_response_id = body.get("previous_response_id")
         conversation = body.get("conversation")
         store = _coerce_request_bool(body.get("store"), default=True)
+        
+        text_format = body.get("text", {}).get("format", {}) if body.get("text") else None
+        
+        if text_format and text_format.get("type") == "json_schema":
+            return web.json_response(
+                _openai_error(
+                    "Structured output (json_schema) is not yet supported on the /v1/responses endpoint. "
+                    "Please use the /v1/chat/completions endpoint with response_format parameter instead."
+                ),
+                status=400
+            )
 
         # conversation and previous_response_id are mutually exclusive
         if conversation and previous_response_id:
