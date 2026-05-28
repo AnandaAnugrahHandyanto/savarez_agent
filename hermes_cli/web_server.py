@@ -2547,6 +2547,16 @@ async def get_session_messages(session_id: str):
         db.close()
 
 
+@app.get("/api/sessions/{session_id}/audit")
+async def get_session_audit(session_id: str):
+    """Return append-only context/audit snapshots for a session."""
+    from agent.companion_audit import iter_session_audit_events
+
+    events = list(iter_session_audit_events(session_id))
+    events.sort(key=lambda e: e.get("timestamp_unix") or e.get("timestamp") or 0)
+    return {"session_id": session_id, "count": len(events), "events": events}
+
+
 @app.delete("/api/sessions/{session_id}")
 async def delete_session_endpoint(session_id: str):
     from hermes_state import SessionDB

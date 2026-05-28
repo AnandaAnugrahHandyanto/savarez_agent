@@ -964,6 +964,29 @@ def run_conversation(
             api_messages, tools=agent.tools or None
         )
 
+        try:
+            from agent.companion_audit import resolve_active_profile_name, write_turn_snapshot
+            write_turn_snapshot(
+                session_id=agent.session_id or "",
+                profile=resolve_active_profile_name(),
+                platform=agent.platform or "",
+                user_message=original_user_message if isinstance(original_user_message, str) else "",
+                assistant_response=None,
+                system_prompt=effective_system,
+                request_messages=list(api_messages),
+                tools=agent.tools or [],
+                enabled_toolsets=list(agent.enabled_toolsets or []),
+                memory_context=_ext_prefetch_cache,
+                plugin_context=_plugin_user_context,
+                api_call_count=api_call_count,
+                approx_input_tokens=approx_tokens,
+                request_char_count=total_chars,
+                model=agent.model,
+                provider=agent.provider,
+            )
+        except Exception as exc:
+            logger.debug("companion audit snapshot failed: %s", exc)
+
         _runtime_context_error = _ollama_context_limit_error(
             agent, approx_request_tokens
         )

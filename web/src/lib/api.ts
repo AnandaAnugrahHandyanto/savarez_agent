@@ -178,6 +178,8 @@ export const api = {
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
     fetchJSON<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(id)}/messages`),
+  getSessionAudit: (id: string) =>
+    fetchJSON<SessionAuditResponse>(`/api/sessions/${encodeURIComponent(id)}/audit`),
   getSessionLatestDescendant: (id: string) =>
     fetchJSON<SessionLatestDescendantResponse>(
       `/api/sessions/${encodeURIComponent(id)}/latest-descendant`,
@@ -575,6 +577,52 @@ export interface SessionMessage {
 export interface SessionMessagesResponse {
   session_id: string;
   messages: SessionMessage[];
+}
+
+export interface SessionAuditEvent {
+  schema_version?: number;
+  event?: string;
+  timestamp?: string;
+  timestamp_unix?: number;
+  session_id: string;
+  profile?: string;
+  platform?: string;
+  user_message?: string;
+  assistant_response?: string;
+  model?: string;
+  provider?: string;
+  context?: {
+    system_prompt_sha256?: string;
+    system_prompt_char_count?: number;
+    system_prompt_preview?: string;
+    memory_context_present?: boolean;
+    memory_context_preview?: string;
+    plugin_context_present?: boolean;
+    plugin_context_preview?: string;
+    enabled_toolsets?: string[];
+  };
+  request?: {
+    api_call_count?: number | null;
+    message_count?: number;
+    approx_input_tokens?: number | null;
+    request_char_count?: number | null;
+  };
+  tools?: {
+    available?: string[];
+    available_count?: number;
+  };
+  tool_attempts?: Array<{
+    id?: string;
+    name?: string;
+    arguments?: unknown;
+    result_preview?: string;
+  }>;
+}
+
+export interface SessionAuditResponse {
+  session_id: string;
+  count: number;
+  events: SessionAuditEvent[];
 }
 
 export interface LogsResponse {

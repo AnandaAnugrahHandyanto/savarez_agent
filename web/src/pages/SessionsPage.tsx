@@ -27,6 +27,7 @@ import {
 import { api } from "@/lib/api";
 import type {
   SessionInfo,
+  SessionAuditEvent,
   SessionMessage,
   SessionSearchResult,
   StatusResponse,
@@ -255,6 +256,83 @@ function MessageList({
   );
 }
 
+function AuditPanel({ events }: { events: SessionAuditEvent[] }) {
+  if (events.length === 0) {
+    return (
+      <div className="rounded border border-border bg-muted/20 p-3 text-sm text-muted-foreground">
+        No context audit snapshots recorded for this session yet.
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-4 flex flex-col gap-3">
+      <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground">
+        <Database className="h-3.5 w-3.5" />
+        Context audit snapshots
+      </div>
+      {events.map((event, idx) => {
+        const context = event.context ?? {};
+        const request = event.request ?? {};
+        const tools = event.tools ?? {};
+        const attempts = event.tool_attempts ?? [];
+        return (
+          <div key={`${event.timestamp ?? "audit"}-${idx}`} className="border border-border bg-background p-3">
+            <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <Badge tone="secondary" className="text-xs">
+                {event.profile ?? "default"}
+              </Badge>
+              <span>{event.platform || "local"}</span>
+              <span>API call {request.api_call_count ?? idx + 1}</span>
+              {event.timestamp && <span>{event.timestamp}</span>}
+            </div>
+            <div className="grid gap-2 text-xs sm:grid-cols-2">
+              <div>
+                <div className="font-semibold text-foreground">Model</div>
+                <div className="text-muted-foreground">{event.provider || "unknown"} / {event.model || "unknown"}</div>
+              </div>
+              <div>
+                <div className="font-semibold text-foreground">Request</div>
+                <div className="text-muted-foreground">
+                  {request.message_count ?? 0} messages · {request.approx_input_tokens ?? "?"} est. tokens
+                </div>
+              </div>
+              <div>
+                <div className="font-semibold text-foreground">System prompt</div>
+                <div className="break-all text-muted-foreground">
+                  {context.system_prompt_char_count ?? 0} chars · {(context.system_prompt_sha256 ?? "").slice(0, 12) || "no hash"}
+                </div>
+              </div>
+              <div>
+                <div className="font-semibold text-foreground">Context injections</div>
+                <div className="text-muted-foreground">
+                  memory: {context.memory_context_present ? "yes" : "no"} · plugins: {context.plugin_context_present ? "yes" : "no"}
+                </div>
+              </div>
+            </div>
+            {context.enabled_toolsets && context.enabled_toolsets.length > 0 && (
+              <div className="mt-2 text-xs text-muted-foreground">
+                Toolsets: {context.enabled_toolsets.join(", ")}
+              </div>
+            )}
+            {tools.available && tools.available.length > 0 && (
+              <div className="mt-2 text-xs text-muted-foreground">
+                Available tools: {tools.available.slice(0, 20).join(", ")}
+                {tools.available.length > 20 ? ` +${tools.available.length - 20} more` : ""}
+              </div>
+            )}
+            {attempts.length > 0 && (
+              <div className="mt-2 text-xs text-muted-foreground">
+                Tool attempts: {attempts.map((attempt) => attempt.name ?? "unknown").join(", ")}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function SessionRow({
   session,
   snippet,
@@ -273,21 +351,27 @@ function SessionRow({
   resumeInChatEnabled: boolean;
 }) {
   const [messages, setMessages] = useState<SessionMessage[] | null>(null);
+  const [auditEvents, setAuditEvents] = useState<SessionAuditEvent[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { t } = useI18n();
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (isExpanded && messages === null && !loading) {
+    if (isExpanded && (messages === null || auditEvents === null) && !loading) {
       setLoading(true);
-      api
-        .getSessionMessages(session.id)
-        .then((resp) => setMessages(resp.messages))
+      Promise.all([
+        api.getSessionMessages(session.id),
+        api.getSessionAudit(session.id).catch(() => ({ events: [] })),
+      ])
+        .then(([messagesResp, auditResp]) => {
+          setMessages(messagesResp.messages);
+          setAuditEvents(auditResp.events);
+        })
         .catch((err) => setError(String(err)))
         .finally(() => setLoading(false));
     }
-  }, [isExpanded, session.id, messages, loading]);
+  }, [isExpanded, session.id, messages, auditEvents, loading]);
 
   const sourceInfo = (session.source
     ? SOURCE_CONFIG[session.source]
@@ -416,7 +500,10 @@ function SessionRow({
             </p>
           )}
           {messages && messages.length > 0 && (
-            <MessageList messages={messages} highlight={searchQuery} />
+            <>
+              <MessageList messages={messages} highlight={searchQuery} />
+              <AuditPanel events={auditEvents ?? []} />
+            </>
           )}
         </div>
       )}
