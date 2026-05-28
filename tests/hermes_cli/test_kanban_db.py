@@ -98,12 +98,19 @@ def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     corrupt = home / "kanban.db"
-    corrupt.write_bytes(b"SQLit" + bytes.fromhex("17 03 03 00 13") + b"x" * 32)
+    original = b"SQLit" + bytes.fromhex("17 03 03 00 13") + b"x" * 32
+    corrupt.write_bytes(original)
 
-    with pytest.raises(sqlite3.DatabaseError) as exc_info:
+    with pytest.raises(kb.KanbanDbCorruptError) as exc_info:
         kb.connect(board="default")
 
-    msg = str(exc_info.value)
+    err = exc_info.value
+    assert err.db_path == corrupt
+    assert err.backup_path is not None
+    assert err.backup_path.exists()
+    assert err.backup_path.read_bytes() == original
+    assert corrupt.read_bytes() == original
+    msg = str(err)
     assert "file is not a database" in msg
     assert "TLS record header detected at byte offset 5" in msg
     assert "53 51 4c 69 74 17 03 03 00 13" in msg

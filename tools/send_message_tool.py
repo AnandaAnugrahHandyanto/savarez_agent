@@ -494,6 +494,8 @@ async def _send_via_adapter(
     thread_id=None,
     media_files=None,
     force_document=False,
+    applied_tags=None,
+    thread_name=None,
 ):
     """Send a message via a live gateway adapter, with a standalone fallback
     for out-of-process callers (e.g. cron running separately from the gateway).
@@ -526,6 +528,10 @@ async def _send_via_adapter(
                     metadata["thread_id"] = thread_id
                 if platform_name == "ntfy" and chat_id:
                     metadata["publish_topic"] = chat_id
+                if applied_tags is not None:
+                    metadata["applied_tags"] = applied_tags
+                if thread_name is not None:
+                    metadata["thread_name"] = thread_name
                 if not metadata:
                     metadata = None
                 result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
@@ -546,13 +552,24 @@ async def _send_via_adapter(
 
     if entry is not None and entry.standalone_sender_fn is not None:
         try:
+            standalone_kwargs = {
+                "thread_id": thread_id,
+                "media_files": media_files,
+            }
+            # Preserve compatibility with older standalone sender hooks that only
+            # accept the original thread/media kwargs.  Only pass newer optional
+            # metadata when it is explicitly requested.
+            if force_document:
+                standalone_kwargs["force_document"] = force_document
+            if applied_tags is not None:
+                standalone_kwargs["applied_tags"] = applied_tags
+            if thread_name is not None:
+                standalone_kwargs["thread_name"] = thread_name
             result = await entry.standalone_sender_fn(
                 pconfig,
                 chat_id,
                 chunk,
-                thread_id=thread_id,
-                media_files=media_files,
-                force_document=force_document,
+                **standalone_kwargs,
             )
         except asyncio.CancelledError:
             raise
@@ -580,7 +597,34 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_discord(
+    pconfig,
+    chat_id,
+    chunk,
+    *,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+    applied_tags=None,
+    thread_name=None,
+):
+    """Send one Discord chunk through the shared adapter/standalone path."""
+    from gateway.config import Platform
+
+    return await _send_via_adapter(
+        Platform.DISCORD,
+        pconfig,
+        chat_id,
+        chunk,
+        thread_id=thread_id,
+        media_files=media_files,
+        force_document=force_document,
+        applied_tags=applied_tags,
+        thread_name=thread_name,
+    )
+
+
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, applied_tags=None, thread_name=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -600,6 +644,14 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 
     from gateway.platforms.base import BasePlatformAdapter, utf16_len
     from gateway.platforms.slack import SlackAdapter
+
+    # Discord adapter import is optional at import time in some deployments.
+    try:
+        from plugins.platforms.discord.adapter import DiscordAdapter
+        _discord_available = True
+    except ImportError:
+        DiscordAdapter = None
+        _discord_available = False
 
     # Telegram adapter import is optional (requires python-telegram-bot)
     try:
@@ -628,6 +680,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH if _telegram_available else 4096,
         Platform.SLACK: SlackAdapter.MAX_MESSAGE_LENGTH,
     }
+    if _discord_available and DiscordAdapter is not None:
+        _MAX_LENGTHS[Platform.DISCORD] = DiscordAdapter.MAX_MESSAGE_LENGTH
     if _feishu_available:
         _MAX_LENGTHS[Platform.FEISHU] = FeishuAdapter.MAX_MESSAGE_LENGTH
 
@@ -671,31 +725,32 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
-    # --- Discord: chunked delivery via the registry's standalone_sender_fn.
-    # The plugin's ``_standalone_send`` (registered in
-    # plugins/platforms/discord/adapter.py) handles forum channels, threads,
-    # and multipart media uploads.  ``_send_via_adapter`` tries the live
-    # in-process adapter first via ``adapter.send()``, but Discord's elif
-    # historically went straight to the HTTP path; we preserve that by
-    # explicitly invoking the registry hook here so behavior is unchanged.
+    # --- Discord: chunked delivery via the shared adapter/standalone helper.
+    # For forum-channel sends, pass explicit projection metadata only on the
+    # starter thread creation call.  Follow-up chunks target the created thread
+    # id and should not carry forum tags/name again.
     if platform == Platform.DISCORD:
-        from gateway.platform_registry import platform_registry
-        entry = platform_registry.get("discord")
-        if entry is None or entry.standalone_sender_fn is None:
-            return {"error": "Discord plugin not registered or missing standalone_sender_fn"}
         last_result = None
+        current_thread_id = thread_id
         for i, chunk in enumerate(chunks):
             is_last = (i == len(chunks) - 1)
-            result = await entry.standalone_sender_fn(
+            result = await _send_discord(
                 pconfig,
                 chat_id,
                 chunk,
-                thread_id=thread_id,
+                thread_id=current_thread_id,
                 media_files=media_files if is_last else [],
+                force_document=force_document,
+                applied_tags=applied_tags if current_thread_id is None else None,
+                thread_name=thread_name if current_thread_id is None else None,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
+            if current_thread_id is None and isinstance(result, dict) and result.get("thread_id"):
+                current_thread_id = result.get("thread_id")
             last_result = result
+        if isinstance(last_result, dict) and current_thread_id and "thread_id" not in last_result:
+            last_result = {**last_result, "thread_id": current_thread_id}
         return last_result
 
     # --- Matrix: use the native adapter helper when media is present ---

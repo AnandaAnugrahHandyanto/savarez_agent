@@ -1443,7 +1443,12 @@ def connect(
     with _cross_process_init_lock(path):
         # Cheap byte-level check first — catches the #29507 TLS-overwrite shape
         # and other invalid-header cases without opening a sqlite connection.
-        _validate_sqlite_header(path)
+        try:
+            _validate_sqlite_header(path)
+        except sqlite3.DatabaseError as exc:
+            resolved_path = path.resolve()
+            backup = _backup_corrupt_db(resolved_path)
+            raise KanbanDbCorruptError(resolved_path, backup, str(exc)) from exc
         # Full integrity probe — catches corruption past the header (malformed
         # pages, broken internal metadata). Cached per-path after first success
         # via _INITIALIZED_PATHS so it only runs once per process per path.

@@ -1458,7 +1458,12 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
-                return await self._send_to_forum(channel, content)
+                return await self._send_to_forum(
+                    channel,
+                    content,
+                    applied_tags=metadata.get("applied_tags") if metadata else None,
+                    thread_name=metadata.get("thread_name") if metadata else None,
+                )
 
             # Format and split message if needed
             formatted = self.format_message(content)
@@ -1529,7 +1534,14 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
-    async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
+    async def _send_to_forum(
+        self,
+        forum_channel: Any,
+        content: str,
+        *,
+        applied_tags: Optional[list] = None,
+        thread_name: Optional[str] = None,
+    ) -> SendResult:
         """Create a thread post in a forum channel with the message as starter content.
 
         Forum channels (type 15) don't support direct messages.  Instead we
@@ -1544,15 +1556,18 @@ class DiscordAdapter(BasePlatformAdapter):
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
-        thread_name = _derive_forum_thread_name(content)
+        thread_name = thread_name or _derive_forum_thread_name(content)
 
         starter_content = chunks[0] if chunks else thread_name
 
         try:
-            thread = await forum_channel.create_thread(
-                name=thread_name,
-                content=starter_content,
-            )
+            kwargs: Dict[str, Any] = {
+                "name": thread_name,
+                "content": starter_content,
+            }
+            if applied_tags is not None:
+                kwargs["applied_tags"] = applied_tags
+            thread = await forum_channel.create_thread(**kwargs)
         except Exception as e:
             logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
             return SendResult(success=False, error=f"Forum thread creation failed: {e}")
@@ -6187,6 +6202,8 @@ async def _standalone_send(
     thread_id: Optional[str] = None,
     media_files: Optional[list] = None,
     force_document: bool = False,
+    applied_tags: Optional[list] = None,
+    thread_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Send via Discord REST API without a live gateway adapter.
 
@@ -6261,7 +6278,7 @@ async def _standalone_send(
                         logger.debug("Failed to probe channel type for %s", chat_id, exc_info=True)
 
             if is_forum:
-                thread_name = _derive_forum_thread_name(message)
+                thread_name = thread_name or _derive_forum_thread_name(message)
                 thread_url = f"https://discord.com/api/v10/channels/{chat_id}/threads"
 
                 # Filter to readable media files up front so we can pick the
@@ -6285,7 +6302,10 @@ async def _standalone_send(
                             for idx, path in enumerate(valid_media)
                         ]
                         starter_message = {"content": message, "attachments": attachments_meta}
-                        payload_json = json.dumps({"name": thread_name, "message": starter_message})
+                        payload = {"name": thread_name, "message": starter_message}
+                        if applied_tags is not None:
+                            payload["applied_tags"] = applied_tags
+                        payload_json = json.dumps(payload)
 
                         form = aiohttp.FormData()
                         form.add_field("payload_json", payload_json, content_type="application/json")
@@ -6308,13 +6328,16 @@ async def _standalone_send(
                     else:
                         # No media — simple JSON POST creates the thread with
                         # just the text starter.
+                        payload = {
+                            "name": thread_name,
+                            "message": {"content": message},
+                        }
+                        if applied_tags is not None:
+                            payload["applied_tags"] = applied_tags
                         async with session.post(
                             thread_url,
                             headers=json_headers,
-                            json={
-                                "name": thread_name,
-                                "message": {"content": message},
-                            },
+                            json=payload,
                             **_req_kw,
                         ) as resp:
                             if resp.status not in {200, 201}:
