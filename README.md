@@ -81,6 +81,31 @@ hermes doctor       # Diagnose any issues
 
 ---
 
+## Agent Project Workspace
+
+For agent-led repository work, this checkout includes a repo-local workspace contract:
+
+- `.hermes/project.md` — project contract and startup order
+- `.hermes/task-schema.yaml` — task schema, status taxonomy, and concurrency rule
+- `.hermes/tasks.yaml` — executable machine-readable task queue
+- `tasks.md` — human task cockpit
+- `scripts/next_task.py` — list/inspect/claim runnable tasks and generate handoffs
+- `scripts/finish_task.py` — validate completed task evidence and optionally commit
+
+Typical flow:
+
+```bash
+python3 scripts/next_task.py --list
+python3 scripts/next_task.py --claim --agent <agent-or-profile>
+python3 scripts/finish_task.py --validate-only HERMES-T###
+```
+
+Claimed tasks write handoffs to `.hermes/runs/`. The queue prevents parallel
+workers from claiming overlapping guarded modify scopes unless one task depends on
+the other.
+
+---
+
 ## Skip the API-key collection — Nous Portal
 
 Hermes works with whatever provider you want — that's not changing. But if you'd rather not collect five separate API keys for the model, web search, image generation, TTS, and a cloud browser, **[Nous Portal](https://portal.nousresearch.com)** covers all of them under one subscription:

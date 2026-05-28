@@ -13,6 +13,34 @@ source .venv/bin/activate   # or: source venv/bin/activate
 `$HOME/.hermes/hermes-agent/venv` (for worktrees that share a venv with the
 main checkout).
 
+## Agent Project Workspace
+
+This repo has a repo-local Agent Project Workspace contract under `.hermes/`.
+Treat `.hermes/tasks.yaml` as the executable agent queue and `tasks.md` as the
+human cockpit.
+
+Before editing when runnable work exists:
+
+```bash
+python3 scripts/next_task.py --list
+python3 scripts/next_task.py --claim --agent <agent-or-profile>
+```
+
+Then read the generated `.hermes/runs/*-handoff.md` and stay inside the task's
+`scope.modify` paths. Do not run parallel workers on overlapping modify paths;
+`claimed`, `active`, and `review` tasks are guarded by the queue tooling.
+
+To finish a completed task, update both ledgers with evidence, then validate or
+commit through the finish gate:
+
+```bash
+python3 scripts/finish_task.py --validate-only HERMES-T###
+python3 scripts/finish_task.py HERMES-T### "short description" --all
+```
+
+Keep secrets, profile-local config, runtime state, caches, and generated logs out
+of the repo. Use one commit per task unless changes are inseparable.
+
 ## Project Structure
 
 File counts shift constantly — don't treat the tree below as exhaustive.

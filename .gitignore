@@ -73,6 +73,12 @@ web/public/ds-assets/
 .release_notes.md
 mini-swe-agent/
 
+# Agent Project Workspace runtime state
+.hermes/runs/*
+!.hermes/runs/.gitkeep
+.hermes/state/*
+!.hermes/state/.gitkeep
+
 # Nix
 .direnv/
 .nix-stamps/
