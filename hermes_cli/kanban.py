@@ -613,6 +613,9 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                         help=f"Auto-block a task after this many consecutive non-success attempts "
                              f"(spawn_failed, timed_out, or crashed; default: {kb.DEFAULT_SPAWN_FAILURE_LIMIT})")
     p_disp.add_argument("--json", action="store_true")
+    p_disp.add_argument("--max-in-progress", type=int, default=None,
+                        help="Cap number of simultaneously running tasks "
+                             "(overrides kanban.max_in_progress config)")
 
     # --- daemon (deprecated) ---
     p_daemon = sub.add_parser(
@@ -2092,6 +2095,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             conn,
             dry_run=args.dry_run,
             max_spawn=args.max,
+            max_in_progress=getattr(args, "max_in_progress", None),
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
         )
     if getattr(args, "json", False):

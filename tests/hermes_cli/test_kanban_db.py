@@ -2800,6 +2800,78 @@ def test_dispatch_max_in_progress_none_is_unlimited(kanban_home, all_assignees_s
 
     assert len(spawns) == 4, f"expected 4 spawns (unlimited), got {len(spawns)}"
 
+
+def test_cli_dispatch_passes_max_in_progress(kanban_home, monkeypatch):
+    """hermes kanban dispatch --max-in-progress passes the value to dispatch_once.
+
+    Regression for #33488: the CLI _cmd_dispatch function did not forward
+    max_in_progress to kanban_db.dispatch_once, silently ignoring the cap.
+    """
+    from types import SimpleNamespace
+    from hermes_cli import kanban as kanban_mod
+
+    captured = {}
+
+    original_dispatch_once = kb.dispatch_once
+
+    def spy_dispatch_once(conn, **kwargs):
+        captured.update(kwargs)
+        return original_dispatch_once(conn, **kwargs)
+
+    monkeypatch.setattr(kb, "dispatch_once", spy_dispatch_once)
+
+    # Create some tasks so dispatch_once has something to work with
+    with kb.connect() as conn:
+        for title in ["a", "b", "c"]:
+            kb.create_task(conn, title=title, assignee="alice")
+
+    args = SimpleNamespace(
+        dry_run=True,
+        max=None,
+        max_in_progress=2,
+        failure_limit=kb.DEFAULT_SPAWN_FAILURE_LIMIT,
+        json=False,
+    )
+    kanban_mod._cmd_dispatch(args)
+
+    assert captured.get("max_in_progress") == 2, (
+        f"max_in_progress not passed to dispatch_once; "
+        f"captured kwargs: {captured}"
+    )
+
+
+def test_cli_dispatch_max_in_progress_none_by_default(kanban_home, monkeypatch):
+    """hermes kanban dispatch without --max-in-progress passes None (unlimited)."""
+    from types import SimpleNamespace
+    from hermes_cli import kanban as kanban_mod
+
+    captured = {}
+
+    original_dispatch_once = kb.dispatch_once
+
+    def spy_dispatch_once(conn, **kwargs):
+        captured.update(kwargs)
+        return original_dispatch_once(conn, **kwargs)
+
+    monkeypatch.setattr(kb, "dispatch_once", spy_dispatch_once)
+
+    with kb.connect() as conn:
+        kb.create_task(conn, title="a", assignee="alice")
+
+    args = SimpleNamespace(
+        dry_run=True,
+        max=None,
+        max_in_progress=None,
+        failure_limit=kb.DEFAULT_SPAWN_FAILURE_LIMIT,
+        json=False,
+    )
+    kanban_mod._cmd_dispatch(args)
+
+    assert captured.get("max_in_progress") is None, (
+        f"max_in_progress should be None by default; got {captured.get('max_in_progress')}"
+    )
+
+
 # Review column dispatch
 # ---------------------------------------------------------------------------
 
