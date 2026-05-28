@@ -140,6 +140,9 @@ SEND_MESSAGE_SCHEMA = {
             "message": {
                 "type": "string",
                 "description": "The message text to send. To send an image or file, include MEDIA:<local_path> for a file under a Hermes media cache or HERMES_MEDIA_ALLOW_DIRS — the platform will deliver it as a native media attachment."
+            },
+            "blocks": {
+                "description": "Slack only: optional Block Kit blocks to pass through to chat.postMessage, for example a table block. Accepts either a blocks array, an object with a top-level 'blocks' array, or a JSON string containing either shape. 'message' is still used as fallback notification text."
             }
         },
         "required": []
@@ -166,12 +169,42 @@ def _handle_list():
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
 
 
+def _normalize_slack_blocks_arg(blocks):
+    """Normalize a send_message Slack ``blocks`` argument to a Block Kit list.
+
+    Accepts either the raw blocks array, a ``{"blocks": [...]}`` wrapper, or a
+    JSON string containing either shape.  Validation here is intentionally light:
+    Slack remains the source of truth for per-block schemas, while Hermes catches
+    common wrong-shape mistakes before making an API call.
+    """
+    if isinstance(blocks, str):
+        try:
+            blocks = json.loads(blocks)
+        except Exception as exc:
+            return None, f"Slack blocks must be valid JSON when provided as a string: {exc}"
+
+    if isinstance(blocks, dict):
+        blocks = blocks.get("blocks")
+
+    if not isinstance(blocks, list):
+        return None, "Slack blocks must be a list of Block Kit block objects or an object with a top-level 'blocks' list"
+    if not blocks:
+        return None, "Slack blocks cannot be empty"
+    if len(blocks) > 50:
+        return None, "Slack blocks cannot contain more than 50 top-level blocks"
+    for idx, block in enumerate(blocks):
+        if not isinstance(block, dict) or not isinstance(block.get("type"), str):
+            return None, f"Slack block at index {idx} must be an object with a string 'type' field"
+    return blocks, None
+
+
 def _handle_send(args):
     """Send a message to a platform target."""
     target = args.get("target", "")
     message = args.get("message", "")
-    if not target or not message:
-        return tool_error("Both 'target' and 'message' are required when action='send'")
+    blocks = args.get("blocks")
+    if not target or (not message and blocks is None):
+        return tool_error("Both 'target' and 'message' are required when action='send' unless Slack 'blocks' are provided")
 
     parts = target.split(":", 1)
     platform_name = parts[0].strip().lower()
@@ -183,6 +216,15 @@ def _handle_send(args):
         chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
     else:
         is_explicit = False
+
+    if blocks is not None and platform_name != "slack":
+        return tool_error("The 'blocks' parameter is only supported for Slack targets")
+
+    normalized_blocks = None
+    if blocks is not None:
+        normalized_blocks, blocks_error = _normalize_slack_blocks_arg(blocks)
+        if blocks_error:
+            return tool_error(blocks_error)
 
     # Resolve human-friendly channel names to numeric IDs
     if target_ref and not is_explicit:
@@ -300,15 +342,20 @@ def _handle_send(args):
 
     try:
         from model_tools import _run_async
+        send_kwargs = {
+            "thread_id": thread_id,
+            "media_files": media_files,
+            "force_document": force_document_attachments,
+        }
+        if normalized_blocks is not None:
+            send_kwargs["blocks"] = normalized_blocks
         result = _run_async(
             _send_to_platform(
                 platform,
                 pconfig,
                 chat_id,
                 cleaned_message,
-                thread_id=thread_id,
-                media_files=media_files,
-                force_document=force_document_attachments,
+                **send_kwargs,
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
@@ -555,7 +602,7 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, blocks=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -581,6 +628,11 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         _feishu_available = False
 
     media_files = media_files or []
+
+    if blocks is not None:
+        if platform != Platform.SLACK:
+            return {"error": "Block Kit blocks are only supported for Slack targets"}
+        return await _send_slack(pconfig.token, chat_id, message or "", thread_id=thread_id, blocks=blocks)
 
     if platform == Platform.SLACK and message:
         try:
@@ -752,7 +804,10 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     last_result = None
     for chunk in chunks:
         if platform == Platform.SLACK:
-            result = await _send_slack(pconfig.token, chat_id, chunk)
+            if thread_id:
+                result = await _send_slack(pconfig.token, chat_id, chunk, thread_id=thread_id)
+            else:
+                result = await _send_slack(pconfig.token, chat_id, chunk)
         elif platform == Platform.WHATSAPP:
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SIGNAL:
@@ -1034,7 +1089,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         return _error(f"Telegram send failed: {e}")
 
 
-async def _send_slack(token, chat_id, message):
+async def _send_slack(token, chat_id, message, thread_id=None, blocks=None):
     """Send via Slack Web API."""
     try:
         import aiohttp
@@ -1047,7 +1102,11 @@ async def _send_slack(token, chat_id, message):
         url = "https://slack.com/api/chat.postMessage"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
-            payload = {"channel": chat_id, "text": message, "mrkdwn": True}
+            payload = {"channel": chat_id, "text": message or " ", "mrkdwn": True}
+            if thread_id:
+                payload["thread_ts"] = thread_id
+            if blocks is not None:
+                payload["blocks"] = blocks
             async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
                 data = await resp.json()
                 if data.get("ok"):
