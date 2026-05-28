@@ -259,8 +259,15 @@ def _bound_kanban_task_for_source(source: SessionSource):
                     row
                     for row in kb.list_notify_subs(conn)
                     if str(row.get("platform") or "").lower() == platform
-                    and str(row.get("chat_id") or "") == chat_id
                     and str(row.get("thread_id") or "") == thread_id
+                    and (
+                        str(row.get("chat_id") or "") == chat_id
+                        or (
+                            platform == "discord"
+                            and str(getattr(source, "chat_type", "") or "") == "thread"
+                            and chat_id == thread_id
+                        )
+                    )
                 ]
                 candidates.extend(
                     (board, str(row.get("task_id") or ""))

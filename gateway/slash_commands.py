@@ -318,8 +318,15 @@ class GatewaySlashCommandsMixin:
                         for row in _kb.list_notify_subs(conn)
                         if row.get("task_id")
                         and str(row.get("platform") or "").lower() == platform_str
-                        and str(row.get("chat_id") or "") == chat_id
                         and str(row.get("thread_id") or "") == thread_id
+                        and (
+                            str(row.get("chat_id") or "") == chat_id
+                            or (
+                                platform_str == "discord"
+                                and str(getattr(source, "chat_type", "") or "") == "thread"
+                                and chat_id == thread_id
+                            )
+                        )
                     )
                 finally:
                     conn.close()
@@ -415,8 +422,15 @@ class GatewaySlashCommandsMixin:
                             row
                             for row in _kb.list_notify_subs(conn)
                             if str(row.get("platform") or "").lower() == platform_str
-                            and str(row.get("chat_id") or "") == chat_id
                             and str(row.get("thread_id") or "") == thread_id
+                            and (
+                                str(row.get("chat_id") or "") == chat_id
+                                or (
+                                    platform_str == "discord"
+                                    and str(getattr(source, "chat_type", "") or "") == "thread"
+                                    and chat_id == thread_id
+                                )
+                            )
                         ]
                         candidates.update(
                             (candidate_board, str(row.get("task_id") or ""))

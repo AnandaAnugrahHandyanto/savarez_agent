@@ -90,6 +90,19 @@ def _create_subscribed_task(source: SessionSource, *, board: str | None = None) 
         conn.close()
 
 
+def _discord_adapter_thread_source(source: SessionSource) -> SessionSource:
+    """Mirror Discord adapter thread events: chat_id is the thread id."""
+    return SessionSource(
+        platform=source.platform,
+        chat_id=str(source.thread_id or ""),
+        chat_name=source.chat_name,
+        chat_type="thread",
+        user_id=source.user_id,
+        user_name=source.user_name,
+        thread_id=source.thread_id,
+    )
+
+
 @pytest.mark.asyncio
 async def test_kanban_block_in_subscribed_thread_uses_bound_task_id(
     kanban_home,
@@ -192,6 +205,38 @@ async def test_free_response_block_in_subscribed_thread_updates_bound_task_witho
         MessageEvent(
             text="block this awaiting Sam approval",
             source=discord_thread_source,
+        )
+    )
+
+    assert result is not None
+    assert f"Blocked {task_id}" in result
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "blocked"
+    finally:
+        conn.close()
+
+
+@pytest.mark.asyncio
+async def test_free_response_block_in_discord_adapter_thread_source_uses_forum_subscription(
+    kanban_home,
+    runner: GatewayRunner,
+    discord_thread_source: SessionSource,
+):
+    """Live Discord thread events use chat_id=thread_id, while subs store parent forum chat_id."""
+    task_id = _create_subscribed_task(discord_thread_source)
+
+    async def _agent_should_not_run(*_args, **_kwargs):
+        raise AssertionError("free-response task-thread block command was routed to the agent")
+
+    runner._handle_message_with_agent = _agent_should_not_run
+
+    result = await runner._handle_message(
+        MessageEvent(
+            text="block this live smoke: keep local-only pending review",
+            source=_discord_adapter_thread_source(discord_thread_source),
         )
     )
 
