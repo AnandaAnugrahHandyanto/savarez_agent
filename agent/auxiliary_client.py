@@ -115,6 +115,18 @@ def _safe_isinstance(obj: Any, maybe_type: Any) -> bool:
         return False
 
 
+def _normalize_timeout_value(timeout: Any) -> Any:
+    """Return a provider timeout only when it is a positive numeric value.
+
+    The auxiliary layer treats ``0`` and negative values as "no explicit
+    timeout override" so config can disable per-request timeout propagation
+    without accidentally sending an already-expired deadline to the SDK.
+    """
+    if isinstance(timeout, (int, float)) and timeout > 0:
+        return timeout
+    return None
+
+
 def _extract_url_query_params(url: str):
     """Extract query params from URL, return (clean_url, default_query dict or None)."""
     parsed = urlparse(url)
@@ -655,7 +667,7 @@ class _CodexCompletionsAdapter:
         # by auxiliary calls such as context compression; if the timeout is not
         # forwarded and enforced, a Codex Responses stream can sit behind a
         # dead-looking CLI until the user force-interrupts the whole session.
-        timeout = kwargs.get("timeout")
+        timeout = _normalize_timeout_value(kwargs.get("timeout"))
         if timeout is not None:
             resp_kwargs["timeout"] = timeout
 
@@ -731,7 +743,7 @@ class _CodexCompletionsAdapter:
         text_parts: List[str] = []
         tool_calls_raw: List[Any] = []
         usage = None
-        total_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
+        total_timeout = _normalize_timeout_value(timeout)
         deadline = time.monotonic() + float(total_timeout) if total_timeout else None
         timed_out = threading.Event()
         timeout_timer: Optional[threading.Timer] = None

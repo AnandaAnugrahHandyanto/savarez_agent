@@ -2382,6 +2382,28 @@ class TestCodexAdapterReasoningTranslation:
         assert captured.get("reasoning") == {"effort": "medium", "summary": "auto"}
         assert captured.get("include") == ["reasoning.encrypted_content"]
 
+    @pytest.mark.parametrize("timeout_value", [0, 0.0, -1, -3.5])
+    def test_non_positive_timeout_is_not_forwarded(self, timeout_value):
+        """A zero or negative auxiliary timeout should behave like 'no override'.
+
+        That keeps config-driven timeout disabling from sending an already-
+        expired deadline into the SDK request kwargs.
+        """
+        adapter, captured = self._build_adapter()
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            timeout=timeout_value,
+        )
+        assert "timeout" not in captured
+
+    def test_positive_timeout_is_forwarded(self):
+        adapter, captured = self._build_adapter()
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            timeout=12.5,
+        )
+        assert captured.get("timeout") == 12.5
+
 
 class TestVisionAutoSkipsKimiCoding:
     """_resolve_auto vision branch skips providers that have no vision on
