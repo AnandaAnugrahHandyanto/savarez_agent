@@ -1122,19 +1122,21 @@ def _try_resolve_fallback_provider() -> dict | None:
         fb_list = get_fallback_chain(cfg)
         if not fb_list:
             return None
+        from hermes_cli.fallback_config import (
+            resolve_explicit_api_key_for_fallback,
+        )
         for entry in fb_list:
             try:
-                explicit_api_key = entry.get("api_key")
-                if not explicit_api_key:
-                    key_env = str(
-                        entry.get("key_env") or entry.get("api_key_env") or ""
-                    ).strip()
-                    if key_env:
-                        explicit_api_key = os.getenv(key_env, "").strip() or None
+                # Shared helper with cli.py::_ensure_runtime_credentials so
+                # one-shot CLI runs and the gateway agree on which env var
+                # (api_key_env / key_env) backs an env-driven fallback and
+                # honor ~/.hermes/.env identically (#33540).
+                explicit_api_key = resolve_explicit_api_key_for_fallback(entry)
                 runtime = resolve_runtime_provider(
                     requested=entry.get("provider"),
                     explicit_base_url=entry.get("base_url"),
                     explicit_api_key=explicit_api_key,
+                    target_model=entry.get("model") or None,
                 )
                 # Log the literal `provider` key from config, not the resolved
                 # runtime category — an Ollama fallback resolves through the

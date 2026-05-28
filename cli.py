@@ -4628,6 +4628,9 @@ class HermesCLI:
         # Primary provider auth failed — try fallback providers before giving up.
         if runtime is None and _primary_exc is not None:
             from hermes_cli.auth import AuthError
+            from hermes_cli.fallback_config import (
+                resolve_explicit_api_key_for_fallback,
+            )
             if isinstance(_primary_exc, AuthError):
                 _fb_chain = self._fallback_model if isinstance(self._fallback_model, list) else []
                 for _fb in _fb_chain:
@@ -4635,19 +4638,55 @@ class HermesCLI:
                     _fb_model = (_fb.get("model") or "").strip()
                     if not _fb_provider or not _fb_model:
                         continue
+                    # Forward the per-fallback ``base_url`` + ``api_key`` /
+                    # ``api_key_env`` / ``key_env`` into the resolver. Without
+                    # this, an env-backed fallback such as ``azure-foundry``
+                    # (which needs ``base_url`` from the entry, not from the
+                    # PRIMARY model_cfg) hits "Azure Foundry requires a base
+                    # URL" and we silently skip to the next entry, then a
+                    # second fallback like ``openrouter`` resolves to an
+                    # empty api_key and we exit with "Provider resolver
+                    # returned an empty API key". Mirrors the gateway path
+                    # in ``gateway/run.py::_try_resolve_fallback_provider``
+                    # so one-shot CLI runs (``hermes chat -q``) behave the
+                    # same as the long-lived gateway (#33540).
+                    _fb_explicit_key = resolve_explicit_api_key_for_fallback(_fb)
+                    _fb_explicit_base = _fb.get("base_url") or None
                     try:
-                        runtime = resolve_runtime_provider(requested=_fb_provider)
-                        logger.warning(
-                            "Primary provider auth failed (%s). Falling through to fallback: %s/%s",
-                            _primary_exc, _fb_provider, _fb_model,
+                        runtime = resolve_runtime_provider(
+                            requested=_fb_provider,
+                            explicit_api_key=_fb_explicit_key,
+                            explicit_base_url=_fb_explicit_base,
+                            target_model=_fb_model,
                         )
-                        _cprint(f"⚠️  Primary auth failed — switching to fallback: {_fb_provider} / {_fb_model}")
-                        self.requested_provider = _fb_provider
-                        self.model = _fb_model
-                        _primary_exc = None
-                        break
                     except Exception:
                         continue
+                    # Defensive: if the resolver returned without raising
+                    # but the result has no usable api_key (env-backed
+                    # provider where the named env var is unset), treat
+                    # as a soft failure and try the next fallback. Without
+                    # this, a hollow fallback runtime trips the
+                    # ``empty API key`` exit below and later fallbacks are
+                    # never tried — the exact symptom reported in #33540.
+                    # Callable api_keys are bearer-token providers
+                    # (Azure Foundry Entra ID) and are always considered
+                    # usable; for string keys we require non-empty.
+                    _fb_key = runtime.get("api_key") if isinstance(runtime, dict) else None
+                    _fb_usable = callable(_fb_key) or (
+                        isinstance(_fb_key, str) and bool(_fb_key.strip())
+                    )
+                    if not _fb_usable:
+                        runtime = None
+                        continue
+                    logger.warning(
+                        "Primary provider auth failed (%s). Falling through to fallback: %s/%s",
+                        _primary_exc, _fb_provider, _fb_model,
+                    )
+                    _cprint(f"⚠️  Primary auth failed — switching to fallback: {_fb_provider} / {_fb_model}")
+                    self.requested_provider = _fb_provider
+                    self.model = _fb_model
+                    _primary_exc = None
+                    break
 
         if runtime is None:
             message = format_runtime_provider_error(_primary_exc) if _primary_exc else "Provider resolution failed."
