@@ -289,6 +289,25 @@ MATRIX_RECOVERY_KEY=EsT... your recovery key here
 
 On each startup, if `MATRIX_RECOVERY_KEY` is set, Hermes imports cross-signing keys from the homeserver's secure secret storage and signs the current device. This is idempotent and safe to leave enabled permanently.
 
+To audit or repair profile devices outside gateway startup, run the repository-backed helper:
+
+```bash
+python scripts/verify_matrix_profile_devices.py --profiles default --sign --require-signed
+# If your top-level Hermes profile root is not ~/.hermes:
+python scripts/verify_matrix_profile_devices.py --hermes-root /path/to/.hermes --profiles default --sign --require-signed
+```
+
+The helper collapses profile-scoped Hermes worker paths back to the top-level profile root: if `HERMES_HOME` is `<root>/profiles/<profile>` or `HOME` is `<root>/profiles/<profile>/home`, profile lookup still uses `<root>/profiles/*/.env`.
+With `MATRIX_RECOVERY_KEY` available, `--sign` attempts automatic self-signing. Without it, the script prints a manual fallback like:
+
+```text
+manual_verify_command=/verify DEVICE_ID ED25519_FINGERPRINT
+manual_verify_run_from=already_verified_matrix_client_for_same_account
+manual_verify_do_not_send_as=bot_gateway_message_or_room_chat
+```
+
+The `/verify ...` line is a local command for an already-verified Matrix client logged in as the same account. Do not send it as a normal Matrix room message and do not ask Hermes/the gateway to send it; outbound bot messages are just chat text and cannot execute device trust verification.
+
 :::warning[Deleting the crypto store]
 If you delete `~/.hermes/platforms/matrix/store/crypto.db`, the bot loses its encryption identity. Simply restarting with the same device ID will **not** fully recover — the homeserver still holds one-time keys signed with the old identity key, and peers cannot establish new Olm sessions.
 
