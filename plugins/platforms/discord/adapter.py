@@ -30,6 +30,7 @@ _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+_DISCORD_COMPONENT_AUTH_CALLBACK_KEY = "_discord_component_auth_callback"
 
 try:
     import discord
@@ -4079,6 +4080,7 @@ class DiscordAdapter(BasePlatformAdapter):
             target_id = chat_id
             if metadata and metadata.get("thread_id"):
                 target_id = metadata["thread_id"]
+            auth_callback = _metadata_component_auth_callback(metadata)
 
             channel = self._client.get_channel(int(target_id))
             if not channel:
@@ -4098,6 +4100,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 session_key=session_key,
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
+                auth_callback=auth_callback,
             )
 
             msg = await channel.send(embed=embed, view=view)
@@ -4118,6 +4121,7 @@ class DiscordAdapter(BasePlatformAdapter):
             target_id = chat_id
             if metadata and metadata.get("thread_id"):
                 target_id = metadata["thread_id"]
+            auth_callback = _metadata_component_auth_callback(metadata)
 
             channel = self._client.get_channel(int(target_id))
             if not channel:
@@ -4137,6 +4141,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 confirm_id=confirm_id,
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
+                auth_callback=auth_callback,
             )
 
             msg = await channel.send(embed=embed, view=view)
@@ -4172,6 +4177,7 @@ class DiscordAdapter(BasePlatformAdapter):
             target_id = chat_id
             if metadata and metadata.get("thread_id"):
                 target_id = metadata["thread_id"]
+            auth_callback = _metadata_component_auth_callback(metadata)
 
             channel = self._client.get_channel(int(target_id))
             if not channel:
@@ -4207,6 +4213,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     clarify_id=clarify_id,
                     allowed_user_ids=self._allowed_user_ids,
                     allowed_role_ids=self._allowed_role_ids,
+                    auth_callback=auth_callback,
                 )
             else:
                 embed.add_field(
@@ -4236,6 +4243,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         try:
             target_id = metadata.get("thread_id") if metadata and metadata.get("thread_id") else chat_id
+            auth_callback = _metadata_component_auth_callback(metadata)
             channel = self._client.get_channel(int(target_id))
             if not channel:
                 channel = await self._client.fetch_channel(int(target_id))
@@ -4250,6 +4258,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 session_key=session_key,
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
+                auth_callback=auth_callback,
             )
             msg = await channel.send(embed=embed, view=view)
             return SendResult(success=True, message_id=str(msg.id))
@@ -4279,6 +4288,7 @@ class DiscordAdapter(BasePlatformAdapter):
             target_id = chat_id
             if metadata and metadata.get("thread_id"):
                 target_id = metadata["thread_id"]
+            auth_callback = _metadata_component_auth_callback(metadata)
 
             channel = self._client.get_channel(int(target_id))
             if not channel:
@@ -4308,6 +4318,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 on_model_selected=on_model_selected,
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
+                auth_callback=auth_callback,
             )
 
             msg = await channel.send(embed=embed, view=view)
@@ -4969,6 +4980,7 @@ def _component_check_auth(
     interaction,
     allowed_user_ids: Optional[set],
     allowed_role_ids: Optional[set],
+    auth_callback: Optional[Callable[[Any], bool]] = None,
 ) -> bool:
     """Shared user-or-role OR semantics for component view button clicks.
 
@@ -4984,8 +4996,11 @@ def _component_check_auth(
 
     Behavior:
 
-      - both allowlists empty -> allow (preserves existing no-allowlist
-        deployments, no regression)
+      - local user/role allowlist hit -> allow
+      - runner-provided auth callback hit (pairing / global allowlist /
+        allow-all parity) -> allow
+      - both allowlists empty and no callback -> allow (legacy fallback for
+        non-gateway call sites)
       - user is in user allowlist -> allow
       - role allowlist set + user has a role in it -> allow
       - role allowlist set + interaction.user has no resolvable
@@ -4997,12 +5012,16 @@ def _component_check_auth(
     role_set = allowed_role_ids or set()
     has_users = bool(user_set)
     has_roles = bool(role_set)
-    if not has_users and not has_roles:
-        return True
 
     user = getattr(interaction, "user", None)
     if user is None:
-        return False
+        if auth_callback is not None:
+            try:
+                return bool(auth_callback(interaction))
+            except Exception:
+                logger.warning("Discord component auth callback raised", exc_info=True)
+                return False
+        return not has_users and not has_roles
 
     if has_users:
         try:
@@ -5027,7 +5046,23 @@ def _component_check_auth(
         if user_role_ids & role_set:
             return True
 
-    return False
+    if auth_callback is not None:
+        try:
+            return bool(auth_callback(interaction))
+        except Exception:
+            logger.warning("Discord component auth callback raised", exc_info=True)
+            return False
+
+    return not has_users and not has_roles
+
+
+def _metadata_component_auth_callback(
+    metadata: Optional[Dict[str, Any]],
+) -> Optional[Callable[[Any], bool]]:
+    if not isinstance(metadata, dict):
+        return None
+    callback = metadata.get(_DISCORD_COMPONENT_AUTH_CALLBACK_KEY)
+    return callback if callable(callback) else None
 
 
 def _define_discord_view_classes() -> None:
@@ -5057,17 +5092,22 @@ def _define_discord_view_classes() -> None:
             session_key: str,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            auth_callback: Optional[Callable[[Any], bool]] = None,
         ):
             super().__init__(timeout=300)  # 5-minute timeout
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
+            self.auth_callback = auth_callback
             self.resolved = False
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             """Verify the user clicking is authorized."""
             return _component_check_auth(
-                interaction, self.allowed_user_ids, self.allowed_role_ids,
+                interaction,
+                self.allowed_user_ids,
+                self.allowed_role_ids,
+                self.auth_callback,
             )
 
         async def _resolve(
@@ -5166,17 +5206,22 @@ def _define_discord_view_classes() -> None:
             confirm_id: str,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            auth_callback: Optional[Callable[[Any], bool]] = None,
         ):
             super().__init__(timeout=300)
             self.session_key = session_key
             self.confirm_id = confirm_id
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
+            self.auth_callback = auth_callback
             self.resolved = False
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             return _component_check_auth(
-                interaction, self.allowed_user_ids, self.allowed_role_ids,
+                interaction,
+                self.allowed_user_ids,
+                self.allowed_role_ids,
+                self.auth_callback,
             )
 
         async def _resolve(
@@ -5260,16 +5305,21 @@ def _define_discord_view_classes() -> None:
             session_key: str,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            auth_callback: Optional[Callable[[Any], bool]] = None,
         ):
             super().__init__(timeout=300)
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
+            self.auth_callback = auth_callback
             self.resolved = False
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             return _component_check_auth(
-                interaction, self.allowed_user_ids, self.allowed_role_ids,
+                interaction,
+                self.allowed_user_ids,
+                self.allowed_role_ids,
+                self.auth_callback,
             )
 
         async def _respond(
@@ -5348,6 +5398,7 @@ def _define_discord_view_classes() -> None:
             on_model_selected,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            auth_callback: Optional[Callable[[Any], bool]] = None,
         ):
             super().__init__(timeout=120)
             self.providers = providers
@@ -5357,6 +5408,7 @@ def _define_discord_view_classes() -> None:
             self.on_model_selected = on_model_selected
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
+            self.auth_callback = auth_callback
             self.resolved = False
             self._selected_provider: str = ""
 
@@ -5364,7 +5416,10 @@ def _define_discord_view_classes() -> None:
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             return _component_check_auth(
-                interaction, self.allowed_user_ids, self.allowed_role_ids,
+                interaction,
+                self.allowed_user_ids,
+                self.allowed_role_ids,
+                self.auth_callback,
             )
 
         def _build_provider_select(self):
@@ -5578,12 +5633,14 @@ def _define_discord_view_classes() -> None:
             clarify_id: str,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            auth_callback: Optional[Callable[[Any], bool]] = None,
         ):
             super().__init__(timeout=300)  # 5-minute timeout
             self.choices = list(choices)[:24]
             self.clarify_id = clarify_id
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
+            self.auth_callback = auth_callback
             self.resolved = False
 
             for index, choice in enumerate(self.choices):
@@ -5607,7 +5664,10 @@ def _define_discord_view_classes() -> None:
 
         def _check_auth(self, interaction: "discord.Interaction") -> bool:
             return _component_check_auth(
-                interaction, self.allowed_user_ids, self.allowed_role_ids,
+                interaction,
+                self.allowed_user_ids,
+                self.allowed_role_ids,
+                self.auth_callback,
             )
 
         def _make_choice_callback(self, index: int, choice: str):

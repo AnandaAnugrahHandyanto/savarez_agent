@@ -133,6 +133,7 @@ _GATEWAY_SECRET_PATTERNS = (
     re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}\b"),
     re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._\-]{20,}\b"),
 )
+_DISCORD_COMPONENT_AUTH_CALLBACK_KEY = "_discord_component_auth_callback"
 
 
 def _gateway_platform_value(platform: Any) -> str:
@@ -10405,7 +10406,12 @@ class GatewayRunner:
                         lines.append(t("gateway.model.session_only_hint"))
                         return "\n".join(lines)
 
-                    metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+                    metadata = self._augment_discord_component_metadata(
+                        self._thread_metadata_for_source(
+                            source, self._reply_anchor_for_event(event),
+                        ),
+                        source=source,
+                    )
                     result = await adapter.send_model_picker(
                         chat_id=source.chat_id,
                         providers=providers,
@@ -13763,7 +13769,12 @@ class GatewayRunner:
         _slash_confirm_mod.register(session_key, confirm_id, command, handler)
 
         adapter = self.adapters.get(source.platform)
-        metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+        metadata = self._augment_discord_component_metadata(
+            self._thread_metadata_for_source(
+                source, self._reply_anchor_for_event(event),
+            ),
+            source=source,
+        )
 
         used_buttons = False
         if adapter is not None:
@@ -13828,6 +13839,73 @@ class GatewayRunner:
             if anchor is not None:
                 metadata["telegram_reply_to_message_id"] = str(anchor)
         return metadata
+
+    def _make_discord_component_auth_callback(self, source: SessionSource):
+        """Bind Discord component clicks back to the runner auth model."""
+        if getattr(source, "platform", None) != Platform.DISCORD:
+            return None
+        try:
+            source_snapshot = dataclasses.replace(source)
+        except Exception:
+            source_snapshot = source
+
+        def _auth_callback(interaction: Any) -> bool:
+            user = getattr(interaction, "user", None)
+            user_id = getattr(user, "id", None)
+            if user_id is None:
+                return False
+            user_name = (
+                getattr(user, "display_name", None)
+                or getattr(user, "name", None)
+                or getattr(source_snapshot, "user_name", None)
+            )
+            try:
+                candidate = dataclasses.replace(
+                    source_snapshot,
+                    user_id=str(user_id),
+                    user_name=user_name,
+                    is_bot=bool(getattr(user, "bot", False)),
+                )
+            except Exception:
+                candidate = SessionSource(
+                    platform=source_snapshot.platform,
+                    chat_id=source_snapshot.chat_id,
+                    chat_name=source_snapshot.chat_name,
+                    chat_type=source_snapshot.chat_type,
+                    user_id=str(user_id),
+                    user_name=user_name,
+                    thread_id=source_snapshot.thread_id,
+                    chat_topic=source_snapshot.chat_topic,
+                    user_id_alt=source_snapshot.user_id_alt,
+                    chat_id_alt=source_snapshot.chat_id_alt,
+                    is_bot=bool(getattr(user, "bot", False)),
+                    guild_id=source_snapshot.guild_id,
+                    parent_chat_id=source_snapshot.parent_chat_id,
+                    message_id=source_snapshot.message_id,
+                )
+            return self._is_user_authorized(candidate)
+
+        return _auth_callback
+
+    def _augment_discord_component_metadata(
+        self,
+        metadata: Optional[Dict[str, Any]],
+        *,
+        source: Optional[SessionSource] = None,
+        session_key: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Attach a runner-level Discord auth callback to interactive metadata."""
+        auth_source = source
+        if auth_source is None and session_key:
+            auth_source = self._get_cached_session_source(session_key)
+        if auth_source is None or getattr(auth_source, "platform", None) != Platform.DISCORD:
+            return metadata
+        auth_callback = self._make_discord_component_auth_callback(auth_source)
+        if auth_callback is None:
+            return metadata
+        out = dict(metadata or {})
+        out[_DISCORD_COMPONENT_AUTH_CALLBACK_KEY] = auth_callback
+        return out
 
     @staticmethod
     def _reply_anchor_for_event(event: MessageEvent) -> Optional[str]:
@@ -14212,6 +14290,11 @@ class GatewayRunner:
                 exit_code_path.write_text("124")
                 await self._send_update_notification()
             return
+
+        metadata = self._augment_discord_component_metadata(
+            metadata,
+            session_key=session_key,
+        )
 
         def _strip_ansi(text: str) -> str:
             return re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', text)
@@ -16537,6 +16620,10 @@ class GatewayRunner:
             }
         else:
             _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
+        _interactive_status_thread_metadata = self._augment_discord_component_metadata(
+            _status_thread_metadata,
+            source=source,
+        )
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
@@ -16914,7 +17001,7 @@ class GatewayRunner:
                         choices=list(choices) if choices else None,
                         clarify_id=clarify_id,
                         session_key=session_key or "",
-                        metadata=_status_thread_metadata,
+                        metadata=_interactive_status_thread_metadata,
                     ),
                     _loop_for_step,
                     logger=logger,
@@ -17032,7 +17119,7 @@ class GatewayRunner:
                                 command=cmd,
                                 session_key=_approval_session_key,
                                 description=desc,
-                                metadata=_status_thread_metadata,
+                                metadata=_interactive_status_thread_metadata,
                             ),
                             _loop_for_step,
                             logger=logger,

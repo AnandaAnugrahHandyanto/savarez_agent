@@ -231,3 +231,28 @@ def test_discord_role_config_does_not_leak_to_other_platforms(monkeypatch):
         user_id="999888777",
     )
     assert runner._is_user_authorized(telegram_user) is False
+
+
+def test_discord_component_auth_metadata_rechecks_pairing():
+    """Interactive Discord surfaces must reuse the runner's pairing/default-deny
+    policy instead of the adapter's old empty-allowlist shortcut."""
+    runner = _make_bare_runner()
+    runner.pairing_store = SimpleNamespace(
+        is_approved=lambda platform_name, user_id: (
+            platform_name == "discord" and str(user_id) == "424242"
+        )
+    )
+
+    source = _make_discord_human_source(user_id="100200300")
+    metadata = runner._augment_discord_component_metadata({}, source=source)
+    callback = metadata["_discord_component_auth_callback"]
+
+    paired = SimpleNamespace(
+        user=SimpleNamespace(id=424242, display_name="paired-user", bot=False)
+    )
+    stranger = SimpleNamespace(
+        user=SimpleNamespace(id=999999999, display_name="stranger", bot=False)
+    )
+
+    assert callback(paired) is True
+    assert callback(stranger) is False
