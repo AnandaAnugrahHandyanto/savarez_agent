@@ -505,6 +505,9 @@ def init_agent(
     agent._last_activity_desc: str = "initializing"
     agent._current_tool: str | None = None
     agent._api_call_count: int = 0
+    agent._request_budget = None
+    agent._last_request_budget: Optional[Dict[str, Any]] = None
+    agent._skill_index_build_ms_pending: float = 0.0
 
     # Rate limit tracking — updated from x-ratelimit-* response headers
     # after each API call.  Accessed by /usage slash command.

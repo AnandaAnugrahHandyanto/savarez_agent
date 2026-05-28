@@ -62,6 +62,7 @@ from agent.nous_rate_guard import (
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
+from agent.request_budget import RequestBudget
 from agent.retry_utils import jittered_backoff
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
@@ -412,6 +413,13 @@ def run_conversation(
     # ``hermes logs --session <id>`` can filter a single conversation.
     from hermes_logging import set_session_context
     set_session_context(agent.session_id)
+    agent._request_budget = RequestBudget(
+        session_id=agent.session_id or "",
+        turn_id=str(getattr(agent, "_user_turn_count", 0) + 1),
+        model=agent.model or "",
+        provider=agent.provider or "",
+        platform=agent.platform or "cli",
+    )
 
     # Bind the skill write-origin ContextVar for this thread so tool
     # handlers (e.g. skill_manage create) can tell whether they are
@@ -594,6 +602,12 @@ def run_conversation(
         _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
     active_system_prompt = agent._cached_system_prompt
+    if agent._request_budget is not None:
+        agent._request_budget.record_skill_index(
+            active_system_prompt or "",
+            build_ms=getattr(agent, "_skill_index_build_ms_pending", 0.0),
+        )
+        agent._skill_index_build_ms_pending = 0.0
 
     # ── Preflight context compression ──
     # Before entering the main loop, check if the loaded conversation
@@ -1183,6 +1197,8 @@ def run_conversation(
 
             try:
                 agent._reset_stream_delivery_tracking()
+                if agent._request_budget is not None:
+                    agent._request_budget.record_tool_schema(agent.tools or [])
                 api_kwargs = agent._build_api_kwargs(api_messages)
                 if agent._force_ascii_payload:
                     _sanitize_structure_non_ascii(api_kwargs)
@@ -1246,6 +1262,11 @@ def run_conversation(
                     if agent.thinking_callback:
                         agent.thinking_callback("")
 
+                def _mark_first_model_byte():
+                    if agent._request_budget is not None:
+                        agent._request_budget.mark_model_first_byte()
+                    _stop_spinner()
+
                 _use_streaming = True
                 # Provider signaled "stream not supported" on a previous
                 # attempt — switch to non-streaming for the rest of this
@@ -1270,12 +1291,18 @@ def run_conversation(
                     if isinstance(getattr(agent, "client", None), Mock):
                         _use_streaming = False
 
-                if _use_streaming:
-                    response = agent._interruptible_streaming_api_call(
-                        api_kwargs, on_first_delta=_stop_spinner
-                    )
-                else:
-                    response = agent._interruptible_api_call(api_kwargs)
+                if agent._request_budget is not None:
+                    agent._request_budget.mark_model_request_start()
+                try:
+                    if _use_streaming:
+                        response = agent._interruptible_streaming_api_call(
+                            api_kwargs, on_first_delta=_mark_first_model_byte
+                        )
+                    else:
+                        response = agent._interruptible_api_call(api_kwargs)
+                finally:
+                    if agent._request_budget is not None:
+                        agent._request_budget.mark_model_request_end()
                 
                 api_duration = time.time() - api_start_time
                 
@@ -4416,6 +4443,16 @@ def run_conversation(
             last_reasoning = msg["reasoning"]
             break
 
+    request_budget_payload = None
+    if agent._request_budget is not None:
+        request_budget_payload = agent._request_budget.log_agent_turn(
+            logger=logger,
+            reason=_turn_exit_reason,
+            api_calls=api_call_count,
+        )
+        agent._last_request_budget = request_budget_payload
+        agent._request_budget = None
+
     # Build result with interrupt info if applicable
     result = {
         "final_response": final_response,
@@ -4445,6 +4482,7 @@ def run_conversation(
         "cost_status": agent.session_cost_status,
         "cost_source": agent.session_cost_source,
         "session_id": agent.session_id,
+        "request_budget": request_budget_payload,
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()

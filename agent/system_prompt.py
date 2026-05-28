@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import (
@@ -175,10 +176,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             )
             if toolset
         }
+        _skill_index_start = time.perf_counter()
         skills_prompt = _r.build_skills_system_prompt(
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,
         )
+        try:
+            agent._skill_index_build_ms_pending += (
+                time.perf_counter() - _skill_index_start
+            ) * 1000
+        except Exception:
+            pass
     else:
         skills_prompt = ""
     if skills_prompt:
