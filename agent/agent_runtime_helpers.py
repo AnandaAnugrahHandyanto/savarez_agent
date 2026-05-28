@@ -34,7 +34,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from hermes_cli.timeouts import get_provider_request_timeout
+from hermes_cli.timeouts import get_provider_request_timeout, get_provider_header_timeout
 from agent.message_sanitization import (
     _repair_tool_call_arguments,
     _sanitize_surrogates,
@@ -772,6 +772,7 @@ def try_recover_primary_transport(
             agent._anthropic_client = build_anthropic_client(
                 rt["anthropic_api_key"], rt["anthropic_base_url"],
                 timeout=get_provider_request_timeout(agent.provider, agent.model),
+                header_timeout=get_provider_header_timeout(agent.provider, agent.model),
             )
             agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
             agent.client = None
@@ -936,6 +937,7 @@ def restore_primary_runtime(agent) -> bool:
             agent._anthropic_client = build_anthropic_client(
                 rt["anthropic_api_key"], rt["anthropic_base_url"],
                 timeout=get_provider_request_timeout(agent.provider, agent.model),
+                header_timeout=get_provider_header_timeout(agent.provider, agent.model),
             )
             agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
             agent.client = None
@@ -1468,6 +1470,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent._anthropic_client = build_anthropic_client(
                 effective_key, agent._anthropic_base_url,
                 timeout=get_provider_request_timeout(agent.provider, agent.model),
+                header_timeout=get_provider_header_timeout(agent.provider, agent.model),
             )
             agent._is_anthropic_oauth = _is_oauth_token(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
             agent.client = None
@@ -1479,7 +1482,8 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 "api_key": effective_key,
                 "base_url": effective_base,
             }
-            _sm_timeout = get_provider_request_timeout(agent.provider, agent.model)
+            from hermes_cli.timeouts import build_provider_timeout
+            _sm_timeout = build_provider_timeout(agent.provider, agent.model)
             if _sm_timeout is not None:
                 agent._client_kwargs["timeout"] = _sm_timeout
             agent.client = agent._create_openai_client(
