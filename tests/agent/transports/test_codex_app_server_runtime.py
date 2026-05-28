@@ -78,6 +78,48 @@ class TestMaybeApplyCodexAppServerRuntime:
         )
         assert got == "codex_app_server"
 
+    def test_platform_override_can_keep_telegram_on_hermes_runtime(self, monkeypatch) -> None:
+        monkeypatch.setenv("HERMES_PLATFORM", "telegram")
+
+        got = _maybe_apply_codex_app_server_runtime(
+            provider="openai-codex",
+            api_mode="codex_responses",
+            model_cfg={
+                "openai_runtime": "codex_app_server",
+                "openai_runtime_platform_overrides": {"telegram": "auto"},
+            },
+        )
+
+        assert got == "codex_responses"
+
+    def test_platform_override_only_affects_matching_platform(self, monkeypatch) -> None:
+        monkeypatch.setenv("HERMES_PLATFORM", "cli")
+
+        got = _maybe_apply_codex_app_server_runtime(
+            provider="openai-codex",
+            api_mode="codex_responses",
+            model_cfg={
+                "openai_runtime": "codex_app_server",
+                "openai_runtime_platform_overrides": {"telegram": "auto"},
+            },
+        )
+
+        assert got == "codex_app_server"
+
+    def test_platform_override_can_enable_codex_runtime(self, monkeypatch) -> None:
+        monkeypatch.setenv("HERMES_PLATFORM", "telegram")
+
+        got = _maybe_apply_codex_app_server_runtime(
+            provider="openai",
+            api_mode="chat_completions",
+            model_cfg={
+                "openai_runtime": "auto",
+                "openai_runtime_platform_overrides": {"telegram": "codex_app_server"},
+            },
+        )
+
+        assert got == "codex_app_server"
+
     @pytest.mark.parametrize(
         "provider",
         [

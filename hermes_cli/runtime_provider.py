@@ -260,6 +260,55 @@ def _parse_api_mode(raw: Any) -> Optional[str]:
     return None
 
 
+def _normalize_openai_runtime(raw: Any) -> Optional[str]:
+    """Normalize user-facing openai_runtime values.
+
+    ``codex_app_server`` is the opt-in Codex subprocess runtime. ``auto`` keeps
+    the provider's normal Hermes runtime, which is important for messaging
+    sessions that need Hermes' own terminal/file tools instead of Codex's
+    sandboxed tool runner.
+    """
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip().lower()
+    if value in {"codex_app_server", "codex", "on", "enable"}:
+        return "codex_app_server"
+    if value in {"auto", "default", "hermes", "off", "disable"}:
+        return "auto"
+    return None
+
+
+def _current_platform_key() -> str:
+    """Return the active Hermes platform key, if this is a platform session."""
+    env_platform = os.getenv("HERMES_PLATFORM", "").strip().lower()
+    if env_platform:
+        return env_platform
+    try:
+        from gateway.session_context import get_session_env
+
+        return get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower()
+    except Exception:
+        return ""
+
+
+def _platform_openai_runtime_override(model_cfg: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Resolve model.openai_runtime_platform_overrides.<platform>, if set."""
+    if not isinstance(model_cfg, dict):
+        return None
+    platform = _current_platform_key()
+    if not platform:
+        return None
+    raw_overrides = model_cfg.get("openai_runtime_platform_overrides")
+    if not isinstance(raw_overrides, dict):
+        return None
+    value = raw_overrides.get(platform)
+    if value is None and platform == "local":
+        value = raw_overrides.get("cli")
+    if value is None:
+        return None
+    return _normalize_openai_runtime(str(value))
+
+
 def _maybe_apply_codex_app_server_runtime(
     *,
     provider: str,
@@ -280,7 +329,9 @@ def _maybe_apply_codex_app_server_runtime(
         return api_mode
     if provider not in {"openai", "openai-codex"}:
         return api_mode
-    runtime = str(model_cfg.get("openai_runtime") or "").strip().lower()
+    runtime = _platform_openai_runtime_override(model_cfg)
+    if runtime is None:
+        runtime = _normalize_openai_runtime(model_cfg.get("openai_runtime"))
     if runtime == "codex_app_server":
         return "codex_app_server"
     return api_mode
