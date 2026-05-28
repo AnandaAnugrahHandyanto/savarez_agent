@@ -3002,6 +3002,62 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["final_response"] == "Fallback answer."
 
+    def test_empty_response_fallback_compresses_for_active_fallback_model(self, agent):
+        """Fallback retries re-check/compress against the fallback model context budget."""
+        self._setup_agent(agent)
+        agent.base_url = "http://127.0.0.1:1234/v1"
+        agent.compression_enabled = True
+        agent.context_compressor = MagicMock()
+        agent.context_compressor.threshold_tokens = 1_000
+        agent.context_compressor.context_length = 2_000
+        agent.context_compressor.protect_first_n = 2
+        agent.context_compressor.protect_last_n = 2
+        agent.context_compressor.should_compress.side_effect = [True, False]
+        agent.tools = []
+        agent._fallback_chain = [{"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}]
+        agent._fallback_index = 0
+        agent._fallback_activated = False
+
+        empty_resp = _mock_response(content=None, finish_reason="stop")
+        content_resp = _mock_response(content="Fallback answer.", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [
+            empty_resp, empty_resp, empty_resp, empty_resp, content_resp,
+        ]
+
+        def _mock_fallback():
+            agent._fallback_index = 1
+            agent._fallback_activated = True
+            agent.model = "anthropic/claude-sonnet-4"
+            agent.provider = "openrouter"
+            return True
+
+        compressed_messages = []
+
+        def _mock_compress(messages, system_message, approx_tokens=None, task_id=None):
+            compressed_messages.append((list(messages), approx_tokens, agent.model))
+            return ([m for m in messages if m.get("role") == "user"], "compressed system")
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_try_activate_fallback", side_effect=_mock_fallback),
+            patch.object(agent, "_compress_context", side_effect=_mock_compress),
+            patch(
+                "agent.conversation_loop.estimate_request_tokens_rough",
+                side_effect=[100, 100, 100, 100, 5_000, 500, 100],
+            ),
+        ):
+            result = agent.run_conversation("answer me")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Fallback answer."
+        assert compressed_messages
+        assert compressed_messages[0][1] == 5_000
+        assert compressed_messages[0][2] == "anthropic/claude-sonnet-4"
+        agent.context_compressor.should_compress.assert_any_call(5_000)
+        agent.context_compressor.should_compress.assert_any_call(500)
+
     def test_empty_response_fallback_also_empty_returns_empty(self, agent):
         """If fallback also returns empty, final response is (empty)."""
         self._setup_agent(agent)

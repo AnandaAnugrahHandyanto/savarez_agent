@@ -563,6 +563,102 @@ def run_conversation(
                 if _preflight_tokens < agent.context_compressor.threshold_tokens:
                     break  # Under threshold
 
+    def _compress_for_active_model_before_retry(reason: str) -> bool:
+        """Re-check context after provider/model changes before retrying.
+
+        Preflight compression above runs before the main loop, using the
+        primary model's context budget. Fallback activation can switch to a
+        smaller context model mid-retry; without this gate, large cron/status
+        jobs can immediately send an impossible request to fallback and loop
+        through provider context-length errors.
+        """
+        nonlocal messages, active_system_prompt, conversation_history
+
+        if not agent.compression_enabled:
+            return True
+
+        try:
+            _tokens = estimate_request_tokens_rough(
+                messages,
+                system_prompt=active_system_prompt or "",
+                tools=agent.tools or None,
+            )
+            try:
+                agent._last_request_context_tokens = _tokens
+            except Exception:
+                pass
+
+            if not agent.context_compressor.should_compress(_tokens):
+                return True
+
+            logger.info(
+                "Fallback/retry preflight compression (%s): ~%s tokens >= %s threshold (model %s, ctx %s)",
+                reason,
+                f"{_tokens:,}",
+                f"{agent.context_compressor.threshold_tokens:,}",
+                agent.model,
+                f"{agent.context_compressor.context_length:,}",
+            )
+            agent._emit_status(
+                f"📦 Compressing before retry on {agent.model}: ~{_tokens:,} tokens "
+                f">= {agent.context_compressor.threshold_tokens:,} threshold."
+            )
+
+            for _pass in range(max_compression_attempts):
+                _orig_len = len(messages)
+                _orig_tokens = _tokens
+                messages, active_system_prompt = agent._compress_context(
+                    messages,
+                    system_message,
+                    approx_tokens=_tokens,
+                    task_id=effective_task_id,
+                )
+                conversation_history = None
+                agent._empty_content_retries = 0
+                agent._thinking_prefill_retries = 0
+                agent._last_content_with_tools = None
+                agent._last_content_tools_all_housekeeping = False
+                agent._mute_post_response = False
+
+                _tokens = estimate_request_tokens_rough(
+                    messages,
+                    system_prompt=active_system_prompt or "",
+                    tools=agent.tools or None,
+                )
+                if not agent.context_compressor.should_compress(_tokens):
+                    return True
+                if len(messages) >= _orig_len and _tokens >= _orig_tokens:
+                    break
+
+            logger.error(
+                "Context still exceeds active model threshold after fallback/retry compression (%s): ~%s tokens >= %s threshold (model %s, ctx %s)",
+                reason,
+                f"{_tokens:,}",
+                f"{agent.context_compressor.threshold_tokens:,}",
+                agent.model,
+                f"{agent.context_compressor.context_length:,}",
+            )
+            return False
+        except Exception as exc:
+            logger.warning("Fallback/retry preflight compression check failed (%s): %s", reason, exc)
+            # Do not make fallback unrecoverable because a defensive estimate failed.
+            return True
+
+    def _fallback_context_failure(reason: str) -> Dict[str, Any]:
+        agent._persist_session(messages, conversation_history)
+        return {
+            "final_response": (
+                f"Context is still too large for fallback model {agent.model} after compression "
+                f"during {reason}. Split the job or reduce loaded skills/toolsets."
+            ),
+            "messages": messages,
+            "api_calls": api_call_count,
+            "completed": False,
+            "failed": True,
+            "error": f"fallback context too large after compression: {reason}",
+            "compression_exhausted": True,
+        }
+
     # Plugin hook: pre_llm_call
     # Fired once per turn before the tool-calling loop.  Plugins can
     # return a dict with a ``context`` key (or a plain string) whose
@@ -1056,6 +1152,8 @@ def run_conversation(
                         )
                         agent._emit_status(f"⏳ {_nous_msg}")
                         if agent._try_activate_fallback():
+                            if not _compress_for_active_model_before_retry("nous rate-limit fallback"):
+                                return _fallback_context_failure("nous rate-limit fallback")
                             retry_count = 0
                             compression_attempts = 0
                             primary_recovery_attempted = False
@@ -1292,6 +1390,8 @@ def run_conversation(
                     if agent._fallback_index < len(agent._fallback_chain):
                         agent._emit_status("⚠️ Empty/malformed response — switching to fallback...")
                     if agent._try_activate_fallback():
+                        if not _compress_for_active_model_before_retry("empty/malformed response fallback"):
+                            return _fallback_context_failure("empty/malformed response fallback")
                         retry_count = 0
                         compression_attempts = 0
                         primary_recovery_attempted = False
@@ -1362,6 +1462,8 @@ def run_conversation(
                         # Try fallback before giving up
                         agent._emit_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
                         if agent._try_activate_fallback():
+                            if not _compress_for_active_model_before_retry("invalid-response retry fallback"):
+                                return _fallback_context_failure("invalid-response retry fallback")
                             retry_count = 0
                             compression_attempts = 0
                             primary_recovery_attempted = False
@@ -2540,6 +2642,8 @@ def run_conversation(
                     if not pool_may_recover:
                         agent._emit_status("⚠️ Rate limited — switching to fallback provider...")
                         if agent._try_activate_fallback(reason=classified.reason):
+                            if not _compress_for_active_model_before_retry("rate-limit fallback"):
+                                return _fallback_context_failure("rate-limit fallback")
                             retry_count = 0
                             compression_attempts = 0
                             primary_recovery_attempted = False
@@ -2931,6 +3035,8 @@ def run_conversation(
                     # may not have the same issue (rate limit, auth, etc.)
                     agent._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
                     if agent._try_activate_fallback():
+                        if not _compress_for_active_model_before_retry("client-error fallback"):
+                            return _fallback_context_failure("client-error fallback")
                         retry_count = 0
                         compression_attempts = 0
                         primary_recovery_attempted = False
@@ -3013,6 +3119,8 @@ def run_conversation(
                     # Try fallback before giving up entirely
                     agent._emit_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
                     if agent._try_activate_fallback():
+                        if not _compress_for_active_model_before_retry("max-retry fallback"):
+                            return _fallback_context_failure("max-retry fallback")
                         retry_count = 0
                         compression_attempts = 0
                         primary_recovery_attempted = False
@@ -3879,6 +3987,8 @@ def run_conversation(
                             "switching to fallback provider..."
                         )
                         if agent._try_activate_fallback():
+                            if not _compress_for_active_model_before_retry("empty-content fallback"):
+                                return _fallback_context_failure("empty-content fallback")
                             agent._empty_content_retries = 0
                             agent._emit_status(
                                 f"↻ Switched to fallback: {agent.model} "
