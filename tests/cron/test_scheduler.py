@@ -604,6 +604,41 @@ class TestDeliverResultWrapping:
         assert metadata["feishu_card_title"].startswith("AI 情报雷达 · ")
         assert metadata["feishu_card_template"] == "blue"
 
+    def test_delivery_loads_dotenv_before_resolving_bare_feishu_target(self, monkeypatch):
+        """Standalone cron delivery should resolve FEISHU_HOME_CHANNEL from dotenv."""
+        from gateway.config import Platform
+
+        monkeypatch.delenv("FEISHU_HOME_CHANNEL", raising=False)
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.FEISHU: pconfig}
+
+        def fake_load_dotenv(**kwargs):
+            monkeypatch.setenv("FEISHU_HOME_CHANNEL", "oc_from_dotenv")
+            return []
+
+        with patch("hermes_cli.env_loader.load_hermes_dotenv", side_effect=fake_load_dotenv), \
+             patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": True}}):
+            err = _deliver_result(
+                {
+                    "id": "dotenv-feishu",
+                    "name": "daily-ai-intel-briefing",
+                    "deliver": "feishu",
+                    "feishu_card_title": "AI 情报雷达 · {date}",
+                },
+                "**Body**",
+            )
+
+        assert err is None
+        send_mock.assert_called_once()
+        assert send_mock.call_args.args[0] == Platform.FEISHU
+        assert send_mock.call_args.args[2] == "oc_from_dotenv"
+        assert send_mock.call_args.args[3] == "**Body**"
+        assert send_mock.call_args.kwargs["metadata"]["feishu_card_title"]
+
     def test_feishu_card_metadata_only_skips_wrapper_for_feishu_targets(self):
         """Mixed delivery keeps cron context for non-Feishu targets."""
         from gateway.config import Platform

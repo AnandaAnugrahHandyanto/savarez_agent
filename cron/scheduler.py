@@ -644,6 +644,18 @@ def _send_media_via_adapter(
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
+def _load_cron_delivery_dotenv(job_id: str) -> None:
+    """Load Hermes dotenv before delivery target/config resolution."""
+    try:
+        from hermes_cli.env_loader import load_hermes_dotenv
+        load_hermes_dotenv(
+            hermes_home=_get_hermes_home(),
+            project_env=Path(__file__).resolve().parents[1] / ".env",
+        )
+    except Exception as env_exc:
+        logger.debug("Job '%s': dotenv load before delivery failed: %s", job_id, env_exc)
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -655,6 +667,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     Returns None on success, or an error string on failure.
     """
+    # Standalone cron ticks (especially no_agent script jobs) do not pass
+    # through the agent setup path that reloads ~/.hermes/.env. Load it before
+    # target resolution so bare targets like ``deliver: feishu`` can resolve
+    # FEISHU_HOME_CHANNEL from dotenv.
+    _load_cron_delivery_dotenv(str(job.get("id", "?")))
+
     targets = _resolve_delivery_targets(job)
     if not targets:
         if job.get("deliver", "local") != "local":
@@ -694,19 +712,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     from gateway.platforms.base import BasePlatformAdapter
 
     try:
-        # Standalone cron ticks (especially no_agent script jobs) do not pass
-        # through the agent setup path that reloads ~/.hermes/.env. Load it here
-        # before resolving gateway platform config so direct delivery has the
-        # same credentials as gateway-hosted delivery.
-        try:
-            from hermes_cli.env_loader import load_hermes_dotenv
-            load_hermes_dotenv(
-                hermes_home=_get_hermes_home(),
-                project_env=Path(__file__).resolve().parents[1] / ".env",
-            )
-        except Exception as env_exc:
-            logger.debug("Job '%s': dotenv load before delivery failed: %s", job["id"], env_exc)
-
         config = load_gateway_config()
     except Exception as e:
         msg = f"failed to load gateway config: {e}"
