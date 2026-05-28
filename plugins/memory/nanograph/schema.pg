@@ -1,0 +1,25 @@
+// Hermes long-term memory — nanograph schema (schema-as-code, git-versioned).
+//
+// A Fact is an atomic durable statement; Entities are the people/projects/
+// things facts are About. Turns are persisted as Facts with kind="turn".
+// The key property is `slug` — never name it `id` (`id` is nanograph's
+// reserved internal node identifier).
+
+node Fact {
+    slug: String @key
+    statement: String
+    kind: String          // preference | decision | fact | event | turn | memory
+    session: String
+    ts: String?
+    // recall_mode semantic/hybrid replaces the marker below with an embedding
+    // column (dim from config.embed_dim); fulltext mode removes it.
+    // @SEMANTIC_EMBEDDING@
+}
+
+node Entity {
+    slug: String @key
+    name: String
+    kind: String          // person | project | tool | concept | ...
+}
+
+edge About: Fact -> Entity

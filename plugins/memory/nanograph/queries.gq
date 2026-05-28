@@ -1,0 +1,69 @@
+// Hermes memory recall/write queries (schema-as-code, git-versioned).
+// Only constructs proven against the engine are used here: search(),
+// keyed filters, edge traversal, insert. Semantic recall is appended,
+// commented, for when an embedding provider is configured.
+
+// Full-text recall over fact statements — the default prefetch path.
+// No embeddings required.
+query recall($q: String) {
+    match {
+        $f: Fact
+        search($f.statement, $q)
+    }
+    return { $f.slug, $f.statement, $f.kind, $f.session }
+    order { $f.slug asc }
+}
+
+// All facts concerning a named entity (graph traversal).
+query facts_about($entity: String) {
+    match {
+        $e: Entity { slug: $entity }
+        $f about $e
+    }
+    return { $f.slug, $f.statement, $f.kind }
+    order { $f.slug asc }
+}
+
+// Facts written during a given session (recency surface).
+query recent($session: String) {
+    match { $f: Fact { session: $session } }
+    return { $f.slug, $f.statement, $f.kind, $f.ts }
+    order { $f.ts desc }
+}
+
+// All facts (used to count for the system prompt block).
+query all_facts() {
+    match { $f: Fact }
+    return { $f.slug }
+}
+
+// Store a fact. slug is a caller-generated unique id (uuid).
+query remember($slug: String, $statement: String, $kind: String, $session: String, $ts: String) {
+    insert Fact {
+        slug: $slug
+        statement: $statement
+        kind: $kind
+        session: $session
+        ts: $ts
+    }
+}
+
+// --- Semantic recall (used when recall_mode is semantic/hybrid) -------------
+// Only executed when the embedding column exists in the active schema; the
+// syntax is valid regardless, and typecheck binds only on the executed query.
+query semantic_recall($q: String) {
+    match { $f: Fact }
+    return { $f.slug, $f.statement, nearest($f.embedding, $q) as score }
+    order { nearest($f.embedding, $q) }
+    limit 8
+}
+
+query hybrid_recall($q: String) {
+    match { $f: Fact }
+    return {
+        $f.slug, $f.statement,
+        rrf(nearest($f.embedding, $q), bm25($f.statement, $q)) as score
+    }
+    order { rrf(nearest($f.embedding, $q), bm25($f.statement, $q)) desc }
+    limit 8
+}

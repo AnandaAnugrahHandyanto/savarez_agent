@@ -1,0 +1,5 @@
+name: nanograph
+version: 0.1.0
+description: "nanograph — local embedded property-graph memory (Arrow/Lance). Full-text + graph-traversal recall, ACID with a CDC audit ledger; optional local LM Studio semantic search."
+hooks:
+  - on_memory_write
