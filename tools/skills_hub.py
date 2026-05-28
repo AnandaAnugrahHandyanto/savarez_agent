@@ -1859,8 +1859,18 @@ class ClawHubSource(SkillSource):
             results = self._search_catalog(query, limit=limit)
             if results:
                 return results
+        else:
+            # Empty query: route through the paginating catalog walker so the
+            # full ClawHub catalog (20k+ skills) lands in the index. The
+            # single-request listing path below caps at one page (200 items)
+            # regardless of `limit`, which silently truncates the public
+            # skills index. The catalog walker follows `nextCursor`.
+            catalog = self._load_catalog_index()
+            if catalog:
+                return self._dedupe_results(catalog)[:limit] if limit > 0 else self._dedupe_results(catalog)
 
-        # Empty query or catalog fallback failure: use the lightweight listing API.
+        # Non-empty query catalog miss, or catalog walker failure: fall back to
+        # the lightweight listing API for a best-effort response.
         cache_key = f"clawhub_search_listing_v1_{hashlib.md5(query.encode()).hexdigest()}_{limit}"
         cached = _read_index_cache(cache_key)
         if cached is not None:
@@ -1989,7 +1999,10 @@ class ClawHubSource(SkillSource):
         cursor: Optional[str] = None
         results: List[SkillMeta] = []
         seen: set[str] = set()
-        max_pages = 50
+        # ClawHub has 20k+ skills and growing; 250 pages * 200/page = 50k ceiling.
+        # Each page is one HTTP request, so the full walk is ~100 requests in
+        # practice — well within the CI build budget (twice-daily refresh).
+        max_pages = 250
 
         for _ in range(max_pages):
             params: Dict[str, Any] = {"limit": 200}
