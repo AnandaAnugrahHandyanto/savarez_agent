@@ -35,6 +35,31 @@ def test_custom_provider_extra_body_merges_into_request_overrides():
     }
 
 
+def test_custom_provider_openai_extra_body_drops_static_reasoning_effort():
+    agent = SimpleNamespace(
+        provider="custom",
+        model="gpt-5.5",
+        base_url="https://example.test/v1",
+        request_overrides={"service_tier": "priority"},
+    )
+
+    _merge_custom_provider_extra_body(
+        agent,
+        [
+            {
+                "name": "openai-compatible",
+                "base_url": "https://example.test/v1/",
+                "model": "gpt-5.5",
+                "extra_body": {
+                    "reasoning_effort": "xhigh",
+                },
+            }
+        ],
+    )
+
+    assert agent.request_overrides == {"service_tier": "priority"}
+
+
 def test_custom_provider_extra_body_preserves_caller_override():
     agent = SimpleNamespace(
         provider="custom",
