@@ -695,6 +695,8 @@ async def _standalone_send(
 
 def register(ctx) -> None:
     """Called by the Hermes plugin loader at startup."""
+    from . import cli as _cli  # local import to avoid argparse at module load
+
     ctx.register_platform(
         name="photon",
         label="Photon iMessage",
@@ -704,10 +706,12 @@ def register(ctx) -> None:
         is_connected=is_connected,
         required_env=["PHOTON_PROJECT_ID", "PHOTON_PROJECT_SECRET"],
         install_hint=(
-            "Run: hermes photon setup  (logs in via device flow, creates a "
-            "Spectrum project, links your phone number, installs the "
-            "spectrum-ts sidecar)."
+            "Run: hermes photon quick-setup --phone +15551234567  (logs in "
+            "via device flow, creates/adopts a Spectrum project, links your "
+            "phone number, installs the sidecar, and registers a managed "
+            "webhook tunnel)."
         ),
+        setup_fn=_cli.interactive_setup,
         env_enablement_fn=_env_enablement,
         cron_deliver_env_var="PHOTON_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send,
@@ -727,9 +731,6 @@ def register(ctx) -> None:
             "Attachments arrive as metadata only (no download URL yet)."
         ),
     )
-
-    # Register CLI subcommands — `hermes photon ...`
-    from . import cli as _cli  # local import to avoid argparse at module load
 
     ctx.register_cli_command(
         name="photon",

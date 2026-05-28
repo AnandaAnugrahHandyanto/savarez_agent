@@ -678,7 +678,7 @@ def print_credential_summary(emit: Any = print) -> None:
     pid, sec = load_project_credentials()
     labels["project_id"] = pid if pid else "✗ missing"
     labels["project_key"] = "✓ stored" if sec else "✗ missing"
-    if os.getenv("PHOTON_WEBHOOK_SECRET"):
+    if _get_hermes_env_value("PHOTON_WEBHOOK_SECRET"):
         labels["webhook_key"] = "✓ set"
     else:
         labels["webhook_key"] = "⚠ unset — verification disabled"
@@ -714,7 +714,7 @@ def credential_summary() -> Dict[str, str]:
         return "✓ stored" if sec else "✗ missing"
 
     def _present_webhook_secret() -> str:
-        return "✓ set" if os.getenv("PHOTON_WEBHOOK_SECRET") else "⚠ unset — verification disabled"
+        return "✓ set" if _get_hermes_env_value("PHOTON_WEBHOOK_SECRET") else "⚠ unset — verification disabled"
 
     return {
         "device_token": _present_token(),

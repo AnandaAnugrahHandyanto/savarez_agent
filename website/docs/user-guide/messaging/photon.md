@@ -47,30 +47,39 @@ when it needs to resolve an uncached outbound space.
 
 - A Photon account — sign up at [app.photon.codes][app]
 - **Node.js 20.18.1 or newer** on PATH (`node --version`)
+- `cloudflared` on PATH for the default local-dev webhook tunnel
 - A phone number that can receive iMessage (used to bind your account)
-- A publicly reachable URL for the webhook receiver — Cloudflare
-  Tunnel, ngrok, or your own gateway hostname all work
+- For production: a stable named Cloudflare Tunnel, ngrok domain, or
+  your own gateway hostname
 
 ## First-time setup
 
 ```bash
-# Device-code login + project + user + sidecar deps, all in one
-hermes photon setup --phone +15551234567
+# Device-code login + project + user + sidecar deps + webhook tunnel.
+# Replace the phone with your E.164 number.
+hermes photon quick-setup --phone +15551234567
+
+# Check the computed next step whenever you get stuck.
+hermes photon status
 ```
 
 The wizard:
 
 1. Opens `https://app.photon.codes/` for device approval
 2. Reuses local project credentials, adopts one matching Photon project
-   named `Hermes Agent`, or asks before creating a new dashboard project
+   named `Hermes Agent`, or creates one when none exists
 3. Calls the Spectrum `create-user` endpoint with `type: shared` so
    Photon allocates an iMessage line from the free pool
 4. Runs `npm install` inside the plugin's sidecar directory
+5. Starts a local Cloudflare Quick Tunnel and registers the public
+   `trycloudflare.com` webhook URL with Photon
 
-Running setup again is safe: Hermes will not silently create another
-Photon dashboard project. To intentionally make a replacement project,
-run `hermes photon setup --new-project`. To bind Hermes to an existing
-project, use `hermes photon projects list` and
+`hermes setup gateway` runs the same guided Photon setup when you choose
+Photon. Running setup again is safe: Hermes will not silently duplicate
+a matching dashboard project. If multiple matching projects exist, the
+setup stops and asks you to select one. To intentionally make a
+replacement project, run `hermes photon setup --new-project`. To bind
+Hermes to an existing project, use `hermes photon projects list` and
 `hermes photon projects select <project-id>`.
 
 The Photon dashboard token is stored in `~/.hermes/auth.json` under
@@ -78,21 +87,41 @@ The Photon dashboard token is stored in `~/.hermes/auth.json` under
 gateway are written to `~/.hermes/.env` as `PHOTON_PROJECT_ID` and
 `PHOTON_PROJECT_SECRET`.
 
-## Registering the webhook
+## Webhook tunnel
 
-Photon needs a public URL it can POST to. Expose your local listener
-(default port 8788, path `/photon/webhook`) via Cloudflare Tunnel or
-ngrok, then:
+Quick setup uses Cloudflare Quick Tunnel by default:
+
+```bash
+hermes photon webhook tunnel start    # start/reuse tunnel and register webhook
+hermes photon webhook tunnel status   # show pid, public URL, and state file
+hermes photon webhook tunnel logs     # show recent cloudflared output
+hermes photon webhook tunnel stop     # stop the local managed tunnel
+```
+
+The command runs `cloudflared tunnel --config /dev/null --url
+http://127.0.0.1:8788 --no-autoupdate`, reads the
+`https://*.trycloudflare.com` URL, appends `/photon/webhook`, registers
+that URL with Photon, and saves both `PHOTON_WEBHOOK_SECRET` and
+`PHOTON_WEBHOOK_PUBLIC_URL` in `~/.hermes/.env`. Runtime state and logs
+live under `~/.hermes/photon/`.
+
+Quick Tunnel URLs are temporary and can change after restart. This is
+fine for local setup and testing. For production, use a named Cloudflare
+Tunnel or another stable user-owned reverse proxy and register it
+manually:
 
 ```bash
 hermes photon webhook register https://YOUR-PUBLIC-URL/photon/webhook
+hermes photon webhook list
+hermes photon webhook delete <webhook-id>
 ```
 
-The response includes a `signingSecret` — **Photon only returns it
-once.** Hermes saves it to `~/.hermes/.env`:
+The registration response includes a `signingSecret` — **Photon only
+returns it once.** Hermes saves it to `~/.hermes/.env`:
 
 ```bash
 PHOTON_WEBHOOK_SECRET=v0_64-char-hex...
+PHOTON_WEBHOOK_PUBLIC_URL=https://YOUR-PUBLIC-URL/photon/webhook
 ```
 
 The plugin verifies every inbound `POST` against this secret and
@@ -100,7 +129,12 @@ rejects deliveries with a timestamp drift greater than 5 minutes.
 If the same URL is already registered and `PHOTON_WEBHOOK_SECRET` is set
 locally, the command is a no-op. If the local secret is missing, delete
 or recreate the webhook in the Photon dashboard and save the new signing
-secret locally.
+secret locally. The managed tunnel flow deletes stale
+`trycloudflare.com` webhooks it created when the tunnel URL changes, but
+leaves user-owned/manual webhook URLs alone.
+
+If `cloudflared` is missing, Hermes prints install instructions and the
+manual `hermes photon webhook register ...` fallback.
 
 ## Start the gateway
 
@@ -123,6 +157,35 @@ hermes gateway install --force
 hermes gateway start
 ```
 
+## Detailed commands
+
+```bash
+# One-command setup.
+hermes photon quick-setup --phone +15551234567
+
+# Separate setup steps for debugging or advanced installs.
+hermes photon login
+hermes photon projects list
+hermes photon projects select <dashboard-or-spectrum-project-id>
+hermes photon setup --phone +15551234567
+hermes photon setup --new-project --phone +15551234567
+hermes photon install-sidecar
+
+# Webhooks.
+hermes photon webhook tunnel start
+hermes photon webhook tunnel status
+hermes photon webhook tunnel logs
+hermes photon webhook tunnel stop
+hermes photon webhook register https://YOUR-PUBLIC-URL/photon/webhook
+hermes photon webhook list
+hermes photon webhook delete <webhook-id>
+
+# Readiness and runtime.
+hermes photon status
+hermes gateway run -v
+hermes gateway restart
+```
+
 ## Status & troubleshooting
 
 ```bash
@@ -136,19 +199,27 @@ Photon iMessage status
 ──────────────────────
   device token        : ✓ stored
   project id          : 3c90c3cc-0d44-4b50-...
-  project secret      : ✓ stored
+  project key         : ✓ stored
   node binary         : /usr/bin/node
   sidecar deps        : ✓ installed
-  webhook secret      : ✓ set
+  webhook key         : ✓ set
+  webhook public URL  : https://...
+  managed tunnel      : ✓ running (pid 12345)
+  next step           : hermes gateway run -v  (or `hermes gateway restart` if already running)
+  docs                : plugins/platforms/photon/README.md; website/docs/user-guide/messaging/photon.md
 ```
 
 Common issues:
 
 - **`sidecar deps : ✗ run hermes photon install-sidecar`** — Node is
   installed but `spectrum-ts` isn't. Run the suggested command.
-- **`webhook secret : ⚠ unset — verification disabled`** — the
+- **`webhook key : ⚠ unset — verification disabled`** — the
   plugin will accept ANY POST to the webhook URL, which is unsafe.
-  Re-run `hermes photon webhook register` and store the secret.
+  Re-run `hermes photon webhook tunnel start` or
+  `hermes photon webhook register` and store the secret.
+- **`managed tunnel : ✗ stopped`** — run
+  `hermes photon webhook tunnel start`. Quick Tunnel URLs can change
+  after restart, so Hermes will update the registered Photon webhook.
 - **`PHOTON_WEBHOOK_PORT` already in use** — set a different port via
   `~/.hermes/.env`.
 - **Webhook reachable from localhost but Photon can't deliver** —
@@ -192,7 +263,8 @@ hermes photon webhook delete <webhook-id>   # remove one
 |---------------------------|--------------------|--------------------------------------------|
 | `PHOTON_PROJECT_ID`       | (unset)            | Set by `hermes photon setup`               |
 | `PHOTON_PROJECT_SECRET`   | (unset)            | Set by `hermes photon setup`               |
-| `PHOTON_WEBHOOK_SECRET`   | (unset)            | From `hermes photon webhook register`      |
+| `PHOTON_WEBHOOK_SECRET`   | (unset)            | From webhook registration                  |
+| `PHOTON_WEBHOOK_PUBLIC_URL` | (unset)          | Registered public webhook URL              |
 | `PHOTON_WEBHOOK_PORT`     | `8788`             | Local port for the aiohttp listener        |
 | `PHOTON_WEBHOOK_PATH`     | `/photon/webhook`  | Path under which the listener mounts       |
 | `PHOTON_WEBHOOK_BIND`     | `0.0.0.0`          | Bind address for the listener              |

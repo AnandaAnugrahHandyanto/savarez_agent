@@ -53,54 +53,137 @@ shared-line DMs, strips the `any;-;` prefix before sending. This
 bridges Photon's webhook shape to the SDK's outbound lookup shape
 without changing the Python gateway contract.
 
-## First-time setup
+## Quick setup
 
 ```bash
-# 1. Log in via the device-code flow (opens browser)
-hermes photon login
-
-# 2. Full setup: reuse/adopt project, create user, install sidecar deps
-hermes photon setup --phone +15551234567
-
-# 3. Expose the local webhook listener to the public internet.
-#    Keep this running while testing; copy the trycloudflare.com URL it prints.
-cloudflared tunnel --url http://127.0.0.1:8788
-
-# 4. Register that public tunnel URL with Photon.
-hermes photon webhook register https://YOUR-TUNNEL.trycloudflare.com/photon/webhook
-
-# 5. Hermes saves the signing secret to ~/.hermes/.env
-#    as PHOTON_WEBHOOK_SECRET=...
-#    Photon only returns it ONCE.
-
-# 6. Restart/start the gateway in foreground QA mode.
-#    Restart is required after webhook registration so Hermes loads the secret.
-hermes gateway run -v
-
-# For always-on local use, install/start the launchd service instead:
-hermes gateway install --force
-hermes gateway start
+# All-in-one local setup. Replace the phone with your E.164 number.
+hermes photon quick-setup --phone +15551234567
 ```
 
-`hermes photon setup` is idempotent. It reuses local credentials first,
-then adopts a matching Photon dashboard project named `Hermes Agent` if
-one exists. If multiple matching projects are found, setup stops and asks
-you to choose instead of creating another dashboard project.
+`hermes setup gateway` runs the same guided Photon flow when you choose
+Photon from the platform list. The quick setup path is idempotent: it
+reuses local credentials first, then adopts a matching Photon dashboard
+project named `Hermes Agent` if one exists, creates one if none exists,
+and stops if multiple matching projects require an explicit selection.
 
-Useful project-management commands:
+The equivalent CLI flow is:
+
+```bash
+# 1. Authenticate with Photon.
+hermes photon login
+
+# 2. Reuse/adopt/create the Photon project, create the shared user,
+#    and install the sidecar dependencies.
+hermes photon setup --phone +15551234567
+
+# 3. Start the managed local webhook tunnel and register it with Photon.
+hermes photon webhook tunnel start
+
+# 4. Check the computed next step.
+hermes photon status
+
+# 5. Start the gateway in foreground QA mode.
+hermes gateway run -v
+```
+
+If the gateway was already running when the webhook was registered,
+restart it so the adapter loads `PHOTON_WEBHOOK_SECRET`:
+
+```bash
+hermes gateway restart
+```
+
+## Project management
+
+Use these commands when quick setup stops because multiple compatible
+Photon projects exist, or when you intentionally want to bind Hermes to
+a specific project.
 
 ```bash
 hermes photon projects list
 hermes photon projects select <dashboard-or-spectrum-project-id>
-hermes photon setup --new-project
+hermes photon setup --new-project --phone +15551234567
 ```
 
 Use `--new-project` only when you intentionally want a separate Photon
-dashboard project. Webhook registration is also duplicate-aware: if the
-same URL is already registered and `PHOTON_WEBHOOK_SECRET` is present,
+dashboard project.
+
+## Managed Cloudflare Quick Tunnel
+
+Cloudflare Quick Tunnel is the default local development path. It is
+temporary: the `trycloudflare.com` URL can change when the tunnel
+restarts. The managed command starts `cloudflared`, captures the public
+URL, registers the Photon webhook, and saves the local webhook secret.
+
+```bash
+hermes photon webhook tunnel start
+hermes photon webhook tunnel status
+hermes photon webhook tunnel logs
+hermes photon webhook tunnel stop
+```
+
+The managed tunnel command can delete stale `trycloudflare.com` webhooks
+it previously created; it leaves user-owned/manual webhook URLs alone.
+
+## Manual webhook management
+
+Use manual webhook registration for production, a named Cloudflare
+Tunnel, or any other stable user-owned reverse proxy.
+
+```bash
+hermes photon webhook register https://YOUR-PUBLIC-URL/photon/webhook
+hermes photon webhook list
+hermes photon webhook delete <webhook-id>
+```
+
+Webhook registration is duplicate-aware: if the same URL is already
+registered and `PHOTON_WEBHOOK_SECRET` is present,
 `hermes photon webhook register ...` is a no-op. If the URL exists but
 the local secret is missing, delete or recreate the webhook in the Photon
 dashboard and save the new signing secret locally.
+
+## Status and gateway runtime
+
+`hermes photon status` is the fastest way to see the current readiness
+state. The final row is a computed next step.
+
+```bash
+hermes photon status
+
+hermes gateway run -v
+hermes gateway restart
+```
+
+For always-on local use, install/start the launchd service instead:
+
+```bash
+hermes gateway install --force
+hermes gateway start
+```
+
+## Detailed command reference
+
+```bash
+hermes photon quick-setup --phone +15551234567
+hermes photon login
+hermes photon setup --phone +15551234567
+hermes photon setup --new-project --phone +15551234567
+hermes photon projects list
+hermes photon projects select <dashboard-or-spectrum-project-id>
+hermes photon install-sidecar
+hermes photon webhook tunnel start
+hermes photon webhook tunnel status
+hermes photon webhook tunnel logs
+hermes photon webhook tunnel stop
+hermes photon webhook register https://YOUR-PUBLIC-URL/photon/webhook
+hermes photon webhook list
+hermes photon webhook delete <webhook-id>
+hermes photon status
+hermes gateway run -v
+hermes gateway restart
+hermes gateway install --force
+hermes gateway start
+```
 
 ## Credentials
 
@@ -127,6 +210,10 @@ PHOTON_PROJECT_SECRET=...
 
 The per-URL webhook signing secret is treated like an API key and
 lives in `~/.hermes/.env` as `PHOTON_WEBHOOK_SECRET`.
+The registered public webhook URL is stored as
+`PHOTON_WEBHOOK_PUBLIC_URL` so `hermes photon status` can tell you
+whether the next action is tunnel setup, gateway start, or gateway
+restart.
 
 ## Configuration knobs
 
@@ -137,6 +224,7 @@ All env vars are documented in `plugin.yaml`. The most important are:
 | `PHOTON_PROJECT_ID`      | (unset)            | Spectrum project ID                     |
 | `PHOTON_PROJECT_SECRET`  | (unset)            | Spectrum project secret (HTTP Basic)    |
 | `PHOTON_WEBHOOK_SECRET`  | (unset)            | Signing secret returned at register     |
+| `PHOTON_WEBHOOK_PUBLIC_URL` | (unset)         | Public webhook URL registered with Photon |
 | `PHOTON_WEBHOOK_PORT`    | 8788               | Local port for the aiohttp listener     |
 | `PHOTON_WEBHOOK_PATH`    | /photon/webhook    | Path under which the listener mounts    |
 | `PHOTON_SIDECAR_PORT`    | 8789               | Loopback port for sidecar control      |

@@ -10,8 +10,8 @@ description: >
   supervised Node sidecar that runs the `spectrum-ts` SDK (Photon does
   not currently expose a public HTTP send endpoint).
 
-  The plugin ships with a `hermes photon` CLI for the one-time login
-  + project + user setup, persists the dashboard token to
+  The plugin ships with a `hermes photon` CLI for quick login + project
+  + user + sidecar + managed webhook tunnel setup, persists the dashboard token to
   ``~/.hermes/auth.json`` and the Spectrum project id + secret to
   ``~/.hermes/.env``, and exposes Photon's free shared-line model so
   users can get started without a paid plan.
@@ -32,6 +32,10 @@ optional_env:
     description: "Per-URL HMAC-SHA256 signing secret returned at webhook registration"
     prompt: "Photon webhook signing secret"
     password: true
+  - name: PHOTON_WEBHOOK_PUBLIC_URL
+    description: "Public Photon webhook URL registered by quick setup or webhook register"
+    prompt: "Photon webhook public URL"
+    password: false
   - name: PHOTON_WEBHOOK_PORT
     description: "Local port the webhook receiver listens on (default 8788)"
     prompt: "Webhook receiver port"
