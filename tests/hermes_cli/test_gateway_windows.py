@@ -482,3 +482,63 @@ def test_uninstall_access_denied_declined_keeps_task_and_cleans_files(monkeypatc
     assert "Skipped elevation" in out
     assert "UAC is Windows' admin approval prompt" in out
     assert "Scheduled Task still registered" in out
+
+
+def test_stop_writes_planned_stop_marker(monkeypatch):
+    """stop() writes the planned-stop marker before sending SIGTERM so the gateway
+    knows this is a deliberate restart (not a crash)."""
+    written_pids = []
+
+    def mock_get_running_pid(*args, **kwargs):
+        return 12345
+
+    def mock_write_marker(pid):
+        written_pids.append(pid)
+
+    def mock_kill_gateway_processes(*args, **kwargs):
+        return 0  # no stragglers
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    monkeypatch.setattr(gateway, "kill_gateway_processes", mock_kill_gateway_processes)
+
+    # Inject a fake gateway.status module so stop() finds our mocks
+    import sys
+    from types import ModuleType
+
+    fake_status = ModuleType("gateway.status")
+    fake_status.get_running_pid = mock_get_running_pid
+    fake_status.write_planned_stop_marker = mock_write_marker
+    monkeypatch.setitem(sys.modules, "gateway.status", fake_status)
+
+    gateway_windows.stop()
+
+    assert written_pids == [12345], f"Expected [12345], got {written_pids}"
+
+
+def test_stop_continues_when_marker_write_fails(monkeypatch):
+    """If writing the marker fails (e.g., permissions), stop() still terminates processes."""
+    calls = []
+
+    def mock_kill_gateway_processes(all_profiles=False):
+        calls.append("kill_called")
+        return 1
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    monkeypatch.setattr(gateway, "kill_gateway_processes", mock_kill_gateway_processes)
+
+    import sys
+    from types import ModuleType
+
+    fake_status = ModuleType("gateway.status")
+
+    def mock_get_running_pid_raises(*args, **kwargs):
+        raise OSError("simulated permission denied")
+
+    fake_status.get_running_pid = mock_get_running_pid_raises
+    monkeypatch.setitem(sys.modules, "gateway.status", fake_status)
+
+    gateway_windows.stop()
+
+    assert "kill_called" in calls, "kill_gateway_processes should still be called even if marker write fails"

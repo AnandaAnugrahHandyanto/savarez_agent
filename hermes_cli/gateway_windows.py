@@ -1019,6 +1019,18 @@ def stop() -> None:
     _assert_windows()
     from hermes_cli.gateway import kill_gateway_processes
 
+    # Write the planned-stop marker so the gateway knows this is a deliberate
+    # restart (not a crash). On Unix, stop() does this before SIGTERM; Windows
+    # needs the same so the gateway's shutdown handler skips resume_pending.
+    try:
+        from gateway.status import get_running_pid, write_planned_stop_marker
+
+        pid = get_running_pid()
+        if pid is not None:
+            write_planned_stop_marker(pid)
+    except Exception:
+        pass  # Best-effort; non-zero exit is sufficient signal on platforms without markers
+
     stopped_any = False
     if is_task_registered():
         code, _out, err = _exec_schtasks(["/End", "/TN", get_task_name()])
