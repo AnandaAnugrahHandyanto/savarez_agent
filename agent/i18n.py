@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sysconfig
 import threading
 from functools import lru_cache
 from pathlib import Path
@@ -87,11 +88,35 @@ _catalog_lock = threading.Lock()
 def _locales_dir() -> Path:
     """Return the directory containing locale YAML files.
 
-    Lives next to the repo root so both the bundled install and editable
-    checkouts find it without PYTHONPATH gymnastics.
+    Resolution order:
+        1. ``HERMES_BUNDLED_LOCALES`` env var (Nix wrapper / explicit override)
+        2. Source checkout: ``<repo root>/locales`` next to ``agent/``
+        3. Wheel install: ``<sysconfig data>/locales`` shipped via setup.py
+           ``data_files``
+
+    Falling back to the packaged data directory is what lets pip-installed
+    wheels find the catalogs — without it, slash commands surface raw i18n
+    keys like ``gateway.model.switched`` (issue #27632).
     """
-    # agent/i18n.py -> agent/ -> repo root
-    return Path(__file__).resolve().parent.parent / "locales"
+    override = os.getenv("HERMES_BUNDLED_LOCALES", "").strip()
+    if override:
+        return Path(override)
+    # agent/i18n.py -> agent/ -> repo root (source checkout)
+    source_dir = Path(__file__).resolve().parent.parent / "locales"
+    if source_dir.is_dir():
+        return source_dir
+    # Wheel install: setup.py ships locales/ via data_files, which pip
+    # extracts to ``sysconfig.get_path("data") / "locales"``.
+    for scheme in ("data", "purelib", "platlib"):
+        raw = sysconfig.get_path(scheme)
+        if not raw:
+            continue
+        candidate = Path(raw) / "locales"
+        if candidate.is_dir():
+            return candidate
+    # Last resort: return the source-style path so error messages stay
+    # informative (``_load_catalog`` logs ``catalog missing for X at <path>``).
+    return source_dir
 
 
 def _normalize_lang(value: Any) -> str:
