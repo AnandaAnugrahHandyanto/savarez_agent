@@ -9,6 +9,7 @@ V0 is intentionally boring:
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from pathlib import Path
@@ -213,3 +214,152 @@ def validate_project_doc(doc: dict[str, Any]) -> None:
         raise ProjectAutopilotError(
             "V0 requires execution_policy parallelism=none max_active_workers=1"
         )
+
+
+def project_home_for_slug(slug: str) -> Path:
+    if not _SLUG_RE.match(slug):
+        raise ProjectAutopilotError(f"invalid project slug: {slug!r}")
+    return ACTIVE_PROJECTS_ROOT / slug
+
+
+def write_json(path: Path, data: dict[str, Any]) -> None:
+    path.write_text(
+        json.dumps(data, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def load_project_doc(project_home: Path) -> dict[str, Any]:
+    doc = json.loads((project_home / "project.json").read_text(encoding="utf-8"))
+    validate_project_doc(doc)
+    return doc
+
+
+def render_project_md(doc: dict[str, Any]) -> str:
+    return f"""# {doc["title"]}
+
+Goal: {doc["goal"]}
+
+Board: `{doc["board_slug"]}`
+Root task: `{doc["root_task_id"]}`
+Project mode: `{doc["project_mode"]}`
+Canonical repo: `{doc["repo"]["canonical_checkout"]}`
+Final branch: `{doc["branch_strategy"]["final_branch"]}`
+Final worktree: `{doc["final_worktree_path"]}`
+"""
+
+
+def render_status_md(
+    doc: dict[str, Any],
+    *,
+    next_action: str | None = None,
+    blocker: str | None = None,
+) -> str:
+    action = next_action or "Plan the first executable task graph."
+    blocker_text = blocker or "none"
+    return f"""# Status: {doc["title"]}
+
+State: {doc["state"]}
+Project home: `{doc["project_home"]}`
+Board: `{doc["board_slug"]}`
+Root task: `{doc["root_task_id"]}`
+PR: {doc.get("pr_url") or "not open"}
+Blocker: {blocker_text}
+
+## Next action
+
+{action}
+"""
+
+
+def render_handoff_md(doc: dict[str, Any]) -> str:
+    return f"""# Session Handoff: {doc["title"]}
+
+State: {doc["state"]}
+
+Restart checklist:
+1. Verify this project home exists and `project.json` validates.
+2. Inspect board `{doc["board_slug"]}` and root task `{doc["root_task_id"]}`.
+3. Reconcile `TASKS.md` and `STATUS.md` from board truth before dispatching work.
+"""
+
+
+def bootstrap_project_home(
+    *,
+    slug: str,
+    title: str,
+    goal: str,
+    board_slug: str,
+    root_task_id: str,
+    project_home: Path | None,
+    repo_org: str,
+    repo_name: str,
+    canonical_checkout: Path,
+    final_branch: str,
+    source_plan: Path | None = None,
+) -> dict[str, Any]:
+    project_home = project_home or project_home_for_slug(slug)
+    project_home.mkdir(parents=True, exist_ok=True)
+    for dirname in REQUIRED_DIRS:
+        (project_home / dirname).mkdir(parents=True, exist_ok=True)
+
+    doc = normalize_project_doc(
+        slug=slug,
+        title=title,
+        goal=goal,
+        board_slug=board_slug,
+        root_task_id=root_task_id,
+        project_home=project_home,
+        repo_org=repo_org,
+        repo_name=repo_name,
+        canonical_checkout=canonical_checkout,
+        final_branch=final_branch,
+    )
+    validate_project_doc(doc)
+
+    (project_home / "PROJECT.md").write_text(
+        render_project_md(doc),
+        encoding="utf-8",
+    )
+    (project_home / "STATUS.md").write_text(
+        render_status_md(doc),
+        encoding="utf-8",
+    )
+    (project_home / "SESSION-HANDOFF.md").write_text(
+        render_handoff_md(doc),
+        encoding="utf-8",
+    )
+    (project_home / "SESSION-LOG.md").write_text(
+        f"# Session Log: {title}\n\n- bootstrapped project home\n",
+        encoding="utf-8",
+    )
+    (project_home / "PARKING-LOT.md").write_text(
+        f"# Parking Lot: {title}\n\n",
+        encoding="utf-8",
+    )
+    (project_home / "TASKS.md").write_text(
+        f"# Tasks: {title}\n\nRoot task: `{root_task_id}`\n",
+        encoding="utf-8",
+    )
+    if source_plan:
+        target = project_home / "refs" / source_plan.name
+        target.write_text(source_plan.read_text(encoding="utf-8"), encoding="utf-8")
+    write_json(project_home / "project.json", doc)
+    verify_project_home(project_home)
+    return doc
+
+
+def verify_project_home(project_home: Path) -> dict[str, Any]:
+    missing = [rel for rel in REQUIRED_FILES if not (project_home / rel).exists()]
+    missing_dirs = [rel for rel in REQUIRED_DIRS if not (project_home / rel).is_dir()]
+    if missing or missing_dirs:
+        raise InvariantError(
+            f"missing project artifacts: files={missing} dirs={missing_dirs}"
+        )
+    doc = load_project_doc(project_home)
+    status = (project_home / "STATUS.md").read_text(encoding="utf-8")
+    if status.count("## Next action") != 1:
+        raise InvariantError("STATUS.md must contain exactly one ## Next action")
+    if str(project_home) != doc["project_home"]:
+        raise InvariantError("project.json project_home does not match actual path")
+    return doc
