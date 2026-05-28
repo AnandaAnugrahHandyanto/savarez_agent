@@ -172,6 +172,52 @@ class TestFreshFinalForLongLivedPreviews:
         # Even with finalize=True, no fresh send — the sentinel gates it.
         assert consumer._should_send_fresh_final() is False
 
+    @pytest.mark.asyncio
+    async def test_adapter_can_force_fresh_final_on_finalize(self):
+        """Platform capability can prefer fresh-final even when age-based gate is off."""
+        adapter = _make_adapter()
+        adapter.PREFER_FRESH_FINAL_ON_FINALIZE = True
+        adapter.send.side_effect = [
+            SimpleNamespace(success=True, message_id="initial_preview"),
+            SimpleNamespace(success=True, message_id="fresh_final"),
+        ]
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            config=StreamConsumerConfig(fresh_final_after_seconds=0.0),
+        )
+        await consumer._send_or_edit("hello")
+        ok = await consumer._send_or_edit("hello world", finalize=True)
+        assert ok is True
+        assert adapter.send.call_count == 2
+        adapter.edit_message.assert_not_called()
+        adapter.delete_message.assert_awaited_once_with("chat", "initial_preview")
+        assert consumer._message_id == "fresh_final"
+
+    @pytest.mark.asyncio
+    async def test_adapter_can_disable_progressive_edits_but_still_fresh_final(self):
+        adapter = _make_adapter()
+        adapter.DISABLE_PROGRESSIVE_EDITS = True
+        adapter.PREFER_FRESH_FINAL_ON_FINALIZE = True
+        adapter.send.side_effect = [
+            SimpleNamespace(success=True, message_id="initial_preview"),
+            SimpleNamespace(success=True, message_id="fresh_final"),
+        ]
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            config=StreamConsumerConfig(fresh_final_after_seconds=0.0),
+        )
+        await consumer._send_or_edit("hello")
+        mid = await consumer._send_or_edit("hello partial")
+        ok = await consumer._send_or_edit("hello world", finalize=True)
+        assert mid is False
+        assert ok is True
+        assert adapter.send.call_count == 2
+        adapter.edit_message.assert_not_called()
+        adapter.delete_message.assert_awaited_once_with("chat", "initial_preview")
+        assert consumer._message_id == "fresh_final"
+
 
 class TestStreamConsumerConfigFreshFinalField:
     """The dataclass field must exist and default to 0 (disabled)."""

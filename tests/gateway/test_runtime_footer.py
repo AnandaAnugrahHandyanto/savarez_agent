@@ -153,14 +153,14 @@ def test_format_footer_unknown_field_silently_ignored():
 
 def test_resolve_defaults_off_empty_config():
     cfg = resolve_footer_config({}, "telegram")
-    assert cfg == {"enabled": False, "fields": ["model", "context_pct", "cwd"]}
+    assert cfg == {"enabled": False, "fields": ["model", "sent_at"]}
 
 
 def test_resolve_global_enable():
     user = {"display": {"runtime_footer": {"enabled": True}}}
     cfg = resolve_footer_config(user, "telegram")
     assert cfg["enabled"] is True
-    assert cfg["fields"] == ["model", "context_pct", "cwd"]
+    assert cfg["fields"] == ["model", "sent_at"]
 
 
 def test_resolve_platform_override_wins():
@@ -189,7 +189,7 @@ def test_resolve_platform_can_add_fields_only():
     }
     tg = resolve_footer_config(user, "telegram")
     assert tg["enabled"] is True
-    assert tg["fields"] == ["model", "context_pct", "cwd"]
+    assert tg["fields"] == ["model", "sent_at"]
     dc = resolve_footer_config(user, "discord")
     assert dc["enabled"] is True
     assert dc["fields"] == ["context_pct"]
@@ -227,8 +227,8 @@ def test_build_footer_returns_rendered_when_enabled(monkeypatch, tmp_path):
         cwd=str(tmp_path / "proj"),
     )
     (tmp_path / "proj").mkdir(exist_ok=True)
+    assert out.startswith("---\n")
     assert "gpt-5.4" in out
-    assert "25%" in out
 
 
 def test_build_footer_per_platform_off_suppresses():

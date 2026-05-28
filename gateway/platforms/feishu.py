@@ -153,9 +153,10 @@ _MARKDOWN_HINT_RE = re.compile(
     r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
     re.MULTILINE,
 )
-# Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
-_MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
+# Detect markdown tables: allow optional leading whitespace before each row.
+# Feishu post-type 'md' elements do not render tables, so table-like content
+# should route to interactive cards instead of post/text degradation.
+_MARKDOWN_TABLE_RE = re.compile(r"^\s*\|.*\|\n\s*\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -359,6 +360,13 @@ class FeishuNormalizedMessage:
 
 
 @dataclass(frozen=True)
+class FeishuLongDecisionGuardSettings:
+    enabled: bool = True
+    max_chars: int = 1200
+    require_decision_trace_url: bool = True
+
+
+@dataclass(frozen=True)
 class FeishuAdapterSettings:
     app_id: str  # Canonical bot/app identifier (credential, not from event payloads)
     app_secret: str
@@ -393,6 +401,7 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    long_decision_guard: FeishuLongDecisionGuardSettings = field(default_factory=FeishuLongDecisionGuardSettings)
 
 
 @dataclass
@@ -457,6 +466,12 @@ def _escape_markdown_text(text: str) -> str:
 
 def _to_boolean(value: Any) -> bool:
     return value is True or value == 1 or value == "true"
+
+
+def _env_or_extra(extra: Dict[str, Any], key: str, env_key: str, default: Any) -> Any:
+    if key in extra:
+        return extra.get(key)
+    return os.getenv(env_key, default)
 
 
 def _is_style_enabled(style: Dict[str, Any] | None, key: str) -> bool:
@@ -545,6 +560,1209 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 # Post payload builders and parsers
 # ---------------------------------------------------------------------------
 
+_SECTION_HEADING_RE = re.compile(
+    r"^\*\*(结论|当前状态|现状|风险|提醒|建议|处理建议|推荐方案|下一步|建议动作|可选动作|已完成|验证结果)\*\*$",
+    re.MULTILINE,
+)
+_MARKDOWN_SECTION_HEADING_RE = re.compile(r"^#+\s+(.+?)\s*$")
+_CARD_SECTION_HEADING_RE = re.compile(r"^\*\*([^*\n]{2,24})\*\*$")
+_COMPARE_LINE_RE = re.compile(
+    r"^(推荐|不推荐|现状|建议|方案\s*A|方案\s*B|A|B)[：:]\s*(.+)$"
+)
+_RAW_URL_RE = re.compile(r"https?://\S+")
+_DECISION_TRACE_URL_RE = re.compile(
+    r"https?://(?:taoge-decision-traces\.pages\.dev/[A-Za-z0-9._-]+\.html|taoge-morning-brief\.pages\.dev/decision-traces/[A-Za-z0-9._-]+\.html)(?:[?#][^\s)]*)?"
+)
+_LONG_DECISION_SIGNAL_RE = re.compile(
+    r"(外部项目|吸收评估|是否引入|有必要引入|详细介绍|全面介绍|选型|调研|方案|风险|证据|建议|结论|下一步|四层审计|专项验证)",
+    re.IGNORECASE,
+)
+_TABLE_BLOCK_RE = re.compile(r"((?:^\s*\|.+\|\s*$\n?)+)", re.MULTILINE)
+_TABLE_ROW_RE = re.compile(r"^\s*\|(.+)\|\s*$")
+_TABLE_SEPARATOR_RE = re.compile(r"^\s*\|(?:\s*:?-+:?\s*\|)+\s*$")
+_COMPARE_LABEL_NORMALIZATION = {
+    "A": "方案 A",
+    "B": "方案 B",
+}
+
+
+def _card_markdown_element(content: str) -> Dict[str, Any]:
+    return {"tag": "markdown", "content": content}
+
+
+def _card_note_element(content: str) -> Dict[str, Any]:
+    return {
+        "tag": "note",
+        "elements": [
+            {
+                "tag": "plain_text",
+                "content": _strip_markdown_to_plain_text(content).strip(),
+            }
+        ],
+    }
+
+
+def _card_url_button_element(url: str, *, label: str = "📖 打开 HTML 论证页") -> Dict[str, Any]:
+    return {
+        "tag": "action",
+        "actions": [
+            {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": label},
+                "type": "primary",
+                "multi_url": {
+                    "url": url,
+                    "pc_url": url,
+                    "ios_url": url,
+                    "android_url": url,
+                },
+            }
+        ],
+    }
+
+
+def _extract_decision_trace_url(content: str) -> str:
+    markdown_match = _MARKDOWN_LINK_RE.search(content)
+    if markdown_match:
+        href = markdown_match.group(2).strip()
+        if _DECISION_TRACE_URL_RE.fullmatch(href):
+            return href
+    raw_match = _DECISION_TRACE_URL_RE.search(content)
+    return raw_match.group(0).rstrip(".,，。") if raw_match else ""
+
+
+def _strip_decision_trace_links(content: str, decision_url: str) -> str:
+    if not decision_url:
+        return content
+    cleaned = _MARKDOWN_LINK_RE.sub(
+        lambda match: "" if match.group(2).strip() == decision_url else match.group(0),
+        content,
+    )
+    cleaned = cleaned.replace(decision_url, "")
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _content_char_count(content: str) -> int:
+    return len(_strip_markdown_to_plain_text(_clean_card_source_content(content)).strip())
+
+
+def _looks_like_long_decision_reply(content: str, *, max_chars: int) -> bool:
+    body = _clean_card_source_content(content)
+    if not body.strip():
+        return False
+    if _extract_decision_trace_url(body):
+        return False
+    char_count = _content_char_count(body)
+    if char_count < max_chars:
+        return False
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    heading_count = sum(
+        1
+        for line in lines
+        if _SECTION_HEADING_RE.match(line)
+        or _CARD_SECTION_HEADING_RE.match(line)
+        or _MARKDOWN_SECTION_HEADING_RE.match(line)
+    )
+    bullet_count = sum(1 for line in lines if re.match(r"^\s*(?:[-*•]|\d+[.、])\s+", line))
+    return bool(_LONG_DECISION_SIGNAL_RE.search(body)) and (heading_count >= 1 or bullet_count >= 3 or len(lines) >= 10)
+
+
+def _chunk_long_card_content(text: str, *, chunk_size: int = 900, max_chunks: int = 3) -> List[str]:
+    """Return bounded content chunks so Feishu still receives useful substance."""
+    normalized = text.strip()
+    if not normalized:
+        return []
+    chunks: List[str] = []
+    cursor = 0
+    while cursor < len(normalized) and len(chunks) < max_chunks:
+        end = min(len(normalized), cursor + chunk_size)
+        if end < len(normalized):
+            newline = normalized.rfind("\n", cursor, end)
+            if newline > cursor + 200:
+                end = newline
+        chunk = normalized[cursor:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        cursor = end
+    if cursor < len(normalized) and chunks:
+        chunks[-1] = chunks[-1].rstrip() + "\n\n…（后续内容建议通过 HTML / wiki / retain 承载）"
+    return chunks
+
+
+def _build_long_decision_guard_card_payload(content: str, *, max_chars: int) -> str:
+    title = "📋 长内容已压缩发送"
+    normalized = _clean_card_source_content(content).strip()
+    plain = _strip_markdown_to_plain_text(normalized).strip()
+    chunks = _chunk_long_card_content(normalized or plain)
+    elements = [
+        _card_markdown_element(
+            "**提醒**\n"
+            "这条回复像长决策/调研内容，但没有检测到 decision trace HTML 链接。"
+            "为避免飞书长 Markdown 丢内容，这里先发送正文压缩版；完整论证仍建议补 HTML/wiki/retain。"
+        )
+    ]
+    for idx, chunk in enumerate(chunks, start=1):
+        elements.append({"tag": "hr"})
+        elements.append(_card_markdown_element(f"**正文片段 {idx}**\n{chunk}"))
+    elements.append({"tag": "hr"})
+    elements.append(_card_markdown_element(f"**触发阈值**\n当前约 {len(plain)} 字符，阈值 {max_chars} 字符。"))
+    return _simple_card_payload(
+        title=title,
+        template="orange",
+        elements=elements,
+        fallback_text=plain[:1000] or "长内容已压缩发送。",
+    )
+
+
+def _parse_markdown_table_block(block: str) -> tuple[List[str], List[List[str]]]:
+    lines = [line.strip() for line in block.strip().split("\n") if line.strip()]
+    if not lines:
+        return [], []
+
+    headers: List[str] = []
+    rows: List[List[str]] = []
+    seen_separator = False
+
+    for line in lines:
+        if _TABLE_SEPARATOR_RE.match(line):
+            seen_separator = True
+            continue
+        match = _TABLE_ROW_RE.match(line)
+        if not match:
+            continue
+        cells = [cell.strip() for cell in match.group(1).split("|")]
+        if not headers:
+            headers = cells
+            continue
+        if seen_separator:
+            rows.append(cells)
+
+    return headers, rows
+
+
+def _table_to_card_elements(headers: List[str], rows: List[List[str]]) -> List[Dict[str, Any]]:
+    if not headers:
+        return []
+    num_cols = len(headers)
+    normalized_headers = [_strip_markdown_to_plain_text(header).strip() for header in headers]
+    normalized_rows: List[List[str]] = []
+    for row in rows:
+        padded = list(row)
+        while len(padded) < num_cols:
+            padded.append("")
+        normalized_rows.append(padded[:num_cols])
+
+    col_width = max(1, 10 // max(1, num_cols))
+    elements: List[Dict[str, Any]] = [
+        {
+            "tag": "column_set",
+            "flex_mode": "none",
+            "background_style": "grey",
+            "columns": [
+                {
+                    "tag": "column",
+                    "width": "weighted",
+                    "weight": col_width,
+                    "elements": [{"tag": "markdown", "content": f"**{header}**"}],
+                }
+                for header in normalized_headers
+            ],
+        }
+    ]
+    for idx, row in enumerate(normalized_rows):
+        elements.append(
+            {
+                "tag": "column_set",
+                "flex_mode": "none",
+                "background_style": "grey" if idx % 2 == 1 else "default",
+                "columns": [
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": col_width,
+                        "elements": [{"tag": "markdown", "content": cell}],
+                    }
+                    for cell in row
+                ],
+            }
+        )
+    return elements
+
+
+def _parse_markdown_tables_to_card_elements(content: str) -> List[Dict[str, Any]]:
+    elements: List[Dict[str, Any]] = []
+    rendered_parts = [part.strip() for part in _TABLE_BLOCK_RE.split(content) if part and part.strip()]
+    for idx, part in enumerate(rendered_parts):
+        if part.lstrip().startswith("|") and "|" in part.lstrip()[1:]:
+            headers, rows = _parse_markdown_table_block(part)
+            if headers and rows:
+                if elements and elements[-1] != {"tag": "hr"}:
+                    elements.append({"tag": "hr"})
+                elements.extend(_table_to_card_elements(headers, rows))
+                if idx < len(rendered_parts) - 1:
+                    elements.append({"tag": "hr"})
+                continue
+        elements.append(_card_markdown_element(part))
+
+    while elements and elements[-1] == {"tag": "hr"}:
+        elements.pop()
+    return elements
+
+
+def _build_compare_markdown_block(lines: List[str]) -> Optional[str]:
+    pairs: List[tuple[str, str]] = []
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        match = _COMPARE_LINE_RE.match(stripped)
+        if not match:
+            return None
+        label = _COMPARE_LABEL_NORMALIZATION.get(match.group(1).strip(), match.group(1).strip())
+        body = match.group(2).strip()
+        pairs.append((label, body))
+    if len(pairs) < 2:
+        return None
+
+    left_label, left_body = pairs[0]
+    right_label, right_body = pairs[1]
+    rendered = (
+        f"**{left_label}**\n{left_body}"
+        f"\n\n<font color='grey'>────────</font>\n\n"
+        f"**{right_label}**\n{right_body}"
+    )
+    return rendered
+
+
+def _contains_routable_url(content: str) -> bool:
+    return bool(_MARKDOWN_LINK_RE.search(content) or _RAW_URL_RE.search(content))
+
+
+def _should_force_text_for_feishu(content: str) -> bool:
+    """Keep compact link-delivery messages visible instead of folding into cards."""
+    if not _contains_routable_url(content):
+        return False
+    if _MARKDOWN_TABLE_RE.search(content):
+        return False
+
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    line_count = len(lines)
+    url_count = len(_RAW_URL_RE.findall(content)) + len(_MARKDOWN_LINK_RE.findall(content))
+    has_section_heading = any(_SECTION_HEADING_RE.match(line) or _CARD_SECTION_HEADING_RE.match(line) for line in lines)
+    has_compare_lines = len([line for line in lines if _COMPARE_LINE_RE.match(line)]) >= 2
+    has_code_fence = "```" in content
+    joined = "\n".join(lines)
+    has_conclusion_signal = any(
+        keyword in joined
+        for keyword in (
+            "结论", "建议", "推荐", "下一步", "已写入", "已更新", "已同步", "已修复", "根因", "原因", "验证", "规则", "落点",
+        )
+    )
+
+    # Structured closure / report-style replies may include 1-2 wiki links or file
+    # paths. Those should stay card/post eligible instead of being downgraded to
+    # plain text by the compact link-delivery heuristic.
+    if has_section_heading and has_conclusion_signal:
+        return False
+
+    if line_count <= 8 and url_count <= 3 and not has_code_fence and not has_compare_lines:
+        return True
+
+    if line_count <= 6 and has_section_heading and url_count <= 2 and not has_code_fence:
+        return True
+
+    return False
+
+
+def _is_path_or_command_heavy(content: str) -> bool:
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    if not lines:
+        return False
+    path_like_lines = sum(
+        1
+        for line in lines
+        if (
+            line.startswith("~/")
+            or line.startswith("/")
+            or line.startswith("./")
+            or line.startswith("../")
+            or line.startswith("$")
+            or line.startswith("python ")
+            or line.startswith("python3 ")
+            or line.startswith("pytest ")
+            or line.startswith("git ")
+            or line.startswith("cd ")
+        )
+    )
+    inline_path_tokens = len(re.findall(r"(?:^|[\s`(])(?:~?/[^\s`]+|~\/[^\s`]+|\.?\.?/[^\s`]+|(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+(?:\.(?:py|md|yaml|yml|json|toml|sh|bash))?|[A-Za-z0-9_.-]+\.(?:py|md|yaml|yml|json|toml|sh|bash))(?:$|[\s`),.])", content))
+    return (
+        path_like_lines >= 2
+        or ("```" in content and path_like_lines >= 1)
+        or inline_path_tokens >= 3
+    )
+
+
+def _looks_like_completion_receipt(lines: List[str], *, has_markdown_hint: bool, markdown_heading_count: int, bold_heading_count: int, bullet_line_count: int, has_hr: bool, has_compare_lines: bool) -> bool:
+    if not lines or not has_markdown_hint:
+        return False
+    if markdown_heading_count >= 1:
+        return False
+    if has_hr or has_compare_lines:
+        return False
+    if bullet_line_count < 2:
+        return False
+    receipt_keywords = (
+        "记下了",
+        "已写入",
+        "已更新",
+        "已补充",
+        "已同步",
+        "落了",
+        "落到",
+        "改了",
+        "这次",
+    )
+    joined = "\n".join(lines)
+    return any(keyword in joined for keyword in receipt_keywords) and bold_heading_count <= 1
+
+
+def _split_card_source_and_footer(content: str) -> tuple[str, str]:
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n").strip()
+    lines = normalized.split("\n") if normalized else []
+    footer = ""
+    while len(lines) >= 2 and re.fullmatch(r"\s*---+\s*", lines[-2]) and " · " in lines[-1]:
+        footer = lines[-1].strip()
+        lines = lines[:-2]
+    return "\n".join(lines).strip(), footer
+
+
+def _clean_card_source_content(content: str) -> str:
+    body, _footer = _split_card_source_and_footer(content)
+    return body
+
+
+def _extract_card_footer(content: str) -> str:
+    _body, footer = _split_card_source_and_footer(content)
+    return footer
+
+
+def _payload_has_note_footer(msg_type: str, payload: str) -> bool:
+    if msg_type != "interactive" or not payload:
+        return False
+    try:
+        card = json.loads(payload)
+    except Exception:
+        return False
+
+    elements = card.get("elements", [])
+    if not isinstance(elements, list) or not elements:
+        return False
+
+    note = elements[-1]
+    if not isinstance(note, dict) or note.get("tag") != "note":
+        return False
+
+    note_elements = note.get("elements", [])
+    if not isinstance(note_elements, list) or not note_elements:
+        return False
+
+    for child in note_elements:
+        if not isinstance(child, dict):
+            continue
+        if child.get("tag") not in {"plain_text", "text", "markdown"}:
+            continue
+        content = str(child.get("content") or child.get("text") or "").strip()
+        if content:
+            return True
+    return False
+
+
+_CARD_SECTION_DECORATORS: tuple[tuple[tuple[str, ...], str, str], ...] = (
+    (("结论", "核心", "重点", "摘要"), "🎯", "green"),
+    (("设计", "方案", "架构", "机制", "实现"), "📝", "blue"),
+    (("状态", "进度", "验证", "结果"), "📊", "wathet"),
+    (("风险", "问题", "隐患", "失败", "注意"), "⚠️", "orange"),
+    (("取舍", "对比", "推荐", "建议"), "⚖️", "purple"),
+    (("下一步", "后续", "行动", "计划", "TODO", "Todo"), "🧭", "blue"),
+    (("成本", "资源", "时间", "收益"), "💰", "yellow"),
+)
+
+
+def _decorate_card_section_title(title: str, *, fallback_icon: str = "📌") -> str:
+    title_plain = _strip_markdown_to_plain_text(title).strip().strip("：:")
+    if not title_plain:
+        return ""
+    lower = title_plain.lower()
+    icon = fallback_icon
+    for keywords, candidate_icon, _candidate_color in _CARD_SECTION_DECORATORS:
+        if any(keyword.lower() in lower for keyword in keywords):
+            icon = candidate_icon
+            break
+    if title_plain.startswith(icon):
+        title_plain = title_plain[len(icon):].strip()
+    return f"{icon} <font color='blue'>**{title_plain}**</font>"
+
+
+def _first_plain_line(lines: List[str], default: str) -> str:
+    for line in lines:
+        plain = _strip_markdown_to_plain_text(line).strip()
+        if plain and not re.fullmatch(r"[-*•]+", plain):
+            return re.sub(r"^[-*•]\s*", "", plain)
+    return default
+
+
+def _looks_like_short_completion_card(lines: List[str], *, bullet_line_count: int, line_count: int, has_hr: bool, has_compare_lines: bool, has_code_fence: bool) -> bool:
+    if not lines or has_hr or has_compare_lines or has_code_fence:
+        return False
+    if line_count > 8:
+        return False
+    if bullet_line_count < 1 or bullet_line_count > 3:
+        return False
+    joined = "\n".join(lines)
+    keywords = ("已完成", "完成了", "已处理", "已更新", "已同步", "这次", "落了", "已修复")
+    return any(k in joined for k in keywords)
+
+
+def _looks_like_comparison_card(lines: List[str], *, line_count: int, has_code_fence: bool) -> bool:
+    if not lines or has_code_fence or line_count > 18:
+        return False
+    joined = "\n".join(lines).lower()
+    option_markers = sum(1 for marker in ("方案 a", "方案 b", "方案A".lower(), "方案B".lower(), "option a", "option b") if marker in joined)
+    has_recommend = any(k in joined for k in ("推荐", "不推荐", "建议", "优先", "recommend"))
+    has_compare_word = any(k in joined for k in ("对比", "比较", " vs ", "差异"))
+    visual_markers = ("✓" in joined or "✗" in joined or "✅" in joined or "❌" in joined)
+    return (option_markers >= 2 and has_recommend) or (has_compare_word and has_recommend) or (visual_markers and has_recommend and line_count <= 12)
+
+
+def _looks_like_status_panel_card(lines: List[str], *, line_count: int, has_code_fence: bool) -> bool:
+    if not lines or has_code_fence or line_count > 12:
+        return False
+    joined = "\n".join(lines)
+    status_icon_count = sum(joined.count(icon) for icon in ("✅", "⚠️", "❌", "⏸️", "🔄"))
+    has_status_keyword = any(k in joined for k in ("当前状态", "状态汇报", "系统状态", "进度", "验证结果"))
+    return status_icon_count >= 2 and (has_status_keyword or line_count <= 8)
+
+
+def _looks_like_action_card(lines: List[str], *, line_count: int, has_code_fence: bool) -> bool:
+    if not lines or has_code_fence or line_count > 10:
+        return False
+    joined = "\n".join(lines)
+    has_action_keyword = any(k in joined for k in ("需要你", "需要操作", "请你", "请确认", "确认一下", "下一步需要", "你现在需要"))
+    numbered = sum(1 for line in lines if re.match(r"^\s*(?:[1-3]️⃣|[1-3][.、])\s*", line))
+    return has_action_keyword and (numbered >= 1 or line_count <= 6)
+
+
+def _looks_like_brief_structured_chat(lines: List[str], *, stripped: str) -> bool:
+    if not lines or len(lines) > 2:
+        return False
+    if len(stripped) > 120:
+        return False
+    joined = "\n".join(lines)
+    has_reasoning_keyword = any(
+        keyword in joined
+        for keyword in (
+            "结论", "原因", "分析", "排查", "定位", "解决", "路由", "footer", "card", "显示", "为什么", "怎么",
+        )
+    )
+    has_progress_keyword = any(
+        keyword in joined
+        for keyword in (
+            "继续", "先", "再", "我先", "我再", "我先验", "测试", "验证", "查", "读日志", "看看", "确认", "处理",
+        )
+    )
+    has_structure_cue = any(token in joined for token in ("，", "。", ",", ":", "：", "然后", "先", "再"))
+    if has_reasoning_keyword and has_structure_cue:
+        return True
+    return has_progress_keyword and has_structure_cue and len(stripped) >= 12
+
+
+def _simple_card_payload(*, title: str, template: str, elements: List[Dict[str, Any]], fallback_text: str, footer: str = "") -> str:
+    finalized = _finalize_card_elements(elements, fallback_text=fallback_text)
+    max_elements = 16
+    if footer:
+        if finalized and finalized[-1].get("tag") != "hr":
+            finalized.append({"tag": "hr"})
+        finalized.append(_card_note_element(footer))
+    if len(finalized) > max_elements:
+        if footer and len(finalized) >= 2:
+            footer_tail = finalized[-2:]
+            body_limit = max(1, max_elements - len(footer_tail))
+            finalized = finalized[:body_limit]
+            while finalized and finalized[-1].get("tag") == "hr":
+                finalized.pop()
+            if finalized and finalized[-1].get("tag") != "hr":
+                finalized.append({"tag": "hr"})
+            finalized.extend(footer_tail)
+        else:
+            finalized = finalized[:max_elements]
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {"title": {"content": title, "tag": "plain_text"}, "template": template},
+        "elements": finalized,
+    }
+    return json.dumps(card, ensure_ascii=False)
+
+
+def _build_conclusion_card_payload(content: str) -> str:
+    footer = _extract_card_footer(content)
+    normalized = _clean_card_source_content(content)
+    lines = [line.strip() for line in normalized.split("\n") if line.strip()]
+    bullets: List[str] = []
+    next_step = ""
+    summary = ""
+    for line in lines:
+        plain = _strip_markdown_to_plain_text(line).strip()
+        if not plain:
+            continue
+        if re.match(r"^[-*•]\s+", line):
+            bullets.append(re.sub(r"^[-*•]\s+", "", plain))
+            continue
+        if plain.startswith(("下一步", "后续", "建议")):
+            next_step = plain
+            continue
+        if not summary and not any(k in plain for k in ("这次落了", "这次改了")):
+            summary = plain
+    if not summary:
+        summary = _first_plain_line(lines, "已完成处理")
+    body = [f"{_decorate_card_section_title('结论', fallback_icon='🎯')}：{summary}"]
+    if bullets:
+        body.append("")
+        body.append(_decorate_card_section_title("已处理", fallback_icon="✅"))
+        body.extend([f"<font color='green'>•</font> {item}" for item in bullets[:5]])
+    elements = [_card_markdown_element("\n".join(body).strip())]
+    if next_step:
+        clean_next = re.sub(r"^(下一步|后续|建议)[:：]?\s*", "", next_step)
+        elements.append({"tag": "hr"})
+        elements.append(_card_markdown_element(f"{_decorate_card_section_title('下一步', fallback_icon='🧭')}：{clean_next}"))
+    return _simple_card_payload(title="✅ 完成 / 收口", template="green", elements=elements, fallback_text=normalized or "已完成", footer=footer)
+
+
+def _build_comparison_card_payload(content: str) -> str:
+    footer = _extract_card_footer(content)
+    normalized = _clean_card_source_content(content)
+    lines = [line.strip() for line in normalized.split("\n") if line.strip()]
+    option_lines: List[str] = []
+    recommendation = ""
+    for line in lines:
+        plain = _strip_markdown_to_plain_text(line).strip()
+        if not plain:
+            continue
+        if any(k in plain.lower() for k in ("方案 a", "方案 b", "option a", "option b")) or plain.startswith(("✓", "✗", "✅", "❌")):
+            option_lines.append(plain)
+        elif any(k in plain for k in ("推荐", "建议", "关键差异", "优先")) and not recommendation:
+            recommendation = plain
+    if not option_lines:
+        option_lines = [_strip_markdown_to_plain_text(line).strip() for line in lines[:4] if line.strip()]
+    body = [_decorate_card_section_title("方案取舍", fallback_icon="⚖️")]
+    for line in option_lines[:4]:
+        plain = line.strip()
+        if ("方案 A" in plain or "方案 a" in plain.lower()) and not plain.startswith(("✓", "✅")):
+            plain = f"✓ {plain}"
+        elif ("方案 B" in plain or "方案 b" in plain.lower()) and not plain.startswith(("✗", "❌")):
+            plain = f"✗ {plain}"
+        body.append(plain)
+    elements = [_card_markdown_element("\n\n".join(body) or normalized)]
+    if recommendation:
+        clean_rec = recommendation[1:].strip() if recommendation.startswith("💡") else recommendation
+        elements.append({"tag": "hr"})
+        elements.append(_card_markdown_element(f"{_decorate_card_section_title('建议', fallback_icon='💡')}：{clean_rec}"))
+    return _simple_card_payload(title="🔄 对比 / 推荐", template="purple", elements=elements, fallback_text=normalized or "方案对比", footer=footer)
+
+
+def _build_status_panel_card_payload(content: str) -> str:
+    footer = _extract_card_footer(content)
+    normalized = _clean_card_source_content(content)
+    lines = [line.strip() for line in normalized.split("\n") if line.strip()]
+    status_lines = []
+    for line in lines:
+        plain = _strip_markdown_to_plain_text(line).strip()
+        if any(icon in plain for icon in ("✅", "⚠️", "❌", "⏸️", "🔄")):
+            status_lines.append(plain)
+    if not status_lines:
+        status_lines = [_strip_markdown_to_plain_text(line).strip() for line in lines[1:6] if line.strip()]
+    body = [_decorate_card_section_title("状态概览", fallback_icon="📊")]
+    body.extend(status_lines[:6] or [normalized])
+    elements = [_card_markdown_element("\n".join(body))]
+    return _simple_card_payload(title="📊 状态面板", template="wathet", elements=elements, fallback_text=normalized or "当前状态", footer=footer)
+
+
+def _build_table_card_payload(content: str) -> str:
+    payload = json.loads(_build_markdown_table_card_payload(content))
+    payload.setdefault("header", {})["title"] = {"content": "📋 表格 / 数据", "tag": "plain_text"}
+    payload["header"]["template"] = "indigo"
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _build_action_card_payload(content: str) -> str:
+    footer = _extract_card_footer(content)
+    normalized = _clean_card_source_content(content)
+    lines = [line.strip() for line in normalized.split("\n") if line.strip()]
+    description: List[str] = []
+    actions: List[str] = []
+    for line in lines:
+        plain = _strip_markdown_to_plain_text(line).strip()
+        if re.match(r"^(?:[1-3]️⃣|[1-3][.、]|[-*•])\s*", plain):
+            actions.append(plain)
+        elif plain:
+            description.append(plain)
+    body: List[str] = []
+    if description:
+        body.extend(description[:2])
+    if actions:
+        if body:
+            body.append("")
+        body.extend(actions[:3])
+    if actions:
+        rendered = [_decorate_card_section_title("请确认下一步", fallback_icon="🧭")]
+        if description:
+            rendered.extend(description[:2])
+            rendered.append("")
+        rendered.extend(actions[:3])
+    else:
+        rendered = body
+    elements = [_card_markdown_element("\n".join(rendered).strip() or normalized)]
+    return _simple_card_payload(title="⚡ 需要确认", template="orange", elements=elements, fallback_text=normalized or "需要操作", footer=footer)
+
+
+def _classify_feishu_reply_kind(content: str) -> str:
+    # Runtime footer is appended to the final text before platform rendering. It
+    # contains a markdown HR (`---`) and model/time text; if classified as body
+    # content it can incorrectly turn short card-worthy replies into reports.
+    content_for_classification = _clean_card_source_content(content)
+    stripped = content_for_classification.strip()
+    if not stripped:
+        return "chat_short"
+    if _MARKDOWN_TABLE_RE.search(content_for_classification):
+        return "report_table"
+
+    lines = [line.strip() for line in content_for_classification.splitlines() if line.strip()]
+    line_count = len(lines)
+    has_markdown_hint = bool(_MARKDOWN_HINT_RE.search(content_for_classification))
+    has_section_heading = any(_SECTION_HEADING_RE.match(line) or _CARD_SECTION_HEADING_RE.match(line) for line in lines)
+    compare_count = len([line for line in lines if _COMPARE_LINE_RE.match(line)])
+    has_compare_lines = compare_count >= 2
+    has_hr = bool(re.search(r"^\s*---+\s*$", content_for_classification, re.MULTILINE))
+    has_code_fence = "```" in content_for_classification
+    bold_heading_count = sum(1 for line in lines if _SECTION_HEADING_RE.match(line) or _CARD_SECTION_HEADING_RE.match(line))
+    markdown_heading_count = sum(1 for line in lines if _MARKDOWN_SECTION_HEADING_RE.match(line))
+    bullet_line_count = sum(1 for line in lines if re.match(r"^\s*[-*•]\s+", line))
+    has_intro_plus_sections = markdown_heading_count >= 1 and bold_heading_count >= 2
+    looks_like_completion_receipt = _looks_like_completion_receipt(
+        lines,
+        has_markdown_hint=has_markdown_hint,
+        markdown_heading_count=markdown_heading_count,
+        bold_heading_count=bold_heading_count,
+        bullet_line_count=bullet_line_count,
+        has_hr=has_hr,
+        has_compare_lines=has_compare_lines,
+    )
+    looks_like_short_completion_card = _looks_like_short_completion_card(
+        lines,
+        bullet_line_count=bullet_line_count,
+        line_count=line_count,
+        has_hr=has_hr,
+        has_compare_lines=has_compare_lines,
+        has_code_fence=has_code_fence,
+    )
+
+    if looks_like_short_completion_card:
+        return "completion_receipt_card"
+    if _looks_like_comparison_card(lines, line_count=line_count, has_code_fence=has_code_fence):
+        return "comparison_card"
+    if _looks_like_status_panel_card(lines, line_count=line_count, has_code_fence=has_code_fence):
+        return "status_panel_card"
+    if _looks_like_action_card(lines, line_count=line_count, has_code_fence=has_code_fence):
+        return "action_card"
+
+    if _looks_like_brief_structured_chat(lines, stripped=stripped):
+        return "chat_structured"
+
+    if _should_force_text_for_feishu(content_for_classification):
+        return "link_delivery"
+
+    if _is_path_or_command_heavy(content_for_classification):
+        joined = "\n".join(lines)
+        has_conclusion_signal = any(
+            keyword in joined
+            for keyword in (
+                "结论", "建议", "推荐", "下一步", "已修", "已修复", "原因", "根因", "状态", "验证", "结果",
+            )
+        )
+        if not has_conclusion_signal:
+            return "code_or_path_heavy"
+
+    if not has_markdown_hint:
+        if line_count == 1 and len(stripped) <= 80:
+            return "chat_short"
+        if line_count == 2 and len(stripped) <= 24 and not any((":" in line or "：" in line) for line in lines):
+            return "chat_short"
+
+    if line_count <= 3 and not has_markdown_hint and len(stripped) <= 20:
+        return "chat_short"
+
+    if looks_like_completion_receipt:
+        return "chat_structured"
+
+    if has_code_fence and not has_section_heading and not has_hr and line_count <= 16:
+        return "code_or_path_heavy"
+
+    report_signals = sum(
+        [
+            1 if has_section_heading else 0,
+            1 if has_compare_lines else 0,
+            1 if has_hr else 0,
+            1 if has_code_fence and line_count >= 8 else 0,
+            1 if bold_heading_count >= 2 else 0,
+            1 if markdown_heading_count >= 1 else 0,
+            1 if bullet_line_count >= 2 else 0,
+            1 if line_count >= 12 else 0,
+        ]
+    )
+
+    if has_intro_plus_sections and line_count >= 7:
+        return "report_structured"
+
+    if report_signals >= 3 and line_count >= 7:
+        return "report_structured"
+
+    if has_markdown_hint:
+        return "chat_structured"
+
+    if line_count >= 2 or len(stripped) > 80:
+        return "chat_structured"
+
+    return "chat_short"
+
+
+def _split_card_body_blocks(lines: List[str]) -> List[str]:
+    blocks: List[str] = []
+    current: List[str] = []
+    in_code_block = False
+
+    def _flush() -> None:
+        nonlocal current
+        if not current:
+            return
+        segment = "\n".join(current).strip()
+        current = []
+        if segment:
+            blocks.append(segment)
+
+    for raw_line in lines:
+        stripped = raw_line.strip()
+        is_open = bool(_MARKDOWN_FENCE_OPEN_RE.match(stripped)) and not in_code_block
+        is_close = bool(_MARKDOWN_FENCE_CLOSE_RE.match(stripped)) and in_code_block
+        if is_open:
+            _flush()
+            current.append(raw_line)
+            in_code_block = True
+            continue
+        if is_close:
+            current.append(raw_line)
+            _flush()
+            in_code_block = False
+            continue
+        if in_code_block:
+            current.append(raw_line)
+            continue
+        if re.fullmatch(r"---+", stripped):
+            _flush()
+            blocks.append("---")
+            continue
+        if not stripped:
+            if current and current[-1] != "":
+                current.append("")
+            continue
+        if _SECTION_HEADING_RE.match(stripped) or _CARD_SECTION_HEADING_RE.match(stripped):
+            _flush()
+            blocks.append(stripped)
+            continue
+        heading_match = _MARKDOWN_SECTION_HEADING_RE.match(stripped)
+        if heading_match:
+            _flush()
+            blocks.append(f"**{heading_match.group(1).strip()}**")
+            continue
+        current.append(raw_line)
+    _flush()
+    return blocks
+
+
+def _extract_card_header_and_body_lines(normalized: str) -> tuple[str, List[str]]:
+    lines = [line.rstrip() for line in normalized.split("\n")]
+    header_title = ""
+    body_lines = list(lines)
+    first = body_lines[0].strip() if body_lines else ""
+    if first.startswith("#"):
+        header_title = re.sub(r"^#{1,6}\s*", "", first).strip()
+        body_lines = body_lines[1:]
+    elif first.startswith("**") and first.endswith("**") and len(first) > 4:
+        header_title = first[2:-2].strip()
+        body_lines = body_lines[1:]
+
+    if not header_title:
+        for candidate in body_lines:
+            stripped = candidate.strip()
+            if stripped:
+                header_title = _strip_markdown_to_plain_text(stripped)[:80] or "Hermes"
+                break
+    if not header_title:
+        header_title = "Hermes"
+    return header_title, body_lines
+
+
+def _finalize_card_elements(elements: List[Dict[str, Any]], *, fallback_text: str) -> List[Dict[str, Any]]:
+    if not elements:
+        elements.append(_card_markdown_element(fallback_text))
+
+    while len(elements) >= 1 and elements[-1].get("tag") == "hr":
+        elements.pop()
+
+    action_titles = {"下一步", "建议动作", "可选动作"}
+    if len(elements) >= 2:
+        last = elements[-1]
+        prev = elements[-2]
+        if last.get("tag") == "markdown" and prev.get("tag") == "markdown":
+            prev_plain = _strip_markdown_to_plain_text(str(prev.get("content", ""))).strip()
+            if prev_plain in action_titles and len(elements) >= 3 and elements[-3].get("tag") != "hr":
+                elements.insert(len(elements) - 2, {"tag": "hr"})
+    return elements
+
+
+def _append_card_section_elements(elements: List[Dict[str, Any]], title: str, body: str) -> None:
+    title_plain = _strip_markdown_to_plain_text(title).strip()
+    body = body.strip()
+    if title_plain:
+        elements.append(_card_markdown_element(_decorate_card_section_title(title_plain)))
+    if not body:
+        return
+    if _MARKDOWN_TABLE_RE.search(body):
+        elements.extend(_parse_markdown_tables_to_card_elements(body))
+        return
+    compare_block = _build_compare_markdown_block(body.split("\n"))
+    elements.append(_card_markdown_element(compare_block or body))
+
+
+def _truncate_card_markdown_block(text: str, *, max_chars: int = 900, max_lines: int = 8) -> str:
+    lines = [line.rstrip() for line in text.strip().split("\n")]
+    trimmed = lines[:max_lines]
+    rendered = "\n".join(trimmed).strip()
+    was_trimmed = len(lines) > max_lines
+    if len(rendered) > max_chars:
+        rendered = rendered[:max_chars].rstrip()
+        was_trimmed = True
+    if was_trimmed:
+        rendered = rendered.rstrip() + "\n…"
+    return rendered
+
+
+def _build_longform_card_payload(content: str) -> str:
+    footer = _extract_card_footer(content)
+    normalized = _clean_card_source_content(content)
+    if not normalized:
+        return _simple_card_payload(title="📘 长文 / 分析", template="wathet", elements=[], fallback_text="", footer=footer)
+
+    header_title, body_lines = _extract_card_header_and_body_lines(normalized)
+    blocks = [block for block in _split_card_body_blocks(body_lines) if block and block != "---"]
+    if not blocks:
+        blocks = [normalized]
+
+    summary = ""
+    for block in blocks:
+        if _SECTION_HEADING_RE.match(block) or _CARD_SECTION_HEADING_RE.match(block):
+            continue
+        plain = _strip_markdown_to_plain_text(block).strip()
+        if plain:
+            summary = plain.split("\n")[0].strip()
+            break
+    if not summary:
+        summary = _strip_markdown_to_plain_text(header_title).strip() or "长文分析"
+    summary = summary[:180].rstrip()
+
+    elements: List[Dict[str, Any]] = [_card_markdown_element(f"{_decorate_card_section_title('重点', fallback_icon='🎯')}：{summary}")]
+
+    pending_title = ""
+    used_blocks = 0
+    truncated = False
+    for block in blocks:
+        if used_blocks >= 5:
+            truncated = True
+            break
+        if _SECTION_HEADING_RE.match(block) or _CARD_SECTION_HEADING_RE.match(block):
+            pending_title = _strip_markdown_to_plain_text(block).strip()
+            continue
+        if block.strip() == summary:
+            continue
+        rendered = _truncate_card_markdown_block(block)
+        if not rendered:
+            continue
+        if pending_title:
+            rendered = f"{_decorate_card_section_title(pending_title)}\n{rendered}"
+            pending_title = ""
+        if elements and elements[-1].get("tag") != "hr":
+            elements.append({"tag": "hr"})
+        if _MARKDOWN_TABLE_RE.search(rendered):
+            elements.extend(_parse_markdown_tables_to_card_elements(rendered))
+        else:
+            elements.append(_card_markdown_element(rendered))
+        used_blocks += 1
+
+    if truncated:
+        elements.append({"tag": "hr"})
+        elements.append(_card_markdown_element(f"{_decorate_card_section_title('内容较长', fallback_icon='📌')}：已保留核心段落。"))
+
+    clean_title = _strip_markdown_to_plain_text(header_title).strip()
+    title = "📘 长文 / 分析" if not clean_title or clean_title == "Hermes" else f"📘 {clean_title[:32]}"
+    return _simple_card_payload(title=title, template="indigo", elements=elements, fallback_text=normalized, footer=footer)
+
+
+def _build_markdown_report_card_payload(content: str) -> str:
+    footer = _extract_card_footer(content)
+    decision_trace_url = _extract_decision_trace_url(content)
+    normalized = _clean_card_source_content(_strip_decision_trace_links(content, decision_trace_url))
+    if not normalized:
+        return json.dumps({"config": {"wide_screen_mode": True}, "elements": [{"tag": "markdown", "content": ""}]}, ensure_ascii=False)
+
+    header_title, body_lines = _extract_card_header_and_body_lines(normalized)
+    blocks = _split_card_body_blocks(body_lines)
+
+    summary_lines: List[str] = []
+    should_summarize = len(blocks) >= 3
+    if should_summarize and blocks and blocks[0] != "---" and not _SECTION_HEADING_RE.match(blocks[0]) and "```" not in blocks[0] and not _MARKDOWN_TABLE_RE.search(blocks[0]):
+        first_block_lines = [line.strip() for line in blocks.pop(0).split("\n") if line.strip()]
+        if first_block_lines:
+            first_line = first_block_lines[0]
+            first_plain = _strip_markdown_to_plain_text(first_line)
+            if first_plain:
+                summary_lines.append(f"**结论：**{first_plain}")
+            extra_points = []
+            for line in first_block_lines[1:]:
+                plain = _strip_markdown_to_plain_text(line).strip()
+                if not plain:
+                    continue
+                plain = re.sub(r"^[\-\*•]\s*", "", plain)
+                extra_points.append(f"- {plain}")
+                if len(extra_points) >= 2:
+                    break
+            summary_lines.extend(extra_points)
+
+    elements: List[Dict[str, Any]] = []
+    if summary_lines:
+        elements.append(_card_markdown_element("\n".join(summary_lines)))
+        elements.append({"tag": "hr"})
+
+    pending_section_title: Optional[str] = None
+    for block in blocks:
+        if block == "---":
+            if elements and elements[-1].get("tag") != "hr":
+                elements.append({"tag": "hr"})
+            continue
+        if _SECTION_HEADING_RE.match(block) or _CARD_SECTION_HEADING_RE.match(block):
+            pending_section_title = block
+            continue
+        if pending_section_title:
+            _append_card_section_elements(elements, pending_section_title, block)
+            pending_section_title = None
+            continue
+        if "```" in block:
+            elements.append(_card_markdown_element(block))
+            continue
+        compare_block = _build_compare_markdown_block(block.split("\n"))
+        if compare_block:
+            elements.append(_card_markdown_element(compare_block))
+            continue
+        elements.append(_card_markdown_element(block))
+
+    if pending_section_title:
+        _append_card_section_elements(elements, pending_section_title, "")
+
+    finalized = _finalize_card_elements(elements, fallback_text=normalized)
+    if decision_trace_url:
+        if finalized and finalized[-1].get("tag") != "hr":
+            finalized.append({"tag": "hr"})
+        finalized.append(_card_url_button_element(decision_trace_url))
+    if footer:
+        if finalized and finalized[-1].get("tag") != "hr":
+            finalized.append({"tag": "hr"})
+        finalized.append(_card_note_element(footer))
+    clean_title = _strip_markdown_to_plain_text(header_title).strip()
+    if decision_trace_url:
+        card_title = "📌 决策 / 结论" if not clean_title or clean_title in {"Hermes", "结论"} else f"📌 {clean_title[:32]}"
+        template = "wathet"
+    else:
+        card_title = "📘 结构化回复" if not clean_title or clean_title == "Hermes" else f"📘 {clean_title[:32]}"
+        template = "indigo"
+    card: Dict[str, Any] = {
+        "config": {"wide_screen_mode": True},
+        "header": {"title": {"content": card_title, "tag": "plain_text"}, "template": template},
+        "elements": finalized,
+    }
+    return json.dumps(card, ensure_ascii=False)
+
+
+def _build_markdown_table_card_payload(content: str) -> str:
+    body, footer = _split_card_source_and_footer(content)
+    decision_trace_url = _extract_decision_trace_url(body)
+    stripped_body = _strip_decision_trace_links(body, decision_trace_url)
+    normalized = stripped_body.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not normalized:
+        return json.dumps({"config": {"wide_screen_mode": True}, "elements": [{"tag": "markdown", "content": ""}]}, ensure_ascii=False)
+
+    header_title, body_lines = _extract_card_header_and_body_lines(normalized)
+    blocks = _split_card_body_blocks(body_lines)
+    elements: List[Dict[str, Any]] = []
+    pending_section_title: Optional[str] = None
+
+    for block in blocks:
+        if block == "---":
+            if elements and elements[-1].get("tag") != "hr":
+                elements.append({"tag": "hr"})
+            continue
+        if _SECTION_HEADING_RE.match(block) or _CARD_SECTION_HEADING_RE.match(block):
+            pending_section_title = block
+            continue
+        if pending_section_title:
+            _append_card_section_elements(elements, pending_section_title, block)
+            pending_section_title = None
+            continue
+        if _MARKDOWN_TABLE_RE.search(block):
+            if elements and elements[-1].get("tag") != "hr" and elements[-1].get("tag") != "markdown":
+                elements.append({"tag": "hr"})
+            elements.extend(_parse_markdown_tables_to_card_elements(block))
+            continue
+        if "```" in block:
+            elements.append(_card_markdown_element(block))
+            continue
+        compare_block = _build_compare_markdown_block(block.split("\n"))
+        if compare_block:
+            elements.append(_card_markdown_element(compare_block))
+            continue
+        elements.append(_card_markdown_element(block))
+
+    if pending_section_title:
+        _append_card_section_elements(elements, pending_section_title, "")
+
+    finalized = _finalize_card_elements(elements, fallback_text=normalized)
+    if decision_trace_url:
+        if finalized and finalized[-1].get("tag") != "hr":
+            finalized.append({"tag": "hr"})
+        finalized.append(_card_url_button_element(decision_trace_url))
+    if footer:
+        if finalized and finalized[-1].get("tag") != "hr":
+            finalized.append({"tag": "hr"})
+        finalized.append(_card_note_element(footer))
+    clean_title = _strip_markdown_to_plain_text(header_title).strip()
+    if decision_trace_url:
+        card_title = "📌 决策 / 数据" if not clean_title or clean_title == "Hermes" else f"📌 {clean_title[:32]}"
+        template = "wathet"
+    else:
+        card_title = "📋 表格 / 数据" if not clean_title or clean_title == "Hermes" else f"📋 {clean_title[:32]}"
+        template = "indigo"
+    card: Dict[str, Any] = {
+        "config": {"wide_screen_mode": True},
+        "header": {"title": {"content": card_title, "tag": "plain_text"}, "template": template},
+        "elements": finalized,
+    }
+    return json.dumps(card, ensure_ascii=False)
+
+
+def _build_markdown_card_payload(content: str) -> str:
+    if _MARKDOWN_TABLE_RE.search(content):
+        return _build_markdown_table_card_payload(content)
+    return _build_markdown_report_card_payload(content)
+
+
+def _build_paginated_report_card_payloads(content: str, *, max_units_per_page: int = 3, max_chars_per_page: int = 1400) -> List[str]:
+    body, footer = _split_card_source_and_footer(content)
+    decision_trace_url = _extract_decision_trace_url(body)
+    stripped_body = _strip_decision_trace_links(body, decision_trace_url)
+    normalized = stripped_body.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not normalized:
+        return [_simple_card_payload(title="Hermes", template="blue", elements=[], fallback_text="", footer="")]
+
+    header_title, body_lines = _extract_card_header_and_body_lines(normalized)
+    title = _strip_markdown_to_plain_text(header_title).strip() or "Hermes"
+    template = "wathet" if decision_trace_url else "indigo"
+    title_prefix = "📌" if decision_trace_url else "📘"
+    blocks = _split_card_body_blocks(body_lines)
+
+    units: List[Dict[str, str]] = []
+    pending_section_title: Optional[str] = None
+    intro_lines: List[str] = []
+
+    for block in blocks:
+        if block == "---":
+            continue
+        if _SECTION_HEADING_RE.match(block) or _CARD_SECTION_HEADING_RE.match(block):
+            pending_section_title = block
+            continue
+        if pending_section_title:
+            units.append({"kind": "section", "title": pending_section_title, "body": block})
+            pending_section_title = None
+            continue
+        intro_lines.append(block)
+
+    if pending_section_title:
+        units.append({"kind": "section", "title": pending_section_title, "body": ""})
+
+    if intro_lines:
+        intro_body = "\n\n".join(part for part in intro_lines if part.strip()).strip()
+        if intro_body:
+            units.insert(0, {"kind": "intro", "title": "", "body": intro_body})
+
+    if not units:
+        units = [{"kind": "intro", "title": "", "body": normalized}]
+
+    pages: List[List[Dict[str, str]]] = []
+    current: List[Dict[str, str]] = []
+    current_chars = 0
+    for unit in units:
+        unit_text = "\n".join(filter(None, [unit.get("title", ""), unit.get("body", "")]))
+        unit_chars = len(unit_text)
+        would_overflow = current and (len(current) >= max_units_per_page or current_chars + unit_chars > max_chars_per_page)
+        if would_overflow:
+            pages.append(current)
+            current = []
+            current_chars = 0
+        current.append(unit)
+        current_chars += unit_chars
+    if current:
+        pages.append(current)
+
+    total_pages = max(len(pages), 1)
+    payloads: List[str] = []
+    for idx, page_units in enumerate(pages, start=1):
+        elements: List[Dict[str, Any]] = []
+        for pos, unit in enumerate(page_units):
+            if pos > 0 and elements and elements[-1].get("tag") != "hr":
+                elements.append({"tag": "hr"})
+
+            kind = unit.get("kind")
+            body_text = (unit.get("body") or "").strip()
+            if kind == "section":
+                _append_card_section_elements(elements, unit.get("title", ""), body_text)
+            else:
+                compare_block = _build_compare_markdown_block(body_text.split("\n")) if body_text else ""
+                elements.append(_card_markdown_element(compare_block or body_text))
+
+        if idx == total_pages:
+            if decision_trace_url:
+                if elements and elements[-1].get("tag") != "hr":
+                    elements.append({"tag": "hr"})
+                elements.append(_card_url_button_element(decision_trace_url))
+            if footer:
+                if elements and elements[-1].get("tag") != "hr":
+                    elements.append({"tag": "hr"})
+                elements.append(_card_note_element(footer))
+
+        page_title = title if total_pages == 1 else f"{title}（{idx}/{total_pages}）"
+        known_prefixes = ("📘", "📋", "✅", "🔄", "📊", "⚡", "📌")
+        if not page_title.startswith(known_prefixes):
+            page_title = f"{title_prefix} {page_title[:32]}" if total_pages == 1 else f"{title_prefix} {page_title[:28]}"
+        payloads.append(_simple_card_payload(title=page_title, template=template, elements=elements, fallback_text=normalized, footer=""))
+
+    return payloads
+
 
 def _build_markdown_post_payload(content: str) -> str:
     rows = _build_markdown_post_rows(content)
@@ -558,53 +1776,82 @@ def _build_markdown_post_payload(content: str) -> str:
     )
 
 
-def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
-    """Build Feishu post rows while isolating fenced code blocks.
+def _build_post_text_element(text: str, *, bold: bool = False, code: bool = False) -> Dict[str, Any]:
+    element: Dict[str, Any] = {"tag": "text", "text": text}
+    style: Dict[str, Any] = {}
+    if bold:
+        style["bold"] = True
+    if code:
+        style["code"] = True
+    if style:
+        element["style"] = style
+    return element
 
-    Feishu's `md` renderer can swallow trailing content when a fenced code block
-    appears inside one large markdown element. Split the reply at real fence
-    lines so prose before/after the code block remains visible while code stays
-    in a dedicated row.
+
+def _build_post_row_from_markdown_text(text: str) -> List[Dict[str, Any]]:
+    cleaned = text.strip()
+    if not cleaned:
+        return [_build_post_text_element("")]
+
+    full_bold_match = re.fullmatch(r"\*\*(.+?)\*\*", cleaned)
+    if full_bold_match:
+        return [_build_post_text_element(full_bold_match.group(1).strip(), bold=True)]
+
+    full_code_match = re.fullmatch(r"`([^`]+)`", cleaned)
+    if full_code_match:
+        return [_build_post_text_element(full_code_match.group(1), code=True)]
+
+    elements: List[Dict[str, Any]] = []
+    last_end = 0
+    for match in _MARKDOWN_LINK_RE.finditer(cleaned):
+        prefix = cleaned[last_end:match.start()]
+        if prefix:
+            elements.append(_build_post_text_element(prefix))
+        label = match.group(1).strip()
+        href = match.group(2).strip()
+        if label:
+            if href:
+                elements.append({"tag": "a", "text": label, "href": href})
+            else:
+                elements.append(_build_post_text_element(label))
+        last_end = match.end()
+
+    suffix = cleaned[last_end:]
+    if suffix:
+        elements.append(_build_post_text_element(suffix))
+
+    return elements or [_build_post_text_element(cleaned)]
+
+
+def _build_markdown_post_rows(content: str) -> List[List[Dict[str, Any]]]:
+    """Build Feishu post rows that preserve markdown verbatim.
+
+    Feishu `post` messages support an `md` element in this code path's
+    existing contract. Keep the post fallback as a literal markdown carrier;
+    richer rendering belongs to interactive cards, not to this legacy fallback.
     """
     if not content:
         return [[{"tag": "md", "text": ""}]]
-    if "```" not in content:
-        return [[{"tag": "md", "text": content}]]
 
-    rows: List[List[Dict[str, str]]] = []
-    current: List[str] = []
-    in_code_block = False
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not normalized:
+        return [[{"tag": "md", "text": ""}]]
 
-    def _flush_current() -> None:
-        nonlocal current
-        if not current:
-            return
-        segment = "\n".join(current)
-        if segment.strip():
-            rows.append([{"tag": "md", "text": segment}])
-        current = []
+    if "```" not in normalized:
+        return [[{"tag": "md", "text": normalized}]]
 
-    for raw_line in content.splitlines():
-        stripped_line = raw_line.strip()
-        is_fence = bool(
-            _MARKDOWN_FENCE_CLOSE_RE.match(stripped_line)
-            if in_code_block
-            else _MARKDOWN_FENCE_OPEN_RE.match(stripped_line)
-        )
+    blocks = _split_card_body_blocks(normalized.split("\n"))
+    if not blocks:
+        return [[{"tag": "md", "text": normalized}]]
 
-        if is_fence:
-            if not in_code_block:
-                _flush_current()
-            current.append(raw_line)
-            in_code_block = not in_code_block
-            if not in_code_block:
-                _flush_current()
-            continue
+    if len(blocks) == 1 and blocks[0] != "---":
+        return [[{"tag": "md", "text": blocks[0]}]]
 
-        current.append(raw_line)
-
-    _flush_current()
-    return rows or [[{"tag": "md", "text": content}]]
+    rows: List[List[Dict[str, Any]]] = []
+    for block in blocks:
+        if block:
+            rows.append([{"tag": "md", "text": block}])
+    return rows or [[{"tag": "md", "text": normalized}]]
 
 
 def parse_feishu_post_payload(
@@ -1408,6 +2655,8 @@ class FeishuAdapter(BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
 
     MAX_MESSAGE_LENGTH = 8000
+    PREFER_FRESH_FINAL_ON_FINALIZE = True
+    DISABLE_PROGRESSIVE_EDITS = True
     # Threshold for detecting Feishu client-side message splits.
     # When a chunk is near the ~4096-char practical limit, a continuation
     # is almost certain.
@@ -1494,6 +2743,30 @@ class FeishuAdapter(BasePlatformAdapter):
         raw_admins = extra.get("admins", [])
         admins = frozenset(str(u).strip() for u in raw_admins if str(u).strip())
 
+        raw_guard = extra.get("long_decision_guard", {})
+        guard_cfg = raw_guard if isinstance(raw_guard, dict) else {}
+        long_decision_guard = FeishuLongDecisionGuardSettings(
+            enabled=_to_boolean(
+                _env_or_extra(guard_cfg, "enabled", "HERMES_FEISHU_LONG_DECISION_GUARD_ENABLED", "true")
+            ),
+            max_chars=max(
+                200,
+                _coerce_required_int(
+                    _env_or_extra(guard_cfg, "max_chars", "HERMES_FEISHU_LONG_DECISION_GUARD_MAX_CHARS", 1200),
+                    default=1200,
+                    min_value=200,
+                ),
+            ),
+            require_decision_trace_url=_to_boolean(
+                _env_or_extra(
+                    guard_cfg,
+                    "require_decision_trace_url",
+                    "HERMES_FEISHU_LONG_DECISION_GUARD_REQUIRE_DECISION_TRACE_URL",
+                    "true",
+                )
+            ),
+        )
+
         # Default group policy (for groups not in group_rules)
         default_group_policy = str(extra.get("default_group_policy", "")).strip().lower()
 
@@ -1569,6 +2842,7 @@ class FeishuAdapter(BasePlatformAdapter):
             require_mention=_to_boolean(
                 extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
             ),
+            long_decision_guard=long_decision_guard,
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1601,6 +2875,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_ping_timeout = settings.ws_ping_timeout
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
+        self._long_decision_guard = settings.long_decision_guard
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -1776,9 +3051,32 @@ class FeishuAdapter(BasePlatformAdapter):
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_response = None
 
+        paginated_card_payloads: Optional[List[tuple[str, str]]] = None
+        if len(chunks) == 1:
+            single_chunk = chunks[0]
+            reply_kind = _classify_feishu_reply_kind(single_chunk)
+            if reply_kind in {"report_structured", "chat_structured"}:
+                paginated_payloads = _build_paginated_report_card_payloads(single_chunk)
+                if len(paginated_payloads) > 1:
+                    paginated_card_payloads = [("interactive", payload) for payload in paginated_payloads]
+
         try:
-            for chunk in chunks:
-                msg_type, payload = self._build_outbound_payload(chunk)
+            iterable_payloads = paginated_card_payloads or []
+            if not iterable_payloads:
+                iterable_payloads = []
+                for chunk in chunks:
+                    msg_type, payload = self._build_outbound_payload(chunk, metadata=metadata)
+                    iterable_payloads.append((msg_type, payload))
+
+            for index, (msg_type, payload) in enumerate(iterable_payloads):
+                chunk = chunks[0] if paginated_card_payloads else chunks[index]
+                logger.info(
+                    "[Feishu] Outbound send prepared: msg_type=%s note_footer=%s reply_to=%s chunk_chars=%d",
+                    msg_type,
+                    "yes" if _payload_has_note_footer(msg_type, payload) else "no",
+                    "yes" if reply_to else "no",
+                    len(chunk),
+                )
                 try:
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
@@ -1788,16 +3086,55 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
-                        raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                    if msg_type == "interactive":
+                        logger.warning("[Feishu] Interactive card send failed; falling back to post: %s", exc)
+                        try:
+                            response = await self._feishu_send_with_retry(
+                                chat_id=chat_id,
+                                msg_type="post",
+                                payload=_build_markdown_post_payload(chunk),
+                                reply_to=reply_to,
+                                metadata=metadata,
+                            )
+                            msg_type = "post"
+                        except Exception as post_exc:
+                            if not _POST_CONTENT_INVALID_RE.search(str(post_exc)):
+                                raise
+                            logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                            response = await self._feishu_send_with_retry(
+                                chat_id=chat_id,
+                                msg_type="text",
+                                payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                                reply_to=reply_to,
+                                metadata=metadata,
+                            )
+                            msg_type = "text"
+                    else:
+                        if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                            raise
+                        logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="text",
+                            payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                        msg_type = "text"
+                if (
+                    msg_type == "interactive"
+                    and not self._response_succeeded(response)
+                ):
+                    logger.warning("[Feishu] Interactive card rejected by API response; falling back to post")
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
-                        msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                        msg_type="post",
+                        payload=_build_markdown_post_payload(chunk),
                         reply_to=reply_to,
                         metadata=metadata,
                     )
+                    msg_type = "post"
+
                 if (
                     msg_type == "post"
                     and not self._response_succeeded(response)
@@ -1811,6 +3148,7 @@ class FeishuAdapter(BasePlatformAdapter):
                         reply_to=reply_to,
                         metadata=metadata,
                     )
+                    msg_type = "text"
                 last_response = response
 
             return self._finalize_send_result(last_response, "send failed")
@@ -1831,12 +3169,35 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         content = self.format_message(content)
+        if getattr(self, "DISABLE_PROGRESSIVE_EDITS", False) is True and not finalize:
+            return SendResult(success=False, error="progressive edits disabled")
         try:
             msg_type, payload = self._build_outbound_payload(content)
+            if msg_type == "interactive":
+                msg_type, payload = "post", _build_markdown_post_payload(content)
+            logger.info(
+                "[Feishu] Outbound edit prepared: msg_type=%s note_footer=%s message_id=%s chunk_chars=%d",
+                msg_type,
+                "yes" if _payload_has_note_footer(msg_type, payload) else "no",
+                message_id,
+                len(content),
+            )
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await asyncio.to_thread(self._client.im.v1.message.update, request)
             result = self._finalize_send_result(response, "update failed")
+
+            if not result.success and msg_type == "interactive":
+                logger.warning("[Feishu] Interactive card update failed; falling back to post")
+                fallback_body = self._build_update_message_body(
+                    msg_type="post",
+                    content=_build_markdown_post_payload(content),
+                )
+                fallback_request = self._build_update_message_request(message_id=message_id, request_body=fallback_body)
+                fallback_response = await asyncio.to_thread(self._client.im.v1.message.update, fallback_request)
+                result = self._finalize_send_result(fallback_response, "update failed")
+                msg_type = "post"
+
             if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
                 logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
                 fallback_body = self._build_update_message_body(
@@ -1846,10 +3207,35 @@ class FeishuAdapter(BasePlatformAdapter):
                 fallback_request = self._build_update_message_request(message_id=message_id, request_body=fallback_body)
                 fallback_response = await asyncio.to_thread(self._client.im.v1.message.update, fallback_request)
                 result = self._finalize_send_result(fallback_response, "update failed")
+
             if result.success:
                 result.message_id = message_id
             return result
         except Exception as exc:
+            if msg_type == "interactive":
+                try:
+                    logger.warning("[Feishu] Interactive card update raised; falling back to post: %s", exc)
+                    fallback_body = self._build_update_message_body(
+                        msg_type="post",
+                        content=_build_markdown_post_payload(content),
+                    )
+                    fallback_request = self._build_update_message_request(message_id=message_id, request_body=fallback_body)
+                    fallback_response = await asyncio.to_thread(self._client.im.v1.message.update, fallback_request)
+                    result = self._finalize_send_result(fallback_response, "update failed")
+                    if not result.success and _POST_CONTENT_INVALID_RE.search(result.error or ""):
+                        logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
+                        text_body = self._build_update_message_body(
+                            msg_type="text",
+                            content=json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
+                        )
+                        text_request = self._build_update_message_request(message_id=message_id, request_body=text_body)
+                        text_response = await asyncio.to_thread(self._client.im.v1.message.update, text_request)
+                        result = self._finalize_send_result(text_response, "update failed")
+                    if result.success:
+                        result.message_id = message_id
+                    return result
+                except Exception as fallback_exc:
+                    exc = fallback_exc
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
@@ -4283,15 +5669,52 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound payload construction and send pipeline
     # =========================================================================
 
-    def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
+    def _build_outbound_payload(self, content: str, *, metadata: Optional[Dict[str, Any]] = None) -> tuple[str, str]:
+        guard = getattr(self, "_long_decision_guard", FeishuLongDecisionGuardSettings())
+        if guard.enabled and _looks_like_long_decision_reply(content, max_chars=guard.max_chars):
+            logger.warning(
+                "[Feishu] Long decision reply blocked by guard: chars=%d max_chars=%d",
+                _content_char_count(content),
+                guard.max_chars,
+            )
+            return "interactive", _build_long_decision_guard_card_payload(content, max_chars=guard.max_chars)
+        if isinstance(metadata, dict) and metadata.get("feishu_force_text"):
             text_payload = {"text": content}
             return "text", json.dumps(text_payload, ensure_ascii=False)
+        reply_kind = _classify_feishu_reply_kind(content)
+
+        if reply_kind == "report_table":
+            return "interactive", _build_table_card_payload(content)
+
+        if reply_kind == "completion_receipt_card":
+            return "interactive", _build_conclusion_card_payload(content)
+
+        if reply_kind == "comparison_card":
+            return "interactive", _build_comparison_card_payload(content)
+
+        if reply_kind == "status_panel_card":
+            return "interactive", _build_status_panel_card_payload(content)
+
+        if reply_kind == "action_card":
+            return "interactive", _build_action_card_payload(content)
+
+        if reply_kind == "report_structured":
+            return "interactive", _build_markdown_card_payload(content)
+
+        if reply_kind in {"link_delivery", "code_or_path_heavy", "chat_short"}:
+            text_payload = {"text": content}
+            return "text", json.dumps(text_payload, ensure_ascii=False)
+
+        if reply_kind == "chat_structured":
+            content_for_routing = _clean_card_source_content(content).strip()
+            route_lines = [line.strip() for line in content_for_routing.splitlines() if line.strip()]
+            if len(route_lines) <= 3 and not _MARKDOWN_TABLE_RE.search(content_for_routing):
+                return "post", _build_markdown_post_payload(content)
+            return "interactive", _build_markdown_card_payload(content)
+
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
+
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
 
