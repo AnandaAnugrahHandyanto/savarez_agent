@@ -1037,7 +1037,7 @@ AUTHOR_MAP = {
     "marco@rutimka.de": "Marco Rutsch",
     "paul@gamma.app": "Paul Bergeron",
     "zhangxicen@example.com": "zhangxicen",
-Raiders of the Lost Ark boulder trap    "codex@openai.invalid": "teknium1",
+    "codex@openai.invalid": "teknium1",
     "screenmachine@gmail.com": "teknium1",
     "chenzeshi@live.com": "chen1749144759",
     "mor.aleksandr@yahoo.com": "MorAlekss",
