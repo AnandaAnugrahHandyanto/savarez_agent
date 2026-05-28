@@ -109,16 +109,25 @@ class DeliveryTarget:
         if target_lower == "local":
             return cls(platform=Platform.LOCAL)
         
-        # Check for platform:chat_id or platform:chat_id:thread_id format
-        # Use the original case for chat_id/thread_id to preserve case-sensitive IDs
+        # Check for platform:chat_id or platform:chat_id:thread_id format.
+        # Keep this aligned with send_message_tool so explicit targets behave
+        # the same across cron, `hermes send`, and direct delivery routing.
         if ":" in target_stripped:
-            parts = target_stripped.split(":", 2)
-            platform_str = parts[0].lower()  # Platform names are case-insensitive
-            chat_id = parts[1] if len(parts) > 1 else None
-            thread_id = parts[2] if len(parts) > 2 else None
+            platform_str, target_ref = target_stripped.split(":", 1)
+            platform_str = platform_str.lower()  # Platform names are case-insensitive
             try:
                 platform = Platform(platform_str)
-                return cls(platform=platform, chat_id=chat_id, thread_id=thread_id, is_explicit=True)
+                from tools.send_message_tool import _parse_target_ref
+
+                chat_id, thread_id, is_explicit = _parse_target_ref(platform_str, target_ref)
+                if not is_explicit:
+                    chat_id, thread_id = target_ref, None
+                return cls(
+                    platform=platform,
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    is_explicit=True,
+                )
             except ValueError:
                 # Unknown platform, treat as local
                 return cls(platform=Platform.LOCAL)
