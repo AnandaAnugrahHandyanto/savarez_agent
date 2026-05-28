@@ -57,10 +57,18 @@ _WINDOW_LINE_RE = re.compile(
     re.MULTILINE,
 )
 
-# Regex to parse element lines from get_window_state AX tree markdown:
-#   "  - [N] AXRole "label""
+# Regex to parse element lines from get_window_state AX tree markdown.
+#
+# Handles two output formats from different cua-driver versions:
+#   Classic:  "  - [N] AXRole \"label\""
+#   New:       "[N] AXRole (order) id=Label"
+#
+# Group 1: element index
+# Group 2: AX role
+# Group 3: quoted label (classic format)
+# Group 4: id= label (new format)
 _ELEMENT_LINE_RE = re.compile(
-    r'^\s*-\s+\[(\d+)\]\s+(\w+)(?:\s+"([^"]*)")?',
+    r'^\s*(?:-\s+)?\[(\d+)\]\s+(\w+)(?:\s+"([^"]*)"|(?:\s+\(\d+\))?\s+id=([^\s\[\]]*))?' ,
     re.MULTILINE,
 )
 
@@ -151,13 +159,19 @@ def _looks_like_bundle_id(query: str) -> bool:
 
 
 def _parse_elements_from_tree(markdown: str) -> List[UIElement]:
-    """Parse UIElement list from get_window_state AX tree markdown."""
+    """Parse UIElement list from get_window_state AX tree markdown.
+
+    Handles both the classic ``"label"``-quoted format and the newer
+    ``id=Label`` format introduced in cua-driver v0.1.6.
+    """
     elements = []
     for m in _ELEMENT_LINE_RE.finditer(markdown):
+        # group(3) = quoted label (classic); group(4) = id= label (new)
+        label = m.group(3) or m.group(4) or ""
         elements.append(UIElement(
             index=int(m.group(1)),
             role=m.group(2),
-            label=m.group(3) or "",
+            label=label,
             bounds=(0, 0, 0, 0),
         ))
     return elements
@@ -369,6 +383,7 @@ class CuaDriverBackend(ComputerUseBackend):
         # Sticky context — updated by capture(), used by action tools.
         self._active_pid: Optional[int] = None
         self._active_window_id: Optional[int] = None
+        self._last_app: Optional[str] = None  # last app name targeted via capture/focus_app
 
     # ── Lifecycle ──────────────────────────────────────────────────
     def start(self) -> None:
@@ -415,8 +430,6 @@ class CuaDriverBackend(ComputerUseBackend):
             raw_text = lw_out["data"] if isinstance(lw_out["data"], str) else ""
             windows = _parse_windows_from_text(raw_text)
 
-        if windows:
-            self._augment_windows_from_apps(windows)
         return windows
 
     def _augment_windows_from_apps(self, windows: List[Dict[str, Any]]) -> None:
@@ -509,13 +522,12 @@ class CuaDriverBackend(ComputerUseBackend):
             window.get("app_name", ""),
             window.get("list_app_name", ""),
         ]
-        title_fields = [window.get("title", "")]
         identity = [_normalize_match_text(f) for f in identity_fields if f]
-        titles = [_normalize_match_text(f) for f in title_fields if f]
 
-        # App identity beats window title. A query for an app should not select
-        # an unrelated app just because that unrelated window has a matching
-        # document title.
+        # Only app identity, bundle ID, list_apps name, or PID can create a
+        # match for an explicit app target. Window titles remain useful for
+        # tie-breaking/preference, but must not turn a localized app-name
+        # mismatch into a silent target selection.
         if q in identity:
             return 320
         for candidate in identity:
@@ -525,18 +537,6 @@ class CuaDriverBackend(ComputerUseBackend):
             for candidate in identity:
                 if _contains_word_match(q, candidate):
                     return 240
-
-        # Title is useful as a fallback for users who pass a visible window
-        # title, but it stays lower confidence than any app/bundle/PID match.
-        if q in titles:
-            return 160
-        for candidate in titles:
-            if _prefix_word_match(q, candidate):
-                return 140
-        if len(q) >= 4:
-            for candidate in titles:
-                if _contains_word_match(q, candidate):
-                    return 80
         return 0
 
     def _window_preference_score(self, window: Dict[str, Any]) -> int:
@@ -572,23 +572,25 @@ class CuaDriverBackend(ComputerUseBackend):
         """Select the best window for an explicit app query, or None.
 
         Explicit app targeting must never silently fall back to the first
-        unrelated window. Rank on-screen and off-screen candidates together so
-        a strong app-identity match is not beaten by a weak on-screen title
-        match from another app.
+        unrelated window. Prefer strong on-screen app-identity matches, but
+        consult all windows when needed so off-screen app matches are still
+        available.
         """
         windows_by_key: Dict[Tuple[int, int], Dict[str, Any]] = {}
         order_by_key: Dict[Tuple[int, int], int] = {}
         order = 0
-        for on_screen_only in (True, False):
-            for window in self._list_windows(on_screen_only=on_screen_only):
+
+        def add_windows(windows: List[Dict[str, Any]]) -> None:
+            nonlocal order
+            for window in windows:
                 key = (int(window.get("pid", 0)), int(window.get("window_id", 0)))
                 if key not in windows_by_key:
                     windows_by_key[key] = window
                     order_by_key[key] = order
                     order += 1
                 else:
-                    # Keep useful metadata from the all-windows pass, but do
-                    # not let it downgrade an already observed on-screen window.
+                    # Keep useful metadata from later passes, but do not let
+                    # them downgrade an already observed on-screen window.
                     existing = windows_by_key[key]
                     for field, value in window.items():
                         if field != "off_screen" and value not in (None, ""):
@@ -596,8 +598,25 @@ class CuaDriverBackend(ComputerUseBackend):
                     if not window.get("off_screen"):
                         existing["off_screen"] = False
 
+        add_windows(self._list_windows(on_screen_only=True))
+        needs_app_metadata = _looks_like_bundle_id(app)
         scored = self._score_matching_windows(app, windows_by_key, order_by_key)
-        if not scored and _looks_like_bundle_id(app):
+        if (not scored or needs_app_metadata) and windows_by_key:
+            self._augment_windows_from_apps(list(windows_by_key.values()))
+            scored = self._score_matching_windows(app, windows_by_key, order_by_key)
+
+        # Exact on-screen identity/PID matches are strong enough to avoid a
+        # second list_windows call. We still do the all-windows pass for weak or
+        # missing matches so off-screen exact app/bundle matches can beat them.
+        best_score = max((item[0] for item in scored), default=0)
+        if best_score < 320:
+            add_windows(self._list_windows(on_screen_only=False))
+            scored = self._score_matching_windows(app, windows_by_key, order_by_key)
+            if (not scored or needs_app_metadata) and windows_by_key:
+                self._augment_windows_from_apps(list(windows_by_key.values()))
+                scored = self._score_matching_windows(app, windows_by_key, order_by_key)
+
+        if not scored and needs_app_metadata:
             self._augment_windows_for_bundle_id(list(windows_by_key.values()), app.strip())
             scored = self._score_matching_windows(app, windows_by_key, order_by_key)
         if not scored:
@@ -621,6 +640,24 @@ class CuaDriverBackend(ComputerUseBackend):
                              elements=[], app="", window_title=message,
                              png_bytes_len=0)
 
+    def _no_window_message(self, app: str) -> str:
+        base = f"No window found for app '{app}'."
+        q = _normalize_match_text(app)
+        try:
+            windows = self._list_windows(on_screen_only=True)
+        except Exception:
+            return base
+        for window in windows:
+            title = _normalize_match_text(window.get("title", ""))
+            if title and (q == title or _prefix_word_match(q, title) or _contains_word_match(q, title)):
+                return (
+                    f"No window found for app '{app}'. A window title matched, but "
+                    "explicit app targeting only matches app names, bundle IDs, "
+                    "or PIDs; call list_apps to see available app names "
+                    "(macOS may report localized names, e.g. '計算機' instead of 'Calculator')."
+                )
+        return base
+
     # ── Capture ────────────────────────────────────────────────────
     def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
         """Capture the frontmost on-screen window (optionally filtered by app name).
@@ -633,13 +670,16 @@ class CuaDriverBackend(ComputerUseBackend):
             if target is None:
                 self._active_pid = None
                 self._active_window_id = None
-                return self._empty_capture(mode, f"No window found for app '{app}'.")
+                return self._empty_capture(mode, self._no_window_message(app))
         else:
             target = self._default_window()
             if target is None:
                 return self._empty_capture(mode)
 
-        return self._capture_window(mode, target)
+        cap = self._capture_window(mode, target)
+        if app:
+            self._last_app = cap.app or app
+        return cap
 
     def capture_active(self, mode: str = "som") -> CaptureResult:
         """Capture the sticky active window after an action.
@@ -672,6 +712,8 @@ class CuaDriverBackend(ComputerUseBackend):
         self._active_pid = int(target["pid"])
         self._active_window_id = int(target["window_id"])
         app_name = target.get("app_name") or target.get("list_app_name", "")
+        if app_name and not self._last_app:
+            self._last_app = app_name
 
         png_b64: Optional[str] = None
         elements: List[UIElement] = []
@@ -779,9 +821,25 @@ class CuaDriverBackend(ComputerUseBackend):
         button: str = "left",
         modifiers: Optional[List[str]] = None,
     ) -> ActionResult:
-        # cua-driver does not expose a drag tool.
-        return ActionResult(ok=False, action="drag",
-                            message="drag is not supported by the cua-driver backend.")
+        pid = self._active_pid
+        if pid is None:
+            return ActionResult(ok=False, action="drag",
+                                message="No active window — call capture() first.")
+        args: Dict[str, Any] = {"pid": pid}
+        if from_element is not None and to_element is not None:
+            if self._active_window_id is None:
+                return ActionResult(ok=False, action="drag",
+                                    message="No active window_id for element-based drag.")
+            args["from_element"] = from_element
+            args["to_element"] = to_element
+            args["window_id"] = self._active_window_id
+        elif from_xy is not None and to_xy is not None:
+            args["from_x"], args["from_y"] = int(from_xy[0]), int(from_xy[1])
+            args["to_x"], args["to_y"] = int(to_xy[0]), int(to_xy[1])
+        else:
+            return ActionResult(ok=False, action="drag",
+                                message="drag requires from_element/to_element or from_coordinate/to_coordinate.")
+        return self._action("drag", args)
 
     def scroll(
         self,
@@ -816,10 +874,7 @@ class CuaDriverBackend(ComputerUseBackend):
         if pid is None:
             return ActionResult(ok=False, action="type_text",
                                 message="No active window — call capture() first.")
-        # Safari WebKit AXTextField does not accept AX attribute writes (type_text),
-        # so use type_text_chars which synthesises individual key events instead.
-        # This works universally across all macOS apps in background mode.
-        return self._action("type_text_chars", {"pid": pid, "text": text})
+        return self._action("type_text", {"pid": pid, "text": text})
 
     def key(self, keys: str) -> ActionResult:
         pid = self._active_pid
@@ -895,11 +950,12 @@ class CuaDriverBackend(ComputerUseBackend):
             self._active_pid = None
             self._active_window_id = None
             return ActionResult(ok=False, action="focus_app",
-                                message=f"No window found for app '{app}'.")
+                                message=self._no_window_message(app))
 
         self._active_pid = int(target["pid"])
         self._active_window_id = int(target["window_id"])
         app_name = target.get("app_name") or target.get("list_app_name", "")
+        self._last_app = app_name or app
         return ActionResult(
             ok=True, action="focus_app",
             message=f"Targeted {app_name} (pid {self._active_pid}, "
