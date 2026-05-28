@@ -7195,8 +7195,8 @@ def _update_via_zip(args):
 
     pip_cmd = [sys.executable, "-m", "pip"]
     uv_bin = shutil.which("uv") or _ensure_uv_for_termux(pip_cmd)
-    if uv_bin:
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+    if uv_bin and (not _is_windows() or _venv_python() is not None):
+        uv_env = _uv_install_env()
         if _is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
@@ -7797,6 +7797,34 @@ def _venv_scripts_dir() -> Path | None:
     return scripts if scripts.is_dir() else None
 
 
+def _venv_python() -> Path | None:
+    """Return the project venv Python executable when the venv is usable."""
+    venv_dir = PROJECT_ROOT / "venv"
+    python_path = venv_dir / ("Scripts/python.exe" if _is_windows() else "bin/python")
+    return python_path if python_path.is_file() else None
+
+
+def _entrypoint_scripts_dir() -> Path | None:
+    """Return the scripts directory for the active interpreter."""
+    if _is_windows():
+        scripts = Path(sys.executable).resolve().parent / "Scripts"
+    else:
+        scripts = Path(sys.executable).resolve().parent
+    return scripts if scripts.is_dir() else None
+
+
+def _uv_install_env() -> dict[str, str]:
+    """Build an env for uv without pointing at a broken project venv."""
+    env = dict(os.environ)
+    venv_python = _venv_python()
+    if venv_python is not None:
+        env["VIRTUAL_ENV"] = str(PROJECT_ROOT / "venv")
+    else:
+        env.pop("VIRTUAL_ENV", None)
+        env.setdefault("UV_PYTHON", sys.executable)
+    return env
+
+
 def _hermes_exe_shims(scripts_dir: Path) -> list[Path]:
     """Entry-point shims that uv may try to rewrite during ``pip install -e .``.
 
@@ -7808,7 +7836,8 @@ def _hermes_exe_shims(scripts_dir: Path) -> list[Path]:
         return []
     return [
         scripts_dir / "hermes.exe",
-        scripts_dir / "hermes-gateway.exe",
+        scripts_dir / "hermes-agent.exe",
+        scripts_dir / "hermes-acp.exe",
     ]
 
 
@@ -8186,7 +8215,11 @@ def _install_python_dependencies_with_optional_fallback(
     copies (Windows blocks REPLACE on a running .exe but allows RENAME). See
     ``_quarantine_running_hermes_exe`` for the rationale.
     """
-    scripts_dir = _venv_scripts_dir() if _is_windows() else None
+    scripts_dir = (
+        _venv_scripts_dir() or _entrypoint_scripts_dir()
+        if _is_windows()
+        else None
+    )
 
     def _install(args: list[str]) -> None:
         moved: list[tuple[Path, Path]] = []
@@ -9258,8 +9291,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         uv_bin = shutil.which("uv") or _ensure_uv_for_termux(pip_cmd)
         install_group = "all"
 
-        if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        if uv_bin and (not _is_windows() or _venv_python() is not None):
+            uv_env = _uv_install_env()
             if _is_termux_env(uv_env):
                 uv_env.pop("PYTHONPATH", None)
                 uv_env.pop("PYTHONHOME", None)

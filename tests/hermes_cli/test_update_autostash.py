@@ -298,7 +298,10 @@ def test_stash_local_changes_if_needed_raises_when_stash_ref_missing(monkeypatch
 def _setup_update_mocks(monkeypatch, tmp_path):
     """Common setup for cmd_update tests."""
     (tmp_path / ".git").mkdir()
+    scripts_dir = tmp_path / "Scripts"
+    scripts_dir.mkdir()
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(hermes_main, "_entrypoint_scripts_dir", lambda: scripts_dir)
     monkeypatch.setattr(hermes_main, "_stash_local_changes_if_needed", lambda *a, **kw: None)
     monkeypatch.setattr(hermes_main, "_restore_stashed_changes", lambda *a, **kw: True)
     monkeypatch.setattr(hermes_config, "get_missing_env_vars", lambda required_only=True: [])
@@ -312,6 +315,7 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
     """When .[all] fails, update should keep base deps and retry extras individually."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(hermes_main, "_venv_python", lambda: tmp_path / "venv" / "Scripts" / "python.exe")
     monkeypatch.setattr(hermes_main, "_is_termux_env", lambda env=None: False)
     monkeypatch.setattr(hermes_main, "_load_installable_optional_extras", lambda group="all": ["matrix", "mcp"])
 
@@ -319,13 +323,13 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
 
     def fake_run(cmd, **kwargs):
         recorded.append(cmd)
-        if cmd == ["git", "fetch", "origin"]:
+        if cmd[-2:] == ["fetch", "origin"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+        if cmd[-3:] == ["rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
-        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+        if cmd[-3:] == ["rev-list", "HEAD..origin/main", "--count"]:
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
+        if cmd[-4:] == ["pull", "--ff-only", "origin", "main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
         if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[all]"]:
             raise CalledProcessError(returncode=1, cmd=cmd)
@@ -362,19 +366,20 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
     """When .[all] succeeds, no fallback should be attempted."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(hermes_main, "_venv_python", lambda: tmp_path / "venv" / "Scripts" / "python.exe")
     monkeypatch.setattr(hermes_main, "_is_termux_env", lambda env=None: False)
 
     recorded = []
 
     def fake_run(cmd, **kwargs):
         recorded.append(cmd)
-        if cmd == ["git", "fetch", "origin"]:
+        if cmd[-2:] == ["fetch", "origin"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+        if cmd[-3:] == ["rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
-        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+        if cmd[-3:] == ["rev-list", "HEAD..origin/main", "--count"]:
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
+        if cmd[-4:] == ["pull", "--ff-only", "origin", "main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -387,9 +392,12 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
     assert ".[all]" in install_cmds[0]
 
 
-def test_install_with_optional_fallback_honors_custom_group(monkeypatch):
+def test_install_with_optional_fallback_honors_custom_group(monkeypatch, tmp_path):
     """Termux update path should target .[termux-all] when requested."""
     calls = []
+    scripts_dir = tmp_path / "Scripts"
+    scripts_dir.mkdir()
+    monkeypatch.setattr(hermes_main, "_entrypoint_scripts_dir", lambda: scripts_dir)
     monkeypatch.setattr(
         hermes_main,
         "_load_installable_optional_extras",
@@ -415,6 +423,55 @@ def test_install_with_optional_fallback_honors_custom_group(monkeypatch):
         ["/usr/bin/uv", "pip", "install", "-e", ".[termux]"],
         ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]"],
     ]
+
+
+def test_uv_install_env_ignores_broken_project_venv(monkeypatch, tmp_path):
+    """Windows git installs may have a stale venv directory without python.exe."""
+    project_root = tmp_path / "hermes-agent"
+    (project_root / "venv" / "Scripts").mkdir(parents=True)
+    active_python = tmp_path / "Python313" / "python.exe"
+
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(hermes_main, "_is_windows", lambda: True)
+    monkeypatch.setattr(hermes_main.sys, "executable", str(active_python))
+    monkeypatch.setenv("VIRTUAL_ENV", str(project_root / "venv"))
+    monkeypatch.delenv("UV_PYTHON", raising=False)
+
+    env = hermes_main._uv_install_env()
+
+    assert "VIRTUAL_ENV" not in env
+    assert env["UV_PYTHON"] == str(active_python)
+
+
+def test_cmd_update_uses_pip_when_windows_project_venv_is_broken(monkeypatch, tmp_path):
+    """Global Windows installs should not let uv remove console scripts."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(hermes_main, "_is_windows", lambda: True)
+    monkeypatch.setattr(hermes_main, "_venv_python", lambda: None)
+    monkeypatch.setattr(hermes_main, "_is_termux_env", lambda env=None: False)
+
+    recorded = []
+
+    def fake_run(cmd, **kwargs):
+        recorded.append(cmd)
+        if cmd[-2:] == ["fetch", "origin"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd[-3:] == ["rev-parse", "--abbrev-ref", "HEAD"]:
+            return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
+        if cmd[-3:] == ["rev-list", "HEAD..origin/main", "--count"]:
+            return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
+        if cmd[-4:] == ["pull", "--ff-only", "origin", "main"]:
+            return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    install_cmds = [c for c in recorded if "pip" in c and "install" in c]
+    assert install_cmds
+    assert install_cmds[0][:3] == [hermes_main.sys.executable, "-m", "pip"]
 
 
 def test_install_heartbeat_prints_when_dependency_install_is_silent(monkeypatch, capsys):
@@ -492,7 +549,7 @@ def test_cmd_update_falls_back_to_reset_when_ff_only_fails(monkeypatch, tmp_path
 
     reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
     assert len(reset_calls) == 1
-    assert reset_calls[0] == ["git", "reset", "--hard", "origin/main"]
+    assert reset_calls[0][-3:] == ["reset", "--hard", "origin/main"]
 
     out = capsys.readouterr().out
     assert "Fast-forward not possible" in out

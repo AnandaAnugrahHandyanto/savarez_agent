@@ -101,6 +101,14 @@ $ hermes update
 
 Close the listed processes and re-run. If you're sure the concurrent process won't interfere (rare — usually only useful when an antivirus shim is mis-attributed), pass `--force` to skip the check. In that case the updater will still retry the `.exe` rename with exponential backoff and, on stubborn locks, schedule the replacement for next reboot via `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` so the update can complete.
 
+### Windows: stale project venv during dependency install
+
+Some native Windows git installs use a global Python entry point, such as `C:\Python313\Scripts\hermes.exe`, while the editable checkout lives under `%LOCALAPPDATA%\hermes\hermes-agent`. In that layout, a stale `venv\Scripts\` directory may exist without `python.exe`. `hermes update` ignores that broken project venv and installs through the active Python interpreter instead, preventing failures like:
+
+```
+Failed to inspect Python interpreter from active virtual environment at `venv\Scripts\python.exe`
+```
+
 Expected output looks like:
 
 ```
