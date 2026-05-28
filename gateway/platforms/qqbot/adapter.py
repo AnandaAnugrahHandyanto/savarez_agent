@@ -41,7 +41,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Union
 from urllib.parse import urlparse
 
 try:
@@ -117,6 +117,7 @@ from gateway.platforms.qqbot.constants import (
 )
 
 MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
+QQ_TRUSTED_MEDIA_HOST = "multimedia.nt.qq.com.cn"
 
 from gateway.platforms.qqbot.utils import (
     coerce_list as _coerce_list_impl,
@@ -1673,7 +1674,7 @@ class QQAdapter(BasePlatformAdapter):
 
     def _qq_media_headers(self, url: str) -> Dict[str, str]:
         """Return Authorization headers for trusted QQ multimedia downloads."""
-        if self._access_token and urlparse(url).hostname == "multimedia.nt.qq.com.cn":
+        if self._access_token and urlparse(url).hostname == QQ_TRUSTED_MEDIA_HOST:
             return {"Authorization": f"QQBot {self._access_token}"}
         return {}
 
@@ -1683,7 +1684,7 @@ class QQAdapter(BasePlatformAdapter):
             headers: Optional[Dict[str, str]] = None,
             context: str = "attachment",
             return_content_type: bool = False,
-    ) -> Optional[bytes | Tuple[bytes, str]]:
+    ) -> Optional[Union[bytes, Tuple[bytes, str]]]:
         """Download bytes while rejecting oversized responses."""
         if not self._http_client:
             logger.debug(
