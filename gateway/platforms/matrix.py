@@ -40,6 +40,11 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
 try:
+    import fresholm.import_hook  # noqa: F401 — intercepts ``import olm`` for mautrix E2EE
+except ImportError:
+    pass
+
+try:
     from mautrix.types import (
         ContentURI,
         EventID,
@@ -138,8 +143,7 @@ _OUTBOUND_MENTION_RE = re.compile(
 )
 
 _E2EE_INSTALL_HINT = (
-    "Install with: pip install 'mautrix[encryption]' asyncpg aiosqlite  "
-    "(requires libolm C library)"
+    "Install with: pip install 'mautrix>=0.20' fresholm unpaddedbase64 pycryptodome base58 asyncpg aiosqlite"
 )
 
 _MATRIX_IMAGE_FILENAME_EXTS = frozenset({
@@ -217,16 +221,18 @@ def _create_matrix_session(proxy_url: str | None):
 def _check_e2ee_deps() -> bool:
     """Return True if mautrix E2EE dependencies are available.
 
-    Verifies python-olm (via mautrix.crypto.OlmMachine), the SQLite crypto
-    store backend (mautrix.crypto.store.asyncpg.PgCryptoStore — yes, the
-    PgCryptoStore class also drives the sqlite backend in mautrix 0.21),
-    and the database drivers actually used at connect time (``asyncpg`` for
-    the underlying upgrade_table machinery, ``aiosqlite`` for the
-    ``sqlite:///`` URL we pass to ``Database.create``).  Without all four,
-    encrypted rooms fail at connect time with a confusing
-    ``No module named 'asyncpg'`` (#31116).
+    Checks for fresholm (Rust/vodozemac, preferred) or python-olm (legacy),
+    plus the non-olm encryption deps that ``mautrix[encryption]`` would install
+    (unpaddedbase64, pycryptodome, base58).  Without these,
+    ``mautrix.crypto.signature`` blows up at import time with
+    ``ModuleNotFoundError: No module named 'unpaddedbase64'``.
+
+    Also verifies the SQLite crypto store backend and database drivers.
     """
     try:
+        import unpaddedbase64  # noqa: F401
+        import Crypto  # pycryptodome  # noqa: F401
+        import base58  # noqa: F401
         from mautrix.crypto import OlmMachine  # noqa: F401
         from mautrix.crypto.store.asyncpg import PgCryptoStore  # noqa: F401
         import asyncpg  # noqa: F401
@@ -234,7 +240,15 @@ def _check_e2ee_deps() -> bool:
 
         return True
     except (ImportError, AttributeError):
-        return False
+        # Fresholm import hook may not have run yet (e.g. early startup).
+        # Try activating it explicitly and retrying.
+        try:
+            import fresholm.import_hook  # noqa: F401
+            from mautrix.crypto import OlmMachine  # noqa: F401
+
+            return True
+        except (ImportError, AttributeError):
+            return False
 
 
 def check_matrix_requirements() -> bool:
