@@ -1885,6 +1885,35 @@ class TestCodexAdapterReasoningTranslation:
         assert "reasoning" not in captured
         assert "include" not in captured
 
+    def test_recovers_when_sdk_terminal_response_output_is_none(self):
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+
+        output_item = SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text="Recovered Title")],
+        )
+
+        class _FakeStream:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+            def __iter__(self):
+                yield SimpleNamespace(type="response.created")
+                yield SimpleNamespace(type="response.output_item.done", item=output_item)
+                raise TypeError("'NoneType' object is not iterable")
+
+            def get_final_response(self):
+                raise AssertionError("get_final_response should not be reached")
+
+        real_client = MagicMock()
+        real_client.responses.stream.return_value = _FakeStream()
+        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "hi"}])
+
+        assert response.choices[0].message.content == "Recovered Title"
+        assert response.choices[0].finish_reason == "stop"
+
     def test_extra_body_without_reasoning_key_is_noop(self):
         adapter, captured = self._build_adapter()
         adapter.create(

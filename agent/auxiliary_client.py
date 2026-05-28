@@ -780,22 +780,67 @@ class _CodexCompletionsAdapter:
                 timeout_timer.daemon = True
                 timeout_timer.start()
             _check_cancelled()
-            with self._client.responses.stream(**resp_kwargs) as stream:
-                for _event in stream:
+            try:
+                with self._client.responses.stream(**resp_kwargs) as stream:
+                    for _event in stream:
+                        _check_cancelled()
+                        _etype = getattr(_event, "type", "")
+                        if _etype == "response.output_item.done":
+                            _done = getattr(_event, "item", None)
+                            if _done is not None:
+                                collected_output_items.append(_done)
+                        elif "output_text.delta" in _etype:
+                            _delta = getattr(_event, "delta", "")
+                            if _delta:
+                                collected_text_deltas.append(_delta)
+                        elif "function_call" in _etype:
+                            has_function_calls = True
                     _check_cancelled()
-                    _etype = getattr(_event, "type", "")
-                    if _etype == "response.output_item.done":
-                        _done = getattr(_event, "item", None)
-                        if _done is not None:
-                            collected_output_items.append(_done)
-                    elif "output_text.delta" in _etype:
-                        _delta = getattr(_event, "delta", "")
-                        if _delta:
-                            collected_text_deltas.append(_delta)
-                    elif "function_call" in _etype:
-                        has_function_calls = True
-                _check_cancelled()
-                final = stream.get_final_response()
+                    final = stream.get_final_response()
+            except TypeError as exc:
+                err_text = str(exc)
+                output_none_parse_error = (
+                    "NoneType" in err_text
+                    and "not iterable" in err_text
+                    and (collected_output_items or collected_text_deltas)
+                )
+                if not output_none_parse_error:
+                    raise
+                if collected_output_items:
+                    final = SimpleNamespace(
+                        output=list(collected_output_items),
+                        usage=None,
+                        status="completed",
+                    )
+                    logger.debug(
+                        "Codex auxiliary: recovered %d output items after SDK "
+                        "terminal response output=None parse error",
+                        len(collected_output_items),
+                    )
+                elif collected_text_deltas and not has_function_calls:
+                    assembled = "".join(collected_text_deltas)
+                    final = SimpleNamespace(
+                        output=[
+                            SimpleNamespace(
+                                type="message",
+                                role="assistant",
+                                status="completed",
+                                content=[
+                                    SimpleNamespace(type="output_text", text=assembled)
+                                ],
+                            )
+                        ],
+                        usage=None,
+                        status="completed",
+                    )
+                    logger.debug(
+                        "Codex auxiliary: synthesized from %d deltas after SDK "
+                        "terminal response output=None parse error (%d chars)",
+                        len(collected_text_deltas),
+                        len(assembled),
+                    )
+                else:
+                    raise
 
             # Backfill empty output from collected stream events
             _output = getattr(final, "output", None)
