@@ -93,6 +93,54 @@ def _redirect_cache(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# TestTableBlocks
+# ---------------------------------------------------------------------------
+
+class TestTableBlocks:
+    @pytest.mark.asyncio
+    async def test_send_converts_markdown_table_to_slack_table_block(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "123.456"})
+
+        result = await adapter.send(
+            chat_id="C123",
+            content=(
+                "Past week actuals\n\n"
+                "| Product | Units | Sales |\n"
+                "|---|---:|---:|\n"
+                "| Tito's | 103 | $3,087.94 |\n"
+                "| Steel 43 | 33 | $734.42 |\n"
+            ),
+        )
+
+        assert result.success
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["channel"] == "C123"
+        assert kwargs["text"].startswith("Past week actuals")
+        table_block = next(block for block in kwargs["blocks"] if block["type"] == "table")
+        assert table_block["rows"][0][0] == {"type": "raw_text", "text": "Product"}
+        assert table_block["rows"][1][0] == {"type": "raw_text", "text": "Tito's"}
+        assert table_block["rows"][2][2] == {"type": "raw_text", "text": "$734.42"}
+        assert table_block["column_settings"][1]["align"] == "right"
+        assert table_block["column_settings"][2]["align"] == "right"
+
+    @pytest.mark.asyncio
+    async def test_send_passes_explicit_metadata_blocks_through(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "123.456"})
+        blocks = [{"type": "table", "rows": [[{"type": "raw_text", "text": "A"}]]}]
+
+        result = await adapter.send(
+            chat_id="C123",
+            content="fallback",
+            metadata={"blocks": blocks, "thread_id": "111.222"},
+        )
+
+        assert result.success
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["blocks"] is blocks
+        assert kwargs["thread_ts"] == "111.222"
+
+
+# ---------------------------------------------------------------------------
 # TestSlashCommandSessionIsolation
 # ---------------------------------------------------------------------------
 

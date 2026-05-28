@@ -52,6 +52,127 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+
+_TABLE_DIVIDER_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$")
+_NUMERIC_TABLE_CELL_RE = re.compile(r"^\s*\$?-?\d[\d,]*(?:\.\d+)?%?\s*$")
+
+
+def _split_markdown_table_row(line: str) -> list[str] | None:
+    """Return cells for a simple pipe-delimited markdown table row."""
+    stripped = line.strip()
+    if "|" not in stripped:
+        return None
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    cells = [cell.strip() for cell in stripped.split("|")]
+    if len(cells) < 2:
+        return None
+    return cells
+
+
+def _looks_like_markdown_table_divider(line: str) -> bool:
+    return bool(_TABLE_DIVIDER_RE.match(line))
+
+
+def _table_cell(text: str) -> dict[str, str]:
+    # Slack's table block supports rich_text/raw_text/raw_number.  raw_text is
+    # accepted for all cell values and avoids guessing raw_number's exact value
+    # shape across Slack SDK/API versions.
+    return {"type": "raw_text", "text": text}
+
+
+def _section_blocks_from_text(text: str) -> list[dict[str, Any]]:
+    formatted = SlackAdapter.__new__(SlackAdapter).format_message(text.strip()) if text.strip() else ""
+    if not formatted:
+        return []
+    blocks = []
+    # Slack section text hard-limit is 3000 chars. Split conservatively.
+    for start in range(0, len(formatted), 2900):
+        chunk = formatted[start:start + 2900].strip()
+        if chunk:
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": chunk}})
+    return blocks
+
+
+def _markdown_tables_to_slack_blocks(content: str) -> list[dict[str, Any]] | None:
+    """Convert simple markdown tables in a message to Slack table blocks.
+
+    Returns ``None`` when the message has no convertible tables or would exceed
+    Slack Block Kit limits, so callers can fall back to plain mrkdwn.
+    """
+    lines = content.splitlines()
+    blocks: list[dict[str, Any]] = []
+    text_buf: list[str] = []
+    converted = False
+    i = 0
+    in_fence = False
+
+    def flush_text() -> None:
+        nonlocal text_buf, blocks
+        if text_buf:
+            blocks.extend(_section_blocks_from_text("\n".join(text_buf)))
+            text_buf = []
+
+    while i < len(lines):
+        line = lines[i]
+        if line.strip().startswith("```"):
+            in_fence = not in_fence
+            text_buf.append(line)
+            i += 1
+            continue
+
+        next_line = lines[i + 1] if i + 1 < len(lines) else ""
+        header = _split_markdown_table_row(line) if not in_fence else None
+        if header and _looks_like_markdown_table_divider(next_line):
+            rows = [header]
+            i += 2
+            while i < len(lines):
+                row = _split_markdown_table_row(lines[i])
+                if row is None or len(row) != len(header):
+                    break
+                rows.append(row)
+                i += 1
+
+            if len(rows) > 100 or len(header) > 20:
+                return None
+
+            flush_text()
+            numeric_cols = {
+                idx
+                for idx in range(len(header))
+                if any((r[idx] or "").strip() for r in rows[1:])
+                and all(
+                    not (r[idx] or "").strip() or _NUMERIC_TABLE_CELL_RE.match(r[idx])
+                    for r in rows[1:]
+                )
+            }
+            column_settings = []
+            for idx in range(len(header)):
+                setting: dict[str, Any] = {}
+                if idx == 0:
+                    setting["is_wrapped"] = True
+                if idx in numeric_cols:
+                    setting["align"] = "right"
+                column_settings.append(setting)
+            blocks.append({
+                "type": "table",
+                "rows": [[_table_cell(cell) for cell in row] for row in rows],
+                "column_settings": column_settings,
+            })
+            converted = True
+            continue
+
+        text_buf.append(line)
+        i += 1
+
+    flush_text()
+    if not converted or len(blocks) > 50:
+        return None
+    return blocks
+
+
 # ContextVar carrying the user_id of the slash-command invoker.
 # Set in _handle_slash_command, read in send() to match the correct
 # stashed response_url when multiple users issue commands on the same
@@ -780,9 +901,14 @@ class SlackAdapter(BasePlatformAdapter):
 
             # Convert standard markdown → Slack mrkdwn
             formatted = self.format_message(content)
-
-            # Split long messages, preserving code block boundaries
-            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            explicit_blocks = None
+            if metadata and metadata.get("blocks") is not None:
+                candidate = metadata.get("blocks")
+                if isinstance(candidate, dict):
+                    candidate = candidate.get("blocks")
+                if isinstance(candidate, list):
+                    explicit_blocks = candidate
+            table_blocks = explicit_blocks or _markdown_tables_to_slack_blocks(content)
 
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
             last_result = None
@@ -791,19 +917,35 @@ class SlackAdapter(BasePlatformAdapter):
             # Controlled via platform config: gateway.slack.reply_broadcast
             broadcast = self.config.extra.get("reply_broadcast", False)
 
-            for i, chunk in enumerate(chunks):
+            if table_blocks:
                 kwargs = {
                     "channel": chat_id,
-                    "text": chunk,
+                    "text": formatted or " ",
                     "mrkdwn": True,
+                    "blocks": table_blocks,
                 }
                 if thread_ts:
                     kwargs["thread_ts"] = thread_ts
-                    # Only broadcast the first chunk of the first reply
-                    if broadcast and i == 0:
+                    if broadcast:
                         kwargs["reply_broadcast"] = True
-
                 last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+            else:
+                # Split long messages, preserving code block boundaries
+                chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+
+                for i, chunk in enumerate(chunks):
+                    kwargs = {
+                        "channel": chat_id,
+                        "text": chunk,
+                        "mrkdwn": True,
+                    }
+                    if thread_ts:
+                        kwargs["thread_ts"] = thread_ts
+                        # Only broadcast the first chunk of the first reply
+                        if broadcast and i == 0:
+                            kwargs["reply_broadcast"] = True
+
+                    last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
 
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:
