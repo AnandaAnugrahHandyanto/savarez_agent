@@ -13,6 +13,8 @@ This page covers configuring both from the dashboard. If you prefer config files
 
 :::tip Fastest path: Nous Portal
 [Nous Portal](/user-guide/features/tool-gateway) provides 300+ models under one subscription. On a fresh install, run `hermes setup --portal` to log in and set Nous as your provider in one command. Inspect what's wired up with `hermes portal status`.
+
+- Portal subscribers also get **10% off token-billed providers**.
 :::
 
 :::note `model:` schema — empty string vs. mapping

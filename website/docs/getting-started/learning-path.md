@@ -12,6 +12,10 @@ Hermes Agent can do a lot — CLI assistant, Telegram/Discord bot, task automati
 If you haven't installed Hermes Agent yet, begin with the [Installation guide](/getting-started/installation) and then run through the [Quickstart](/getting-started/quickstart). Everything below assumes you have a working installation.
 :::
 
+:::tip First-time provider setup
+First-time users almost always want `hermes setup --portal` — one OAuth covers a model plus the four Tool Gateway tools (search/image/TTS/browser). See [Nous Portal](/integrations/nous-portal).
+:::
+
 ## How to Use This Page
 
 - **Know your level?** Jump to the [experience-level table](#by-experience-level) and follow the reading order for your tier.
