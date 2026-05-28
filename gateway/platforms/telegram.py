@@ -106,6 +106,71 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
 
 
 MAX_COMMANDS_PER_SCOPE = 30
+_EXEC_APPROVAL_COMMAND_PREVIEW_LIMIT = 3000
+_PIPE_TO_INTERPRETER_RE = re.compile(
+    r"\|\s*(?:sudo\s+)?(?:env\s+)?"
+    r"(?:bash|sh|zsh|fish|python(?:3)?|node|ruby|perl|php|pwsh|powershell)\b",
+    re.IGNORECASE,
+)
+
+
+def _truncate_text(text: str, limit: int) -> str:
+    """Return text capped at limit chars, preserving room for an ellipsis."""
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)] + "..."
+
+
+def _security_scan_title(description: str) -> str:
+    """Extract the primary scanner title from a formatted security description."""
+    match = re.search(
+        r"Security scan\s+[—-]\s+(?:\[[^\]]+\]\s*)?([^:;]+)",
+        description,
+        re.IGNORECASE,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def _exec_approval_plain_language(command: str, description: str) -> Dict[str, str]:
+    """Build deterministic, user-facing approval explanation text.
+
+    Keep this local and heuristic-based: approval prompts must not make an
+    extra model call before asking the user whether execution is allowed.
+    """
+    command_text = command or ""
+    description_text = (description or "dangerous command").strip()
+    description_lower = description_text.lower()
+    is_pipe_to_interpreter = (
+        "pipe to interpreter" in description_lower
+        or bool(_PIPE_TO_INTERPRETER_RE.search(command_text))
+    )
+
+    if is_pipe_to_interpreter:
+        action = "pipe로 받은 내용을 interpreter에 바로 실행하려고 해요."
+        risk = (
+            "외부에서 받은 출력이 bash/sh/python 같은 interpreter로 바로 전달되면 "
+            "내용을 확인하기 전에 코드가 실행될 수 있어요."
+        )
+    elif re.search(r"(?:^|[;&|]\s*)rm\s+[^\n]*(?:-[^\s]*r[^\s]*f|-[^\s]*f[^\s]*r)", command_text):
+        action = "파일/디렉터리를 강제로 삭제하는 명령을 실행하려고 해요."
+        risk = "삭제 범위가 넓거나 되돌리기 어려울 수 있어요."
+    elif re.search(r"(?:^|[;&|]\s*)sudo\b", command_text):
+        action = "관리자 권한으로 터미널 명령을 실행하려고 해요."
+        risk = "관리자 권한은 시스템 설정이나 파일을 변경할 수 있어요."
+    else:
+        action = "터미널에서 명령을 실행하려고 해요."
+        title = _security_scan_title(description_text)
+        if title:
+            risk = f"보안 스캐너가 '{title}' 위험을 감지했어요."
+        else:
+            risk = f"감지된 이유: {_truncate_text(description_text, 240)}"
+
+    if description_lower.startswith("security scan"):
+        why = "보안 스캐너가 위험 가능성을 감지해서 실행 전에 사용자 승인이 필요해요."
+    else:
+        why = "승인 정책에서 위험 가능성이 있는 작업으로 분류돼 실행 전에 사용자 승인이 필요해요."
+
+    return {"action": action, "why": why, "risk": risk}
 
 
 def check_telegram_requirements() -> bool:
@@ -2592,9 +2657,17 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
+            cmd_preview = _truncate_text(command, _EXEC_APPROVAL_COMMAND_PREVIEW_LIMIT)
+            explanation = _exec_approval_plain_language(command, description)
             text = (
                 f"⚠️ <b>Command Approval Required</b>\n\n"
+                f"<b>하려는 일</b>\n"
+                f"{_html.escape(explanation['action'])}\n\n"
+                f"<b>왜 승인이 필요한지</b>\n"
+                f"{_html.escape(explanation['why'])}\n\n"
+                f"<b>위험 포인트</b>\n"
+                f"{_html.escape(explanation['risk'])}\n\n"
+                f"<b>Raw command</b>\n"
                 f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
                 f"Reason: {_html.escape(description)}"
             )
