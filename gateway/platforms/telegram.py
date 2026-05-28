@@ -146,29 +146,29 @@ def _exec_approval_plain_language(command: str, description: str) -> Dict[str, s
     )
 
     if is_pipe_to_interpreter:
-        action = "pipe로 받은 내용을 interpreter에 바로 실행하려고 해요."
+        action = "Pipe command output directly into an interpreter."
         risk = (
-            "외부에서 받은 출력이 bash/sh/python 같은 interpreter로 바로 전달되면 "
-            "내용을 확인하기 전에 코드가 실행될 수 있어요."
+            "Output from a download or another command can execute as code before "
+            "you inspect it."
         )
     elif re.search(r"(?:^|[;&|]\s*)rm\s+[^\n]*(?:-[^\s]*r[^\s]*f|-[^\s]*f[^\s]*r)", command_text):
-        action = "파일/디렉터리를 강제로 삭제하는 명령을 실행하려고 해요."
-        risk = "삭제 범위가 넓거나 되돌리기 어려울 수 있어요."
+        action = "Force-delete files or directories from the terminal."
+        risk = "The deletion may cover a broad path or be hard to undo."
     elif re.search(r"(?:^|[;&|]\s*)sudo\b", command_text):
-        action = "관리자 권한으로 터미널 명령을 실행하려고 해요."
-        risk = "관리자 권한은 시스템 설정이나 파일을 변경할 수 있어요."
+        action = "Run a terminal command with administrator privileges."
+        risk = "Administrator privileges can change system settings or protected files."
     else:
-        action = "터미널에서 명령을 실행하려고 해요."
+        action = "Run a terminal command."
         title = _security_scan_title(description_text)
         if title:
-            risk = f"보안 스캐너가 '{title}' 위험을 감지했어요."
+            risk = f"The security scanner flagged this as '{title}'."
         else:
-            risk = f"감지된 이유: {_truncate_text(description_text, 240)}"
+            risk = f"Detected reason: {_truncate_text(description_text, 240)}"
 
     if description_lower.startswith("security scan"):
-        why = "보안 스캐너가 위험 가능성을 감지해서 실행 전에 사용자 승인이 필요해요."
+        why = "The security scanner flagged this command, so Hermes needs your approval before running it."
     else:
-        why = "승인 정책에서 위험 가능성이 있는 작업으로 분류돼 실행 전에 사용자 승인이 필요해요."
+        why = "Hermes classified this as potentially risky and needs your approval before running it."
 
     return {"action": action, "why": why, "risk": risk}
 
@@ -2661,11 +2661,11 @@ class TelegramAdapter(BasePlatformAdapter):
             explanation = _exec_approval_plain_language(command, description)
             text = (
                 f"⚠️ <b>Command Approval Required</b>\n\n"
-                f"<b>하려는 일</b>\n"
+                f"<b>What will run</b>\n"
                 f"{_html.escape(explanation['action'])}\n\n"
-                f"<b>왜 승인이 필요한지</b>\n"
+                f"<b>Why approval is needed</b>\n"
                 f"{_html.escape(explanation['why'])}\n\n"
-                f"<b>위험 포인트</b>\n"
+                f"<b>Risk to review</b>\n"
                 f"{_html.escape(explanation['risk'])}\n\n"
                 f"<b>Raw command</b>\n"
                 f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
