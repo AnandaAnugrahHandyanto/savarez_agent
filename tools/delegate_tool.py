@@ -1946,6 +1946,7 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    profile: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2056,6 +2057,22 @@ def delegate_task(
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
 
+    # Resolve and cache all profiles referenced in this call.
+    # Validate ALL profiles before spawning any children — a typo in one
+    # batch item must not leave other children dangling.
+    _profiles_cache: Dict[str, dict] = {}
+    _profile_names_to_check: set = set()
+    if profile:
+        _profile_names_to_check.add(profile)
+    for _t in task_list:
+        if _t.get("profile"):
+            _profile_names_to_check.add(_t["profile"])
+    for _pname in _profile_names_to_check:
+        try:
+            _profiles_cache[_pname] = _resolve_profile(_pname)
+        except ValueError as exc:
+            return tool_error(str(exc))
+
     overall_start = time.monotonic()
     results = []
 
@@ -2076,31 +2093,72 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
-            task_acp_args = t.get("acp_args") if "acp_args" in t else None
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+
+            # Resolve per-task profile (per-task beats top-level)
+            _task_profile_name = t.get("profile") or profile
+            _profile_cfg = _profiles_cache.get(_task_profile_name, {}) if _task_profile_name else {}
+
+            # ACP mode vs API mode — mutually exclusive.
+            # When profile defines acp_command, use ACP transport (no direct API creds).
+            if _profile_cfg.get("acp_command"):
+                _task_creds = {
+                    "model": None, "provider": None,
+                    "base_url": None, "api_key": None, "api_mode": None,
+                }
+                _task_acp_command = _profile_cfg["acp_command"]
+                _task_acp_args = (
+                    t.get("acp_args") if "acp_args" in t
+                    else _profile_cfg.get("acp_args")
+                )
+            else:
+                # API mode: resolve credentials from profile dict (if set) or
+                # fall back to default delegation config.
+                _cred_src = _profile_cfg if _profile_cfg else cfg
+                try:
+                    _task_creds = _resolve_delegation_credentials(_cred_src, parent_agent) if _profile_cfg else creds
+                except ValueError as exc:
+                    return tool_error(str(exc))
+                _task_acp_args_explicit = t.get("acp_args") if "acp_args" in t else None
+                _task_acp_command = (
+                    t.get("acp_command") or acp_command or _task_creds.get("command")
+                )
+                _task_acp_args = (
+                    _task_acp_args_explicit
+                    if _task_acp_args_explicit is not None
+                    else (acp_args if acp_args is not None else _task_creds.get("args"))
+                )
+
+            # Toolsets: explicit call arg > profile default > top-level toolsets arg
+            _task_toolsets = (
+                t.get("toolsets")
+                or _profile_cfg.get("toolsets")
+                or toolsets
+            )
+
+            # Proxy from profile (v1: warning logged inside _build_child_agent, not applied)
+            _task_proxy = _profile_cfg.get("proxy") if _profile_cfg else None
+
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                toolsets=_task_toolsets,
+                model=_task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
-                override_acp_command=t.get("acp_command")
-                or acp_command
-                or creds.get("command"),
-                override_acp_args=(
-                    task_acp_args
-                    if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
-                ),
+                override_provider=_task_creds["provider"],
+                override_base_url=_task_creds["base_url"],
+                override_api_key=_task_creds["api_key"],
+                override_api_mode=_task_creds["api_mode"],
+                override_acp_command=_task_acp_command,
+                override_acp_args=_task_acp_args,
+                override_proxy=_task_proxy,
+                profile_system_prompt=_profile_cfg.get("system_prompt"),
+                profile_constraints=_profile_cfg.get("constraints"),
                 role=effective_role,
             )
             # Override with correct parent tool names (before child construction mutated global)
@@ -2830,6 +2888,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        profile=args.get("profile"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,
