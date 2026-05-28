@@ -26,6 +26,13 @@ Endpoint override:
   ``openai.OpenAI(base_url=...)`` when set, so image generation can target a
   provider-specific OpenAI-compatible endpoint without relying on the global
   ``OPENAI_BASE_URL`` environment variable.
+
+Credential override:
+
+- ``image_gen.openai.key_env`` names the environment variable containing the
+  API key for this image backend. ``api_key_env`` is accepted as an alias.
+  When neither resolves to a set value, the provider falls back to
+  ``OPENAI_API_KEY``.
 """
 
 from __future__ import annotations
@@ -139,6 +146,26 @@ def _resolve_base_url() -> Optional[str]:
     return cleaned or None
 
 
+def _resolve_api_key() -> Optional[str]:
+    """Return the configured OpenAI image API key, if available."""
+    cfg = _load_openai_config()
+    openai_cfg = cfg.get("openai") if isinstance(cfg.get("openai"), dict) else {}
+    if isinstance(openai_cfg, dict):
+        for field in ("key_env", "api_key_env"):
+            env_name = openai_cfg.get(field)
+            if not isinstance(env_name, str):
+                continue
+            env_name = env_name.strip()
+            if not env_name:
+                continue
+            value = os.environ.get(env_name, "").strip()
+            if value:
+                return value
+
+    value = os.environ.get("OPENAI_API_KEY", "").strip()
+    return value or None
+
+
 # ---------------------------------------------------------------------------
 # Provider
 # ---------------------------------------------------------------------------
@@ -156,7 +183,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
         return "OpenAI"
 
     def is_available(self) -> bool:
-        if not os.environ.get("OPENAI_API_KEY"):
+        if not _resolve_api_key():
             return False
         try:
             import openai  # noqa: F401
@@ -210,12 +237,12 @@ class OpenAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        if not os.environ.get("OPENAI_API_KEY"):
+        api_key = _resolve_api_key()
+        if not api_key:
             return error_response(
                 error=(
-                    "OPENAI_API_KEY not set. Run `hermes tools` → Image "
-                    "Generation → OpenAI to configure, or `hermes setup` "
-                    "to add the key."
+                    "OpenAI image API key not set. Configure "
+                    "`image_gen.openai.key_env` or set OPENAI_API_KEY."
                 ),
                 error_type="auth_required",
                 provider="openai",
@@ -247,10 +274,10 @@ class OpenAIImageGenProvider(ImageGenProvider):
 
         try:
             base_url = _resolve_base_url()
+            client_kwargs: Dict[str, Any] = {"api_key": api_key}
             if base_url is not None:
-                client = openai.OpenAI(base_url=base_url)
-            else:
-                client = openai.OpenAI()
+                client_kwargs["base_url"] = base_url
+            client = openai.OpenAI(**client_kwargs)
             response = client.images.generate(**payload)
         except Exception as exc:
             logger.debug("OpenAI image generation failed", exc_info=True)
