@@ -97,4 +97,5 @@ docs/superpowers/*
 # personal reference; not part of the upstream contract.
 /STATUS.md
 /docs/cursor_self_review.md
+/docs/cursor_sdk_strategy_notes.md
 /docs/plans/2026-05-25-cursor-provider-integration.md
