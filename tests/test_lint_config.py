@@ -82,7 +82,6 @@ class TestLintWorkflow:
         # Look for the blocking step's named line + its command.  We want
         # at least one ``ruff check .`` that does NOT have ``--exit-zero``
         # nearby.
-        import re
         # Split into lines and find ruff check invocations
         lines = content.splitlines()
         found_blocking = False
@@ -113,3 +112,30 @@ class TestLintWorkflow:
             pytest.fail(f"lint.yml is not valid YAML: {exc}")
         assert isinstance(parsed, dict)
         assert "jobs" in parsed
+
+
+class TestToolsLintRegression:
+    """Regression tests for specific file-level lint contracts.
+
+    Each test asserts zero violations of a specific rule class in a specific
+    file.  A failure means a new violation was introduced — fix it or add a
+    noqa with rationale before merging.
+    """
+
+    REPO_ROOT = REPO_ROOT
+
+    def test_code_execution_tool_has_zero_f401(self) -> None:
+        """tools/code_execution_tool.py must have zero F401 (unused import)
+        violations."""
+        import subprocess
+        import sys
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F401",
+             "--output-format=concise",
+             str(self.REPO_ROOT / "tools" / "code_execution_tool.py")],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, (
+            "tools/code_execution_tool.py has F401 violations:\n"
+            f"{result.stdout}{result.stderr}"
+        )
