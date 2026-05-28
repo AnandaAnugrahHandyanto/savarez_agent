@@ -4,6 +4,7 @@ import builtins
 import importlib
 import logging
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -753,6 +754,18 @@ class TestFindGitRoot:
         if result is not None:
             assert (result / ".git").exists()
 
+    def test_skips_inaccessible_git_marker(self, tmp_path, monkeypatch):
+        real_exists = Path.exists
+
+        def fake_exists(path):
+            if path.name == ".git":
+                raise PermissionError("permission denied")
+            return real_exists(path)
+
+        monkeypatch.setattr(Path, "exists", fake_exists)
+
+        assert _find_git_root(tmp_path) is None
+
 
 class TestStripYamlFrontmatter:
     def test_strips_frontmatter(self):
@@ -1192,6 +1205,5 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 
 

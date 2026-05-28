@@ -66,9 +66,16 @@ def _find_git_root(start: Path) -> Optional[Path]:
     Returns the directory containing ``.git``, or ``None`` if we hit the
     filesystem root without finding one.
     """
-    current = start.resolve()
+    try:
+        current = start.resolve()
+    except OSError:
+        current = start.absolute()
     for parent in [current, *current.parents]:
-        if (parent / ".git").exists():
+        try:
+            has_git_marker = (parent / ".git").exists()
+        except OSError:
+            continue
+        if has_git_marker:
             return parent
     return None
 
@@ -84,12 +91,19 @@ def _find_hermes_md(cwd: Path) -> Optional[Path]:
     ``None`` if nothing is found.
     """
     stop_at = _find_git_root(cwd)
-    current = cwd.resolve()
+    try:
+        current = cwd.resolve()
+    except OSError:
+        current = cwd.absolute()
 
     for directory in [current, *current.parents]:
         for name in _HERMES_MD_NAMES:
             candidate = directory / name
-            if candidate.is_file():
+            try:
+                is_context_file = candidate.is_file()
+            except OSError:
+                continue
+            if is_context_file:
                 return candidate
         # Stop walking at the git root (or filesystem root).
         if stop_at and directory == stop_at:
