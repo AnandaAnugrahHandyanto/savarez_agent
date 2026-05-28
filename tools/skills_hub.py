@@ -1999,10 +1999,12 @@ class ClawHubSource(SkillSource):
         cursor: Optional[str] = None
         results: List[SkillMeta] = []
         seen: set[str] = set()
-        # ClawHub has 20k+ skills and growing; 250 pages * 200/page = 50k ceiling.
-        # Each page is one HTTP request, so the full walk is ~100 requests in
-        # practice — well within the CI build budget (twice-daily refresh).
-        max_pages = 250
+        # ClawHub has 50k+ skills as of May 2026 (live E2E walked 49,698 with
+        # an active cursor still pending); 750 pages * 200/page = 150k ceiling
+        # leaves room for catalog growth. Walk-to-exhaustion typically
+        # terminates well before this on `nextCursor` going None — the cap is
+        # a safety rail against an infinite-cursor loop.
+        max_pages = 750
 
         for _ in range(max_pages):
             params: Dict[str, Any] = {"limit": 200}

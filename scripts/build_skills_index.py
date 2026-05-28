@@ -275,7 +275,8 @@ def main():
     # (well above current catalog size) lets the full catalog land in the
     # index instead of being truncated at an arbitrary build-time limit.
     SOURCE_LIMITS = {
-        "clawhub": 100_000,
+        # ClawHub had 49,698+ skills as of May 2026; 200k leaves headroom.
+        "clawhub": 200_000,
         "lobehub": 100_000,
         "browse-sh": 5_000,
         "claude-marketplace": 5_000,
@@ -346,11 +347,11 @@ def main():
     EXPECTED_FLOORS = {
         "skills.sh": 100,
         "lobehub": 100,
-        # ClawHub has 20k+ skills as of 2026 — anything under 5k means
+        # ClawHub had 49,698+ skills as of May 2026 — anything under 20k means
         # pagination broke or the API surface changed.  Fail loudly rather
-        # than ship a degenerate index (we shipped 200/20000 silently for
+        # than ship a degenerate index (we shipped 200/50000 silently for
         # weeks because the floor was 50).
-        "clawhub": 5000,
+        "clawhub": 20000,
         "official": 50,
         "github": 30,        # collapsed across all GitHub taps
         "browse-sh": 50,
