@@ -4787,10 +4787,9 @@ class DiscordAdapter(BasePlatformAdapter):
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
 
         # ── History backfill ─────────────────────────────────────────
-        # When require_mention is active, the bot only processes messages
-        # that @mention it.  Messages in the channel between bot turns are
-        # invisible to the session transcript.  To recover that context,
-        # fetch recent channel history and prepend it to the user message.
+        # Messages in the channel between bot turns are invisible to the
+        # session transcript.  To recover that context, fetch recent
+        # channel history and prepend it to the user message.
         #
         # The fetch window is: everything after the bot's last message in
         # the channel up to (but not including) the current trigger.  On
@@ -4812,13 +4811,8 @@ class DiscordAdapter(BasePlatformAdapter):
         _channel_context = None
         _is_dm = isinstance(message.channel, discord.DMChannel)
         if not _is_dm:
-            _needed_mention = (
-                require_mention
-                and not is_free_channel
-                and not in_bot_thread
-            )
             _backfill_enabled = self._discord_history_backfill()
-            if _needed_mention and _backfill_enabled:
+            if _backfill_enabled:
                 _backfill_text = await self._fetch_channel_context(
                     message.channel, before=message,
                 )
