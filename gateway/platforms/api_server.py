@@ -562,6 +562,11 @@ def _derive_chat_session_id(
     return f"api-{digest}"
 
 
+def _new_chat_session_id() -> str:
+    """Return a fresh API session ID for compatibility with older callers."""
+    return f"api-{uuid.uuid4().hex[:16]}"
+
+
 _CRON_AVAILABLE = False
 try:
     from cron.jobs import (
