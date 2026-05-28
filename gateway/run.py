@@ -14805,11 +14805,18 @@ class GatewayRunner:
                     initial_prompt=transcription_prompt or None,
                 )
                 if result["success"]:
-                    transcript = result["transcript"]
-                    enriched_parts.append(
-                        f'[The user sent a voice message~ '
-                        f'Here\'s what they said: "{transcript}"]'
-                    )
+                    transcript = str(result.get("transcript") or "").strip()
+                    if transcript:
+                        enriched_parts.append(
+                            f'[The user sent a voice message~ '
+                            f'Here\'s what they said: "{transcript}"]'
+                        )
+                    else:
+                        provider = result.get("provider") or "unknown provider"
+                        enriched_parts.append(
+                            "[The user sent a voice message but I had trouble "
+                            f"transcribing it~ (empty transcript from {provider})]"
+                        )
                 else:
                     error = result.get("error", "unknown error")
                     if (
