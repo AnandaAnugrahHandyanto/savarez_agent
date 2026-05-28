@@ -135,6 +135,7 @@ hermes gateway status --system         # Linux only: inspect the system service 
 | `/retry` | Retry the last message |
 | `/undo` | Remove the last exchange |
 | `/status` | Show session info |
+| `/issue <owner/repo\|issue-url> <number> [--workdir path]` | Queue a GitHub issue for the headless persistent issue-resolution lane. See [Issue Resolution Lane](/user-guide/features/issue-resolution). |
 | `/whoami` | Show your slash command access on this scope (admin / user / unrestricted) |
 | `/stop` | Stop the running agent |
 | `/approve` | Approve a pending dangerous command |
