@@ -317,9 +317,12 @@ agents:
   - browser-automation-for-blocked-sites
   - macos-computer-use
   - playwright-mcp
+  - libreoffice-cli
   tools:
   - desktop
   - browser
+  - file
+  - terminal
   permission: ask
   can_delegate: false
   capabilities:
@@ -331,6 +334,7 @@ agents:
   - browser_gui_operation
   - browser_operation
   - gui_workflow
+  - office_document_automation
   risk_allowed:
   - R0
   - R1
@@ -414,6 +418,7 @@ routing:
     screenshot: agent-tars
     visual_gui_automation: agent-tars
     browser_gui_operation: agent-tars
+    office_document_automation: agent-tars
     content_writing: pirlo
     planning: pirlo
     document_creation: pirlo

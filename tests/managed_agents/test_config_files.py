@@ -107,6 +107,7 @@ def test_managed_agents_skill_whitelists_are_declared():
     assert "comfyui" not in registry.get("pirlo").skills
     assert "browser-automation-for-blocked-sites" in registry.get("agent-tars").skills
     assert "playwright-mcp" in registry.get("agent-tars").skills
+    assert "libreoffice-cli" in registry.get("agent-tars").skills
     assert "github-code-review" in registry.get("ambrosini").skills
     assert "playwright-mcp" not in registry.get("ambrosini").skills
     assert "kanban" not in registry.agents
@@ -154,6 +155,10 @@ def test_known_tool_bound_skills_are_assigned_to_executable_agents():
     assert "browser" in registry.get("agent-tars").tools
     assert "playwright-mcp" not in registry.get("codex").skills
     assert "playwright-mcp" not in registry.get("ambrosini").skills
+
+    assert "libreoffice-cli" in registry.get("agent-tars").skills
+    assert "terminal" in registry.get("agent-tars").tools
+    assert "file" in registry.get("agent-tars").tools
 
 
 def test_active_skill_frontmatter_uses_canonical_agent_ids():
