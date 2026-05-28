@@ -36,36 +36,42 @@ needs to replace the import + call site:
     platform = get_session_env("HERMES_SESSION_PLATFORM", "")
 """
 
+from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from typing import Optional, cast
+from typing import Iterator, Optional
+
+class _UnsetType:
+    def __repr__(self) -> str:
+        return "<UNSET>"
+
 
 # Sentinel to distinguish "never set in this context" from "explicitly set to empty".
 # When a contextvar holds _UNSET, we fall back to os.environ (CLI/cron compat).
 # When it holds "" (after clear_session_vars resets it), we return "" — no fallback.
-_UNSET: object = object()
+_UNSET = _UnsetType()
 
 # ---------------------------------------------------------------------------
 # Per-task session variables
 # ---------------------------------------------------------------------------
 
-_SESSION_PLATFORM: ContextVar[object] = ContextVar("HERMES_SESSION_PLATFORM", default=_UNSET)
-_SESSION_CHAT_ID: ContextVar[object] = ContextVar("HERMES_SESSION_CHAT_ID", default=_UNSET)
-_SESSION_CHAT_NAME: ContextVar[object] = ContextVar("HERMES_SESSION_CHAT_NAME", default=_UNSET)
-_SESSION_THREAD_ID: ContextVar[object] = ContextVar("HERMES_SESSION_THREAD_ID", default=_UNSET)
-_SESSION_USER_ID: ContextVar[object] = ContextVar("HERMES_SESSION_USER_ID", default=_UNSET)
-_SESSION_USER_NAME: ContextVar[object] = ContextVar("HERMES_SESSION_USER_NAME", default=_UNSET)
-_SESSION_KEY: ContextVar[object] = ContextVar("HERMES_SESSION_KEY", default=_UNSET)
-_SESSION_ID: ContextVar[object] = ContextVar("HERMES_SESSION_ID", default=_UNSET)
+_SESSION_PLATFORM: ContextVar[str | _UnsetType] = ContextVar("HERMES_SESSION_PLATFORM", default=_UNSET)
+_SESSION_CHAT_ID: ContextVar[str | _UnsetType] = ContextVar("HERMES_SESSION_CHAT_ID", default=_UNSET)
+_SESSION_CHAT_NAME: ContextVar[str | _UnsetType] = ContextVar("HERMES_SESSION_CHAT_NAME", default=_UNSET)
+_SESSION_THREAD_ID: ContextVar[str | _UnsetType] = ContextVar("HERMES_SESSION_THREAD_ID", default=_UNSET)
+_SESSION_USER_ID: ContextVar[str | _UnsetType] = ContextVar("HERMES_SESSION_USER_ID", default=_UNSET)
+_SESSION_USER_NAME: ContextVar[str | _UnsetType] = ContextVar("HERMES_SESSION_USER_NAME", default=_UNSET)
+_SESSION_KEY: ContextVar[str | _UnsetType] = ContextVar("HERMES_SESSION_KEY", default=_UNSET)
+_SESSION_ID: ContextVar[str | _UnsetType] = ContextVar("HERMES_SESSION_ID", default=_UNSET)
 # ID of the message that triggered the current turn. Used as a reply anchor
 # so background-process notifications stay inside the originating Telegram
 # private-chat topic (those lanes route only with thread id + reply anchor).
-_SESSION_MESSAGE_ID: ContextVar[object] = ContextVar("HERMES_SESSION_MESSAGE_ID", default=_UNSET)
+_SESSION_MESSAGE_ID: ContextVar[str | _UnsetType] = ContextVar("HERMES_SESSION_MESSAGE_ID", default=_UNSET)
 
 # Cron auto-delivery vars — set per-job in run_job() so concurrent jobs
 # don't clobber each other's delivery targets.
-_CRON_AUTO_DELIVER_PLATFORM: ContextVar[object] = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", default=_UNSET)
-_CRON_AUTO_DELIVER_CHAT_ID: ContextVar[object] = ContextVar("HERMES_CRON_AUTO_DELIVER_CHAT_ID", default=_UNSET)
-_CRON_AUTO_DELIVER_THREAD_ID: ContextVar[object] = ContextVar("HERMES_CRON_AUTO_DELIVER_THREAD_ID", default=_UNSET)
+_CRON_AUTO_DELIVER_PLATFORM: ContextVar[str | _UnsetType] = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", default=_UNSET)
+_CRON_AUTO_DELIVER_CHAT_ID: ContextVar[str | _UnsetType] = ContextVar("HERMES_CRON_AUTO_DELIVER_CHAT_ID", default=_UNSET)
+_CRON_AUTO_DELIVER_THREAD_ID: ContextVar[str | _UnsetType] = ContextVar("HERMES_CRON_AUTO_DELIVER_THREAD_ID", default=_UNSET)
 
 _VAR_MAP = {
     "HERMES_SESSION_PLATFORM": _SESSION_PLATFORM,
@@ -98,7 +104,7 @@ def set_current_session_id(session_id: str) -> None:
     _SESSION_ID.set(session_id)
 
 
-def set_current_turn_session_key(session_key: Optional[str]) -> Token[object]:
+def set_current_turn_session_key(session_key: Optional[str]) -> Token[str | _UnsetType]:
     """Bind the per-turn session-identity ContextVar to ``session_key``.
 
     Accepts ``None`` (treated as empty string) so server-initiated turns can
@@ -125,13 +131,23 @@ def set_current_turn_session_key(session_key: Optional[str]) -> Token[object]:
     return _SESSION_KEY.set(session_key or "")
 
 
-def reset_current_turn_session_key(token: Token[object]) -> None:
+def reset_current_turn_session_key(token: Token[str | _UnsetType]) -> None:
     """Reset the per-turn session-identity ContextVar.
 
     Pair with :func:`set_current_turn_session_key` in a ``finally``
     clause.
     """
     _SESSION_KEY.reset(token)
+
+
+@contextmanager
+def turn_session_key(session_key: Optional[str]) -> Iterator[None]:
+    """Context manager wrapper around the public per-turn session-key setters."""
+    token = set_current_turn_session_key(session_key)
+    try:
+        yield
+    finally:
+        reset_current_turn_session_key(token)
 
 
 def set_session_vars(
@@ -209,7 +225,7 @@ def get_session_env(name: str, default: str = "") -> str:
     var = _VAR_MAP.get(name)
     if var is not None:
         value = var.get()
-        if value is not _UNSET:
-            return cast(str, value)
+        if isinstance(value, str):
+            return value
     # Fall back to os.environ for CLI, cron, and test compatibility
     return os.getenv(name, default)

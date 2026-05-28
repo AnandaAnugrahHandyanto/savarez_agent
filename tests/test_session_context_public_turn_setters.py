@@ -9,8 +9,9 @@ ContextVar (``_approval_session_key`` in tools.approval).
 
 from gateway.session_context import (
     get_session_env,
-    set_current_turn_session_key,
     reset_current_turn_session_key,
+    set_current_turn_session_key,
+    turn_session_key,
 )
 
 
@@ -39,7 +40,7 @@ def test_nested_set_reset():
         reset_current_turn_session_key(outer)
 
 
-def test_empty_string_normalized():
+def test_empty_string_round_trip():
     token = set_current_turn_session_key("")
     try:
         assert get_session_env("HERMES_SESSION_KEY") == ""
@@ -47,10 +48,24 @@ def test_empty_string_normalized():
         reset_current_turn_session_key(token)
 
 
-def test_none_normalized_to_empty():
+def test_none_coerced_to_empty_string():
     # set_current_turn_session_key(None) should not raise; treat as "".
     token = set_current_turn_session_key(None)
     try:
         assert get_session_env("HERMES_SESSION_KEY") == ""
     finally:
         reset_current_turn_session_key(token)
+
+
+def test_turn_session_key_context_manager_restores_previous_value(monkeypatch):
+    monkeypatch.setenv("HERMES_SESSION_KEY", "env-session")
+
+    with turn_session_key("session-xyz"):
+        assert get_session_env("HERMES_SESSION_KEY") == "session-xyz"
+
+    assert get_session_env("HERMES_SESSION_KEY") == "env-session"
+
+
+def test_turn_session_key_context_manager_none_coerces_to_empty_string():
+    with turn_session_key(None):
+        assert get_session_env("HERMES_SESSION_KEY") == ""
