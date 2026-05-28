@@ -3072,20 +3072,19 @@ async def update_profile_soul(name: str, body: ProfileSoulUpdate):
 
 
 @app.post("/api/profiles/{name}/activate")
-async def activate_profile_endpoint(name: str):
-    """Activate a profile persistently (sticky across restarts)."""
+async def activate_profile_endpoint(request: Request, name: str):
+    """Set the active profile (sticky — persists across restarts)."""
+    _require_token(request)
     from hermes_cli import profiles as profiles_mod
-    try:
-        profiles_mod.set_active_profile(name)
-    except HTTPException:
-        raise
-    except (ValueError, FileNotFoundError) as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        _log.exception("POST /api/profiles/%s/activate failed", name)
-        raise HTTPException(status_code=500, detail=str(e))
     canon = profiles_mod.normalize_profile_name(name)
-    return {"ok": True, "name": canon}
+    if not profiles_mod.profile_exists(canon):
+        raise HTTPException(status_code=404, detail=f"Profile '{name}' not found")
+    profiles_mod.set_active_profile(canon)
+    return {
+        "ok": True,
+        "active_profile": canon,
+        "profile_dir": str(profiles_mod.get_profile_dir(canon)),
+    }
 
 
 # ---------------------------------------------------------------------------
