@@ -36,6 +36,10 @@ const PRINTABLE = /^[ -~\u00a0-\uffff]+$/
 const BRACKET_PASTE = new RegExp(`${ESC}?\\[20[01]~`, 'g')
 const FRAME_BATCH_MS = 16
 const MULTI_CLICK_MS = 500
+const IME_TERMINATOR_HOLD_MS = 40
+const IME_TERMINATOR_RE = /^[ .,!?:;]+$/
+const LEADING_IME_TERMINATOR_RE = /^([.,!?:;]+)([\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7af\ud7b0-\ud7ff]+)$/
+const HANGUL_IME_COMMIT_RE = /[\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7af\ud7b0-\ud7ff]/
 
 const invert = (s: string) => INV + s + INV_OFF
 const dim = (s: string) => DIM + s + DIM_OFF
@@ -121,6 +125,21 @@ export function applyPrintableInsert(
 }
 
 export const shouldRouteMultiCharInputAsPaste = (text: string): boolean => text.includes('\n')
+
+export const containsHangulImeCommit = (text: string): boolean => HANGUL_IME_COMMIT_RE.test(text)
+
+export const shouldDeferImeTerminator = (text: string): boolean =>
+  text.length > 0 && text.length <= 3 && IME_TERMINATOR_RE.test(text)
+
+export const normalizeImeTerminatorOrder = (text: string): string => {
+  const match = LEADING_IME_TERMINATOR_RE.exec(text)
+
+  if (!match) {
+    return text
+  }
+
+  return `${match[2]}${match[1]}`
+}
 
 function prevPos(s: string, p: number) {
   const pos = snapPos(s, p)
@@ -436,6 +455,7 @@ export function TextInput({
   const editVersionRef = useRef(0)
   const parentChangeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingParentValue = useRef<string | null>(null)
+  const pendingImeTerminator = useRef<null | { text: string; timer: ReturnType<typeof setTimeout> | null }>(null)
   const localRenderTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lineWidthRef = useRef(stringWidth(value.includes('\n') ? value.slice(value.lastIndexOf('\n') + 1) : value))
   const mouseAnchorRef = useRef<null | number>(null)
@@ -571,6 +591,10 @@ export function TextInput({
 
       if (parentChangeTimer.current) {
         clearTimeout(parentChangeTimer.current)
+      }
+
+      if (pendingImeTerminator.current?.timer) {
+        clearTimeout(pendingImeTerminator.current.timer)
       }
 
       if (localRenderTimer.current) {
@@ -731,6 +755,7 @@ export function TextInput({
     }
 
     flushParentChange()
+    flushPendingImeTerminator()
   }
 
   const scheduleKeyBurstCommit = (next: string, nextCur: number) => {
@@ -744,6 +769,51 @@ export function TextInput({
       keyBurstTimer.current = null
       flushParentChange()
     }, FRAME_BATCH_MS)
+  }
+
+  const takePendingImeTerminator = () => {
+    const pending = pendingImeTerminator.current
+
+    if (!pending) {
+      return ''
+    }
+
+    if (pending.timer) {
+      clearTimeout(pending.timer)
+    }
+
+    pendingImeTerminator.current = null
+
+    return pending.text
+  }
+
+  const flushPendingImeTerminator = () => {
+    const text = takePendingImeTerminator()
+
+    if (!text) {
+      return false
+    }
+
+    const c = curRef.current
+    const v = vRef.current
+    commit(v.slice(0, c) + text + v.slice(c), c + text.length)
+
+    return true
+  }
+
+  const deferImeTerminator = (text: string) => {
+    const existing = pendingImeTerminator.current
+
+    if (existing?.timer) {
+      clearTimeout(existing.timer)
+    }
+
+    const nextText = `${existing?.text ?? ''}${text}`
+    const timer = setTimeout(() => {
+      flushPendingImeTerminator()
+    }, IME_TERMINATOR_HOLD_MS)
+
+    pendingImeTerminator.current = { text: nextText, timer }
   }
 
   const clearSel = () => {
@@ -961,12 +1031,15 @@ export function TextInput({
       const actionDeleteToStart = (mod && inp === 'u') || isMacActionFallback(k, inp, 'u')
       const actionKillToEnd = (mod && inp === 'k') || isMacActionFallback(k, inp, 'k')
       const actionDeleteWord = (mod && inp === 'w') || isMacActionFallback(k, inp, 'w')
-      const range = selRange()
+      let range = selRange()
       const delFwd = k.delete || fwdDel.current
       const isPrintableInput = (event.keypress.isPasted || inp.length > 0) && PRINTABLE.test(inp.replace(BRACKET_PASTE, ''))
 
       if (!isPrintableInput) {
         flushKeyBurst()
+        c = curRef.current
+        v = vRef.current
+        range = selRange()
       }
 
       if (mod && inp === 'z') {
@@ -1082,7 +1155,11 @@ export function TextInput({
         }
       } else if (event.keypress.isPasted || inp.length > 0) {
         const bracketed = event.keypress.isPasted || inp.includes('[200~')
-        const text = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+        let text = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+
+        if (!event.keypress.isPasted) {
+          text = normalizeImeTerminatorOrder(text)
+        }
 
         if (bracketed && emitPaste({ bracketed: true, cursor: c, text, value: v })) {
           return
@@ -1092,8 +1169,33 @@ export function TextInput({
           return
         }
 
+        if (!event.keypress.isPasted && pendingImeTerminator.current && containsHangulImeCommit(text) && !text.includes('\n')) {
+          const suffix = takePendingImeTerminator()
+          const inserted = applyPrintableInsert(v, c, `${text}${suffix}`, range)
+
+          if (!inserted) {
+            return
+          }
+
+          commit(inserted.value, inserted.cursor)
+
+          return
+        }
+
+        if (!event.keypress.isPasted && pendingImeTerminator.current) {
+          flushPendingImeTerminator()
+          c = curRef.current
+          v = vRef.current
+        }
+
         if (text === '\n') {
           return commit(ins(v, c, '\n'), c + 1)
+        }
+
+        if (!event.keypress.isPasted && !range && shouldDeferImeTerminator(text)) {
+          deferImeTerminator(text)
+
+          return
         }
 
         if (text.length > 1 || text.includes('\n')) {
@@ -1115,7 +1217,12 @@ export function TextInput({
 
           v = inserted.value
           c = inserted.cursor
-          scheduleKeyBurstCommit(v, c)
+
+          if (containsHangulImeCommit(text)) {
+            commit(v, c)
+          } else {
+            scheduleKeyBurstCommit(v, c)
+          }
 
           return
         }

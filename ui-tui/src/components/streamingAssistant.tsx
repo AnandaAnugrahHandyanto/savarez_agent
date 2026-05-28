@@ -15,6 +15,15 @@ import { TodoPanel } from './todoPanel.js'
 const groupedSegments = (segments: Msg[]): Msg[] =>
   segments.reduce<Msg[]>((acc, msg) => appendToolShelfMessage(acc, msg), [])
 
+const WORKING_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+const WORKING_BAR_WIDTH = 14
+
+const workingBar = (tick: number, width = WORKING_BAR_WIDTH) => {
+  const head = tick % width
+
+  return `[${Array.from({ length: width }, (_, index) => (index === head ? '◆' : index < head ? '━' : '─')).join('')}]`
+}
+
 const InlineProgress = memo(function InlineProgress({ progress }: { progress: AppLayoutProgressProps }) {
   const [now, setNow] = useState(() => Date.now())
 
@@ -24,7 +33,7 @@ const InlineProgress = memo(function InlineProgress({ progress }: { progress: Ap
     }
 
     setNow(Date.now())
-    const id = setInterval(() => setNow(Date.now()), 1000)
+    const id = setInterval(() => setNow(Date.now()), 250)
 
     return () => clearInterval(id)
   }, [progress.busy, progress.turnStartedAt])
@@ -33,11 +42,16 @@ const InlineProgress = memo(function InlineProgress({ progress }: { progress: Ap
     return null
   }
 
-  const elapsed = progress.turnStartedAt ? fmtDuration(now - progress.turnStartedAt) : '…'
+  const elapsedMs = progress.turnStartedAt ? now - progress.turnStartedAt : 0
+  const elapsed = progress.turnStartedAt ? fmtDuration(elapsedMs) : '…'
+  const tick = Math.floor(elapsedMs / 250)
 
   return (
     <Box marginBottom={1} marginTop={1}>
-      <Text color={progress.statusColor}>• Working ({elapsed} · Ctrl+C to interrupt)</Text>
+      <Text color={progress.statusColor}>
+        {WORKING_FRAMES[tick % WORKING_FRAMES.length]} Working {elapsed} {workingBar(tick)}
+        <Text dim> Ctrl+C to interrupt</Text>
+      </Text>
     </Box>
   )
 })
@@ -63,8 +77,6 @@ export const StreamingAssistant = memo(function StreamingAssistant({
 
   return (
     <>
-      <InlineProgress progress={progress} />
-
       {groupedSegments(streamSegments).map((msg, i) => (
         <MessageLine
           cols={cols}
@@ -119,6 +131,9 @@ export const StreamingAssistant = memo(function StreamingAssistant({
           t={ui.theme}
         />
       )}
+
+      <LiveTodoPanel />
+      <InlineProgress progress={progress} />
     </>
   )
 })

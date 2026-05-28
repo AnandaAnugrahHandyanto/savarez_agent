@@ -4,7 +4,13 @@ import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
 import { THINKING_COT_MAX } from '../config/limits.js'
 import { sectionMode } from '../domain/details.js'
-import { actionStatusGlyph, foldActionDetail, parseActionCall, type ActionStatus } from '../lib/actionFeed.js'
+import {
+  actionStatusGlyph,
+  foldActionDetail,
+  parseActionCall,
+  selectVisibleActionFeedItems,
+  type ActionStatus
+} from '../lib/actionFeed.js'
 import {
   buildSubagentTree,
   fmtCost,
@@ -902,7 +908,8 @@ export const ToolTrail = memo(function ToolTrail({
 
   // ── Derived ────────────────────────────────────────────────────
 
-  const hasTools = groups.length > 0
+  const { hidden: hiddenActionCount, items: visibleGroups } = selectVisibleActionFeedItems(groups)
+  const hasTools = visibleGroups.length > 0
   const hasSubagents = subagents.length > 0
   const hasMeta = meta.length > 0
   const hasThinking = !!cot || reasoningActive || reasoningStreaming
@@ -918,8 +925,13 @@ export const ToolTrail = memo(function ToolTrail({
   const toolTokensLabel = toolTokens !== undefined && toolTokens > 0 ? `~${fmtK(toolTokens)} tokens` : undefined
 
   const totalTokensLabel = tokenCount > 0 && toolTokenCount > 0 ? `~${fmtK(totalTokenCount)} total` : null
-  const delegateGroups = groups.filter(g => g.label.startsWith('Delegate Task'))
-  const inlineDelegateKey = hasSubagents && delegateGroups.length === 1 ? delegateGroups[0]!.key : null
+  const allDelegateGroups = groups.filter(g => g.label.startsWith('Delegate Task'))
+  const visibleDelegateGroups = visibleGroups.filter(g => g.label.startsWith('Delegate Task'))
+  const inlineDelegateKey =
+    hasSubagents && allDelegateGroups.length === 1 && visibleDelegateGroups.length === 1 ? visibleDelegateGroups[0]!.key : null
+  const actionFeedSuffix = [hiddenActionCount > 0 ? `+${hiddenActionCount} hidden` : null, toolTokensLabel]
+    .filter(Boolean)
+    .join('  ')
 
   const toolLabel = (group: Group) => {
     const { duration, label } = splitToolDuration(String(group.content))
@@ -1078,7 +1090,7 @@ export const ToolTrail = memo(function ToolTrail({
     panels.push({
       header: (
         <Chevron
-          count={groups.length}
+          count={visibleGroups.length}
           onClick={shift => {
             if (shift) {
               expandAll()
@@ -1087,7 +1099,7 @@ export const ToolTrail = memo(function ToolTrail({
             }
           }}
           open={openTools}
-          suffix={toolTokensLabel}
+          suffix={actionFeedSuffix || undefined}
           t={t}
           title="Action feed"
         />
@@ -1096,8 +1108,8 @@ export const ToolTrail = memo(function ToolTrail({
       open: openTools,
       render: rails => (
         <Box flexDirection="column">
-          {groups.map((group, index) => {
-            const branch: TreeBranch = index === groups.length - 1 ? 'last' : 'mid'
+          {visibleGroups.map((group, index) => {
+            const branch: TreeBranch = index === visibleGroups.length - 1 ? 'last' : 'mid'
             const childRails = nextTreeRails(rails, branch)
             const hasInlineSubagents = inlineDelegateKey === group.key
 

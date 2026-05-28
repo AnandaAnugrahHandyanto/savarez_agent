@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import { canFastAppendShape, canFastBackspaceShape, supportsFastEchoTerminal } from '../components/textInput.js'
+import {
+  canFastAppendShape,
+  canFastBackspaceShape,
+  containsHangulImeCommit,
+  normalizeImeTerminatorOrder,
+  shouldDeferImeTerminator,
+  supportsFastEchoTerminal
+} from '../components/textInput.js'
 
 // The fast-echo path bypasses Ink and writes characters directly to stdout
 // for the common case of typing plain English at the end of the line. These
@@ -16,6 +23,33 @@ import { canFastAppendShape, canFastBackspaceShape, supportsFastEchoTerminal } f
 //   - #5221  TUI input box renders incorrectly for CJK / East-Asian wide
 //   - #7443  CLI TUI renders and deletes Chinese characters incorrectly
 //   - #17602 / #17603  Chinese text scattering / ghosting
+
+describe('IME terminator ordering', () => {
+  it('moves leading punctuation after a following Hangul commit', () => {
+    expect(normalizeImeTerminatorOrder('.돼')).toBe('돼.')
+    expect(normalizeImeTerminatorOrder('!돼')).toBe('돼!')
+    expect(normalizeImeTerminatorOrder('?돼')).toBe('돼?')
+  })
+
+  it('does not rewrite ordinary ASCII chunks, spaces, or already-correct Korean text', () => {
+    expect(normalizeImeTerminatorOrder('.done')).toBe('.done')
+    expect(normalizeImeTerminatorOrder(' 돼')).toBe(' 돼')
+    expect(normalizeImeTerminatorOrder('돼.')).toBe('돼.')
+  })
+
+  it('identifies short ASCII IME terminators for brief deferral', () => {
+    expect(shouldDeferImeTerminator('.')).toBe(true)
+    expect(shouldDeferImeTerminator('!')).toBe(true)
+    expect(shouldDeferImeTerminator(' ')).toBe(true)
+    expect(shouldDeferImeTerminator('a')).toBe(false)
+    expect(shouldDeferImeTerminator('....')).toBe(false)
+  })
+
+  it('recognizes Hangul commit text', () => {
+    expect(containsHangulImeCommit('돼')).toBe(true)
+    expect(containsHangulImeCommit('abc')).toBe(false)
+  })
+})
 
 describe('canFastAppendShape', () => {
   const COLS = 40

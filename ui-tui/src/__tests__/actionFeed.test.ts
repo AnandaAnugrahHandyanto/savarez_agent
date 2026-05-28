@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { actionStatusGlyph, foldActionDetail, parseActionCall } from '../lib/actionFeed.js'
+import { actionStatusGlyph, foldActionDetail, parseActionCall, selectVisibleActionFeedItems } from '../lib/actionFeed.js'
 
 describe('actionFeed formatter', () => {
   it.each([
@@ -30,5 +30,29 @@ describe('actionFeed formatter', () => {
     expect(actionStatusGlyph('running')).toBe('●')
     expect(actionStatusGlyph('success')).toBe('✓')
     expect(actionStatusGlyph('error')).toBe('✗')
+  })
+
+  it('limits visible actions to important and recent items', () => {
+    const actions = [
+      { label: 'Read File("a")', status: 'success' as const },
+      { label: 'Search Files("b")', status: 'success' as const },
+      { label: 'Read File("c")', status: 'success' as const },
+      { label: 'Patch("src/app.ts")', status: 'success' as const },
+      { label: 'Search Files("d")', status: 'success' as const },
+      { label: 'Todo', status: 'success' as const },
+      { label: 'Read File("e")', status: 'success' as const },
+      { label: 'Terminal("npm test")', status: 'running' as const }
+    ]
+
+    const selected = selectVisibleActionFeedItems(actions)
+
+    expect(selected.hidden).toBe(3)
+    expect(selected.items.map(item => item.label)).toEqual([
+      'Patch("src/app.ts")',
+      'Search Files("d")',
+      'Todo',
+      'Read File("e")',
+      'Terminal("npm test")'
+    ])
   })
 })

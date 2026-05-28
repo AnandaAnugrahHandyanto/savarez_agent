@@ -2,6 +2,8 @@ import { compactPreview } from './text.js'
 
 export type ActionStatus = 'error' | 'running' | 'success'
 
+export const ACTION_FEED_VISIBLE_LIMIT = 5
+
 export interface ParsedActionCall {
   action: string
   subject: string
@@ -110,4 +112,45 @@ export const foldActionDetail = (detail: string, maxLines = 4, maxChars = 420): 
 
   const hiddenLines = Math.max(0, lines.length - visible.length)
   return { hiddenLines, preview: visible.join('\n') }
+}
+
+export interface ActionFeedItemLike {
+  label: string
+  status: ActionStatus
+}
+
+const IMPORTANT_ACTION_LABEL_RE = /^(?:Browser (?:Click|Navigate|Type)|Delegate Task|Execute Code|Patch|Terminal|Todo|Write File)/
+
+export const isImportantActionLabel = (label: string): boolean => IMPORTANT_ACTION_LABEL_RE.test(label)
+
+export const selectVisibleActionFeedItems = <T extends ActionFeedItemLike>(
+  items: readonly T[],
+  limit = ACTION_FEED_VISIBLE_LIMIT
+): { hidden: number; items: T[] } => {
+  if (items.length <= limit) {
+    return { hidden: 0, items: [...items] }
+  }
+
+  const keep = new Set<number>()
+
+  items.forEach((item, index) => {
+    if (item.status !== 'success' || isImportantActionLabel(item.label)) {
+      keep.add(index)
+    }
+  })
+
+  for (let index = Math.max(0, items.length - 2); index < items.length; index += 1) {
+    keep.add(index)
+  }
+
+  for (let index = items.length - 1; keep.size < Math.min(limit, items.length) && index >= 0; index -= 1) {
+    keep.add(index)
+  }
+
+  const selected = [...keep].sort((a, b) => a - b).slice(-limit)
+
+  return {
+    hidden: Math.max(0, items.length - selected.length),
+    items: selected.map(index => items[index]!)
+  }
 }

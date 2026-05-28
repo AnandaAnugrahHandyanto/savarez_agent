@@ -25,7 +25,7 @@ import { FpsOverlay } from './fpsOverlay.js'
 import { HelpHint } from './helpHint.js'
 import { MessageLine } from './messageLine.js'
 import { QueuedMessages } from './queuedMessages.js'
-import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
+import { StreamingAssistant } from './streamingAssistant.js'
 import { TextInput, type TextInputMouseApi } from './textInput.js'
 
 const PromptPrefix = memo(function PromptPrefix({
@@ -60,21 +60,6 @@ const TranscriptPane = memo(function TranscriptPane({
   transcript
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'transcript'>) {
   const ui = useStore($uiState)
-
-  // LiveTodoPanel rides as a child of the latest user-message row so it
-  // visually belongs to the prompt and follows it during scroll. -1 when
-  // empty → row.index === -1 is always false → no render.
-  const lastUserIdx = useMemo(() => {
-    const items = transcript.historyItems
-
-    for (let i = items.length - 1; i >= 0; i--) {
-      if (items[i].role === 'user') {
-        return i
-      }
-    }
-
-    return -1
-  }, [transcript.historyItems])
 
   // Index of the first user-role message; every later user message gets a
   // small dash above it so multi-turn transcripts visually segment by
@@ -130,7 +115,6 @@ const TranscriptPane = memo(function TranscriptPane({
                 />
               )}
 
-              {row.index === lastUserIdx && <LiveTodoPanel />}
             </Box>
           ))}
 
