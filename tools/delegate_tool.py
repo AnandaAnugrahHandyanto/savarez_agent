@@ -1207,8 +1207,22 @@ def _resolve_model_strategy_credentials(
     if strategy.get("mode") == "fallback":
         chain = list(strategy.get("chain") or [])
         if chain:
-            primary_ref = str(strategy.get("primary") or chain[0] or model_ref).strip()
-            for ref in chain:
+            configured_primary = str(strategy.get("primary") or chain[0] or model_ref).strip()
+            try:
+                from agent.model_health import is_model_in_cooldown
+
+                healthy_chain = [ref for ref in chain if not is_model_in_cooldown(str(ref))]
+            except Exception:
+                healthy_chain = chain
+            if not healthy_chain:
+                healthy_chain = chain
+            primary_ref = str(
+                configured_primary
+                if configured_primary in healthy_chain
+                else healthy_chain[0]
+            ).strip()
+            strategy["active_primary"] = primary_ref
+            for ref in healthy_chain:
                 ref = str(ref or "").strip()
                 if not ref or ref == primary_ref:
                     continue
@@ -2468,6 +2482,11 @@ def _build_child_agent(
     child._subagent_isolation_error = _isolation_error
     child._subagent_model_strategy = model_strategy or {}
     child._subagent_model_fallback_chain = list(model_fallback_chain or [])
+    child._current_model_ref = (
+        (model_strategy or {}).get("active_primary")
+        or (model_strategy or {}).get("primary")
+        or (profile or {}).get("model_ref")
+    )
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.

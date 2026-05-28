@@ -80,12 +80,22 @@ function sourceTone(source: string): "success" | "warning" | "secondary" | "dest
 
 function ModelLabel({ model }: { model?: ManagedModelEntry }) {
   if (!model) return <span className="text-muted-foreground">Unknown model</span>;
+  const health = model.health;
+  const cooldown = health?.status === "cooldown";
   return (
     <span className="min-w-0">
       <span className="block truncate font-medium">{model.model_ref}</span>
       <span className="block truncate text-[11px] text-muted-foreground">
         {model.provider} / {model.model}
       </span>
+      {health ? (
+        <span className="mt-0.5 block text-[11px] text-muted-foreground">
+          <Badge tone={cooldown ? "warning" : "success"}>{cooldown ? "cooldown" : "healthy"}</Badge>
+          {cooldown && health.cooldown_remaining_seconds ? (
+            <span className="ml-1">{Math.ceil(health.cooldown_remaining_seconds / 60)}m · {health.reason || "unknown"}</span>
+          ) : null}
+        </span>
+      ) : null}
     </span>
   );
 }

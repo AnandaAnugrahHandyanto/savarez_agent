@@ -278,6 +278,52 @@ def test_managed_agent_fallback_chain_passes_to_child_agent(tmp_path, monkeypatc
     ]
 
 
+def test_managed_agent_strategy_skips_unhealthy_primary_model(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek")
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "sk-opencode")
+    _write_managed_agents_yaml(tmp_path)
+    _write_models_yaml(tmp_path)
+    parent = _make_parent()
+
+    from agent.model_health import mark_model_unhealthy
+
+    mark_model_unhealthy("deepseek_pro", reason="rate_limit", now=1000)
+
+    with (
+        patch("agent.model_health.time.time", return_value=1001),
+        patch("hermes_cli.runtime_provider.resolve_runtime_provider") as mock_runtime,
+        patch("tools.delegate_tool._build_child_agent") as mock_build,
+        patch("tools.delegate_tool._run_single_child") as mock_run,
+    ):
+        mock_runtime.side_effect = lambda requested, explicit_api_key=None, explicit_base_url=None, target_model=None: {
+            "provider": requested,
+            "base_url": explicit_base_url,
+            "api_key": explicit_api_key,
+            "api_mode": "chat_completions",
+        }
+        mock_build.return_value = MagicMock()
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "done",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
+        }
+
+        delegate_task(
+            tasks=[{"goal": "test", "agent_id": "低成本快工"}],
+            parent_agent=parent,
+        )
+
+    call = mock_build.call_args.kwargs
+    assert call["model"] == "deepseek-v4-flash"
+    assert call["override_provider"] == "opencode-go"
+    assert call["model_strategy"]["active_primary"] == "opencode_go_deepseek_flash"
+    assert call["model_fallback_chain"] == []
+
+
 def test_claude_agent_uses_external_claude_code_cli_runtime(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

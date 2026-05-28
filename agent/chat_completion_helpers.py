@@ -884,8 +884,23 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             f"{fb_model} via {fb_provider}"
         )
         reason_value = getattr(reason, "value", None) or str(reason or "unknown")
+        old_model_ref = getattr(agent, "_current_model_ref", None)
+        if old_model_ref:
+            try:
+                from agent.model_health import mark_model_unhealthy
+
+                mark_model_unhealthy(
+                    str(old_model_ref),
+                    reason=reason_value,
+                    provider=str(old_provider or ""),
+                    model=str(old_model or ""),
+                    base_url=str(old_base_url or ""),
+                )
+            except Exception:
+                logging.debug("Failed to mark model_ref %s unhealthy", old_model_ref, exc_info=True)
         activation = {
             "from_model": old_model,
+            "from_model_ref": old_model_ref,
             "from_provider": old_provider,
             "from_base_url": old_base_url,
             "to_model": fb_model,
@@ -902,6 +917,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             history = []
         history.append(activation)
         agent._fallback_activation_history = history[-20:]
+        if fb.get("model_ref"):
+            agent._current_model_ref = fb.get("model_ref")
         logging.info(
             "Fallback activated: %s → %s (%s)",
             old_model, fb_model, fb_provider,

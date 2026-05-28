@@ -790,6 +790,13 @@ export interface ManagedModelEntry {
   model: string;
   role: string;
   status: string;
+  health?: {
+    status?: string;
+    reason?: string;
+    cooldown_until?: number;
+    cooldown_remaining_seconds?: number;
+    last_failure_at?: number;
+  };
   tokens_per_million: number | null;
   notes: string;
   subscription: SubscriptionStatus;

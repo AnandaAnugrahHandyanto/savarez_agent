@@ -1617,6 +1617,10 @@ async def get_managed_agents(days: int = 30):
         days = max(1, min(int(days or 30), 365))
         models_cfg = _load_models_config()
         sub_cfg = _load_subscription_config()
+        try:
+            from agent.model_health import get_model_health
+        except Exception:
+            get_model_health = None  # type: ignore[assignment]
         registry = load_agent_registry(_AGENTS_CONFIG_PATH)
         model_usage, model_totals = _model_usage_by_model(days)
         agent_usage, attribution = _agent_usage_from_events(days)
@@ -1627,12 +1631,14 @@ async def get_managed_agents(days: int = 30):
                 continue
             subscription = _subscription_for_model(str(model_ref), cfg, sub_cfg)
             usage = model_usage.get((str(cfg.get("model") or ""), str(cfg.get("provider") or "")))
+            health = get_model_health(str(model_ref)) if get_model_health else {"status": "unknown"}
             models.append({
                 "model_ref": str(model_ref),
                 "provider": str(cfg.get("provider") or ""),
                 "model": str(cfg.get("model") or ""),
                 "role": str(cfg.get("role") or ""),
                 "status": str(cfg.get("status") or "active"),
+                "health": health,
                 "tokens_per_million": cfg.get("tokens_per_million"),
                 "notes": str(cfg.get("notes") or ""),
                 "subscription": subscription,
