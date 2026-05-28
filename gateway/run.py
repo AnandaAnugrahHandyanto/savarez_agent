@@ -2715,6 +2715,12 @@ class GatewayRunner:
         except Exception:
             pass
 
+    async def _runtime_heartbeat_watcher(self, interval: float = 30.0) -> None:
+        """Keep the local runtime heartbeat fresh while the gateway is alive."""
+        while self._running:
+            self._update_runtime_status("running")
+            await asyncio.sleep(interval)
+
     # ------------------------------------------------------------------
     # Per-platform circuit breaker (pause/resume) — used by the reconnect
     # watcher when a retryable failure recurs past a threshold, and by the
@@ -4376,6 +4382,7 @@ class GatewayRunner:
             logger.error("Recovered watcher setup error: %s", e)
 
         # Start background session expiry watcher to finalize expired sessions
+        asyncio.create_task(self._runtime_heartbeat_watcher())
         asyncio.create_task(self._session_expiry_watcher())
 
         # Start background kanban notifier — delivers `completed`, `blocked`,
