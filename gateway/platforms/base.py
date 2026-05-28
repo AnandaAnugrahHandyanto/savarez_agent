@@ -3780,6 +3780,15 @@ class BasePlatformAdapter(ABC):
                 # where Telegram's sendPhoto recompression destroys legibility.
                 force_document_attachments = "[[as_document]]" in response
 
+                # Preserve the pre-extract response so we can recover from a
+                # pipeline that silently strips a non-empty tool-using reply
+                # down to empty text (#29346).  Tool-using responses on Discord
+                # were getting reduced to "" by the extract_* helpers when no
+                # image / media / local-file attachment was produced, which
+                # bypassed the ``if text_content:`` send guard below and
+                # dropped the final answer with no error logged.
+                _response_pre_extract = response
+
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
                 media_files = self.filter_media_delivery_paths(media_files)
@@ -3808,7 +3817,36 @@ class BasePlatformAdapter(ABC):
                     local_files = self.filter_local_delivery_paths(local_files)
                     if local_files:
                         logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
-                
+
+                # Recover from "response stripped to empty" on Discord (#29346).
+                # If the extract pipeline reduced a non-empty reply to "" but
+                # produced no native attachment to deliver in its place, fall
+                # back to sending a sanitized copy of the original response so
+                # the user actually receives the answer.  Scoped to Discord
+                # because that's where the reproducer is confirmed; other
+                # adapters keep current behavior to avoid unintended
+                # regressions in their delivery pipelines.
+                if (
+                    self.platform == Platform.DISCORD
+                    and not text_content
+                    and not images
+                    and not local_files
+                    and not media_files
+                    and _response_pre_extract
+                    and _response_pre_extract.strip()
+                ):
+                    _fallback_text = _response_pre_extract
+                    _fallback_text = _fallback_text.replace("[[audio_as_voice]]", "")
+                    _fallback_text = _fallback_text.replace("[[as_document]]", "")
+                    _fallback_text = re.sub(r"MEDIA:\s*\S+", "", _fallback_text).strip()
+                    if _fallback_text:
+                        logger.warning(
+                            "[%s] Response stripped to empty after extract pipeline "
+                            "(orig=%d chars). Sending raw response as fallback.",
+                            self.name, len(_response_pre_extract),
+                        )
+                        text_content = _fallback_text
+
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
                 # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
