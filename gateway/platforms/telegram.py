@@ -65,6 +65,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.approval_brief import format_exec_approval_brief_text
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -2592,12 +2593,17 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
+            approval_data = (metadata or {}).get("approval_data") if isinstance(metadata, dict) else None
+            brief_text = format_exec_approval_brief_text(command, description, approval_data)
             cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
+            if len(brief_text) > 3800:
+                brief_text = brief_text[:3800] + "..."
             text = (
-                f"⚠️ <b>Command Approval Required</b>\n\n"
-                f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
-                f"Reason: {_html.escape(description)}"
+                "⚠️ <b>Command Approval Required</b>\n\n"
+                f"<pre>{_html.escape(brief_text)}</pre>"
             )
+            if cmd_preview not in brief_text:
+                text += f"\n\n<pre>{_html.escape(cmd_preview)}</pre>"
 
             # Resolve thread context for thread replies
             thread_id = self._metadata_thread_id(metadata)
