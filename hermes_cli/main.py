@@ -10892,7 +10892,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
         "send", "sessions", "setup",
-        "skills", "slack", "status", "tools", "uninstall", "update",
+        "skills", "slack", "squad", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
@@ -14043,6 +14043,57 @@ Examples:
         help="Filter by component: gateway, agent, tools, cli, cron",
     )
     logs_parser.set_defaults(func=cmd_logs)
+
+    # =========================================================================
+    # squad command — tmux-backed multi-session Hermes dashboard
+    # =========================================================================
+    from hermes_cli.squad import cmd_squad
+
+    squad_parser = subparsers.add_parser(
+        "squad",
+        help="Manage multiple Hermes sessions in one terminal (tmux-backed)",
+        description=(
+            "Launch a claude-squad-style terminal dashboard for multiple Hermes "
+            "sessions. Each session runs in its own tmux session; by default new "
+            "sessions launch `hermes --worktree` for isolated repo work."
+        ),
+    )
+    squad_parser.add_argument(
+        "squad_action",
+        nargs="?",
+        choices=["ui", "list", "new", "attach", "kill", "reset"],
+        default=None,
+        help="Action to run (default: interactive dashboard)",
+    )
+    squad_parser.add_argument(
+        "identifier",
+        nargs="?",
+        help="Session id/title/tmux name for attach or kill",
+    )
+    squad_parser.add_argument("--name", help="Name for `hermes squad new`")
+    squad_parser.add_argument("--prompt", help="Initial prompt to send after the session starts")
+    squad_parser.add_argument("--cwd", help="Working directory for new sessions (default: current directory)")
+    squad_parser.add_argument(
+        "--program",
+        help="Program to run in each new tmux session instead of Hermes (advanced; shell-like string)",
+    )
+    squad_parser.add_argument(
+        "--no-worktree",
+        action="store_true",
+        help="Do not append --worktree to the default Hermes command",
+    )
+    squad_parser.add_argument(
+        "--attach",
+        action="store_true",
+        help="With `new`, attach to the tmux session immediately after creating it",
+    )
+    squad_parser.add_argument(
+        "--hermes-arg",
+        action="append",
+        default=None,
+        help="Extra argument to append to the Hermes command for new sessions (repeatable)",
+    )
+    squad_parser.set_defaults(func=cmd_squad)
 
     # =========================================================================
     # Parse and execute

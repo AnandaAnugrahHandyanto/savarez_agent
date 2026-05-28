@@ -63,6 +63,7 @@ Examples:
     hermes gateway install        Install gateway background service
     hermes sessions list          List past sessions
     hermes sessions browse        Interactive session picker
+    hermes squad                  Manage multiple live Hermes sessions in one terminal
     hermes sessions rename ID T   Rename/title a session
     hermes logs                   View agent.log (last 50 lines)
     hermes logs -f                Follow agent.log in real time

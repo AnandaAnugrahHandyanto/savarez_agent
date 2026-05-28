@@ -93,6 +93,51 @@ Each session is tagged with its source platform:
 | `cron` | Scheduled cron jobs |
 | `batch` | Batch processing runs |
 
+## Hermes Squad: Multiple Live Sessions in One Terminal
+
+`hermes squad` launches a tmux-backed dashboard for running several Hermes
+sessions from one terminal, following the same practical pattern as
+Claude Squad: one manager UI, one tmux session per agent, and isolated work by
+default.
+
+```bash
+# Open the interactive dashboard
+hermes squad
+
+# Start a named background Hermes session and return to your shell
+hermes squad new --name backend --prompt "Build the API skeleton"
+
+# Show running squad sessions
+hermes squad list
+
+# Attach to a session by id prefix, title, or tmux session name
+hermes squad attach backend
+
+# Kill one session, or reset all squad-managed tmux sessions
+hermes squad kill backend
+hermes squad reset
+```
+
+Inside the dashboard:
+
+| Key | Action |
+|-----|--------|
+| `n` | Start a new Hermes session |
+| `N` | Start a new session and send an initial prompt |
+| `Enter` / `o` | Attach to the selected tmux session |
+| `Ctrl-b d` | Detach from tmux and return to the dashboard/shell |
+| `D` | Kill the selected session |
+| `j`/`k` or arrows | Move between sessions |
+| `r` | Refresh status and prune dead sessions |
+| `q` | Quit the dashboard without killing sessions |
+
+New sessions run `hermes --worktree` by default so multiple coding agents can
+work from the same repository without fighting over the same checkout. Pass
+`--no-worktree` if you want sessions to share the current working tree, or
+`--program "..."` to run another local agent command in the same manager.
+Squad metadata lives under `~/.hermes/squad/`; the actual live terminals are
+tmux sessions named `hermes_squad_*`.
+
 ## CLI Session Resume
 
 Resume previous conversations from the CLI using `--continue` or `--resume`:
