@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -285,6 +285,20 @@ CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+
+CREATE TABLE IF NOT EXISTS incidents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    check_name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    message TEXT,
+    detail_json TEXT,
+    fix TEXT,
+    timestamp REAL NOT NULL,
+    resolved_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_incidents_check_name ON incidents(check_name);
+CREATE INDEX IF NOT EXISTS idx_incidents_timestamp ON incidents(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents(status);
 """
 
 FTS_SQL = """
@@ -338,6 +352,38 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE ON message
     INSERT INTO messages_fts_trigram(rowid, content) VALUES (
         new.id,
         COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+    );
+END;
+"""
+
+INCIDENTS_FTS_SQL = """
+CREATE VIRTUAL TABLE IF NOT EXISTS incidents_fts USING fts5(
+    check_name, status, message, fix,
+    tokenize='porter unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS incidents_fts_insert AFTER INSERT ON incidents BEGIN
+    INSERT INTO incidents_fts(rowid, check_name, status, message, fix) VALUES (
+        new.id,
+        new.check_name,
+        new.status,
+        COALESCE(new.message, ''),
+        COALESCE(new.fix, '')
+    );
+END;
+
+CREATE TRIGGER IF NOT EXISTS incidents_fts_delete AFTER DELETE ON incidents BEGIN
+    DELETE FROM incidents_fts WHERE rowid = old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS incidents_fts_update AFTER UPDATE ON incidents BEGIN
+    DELETE FROM incidents_fts WHERE rowid = old.id;
+    INSERT INTO incidents_fts(rowid, check_name, status, message, fix) VALUES (
+        new.id,
+        new.check_name,
+        new.status,
+        COALESCE(new.message, ''),
+        COALESCE(new.fix, '')
     );
 END;
 """
@@ -698,6 +744,22 @@ class SessionDB:
                     "COALESCE(tool_calls, '') "
                     "FROM messages"
                 )
+            if current_version < 14:
+                # v14: incidents FTS5 table for operational failure search.
+                # Virtual table created unconditionally below, but existing
+                # rows need backfill.
+                _fts_incidents_exists = True
+                try:
+                    cursor.execute("SELECT * FROM incidents_fts LIMIT 0")
+                except sqlite3.OperationalError:
+                    _fts_incidents_exists = False
+                if not _fts_incidents_exists:
+                    cursor.executescript(INCIDENTS_FTS_SQL)
+                    cursor.execute(
+                        "INSERT INTO incidents_fts(rowid, check_name, status, message, fix) "
+                        "SELECT id, check_name, status, COALESCE(message, ''), COALESCE(fix, '') "
+                        "FROM incidents"
+                    )
             if current_version < SCHEMA_VERSION:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
@@ -724,6 +786,12 @@ class SessionDB:
             cursor.execute("SELECT * FROM messages_fts_trigram LIMIT 0")
         except sqlite3.OperationalError:
             cursor.executescript(FTS_TRIGRAM_SQL)
+
+        # Incidents FTS5 for operational failure search
+        try:
+            cursor.execute("SELECT * FROM incidents_fts LIMIT 0")
+        except sqlite3.OperationalError:
+            cursor.executescript(INCIDENTS_FTS_SQL)
 
         self._conn.commit()
 
@@ -3311,4 +3379,131 @@ class SessionDB:
                 (error[:500], session_id),
             )
         self._execute_write(_do)
+
+    # =========================================================================
+    # Incident store — operational failure memory with FTS5 search
+    # =========================================================================
+
+    def record_incident(
+        self,
+        check_name: str,
+        status: str,
+        message: str | None = None,
+        detail: dict | None = None,
+    ) -> int:
+        """Record an operational incident. Returns the new incident id.
+
+        Args:
+            check_name: Name of the check that generated this incident
+                (e.g. "self_config_health", "skills_integrity").
+            status: One of "ok", "degraded", "failed".
+            message: Human-readable description of what happened.
+            detail: Optional structured data as a dict (stored as JSON).
+        """
+        def _do(conn):
+            cur = conn.execute(
+                "INSERT INTO incidents (check_name, status, message, detail_json, timestamp) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    check_name,
+                    status,
+                    message,
+                    json.dumps(detail) if detail else None,
+                    time.time(),
+                ),
+            )
+            return cur.lastrowid
+        return self._execute_write(_do)
+
+    def search_incidents(self, query: str, limit: int = 10) -> list[dict]:
+        """Search past incidents using FTS5. Returns list of incident dicts.
+
+        Ranks by BM25 relevance. Useful for finding similar past failures
+        when a check or tool errors out.
+        """
+        try:
+            cur = self._conn.execute(
+                "SELECT i.*, rank FROM incidents_fts f "
+                "JOIN incidents i ON i.id = f.rowid "
+                "WHERE incidents_fts MATCH ? "
+                "ORDER BY rank "
+                "LIMIT ?",
+                (query, limit),
+            )
+            return [dict(r) for r in cur.fetchall()]
+        except sqlite3.OperationalError:
+            # FTS table doesn't exist yet (fresh DB, not initialized)
+            return []
+
+    def get_recent_incidents(
+        self, limit: int = 20, status_filter: str | None = None
+    ) -> list[dict]:
+        """Return the most recent incidents, newest first.
+
+        Args:
+            limit: Max incidents to return.
+            status_filter: Optional filter — "failed", "degraded", or "ok".
+        """
+        sql = "SELECT * FROM incidents"
+        params: list = []
+        if status_filter:
+            sql += " WHERE status = ?"
+            params.append(status_filter)
+        sql += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+        try:
+            cur = self._conn.execute(sql, params)
+            return [dict(r) for r in cur.fetchall()]
+        except Exception:
+            return []
+
+    def record_fix(self, incident_id: int, fix_text: str) -> bool:
+        """Attach a fix description to an existing incident. Returns True if found."""
+        def _do(conn):
+            cur = conn.execute(
+                "UPDATE incidents SET fix = ? WHERE id = ?",
+                (fix_text, incident_id),
+            )
+            return cur.rowcount > 0
+        return self._execute_write(_do)
+
+    def resolve_incident(self, incident_id: int) -> bool:
+        """Mark an incident as resolved. Returns True if found."""
+        def _do(conn):
+            cur = conn.execute(
+                "UPDATE incidents SET resolved_at = ? WHERE id = ? AND resolved_at IS NULL",
+                (time.time(), incident_id),
+            )
+            return cur.rowcount > 0
+        return self._execute_write(_do)
+
+    def get_incident_counts(self) -> list[dict]:
+        """Return incident counts grouped by check_name and status.
+
+        Returns:
+            List of dicts: {check_name, status, count, latest_timestamp}.
+        """
+        try:
+            cur = self._conn.execute(
+                "SELECT check_name, status, COUNT(*) as count, "
+                "MAX(timestamp) as latest_timestamp "
+                "FROM incidents GROUP BY check_name, status "
+                "ORDER BY latest_timestamp DESC"
+            )
+            return [dict(r) for r in cur.fetchall()]
+        except Exception:
+            return []
+
+    def get_unresolved_incidents(self, limit: int = 10) -> list[dict]:
+        """Return recent unresolved (no fix, not resolved) incidents."""
+        try:
+            cur = self._conn.execute(
+                "SELECT * FROM incidents "
+                "WHERE (fix IS NULL OR fix = '') AND resolved_at IS NULL "
+                "ORDER BY timestamp DESC LIMIT ?",
+                (limit,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+        except Exception:
+            return []
 
