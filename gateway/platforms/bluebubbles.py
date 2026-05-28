@@ -61,6 +61,11 @@ _TAPBACK_REMOVED = {
 # responses to stale replayed webhook events after restart / reconnect.
 _GATEWAY_GRACE = 5.0
 
+# Max message age (seconds) — any message whose dateCreated is more than this
+# many seconds before the current time is dropped. This prevents responding to
+# old messages that BB re-sends after a period of inactivity / reconnection.
+_MAX_MESSAGE_AGE = 60.0
+
 # Webhook event types that carry user messages
 _MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
 
@@ -992,6 +997,20 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                         date_created_ms / 1000.0, cutoff,
                     )
                     return web.Response(text="ok")
+
+        # --- Absolute-age check: skip messages older than MAX_MESSAGE_AGE ---
+        # Catches replayed webhooks for messages from before a period of
+        # inactivity — the gateway-start check alone won't catch these since
+        # msg dateCreated may be after gateway started but still minutes old.
+        date_created_ms = record.get("dateCreated") or record.get("date_created")
+        if isinstance(date_created_ms, (int, float)):
+            age = time.time() - (date_created_ms / 1000.0)
+            if age > _MAX_MESSAGE_AGE:
+                logger.debug(
+                    "[bluebubbles] dropping old message (age %.1fs > max %.0fs)",
+                    age, _MAX_MESSAGE_AGE,
+                )
+                return web.Response(text="ok")
 
         # --- Dedup: BB fires multiple webhooks per message ---
         msg_guid = self._value(
