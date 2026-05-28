@@ -55,7 +55,7 @@ fi
 # mkdir -p block below seeds. Keep them in sync if the seed list changes.
 actual_hermes_uid=$(id -u hermes)
 needs_chown=false
-if [ -n "${HERMES_UID:-}" ] && [ "$HERMES_UID" != "10000" ]; then
+if [ -n "${HERMES_UID:-}" ] && [ "$HERMES_UID" != "$actual_hermes_uid" ]; then
     needs_chown=true
 elif [ "$(stat -c %u "$HERMES_HOME" 2>/dev/null)" != "$actual_hermes_uid" ]; then
     needs_chown=true
