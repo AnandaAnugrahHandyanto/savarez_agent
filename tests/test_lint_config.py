@@ -79,18 +79,12 @@ class TestLintWorkflow:
         """The workflow must run a blocking ``ruff check .`` step
         (one without --exit-zero) so violations fail the job."""
         content = self.WORKFLOW_PATH.read_text(encoding="utf-8")
-        # Look for the blocking step's named line + its command.  We want
-        # at least one ``ruff check .`` that does NOT have ``--exit-zero``
-        # nearby.
         import re
-        # Split into lines and find ruff check invocations
         lines = content.splitlines()
         found_blocking = False
         for i, line in enumerate(lines):
             stripped = line.strip()
             if stripped.startswith("ruff check") and "--exit-zero" not in stripped:
-                # Also check it's not piped to `|| true` which would mask
-                # the exit code.
                 window = " ".join(lines[i:i + 3])
                 if "|| true" not in window:
                     found_blocking = True
@@ -129,6 +123,26 @@ class TestToolsLintRegression:
         )
 
         assert result.returncode == 0, (
-            f"tools/cronjob_tools.py has F-class violations:\n"
+            "tools/cronjob_tools.py has F-class violations:\n"
             f"{result.stdout}\n{result.stderr}\n"
+        )
+
+    def test_browser_tool_zero_f401_violations(self):
+        """tools/browser_tool.py must have zero F401 (unused-import) violations."""
+        import subprocess
+        import sys
+
+        target = REPO_ROOT / "tools" / "browser_tool.py"
+        assert target.exists(), f"Target file not found: {target}"
+
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F401",
+             "--output-format=concise", str(target)],
+            capture_output=True, text=True, check=False,
+        )
+
+        assert result.returncode == 0, (
+            f"{target} has F401 violation(s):\n{result.stdout}" + (
+                f"\n{result.stderr}" if result.stderr else ""
+            )
         )
