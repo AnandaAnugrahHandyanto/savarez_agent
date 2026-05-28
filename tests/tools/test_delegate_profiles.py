@@ -1,4 +1,5 @@
 """Tests for delegate_task profile support."""
+import json
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -203,3 +204,178 @@ class TestBuildChildAgentProxyStub:
             if "proxy" in str(call).lower() and "v1" in str(call).lower()
         ]
         assert len(proxy_warnings) == 0
+
+
+def _mock_child():
+    child = MagicMock()
+    child.run_conversation.return_value = {
+        "final_response": "done", "completed": True, "api_calls": 1
+    }
+    return child
+
+
+class TestDelegateTaskProfileRouting:
+
+    @patch("tools.delegate_tool._load_config", return_value={"max_iterations": 10, **_PROFILE_CFG})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_profile_none_uses_default_creds(self, mock_creds, _mock_cfg):
+        """No profile → _resolve_delegation_credentials called with cfg dict."""
+        mock_creds.return_value = {
+            "model": "gpt-4o", "provider": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "sk-test", "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent()
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = _mock_child()
+            delegate_task(goal="Do work", parent_agent=parent)
+        mock_creds.assert_called_once()
+
+    @patch("tools.delegate_tool._load_config", return_value={"max_iterations": 10, **_PROFILE_CFG})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_api_profile_passes_profile_cfg_to_creds(self, mock_creds, _mock_cfg):
+        """API profile → _resolve_delegation_credentials called with profile dict."""
+        mock_creds.return_value = {
+            "model": "deepseek-v4-flash", "provider": "deepseek",
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key": "sk-ds", "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent()
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = _mock_child()
+            delegate_task(goal="Write code", profile="coder", parent_agent=parent)
+
+        call_cfg = mock_creds.call_args[0][0]
+        assert call_cfg.get("model") == "deepseek-v4-flash"
+        assert call_cfg.get("provider") == "deepseek"
+
+    @patch("tools.delegate_tool._load_config", return_value={"max_iterations": 10, **_PROFILE_CFG})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_acp_profile_uses_acp_command_not_api_creds(self, mock_creds, _mock_cfg):
+        """ACP profile → acp_command passed to AIAgent, no API creds lookup."""
+        mock_creds.return_value = {
+            "model": None, "provider": None,
+            "base_url": None, "api_key": None, "api_mode": None,
+        }
+        parent = _make_mock_parent()
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = _mock_child()
+            delegate_task(goal="Run via copilot", profile="copilot-runner", parent_agent=parent)
+
+        _, kwargs = MockAgent.call_args
+        assert kwargs.get("acp_command") == "copilot"
+        assert kwargs.get("acp_args") == ["--model", "claude-sonnet-4-5"]
+
+    @patch("tools.delegate_tool._load_config", return_value={"max_iterations": 10, **_PROFILE_CFG})
+    def test_unknown_profile_returns_error_before_spawn(self, _mock_cfg):
+        parent = _make_mock_parent()
+        with patch("run_agent.AIAgent") as MockAgent:
+            result = delegate_task(goal="Work", profile="nonexistent", parent_agent=parent)
+        MockAgent.assert_not_called()
+        assert "nonexistent" in result
+
+    @patch("tools.delegate_tool._load_config", return_value={"max_iterations": 10, **_PROFILE_CFG})
+    def test_unknown_profile_in_batch_blocks_all_spawns(self, _mock_cfg):
+        """Invalid profile in one batch item → no children spawned at all."""
+        parent = _make_mock_parent()
+        with patch("run_agent.AIAgent") as MockAgent:
+            result = delegate_task(tasks=[
+                {"goal": "Task A", "profile": "coder"},
+                {"goal": "Task B", "profile": "typo_profile"},
+            ], parent_agent=parent)
+        MockAgent.assert_not_called()
+        assert "typo_profile" in result
+
+    @patch("tools.delegate_tool._load_config", return_value={"max_iterations": 10, **_PROFILE_CFG})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_explicit_toolsets_beat_profile_toolsets(self, mock_creds, _mock_cfg):
+        """toolsets kwarg takes priority over profile.toolsets."""
+        mock_creds.return_value = {
+            "model": "deepseek-v4-flash", "provider": "deepseek",
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key": "sk-ds", "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["terminal", "file", "web"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = _mock_child()
+            delegate_task(
+                goal="Work",
+                profile="coder",       # profile.toolsets = ["terminal", "file"]
+                toolsets=["web"],      # explicit → should win
+                parent_agent=parent,
+            )
+        _, kwargs = MockAgent.call_args
+        assert "web" in kwargs.get("enabled_toolsets", [])
+
+    @patch("tools.delegate_tool._load_config", return_value={"max_iterations": 10, **_PROFILE_CFG})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_profile_toolsets_used_when_no_explicit(self, mock_creds, _mock_cfg):
+        """When no explicit toolsets, profile.toolsets are used (intersected with parent)."""
+        mock_creds.return_value = {
+            "model": "deepseek-v4-flash", "provider": "deepseek",
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key": "sk-ds", "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["terminal", "file", "web"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = _mock_child()
+            delegate_task(goal="Work", profile="coder", parent_agent=parent)
+
+        _, kwargs = MockAgent.call_args
+        enabled = kwargs.get("enabled_toolsets", [])
+        assert "terminal" in enabled
+        assert "file" in enabled
+        assert "web" not in enabled  # coder profile doesn't include web
+
+    @patch("tools.delegate_tool._load_config", return_value={"max_iterations": 10, **_PROFILE_CFG})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_proxy_in_profile_emits_warning(self, mock_creds, _mock_cfg):
+        """critic profile has proxy field — logger.warning must be called."""
+        mock_creds.return_value = {
+            "model": "claude-sonnet-4-20250514", "provider": "custom",
+            "base_url": "https://api.anthropic.com/v1",
+            "api_key": "sk-ant", "api_mode": "anthropic_messages",
+        }
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["terminal", "file", "web"]
+
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("tools.delegate_tool.logger") as mock_logger:
+            MockAgent.return_value = _mock_child()
+            delegate_task(goal="Review code", profile="critic", parent_agent=parent)
+
+        all_warnings = " ".join(str(c) for c in mock_logger.warning.call_args_list)
+        assert "proxy" in all_warnings.lower()
+
+    @patch("tools.delegate_tool._load_config", return_value={"max_iterations": 10, **_PROFILE_CFG})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_batch_different_profiles_each_uses_own_cfg(self, mock_creds, _mock_cfg):
+        """Batch with two profiles → credentials resolved per-task with correct cfg."""
+        call_cfgs = []
+
+        def capture_creds(cfg, parent):
+            call_cfgs.append(cfg)
+            return {
+                "model": cfg.get("model"), "provider": cfg.get("provider"),
+                "base_url": cfg.get("base_url", "https://example.com"),
+                "api_key": "sk-test", "api_mode": "chat_completions",
+            }
+
+        mock_creds.side_effect = capture_creds
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["terminal", "file", "web"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = _mock_child()
+            delegate_task(tasks=[
+                {"goal": "Write code", "profile": "coder"},
+                {"goal": "Review", "profile": "critic"},
+            ], parent_agent=parent)
+
+        models = [c.get("model") for c in call_cfgs]
+        assert "deepseek-v4-flash" in models
+        assert "claude-sonnet-4-20250514" in models
