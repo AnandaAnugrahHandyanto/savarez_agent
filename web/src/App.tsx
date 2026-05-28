@@ -1063,6 +1063,8 @@ function GatewayDot({ status }: GatewayDotProps) {
 
 function SidebarTooltip({ anchor, label }: SidebarTooltipProps) {
   const rect = anchor.getBoundingClientRect();
+  const sidebar = document.getElementById("app-sidebar");
+  const sidebarRight = sidebar?.getBoundingClientRect().right ?? rect.right;
   return createPortal(
     <span
       className={cn(
@@ -1073,7 +1075,7 @@ function SidebarTooltip({ anchor, label }: SidebarTooltipProps) {
       )}
       style={{
         top: rect.top + rect.height / 2,
-        left: rect.right + 8,
+        left: sidebarRight + 8,
         transform: "translateY(-50%)",
       }}
     >
