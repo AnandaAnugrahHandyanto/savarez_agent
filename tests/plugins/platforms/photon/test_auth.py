@@ -41,6 +41,9 @@ def tmp_hermes_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home = tmp_path / "hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("PHOTON_PROJECT_ID", raising=False)
+    monkeypatch.delenv("PHOTON_PROJECT_SECRET", raising=False)
+    monkeypatch.delenv("PHOTON_WEBHOOK_SECRET", raising=False)
     # The auth module memoises by reading get_hermes_home at call time
     # so the env var is what matters.
     return home
@@ -63,8 +66,24 @@ def test_store_and_load_project_credentials(tmp_hermes_home: Path) -> None:
     assert pid == "proj-uuid"
     assert secret == "secret-key"
 
+    env_text = (tmp_hermes_home / ".env").read_text(encoding="utf-8")
+    assert "PHOTON_PROJECT_ID=proj-uuid" in env_text
+    assert "PHOTON_PROJECT_SECRET=secret-key" in env_text
+    assert not (tmp_hermes_home / "auth.json").exists()
 
-def test_load_project_credentials_env_override(
+
+def test_load_project_credentials_reads_env_file_without_preload(
+    tmp_hermes_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    photon_auth.store_project_credentials("from-file", "secret-file")
+    monkeypatch.delenv("PHOTON_PROJECT_ID", raising=False)
+    monkeypatch.delenv("PHOTON_PROJECT_SECRET", raising=False)
+    pid, secret = photon_auth.load_project_credentials()
+    assert pid == "from-file"
+    assert secret == "secret-file"
+
+
+def test_load_project_credentials_process_env_override(
     tmp_hermes_home: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     photon_auth.store_project_credentials("from-file", "secret-file")

@@ -104,19 +104,25 @@ dashboard and save the new signing secret locally.
 
 ## Credentials
 
-Stored in `~/.hermes/auth.json` under `credential_pool`:
+The Photon dashboard token is stored in `~/.hermes/auth.json` under
+`credential_pool`:
 
 ```jsonc
 {
   "credential_pool": {
     "photon": [
       { "access_token": "<dashboard-bearer>", "issued_at": ... }
-    ],
-    "photon_project": [
-      { "project_id": "...", "project_secret": "...", "name": "Hermes Agent" }
     ]
   }
 }
+```
+
+The Spectrum project credentials used by the gateway are stored in
+`~/.hermes/.env`:
+
+```bash
+PHOTON_PROJECT_ID=...
+PHOTON_PROJECT_SECRET=...
 ```
 
 The per-URL webhook signing secret is treated like an API key and
@@ -128,8 +134,8 @@ All env vars are documented in `plugin.yaml`. The most important are:
 
 | Env var                  | Default            | Meaning                                 |
 |--------------------------|--------------------|-----------------------------------------|
-| `PHOTON_PROJECT_ID`      | from auth.json     | Spectrum project ID                     |
-| `PHOTON_PROJECT_SECRET`  | from auth.json     | Spectrum project secret (HTTP Basic)    |
+| `PHOTON_PROJECT_ID`      | (unset)            | Spectrum project ID                     |
+| `PHOTON_PROJECT_SECRET`  | (unset)            | Spectrum project secret (HTTP Basic)    |
 | `PHOTON_WEBHOOK_SECRET`  | (unset)            | Signing secret returned at register     |
 | `PHOTON_WEBHOOK_PORT`    | 8788               | Local port for the aiohttp listener     |
 | `PHOTON_WEBHOOK_PATH`    | /photon/webhook    | Path under which the listener mounts    |

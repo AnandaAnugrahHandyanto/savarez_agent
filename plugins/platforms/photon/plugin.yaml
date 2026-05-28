@@ -11,11 +11,10 @@ description: >
   not currently expose a public HTTP send endpoint).
 
   The plugin ships with a `hermes photon` CLI for the one-time login
-  + project + user setup, persists Spectrum credentials to
-  ``~/.hermes/auth.json`` under ``credential_pool.photon`` (token) and
-  ``credential_pool.photon_project`` (project id + secret), and exposes
-  Photon's free shared-line model so users can get started without a
-  paid plan.
+  + project + user setup, persists the dashboard token to
+  ``~/.hermes/auth.json`` and the Spectrum project id + secret to
+  ``~/.hermes/.env``, and exposes Photon's free shared-line model so
+  users can get started without a paid plan.
 author: NousResearch
 requires_env:
   - name: PHOTON_PROJECT_ID

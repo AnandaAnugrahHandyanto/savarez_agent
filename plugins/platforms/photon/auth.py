@@ -13,7 +13,8 @@ directly:
                     HTTP Basic with (projectId, projectSecret)
 
 The webhook receiver + Node sidecar in ``adapter.py`` consume the
-credentials this module persists to ``~/.hermes/auth.json``.
+Spectrum project credentials from Hermes' canonical ``~/.hermes/.env``.
+Only the dashboard/device token is persisted to ``~/.hermes/auth.json``.
 
 Reference docs (read at integration time):
   https://photon.codes/docs/api-reference/introduction
@@ -145,34 +146,35 @@ def store_photon_token(token: str) -> None:
     _save_auth(auth)
 
 
+def _get_hermes_env_value(key: str) -> Optional[str]:
+    """Read a Hermes env value without requiring callers to preload .env."""
+    try:
+        from hermes_cli.config import get_env_value  # type: ignore
+    except ImportError:
+        return os.getenv(key)
+    return get_env_value(key)
+
+
 def load_project_credentials() -> Tuple[Optional[str], Optional[str]]:
-    """Return ``(project_id, project_secret)`` from auth.json + env override."""
-    env_id = os.getenv("PHOTON_PROJECT_ID")
-    env_sec = os.getenv("PHOTON_PROJECT_SECRET")
-    if env_id and env_sec:
-        return env_id, env_sec
-    auth = _load_auth()
-    proj = auth.get("credential_pool", {}).get("photon_project") or []
-    if isinstance(proj, list) and proj:
-        entry = proj[0]
-        return (
-            env_id or entry.get("project_id"),
-            env_sec or entry.get("project_secret"),
-        )
-    return env_id, env_sec
+    """Return ``(project_id, project_secret)`` from Hermes' environment."""
+    return (
+        _get_hermes_env_value("PHOTON_PROJECT_ID"),
+        _get_hermes_env_value("PHOTON_PROJECT_SECRET"),
+    )
 
 
 def store_project_credentials(project_id: str, project_secret: str, **extra: Any) -> None:
-    """Persist the Spectrum project's id+secret under ``credential_pool.photon_project``."""
-    auth = _load_auth()
-    record = {
-        "project_id": project_id,
-        "project_secret": project_secret,
-        "issued_at": int(time.time()),
-    }
-    record.update(extra)
-    auth.setdefault("credential_pool", {})["photon_project"] = [record]
-    _save_auth(auth)
+    """Persist the Spectrum project's id+secret to Hermes' canonical .env."""
+    _ = extra
+    try:
+        from hermes_cli.config import save_env_value  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError(
+            "hermes_cli.config is required to save Photon credentials"
+        ) from exc
+
+    save_env_value("PHOTON_PROJECT_ID", project_id)
+    save_env_value("PHOTON_PROJECT_SECRET", project_secret)
 
 
 @contextmanager

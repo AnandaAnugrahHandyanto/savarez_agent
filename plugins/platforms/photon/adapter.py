@@ -123,7 +123,8 @@ def validate_config(cfg: PlatformConfig) -> bool:
     project_id = extra.get("project_id") or os.getenv("PHOTON_PROJECT_ID")
     project_secret = extra.get("project_secret") or os.getenv("PHOTON_PROJECT_SECRET")
     if not project_id or not project_secret:
-        # Fall back to auth.json
+        # Fall back to Hermes' .env loader; the process may not have
+        # preloaded ~/.hermes/.env into os.environ yet.
         stored_id, stored_sec = load_project_credentials()
         return bool(stored_id and stored_sec)
     return True
@@ -196,7 +197,8 @@ class PhotonAdapter(BasePlatformAdapter):
         super().__init__(config, Platform("photon"))
         extra = config.extra or {}
 
-        # Project credentials (env wins, then config.extra, then auth.json).
+        # Project credentials (process env wins, then config.extra, then
+        # Hermes' .env loader).
         stored_id, stored_sec = load_project_credentials()
         self._project_id: str = (
             os.getenv("PHOTON_PROJECT_ID")

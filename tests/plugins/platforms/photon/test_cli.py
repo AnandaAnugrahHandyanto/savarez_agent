@@ -174,6 +174,39 @@ def test_setup_new_project_flag_creates_and_stores(monkeypatch: Any) -> None:
     assert stored["extra"]["source"] == "explicit-new"
 
 
+def test_setup_new_project_writes_project_env(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("PHOTON_PROJECT_ID", raising=False)
+    monkeypatch.delenv("PHOTON_PROJECT_SECRET", raising=False)
+    _patch_setup_basics(monkeypatch)
+    monkeypatch.setattr(photon_auth, "load_project_credentials", lambda: (None, None))
+    monkeypatch.setattr(photon_auth, "list_projects", lambda _token: [])
+    monkeypatch.setattr(photon_auth, "create_project", lambda _token, *, name: {
+        "id": "dash-1",
+        "name": name,
+        "spectrumProjectId": "spectrum-1",
+        "projectSecret": "secret-1",
+        "platforms": ["imessage"],
+    })
+
+    rc = photon_cli._cmd_setup(_setup_args(new_project=True))
+
+    assert rc == 0
+    env_text = (home / ".env").read_text(encoding="utf-8")
+    assert "PHOTON_PROJECT_ID=spectrum-1" in env_text
+    assert "PHOTON_PROJECT_SECRET=secret-1" in env_text
+
+    from hermes_cli.config import get_missing_env_vars
+
+    missing = {entry["name"] for entry in get_missing_env_vars(required_only=False)}
+    assert "PHOTON_PROJECT_ID" not in missing
+    assert "PHOTON_PROJECT_SECRET" not in missing
+
+
 def test_projects_select_stores_existing_project(monkeypatch: Any) -> None:
     stored: dict[str, Any] = {}
     monkeypatch.setattr(photon_auth, "load_photon_token", lambda: "token")

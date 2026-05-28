@@ -73,9 +73,10 @@ run `hermes photon setup --new-project`. To bind Hermes to an existing
 project, use `hermes photon projects list` and
 `hermes photon projects select <project-id>`.
 
-Credentials are stored in `~/.hermes/auth.json` under
-`credential_pool.photon` (bearer token) and
-`credential_pool.photon_project` (project id + secret).
+The Photon dashboard token is stored in `~/.hermes/auth.json` under
+`credential_pool.photon`. The Spectrum project credentials used by the
+gateway are written to `~/.hermes/.env` as `PHOTON_PROJECT_ID` and
+`PHOTON_PROJECT_SECRET`.
 
 ## Registering the webhook
 
@@ -189,8 +190,8 @@ hermes photon webhook delete <webhook-id>   # remove one
 
 | Variable                  | Default            | Notes                                      |
 |---------------------------|--------------------|--------------------------------------------|
-| `PHOTON_PROJECT_ID`       | from `auth.json`   | Set by `hermes photon setup`               |
-| `PHOTON_PROJECT_SECRET`   | from `auth.json`   | Set by `hermes photon setup`               |
+| `PHOTON_PROJECT_ID`       | (unset)            | Set by `hermes photon setup`               |
+| `PHOTON_PROJECT_SECRET`   | (unset)            | Set by `hermes photon setup`               |
 | `PHOTON_WEBHOOK_SECRET`   | (unset)            | From `hermes photon webhook register`      |
 | `PHOTON_WEBHOOK_PORT`     | `8788`             | Local port for the aiohttp listener        |
 | `PHOTON_WEBHOOK_PATH`     | `/photon/webhook`  | Path under which the listener mounts       |
