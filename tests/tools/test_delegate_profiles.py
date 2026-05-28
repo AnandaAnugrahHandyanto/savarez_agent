@@ -147,3 +147,59 @@ class TestBuildChildSystemPrompt:
     def test_whitespace_only_profile_system_prompt_falls_back_to_default(self):
         result = _build_child_system_prompt("Do something", profile_system_prompt="   ")
         assert result.startswith("You are a focused subagent")
+
+
+class TestBuildChildAgentProxyStub:
+    """override_proxy is accepted and logs a warning in v1."""
+
+    @patch("tools.delegate_tool._load_config", return_value={"max_iterations": 10})
+    @patch("tools.delegate_tool.logger")
+    def test_override_proxy_warns_in_v1(self, mock_logger, _mock_cfg):
+        from tools.delegate_tool import _build_child_agent
+        parent = _make_mock_parent()
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+            _build_child_agent(
+                task_index=0,
+                goal="test",
+                context=None,
+                toolsets=["file"],
+                model="gpt-4o",
+                max_iterations=10,
+                task_count=1,
+                parent_agent=parent,
+                override_proxy="http://localhost:8119",
+            )
+        mock_logger.warning.assert_called()
+        warning_text = " ".join(
+            str(a) for call in mock_logger.warning.call_args_list for a in call[0]
+        )
+        assert "proxy" in warning_text.lower()
+        assert "v1" in warning_text.lower()
+
+    @patch("tools.delegate_tool._load_config", return_value={"max_iterations": 10})
+    def test_override_proxy_none_no_proxy_warning(self, _mock_cfg):
+        from tools.delegate_tool import _build_child_agent
+        parent = _make_mock_parent()
+
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("tools.delegate_tool.logger") as mock_logger:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="test",
+                context=None,
+                toolsets=["file"],
+                model="gpt-4o",
+                max_iterations=10,
+                task_count=1,
+                parent_agent=parent,
+                override_proxy=None,
+            )
+        proxy_warnings = [
+            call for call in mock_logger.warning.call_args_list
+            if "proxy" in str(call).lower() and "v1" in str(call).lower()
+        ]
+        assert len(proxy_warnings) == 0

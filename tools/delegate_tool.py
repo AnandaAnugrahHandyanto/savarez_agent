@@ -893,6 +893,13 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # v1 stub: stored for future async-proxy path (v2).
+    # When non-None, a warning is emitted and the proxy is NOT applied.
+    override_proxy: Optional[str] = None,
+    # Profile-supplied system prompt and constraints forwarded to
+    # _build_child_system_prompt.
+    profile_system_prompt: Optional[str] = None,
+    profile_constraints: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -905,6 +912,14 @@ def _build_child_agent(
     """
     from run_agent import AIAgent
     import uuid as _uuid
+
+    # ── Proxy warning (v1 stub) ────────────────────────────────────────
+    if override_proxy:
+        logger.warning(
+            "_build_child_agent: proxy='%s' not applied in v1 — "
+            "per-child proxy requires v2 async httpx.AsyncClient path",
+            override_proxy,
+        )
 
     # ── Role resolution ─────────────────────────────────────────────────
     # Honor the caller's role only when BOTH the kill switch and the
@@ -980,6 +995,8 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        profile_system_prompt=profile_system_prompt,
+        profile_constraints=profile_constraints,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
