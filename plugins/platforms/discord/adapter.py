@@ -4861,7 +4861,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # Prepend reply context to the message text so the agent can
         # understand what the user is responding to.
         if reply_to_text:
-            reply_context = f'[Replying to: "{reply_to_text[:200]}"]\n' if len(reply_to_text) <= 200 else f'[Replying to: "{reply_to_text[:200]}..."]\n'
+            truncated = reply_to_text[:200]
+            suffix = "…" if len(reply_to_text) > 200 else ""
+            reply_context = f'[Replying to: "{truncated}{suffix}"]\n'
             event_text = reply_context + event_text
 
         event = MessageEvent(
