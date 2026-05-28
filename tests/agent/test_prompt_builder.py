@@ -266,6 +266,30 @@ class TestBuildSkillsSystemPrompt:
         assert "Debug Python scripts" in result
         assert "available_skills" in result
 
+    def test_skill_policy_does_not_force_load_on_simple_chat(self, monkeypatch, tmp_path):
+        """The skills index should not make greetings/meta chat load arbitrary skills.
+
+        Regression for startup-context bloat: the old wording said every partially
+        relevant skill MUST be loaded before replying, which caused simple chats to
+        load large skills (for example kanban-worker) just because their category
+        appeared related to injected guidance.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "dev" / "python-debug"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: python-debug\ndescription: Debug Python scripts\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "skill_view" in result
+        assert "hermes-agent" in result
+        assert "MUST load" not in result
+        assert "Err on the side of loading" not in result
+        assert "simple greetings" in result
+        assert "do not load a skill" in result
+
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cat_dir = tmp_path / "skills" / "tools"
