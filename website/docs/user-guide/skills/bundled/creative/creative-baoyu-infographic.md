@@ -228,12 +228,13 @@ Save the assembled prompt to `prompts/infographic.md` using `write_file`.
 
 ### Step 6: Generate Image
 
-Use the `image_generate` tool with the assembled prompt from Step 5.
+Use the Hermes `image_generate` tool with the assembled prompt from Step 5. This skill is designed to prompt the configured Hermes image-generation backend, not to silently replace the generation step with a handmade/scripted graphic.
 
 - Map aspect ratio to image_generate's format: `16:9` → `landscape`, `9:16` → `portrait`, `1:1` → `square`
 - For custom ratios, pick the closest named aspect
 - On failure, auto-retry once
 - Save the resulting image URL/path to the output directory
+- If exact, readable text is more important than illustration quality, explicitly tell the user that a deterministic HTML/SVG/Pillow overlay may be better before switching away from `image_generate`. Do not substitute a scripted infographic without saying so.
 
 ### Step 7: Output Summary
 
