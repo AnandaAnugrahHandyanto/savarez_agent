@@ -257,14 +257,28 @@ class PermissionManager:
         return PlatformPermissionSnapshot(
             platform=Platform.TELEGRAM,
             approved_users=approved_users,
-            allowed_users=_string_set(extra.get("allow_from")) | _string_set(os.getenv("TELEGRAM_ALLOWED_USERS")),
+            allowed_users=(
+                _string_set(extra.get("allow_from"))
+                | _string_set(os.getenv("TELEGRAM_ALLOWED_USERS"))
+                | _string_set(os.getenv("GATEWAY_ALLOWED_USERS"))
+            ),
             group_allowed_users=_string_set(extra.get("group_allow_from")) | _string_set(os.getenv("TELEGRAM_GROUP_ALLOWED_USERS")),
             allowed_chats=_string_set(extra.get("allowed_chats")) | _string_set(os.getenv("TELEGRAM_ALLOWED_CHATS")),
-            group_allowed_chats=_string_set(extra.get("group_allowed_chats")) | _string_set(os.getenv("TELEGRAM_GROUP_ALLOWED_CHATS")),
+            group_allowed_chats=(
+                _string_set(extra.get("group_allowed_chats"))
+                | _string_set(os.getenv("TELEGRAM_GROUP_ALLOWED_CHATS"))
+                | frozenset(
+                    value for value in _string_set(os.getenv("TELEGRAM_GROUP_ALLOWED_USERS")) if value.startswith("-")
+                )
+            ),
             allowed_topics=_string_set(extra.get("allowed_topics")) | _string_set(os.getenv("TELEGRAM_ALLOWED_TOPICS")),
             free_response_chats=_string_set(extra.get("free_response_chats")) | _string_set(os.getenv("TELEGRAM_FREE_RESPONSE_CHATS")),
             mention_patterns=extra.get("mention_patterns") or os.getenv("TELEGRAM_MENTION_PATTERNS"),
-            allow_all=_bool_value(extra.get("allow_all_users"), False) or _bool_value(os.getenv("TELEGRAM_ALLOW_ALL_USERS"), False),
+            allow_all=(
+                _bool_value(extra.get("allow_all_users"), False)
+                or _bool_value(os.getenv("TELEGRAM_ALLOW_ALL_USERS"), False)
+                or _bool_value(os.getenv("GATEWAY_ALLOW_ALL_USERS"), False)
+            ),
             allow_bots=_bool_value(extra.get("allow_bots"), False),
             extra=extra,
         )

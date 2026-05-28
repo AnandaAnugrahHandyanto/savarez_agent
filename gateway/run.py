@@ -1029,6 +1029,7 @@ from gateway.session import (
     is_shared_multi_user_session,
 )
 from gateway.delivery import DeliveryRouter
+from gateway.permissions import PermissionManager, PermissionSnapshot, ReloadResult
 from gateway.platforms.base import (
     BasePlatformAdapter,
     EphemeralReply,
@@ -1846,6 +1847,16 @@ class GatewayRunner:
         # DM pairing store for code-based user authorization
         from gateway.pairing import PairingStore
         self.pairing_store = PairingStore()
+        self.permission_manager = PermissionManager(
+            config_loader=load_gateway_config,
+            pairing_store=self.pairing_store,
+        )
+        initial_permission_load = self.permission_manager.reload()
+        if not initial_permission_load.ok:
+            logger.warning(
+                "Initial gateway permission snapshot failed: %s",
+                initial_permission_load.reason,
+            )
         
         # Event hook system
         from gateway.hooks import HookRegistry
@@ -6386,6 +6397,15 @@ class GatewayRunner:
         if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK}:
             return True
 
+        if source.platform == Platform.TELEGRAM and hasattr(self, "permission_manager"):
+            try:
+                return self.permission_manager.authorize(source).allowed
+            except Exception as exc:
+                logger.warning(
+                    "Telegram permission snapshot auth failed; falling back to legacy auth: %s",
+                    exc,
+                )
+
         user_id = source.user_id
 
         # Telegram (and similar) authorize entire group/forum/channel chats
@@ -6584,6 +6604,78 @@ class GatewayRunner:
                 check_ids.add(normalized_user_id)
 
         return bool(check_ids & allowed_ids)
+
+    def _apply_permission_snapshot(self, snapshot: PermissionSnapshot) -> None:
+        """Apply a validated permission snapshot to gateway runtime references."""
+        previous_config = self.config
+        previous_session_config = getattr(self.session_store, "config", None)
+        previous_delivery_config = getattr(self.delivery_router, "config", None)
+        previous_adapter_configs = {
+            platform: adapter.config for platform, adapter in self.adapters.items()
+        }
+        try:
+            self.config = snapshot.config
+            if hasattr(self.session_store, "config"):
+                self.session_store.config = snapshot.config
+            if hasattr(self.delivery_router, "config"):
+                self.delivery_router.config = snapshot.config
+            for platform, adapter in self.adapters.items():
+                platform_config = snapshot.config.platforms.get(platform)
+                if platform_config is None:
+                    continue
+                permissions = snapshot.platforms.get(platform)
+                adapter.apply_permission_config(platform_config, permissions)
+        except Exception:
+            self.config = previous_config
+            if hasattr(self.session_store, "config"):
+                self.session_store.config = previous_session_config
+            if hasattr(self.delivery_router, "config"):
+                self.delivery_router.config = previous_delivery_config
+            for platform, adapter in self.adapters.items():
+                previous_adapter_config = previous_adapter_configs.get(platform)
+                if previous_adapter_config is not None:
+                    adapter.config = previous_adapter_config
+            raise
+
+    def _reload_gateway_permissions(self) -> ReloadResult:
+        """Reload permission state without rebuilding agents, tools, or adapters."""
+        try:
+            candidate = self.permission_manager.load_candidate()
+            self._apply_permission_snapshot(candidate)
+            self.permission_manager.commit(candidate)
+        except Exception as exc:
+            logger.warning("Gateway permission reload rejected; previous permissions retained: %s", exc)
+            return ReloadResult(False, str(exc), self.permission_manager.snapshot if getattr(self.permission_manager, "_snapshot", None) else None)
+        return ReloadResult(True, "permissions reloaded", candidate)
+
+    def _permission_reload_summary(self, snapshot: PermissionSnapshot) -> str:
+        telegram = snapshot.platforms.get(Platform.TELEGRAM)
+        if telegram is None:
+            return "Telegram: not configured"
+        return (
+            "Telegram: "
+            f"approved_users={len(telegram.approved_users)} "
+            f"allowed_users={len(telegram.allowed_users)} "
+            f"allowed_chats={len(telegram.allowed_chats)} "
+            f"group_allowed_chats={len(telegram.group_allowed_chats)} "
+            f"mention_patterns={len(telegram.mention_patterns)}"
+        )
+
+    async def _handle_reload_permissions_command(self, event: MessageEvent) -> str:
+        """Handle /reload-permissions without restarting the gateway process."""
+        result = self._reload_gateway_permissions()
+        if not result.ok:
+            return (
+                "NO-GO: permission reload rejected. Previous permissions retained.\n"
+                f"Reason: {result.reason}\n"
+                "Scope: permissions only. Model/tools/system prompt/session unchanged."
+            )
+        assert result.snapshot is not None
+        return (
+            "GO: permissions reloaded without gateway restart.\n"
+            f"{self._permission_reload_summary(result.snapshot)}\n"
+            "Scope: permissions only. Model/tools/system prompt/session unchanged."
+        )
 
     def _get_unauthorized_dm_behavior(self, platform: Optional[Platform]) -> str:
         """Return how unauthorized DMs should be handled for a platform.
@@ -7478,6 +7570,9 @@ class GatewayRunner:
 
         if canonical == "restart":
             return await self._handle_restart_command(event)
+
+        if canonical == "reload-permissions":
+            return await self._handle_reload_permissions_command(event)
         
         if canonical == "stop":
             return await self._handle_stop_command(event)
