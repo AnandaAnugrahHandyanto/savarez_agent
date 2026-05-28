@@ -329,6 +329,42 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 )
                 return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
             raise
+        except TypeError as exc:
+            err_text = str(exc)
+            sdk_output_none = "'NoneType' object is not iterable" in err_text
+            if sdk_output_none and (collected_output_items or agent._codex_streamed_text_parts):
+                # OpenAI SDK 2.24 can crash while parsing the terminal
+                # response.completed event from chatgpt.com/backend-api/codex
+                # when that event has response.output=null. The same stream
+                # has already delivered valid response.output_item.done events,
+                # so recover from those instead of failing the turn.
+                if collected_output_items:
+                    logger.debug(
+                        "Codex stream: recovered %d output items after SDK output=None parse error",
+                        len(collected_output_items),
+                    )
+                    return SimpleNamespace(
+                        output=list(collected_output_items),
+                        status="completed",
+                        model=api_kwargs.get("model"),
+                    )
+                if not has_tool_calls:
+                    assembled = "".join(agent._codex_streamed_text_parts)
+                    logger.debug(
+                        "Codex stream: recovered from SDK output=None parse error using %d text deltas (%d chars)",
+                        len(agent._codex_streamed_text_parts), len(assembled),
+                    )
+                    return SimpleNamespace(
+                        output=[SimpleNamespace(
+                            type="message",
+                            role="assistant",
+                            status="completed",
+                            content=[SimpleNamespace(type="output_text", text=assembled)],
+                        )],
+                        status="completed",
+                        model=api_kwargs.get("model"),
+                    )
+            raise
 
 
 
