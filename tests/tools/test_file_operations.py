@@ -558,6 +558,70 @@ class TestSearchFilesFallbackHiddenPaths:
         assert result.error is None
         assert set(result.files) == {str(visible_file), str(visible_nested_file)}
 
+    def test_fallback_finds_directories_matching_pattern(self, tmp_path, monkeypatch):
+        """Fallback find should return directories whose name matches the pattern.
+
+        Regression: previously _search_files used ``-type f`` which silently
+        excluded directories, breaking the tool's documented role as a ``find/ls``
+        replacement. An agent asked "what's in folder X?" would get an empty
+        result and conclude the folder didn't exist.
+        """
+        root = tmp_path / "repo"
+        root.mkdir()
+        target_dir = root / "myproject"
+        target_dir.mkdir()
+        nested_target_dir = root / "src" / "myproject"
+        nested_target_dir.mkdir(parents=True)
+        regular_file = root / "myproject.txt"
+        regular_file.write_text("x")
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+        result = ops._search_files("myproject", str(root), limit=50, offset=0)
+
+        assert result.error is None
+        assert str(target_dir) in result.files
+        assert str(nested_target_dir) in result.files
+
+    def test_rg_path_finds_directories_via_parallel_find(self, tmp_path, monkeypatch):
+        """rg-backed search should also return matching directories.
+
+        rg --files is regular-files-only; the implementation runs a parallel
+        ``find -type d`` pass to capture directories. Both files and
+        directories matching the same pattern should appear in the result.
+        """
+        root = tmp_path / "repo"
+        root.mkdir()
+        target_dir = root / "components"
+        target_dir.mkdir()
+        regular_file_in_dir = target_dir / "components"
+        regular_file_in_dir.write_text("x")
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda command: command in {"rg", "find"})
+        result = ops._search_files("components", str(root), limit=50, offset=0)
+
+        assert result.error is None
+        assert str(target_dir) in result.files
+        assert str(regular_file_in_dir) in result.files
+
+    def test_rg_path_excludes_hidden_directories(self, tmp_path, monkeypatch):
+        """The directory pass should skip hidden directories, matching rg's defaults."""
+        root = tmp_path / "repo"
+        root.mkdir()
+        visible_dir = root / "visible_target"
+        visible_dir.mkdir()
+        hidden_parent_target = root / ".hidden" / "visible_target"
+        hidden_parent_target.mkdir(parents=True)
+
+        ops = ShellFileOperations(self._make_env())
+        monkeypatch.setattr(ops, "_has_command", lambda command: command in {"rg", "find"})
+        result = ops._search_files("visible_target", str(root), limit=50, offset=0)
+
+        assert result.error is None
+        assert str(visible_dir) in result.files
+        assert str(hidden_parent_target) not in result.files
+
 
 class TestShellFileOpsWriteDenied:
     def test_write_file_denied_path(self, file_ops):

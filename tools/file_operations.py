@@ -1698,14 +1698,16 @@ class ShellFileOperations(FileOperations):
         if not has_hidden_path_ancestor:
             pagination_expr = f" | tail -n +{offset + 1} | head -n {limit}"
 
-        cmd = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
+        # Match both regular files and directories so this tool delivers the
+        # find/ls replacement contract its description promises.
+        cmd = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} \\( -type f -o -type d \\) -name {self._escape_shell_arg(search_pattern)} " \
               f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn{pagination_expr}"
 
         result = self._exec(cmd, timeout=60)
 
         if not result.stdout.strip():
             # Try without -printf (BSD find compatibility -- macOS)
-            cmd_simple = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
+            cmd_simple = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} \\( -type f -o -type d \\) -name {self._escape_shell_arg(search_pattern)} " \
                         f"2>/dev/null | sort -rn{pagination_expr}"
             result = self._exec(cmd_simple, timeout=60)
 
@@ -1742,12 +1744,16 @@ class ShellFileOperations(FileOperations):
         )
 
     def _search_files_rg(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
-        """Search for files by name using ripgrep's --files mode.
+        """Search for files and directories by name using ripgrep + find.
 
         rg --files respects .gitignore and excludes hidden directories by
         default, and uses parallel directory traversal for ~200x speedup
         over find on wide trees.  Results are sorted by modification time
         (most recently edited first) when rg >= 13.0 supports --sortr.
+
+        rg --files is regular-files-only by design; a parallel ``find -type d``
+        pass captures matching directories so this tool delivers the find/ls
+        replacement contract its description promises.
         """
         # rg --files -g uses glob patterns; wrap bare names so they match
         # at any depth (equivalent to find -name).
@@ -1776,12 +1782,24 @@ class ShellFileOperations(FileOperations):
             result = self._exec(cmd_plain, timeout=60)
             all_files = [f for f in result.stdout.strip().split('\n') if f]
 
-        page = all_files[offset:offset + limit]
+        # Directories: rg --files is files-only, so use a parallel find pass.
+        # Exclude hidden directories to match rg's default behavior.
+        cmd_dirs = (
+            f"find {self._escape_shell_arg(path)} -type d -not -path '*/.*' "
+            f"-name {self._escape_shell_arg(glob_pattern)} 2>/dev/null "
+            f"| head -n {fetch_limit}"
+        )
+        result_dirs = self._exec(cmd_dirs, timeout=60)
+        all_dirs = [d for d in result_dirs.stdout.strip().split('\n') if d]
+
+        # Files (mtime-sorted) first, then directories; dedupe preserves order.
+        combined = list(dict.fromkeys(all_files + all_dirs))
+        page = combined[offset:offset + limit]
 
         return SearchResult(
             files=page,
-            total_count=len(all_files),
-            truncated=len(all_files) >= fetch_limit,
+            total_count=len(combined),
+            truncated=len(combined) >= fetch_limit,
         )
     
     def _search_content(self, pattern: str, path: str, file_glob: Optional[str],
