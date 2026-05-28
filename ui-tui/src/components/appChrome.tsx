@@ -1,6 +1,7 @@
 import { Box, type ScrollBoxHandle, stringWidth, Text } from '@hermes/ink'
 import { type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
 
+import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
 import { fmtK } from '../lib/text.js'
@@ -10,6 +11,9 @@ import type { Msg, Usage } from '../types.js'
 
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 const STATUS_SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+
+export const VERB_PAD_LEN = Math.max(...VERBS.map(verb => verb.length)) + 1
+export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN)
 
 function ctxBarColor(pct: number | undefined, t: Theme) {
   if (pct == null) {

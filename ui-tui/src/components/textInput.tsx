@@ -40,6 +40,22 @@ const LEADING_IME_TERMINATOR_RE = /^([.,!?:;]+)([\u1100-\u11ff\u3130-\u318f\ua96
 const HANGUL_IME_COMMIT_RE = /[\u1100-\u11ff\u3130-\u318f\ua960-\ua97f\uac00-\ud7af\ud7b0-\ud7ff]/
 
 const invert = (s: string) => INV + s + INV_OFF
+const truthy = (value?: string) => /^(?:1|true|yes|on)$/i.test((value ?? '').trim())
+const falsy = (value?: string) => /^(?:0|false|no|off)$/i.test((value ?? '').trim())
+
+function parseFastEchoOverride(env: NodeJS.ProcessEnv): boolean | null {
+  const raw = env.HERMES_TUI_FAST_ECHO
+
+  if (truthy(raw)) {
+    return true
+  }
+
+  if (falsy(raw)) {
+    return false
+  }
+
+  return null
+}
 
 let _seg: Intl.Segmenter | null = null
 const seg = () => (_seg ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' }))
@@ -344,9 +360,23 @@ export function canFastBackspaceShape(current: string, cursor: number, columns?:
 }
 
 export function supportsFastEchoTerminal(env: NodeJS.ProcessEnv = process.env): boolean {
+  const explicitOverride = parseFastEchoOverride(env)
+
+  if (explicitOverride !== null) {
+    return explicitOverride
+  }
+
   // Terminal.app still shows paint/cursor artifacts under the fast-echo
   // bypass path. Fall back to the normal Ink render path there.
   if ((env.TERM_PROGRAM ?? '').trim() === 'Apple_Terminal') {
+    return false
+  }
+
+  // tmux adds its own cursor/IME/alternate-buffer state layer. The direct
+  // stdout fast-echo path can race React layout there, which is exactly how
+  // typed text ends up visually below the composer instead of inside it. Keep
+  // tmux on the normal Ink render path unless explicitly opted in.
+  if (env.TMUX) {
     return false
   }
 

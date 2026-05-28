@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import { completionRowStyle } from '../components/appOverlays.js'
+import { completionOverlayMode, completionRowStyle } from '../components/appOverlays.js'
 import { DEFAULT_THEME } from '../theme.js'
+
+describe('completionOverlayMode', () => {
+  it('renders slash completions in normal layout flow instead of absolute-overlapping the composer', () => {
+    expect(completionOverlayMode()).toBe('flow')
+  })
+})
 
 describe('completionRowStyle', () => {
   it('keeps inactive slash completions free of row and meta backgrounds', () => {

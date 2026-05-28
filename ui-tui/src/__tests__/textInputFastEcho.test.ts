@@ -212,6 +212,19 @@ describe('supportsFastEchoTerminal', () => {
     expect(supportsFastEchoTerminal({ TERM_PROGRAM: 'Apple_Terminal' } as NodeJS.ProcessEnv)).toBe(false)
   })
 
+  it('disables fast-echo by default inside tmux to avoid cursor/IME drift below the composer', () => {
+    expect(supportsFastEchoTerminal({ TMUX: '/tmp/tmux-501/default,123,0' } as NodeJS.ProcessEnv)).toBe(false)
+  })
+
+  it('allows explicit tmux fast-echo opt-in for debugging only', () => {
+    expect(
+      supportsFastEchoTerminal({
+        HERMES_TUI_FAST_ECHO: '1',
+        TMUX: '/tmp/tmux-501/default,123,0'
+      } as NodeJS.ProcessEnv)
+    ).toBe(true)
+  })
+
   it('disables fast-echo by default in Termux mode', () => {
     expect(
       supportsFastEchoTerminal({ TERMUX_VERSION: '0.118.0', PREFIX: '/data/data/com.termux/files/usr' } as NodeJS.ProcessEnv)

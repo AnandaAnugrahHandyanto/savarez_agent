@@ -20,7 +20,7 @@ import { composerPromptText } from '../lib/prompt.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
-import { FloatingOverlays, PromptZone } from './appOverlays.js'
+import { CompletionOverlay, FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
 import { FpsOverlay } from './fpsOverlay.js'
 import { HelpHint } from './helpHint.js'
@@ -235,17 +235,16 @@ const ComposerPane = memo(function ComposerPane({
 
       <Box flexDirection="column" marginTop={ui.statusBar === 'top' ? 0 : 1} position="relative">
         <FloatingOverlays
-          cols={composer.cols}
-          compIdx={composer.compIdx}
-          completions={composer.completions}
-          onActiveSessionSelect={actions.activateLiveSession}
           onActiveSessionClose={actions.closeLiveSession}
+          onActiveSessionSelect={actions.activateLiveSession}
           onModelSelect={actions.onModelSelect}
           onNewLiveSession={actions.newLiveSession}
           onNewPromptSession={actions.newPromptSession}
           onPickerSelect={actions.resumeById}
           pagerPageSize={composer.pagerPageSize}
         />
+
+        <CompletionOverlay cols={composer.cols} compIdx={composer.compIdx} completions={composer.completions} />
 
         {composer.input === '?' && !composer.inputBuf.length && <HelpHint t={ui.theme} />}
 

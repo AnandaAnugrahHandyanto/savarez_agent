@@ -18,6 +18,8 @@ import { SkillsHub } from './skillsHub.js'
 
 const COMPLETION_WINDOW = 16
 
+export const completionOverlayMode = () => 'flow' as const
+
 export function completionRowStyle(active: boolean, theme: Theme) {
   return {
     commandColor: active ? theme.color.primary : theme.color.label,
@@ -25,6 +27,61 @@ export function completionRowStyle(active: boolean, theme: Theme) {
     metaColor: active ? theme.color.text : theme.color.muted,
     rowBackground: active ? theme.color.statusBg : undefined
   }
+}
+
+export function CompletionOverlay({
+  cols,
+  compIdx,
+  completions
+}: Pick<AppOverlaysProps, 'cols' | 'compIdx' | 'completions'>) {
+  const theme = useStore($uiTheme)
+
+  if (!completions.length) {
+    return null
+  }
+
+  // Fixed viewport centered on compIdx — previously the slice end was
+  // compIdx + 8 so the dropdown grew from 8 rows to 16 as the user scrolled
+  // down, bouncing the height on every keystroke.
+  const viewportSize = Math.min(COMPLETION_WINDOW, completions.length)
+  const start = Math.max(0, Math.min(compIdx - Math.floor(COMPLETION_WINDOW / 2), completions.length - viewportSize))
+
+  return (
+    <FloatBox color={theme.color.primary}>
+      <Box flexDirection="column" width={Math.max(28, cols - 6)}>
+        {completions.slice(start, start + viewportSize).map((item, i) => {
+          const active = start + i === compIdx
+          const style = completionRowStyle(active, theme)
+
+          return (
+            <Box
+              backgroundColor={style.rowBackground}
+              flexDirection="row"
+              key={`${start + i}:${item.text}:${item.display}:${item.meta ?? ''}`}
+              width="100%"
+            >
+              {/* flexShrink=0 — when meta overflows the row, Ink/Yoga
+                  otherwise shaves the last char off the display column
+                  (e.g. /goal renders as /goa). */}
+              <Box flexShrink={0}>
+                <Text color={style.markerColor}>{active ? ' ❯ ' : '   '}</Text>
+                <Text bold={active} color={style.commandColor}>
+                  {' '}
+                  {item.display}
+                </Text>
+              </Box>
+              {item.meta ? (
+                <Text color={style.metaColor} dimColor={!active}>
+                  {' '}
+                  {item.meta}
+                </Text>
+              ) : null}
+            </Box>
+          )
+        })}
+      </Box>
+    </FloatBox>
+  )
 }
 
 export function PromptZone({
@@ -103,9 +160,6 @@ export function PromptZone({
 }
 
 export function FloatingOverlays({
-  cols,
-  compIdx,
-  completions,
   onActiveSessionSelect,
   onActiveSessionClose,
   onModelSelect,
@@ -115,9 +169,6 @@ export function FloatingOverlays({
   pagerPageSize
 }: Pick<
   AppOverlaysProps,
-  | 'cols'
-  | 'compIdx'
-  | 'completions'
   | 'onActiveSessionSelect'
   | 'onActiveSessionClose'
   | 'onModelSelect'
@@ -131,24 +182,11 @@ export function FloatingOverlays({
   const sid = useStore($uiSessionId)
   const theme = useStore($uiTheme)
 
-  const hasAny =
-    overlay.modelPicker ||
-    overlay.pager ||
-    overlay.picker ||
-    overlay.sessions ||
-    overlay.skillsHub ||
-    completions.length
+  const hasAny = overlay.modelPicker || overlay.pager || overlay.picker || overlay.sessions || overlay.skillsHub
 
   if (!hasAny) {
     return null
   }
-
-  // Fixed viewport centered on compIdx — previously the slice end was
-  // compIdx + 8 so the dropdown grew from 8 rows to 16 as the user scrolled
-  // down, bouncing the height on every keystroke.
-  const viewportSize = Math.min(COMPLETION_WINDOW, completions.length)
-
-  const start = Math.max(0, Math.min(compIdx - Math.floor(COMPLETION_WINDOW / 2), completions.length - viewportSize))
 
   return (
     <Box alignItems="flex-start" bottom="100%" flexDirection="column" left={0} position="absolute" right={0}>
@@ -222,42 +260,6 @@ export function FloatingOverlays({
         </FloatBox>
       )}
 
-      {!!completions.length && (
-        <FloatBox color={theme.color.primary}>
-          <Box flexDirection="column" width={Math.max(28, cols - 6)}>
-            {completions.slice(start, start + viewportSize).map((item, i) => {
-              const active = start + i === compIdx
-              const style = completionRowStyle(active, theme)
-
-              return (
-                <Box
-                  backgroundColor={style.rowBackground}
-                  flexDirection="row"
-                  key={`${start + i}:${item.text}:${item.display}:${item.meta ?? ''}`}
-                  width="100%"
-                >
-                  {/* flexShrink=0 — when meta overflows the row, Ink/Yoga
-                      otherwise shaves the last char off the display column
-                      (e.g. /goal renders as /goa). */}
-                  <Box flexShrink={0}>
-                    <Text color={style.markerColor}>{active ? ' ❯ ' : '   '}</Text>
-                    <Text bold={active} color={style.commandColor}>
-                      {' '}
-                      {item.display}
-                    </Text>
-                  </Box>
-                  {item.meta ? (
-                    <Text color={style.metaColor} dimColor={!active}>
-                      {' '}
-                      {item.meta}
-                    </Text>
-                  ) : null}
-                </Box>
-              )
-            })}
-          </Box>
-        </FloatBox>
-      )}
     </Box>
   )
 }
