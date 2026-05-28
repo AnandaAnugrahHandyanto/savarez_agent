@@ -50,7 +50,9 @@ import httpx  # noqa: F401 — kept at module top so tests can patch tools.web_t
 # surface stays stable.
 if TYPE_CHECKING:
     from firecrawl import Firecrawl  # noqa: F401 — type hints only
-from plugins.web.firecrawl.provider import (
+# Firecrawl helpers re-exported for backward-compat with integration tests
+# and unit-test patches (see the note further down in this module).
+from plugins.web.firecrawl.provider import (  # noqa: F401 — backward-compat names
     Firecrawl,
     _FirecrawlProxy,
     _FIRECRAWL_CLS_CACHE,
@@ -68,6 +70,7 @@ from plugins.web.firecrawl.provider import (
     _to_plain_object,
     check_firecrawl_api_key,
 )
+from tools.website_policy import check_website_access  # noqa: F401 — backward-compat
 # Tavily helpers re-exported for backward-compat with existing unit tests
 # (tests/tools/test_web_tools_tavily.py imports these names directly).
 from plugins.web.tavily.provider import (  # noqa: F401 — backward-compat names
@@ -112,7 +115,6 @@ from tools.tool_backend_helpers import (  # noqa: F401
     prefers_gateway,
 )
 from tools.url_safety import is_safe_url
-from tools.website_policy import check_website_access
 import sys
 
 logger = logging.getLogger(__name__)
