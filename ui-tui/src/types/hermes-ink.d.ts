@@ -66,6 +66,7 @@ declare module '@hermes/ink' {
     readonly exitOnCtrlC?: boolean
     readonly patchConsole?: boolean
     readonly onFrame?: (event: FrameEvent) => void
+    readonly onHyperlinkClick?: (url: string) => void
   }
 
   export type Instance = {
@@ -83,6 +84,7 @@ declare module '@hermes/ink' {
     readonly getScrollTop: () => number
     readonly getPendingDelta: () => number
     readonly getScrollHeight: () => number
+    readonly getFreshScrollHeight: () => number
     readonly getViewportHeight: () => number
     readonly getViewportTop: () => number
     readonly getLastManualScrollAt: () => number
@@ -145,6 +147,7 @@ declare module '@hermes/ink' {
     readonly clearSelection: () => void
     readonly hasSelection: () => boolean
     readonly getState: () => unknown
+    readonly version: () => number
     readonly subscribe: (cb: () => void) => () => void
     readonly shiftAnchor: (dRow: number, minRow: number, maxRow: number) => void
     readonly shiftSelection: (dRow: number, minRow: number, maxRow: number) => void
@@ -161,6 +164,7 @@ declare module '@hermes/ink' {
     readonly column: number
     readonly active: boolean
   }): (el: unknown) => void
+  export function useCursorAdvance(): (dx: number, dy?: number) => void
   export function useStdin(): {
     readonly stdin: NodeJS.ReadStream
     readonly setRawMode: (value: boolean) => void
