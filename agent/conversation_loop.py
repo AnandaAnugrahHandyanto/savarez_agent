@@ -73,6 +73,14 @@ from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
 
+_INTERACTIVE_TURN_WALL_SECONDS = 5 * 60
+_NON_INTERACTIVE_TURN_GUARD_PLATFORMS = {"", "cli", "cron", "scheduler"}
+
+
+def _interactive_turn_guard_enabled(agent: Any) -> bool:
+    platform = str(getattr(agent, "platform", "") or "").strip().lower()
+    return platform not in _NON_INTERACTIVE_TURN_GUARD_PLATFORMS
+
 
 def _interactive_wall_clock_guard_message(platform: str | None = None) -> str:
     label = (platform or "gateway").strip().lower()
@@ -720,6 +728,8 @@ def run_conversation(
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
+    _turn_started_at = time.monotonic()
+    _interactive_turn_guard = _interactive_turn_guard_enabled(agent)
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
 
     # Per-turn file-mutation verifier state.  Keyed by resolved path;

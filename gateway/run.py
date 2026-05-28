@@ -3834,6 +3834,15 @@ class GatewayRunner:
         ``resume_pending`` and will auto-resume on the next real user
         message, or on the next gateway startup.
         """
+        # Startup auto-resume is intentionally conservative for large
+        # interactive sessions.  Synthesizing an empty turn against an already
+        # large transcript can spend minutes in preflight compression while
+        # holding the chat's active-session slot, making fresh user messages
+        # appear stuck behind a typing indicator.  Leave those sessions marked
+        # resume_pending so the next real user message owns the recovery turn.
+        auto_resume_token_limit = int(
+            _float_env("HERMES_AUTO_RESUME_MAX_PROMPT_TOKENS", 50000)
+        )
         window = _auto_continue_freshness_window()
         try:
             with self.session_store._lock:  # noqa: SLF001 — snapshot under lock
@@ -3854,6 +3863,18 @@ class GatewayRunner:
         for entry in candidates:
             marker = entry.last_resume_marked_at or entry.updated_at
             if marker is not None and (now - marker).total_seconds() > window:
+                continue
+            if (
+                auto_resume_token_limit > 0
+                and int(getattr(entry, "last_prompt_tokens", 0) or 0) >= auto_resume_token_limit
+            ):
+                logger.info(
+                    "Skipping auto-resume for %s: last prompt tokens %s >= %s; "
+                    "waiting for next real user message",
+                    entry.session_key,
+                    f"{int(getattr(entry, 'last_prompt_tokens', 0) or 0):,}",
+                    f"{auto_resume_token_limit:,}",
+                )
                 continue
 
             source = entry.origin
