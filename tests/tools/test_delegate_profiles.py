@@ -252,11 +252,7 @@ class TestDelegateTaskProfileRouting:
     @patch("tools.delegate_tool._load_config", return_value={"max_iterations": 10, **_PROFILE_CFG})
     @patch("tools.delegate_tool._resolve_delegation_credentials")
     def test_acp_profile_uses_acp_command_not_api_creds(self, mock_creds, _mock_cfg):
-        """ACP profile → acp_command passed to AIAgent, no API creds lookup."""
-        mock_creds.return_value = {
-            "model": None, "provider": None,
-            "base_url": None, "api_key": None, "api_mode": None,
-        }
+        """ACP profile → acp_command passed to AIAgent, _resolve_delegation_credentials NOT called."""
         parent = _make_mock_parent()
         with patch("run_agent.AIAgent") as MockAgent:
             MockAgent.return_value = _mock_child()
@@ -265,6 +261,24 @@ class TestDelegateTaskProfileRouting:
         _, kwargs = MockAgent.call_args
         assert kwargs.get("acp_command") == "copilot"
         assert kwargs.get("acp_args") == ["--model", "claude-sonnet-4-5"]
+        mock_creds.assert_not_called()
+
+    @patch("tools.delegate_tool._load_config", return_value={"max_iterations": 10, **_PROFILE_CFG})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_acp_profile_top_level_acp_args_used_as_fallback(self, mock_creds, _mock_cfg):
+        """Top-level acp_args are used when no per-task override; profile.acp_args is lowest priority."""
+        parent = _make_mock_parent()
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = _mock_child()
+            delegate_task(
+                goal="Run via copilot",
+                profile="copilot-runner",
+                acp_args=["--model", "override-model"],  # top-level beats profile.acp_args
+                parent_agent=parent,
+            )
+
+        _, kwargs = MockAgent.call_args
+        assert kwargs.get("acp_args") == ["--model", "override-model"]
 
     @patch("tools.delegate_tool._load_config", return_value={"max_iterations": 10, **_PROFILE_CFG})
     def test_unknown_profile_returns_error_before_spawn(self, _mock_cfg):
@@ -379,6 +393,68 @@ class TestDelegateTaskProfileRouting:
         models = [c.get("model") for c in call_cfgs]
         assert "deepseek-v4-flash" in models
         assert "claude-sonnet-4-20250514" in models
+
+    @patch("tools.delegate_tool._load_config", return_value={"max_iterations": 10, **_PROFILE_CFG})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_acp_only_call_does_not_need_delegation_provider(self, mock_creds, _mock_cfg):
+        """ACP-only batch never calls _resolve_delegation_credentials even if delegation.provider is absent."""
+        # If this test passes with assert_not_called(), the lazy-creds fix is working.
+        parent = _make_mock_parent()
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = _mock_child()
+            delegate_task(tasks=[
+                {"goal": "Task A", "profile": "copilot-runner"},
+                {"goal": "Task B", "profile": "copilot-runner"},
+            ], parent_agent=parent)
+        mock_creds.assert_not_called()
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_profile_toolsets_empty_list_not_replaced_by_default(self, mock_creds):
+        """Profile with toolsets:[] is passed to _build_child_agent (not skipped for top-level).
+        When no explicit top-level toolsets are given, profile [] wins — _build_child_agent
+        then inherits from parent (its convention for falsy toolsets), so child gets parent's tools.
+        If we'd incorrectly fallen through profile [] to a non-None default, the child would
+        have gotten different tools."""
+        _profile_with_empty_toolsets = {
+            "max_iterations": 10,
+            "profiles": {
+                "restricted": {
+                    "model": "gpt-4o",
+                    "provider": "openai",
+                    "toolsets": [],  # profile explicitly declares empty toolsets
+                }
+            }
+        }
+        mock_creds.return_value = {
+            "model": "gpt-4o", "provider": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "sk-test", "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["terminal", "file", "web"]
+
+        captured_toolsets = []
+
+        with patch("tools.delegate_tool._load_config", return_value=_profile_with_empty_toolsets), \
+             patch("tools.delegate_tool._build_child_agent", wraps=None) as mock_build:
+            def capture(*args, **kwargs):
+                captured_toolsets.append(kwargs.get("toolsets"))
+                child = _mock_child()
+                return child
+            mock_build.side_effect = capture
+
+            delegate_task(
+                goal="Work",
+                profile="restricted",
+                # No top-level toolsets — profile should supply []
+                parent_agent=parent,
+            )
+
+        # _build_child_agent received toolsets=[] from profile, not any other value
+        assert len(captured_toolsets) == 1
+        assert captured_toolsets[0] == [], (
+            f"Expected profile toolsets=[] to be passed, got {captured_toolsets[0]!r}"
+        )
 
 
 class TestDelegateTaskSchema:

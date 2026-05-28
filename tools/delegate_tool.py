@@ -2010,16 +2010,6 @@ def delegate_task(
         )
     effective_max_iter = default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
-
     # Normalize to task list
     max_children = _get_max_concurrent_children()
     recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
@@ -2073,6 +2063,12 @@ def delegate_task(
         except ValueError as exc:
             return tool_error(str(exc))
 
+    # Lazy default credentials: resolved only when a task needs the default API
+    # path (no profile, or profile without acp_command). ACP-only calls never
+    # trigger provider resolution — users without delegation.provider configured
+    # can still use ACP profiles without an API-key error.
+    _default_creds: Optional[dict] = None
+
     # Cache resolved credentials per profile name so _resolve_delegation_credentials
     # is called once per unique profile, not once per task (avoids repeated
     # provider lookups / env reads in large batches).
@@ -2114,9 +2110,10 @@ def delegate_task(
                     "base_url": None, "api_key": None, "api_mode": None,
                 }
                 _task_acp_command = _profile_cfg["acp_command"]
+                # Priority: per-task > top-level call arg > profile default
                 _task_acp_args = (
                     t.get("acp_args") if "acp_args" in t
-                    else _profile_cfg.get("acp_args")
+                    else (acp_args if acp_args is not None else _profile_cfg.get("acp_args"))
                 )
             else:
                 # API mode: resolve credentials from profile dict (if set) or
@@ -2133,7 +2130,14 @@ def delegate_task(
                             return tool_error(str(exc))
                     _task_creds = _creds_cache[_task_profile_name]
                 else:
-                    _task_creds = creds
+                    # Default path (no profile) — resolve default credentials lazily
+                    # so ACP-only callers never trigger provider credential lookup.
+                    if _default_creds is None:
+                        try:
+                            _default_creds = _resolve_delegation_credentials(cfg, parent_agent)
+                        except ValueError as exc:
+                            return tool_error(str(exc))
+                    _task_creds = _default_creds
                 _task_acp_args_explicit = t.get("acp_args") if "acp_args" in t else None
                 _task_acp_command = (
                     t.get("acp_command") or acp_command or _task_creds.get("command")
@@ -2144,14 +2148,13 @@ def delegate_task(
                     else (acp_args if acp_args is not None else _task_creds.get("args"))
                 )
 
-            # Toolsets: explicit call arg > profile default > top-level toolsets arg
-            # Toolset priority: explicit per-task > profile default > top-level arg.
-            # Use `is not None` (not `or`) so an explicit empty list [] is respected
-            # as "no toolsets" rather than falling through to the profile default.
+            # Toolsets: explicit per-task > profile default > top-level arg.
+            # Use key-presence checks (not `or`) so an explicit empty list [] is
+            # respected at every level rather than falling through to the next tier.
             _t_toolsets = t.get("toolsets")
             _task_toolsets = (
                 _t_toolsets if _t_toolsets is not None
-                else (_profile_cfg.get("toolsets") or toolsets)
+                else (_profile_cfg["toolsets"] if "toolsets" in _profile_cfg else toolsets)
             )
 
             # Proxy from profile (v1: warning logged inside _build_child_agent, not applied)
