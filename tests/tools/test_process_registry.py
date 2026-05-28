@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import types
 import pytest
@@ -64,6 +65,161 @@ def _wait_until(predicate, timeout: float = 5.0, interval: float = 0.05) -> bool
             return True
         time.sleep(interval)
     return False
+
+
+# =========================================================================
+# Output buffering / metadata
+# =========================================================================
+
+class TestOutputHardening:
+    def test_append_output_rolls_buffer_and_updates_metadata(self, registry):
+        s = _make_session()
+        s.max_output_chars = 10
+
+        registry._append_output(s, "hello\n")
+        registry._append_output(s, "world\nagain")
+
+        assert s.output_buffer == "orld\nagain"
+        assert s.output_total_chars == len("hello\nworld\nagain")
+        assert s.output_total_lines == 2
+        assert s.output_buffer_chars == 10
+        assert s.buffer_truncated is True
+        assert s.output_dropped_chars == len("hello\nworld\nagain") - 10
+
+    def test_append_output_merges_partial_lines_across_chunks(self, registry):
+        s = _make_session()
+
+        registry._append_output(s, "abc")
+        registry._append_output(s, "def\n")
+
+        assert s.output_buffer == "abcdef\n"
+        assert s.output_total_lines == 1
+        assert s.output_total_chars == len("abcdef\n")
+
+    def test_append_output_carriage_return_refresh_is_not_new_line(self, registry):
+        s = _make_session()
+
+        registry._append_output(s, "progress 1\rprogress 2\r")
+
+        assert s.output_total_lines == 0
+        assert s.output_buffer == "progress 1\rprogress 2\r"
+
+    def test_diff_flood_detection_triggers_across_chunks(self, registry):
+        s = _make_session()
+        chunks = []
+        for file_no in range(3):
+            lines = [
+                f"diff --git a/file{file_no}.py b/file{file_no}.py\n",
+                "index 1111111..2222222 100644\n",
+                f"--- a/file{file_no}.py\n",
+                f"+++ b/file{file_no}.py\n",
+                "@@ -1,20 +1,20 @@\n",
+            ]
+            for i in range(20):
+                lines.append(f"-old line {file_no}-{i}\n")
+                lines.append(f"+new line {file_no}-{i}\n")
+            chunks.append("".join(lines))
+
+        for chunk in chunks:
+            registry._append_output(s, chunk)
+
+        assert s.diff_flood_detected is True
+        assert s.diff_flood_score > 0
+        assert s.diff_flood_first_seen_at > 0
+
+    def test_diff_flood_detection_ignores_normal_short_output(self, registry):
+        s = _make_session()
+
+        registry._append_output(s, "collected 12 items\n...........\n12 passed\n")
+
+        assert s.diff_flood_detected is False
+        assert s.diff_flood_score == 0.0
+
+    def test_diff_flood_detection_ignores_markdown_bullet_flood(self, registry):
+        s = _make_session()
+
+        registry._append_output(s, "".join(f"- checklist item {i}\n" for i in range(80)))
+
+        assert s.diff_flood_detected is False
+        assert s.diff_flood_score > 0
+
+    def test_diff_flood_detection_ignores_markdown_rule_and_bullets(self, registry):
+        s = _make_session()
+
+        text = "--- release notes\n" + "".join(f"- checklist item {i}\n" for i in range(80))
+        registry._append_output(s, text)
+
+        assert s.diff_flood_detected is False
+        assert s.diff_flood_score > 0
+
+    def test_diff_flood_detection_ignores_markdown_plus_minus_sections(self, registry):
+        s = _make_session()
+
+        text = (
+            "+++ added section\n"
+            "-- removed section\n"
+            + "".join(f"- bullet item {i}\n" for i in range(80))
+        )
+        registry._append_output(s, text)
+
+        assert s.diff_flood_detected is False
+        assert s.diff_flood_score > 0
+
+    def test_poll_wait_read_log_and_list_include_output_metadata(self, registry, monkeypatch):
+        s = _make_session(exited=True, exit_code=0)
+        registry._append_output(s, "line 1\nline 2\n")
+        registry._finished[s.id] = s
+        monkeypatch.setenv("TERMINAL_TIMEOUT", "1")
+
+        poll = registry.poll(s.id)
+        wait = registry.wait(s.id, timeout=1)
+        log = registry.read_log(s.id)
+        entry = registry.list_sessions()[0]
+
+        for result in (poll, wait, log, entry):
+            assert result["output_total_chars"] == len("line 1\nline 2\n")
+            assert result["output_total_lines"] == 2
+            assert result["output_buffer_chars"] == len("line 1\nline 2\n")
+            assert result["buffer_truncated"] is False
+            assert result["output_dropped_chars"] == 0
+            assert result["diff_flood_detected"] is False
+            assert result["diff_flood_score"] == 0.0
+            assert result["diff_flood_first_seen_at"] is None
+            assert "returned_chars" in result
+        assert log["source"] == "rolling_buffer"
+
+    def test_completion_notification_says_output_tail_only(self, registry):
+        s = _make_session(exited=True, exit_code=0)
+        s.notify_on_complete = True
+        registry._running[s.id] = s
+        registry._append_output(s, "done\n")
+
+        registry._move_to_finished(s)
+        event, text = registry.drain_notifications()[0]
+
+        assert event["source"] == "rolling_buffer"
+        assert "Output tail only (not full output):" in text
+        assert "done" in text
+
+    def test_concurrent_append_output_sanity(self, registry):
+        s = _make_session()
+        chunks = [f"thread-{i}\n" for i in range(20)]
+
+        def worker(chunk):
+            for _ in range(50):
+                registry._append_output(s, chunk)
+
+        threads = [threading.Thread(target=worker, args=(chunk,)) for chunk in chunks]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        expected_chars = sum(len(chunk) * 50 for chunk in chunks)
+        assert s.output_total_chars == expected_chars
+        assert s.output_total_lines == 20 * 50
+        assert s.output_buffer_chars == len(s.output_buffer)
+        assert s.output_dropped_chars + s.output_buffer_chars == s.output_total_chars
 
 
 # =========================================================================
@@ -1211,7 +1367,7 @@ def test_format_completion_event():
     assert "[IMPORTANT: Background process proc_abc completed" in result
     assert "exit code 0" in result
     assert "Command: sleep 5" in result
-    assert "Output:\ndone]" in result
+    assert "Output tail only (not full output):\ndone]" in result
 
 
 def test_format_completion_event_after_kill_request_is_not_plain_completed():

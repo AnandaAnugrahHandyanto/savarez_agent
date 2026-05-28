@@ -39,6 +39,7 @@ import subprocess
 import threading
 import time
 import uuid
+from collections import deque
 
 _IS_WINDOWS = platform.system() == "Windows"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
@@ -47,6 +48,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
+from tools.ansi_strip import strip_ansi
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +105,14 @@ class ProcessSession:
     exit_code: Optional[int] = None             # Exit code (None if still running)
     output_buffer: str = ""                     # Rolling output (last MAX_OUTPUT_CHARS)
     max_output_chars: int = MAX_OUTPUT_CHARS
+    output_total_chars: int = 0                 # Python characters seen, not bytes
+    output_total_lines: int = 0                 # Completed "\n" lines only; "\r" refreshes do not count
+    output_buffer_chars: int = 0                # Current rolling-buffer character count
+    buffer_truncated: bool = False              # True once rolling buffer has dropped any output
+    output_dropped_chars: int = 0               # Characters dropped from the rolling buffer
+    diff_flood_detected: bool = False           # Sticky once high-volume diff-like output is detected
+    diff_flood_score: float = 0.0
+    diff_flood_first_seen_at: float = 0.0
     detached: bool = False                      # True if recovered from crash (no pipe)
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
     kill_attempted: bool = False                # A kill request was attempted for this session
@@ -142,6 +152,8 @@ class ProcessSession:
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
+    _diff_recent_lines: Any = field(default_factory=lambda: deque(maxlen=1000), repr=False)
+    _diff_partial_line: str = field(default="", repr=False)
 
 
 class ProcessRegistry:
@@ -326,6 +338,116 @@ class ProcessRegistry:
             "message_id": session.watcher_message_id,
         })
 
+    @staticmethod
+    def _is_diff_like_line(line: str) -> bool:
+        stripped = strip_ansi(line).lstrip("\r")
+        if stripped.startswith("diff --git "):
+            return True
+        if stripped.startswith("@@"):
+            return True
+        if stripped.startswith("index "):
+            return True
+        if stripped.startswith(("--- a/", "+++ b/", "--- /dev/null", "+++ /dev/null")):
+            return True
+        if stripped.startswith(("+", "-")) and not stripped.startswith(("+++", "---")):
+            return True
+        return False
+
+    @staticmethod
+    def _diff_flood_recommendation() -> str:
+        return (
+            "Diff-like output flood detected. Inspect git status, git diff --stat, "
+            "and git diff --name-only, then read touched files directly; avoid "
+            "process(action='log') full scan unless debugging agent output itself."
+        )
+
+    def _append_output(self, session: ProcessSession, text: str) -> None:
+        """Append process output and update rolling-output metadata.
+
+        Counting semantics are intentionally character-based: output_total_chars
+        uses Python len(text), not bytes. output_total_lines counts completed
+        newline characters ("\n") only, so carriage-return refreshes ("\r") do
+        not create new lines. Partial lines are carried across chunks naturally;
+        appending "abc" then "def\n" records one completed line and buffers
+        "abcdef\n".
+        """
+        if not text:
+            return
+        with session._lock:
+            session.output_total_chars += len(text)
+            session.output_total_lines += text.count("\n")
+
+            session.output_buffer += text
+            if len(session.output_buffer) > session.max_output_chars:
+                dropped = len(session.output_buffer) - session.max_output_chars
+                session.output_buffer = session.output_buffer[-session.max_output_chars:]
+                session.buffer_truncated = True
+                session.output_dropped_chars += dropped
+            session.output_buffer_chars = len(session.output_buffer)
+
+            combined = session._diff_partial_line + text
+            parts = combined.split("\n")
+            completed_lines = parts[:-1]
+            session._diff_partial_line = parts[-1]
+            if completed_lines:
+                for line in completed_lines:
+                    session._diff_recent_lines.append(line.rstrip("\r"))
+                recent = list(session._diff_recent_lines)
+                total = len(recent)
+                if total >= 40:
+                    normalized_recent = [strip_ansi(line) for line in recent]
+                    diff_headers = sum(1 for line in normalized_recent if line.startswith("diff --git "))
+                    hunk_headers = sum(1 for line in normalized_recent if line.startswith("@@"))
+                    old_file_headers = sum(
+                        1 for line in normalized_recent
+                        if line.startswith(("--- a/", "--- /dev/null"))
+                    )
+                    new_file_headers = sum(
+                        1 for line in normalized_recent
+                        if line.startswith(("+++ b/", "+++ /dev/null"))
+                    )
+                    paired_file_headers = bool(old_file_headers and new_file_headers)
+                    patch_lines = sum(
+                        1 for line in normalized_recent
+                        if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
+                    )
+                    diff_like = sum(1 for line in normalized_recent if self._is_diff_like_line(line))
+                    score = diff_like / total if total else 0.0
+                    session.diff_flood_score = max(session.diff_flood_score, round(score, 3))
+                    has_diff_structure = bool(diff_headers or hunk_headers)
+                    if (
+                        not session.diff_flood_detected
+                        and score >= 0.45
+                        and has_diff_structure
+                        and (
+                            (patch_lines >= 30 and (diff_headers or hunk_headers))
+                            or (diff_headers >= 2 and hunk_headers >= 2 and patch_lines >= 12)
+                        )
+                    ):
+                        session.diff_flood_detected = True
+                        session.diff_flood_first_seen_at = time.time()
+
+    @staticmethod
+    def _output_metadata(session: ProcessSession, returned_text: Optional[str] = None) -> dict:
+        buffer_chars = session.output_buffer_chars or len(session.output_buffer)
+        total_chars = session.output_total_chars or len(session.output_buffer)
+        total_lines = session.output_total_lines or session.output_buffer.count("\n")
+        data = {
+            "output_total_chars": total_chars,
+            "output_total_lines": total_lines,
+            "output_buffer_chars": buffer_chars,
+            "buffer_truncated": session.buffer_truncated,
+            "output_dropped_chars": session.output_dropped_chars,
+            "diff_flood_detected": session.diff_flood_detected,
+            "diff_flood_score": session.diff_flood_score,
+            "diff_flood_first_seen_at": session.diff_flood_first_seen_at or None,
+        }
+        if returned_text is not None:
+            data["returned_chars"] = len(returned_text)
+        if session.diff_flood_first_seen_at:
+            data["diff_flood_recommended_next_action"] = ProcessRegistry._diff_flood_recommendation()
+        return data
+
     def _global_watch_admit(self, now: float) -> bool:
         """Return True if this watch_match event is allowed through the global breaker.
 
@@ -486,6 +608,10 @@ class ProcessRegistry:
                     "or evidence that the process is no longer making progress."
                 ),
             })
+        if session.diff_flood_detected:
+            data["recommended_next_action"] = (
+                data["recommended_next_action"] + " " + ProcessRegistry._diff_flood_recommendation()
+            )
         return data
 
     @staticmethod
@@ -896,7 +1022,7 @@ class ProcessRegistry:
         except Exception as e:
             session.exited = True
             session.exit_code = -1
-            session.output_buffer = f"Failed to start: {e}"
+            self._append_output(session, f"Failed to start: {e}")
 
         if not session.exited:
             # Start a poller thread that periodically reads the log file
@@ -929,10 +1055,7 @@ class ProcessRegistry:
                 if first_chunk:
                     chunk = self._clean_shell_noise(chunk)
                     first_chunk = False
-                with session._lock:
-                    session.output_buffer += chunk
-                    if len(session.output_buffer) > session.max_output_chars:
-                        session.output_buffer = session.output_buffer[-session.max_output_chars:]
+                self._append_output(session, chunk)
                 self._check_watch_patterns(session, chunk)
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
@@ -965,13 +1088,10 @@ class ProcessRegistry:
                 new_output = result.get("output", "")
                 if new_output:
                     # Compute delta for watch pattern scanning
-                    delta = new_output[prev_output_len:] if len(new_output) > prev_output_len else ""
+                    delta = new_output[prev_output_len:] if len(new_output) >= prev_output_len else new_output
                     prev_output_len = len(new_output)
-                    with session._lock:
-                        session.output_buffer = new_output
-                        if len(session.output_buffer) > session.max_output_chars:
-                            session.output_buffer = session.output_buffer[-session.max_output_chars:]
                     if delta:
+                        self._append_output(session, delta)
                         self._check_watch_patterns(session, delta)
 
                 # Check if process is still running
@@ -1019,10 +1139,7 @@ class ProcessRegistry:
                     if chunk:
                         # ptyprocess returns bytes
                         text = chunk if isinstance(chunk, str) else chunk.decode("utf-8", errors="replace")
-                        with session._lock:
-                            session.output_buffer += text
-                            if len(session.output_buffer) > session.max_output_chars:
-                                session.output_buffer = session.output_buffer[-session.max_output_chars:]
+                        self._append_output(session, text)
                         self._check_watch_patterns(session, text)
                 except EOFError:
                     break
@@ -1067,8 +1184,10 @@ class ProcessRegistry:
                 "command": session.command,
                 "exit_code": session.exit_code,
                 "output": output_tail,
+                "source": "rolling_buffer",
             }
             event.update(self._process_state_metadata(session))
+            event.update(self._output_metadata(session, output_tail))
             self.completion_queue.put(event)
 
     # ----- Query Methods -----
@@ -1161,11 +1280,9 @@ class ProcessRegistry:
             except Exception as e:
                 logger.debug("Non-blocking drain failed for %s: %s", session.id, e)
 
+        if drained:
+            self._append_output(session, drained)
         with session._lock:
-            if drained:
-                session.output_buffer += drained
-                if len(session.output_buffer) > session.max_output_chars:
-                    session.output_buffer = session.output_buffer[-session.max_output_chars:]
             session.exited = True
             session.exit_code = rc
         logger.info(
@@ -1189,6 +1306,7 @@ class ProcessRegistry:
 
         with session._lock:
             output_preview = strip_ansi(session.output_buffer[-1000:]) if session.output_buffer else ""
+            output_metadata = self._output_metadata(session, output_preview)
 
         result = {
             "session_id": session.id,
@@ -1198,6 +1316,7 @@ class ProcessRegistry:
             "uptime_seconds": int(time.time() - session.started_at),
             "output_preview": output_preview,
         }
+        result.update(output_metadata)
         if session.exited:
             result["exit_code"] = session.exit_code
             result.update(self._process_state_metadata(session))
@@ -1208,7 +1327,7 @@ class ProcessRegistry:
         return result
 
     def read_log(self, session_id: str, offset: int = 0, limit: int = 200) -> dict:
-        """Read the full output log with optional pagination by lines."""
+        """Read rolling-buffer output with optional pagination by lines."""
         from tools.ansi_strip import strip_ansi
 
         session = self.get(session_id)
@@ -1217,6 +1336,7 @@ class ProcessRegistry:
 
         with session._lock:
             full_output = strip_ansi(session.output_buffer)
+            output_metadata = self._output_metadata(session)
 
         lines = full_output.splitlines()
         total_lines = len(lines)
@@ -1233,7 +1353,10 @@ class ProcessRegistry:
             "output": "\n".join(selected),
             "total_lines": total_lines,
             "showing": f"{len(selected)} lines",
+            "source": "rolling_buffer",
         }
+        result.update(output_metadata)
+        result["returned_chars"] = len(result["output"])
         if session.exited:
             self._completion_consumed.add(session_id)
         return result
@@ -1290,24 +1413,32 @@ class ProcessRegistry:
             self._reconcile_local_exit(session)
             if session.exited:
                 self._completion_consumed.add(session_id)
+                with session._lock:
+                    output = strip_ansi(session.output_buffer[-2000:])
+                    output_metadata = self._output_metadata(session, output)
                 result = {
                     "status": "exited",
                     "exit_code": session.exit_code,
-                    "output": strip_ansi(session.output_buffer[-2000:]),
+                    "output": output,
                 }
                 result.update(timeout_metadata)
+                result.update(output_metadata)
                 result.update(self._process_state_metadata(session))
                 if timeout_note:
                     result["timeout_note"] = timeout_note
                 return result
 
             if _is_interrupted():
+                with session._lock:
+                    output = strip_ansi(session.output_buffer[-1000:])
+                    output_metadata = self._output_metadata(session, output)
                 result = {
                     "status": "interrupted",
-                    "output": strip_ansi(session.output_buffer[-1000:]),
+                    "output": output,
                     "note": "User sent a new message -- wait interrupted",
                 }
                 result.update(timeout_metadata)
+                result.update(output_metadata)
                 if timeout_note:
                     result["timeout_note"] = timeout_note
                 return result
@@ -1318,26 +1449,34 @@ class ProcessRegistry:
         self._reconcile_local_exit(session)
         if session.exited:
             self._completion_consumed.add(session_id)
+            with session._lock:
+                output = strip_ansi(session.output_buffer[-2000:])
+                output_metadata = self._output_metadata(session, output)
             result = {
                 "status": "exited",
                 "exit_code": session.exit_code,
-                "output": strip_ansi(session.output_buffer[-2000:]),
+                "output": output,
             }
             result.update(timeout_metadata)
+            result.update(output_metadata)
             result.update(self._process_state_metadata(session))
             if timeout_note:
                 result["timeout_note"] = timeout_note
             return result
 
+        with session._lock:
+            output = strip_ansi(session.output_buffer[-1000:])
+            output_metadata = self._output_metadata(session, output)
         result = {
             "status": "timeout",
-            "output": strip_ansi(session.output_buffer[-1000:]),
+            "output": output,
         }
         result.update(timeout_metadata)
         with session._lock:
             session.last_wait_timeout_at = time.time()
             session.last_wait_timeout_seconds = int(effective_timeout)
         result.update(self._wait_timeout_metadata(session))
+        result.update(output_metadata)
         result.update(self._process_state_metadata(session))
         if timeout_note:
             result["timeout_note"] = timeout_note
@@ -1541,6 +1680,9 @@ class ProcessRegistry:
 
         result = []
         for s in all_sessions:
+            with s._lock:
+                output_preview = s.output_buffer[-200:] if s.output_buffer else ""
+                output_metadata = self._output_metadata(s, output_preview)
             entry = {
                 "session_id": s.id,
                 "command": s.command[:200],
@@ -1549,8 +1691,9 @@ class ProcessRegistry:
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(s.started_at)),
                 "uptime_seconds": int(time.time() - s.started_at),
                 "status": "exited" if s.exited else "running",
-                "output_preview": s.output_buffer[-200:] if s.output_buffer else "",
+                "output_preview": output_preview,
             }
+            entry.update(output_metadata)
             if s.exited:
                 entry["exit_code"] = s.exit_code
                 entry.update(self._process_state_metadata(s))
@@ -1796,19 +1939,26 @@ def format_process_notification(evt: dict) -> "str | None":
     _exit = evt.get("exit_code", "?")
     _out = evt.get("output", "")
     _trusted = evt.get("trusted_completion", True)
+    _output_label = "Output tail only (not full output):"
+    _notes = []
+    if evt.get("buffer_truncated"):
+        _notes.append("rolling buffer was truncated")
+    if evt.get("diff_flood_detected"):
+        _notes.append(ProcessRegistry._diff_flood_recommendation())
+    _note_text = f"\nNote: {'; '.join(_notes)}" if _notes else ""
     if evt.get("kill_requested") or evt.get("kill_attempted") or _trusted is False:
         _method = evt.get("termination_method") or "unknown"
         return (
             f"[IMPORTANT: Background process {_sid} exited after a kill/termination request "
             f"(exit code {_exit}, trusted_completion=false, method={_method}).\n"
             f"Command: {_cmd}\n"
-            f"Output:\n{_out}]"
+            f"{_output_label}\n{_out}{_note_text}]"
         )
     return (
         f"[IMPORTANT: Background process {_sid} completed "
         f"(exit code {_exit}).\n"
         f"Command: {_cmd}\n"
-        f"Output:\n{_out}]"
+        f"{_output_label}\n{_out}{_note_text}]"
     )
 
 
@@ -1822,7 +1972,8 @@ PROCESS_SCHEMA = {
     "description": (
         "Manage background processes started with terminal(background=true). "
         "Actions: 'list' (show all), 'poll' (check status + new output), "
-        "'log' (full output with pagination), 'wait' (block until done or timeout), "
+        "'log' (tail-only rolling-buffer output with line pagination; source='rolling_buffer'), "
+        "'wait' (block until done or timeout), "
         "'kill' (terminate), 'write' (send raw stdin data without newline), "
         "'submit' (send data + Enter, for answering prompts), 'close' (close stdin/send EOF)."
     ),
