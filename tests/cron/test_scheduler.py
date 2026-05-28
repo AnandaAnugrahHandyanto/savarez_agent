@@ -2584,3 +2584,16 @@ class TestSendMediaTimeoutCancelsFuture:
         # 2. Second file still got dispatched — one timeout doesn't abort the batch
         adapter.send_video.assert_called_once()
         assert adapter.send_video.call_args[1]["video_path"] == str(fast.resolve())
+
+
+def test_tick_skips_config_load_when_no_jobs_due(tmp_path):
+    """Idle cron ticks should return before config/home churn."""
+    from cron import scheduler as sched
+
+    with patch("cron.scheduler._hermes_home", tmp_path), \
+         patch("cron.scheduler.get_due_jobs", return_value=[]), \
+         patch("cron.scheduler.load_config") as mock_load_config:
+        result = sched.tick(verbose=False)
+
+    assert result == 0
+    mock_load_config.assert_not_called()
