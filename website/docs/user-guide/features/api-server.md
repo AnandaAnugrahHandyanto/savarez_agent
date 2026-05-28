@@ -198,6 +198,14 @@ Delete a stored response.
 
 Lists the agent as an available model. The advertised model name defaults to the [profile](/user-guide/profiles) name (or `hermes-agent` for the default profile). Required by most frontends for model discovery.
 
+### GET /v1/skills
+
+List installed skills visible to the API-server agent, so dashboards and control planes can enumerate available skills without reading Python internals.
+
+### GET /v1/toolsets
+
+List toolsets and their resolved tools (the effective configurable toolsets for the running agent).
+
 ### GET /v1/capabilities
 
 Returns a machine-readable description of the API server's stable surface for external UIs, orchestrators, and plugin bridges.
@@ -214,7 +222,12 @@ Returns a machine-readable description of the API server's stable surface for ex
     "run_submission": true,
     "run_status": true,
     "run_events_sse": true,
-    "run_stop": true
+    "run_stop": true,
+    "skills_api": true,
+    "session_resources": true,
+    "session_chat": true,
+    "session_chat_streaming": true,
+    "session_fork": true
   }
 }
 ```
@@ -307,6 +320,46 @@ Resume a previously paused job.
 ### POST /api/jobs/\{job_id\}/run
 
 Trigger the job to run immediately, out of schedule.
+
+## Sessions API (persisted conversations)
+
+The server exposes a CRUD + chat surface over persisted Hermes sessions so external UIs can list, branch, and continue conversations without managing history client-side. All endpoints are gated behind the same bearer auth.
+
+### GET /api/sessions
+
+List persisted Hermes sessions.
+
+### POST /api/sessions
+
+Create an empty Hermes session row.
+
+### GET /api/sessions/\{session_id\}
+
+Fetch a single session.
+
+### PATCH /api/sessions/\{session_id\}
+
+Update client-safe session metadata. Partial updates are merged.
+
+### DELETE /api/sessions/\{session_id\}
+
+Delete a session.
+
+### GET /api/sessions/\{session_id\}/messages
+
+List the session's message history.
+
+### POST /api/sessions/\{session_id\}/fork
+
+Branch the session into a new one via the current SessionDB primitives.
+
+### POST /api/sessions/\{session_id\}/chat
+
+Run one synchronous agent turn against the session and return the result.
+
+### POST /api/sessions/\{session_id\}/chat/stream
+
+Server-Sent Events variant of `/chat` that streams the agent turn as it runs.
 
 ## System Prompt Handling
 
