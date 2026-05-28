@@ -362,9 +362,13 @@ def _write_env_vars(env_writes: dict) -> None:
     is therefore caught here too, not just at the dashboard
     ``PUT /api/env`` boundary that #32277 hardened.
 
-    Failures are surfaced and skipped rather than aborting the wizard
-    so a single denylisted/malformed key from one schema field doesn't
-    take down the rest of the batch.
+    Validation failures (``ValueError`` from ``save_env_value`` — i.e.
+    a denylisted name, an identifier rejected by ``_ENV_VAR_NAME_RE``)
+    are surfaced and skipped rather than aborting the wizard, so a
+    single bad key from one schema field doesn't take down the rest of
+    the batch. Non-validation errors (filesystem failures, permission
+    errors) are intentionally NOT caught — those indicate the wizard
+    cannot safely persist any subsequent key either and should propagate.
     """
     from hermes_cli.config import save_env_value
 

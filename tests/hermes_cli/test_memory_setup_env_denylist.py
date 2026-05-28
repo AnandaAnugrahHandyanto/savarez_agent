@@ -16,14 +16,29 @@ code before ``main()``.
 The fix routes through ``save_env_value`` so the same gate fires.
 """
 
-import os
-from pathlib import Path
-from unittest.mock import patch
-
 import pytest
 
-from hermes_cli.config import ensure_hermes_home, load_env
+from hermes_cli.config import ensure_hermes_home, get_env_path, load_env
 from hermes_cli.memory_setup import _write_env_vars
+
+
+def _env_file_keys() -> set[str]:
+    """Parse ``~/.hermes/.env`` directly and return the set of keys present.
+
+    Used by tests that want to verify a key was NOT written to disk without
+    going through ``load_env()`` (whose sanitization/caching could mask the
+    underlying file state).
+    """
+    env_path = get_env_path()
+    if not env_path.exists():
+        return set()
+    keys: set[str] = set()
+    for line in env_path.read_text(encoding="utf-8-sig").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, _, _ = line.partition("=")
+            keys.add(key.strip())
+    return keys
 
 
 @pytest.fixture(autouse=True)
@@ -57,8 +72,11 @@ def test_denylisted_key_is_skipped(denied_key, capsys):
     provider schema. The wizard prints a warning and continues."""
     _write_env_vars({denied_key: "/tmp/evil.so"})
 
-    env = load_env()
-    assert denied_key not in env
+    # Assert directly against ``.env`` file contents so the test isn't
+    # coupled to ``load_env()``'s sanitization or any future merge with
+    # ``os.environ`` (where common names like ``PATH``/``EDITOR`` would
+    # always appear and trivially satisfy a ``not in env`` check).
+    assert denied_key not in _env_file_keys()
 
     captured = capsys.readouterr()
     assert denied_key in captured.out
@@ -75,8 +93,8 @@ def test_denylisted_key_does_not_block_other_writes(capsys):
         "OPENROUTER_API_KEY": "sk-or-test-456",
     })
 
+    assert "LD_PRELOAD" not in _env_file_keys()
     env = load_env()
-    assert "LD_PRELOAD" not in env
     assert env["HERMES_LANGFUSE_PUBLIC_KEY"] == "pk-test-123"
     assert env["OPENROUTER_API_KEY"] == "sk-or-test-456"
 
@@ -105,9 +123,9 @@ def test_malformed_key_name_is_skipped(capsys):
     verbatim, producing a malformed ``.env`` line."""
     _write_env_vars({"FOO BAR": "value"})
 
-    env = load_env()
-    assert "FOO BAR" not in env
-    assert "FOO" not in env  # not silently truncated either
+    keys = _env_file_keys()
+    assert "FOO BAR" not in keys
+    assert "FOO" not in keys  # not silently truncated either
 
     captured = capsys.readouterr()
     assert "Skipping" in captured.out or "FOO BAR" in captured.out
@@ -132,5 +150,6 @@ def test_value_with_embedded_newline_is_stripped():
     env = load_env()
     # CR/LF stripped, value still lands intact (minus the newlines)
     assert env["MEM0_API_KEY"] == "key1EVIL=injected"
-    # And no smuggled key landed
-    assert "EVIL" not in env
+    # And no smuggled key landed — assert against the file too so the test
+    # holds even if ``load_env()`` ever starts merging ``os.environ``.
+    assert "EVIL" not in _env_file_keys()
