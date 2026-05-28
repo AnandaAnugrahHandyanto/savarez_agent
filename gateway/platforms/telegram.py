@@ -3092,6 +3092,57 @@ class TelegramAdapter(BasePlatformAdapter):
             # Catch-all (e.g. page counter button "mx:noop")
             await query.answer()
 
+    async def _handle_resume_callback(
+        self,
+        query,
+        session_id: str,
+        *,
+        query_chat_id,
+        query_chat_type,
+        query_thread_id,
+    ) -> None:
+        """Handle a resume-session inline button click (rs:<session_id>)."""
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=getattr(query.from_user, "first_name", None),
+        ):
+            await query.answer(text="⛔ You are not authorized to resume sessions.")
+            return
+
+        await query.answer(text="Resuming session…")
+
+        from gateway.session import SessionSource
+
+        chat_type_str = str(query_chat_type or "dm").lower()
+        if chat_type_str == "private":
+            chat_type_str = "dm"
+        elif chat_type_str == "supergroup":
+            chat_type_str = "forum" if query_thread_id is not None else "group"
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=str(query_chat_id or caller_id),
+            chat_type=chat_type_str,
+            user_id=caller_id,
+            user_name=getattr(query.from_user, "first_name", None) or None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            message_id=str(getattr(query.message, "message_id", "")) if query.message else None,
+        )
+
+        event = MessageEvent(
+            text=f"/resume {session_id}",
+            message_type=MessageType.COMMAND,
+            source=source,
+            internal=True,
+        )
+        event.message_id = source.message_id
+
+        await self.handle_message(event)
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -3106,6 +3157,19 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # --- Resume session callbacks (rs:<session_id>) ---
+        if data.startswith("rs:"):
+            session_id = data[3:]
+            if session_id:
+                await self._handle_resume_callback(
+                    query,
+                    session_id,
+                    query_chat_id=query_chat_id,
+                    query_chat_type=query_chat_type,
+                    query_thread_id=query_thread_id,
+                )
+            return
 
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mm:", "mb", "mx", "mg:")):
@@ -4980,7 +5044,95 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
         event = self._apply_telegram_group_observe_attribution(event)
+
+        # --- /resume button UI ---
+        if event.text and event.text.lower().startswith("/resume"):
+            args = event.text[len("/resume"):].strip()
+            if not args:
+                logger.info("[Telegram] /resume intercepted — sending button UI")
+                try:
+                    await self._send_resume_button_ui(msg, event)
+                except Exception as _btn_exc:
+                    logger.error("[Telegram] resume button UI failed: %s", _btn_exc, exc_info=True)
+                    await self.handle_message(event)
+                return
+
         await self.handle_message(event)
+
+    async def _send_resume_button_ui(
+        self,
+        msg,
+        event: "MessageEvent",
+    ) -> None:
+        """Send an inline keyboard listing the last 12 non-cron named sessions."""
+        try:
+            runner = None
+            handler = self._message_handler
+            if handler is not None:
+                runner = getattr(handler, "__self__", None)
+
+            if runner is None:
+                logger.warning("[Telegram] resume UI: no runner found, falling back")
+                await self.handle_message(event)
+                return
+
+            if not hasattr(runner, "get_resume_sessions"):
+                logger.warning("[Telegram] resume UI: runner missing get_resume_sessions, falling back")
+                await self.handle_message(event)
+                return
+
+            try:
+                sessions = runner.get_resume_sessions(event)
+            except Exception:
+                sessions = []
+
+            if not sessions:
+                await self._send_message_with_thread_fallback(
+                    chat_id=msg.chat_id,
+                    text="No named sessions found. Use `/title My Session` to name your current session.",
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    **self._link_preview_kwargs(),
+                )
+                return
+
+            lines = []
+            buttons = []
+            for idx, s in enumerate(sessions, start=1):
+                title = s["title"]
+                preview = s.get("preview", "")
+
+                # Plain text — no parse mode to avoid Telegram HTML/Markdown escaping issues
+                msg_line = f"{idx}. {title}"
+                if preview:
+                    msg_line += f"\n   {preview}"
+                lines.append(msg_line)
+
+                # Button label: number + title, truncated to fit mobile (~25 chars)
+                short_title = title[:18] + "..." if len(title) > 21 else title
+                btn_label = f"{idx}. {short_title}"
+                buttons.append([InlineKeyboardButton(btn_label, callback_data=f"rs:{s['id']}")])
+
+            keyboard = InlineKeyboardMarkup(buttons)
+            text = "Tap a recent session to resume:\n\n" + "\n\n".join(lines)
+
+            kwargs = dict(
+                chat_id=msg.chat_id,
+                text=text,
+                reply_markup=keyboard,
+            )
+            if hasattr(msg, "message_thread_id") and msg.message_thread_id:
+                kwargs["message_thread_id"] = msg.message_thread_id
+            await self._send_message_with_thread_fallback(**kwargs)
+
+        except Exception as exc:
+            logger.error("Failed to send resume button UI: %s", exc, exc_info=True)
+            try:
+                await self._send_message_with_thread_fallback(
+                    chat_id=msg.chat_id,
+                    text="Sorry, something went wrong listing sessions. Try /resume again.",
+                )
+            except Exception:
+                pass
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming location/venue pin messages."""

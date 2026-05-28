@@ -668,6 +668,7 @@ def create_job(
             "times": repeat,  # None = forever
             "completed": 0
         },
+        "consecutive_failures": 0,
         "enabled": True,
         "state": "scheduled",
         "paused_at": None,
@@ -907,6 +908,10 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 job["last_run_at"] = now
                 job["last_status"] = "ok" if success else "error"
                 job["last_error"] = error if not success else None
+                if success:
+                    job["consecutive_failures"] = 0
+                else:
+                    job["consecutive_failures"] = job.get("consecutive_failures", 0) + 1
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
                 

@@ -235,6 +235,28 @@ def _job_profile_context(job_id: str, profile: Optional[str]):
                 os.environ[k] = v
 
 
+# Retry configuration for transient provider errors
+_MAX_RETRY_ATTEMPTS = 3
+_RETRY_BASE_DELAY_SECONDS = 300  # 5 minutes
+_RETRYABLE_ERROR_PATTERNS = (
+    "429", "too many requests", "rate limit", "rate-limit",
+    "503", "service unavailable",
+    "502", "bad gateway",
+    "504", "gateway timeout",
+    "connection error", "connection refused", "connection reset",
+    "timeout", "timed out",
+    "provider returned error",
+)
+
+
+def _is_retryable_error(error: Optional[str]) -> bool:
+    """Check if an error message indicates a transient/retryable failure."""
+    if not error:
+        return False
+    text = error.lower()
+    return any(pat.lower() in text for pat in _RETRYABLE_ERROR_PATTERNS)
+
+
 def _resolve_origin(job: dict) -> Optional[dict]:
     """Extract origin info from a job, preserving any extra routing metadata.
 
@@ -1965,6 +1987,46 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
                 mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+
+                # Retry logic: if the error is transient (e.g. HTTP 429 rate
+                # limit), override next_run_at to retry sooner rather than
+                # waiting for the next scheduled slot. This prevents silent
+                # permanent misses when the LLM provider is temporarily down.
+                if not success and error and _is_retryable_error(error):
+                    from cron.jobs import load_jobs, save_jobs as _save_jobs
+                    _retry_jobs = load_jobs()
+                    for _rj in _retry_jobs:
+                        if _rj["id"] == job["id"]:
+                            _failures = _rj.get("consecutive_failures", 1)
+                            if _failures <= _MAX_RETRY_ATTEMPTS:
+                                _delay = _RETRY_BASE_DELAY_SECONDS * (2 ** (_failures - 1))
+                                _retry_at = _hermes_now().timestamp() + _delay
+                                from datetime import datetime as _dt, timezone as _tz
+                                _rj["next_run_at"] = _dt.fromtimestamp(_retry_at, tz=_tz.utc).isoformat()
+                                logger.warning(
+                                    "Job '%s' (%s): retryable error (%s) — "
+                                    "will retry at +%ds (attempt %d/%d)",
+                                    job["id"], job.get("name", "?"),
+                                    error[:80], _delay, _failures,
+                                    _MAX_RETRY_ATTEMPTS,
+                                )
+                            else:
+                                _rj["enabled"] = False
+                                _rj["state"] = "paused"
+                                _rj["paused_at"] = _hermes_now().isoformat()
+                                _rj["paused_reason"] = (
+                                    f"Auto-paused after {_MAX_RETRY_ATTEMPTS} "
+                                    f"consecutive failures"
+                                )
+                                logger.error(
+                                    "Job '%s' (%s): auto-paused after %d "
+                                    "consecutive failures — last error: %s",
+                                    job["id"], job.get("name", "?"),
+                                    _MAX_RETRY_ATTEMPTS, error[:120],
+                                )
+                            _save_jobs(_retry_jobs)
+                            break
+
                 return True
 
             except Exception as e:

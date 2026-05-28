@@ -12953,7 +12953,10 @@ class GatewayRunner:
 
         def _list_titled_sessions() -> list[dict]:
             user_source = source.platform.value if source.platform else None
-            sessions = self._session_db.list_sessions_rich(source=user_source, limit=10)
+            sessions = self._session_db.list_sessions_rich(
+                source=user_source, limit=10,
+                exclude_sources=["cron"],
+            )
             return [s for s in sessions if s.get("title")][:10]
 
         if not name:
@@ -13036,6 +13039,37 @@ class GatewayRunner:
         if msg_count == 1:
             return t("gateway.resume.resumed_one", title=title, count=msg_count)
         return t("gateway.resume.resumed_many", title=title, count=msg_count)
+
+    def get_resume_sessions(self, event: "MessageEvent", limit: int = 12) -> list:
+        """Return the list of resumable sessions for the Telegram button UI.
+
+        Returns a list of dicts with keys: id, title, preview, message_count,
+        source, last_active.  Excludes cron/tool sessions, ordered by most
+        recent activity.
+        """
+        if not self._session_db:
+            return []
+        sessions = self._session_db.list_sessions_rich(
+            source=None,
+            exclude_sources=["cron", "tool"],
+            limit=limit * 6,
+            order_by_last_active=True,
+        )
+        result = []
+        for s in sessions:
+            if not s.get("title"):
+                continue
+            result.append({
+                "id": s["id"],
+                "title": s["title"],
+                "preview": s.get("preview", "")[:60],
+                "message_count": s.get("message_count", 0),
+                "source": s.get("source", ""),
+                "last_active": s.get("last_active", s.get("started_at")),
+            })
+            if len(result) >= limit:
+                break
+        return result
 
     async def _handle_branch_command(self, event: MessageEvent) -> str:
         """Handle /branch [name] — fork the current session into a new independent copy.
