@@ -26,6 +26,13 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
+from agent.instruction_surface import (
+    build_project_context_manifest,
+    make_instruction_block,
+    resolve_instruction_blocks,
+    render_resolved_surface,
+)
+
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
@@ -83,6 +90,24 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts: List[str] = []
+    instruction_blocks = []
+
+    def _record_block(*, id: str, content: str, surface: str, tier: str, authority: int, scope: str, origin: str, path: str | None = None, trust: str = "trusted", cache_policy: str = "session", labels=()):
+        if not content or not str(content).strip():
+            return
+        instruction_blocks.append(make_instruction_block(
+            id=id,
+            content=content,
+            surface=surface,
+            tier=tier,
+            authority=authority,
+            scope=scope,
+            origin=origin,
+            path=path,
+            trust=trust,
+            cache_policy=cache_policy,
+            labels=labels,
+        ))
 
     # Try SOUL.md as primary identity unless the caller explicitly skipped it.
     # Some execution modes (cron) still want HERMES_HOME persona while keeping
@@ -92,14 +117,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         _soul_content = _r.load_soul_md()
         if _soul_content:
             stable_parts.append(_soul_content)
+            _record_block(id="profile.SOUL", content=_soul_content, surface="profile", tier="stable", authority=950, scope="profile", origin="HERMES_HOME/SOUL.md", path=str(_r.get_hermes_home() / "SOUL.md") if hasattr(_r, "get_hermes_home") else None, trust="trusted", cache_policy="stable", labels={"identity", "profile"})
             _soul_loaded = True
 
     if not _soul_loaded:
         # Fallback to hardcoded identity
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
+        _record_block(id="profile.DEFAULT_AGENT_IDENTITY", content=DEFAULT_AGENT_IDENTITY, surface="profile", tier="stable", authority=950, scope="profile", origin="agent.prompt_builder.DEFAULT_AGENT_IDENTITY", trust="trusted", cache_policy="stable", labels={"identity", "profile"})
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+    _record_block(id="core.hermes_agent_help", content=HERMES_AGENT_HELP_GUIDANCE, surface="core", tier="stable", authority=1000, scope="global", origin="agent.prompt_builder.HERMES_AGENT_HELP_GUIDANCE", trust="trusted", cache_policy="stable", labels={"workflow", "tool"})
 
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
     # models regardless of tool_use_enforcement gating — the failure modes
@@ -129,17 +157,21 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # Fallback for code paths that bypass agent_init (rare).
         tool_guidance.append(KANBAN_GUIDANCE)
     if tool_guidance:
-        stable_parts.append(" ".join(tool_guidance))
+        _tool_guidance_text = " ".join(tool_guidance)
+        stable_parts.append(_tool_guidance_text)
+        _record_block(id="tool.guidance", content=_tool_guidance_text, surface="tool_guidance", tier="stable", authority=925, scope="session", origin="agent.system_prompt tool guidance", trust="trusted", cache_policy="stable", labels={"tool", "workflow", "kanban", "safety"})
 
     # Computer-use (macOS) — goes in as its own block rather than being
     # merged into tool_guidance because the content is multi-paragraph.
     if "computer_use" in agent.valid_tool_names:
         from agent.prompt_builder import COMPUTER_USE_GUIDANCE
         stable_parts.append(COMPUTER_USE_GUIDANCE)
+        _record_block(id="tool.computer_use", content=COMPUTER_USE_GUIDANCE, surface="tool_guidance", tier="stable", authority=925, scope="session", origin="agent.prompt_builder.COMPUTER_USE_GUIDANCE", trust="trusted", cache_policy="stable", labels={"tool", "safety"})
 
     nous_subscription_prompt = _r.build_nous_subscription_prompt(agent.valid_tool_names)
     if nous_subscription_prompt:
         stable_parts.append(nous_subscription_prompt)
+        _record_block(id="tool.nous_subscription", content=nous_subscription_prompt, surface="tool_guidance", tier="stable", authority=925, scope="session", origin="agent.prompt_builder.build_nous_subscription_prompt", trust="trusted", cache_policy="stable", labels={"tool"})
     # Tool-use enforcement: tells the model to actually call tools instead
     # of describing intended actions.  Controlled by config.yaml
     # agent.tool_use_enforcement:
@@ -163,11 +195,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
         if _inject:
             stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
+            _record_block(id="core.tool_use_enforcement", content=TOOL_USE_ENFORCEMENT_GUIDANCE, surface="core", tier="stable", authority=1000, scope="global", origin="agent.prompt_builder.TOOL_USE_ENFORCEMENT_GUIDANCE", trust="trusted", cache_policy="stable", labels={"tool", "safety", "workflow"})
             _model_lower = (agent.model or "").lower()
             # Google model operational guidance (conciseness, absolute
             # paths, parallel tool calls, verify-before-edit, etc.)
             if "gemini" in _model_lower or "gemma" in _model_lower:
                 stable_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
+                _record_block(id="core.google_model_operational_guidance", content=GOOGLE_MODEL_OPERATIONAL_GUIDANCE, surface="core", tier="stable", authority=1000, scope="global", origin="agent.prompt_builder.GOOGLE_MODEL_OPERATIONAL_GUIDANCE", trust="trusted", cache_policy="stable", labels={"workflow"})
             # OpenAI GPT/Codex execution discipline (tool persistence,
             # prerequisite checks, verification, anti-hallucination).
             # Also applied to xAI Grok — same failure modes (claims completion
@@ -175,6 +209,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             # existing tools, replies with plans instead of executing).
             if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
                 stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
+                _record_block(id="core.openai_model_execution_guidance", content=OPENAI_MODEL_EXECUTION_GUIDANCE, surface="core", tier="stable", authority=1000, scope="global", origin="agent.prompt_builder.OPENAI_MODEL_EXECUTION_GUIDANCE", trust="trusted", cache_policy="stable", labels={"tool", "workflow", "safety"})
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
     if has_skills_tools:
@@ -193,6 +228,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         skills_prompt = ""
     if skills_prompt:
         stable_parts.append(skills_prompt)
+        _record_block(id="skill.index", content=skills_prompt, surface="skill_index", tier="stable", authority=800, scope="session", origin="agent.prompt_builder.build_skills_system_prompt", trust="trusted", cache_policy="stable", labels={"workflow"})
 
     # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
     # of the requested model. Inject explicit model identity into the system prompt
@@ -201,12 +237,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # at construction time.
     if agent.provider == "alibaba":
         _model_short = agent.model.split("/")[-1] if "/" in agent.model else agent.model
-        stable_parts.append(
+        _alibaba_guidance = (
             f"You are powered by the model named {_model_short}. "
             f"The exact model ID is {agent.model}. "
             f"When asked what model you are, always answer based on this information, "
             f"not on any model name returned by the API."
         )
+        stable_parts.append(_alibaba_guidance)
+        _record_block(id="core.alibaba_model_identity", content=_alibaba_guidance, surface="core", tier="stable", authority=1000, scope="session", origin="agent.system_prompt alibaba workaround", trust="trusted", cache_policy="stable", labels={"identity"})
 
     # Environment hints (WSL, Termux, etc.) — tell the agent about the
     # execution environment so it can translate paths and adapt behavior.
@@ -214,6 +252,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _env_hints = _r.build_environment_hints()
     if _env_hints:
         stable_parts.append(_env_hints)
+        _record_block(id="environment.hints", content=_env_hints, surface="environment", tier="stable", authority=925, scope="session", origin="agent.prompt_builder.build_environment_hints", trust="trusted", cache_policy="stable", labels={"environment", "workflow"})
 
     # Local Python toolchain probe — names python/pip/uv/PEP-668 state when
     # something is non-default so the model can pick the right install
@@ -266,9 +305,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             f"after explicit direction."
         )
 
+    _record_block(id="profile.active_profile_hint", content=stable_parts[-1] if stable_parts else "", surface="profile", tier="stable", authority=950, scope="profile", origin="agent.system_prompt active profile hint", trust="trusted", cache_policy="stable", labels={"profile", "safety"})
+
     platform_key = (agent.platform or "").lower().strip()
     if platform_key in PLATFORM_HINTS:
         stable_parts.append(PLATFORM_HINTS[platform_key])
+        _record_block(id=f"platform.{platform_key}", content=PLATFORM_HINTS[platform_key], surface="platform", tier="stable", authority=925, scope="session", origin="agent.prompt_builder.PLATFORM_HINTS", trust="trusted", cache_policy="stable", labels={"platform", "workflow"})
     elif platform_key:
         # Check plugin registry for platform-specific LLM guidance
         try:
@@ -276,6 +318,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             _entry = platform_registry.get(platform_key)
             if _entry and _entry.platform_hint:
                 stable_parts.append(_entry.platform_hint)
+                _record_block(id=f"platform.{platform_key}", content=_entry.platform_hint, surface="platform", tier="stable", authority=925, scope="session", origin="gateway.platform_registry", trust="trusted", cache_policy="stable", labels={"platform", "workflow"})
         except Exception:
             pass
 
@@ -286,6 +329,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # API-call time only so it stays out of the cached/stored system prompt.
     if system_message is not None:
         context_parts.append(system_message)
+        _record_block(id="caller.system_message", content=system_message, surface="caller_system", tier="context", authority=850, scope="session", origin="run_conversation.system_message", trust="trusted", cache_policy="session", labels={"workflow"})
 
     if not agent.skip_context_files:
         # Prefer the configured TERMINAL_CWD (gateway mode). When unset (local
@@ -296,6 +340,35 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             cwd=resolve_context_cwd(), skip_soul=_soul_loaded)
         if context_files_prompt:
             context_parts.append(context_files_prompt)
+            project_block = build_project_context_manifest(cwd=_context_cwd or os.getcwd())
+            if project_block:
+                _record_block(
+                    id=project_block.id,
+                    content=context_files_prompt,
+                    surface=project_block.surface,
+                    tier=project_block.tier,
+                    authority=project_block.authority,
+                    scope=project_block.scope,
+                    origin=project_block.origin,
+                    path=project_block.path,
+                    trust=project_block.trust,
+                    cache_policy=project_block.cache_policy,
+                    labels=project_block.labels,
+                )
+            else:
+                _record_block(
+                    id="project.context_files",
+                    content=context_files_prompt,
+                    surface="project",
+                    tier="context",
+                    authority=650,
+                    scope="project",
+                    origin="agent.prompt_builder.build_context_files_prompt",
+                    path=_context_cwd,
+                    trust="workspace",
+                    cache_policy="session",
+                    labels={"project", "workflow"},
+                )
 
     # ── Volatile tier (changes per session/turn — never cached) ───
     volatile_parts: List[str] = []
@@ -305,11 +378,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             mem_block = agent._memory_store.format_for_system_prompt("memory")
             if mem_block:
                 volatile_parts.append(mem_block)
+                _record_block(id="memory.durable", content=mem_block, surface="memory", tier="volatile", authority=450, scope="profile", origin="memory_store.format_for_system_prompt(memory)", trust="derived", cache_policy="turn", labels={"memory"})
         # USER.md is always included when enabled.
         if agent._user_profile_enabled:
             user_block = agent._memory_store.format_for_system_prompt("user")
             if user_block:
                 volatile_parts.append(user_block)
+                _record_block(id="memory.user_profile", content=user_block, surface="user_profile", tier="volatile", authority=450, scope="profile", origin="memory_store.format_for_system_prompt(user)", trust="derived", cache_policy="turn", labels={"memory", "profile"})
 
     # External memory provider system prompt block (additive to built-in)
     if agent._memory_manager:
@@ -317,6 +392,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             _ext_mem_block = agent._memory_manager.build_system_prompt()
             if _ext_mem_block:
                 volatile_parts.append(_ext_mem_block)
+                _record_block(id="memory.external", content=_ext_mem_block, surface="external_memory", tier="volatile", authority=400, scope="session", origin="memory_manager.build_system_prompt", trust="derived", cache_policy="turn", labels={"memory"})
         except Exception:
             pass
 
@@ -336,12 +412,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if agent.provider:
         timestamp_line += f"\nProvider: {agent.provider}"
     volatile_parts.append(timestamp_line)
+    _record_block(id="volatile.timestamp", content=timestamp_line, surface="environment", tier="volatile", authority=925, scope="session", origin="hermes_time.now/date + agent metadata", trust="trusted", cache_policy="turn", labels={"environment"})
 
-    return {
-        "stable":   "\n\n".join(p.strip() for p in stable_parts   if p and p.strip()),
-        "context":  "\n\n".join(p.strip() for p in context_parts  if p and p.strip()),
-        "volatile": "\n\n".join(p.strip() for p in volatile_parts if p and p.strip()),
-    }
+    resolved = resolve_instruction_blocks(instruction_blocks)
+    agent._instruction_surface_manifest = resolved.manifest
+    agent._instruction_surface_conflicts = resolved.conflicts
+    return render_resolved_surface(resolved)
 
 
 def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str:
