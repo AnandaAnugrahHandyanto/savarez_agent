@@ -46,12 +46,14 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
     "9592417+adam91holt@users.noreply.github.com": "adam91holt",
+    "kchuang1015@users.noreply.github.com": "kchuang1015",
     "45688690+fujinice@users.noreply.github.com": "fujinice",
     "276689385+carltonawong@users.noreply.github.com": "carltonawong",
     "195255660+EvilHumphrey@users.noreply.github.com": "EvilHumphrey",
     "270604154+superearn-fisher@users.noreply.github.com": "superearn-fisher",
     "3540493+kpadilha@users.noreply.github.com": "kpadilha",
     "40378218+chaconne67@users.noreply.github.com": "chaconne67",
+    "Pluviobyte@users.noreply.github.com": "Pluviobyte",
     "sanghyuk_seo@nexcubecorp.com": "sanghyuk-seo-nexcube",
     "subrtt@gmail.com": "Brixyy",
     "wangpuv@hotmail.com": "wangpuv",
