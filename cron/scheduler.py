@@ -181,58 +181,27 @@ def _job_profile_context(job_id: str, profile: Optional[str]):
     .env/config loading, script resolution, AIAgent construction, and downstream
     get_hermes_home() callers agree on the same home.
 
-    Some existing provider/config paths still load profile .env values through
-    os.environ, so profile jobs also snapshot and restore the process
-    environment on exit. tick() runs profile jobs sequentially to keep that
-    temporary mutation isolated from other scheduled jobs.
+    Delegates to :func:`hermes_cli.profile_context.profile_context` for the
+    heavy lifting (home override, .env loading, environment snapshot/restore).
+    This wrapper additionally maintains the cron module's ``_hermes_home``
+    variable so ``_get_hermes_home()`` resolves correctly for direct callers.
     """
-    raw_profile = str(profile or "").strip()
-    if not raw_profile:
-        yield None
-        return
+    from hermes_cli.profile_context import profile_context
 
     global _hermes_home
     prior_override = _hermes_home
-    env_snapshot = os.environ.copy()
 
-    from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    with profile_context(profile or "", label=job_id) as normalized:
+        if normalized is not None:
+            from hermes_cli.profiles import resolve_profile_env
+            from pathlib import Path as _Path
+            try:
+                _hermes_home = _Path(resolve_profile_env(normalized)).resolve()
+            except Exception:
+                pass
+        yield normalized
 
-    normalized_profile = normalize_profile_name(raw_profile)
-    try:
-        profile_home = Path(resolve_profile_env(normalized_profile)).resolve()
-    except (FileNotFoundError, ValueError) as exc:
-        logger.warning(
-            "Job '%s': configured profile %r no longer valid (%s) — "
-            "falling back to scheduler default",
-            job_id, raw_profile, exc,
-        )
-        yield None
-        return
-
-    override_token = None
-    try:
-        override_token = set_hermes_home_override(profile_home)
-        _hermes_home = profile_home
-        logger.info(
-            "Job '%s': using Hermes profile '%s' (%s)",
-            job_id,
-            normalized_profile,
-            profile_home,
-        )
-        yield normalized_profile
-    finally:
-        _hermes_home = prior_override
-        if override_token is not None:
-            reset_hermes_home_override(override_token)
-        # Delta-based restore: remove added keys, restore changed keys.
-        # Avoids a brief window where other threads see an empty env.
-        added = set(os.environ.keys()) - set(env_snapshot.keys())
-        for k in added:
-            os.environ.pop(k, None)
-        for k, v in env_snapshot.items():
-            if os.environ.get(k) != v:
-                os.environ[k] = v
+    _hermes_home = prior_override
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:

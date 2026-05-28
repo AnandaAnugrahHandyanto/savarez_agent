@@ -7860,6 +7860,22 @@ class GatewayRunner:
         self._running_agents_ts[_quick_key] = time.time()
         _run_generation = self._begin_session_run_generation(_quick_key)
 
+        # ── Per-user profile routing ─────────────────────────────────
+        # If the platform supports user→profile mapping (e.g.
+        # SLACK_USER_PROFILE_MAP), enter that profile's context so the
+        # agent runs with the target profile's config, model, memory,
+        # skills, and .env.  Restored in the finally block below.
+        _profile_ctx = None
+        try:
+            from hermes_cli.profile_context import resolve_user_profile, profile_context
+            _platform_str = source.platform.value if hasattr(source.platform, 'value') else str(source.platform)
+            _resolved_profile = resolve_user_profile(_platform_str, source.user_id)
+            if _resolved_profile:
+                _profile_ctx = profile_context(_resolved_profile, label=f"user:{source.user_id}")
+                _profile_ctx.__enter__()
+        except Exception:
+            pass
+
         try:
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
             # Goal continuation: after the agent returns a final response
@@ -7892,6 +7908,12 @@ class GatewayRunner:
                 logger.debug("goal continuation hook failed: %s", _goal_exc)
             return _agent_result
         finally:
+            # ── Exit per-user profile context ───────────────────────
+            if _profile_ctx is not None:
+                try:
+                    _profile_ctx.__exit__(None, None, None)
+                except Exception:
+                    pass
             # If _run_agent replaced the sentinel with a real agent and
             # then cleaned it up, this is a no-op.  If we exited early
             # (exception, command fallthrough, etc.) the sentinel must
