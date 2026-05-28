@@ -6152,7 +6152,17 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
                 f"omitted; showing most recent {len(shown_c)})_"
             )
         for c in shown_c:
-            ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(c.created_at))
+            # Older/buggy event-mirroring paths wrote non-epoch strings into
+            # task_comments.created_at (for example JSON payloads from
+            # claimed/spawned events).  Worker prompt construction must be
+            # best-effort: one malformed legacy comment timestamp should not
+            # crash every dispatcher-spawned worker for the task.
+            c_ts = _to_epoch(c.created_at)
+            ts = (
+                time.strftime("%Y-%m-%d %H:%M", time.localtime(c_ts))
+                if c_ts is not None
+                else "unknown time"
+            )
             # Render author with explicit "comment from worker" framing so
             # operator-controlled HERMES_PROFILE values like "hermes-system"
             # or "operator" can't be misread by the next worker as a system

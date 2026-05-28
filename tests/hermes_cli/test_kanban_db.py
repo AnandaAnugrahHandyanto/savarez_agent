@@ -202,6 +202,22 @@ def test_create_task_persists_worktree_branch_name(kanban_home, tmp_path):
     assert "Branch:   wt/t6-wire" in context
 
 
+def test_build_worker_context_tolerates_malformed_comment_timestamp(kanban_home):
+    """Legacy bad rows must not crash every worker prompt for a task."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="legacy comment timestamp")
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (tid, "legacy", "CLAIMED_EVENT_SHAPED_COMMENT", '{"lock":"x"}'),
+        )
+        context = kb.build_worker_context(conn, tid)
+
+    assert "Comment thread" in context
+    assert "unknown time" in context
+    assert "CLAIMED_EVENT_SHAPED_COMMENT" in context
+
+
 def test_branch_name_requires_worktree_workspace(kanban_home):
     with kb.connect() as conn, pytest.raises(ValueError, match="worktree"):
         kb.create_task(
