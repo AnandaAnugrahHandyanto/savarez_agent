@@ -1,5 +1,4 @@
 """Tests for delegate_task profile support."""
-import json
 import threading
 from unittest.mock import MagicMock, patch
 
