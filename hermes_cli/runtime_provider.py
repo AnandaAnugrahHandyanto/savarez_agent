@@ -1666,3 +1666,150 @@ def format_runtime_provider_error(error: Exception) -> str:
     if isinstance(error, AuthError):
         return format_auth_error(error)
     return str(error)
+
+
+# ---------------------------------------------------------------------------
+# Post-resolution credential sanity check (#33936)
+# ---------------------------------------------------------------------------
+# ``resolve_runtime_provider()`` for an api-key provider (PROVIDER_REGISTRY
+# entry with ``auth_type='api_key'`` — DeepSeek, Z.AI/GLM, Kimi, Mistral,
+# Groq, NVIDIA NIM, ...) silently returns ``{"api_key": "", ...}`` when the
+# expected env var is unset or empty. Long-lived callers (cron scheduler,
+# gateway request handler, CLI one-shot) wrap the call in ``try/except
+# AuthError`` to trigger their ``fallback_providers`` chain — but the
+# missing-key case never raised, so the agent was constructed with an
+# empty api_key and the API call eventually failed with a confusing 401
+# instead of falling back. #33936 reported this as "DEEPSEEK_API_KEY blocked
+# by env blocklist" but the real root cause was the silent fall-through.
+# The helper below classifies a resolved runtime and lets the caller raise
+# ``AuthError`` so the existing fallback wiring kicks in.
+# ---------------------------------------------------------------------------
+
+
+# Placeholder api_key values that pass our string-truthiness check but
+# represent "no real credential" — used by local LLM providers that
+# expose an OpenAI-compatible endpoint without auth. Keep in sync with
+# ``hermes_cli.auth.LMSTUDIO_NOAUTH_PLACEHOLDER`` and the ``no-key-required``
+# sentinel produced by ``_resolve_named_custom_runtime`` for localhost-
+# only custom providers.
+_RUNTIME_NOAUTH_API_KEY_PLACEHOLDERS = frozenset({
+    "no-key-required",
+    "dummy-lm-api-key",
+    "aws-sdk",
+    "copilot-acp",
+})
+
+
+def _runtime_is_registry_api_key_provider(runtime: dict[str, Any]) -> bool:
+    """True when ``runtime['provider']`` is a registry entry whose
+    ``auth_type`` is ``api_key``.
+
+    Used to scope the empty-key check to providers that genuinely
+    require an api_key in ``os.environ`` / ``~/.hermes/.env`` —
+    DeepSeek, Z.AI/GLM, Kimi, Mistral, Groq, NVIDIA NIM, etc.
+    OAuth providers (Nous, Codex, xAI OAuth, Qwen, Gemini OAuth),
+    OpenRouter, AWS Bedrock, Copilot ACP and bare ``custom`` /
+    localhost runtimes all carry their auth in other fields and are
+    intentionally allowed to flow through with empty/placeholder
+    api_key values.
+    """
+    provider = str(runtime.get("provider") or "").strip().lower()
+    if not provider:
+        return False
+    pconfig = PROVIDER_REGISTRY.get(provider)
+    return bool(pconfig and pconfig.auth_type == "api_key")
+
+
+def runtime_credentials_are_usable(runtime: dict[str, Any] | None) -> bool:
+    """Return True when ``runtime`` carries credentials we can actually use.
+
+    The check is intentionally scoped to api-key providers from
+    :data:`PROVIDER_REGISTRY` (DeepSeek, Z.AI/GLM, Kimi, Mistral, …).
+    Those are the providers that 1) silently returned ``api_key=""``
+    in #33936 when their env var was unset, and 2) cannot possibly
+    succeed without a real bearer token at the API call.
+
+    A runtime is *usable* when:
+
+    * it's a dict, AND either:
+        - the provider is NOT a registry api-key provider (OAuth,
+          OpenRouter, Bedrock, custom, … carry auth in other fields,
+          we trust the per-provider resolver); OR
+        - its ``api_key`` is a callable (dynamic-token resolvers
+          refresh at API call time); OR
+        - its ``api_key`` is a known no-auth placeholder
+          (``no-key-required`` / ``dummy-lm-api-key`` / …); OR
+        - its ``api_key`` is a non-empty string that passes
+          :func:`has_usable_secret`.
+
+    Returns False for the silent-failure case described in #33936: an
+    api-key provider (DeepSeek, Z.AI, Kimi, …) resolved with an empty
+    ``api_key`` because the env var wasn't set. Callers should raise
+    :class:`AuthError` in that case so their fallback chain activates.
+    """
+    if not isinstance(runtime, dict):
+        return False
+
+    api_key = runtime.get("api_key")
+    if callable(api_key):
+        return True
+
+    # Off-registry / OAuth / Bedrock / OpenRouter / custom — trust the
+    # per-provider resolver's idea of "usable". The check below would
+    # otherwise reject test mocks with ``api_key='***'`` and break a
+    # large swath of tests that don't care about credentials.
+    if not _runtime_is_registry_api_key_provider(runtime):
+        return True
+
+    if isinstance(api_key, str):
+        cleaned = api_key.strip()
+        if not cleaned:
+            return False
+        # Known placeholders for local/no-auth providers are fine —
+        # the API call won't try to send them as bearer tokens.
+        if cleaned.lower() in _RUNTIME_NOAUTH_API_KEY_PLACEHOLDERS:
+            return True
+        return has_usable_secret(cleaned)
+
+    return False
+
+
+def ensure_runtime_credentials_or_raise(
+    runtime: dict[str, Any] | None,
+    *,
+    requested_provider: Optional[str] = None,
+) -> None:
+    """Raise :class:`AuthError` when ``runtime`` lacks usable credentials.
+
+    Companion to :func:`runtime_credentials_are_usable`. The error
+    message names the provider and the env var(s) the resolver tried to
+    read, so operators reading gateway / cron logs can fix their
+    ``~/.hermes/.env`` without digging through code.
+
+    No-op when the runtime is usable — keeps the happy path cost
+    negligible for callers that wrap every primary-provider resolution.
+    """
+    if runtime_credentials_are_usable(runtime):
+        return
+
+    runtime = runtime or {}
+    provider_id = (
+        str(runtime.get("provider") or "").strip()
+        or str(requested_provider or "").strip()
+        or "?"
+    )
+
+    env_hint = ""
+    pconfig = PROVIDER_REGISTRY.get(provider_id.lower())
+    if pconfig and pconfig.auth_type == "api_key" and pconfig.api_key_env_vars:
+        env_hint = (
+            f" Set one of: {', '.join(pconfig.api_key_env_vars)} "
+            f"(in ~/.hermes/.env or the process environment)."
+        )
+
+    raise AuthError(
+        f"Provider '{provider_id}' resolved with no usable api_key — "
+        f"the configured credential source is empty or missing.{env_hint}",
+        provider=provider_id,
+        code="missing_api_key",
+    )
