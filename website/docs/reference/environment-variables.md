@@ -366,6 +366,8 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `BLUEBUBBLES_WEBHOOK_PORT` | Webhook listener port (default: `8645`) |
 | `BLUEBUBBLES_HOME_CHANNEL` | Phone/email for cron/notification delivery |
 | `BLUEBUBBLES_ALLOWED_USERS` | Comma-separated authorized users |
+| `BLUEBUBBLES_ALLOWED_CHATS` | Comma-separated BlueBubbles chat GUIDs the bot may answer in |
+| `BLUEBUBBLES_IGNORE_GROUP_CHATS` | Drop inbound group chat messages (`true`/`false`) |
 | `BLUEBUBBLES_ALLOW_ALL_USERS` | Allow all users (`true`/`false`) |
 | `QQ_APP_ID` | QQ Bot App ID from [q.qq.com](https://q.qq.com) |
 | `QQ_CLIENT_SECRET` | QQ Bot App Secret from [q.qq.com](https://q.qq.com) |

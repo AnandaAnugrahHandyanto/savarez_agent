@@ -246,6 +246,8 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "DINGTALK_ALLOWED_USERS",
     "FEISHU_ALLOWED_USERS",
     "WECOM_ALLOWED_USERS",
+    "BLUEBUBBLES_ALLOWED_USERS",
+    "BLUEBUBBLES_ALLOWED_CHATS",
     "GATEWAY_ALLOWED_USERS",
     "GATEWAY_ALLOW_ALL_USERS",
     "TELEGRAM_ALLOW_ALL_USERS",
@@ -255,6 +257,8 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "SIGNAL_ALLOW_ALL_USERS",
     "EMAIL_ALLOW_ALL_USERS",
     "SMS_ALLOW_ALL_USERS",
+    "BLUEBUBBLES_ALLOW_ALL_USERS",
+    "BLUEBUBBLES_IGNORE_GROUP_CHATS",
     # Gateway home channels are set by /sethome in real profiles. Tests that
     # exercise dashboard notification toggles must opt in explicitly or they
     # can accidentally subscribe against a developer's real home channel.

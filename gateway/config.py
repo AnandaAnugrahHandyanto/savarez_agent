@@ -1675,14 +1675,26 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if Platform.BLUEBUBBLES not in config.platforms:
             config.platforms[Platform.BLUEBUBBLES] = PlatformConfig()
         config.platforms[Platform.BLUEBUBBLES].enabled = True
-        config.platforms[Platform.BLUEBUBBLES].extra.update({
+        bluebubbles_extra = {
             "server_url": bluebubbles_server_url.rstrip("/"),
             "password": bluebubbles_password,
             "webhook_host": os.getenv("BLUEBUBBLES_WEBHOOK_HOST", "127.0.0.1"),
             "webhook_port": int(os.getenv("BLUEBUBBLES_WEBHOOK_PORT", "8645")),
             "webhook_path": os.getenv("BLUEBUBBLES_WEBHOOK_PATH", "/bluebubbles-webhook"),
-            "send_read_receipts": os.getenv("BLUEBUBBLES_SEND_READ_RECEIPTS", "true").lower() in {"true", "1", "yes"},
-        })
+            "send_read_receipts": (
+                os.getenv("BLUEBUBBLES_SEND_READ_RECEIPTS", "true").lower()
+                in {"true", "1", "yes"}
+            ),
+        }
+        bluebubbles_allowed_chats = os.getenv("BLUEBUBBLES_ALLOWED_CHATS")
+        if bluebubbles_allowed_chats:
+            bluebubbles_extra["allowed_chats"] = bluebubbles_allowed_chats
+        bluebubbles_ignore_group_chats = os.getenv("BLUEBUBBLES_IGNORE_GROUP_CHATS")
+        if bluebubbles_ignore_group_chats:
+            bluebubbles_extra["ignore_group_chats"] = (
+                bluebubbles_ignore_group_chats.lower() in {"true", "1", "yes"}
+            )
+        config.platforms[Platform.BLUEBUBBLES].extra.update(bluebubbles_extra)
     bluebubbles_home = os.getenv("BLUEBUBBLES_HOME_CHANNEL")
     if bluebubbles_home and Platform.BLUEBUBBLES in config.platforms:
         config.platforms[Platform.BLUEBUBBLES].home_channel = HomeChannel(

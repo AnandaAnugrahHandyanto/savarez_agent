@@ -90,6 +90,24 @@ def _normalize_server_url(raw: str) -> str:
     return value.rstrip("/")
 
 
+def _parse_csv_values(raw: Any) -> set[str]:
+    if raw is None:
+        return set()
+    if isinstance(raw, str):
+        values = raw.split(",")
+    elif isinstance(raw, (list, tuple, set)):
+        values = raw
+    else:
+        values = [raw]
+    return {str(value).strip() for value in values if str(value).strip()}
+
+
+def _truthy(raw: Any) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 
 
 
@@ -124,6 +142,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not str(self.webhook_path).startswith("/"):
             self.webhook_path = f"/{self.webhook_path}"
         self.send_read_receipts = bool(extra.get("send_read_receipts", True))
+        allowed_chats = extra.get("allowed_chats")
+        if allowed_chats is None:
+            allowed_chats = os.getenv("BLUEBUBBLES_ALLOWED_CHATS", "")
+        self._allowed_chats = _parse_csv_values(allowed_chats)
+        ignore_group_chats = extra.get("ignore_group_chats")
+        if ignore_group_chats is None:
+            ignore_group_chats = os.getenv("BLUEBUBBLES_IGNORE_GROUP_CHATS", "")
+        self._ignore_group_chats = _truthy(ignore_group_chats)
         self.client: Optional[httpx.AsyncClient] = None
         self._runner = None
         self._private_api_enabled: Optional[bool] = None
@@ -778,6 +804,16 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 return candidate.strip()
         return None
 
+    def _chat_is_allowed(
+        self,
+        chat_guid: Optional[str],
+        chat_identifier: Optional[str],
+    ) -> bool:
+        if not self._allowed_chats or "*" in self._allowed_chats:
+            return True
+        candidates = {value for value in (chat_guid, chat_identifier) if value}
+        return bool(candidates & self._allowed_chats)
+
     async def _handle_webhook(self, request):
         from aiohttp import web
 
@@ -913,6 +949,18 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         session_chat_id = chat_guid or chat_identifier
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
+        if is_group and self._ignore_group_chats:
+            logger.debug(
+                "[bluebubbles] dropping group chat message from %s",
+                _redact(sender),
+            )
+            return web.Response(text="ok")
+        if not self._chat_is_allowed(chat_guid, chat_identifier):
+            logger.debug(
+                "[bluebubbles] dropping message from non-allowed chat %s",
+                _redact(session_chat_id or ""),
+            )
+            return web.Response(text="ok")
         source = self.build_source(
             chat_id=session_chat_id,
             chat_name=chat_identifier or sender,

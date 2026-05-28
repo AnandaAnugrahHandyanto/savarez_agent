@@ -1,7 +1,12 @@
 """Tests for the BlueBubbles iMessage gateway adapter."""
+import asyncio
+import json
+from types import SimpleNamespace
+
 import pytest
 
 from gateway.config import Platform, PlatformConfig
+from gateway.session import SessionSource
 
 
 def _make_adapter(monkeypatch, **extra):
@@ -20,11 +25,23 @@ def _make_adapter(monkeypatch, **extra):
     return BlueBubblesAdapter(cfg)
 
 
+class _WebhookRequest:
+    def __init__(self, payload):
+        self.query = {"password": "secret"}
+        self.headers = {}
+        self._payload = payload
+
+    async def read(self):
+        return json.dumps(self._payload).encode("utf-8")
+
+
 class TestBlueBubblesConfigLoading:
     def test_apply_env_overrides_bluebubbles(self, monkeypatch):
         monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
         monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
         monkeypatch.setenv("BLUEBUBBLES_WEBHOOK_PORT", "9999")
+        monkeypatch.setenv("BLUEBUBBLES_ALLOWED_CHATS", "any;+;chat-uuid-abc123")
+        monkeypatch.setenv("BLUEBUBBLES_IGNORE_GROUP_CHATS", "true")
         from gateway.config import GatewayConfig, _apply_env_overrides
 
         config = GatewayConfig()
@@ -35,6 +52,8 @@ class TestBlueBubblesConfigLoading:
         assert bc.extra["server_url"] == "http://localhost:1234"
         assert bc.extra["password"] == "secret"
         assert bc.extra["webhook_port"] == 9999
+        assert bc.extra["allowed_chats"] == "any;+;chat-uuid-abc123"
+        assert bc.extra["ignore_group_chats"] is True
 
     def test_home_channel_set_from_env(self, monkeypatch):
         monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
@@ -272,6 +291,111 @@ class TestBlueBubblesWebhookParsing:
         payload = {"message": {"text": "hello"}}
         record = adapter._extract_payload_record(payload)
         assert record["text"] == "hello"
+
+    @pytest.mark.asyncio
+    async def test_webhook_ignores_group_chat_when_configured(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, ignore_group_chats=True)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "MESSAGE-GUID",
+                "text": "hello everyone",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "isGroup": True,
+                "chats": [{"guid": "any;+;chat-uuid-abc123"}],
+            },
+        }
+
+        response = await adapter._handle_webhook(_WebhookRequest(payload))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert handled == []
+
+    @pytest.mark.asyncio
+    async def test_webhook_allows_configured_group_chat(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            allowed_chats=["any;+;chat-uuid-abc123"],
+        )
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "MESSAGE-GUID",
+                "text": "hello everyone",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "isGroup": True,
+                "chats": [{"guid": "any;+;chat-uuid-abc123"}],
+            },
+        }
+
+        response = await adapter._handle_webhook(_WebhookRequest(payload))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert len(handled) == 1
+        assert handled[0].source.chat_id == "any;+;chat-uuid-abc123"
+        assert handled[0].source.chat_type == "group"
+
+    @pytest.mark.asyncio
+    async def test_webhook_drops_unlisted_chat_when_allowlist_set(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            allowed_chats=["any;+;allowed-chat"],
+        )
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "MESSAGE-GUID",
+                "text": "hello everyone",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "isGroup": True,
+                "chats": [{"guid": "any;+;other-chat"}],
+            },
+        }
+
+        response = await adapter._handle_webhook(_WebhookRequest(payload))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert handled == []
+
+    def test_allowed_chats_authorizes_group_chat(self, monkeypatch):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner.pairing_store = SimpleNamespace(is_approved=lambda *_a, **_kw: False)
+        monkeypatch.setenv("BLUEBUBBLES_ALLOWED_CHATS", "any;+;chat-uuid-abc123")
+        source = SessionSource(
+            platform=Platform.BLUEBUBBLES,
+            chat_id="any;+;chat-uuid-abc123",
+            chat_type="group",
+            user_id=None,
+            user_name=None,
+        )
+
+        assert runner._is_user_authorized(source) is True
 
 
 class TestBlueBubblesGuidResolution:

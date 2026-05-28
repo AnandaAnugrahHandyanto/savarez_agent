@@ -89,6 +89,8 @@ Hermes → BlueBubbles REST API → Messages.app → iMessage
 | `BLUEBUBBLES_WEBHOOK_PATH` | No | `/bluebubbles-webhook` | Webhook URL path |
 | `BLUEBUBBLES_HOME_CHANNEL` | No | — | Phone/email for cron delivery |
 | `BLUEBUBBLES_ALLOWED_USERS` | No | — | Comma-separated authorized users |
+| `BLUEBUBBLES_ALLOWED_CHATS` | No | — | Comma-separated BlueBubbles chat GUIDs the bot may answer in |
+| `BLUEBUBBLES_IGNORE_GROUP_CHATS` | No | `false` | Drop inbound group chat messages |
 | `BLUEBUBBLES_ALLOW_ALL_USERS` | No | `false` | Allow all users |
 
 Auto-marking messages as read is controlled by the `send_read_receipts` key under `platforms.bluebubbles.extra` in `~/.hermes/config.yaml` (default: `true`). There is no corresponding environment variable.
