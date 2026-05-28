@@ -435,8 +435,17 @@ def _chat_messages_to_responses_input(
                             "status": _normalize_responses_message_status(raw_item.get("status")),
                             "content": normalized_content_parts,
                         }
+                        # Strip oversized message item ids (>64 chars) on
+                        # replay — the Responses API rejects them with HTTP
+                        # 400 string_above_max_length.  With store=false the
+                        # server cannot resolve the id anyway; the phase
+                        # field (preserved below) is what matters for cache.
                         item_id = raw_item.get("id")
-                        if isinstance(item_id, str) and item_id.strip():
+                        if (
+                            isinstance(item_id, str)
+                            and item_id.strip()
+                            and len(item_id.strip()) <= 64
+                        ):
                             replay_item["id"] = item_id.strip()
                         phase = raw_item.get("phase")
                         if isinstance(phase, str) and phase.strip():
@@ -690,7 +699,13 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                 "content": normalized_content,
             }
             item_id = item.get("id")
-            if isinstance(item_id, str) and item_id.strip():
+            if (
+                isinstance(item_id, str)
+                and item_id.strip()
+                and len(item_id.strip()) <= 64
+            ):
+                # Only pass through short ids — oversized ids from
+                # Codex (408+ chars) cause HTTP 400 on replay.
                 normalized_item["id"] = item_id.strip()
             phase = item.get("phase")
             if isinstance(phase, str) and phase.strip():
@@ -1069,8 +1084,13 @@ def _normalize_codex_response(
                     "content": [{"type": "output_text", "text": message_text}],
                 }
                 item_id = getattr(item, "id", None)
-                if isinstance(item_id, str) and item_id:
+                if isinstance(item_id, str) and item_id and len(item_id) <= 64:
                     raw_message_item["id"] = item_id
+                elif isinstance(item_id, str) and len(item_id) > 64:
+                    logger.debug(
+                        "Dropping oversized message item id (%d chars) during capture",
+                        len(item_id),
+                    )
                 if normalized_phase:
                     raw_message_item["phase"] = normalized_phase
                 message_items_raw.append(raw_message_item)
@@ -1098,8 +1118,13 @@ def _normalize_codex_response(
                         item_id,
                     )
                     continue
-                if isinstance(item_id, str) and item_id:
+                if isinstance(item_id, str) and item_id and len(item_id) <= 64:
                     raw_item["id"] = item_id
+                elif isinstance(item_id, str) and len(item_id) > 64:
+                    logger.debug(
+                        "Dropping oversized reasoning item id (%d chars) during capture",
+                        len(item_id),
+                    )
                 # Capture summary — required by the API when replaying reasoning items
                 summary = getattr(item, "summary", None)
                 if isinstance(summary, list):
