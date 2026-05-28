@@ -778,6 +778,10 @@ class GatewayStreamConsumer:
                         pass
                 self._already_sent = True
                 self._final_response_sent = True
+                # Content was already visible to the user before fallback —
+                # mark it delivered so the gateway queued-follow-up path
+                # does not treat the run as unconfirmed and resend it.
+                self._final_content_delivered = True
                 return
 
         raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
@@ -819,6 +823,7 @@ class GatewayStreamConsumer:
                     # full response and create another duplicate.
                     self._already_sent = True
                     self._final_response_sent = True
+                    self._final_content_delivered = True
                     self._message_id = last_message_id
                     self._last_sent_text = last_successful_chunk
                     self._fallback_prefix = ""
@@ -856,6 +861,7 @@ class GatewayStreamConsumer:
         self._message_id = last_message_id
         self._already_sent = True
         self._final_response_sent = True
+        self._final_content_delivered = True
         self._last_sent_text = chunks[-1]
         self._fallback_prefix = ""
 
