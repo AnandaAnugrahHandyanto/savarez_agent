@@ -107,7 +107,19 @@ function terminalLineHeightForWidth(layoutWidthPx: number): number {
   return layoutWidthPx < 1024 ? 1.02 : 1.15;
 }
 
-export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
+export default function ChatPage({
+  isActive = true,
+  chatSystemMonitor: _chatSystemMonitor = true,
+  chatByAgentProfile = true,
+  channelBumpKey = 0,
+  onProfileActivated,
+}: {
+  isActive?: boolean;
+  chatSystemMonitor?: boolean;
+  chatByAgentProfile?: boolean;
+  channelBumpKey?: number;
+  onProfileActivated?: () => void;
+}) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -159,7 +171,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
-  const channel = useMemo(() => generateChannelId(), [resumeParam]);
+  const channel = useMemo(() => generateChannelId(), [resumeParam, channelBumpKey]);
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -795,7 +807,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "border-t border-current/10",
             )}
           >
-            <ChatSidebar channel={channel} />
+            <ChatSidebar channel={channel} chatByAgentProfile={chatByAgentProfile} onProfileActivated={onProfileActivated} />
           </div>
         </div>
       </>,
@@ -863,7 +875,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             className="flex min-h-0 shrink-0 flex-col overflow-hidden lg:h-full lg:w-80"
           >
             <div className="min-h-0 flex-1 overflow-hidden">
-              <ChatSidebar channel={channel} />
+              <ChatSidebar channel={channel} chatByAgentProfile={chatByAgentProfile} onProfileActivated={onProfileActivated} />
             </div>
           </div>
         )}
