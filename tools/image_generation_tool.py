@@ -842,10 +842,32 @@ IMAGE_GENERATE_SCHEMA = {
                 "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
                 "default": DEFAULT_ASPECT_RATIO,
             },
+            "reference_image_paths": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional local image file paths or image URLs to pass as "
+                    "input/reference images when the configured backend supports "
+                    "image-conditioned generation. Do not include these paths in "
+                    "the text prompt."
+                ),
+                "default": [],
+            },
         },
         "required": ["prompt"],
     },
 }
+
+
+def _coerce_reference_image_paths(value: Any) -> list[str]:
+    """Return a clean list of reference image path strings from tool args."""
+    if not isinstance(value, list):
+        return []
+    paths: list[str] = []
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            paths.append(item.strip())
+    return paths
 
 
 def _read_configured_image_model():
@@ -887,7 +909,7 @@ def _read_configured_image_provider():
     return None
 
 
-def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
+def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str, reference_image_paths=None):
     """Route the call to a plugin-registered provider when one is selected.
 
     Returns a JSON string on dispatch, or ``None`` to fall through to the
@@ -941,9 +963,12 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
         })
 
     try:
-        kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio}
+        kwargs: Dict[str, Any] = {"prompt": prompt, "aspect_ratio": aspect_ratio}
         if configured_model:
             kwargs["model"] = configured_model
+        clean_reference_image_paths = _coerce_reference_image_paths(reference_image_paths)
+        if clean_reference_image_paths:
+            kwargs["reference_image_paths"] = clean_reference_image_paths
         result = provider.generate(**kwargs)
     except Exception as exc:
         logger.warning(
@@ -971,12 +996,32 @@ def _handle_image_generate(args, **kw):
     if not prompt:
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
+    reference_image_paths = _coerce_reference_image_paths(args.get("reference_image_paths"))
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
-    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
+    dispatched = _dispatch_to_plugin_provider(
+        prompt,
+        aspect_ratio,
+        reference_image_paths=reference_image_paths,
+    )
     if dispatched is not None:
         return dispatched
+
+    if reference_image_paths:
+        return json.dumps({
+            "success": False,
+            "image": None,
+            "error": (
+                "reference_image_paths were provided, but no image_gen.provider "
+                "plugin is configured to accept image references. Configure a "
+                "reference-capable provider such as openai-codex."
+            ),
+            "error_type": "unsupported_reference_images",
+            "provider": "fal",
+            "prompt": prompt,
+            "aspect_ratio": aspect_ratio,
+        })
 
     return image_generate_tool(
         prompt=prompt,

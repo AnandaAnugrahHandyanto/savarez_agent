@@ -27,6 +27,7 @@ class _FakeCodexProvider(ImageGenProvider):
             "prompt": prompt,
             "aspect_ratio": aspect_ratio,
             "provider": "codex",
+            "kwargs": kwargs,
         }
 
 
@@ -51,6 +52,27 @@ class TestPluginDispatch:
         assert payload["provider"] == "codex"
         assert payload["image"] == "/tmp/codex-test.png"
         assert payload["aspect_ratio"] == "square"
+
+    def test_dispatch_forwards_reference_image_paths(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from hermes_cli import plugins as plugins_module
+        from agent import image_gen_registry as registry_module
+
+        reference_paths = [str(tmp_path / "reference.png")]
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "codex")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda: None)
+        monkeypatch.setattr(registry_module, "get_provider", lambda name: _FakeCodexProvider() if name == "codex" else None)
+
+        dispatched = image_generation_tool._dispatch_to_plugin_provider(
+            "draw Dominik",
+            "portrait",
+            reference_image_paths=reference_paths,
+        )
+        payload = json.loads(dispatched)
+
+        assert payload["success"] is True
+        assert payload["kwargs"]["reference_image_paths"] == reference_paths
 
     def test_dispatch_reports_missing_registered_provider(self, monkeypatch, tmp_path):
         from tools import image_generation_tool
