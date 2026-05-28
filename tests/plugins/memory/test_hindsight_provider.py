@@ -20,6 +20,9 @@ from plugins.memory.hindsight import (
     RETAIN_SCHEMA,
     _load_config,
     _build_embedded_profile_env,
+    _dedupe_memory_lines,
+    _is_stale_operational_status,
+    _is_task_log_memory,
     _normalize_retain_tags,
     _resolve_bank_id_template,
     _sanitize_bank_segment,
@@ -194,6 +197,7 @@ class TestConfig:
         assert provider._auto_recall is True
         assert provider._retain_every_n_turns == 1
         assert provider._recall_max_tokens == 4096
+        assert provider._recall_max_results == 8
         assert provider._recall_max_input_chars == 800
         assert provider._tags is None
         assert provider._recall_tags is None
@@ -215,6 +219,7 @@ class TestConfig:
             retain_context="custom-ctx",
             bank_retain_mission="Extract key facts",
             recall_max_tokens=2048,
+            recall_max_results=3,
             recall_types=["world", "experience"],
             recall_prompt_preamble="Custom preamble:",
             recall_max_input_chars=500,
@@ -233,6 +238,7 @@ class TestConfig:
         assert p._retain_context == "custom-ctx"
         assert p._bank_retain_mission == "Extract key facts"
         assert p._recall_max_tokens == 2048
+        assert p._recall_max_results == 3
         assert p._recall_types == ["world", "experience"]
         assert p._recall_prompt_preamble == "Custom preamble:"
         assert p._recall_max_input_chars == 500
@@ -432,6 +438,67 @@ class TestPostSetup:
         assert saved["timeout"] == 120
 
 
+
+
+# ---------------------------------------------------------------------------
+# Memory hygiene tests
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryHygiene:
+    def test_task_log_classifier_rejects_transient_status(self):
+        assert _is_task_log_memory("No memory update was required for this turn.")
+        assert _is_task_log_memory("job ID 12345 completed")
+        assert _is_task_log_memory("PR #42 merged")
+        assert _is_task_log_memory("commit SHA abc1234 deployed")
+        assert _is_task_log_memory("last run 2026-05-26 error")
+        assert _is_task_log_memory("health was green on 2026-05-26")
+
+    def test_task_log_classifier_preserves_durable_preferences(self):
+        assert not _is_task_log_memory("Tyler prefers concise final answers.")
+        assert not _is_task_log_memory("Canonical Hindsight bank is hermes-default.")
+        assert not _is_task_log_memory("Workflow rule: use session_search for task logs.")
+
+    def test_dedupe_collapses_model_evaluation_variants(self):
+        lines = [
+            "Qwen3 14B gives better reasoning/synthesis.",
+            "Qwen3 14B gave better complete answers.",
+            "Qwen3 14B has better answer quality but is slower.",
+            "Tyler prefers concise answers.",
+        ]
+        assert _dedupe_memory_lines(lines) == [
+            "Qwen3 14B gives better reasoning/synthesis.",
+            "Tyler prefers concise answers.",
+        ]
+
+    def test_stale_operational_status_classifier(self):
+        assert _is_stale_operational_status("health was red on 2026-05-25")
+        assert _is_stale_operational_status("last run 2026-05-25 ok")
+        assert not _is_stale_operational_status("Canonical Hindsight API is http://127.0.0.1:8888")
+
+    def test_sync_turn_skips_non_durable_task_log(self, provider):
+        provider.sync_turn("status?", "No memory update was required for this turn.")
+        provider._retain_queue.join()
+        provider._client.aretain_batch.assert_not_called()
+
+    def test_sync_turn_preserves_durable_fact(self, provider):
+        provider.sync_turn("remember", "Tyler prefers concise final answers.")
+        provider._retain_queue.join()
+        provider._client.aretain_batch.assert_called_once()
+
+    def test_recall_format_dedupes_caps_and_drops_stale_status(self, provider_with_config):
+        p = provider_with_config(recall_max_results=2)
+        results = [
+            SimpleNamespace(text="health was green on 2026-05-26"),
+            SimpleNamespace(text="Qwen3 14B gives better reasoning/synthesis."),
+            SimpleNamespace(text="Qwen3 14B gave better complete answers."),
+            SimpleNamespace(text="Tyler prefers concise answers."),
+            SimpleNamespace(text="Canonical bank is hermes-default."),
+        ]
+        assert p._format_recall_results(results) == (
+            "- Qwen3 14B gives better reasoning/synthesis.\n"
+            "- Tyler prefers concise answers."
+        )
 
 # ---------------------------------------------------------------------------
 # Tool handler tests
@@ -1219,7 +1286,7 @@ class TestConfigSchema:
             "recall_tags", "recall_tags_match",
             "auto_recall", "auto_retain",
             "retain_every_n_turns", "retain_async", "retain_context",
-            "recall_max_tokens", "recall_max_input_chars",
+            "recall_max_tokens", "recall_max_results", "recall_max_input_chars",
             "recall_prompt_preamble",
         }
         assert expected_keys.issubset(keys), f"Missing: {expected_keys - keys}"

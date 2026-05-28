@@ -71,6 +71,7 @@ Config file: `~/.hermes/hindsight/config.json`
 | `recall_budget` | `mid` | Recall thoroughness: `low` / `mid` / `high` |
 | `recall_prefetch_method` | `recall` | Auto-recall method: `recall` (raw facts) or `reflect` (LLM synthesis) |
 | `recall_max_tokens` | `4096` | Maximum tokens for recall results |
+| `recall_max_results` | `8` | Maximum deduplicated recalled memory bullets injected into context |
 | `recall_max_input_chars` | `800` | Maximum input query length for auto-recall |
 | `recall_prompt_preamble` | — | Custom preamble for recalled memories in context |
 | `recall_tags` | — | Tags to filter when searching memories |
@@ -89,6 +90,8 @@ Config file: `~/.hermes/hindsight/config.json`
 | `retain_source` | — | Optional `metadata.source` attached to retained memories |
 | `retain_user_prefix` | `User` | Label used before user turns in auto-retained transcripts |
 | `retain_assistant_prefix` | `Assistant` | Label used before assistant turns in auto-retained transcripts |
+
+Auto-retain is for durable steering facts only. Hermes filters obvious task logs and transient operational status such as job IDs, PR numbers, commit SHAs, one-off health states, reminders, and "no memory update required" messages before sending content to Hindsight. Use `session_search` for task history and audit trails. Put reusable workflow lessons and user corrections into the relevant `SKILL.md` when they describe how future work should be done.
 
 ### Integration
 
@@ -120,6 +123,15 @@ Available in `hybrid` and `tools` memory modes:
 | `hindsight_retain` | Store information with auto entity extraction; supports optional per-call `tags` |
 | `hindsight_recall` | Multi-strategy search (semantic + entity graph) |
 | `hindsight_reflect` | Cross-memory synthesis (LLM-powered) |
+
+## Operator Memory Boundaries
+
+- Built-in memory: compact durable user preferences, stable environment facts, and long-lived conventions that should steer future turns.
+- Hindsight: broader cross-session semantic context, still treated as advisory historical context rather than live truth.
+- `session_search`: task logs, completed work, job IDs, PRs, run results, timestamps, and other audit/history lookups.
+- `SKILL.md`: reusable workflows, corrections to how tasks should be performed, and domain-specific operating procedures.
+
+Recalled Hindsight context is injected as hidden advisory memory. It must not be echoed verbatim to users, and live operational state still requires tools or another source-of-truth check.
 
 ## Environment Variables
 
