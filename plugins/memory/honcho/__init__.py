@@ -584,7 +584,7 @@ class HonchoMemoryProvider(MemoryProvider):
             if self._base_context_cache is None:
                 # First call — synchronous fetch
                 try:
-                    ctx = self._manager.get_prefetch_context(self._session_key)
+                    ctx = self._manager.get_prefetch_context(self._session_key, query)
                     self._base_context_cache = self._format_first_turn_context(ctx) if ctx else ""
                     self._last_context_turn = self._turn_count
                 except Exception as e:
