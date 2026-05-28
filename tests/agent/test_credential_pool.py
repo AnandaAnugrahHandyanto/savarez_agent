@@ -6,12 +6,18 @@ import base64
 import json
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
 
 def _write_auth_store(tmp_path, payload: dict) -> None:
     hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps(payload, indent=2))
+
+
+def _write_auth_store_at(hermes_home, payload: dict) -> None:
     hermes_home.mkdir(parents=True, exist_ok=True)
     (hermes_home / "auth.json").write_text(json.dumps(payload, indent=2))
 
@@ -2207,6 +2213,65 @@ def test_sync_codex_entry_noop_when_tokens_match(tmp_path, monkeypatch):
 
     synced = pool._sync_codex_entry_from_auth_store(entry)
     assert synced is entry
+
+
+def test_sync_codex_manual_device_code_entry_from_shared_profile_pool(tmp_path, monkeypatch):
+    """Profile workers should adopt fresh Codex OAuth tokens from the shared root pool."""
+    root_home = tmp_path / ".hermes"
+    profile_home = root_home / "profiles" / "worker"
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    _write_auth_store_at(root_home, {
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "id": "manual-device",
+                    "source": "manual:device_code",
+                    "auth_type": "oauth",
+                    "access_token": "old-at",
+                    "refresh_token": "old-rt",
+                    "last_status": "exhausted",
+                    "last_error_code": 401,
+                    "last_error_reset_at": time.time() + 3600,
+                },
+            ],
+        },
+    })
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    entry = pool.select()
+    assert entry is None
+    entry = pool._entries[0]
+
+    _write_auth_store_at(root_home, {
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "id": "manual-device",
+                    "source": "manual:device_code",
+                    "auth_type": "oauth",
+                    "access_token": "fresh-at",
+                    "refresh_token": "fresh-rt",
+                    "last_status": None,
+                    "last_error_code": None,
+                    "last_error_reset_at": None,
+                },
+            ],
+        },
+    })
+
+    synced = pool._sync_codex_entry_from_auth_store(entry)
+    assert synced is not entry
+    assert synced.access_token == "fresh-at"
+    assert synced.refresh_token == "fresh-rt"
+    assert synced.last_status is None
+    assert synced.last_error_code is None
+    assert synced.last_error_reset_at is None
 
 
 def test_codex_exhausted_entry_recovers_via_auth_store_sync(tmp_path, monkeypatch):

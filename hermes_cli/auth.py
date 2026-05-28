@@ -113,6 +113,7 @@ STEPFUN_STEP_PLAN_CN_BASE_URL = "https://api.stepfun.com/step_plan/v1"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+SHARED_CREDENTIAL_POOL_PROVIDERS = frozenset({"openai-codex"})
 XAI_OAUTH_ISSUER = "https://auth.x.ai"
 XAI_OAUTH_DISCOVERY_URL = f"{XAI_OAUTH_ISSUER}/.well-known/openid-configuration"
 XAI_OAUTH_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
@@ -869,15 +870,19 @@ def _oauth_trace(event: str, *, sequence_id: Optional[str] = None, **fields: Any
 # Auth Store — persistence layer for ~/.hermes/auth.json
 # =============================================================================
 
-def _auth_file_path() -> Path:
-    path = get_hermes_home() / "auth.json"
+def _assert_test_safe_auth_path(path: Path) -> Path:
     # Seat belt: if pytest is running and HERMES_HOME resolves to the real
     # user's auth store, refuse rather than silently corrupt it. This catches
     # tests that forgot to monkeypatch HERMES_HOME, tests invoked without the
     # hermetic conftest, or sandbox escapes via threads/subprocesses. In
     # production (no PYTEST_CURRENT_TEST) this is a single dict lookup.
     if os.environ.get("PYTEST_CURRENT_TEST"):
-        real_home_auth = (Path.home() / ".hermes" / "auth.json").resolve(strict=False)
+        real_home_env = os.environ.get("HOME", "")
+        real_home_auth = (
+            Path(real_home_env) / ".hermes" / "auth.json"
+            if real_home_env
+            else Path.home() / ".hermes" / "auth.json"
+        ).resolve(strict=False)
         try:
             resolved = path.resolve(strict=False)
         except Exception:
@@ -889,6 +894,10 @@ def _auth_file_path() -> Path:
                 "via scripts/run_tests.sh for hermetic CI-parity env."
             )
     return path
+
+
+def _auth_file_path() -> Path:
+    return _assert_test_safe_auth_path(get_hermes_home() / "auth.json")
 
 
 def _global_auth_file_path() -> Optional[Path]:
@@ -963,6 +972,7 @@ def _auth_lock_path() -> Path:
 
 
 _auth_lock_holder = threading.local()
+_global_auth_lock_holder = threading.local()
 
 
 @contextmanager
@@ -1056,6 +1066,24 @@ def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
         yield
 
 
+@contextmanager
+def _global_auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
+    """Cross-process lock for global-root auth.json writes in profile mode."""
+    global_auth_file = _global_auth_file_path()
+    if global_auth_file is None:
+        with _auth_store_lock(timeout_seconds=timeout_seconds):
+            yield
+        return
+    global_auth_file = _assert_test_safe_auth_path(global_auth_file)
+    with _file_lock(
+        global_auth_file.with_suffix(".lock"),
+        _global_auth_lock_holder,
+        timeout_seconds,
+        "Timed out waiting for global auth store lock",
+    ):
+        yield
+
+
 def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
     auth_file = auth_file or _auth_file_path()
     if not auth_file.exists():
@@ -1096,8 +1124,8 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
     return {"version": AUTH_STORE_VERSION, "providers": {}}
 
 
-def _save_auth_store(auth_store: Dict[str, Any]) -> Path:
-    auth_file = _auth_file_path()
+def _save_auth_store(auth_store: Dict[str, Any], auth_file: Optional[Path] = None) -> Path:
+    auth_file = _assert_test_safe_auth_path(auth_file or _auth_file_path())
     auth_file.parent.mkdir(parents=True, exist_ok=True)
     # Tighten parent dir to 0o700 so siblings can't traverse to creds.
     # No-op on Windows (POSIX mode bits not enforced); ignore failures.
@@ -1214,18 +1242,14 @@ def get_auth_provider_display_name(provider_id: str) -> str:
 def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     """Return the persisted credential pool, or one provider slice.
 
-    In profile mode, the profile's credential pool is authoritative. If a
-    provider has no entries in the profile, entries from the global-root
-    ``auth.json`` are used as a read-only fallback — so workers spawned in a
-    profile can see providers that were only authenticated at global scope.
+    In profile mode, most providers keep profile-local pools and use the
+    global-root ``auth.json`` as a read-only fallback only when the profile has
+    no entries. Providers in ``SHARED_CREDENTIAL_POOL_PROVIDERS`` use the
+    global-root pool first because their OAuth refresh tokens are single-use
+    and cannot be safely duplicated across profile-local pools.
 
-    Profile entries always win: the global fallback only applies per-provider
-    when the profile has zero entries for that provider. Once the user runs
-    ``hermes auth add <provider>`` inside the profile, profile entries
-    fully shadow global for that provider on the next read.
-
-    Writes always go to the profile (``write_credential_pool`` is unchanged).
-    See issue #18594 follow-up.
+    Writes for shared providers go to the global-root auth store in profile
+    mode. Writes for all other providers remain profile-local.
     """
     auth_store = _load_auth_store()
     pool = auth_store.get("credential_pool")
@@ -1243,12 +1267,20 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
         for gp_key, gp_entries in global_pool.items():
             if not isinstance(gp_entries, list) or not gp_entries:
                 continue
+            if gp_key in SHARED_CREDENTIAL_POOL_PROVIDERS:
+                merged[gp_key] = list(gp_entries)
+                continue
             # Per-provider shadowing: profile wins whenever it has ANY entries.
             existing = merged.get(gp_key)
             if isinstance(existing, list) and existing:
                 continue
             merged[gp_key] = list(gp_entries)
         return merged
+
+    if provider_id in SHARED_CREDENTIAL_POOL_PROVIDERS:
+        global_entries = global_pool.get(provider_id)
+        if isinstance(global_entries, list) and global_entries:
+            return list(global_entries)
 
     provider_entries = pool.get(provider_id)
     if isinstance(provider_entries, list) and provider_entries:
@@ -1265,8 +1297,14 @@ def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Pa
     credentials. Callers may pass raw dictionaries, so sanitize here even when
     ``PooledCredential.to_dict()`` already did the same work upstream.
     """
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
+    shared_auth_file = (
+        _global_auth_file_path()
+        if provider_id in SHARED_CREDENTIAL_POOL_PROVIDERS
+        else None
+    )
+    lock = _global_auth_store_lock if shared_auth_file is not None else _auth_store_lock
+    with lock():
+        auth_store = _load_auth_store(shared_auth_file)
         pool = auth_store.get("credential_pool")
         if not isinstance(pool, dict):
             pool = {}
@@ -1276,7 +1314,7 @@ def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Pa
             if isinstance(entry, dict) else entry
             for entry in entries
         ]
-        return _save_auth_store(auth_store)
+        return _save_auth_store(auth_store, auth_file=shared_auth_file)
 
 
 def suppress_credential_source(provider_id: str, source: str) -> None:
@@ -3381,10 +3419,78 @@ def _sync_codex_pool_entries(
         entry["last_error_reset_at"] = None
 
 
+def _clone_pool_entries(entries: Any) -> List[Any]:
+    if not isinstance(entries, list):
+        return []
+    return [dict(entry) if isinstance(entry, dict) else entry for entry in entries]
+
+
+def _append_codex_device_code_pool_entry(
+    entries: List[Any],
+    tokens: Dict[str, str],
+    last_refresh: Optional[str],
+) -> None:
+    access_token = tokens.get("access_token")
+    if not access_token:
+        return
+    entry = {
+        "id": uuid.uuid4().hex[:6],
+        "source": "device_code",
+        "auth_type": "oauth",
+        "priority": 0,
+        "label": "device_code",
+        "access_token": access_token,
+        "base_url": DEFAULT_CODEX_BASE_URL,
+        "last_status": None,
+        "last_status_at": None,
+        "last_error_code": None,
+        "last_error_reason": None,
+        "last_error_message": None,
+        "last_error_reset_at": None,
+    }
+    refresh_token = tokens.get("refresh_token")
+    if refresh_token:
+        entry["refresh_token"] = refresh_token
+    if last_refresh:
+        entry["last_refresh"] = last_refresh
+    entries.append(entry)
+
+
+def _sync_shared_codex_pool_entries(
+    tokens: Dict[str, str],
+    last_refresh: Optional[str],
+    profile_entries: List[Any],
+) -> None:
+    """Mirror Codex device-code entries into the global-root pool in profile mode."""
+    global_auth_file = _global_auth_file_path()
+    if global_auth_file is None:
+        return
+    with _global_auth_store_lock():
+        auth_store = _load_auth_store(global_auth_file)
+        pool = auth_store.get("credential_pool")
+        if not isinstance(pool, dict):
+            pool = {}
+            auth_store["credential_pool"] = pool
+        if not isinstance(pool.get("openai-codex"), list) and profile_entries:
+            pool["openai-codex"] = _clone_pool_entries(profile_entries)
+        _sync_codex_pool_entries(auth_store, tokens, last_refresh)
+        entries = pool.get("openai-codex")
+        if not isinstance(entries, list):
+            entries = []
+            pool["openai-codex"] = entries
+        if (
+            not any(isinstance(entry, dict) and entry.get("source") == "device_code" for entry in entries)
+            and not is_source_suppressed("openai-codex", "device_code")
+        ):
+            _append_codex_device_code_pool_entry(entries, tokens, last_refresh)
+        _save_auth_store(auth_store, auth_file=global_auth_file)
+
+
 def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None:
     """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
     if last_refresh is None:
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    profile_entries: List[Any] = []
     with _auth_store_lock():
         auth_store = _load_auth_store()
         state = _load_provider_state(auth_store, "openai-codex") or {}
@@ -3393,7 +3499,11 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None
         state["auth_mode"] = "chatgpt"
         _save_provider_state(auth_store, "openai-codex", state)
         _sync_codex_pool_entries(auth_store, tokens, last_refresh)
+        profile_entries = _clone_pool_entries(
+            (auth_store.get("credential_pool") or {}).get("openai-codex")
+        )
         _save_auth_store(auth_store)
+    _sync_shared_codex_pool_entries(tokens, last_refresh, profile_entries)
 
 
 def refresh_codex_oauth_pure(
@@ -3656,21 +3766,15 @@ def _pool_codex_access_token() -> str:
     """Return the most-recent usable access_token from the openai-codex pool.
 
     Used as a fallback by ``resolve_codex_runtime_credentials`` when the
-    singleton has no creds.  Reads ``credential_pool.openai-codex`` entries
-    directly from auth.json and picks the first non-empty access_token,
+    singleton has no creds.  Reads ``credential_pool.openai-codex`` through
+    ``read_credential_pool`` so profile-mode workers use the shared global
+    Codex pool, then picks the first non-empty access_token,
     preferring entries that are not currently in an exhaustion cooldown.
     Returns ``""`` when no usable entry is found (caller handles by raising
     the original AuthError).
     """
     try:
-        with _auth_store_lock():
-            auth_store = _load_auth_store()
-        pool = auth_store.get("credential_pool")
-        if not isinstance(pool, dict):
-            return ""
-        entries = pool.get("openai-codex")
-        if not isinstance(entries, list):
-            return ""
+        entries = read_credential_pool("openai-codex")
 
         def _entry_usable(entry: Dict[str, Any]) -> bool:
             if not isinstance(entry, dict):
