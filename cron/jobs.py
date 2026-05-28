@@ -3,6 +3,22 @@ Cron job storage and management.
 
 Jobs are stored in ~/.hermes/cron/jobs.json
 Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
+
+Discord reminder buttons sentinel
+---------------------------------
+Cron prompts that should produce interactive Discord reminder buttons must
+instruct the agent to emit a sentinel block of the form::
+
+    <<<REMINDER_BUTTONS reminder_id="abc123" text_b64="<base64 of reminder text>">>>
+    ✅ Done | ⏰ +15min | ⏰ +1h | ⏰ Tomorrow 9am
+    <<</REMINDER_BUTTONS>>>
+
+The Discord adapter strips this block from the displayed text and attaches a
+four-button view ( done / +15min / +1h / Tomorrow 9am ).  Snooze buttons
+create a new cron job here via :func:`create_job` that re-delivers the same
+reminder text after the chosen delay.  See
+``plugins/platforms/discord/reminder_buttons.py`` for the full implementation
+and persistence layout under ``~/.hermes/reminders/``.
 """
 
 import copy

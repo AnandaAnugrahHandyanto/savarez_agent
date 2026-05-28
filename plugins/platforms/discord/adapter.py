@@ -710,6 +710,24 @@ class DiscordAdapter(BasePlatformAdapter):
                 await adapter_self._resolve_allowed_usernames()
                 adapter_self._ready_event.set()
 
+                # Re-register persistent reminder-button views so reminders
+                # delivered before the last restart still respond to clicks.
+                try:
+                    from plugins.platforms.discord.reminder_buttons import (
+                        register_persistent_views as _register_reminder_views,
+                    )
+                    count = _register_reminder_views(adapter_self._client)
+                    if count:
+                        logger.info(
+                            "[%s] Restored %d reminder-button view(s)",
+                            adapter_self.name, count,
+                        )
+                except Exception:
+                    logger.debug(
+                        "[%s] Failed to restore reminder-button views",
+                        adapter_self.name, exc_info=True,
+                    )
+
                 if adapter_self._post_connect_task and not adapter_self._post_connect_task.done():
                     adapter_self._post_connect_task.cancel()
                 adapter_self._post_connect_task = asyncio.create_task(
@@ -1411,6 +1429,21 @@ class DiscordAdapter(BasePlatformAdapter):
             if self._is_forum_parent(channel):
                 return await self._send_to_forum(channel, content)
 
+            # Extract reminder-button sentinel BEFORE chunking so the cleaned
+            # text gets formatted/split normally and the buttons attach to the
+            # final chunk only.
+            from plugins.platforms.discord.reminder_buttons import (
+                extract as _extract_reminder_buttons,
+            )
+            reminder_origin = {
+                "platform": "discord",
+                "chat_id": str(chat_id),
+                "thread_id": str(thread_id) if thread_id else None,
+            }
+            content, reminder_view = _extract_reminder_buttons(
+                content, origin=reminder_origin,
+            )
+
             # Format and split message if needed
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
@@ -1433,11 +1466,16 @@ class DiscordAdapter(BasePlatformAdapter):
                     chunk_reference = reference
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
+                # Attach the reminder-button view to the FINAL chunk only —
+                # the buttons live on the message that ends the reminder.
+                send_kwargs: Dict[str, Any] = {
+                    "content": chunk,
+                    "reference": chunk_reference,
+                }
+                if reminder_view is not None and i == len(chunks) - 1:
+                    send_kwargs["view"] = reminder_view
                 try:
-                    msg = await channel.send(
-                        content=chunk,
-                        reference=chunk_reference,
-                    )
+                    msg = await channel.send(**send_kwargs)
                 except Exception as e:
                     err_text = str(e)
                     if (
@@ -1456,10 +1494,9 @@ class DiscordAdapter(BasePlatformAdapter):
                             reply_to,
                         )
                         reference = None
-                        msg = await channel.send(
-                            content=chunk,
-                            reference=None,
-                        )
+                        retry_kwargs = dict(send_kwargs)
+                        retry_kwargs["reference"] = None
+                        msg = await channel.send(**retry_kwargs)
                     else:
                         raise
                 message_ids.append(str(msg.id))
