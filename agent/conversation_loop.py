@@ -3670,22 +3670,62 @@ def run_conversation(
                         if tc.function.name in {n for n, _ in invalid_json_args}
                     )
                     if _truncated:
-                        agent._vprint(
-                            f"{agent.log_prefix}⚠️  Truncated tool call arguments detected "
-                            f"(finish_reason={finish_reason!r}) — refusing to execute.",
-                            force=True,
-                        )
-                        agent._invalid_json_retries = 0
-                        agent._cleanup_task_resources(effective_task_id)
-                        agent._persist_session(messages, conversation_history)
-                        return {
-                            "final_response": None,
-                            "messages": messages,
-                            "api_calls": api_call_count,
-                            "completed": False,
-                            "partial": True,
-                            "error": "Response truncated due to output length limit",
-                        }
+                        # Attempt to repair truncated JSON before giving up.
+                        # _repair_tool_call_arguments already handles trailing
+                        # commas, unclosed braces/brackets, and control chars.
+                        # If repair succeeds on ALL truncated calls, clear the
+                        # error list and continue normally instead of aborting.
+                        _repaired_count = 0
+                        for tc in assistant_message.tool_calls:
+                            raw_args = tc.function.arguments or ""
+                            if raw_args.rstrip().endswith(("}", "]")):
+                                continue  # not this one
+                            fixed = _repair_tool_call_arguments(raw_args, tc.function.name)
+                            if fixed != raw_args and fixed != "{}":
+                                try:
+                                    json.loads(fixed)
+                                    tc.function.arguments = fixed
+                                    _repaired_count += 1
+                                except json.JSONDecodeError:
+                                    pass
+
+                        # Re-validate: did repair fix everything?
+                        invalid_json_args.clear()
+                        for tc in assistant_message.tool_calls:
+                            args = tc.function.arguments
+                            if isinstance(args, (dict, list)):
+                                continue
+                            if not args or not isinstance(args, str) or not args.strip():
+                                continue
+                            try:
+                                json.loads(args)
+                            except json.JSONDecodeError as e:
+                                invalid_json_args.append((tc.function.name, str(e)))
+
+                        if not invalid_json_args:
+                            agent._vprint(
+                                f"{agent.log_prefix}🔧 Repaired {_repaired_count} truncated "
+                                f"tool call argument(s) — continuing.",
+                                force=True,
+                            )
+                            agent._invalid_json_retries = 0
+                        else:
+                            agent._vprint(
+                                f"{agent.log_prefix}⚠️  Truncated tool call arguments detected "
+                                f"(finish_reason={finish_reason!r}) — repair failed, aborting.",
+                                force=True,
+                            )
+                            agent._invalid_json_retries = 0
+                            agent._cleanup_task_resources(effective_task_id)
+                            agent._persist_session(messages, conversation_history)
+                            return {
+                                "final_response": None,
+                                "messages": messages,
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "partial": True,
+                                "error": "Response truncated due to output length limit",
+                            }
 
                     # Track retries for invalid JSON arguments
                     agent._invalid_json_retries += 1
