@@ -6899,7 +6899,7 @@ class GatewayRunner:
                 prompt_path = _hermes_home / ".update_prompt.json"
                 try:
                     tmp = response_path.with_suffix(".tmp")
-                    tmp.write_text(response_text)
+                    tmp.write_text(response_text, encoding="utf-8")
                     tmp.replace(response_path)
                     prompt_path.unlink(missing_ok=True)
                 except OSError as e:
@@ -6919,7 +6919,7 @@ class GatewayRunner:
                 prompt_path = _hermes_home / ".update_prompt.json"
                 try:
                     tmp = response_path.with_suffix(".tmp")
-                    tmp.write_text("")
+                    tmp.write_text("", encoding="utf-8")
                     tmp.replace(response_path)
                     prompt_path.unlink(missing_ok=True)
                     logger.info(
@@ -14032,6 +14032,27 @@ class GatewayRunner:
         pending_path = _hermes_home / ".update_pending.json"
         output_path = _hermes_home / ".update_output.txt"
         exit_code_path = _hermes_home / ".update_exit_code"
+        sentinel_path = _hermes_home / ".update_in_progress"
+        logs_dir = _hermes_home / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        transcript_path = logs_dir / f"safe-update-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
+
+        if sentinel_path.exists():
+            pending_exists = pending_path.exists() or (_hermes_home / ".update_pending.claimed.json").exists()
+            if exit_code_path.exists() and pending_exists:
+                notified = await self._send_update_notification()
+                if notified:
+                    return "⚕ Previous Hermes update result was delivered. Run `/update` again if you want to start another update."
+                self._schedule_update_notification_watch()
+                return "⚕ Previous Hermes update finished, but its notification is still pending retry. I will keep watching it."
+            if not exit_code_path.exists() and pending_exists:
+                self._schedule_update_notification_watch()
+                return "⚕ Hermes update is already in progress. I will keep watching it and report when it finishes."
+            if not pending_exists:
+                sentinel_path.unlink(missing_ok=True)
+                if exit_code_path.exists():
+                    exit_code_path.unlink(missing_ok=True)
+
         session_key = self._session_key_for_source(event.source)
         pending = {
             "platform": event.source.platform.value,
@@ -14039,12 +14060,15 @@ class GatewayRunner:
             "user_id": event.source.user_id,
             "session_key": session_key,
             "timestamp": datetime.now().isoformat(),
+            "sentinel_path": str(sentinel_path),
+            "transcript_path": str(transcript_path),
         }
         if event.source.thread_id:
             pending["thread_id"] = event.source.thread_id
         _tmp_pending = pending_path.with_suffix(".tmp")
-        _tmp_pending.write_text(json.dumps(pending))
+        _tmp_pending.write_text(json.dumps(pending), encoding="utf-8")
         _tmp_pending.replace(pending_path)
+        sentinel_path.write_text(datetime.now().isoformat(), encoding="utf-8")
         exit_code_path.unlink(missing_ok=True)
 
         # Spawn `hermes update --gateway` detached so it survives gateway restart.
@@ -14083,20 +14107,31 @@ class GatewayRunner:
                     import os, subprocess, sys
                     output_path = sys.argv[1]
                     exit_code_path = sys.argv[2]
-                    cmd = sys.argv[3:]
+                    transcript_path = sys.argv[3]
+                    cmd = sys.argv[4:]
                     env = dict(os.environ)
                     env["PYTHONUNBUFFERED"] = "1"
-                    with open(output_path, "wb") as f:
-                        proc = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, env=env)
+                    env["PYTHONUTF8"] = "1"
+                    env["PYTHONIOENCODING"] = "utf-8"
+                    with open(output_path, "wb") as out, open(transcript_path, "ab") as transcript:
+                        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+                        assert proc.stdout is not None
+                        for chunk in iter(lambda: proc.stdout.read(8192), b""):
+                            if not chunk:
+                                break
+                            out.write(chunk)
+                            out.flush()
+                            transcript.write(chunk)
+                            transcript.flush()
                         rc = proc.wait()
-                    with open(exit_code_path, "w") as f:
+                    with open(exit_code_path, "w", encoding="utf-8") as f:
                         f.write(str(rc))
                     """
                 ).strip()
                 subprocess.Popen(
                     [
                         sys.executable, "-c", helper,
-                        str(output_path), str(exit_code_path),
+                        str(output_path), str(exit_code_path), str(transcript_path),
                         *hermes_cmd, "update", "--gateway",
                     ],
                     stdout=subprocess.DEVNULL,
@@ -14106,13 +14141,15 @@ class GatewayRunner:
             else:
                 hermes_cmd_str = " ".join(shlex.quote(part) for part in hermes_cmd)
                 update_cmd = (
-                    f"PYTHONUNBUFFERED=1 {hermes_cmd_str} update --gateway"
-                    f" > {shlex.quote(str(output_path))} 2>&1; "
+                    f"PYTHONUNBUFFERED=1 PYTHONUTF8=1 PYTHONIOENCODING=utf-8 "
+                    f"{hermes_cmd_str} update --gateway 2>&1 "
+                    f"| tee -a {shlex.quote(str(transcript_path))} > {shlex.quote(str(output_path))}; "
                     # Avoid `status=$?`: `status` is a read-only special parameter
                     # in zsh, and this command string is copied/reused in macOS/zsh
                     # operator wrappers. Keep the template zsh-safe even though this
-                    # specific subprocess currently runs under bash.
-                    f"rc=$?; printf '%s' \"$rc\" > {shlex.quote(str(exit_code_path))}"
+                    # specific subprocess currently runs under bash. PIPESTATUS is
+                    # bash-specific, and this command is explicitly run via bash.
+                    f"rc=${{PIPESTATUS[0]}}; printf '%s' \"$rc\" > {shlex.quote(str(exit_code_path))}"
                 )
                 setsid_bin = shutil.which("setsid")
                 if setsid_bin:
@@ -14133,6 +14170,8 @@ class GatewayRunner:
                     )
         except Exception as e:
             pending_path.unlink(missing_ok=True)
+            sentinel_path.unlink(missing_ok=True)
+            output_path.unlink(missing_ok=True)
             exit_code_path.unlink(missing_ok=True)
             return t("gateway.update.start_failed", error=e)
 
@@ -14171,6 +14210,8 @@ class GatewayRunner:
         output_path = _hermes_home / ".update_output.txt"
         exit_code_path = _hermes_home / ".update_exit_code"
         prompt_path = _hermes_home / ".update_prompt.json"
+        sentinel_path = _hermes_home / ".update_in_progress"
+        transcript_path: Optional[Path] = None
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
@@ -14183,11 +14224,13 @@ class GatewayRunner:
         for path in (claimed_path, pending_path):
             if path.exists():
                 try:
-                    pending = json.loads(path.read_text())
+                    pending = json.loads(path.read_text(encoding="utf-8"))
                     platform_str = pending.get("platform")
                     chat_id = pending.get("chat_id")
                     session_key = pending.get("session_key")
                     thread_id = pending.get("thread_id")
+                    transcript_raw = pending.get("transcript_path")
+                    transcript_path = Path(transcript_raw) if transcript_raw else None
                     metadata = {"thread_id": thread_id} if thread_id else None
                     if platform_str and chat_id:
                         platform = Platform(platform_str)
@@ -14208,7 +14251,7 @@ class GatewayRunner:
                     return
                 await asyncio.sleep(poll_interval)
             if (pending_path.exists() or claimed_path.exists()) and not exit_code_path.exists():
-                exit_code_path.write_text("124")
+                exit_code_path.write_text("124", encoding="utf-8")
                 await self._send_update_notification()
             return
 
@@ -14246,7 +14289,7 @@ class GatewayRunner:
                 # Read any remaining output
                 if output_path.exists():
                     try:
-                        content = output_path.read_text()
+                        content = output_path.read_text(encoding="utf-8", errors="replace")
                         if len(content) > bytes_sent:
                             buffer += content[bytes_sent:]
                             bytes_sent = len(content)
@@ -14256,23 +14299,29 @@ class GatewayRunner:
 
                 # Send final status
                 try:
-                    exit_code_raw = exit_code_path.read_text().strip() or "1"
+                    exit_code_raw = exit_code_path.read_text(encoding="utf-8").strip() or "1"
                     exit_code = int(exit_code_raw)
+                    transcript_note = f"\n\nTranscript: `{transcript_path}`" if transcript_path else ""
                     if exit_code == 0:
-                        await adapter.send(chat_id, "✅ Hermes update finished.", metadata=metadata)
+                        await adapter.send(chat_id, f"✅ Hermes update finished.{transcript_note}", metadata=metadata)
                     else:
                         await adapter.send(
                             chat_id,
-                            "❌ Hermes update failed (exit code {}).".format(exit_code),
+                            "❌ Hermes update failed (exit code {}).{}".format(exit_code, transcript_note),
                             metadata=metadata,
                         )
                     logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
                 except Exception as e:
                     logger.warning("Update final notification failed: %s", e)
+                    # Preserve markers/output/exit code and retry while the
+                    # watcher is alive rather than losing the final update
+                    # result on a transient platform send failure.
+                    await asyncio.sleep(poll_interval)
+                    continue
 
                 # Cleanup
                 for p in (pending_path, claimed_path, output_path,
-                          exit_code_path, prompt_path):
+                          exit_code_path, prompt_path, sentinel_path):
                     p.unlink(missing_ok=True)
                 (_hermes_home / ".update_response").unlink(missing_ok=True)
                 self._update_prompt_pending.pop(session_key, None)
@@ -14281,7 +14330,7 @@ class GatewayRunner:
             # Check for new output
             if output_path.exists():
                 try:
-                    content = output_path.read_text()
+                    content = output_path.read_text(encoding="utf-8", errors="replace")
                     if len(content) > bytes_sent:
                         buffer += content[bytes_sent:]
                         bytes_sent = len(content)
@@ -14299,7 +14348,7 @@ class GatewayRunner:
             if (prompt_path.exists() and session_key
                     and not self._update_prompt_pending.get(session_key)):
                 try:
-                    prompt_data = json.loads(prompt_path.read_text())
+                    prompt_data = json.loads(prompt_path.read_text(encoding="utf-8"))
                     prompt_text = prompt_data.get("prompt", "")
                     default = prompt_data.get("default", "")
                     if prompt_text:
@@ -14346,7 +14395,7 @@ class GatewayRunner:
         # Timeout
         if not exit_code_path.exists():
             logger.warning("Update watcher timed out after %.0fs", timeout)
-            exit_code_path.write_text("124")
+            exit_code_path.write_text("124", encoding="utf-8")
             await _flush_buffer()
             try:
                 await adapter.send(
@@ -14357,7 +14406,7 @@ class GatewayRunner:
             except Exception:
                 pass
             for p in (pending_path, claimed_path, output_path,
-                      exit_code_path, prompt_path):
+                      exit_code_path, prompt_path, sentinel_path):
                 p.unlink(missing_ok=True)
             (_hermes_home / ".update_response").unlink(missing_ok=True)
             self._update_prompt_pending.pop(session_key, None)
@@ -14365,89 +14414,124 @@ class GatewayRunner:
     async def _send_update_notification(self) -> bool:
         """If an update finished, notify the user.
 
-        Returns False when the update is still running so a caller can retry
-        later. Returns True after a definitive send/skip decision.
-
-        This is the legacy notification path used when the streaming watcher
-        cannot resolve the adapter (e.g. after a gateway restart where the
-        platform hasn't reconnected yet).
+        Returns False when the update is still running or delivery should be
+        retried later. Returns True after a definitive send/skip decision.
         """
         pending_path = _hermes_home / ".update_pending.json"
         claimed_path = _hermes_home / ".update_pending.claimed.json"
         output_path = _hermes_home / ".update_output.txt"
         exit_code_path = _hermes_home / ".update_exit_code"
+        sentinel_path = _hermes_home / ".update_in_progress"
 
         if not pending_path.exists() and not claimed_path.exists():
             return False
 
-        cleanup = True
-        active_pending_path = claimed_path
+        claimed = False
+
+        def _restore_claim_for_retry() -> None:
+            try:
+                if claimed_path.exists():
+                    claimed_path.replace(pending_path)
+            except OSError as restore_err:
+                logger.warning("Failed to restore update pending marker for retry: %s", restore_err)
+
         try:
             if pending_path.exists():
                 try:
                     pending_path.replace(claimed_path)
+                    claimed = True
                 except FileNotFoundError:
                     if not claimed_path.exists():
                         return True
             elif not claimed_path.exists():
                 return True
 
-            pending = json.loads(claimed_path.read_text())
+            try:
+                pending = json.loads(claimed_path.read_text(encoding="utf-8"))
+            except Exception as e:
+                logger.warning("Post-update notification discarded malformed marker: %s", e)
+                claimed_path.unlink(missing_ok=True)
+                pending_path.unlink(missing_ok=True)
+                output_path.unlink(missing_ok=True)
+                exit_code_path.unlink(missing_ok=True)
+                sentinel_path.unlink(missing_ok=True)
+                return True
+
             platform_str = pending.get("platform")
             chat_id = pending.get("chat_id")
             thread_id = pending.get("thread_id")
+            transcript_raw = pending.get("transcript_path")
+            transcript_path = Path(transcript_raw) if transcript_raw else None
 
             if not exit_code_path.exists():
                 logger.info("Update notification deferred: update still running")
-                cleanup = False
-                active_pending_path = pending_path
-                claimed_path.replace(pending_path)
+                _restore_claim_for_retry()
                 return False
 
-            exit_code_raw = exit_code_path.read_text().strip() or "1"
+            exit_code_raw = exit_code_path.read_text(encoding="utf-8").strip() or "1"
             exit_code = int(exit_code_raw)
 
-            # Read the captured update output
             output = ""
             if output_path.exists():
-                output = output_path.read_text()
+                output = output_path.read_text(encoding="utf-8", errors="replace")
 
-            # Resolve adapter
-            platform = Platform(platform_str)
-            adapter = self.adapters.get(platform)
-
-            if adapter and chat_id:
-                metadata = {"thread_id": thread_id} if thread_id else None
-                # Strip ANSI escape codes for clean display
-                output = re.sub(r'\x1b\[[0-9;]*m', '', output).strip()
-                if output:
-                    if len(output) > 3500:
-                        output = "…" + output[-3500:]
-                    if exit_code == 0:
-                        msg = f"✅ Hermes update finished.\n\n```\n{output}\n```"
-                    else:
-                        msg = f"❌ Hermes update failed.\n\n```\n{output}\n```"
-                elif exit_code == 0:
-                    msg = "✅ Hermes update finished successfully."
-                else:
-                    msg = "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
-                await adapter.send(chat_id, msg, metadata=metadata)
-                logger.info(
-                    "Sent post-update notification to %s:%s (exit=%s)",
-                    platform_str,
-                    chat_id,
-                    exit_code,
-                )
-        except Exception as e:
-            logger.warning("Post-update notification failed: %s", e)
-        finally:
-            if cleanup:
-                active_pending_path.unlink(missing_ok=True)
+            try:
+                platform = Platform(platform_str)
+            except Exception as e:
+                logger.warning("Post-update notification discarded invalid platform %r: %s", platform_str, e)
                 claimed_path.unlink(missing_ok=True)
+                pending_path.unlink(missing_ok=True)
                 output_path.unlink(missing_ok=True)
                 exit_code_path.unlink(missing_ok=True)
+                sentinel_path.unlink(missing_ok=True)
+                return True
 
-        return True
+            adapter = self.adapters.get(platform)
+            if not adapter or not chat_id:
+                logger.warning(
+                    "Post-update notification deferred: adapter/chat unavailable for %s:%s",
+                    platform_str,
+                    chat_id,
+                )
+                _restore_claim_for_retry()
+                return False
+
+            metadata = {"thread_id": thread_id} if thread_id else None
+            output = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', output).strip()
+            transcript_note = f"\n\nTranscript: `{transcript_path}`" if transcript_path else ""
+            if output:
+                if len(output) > 3500:
+                    output = "…" + output[-3500:]
+                if exit_code == 0:
+                    msg = f"✅ Hermes update finished.{transcript_note}\n\n```\n{output}\n```"
+                else:
+                    msg = f"❌ Hermes update failed.{transcript_note}\n\n```\n{output}\n```"
+            elif exit_code == 0:
+                msg = f"✅ Hermes update finished successfully.{transcript_note}"
+            else:
+                msg = f"❌ Hermes update failed.{transcript_note}\nCheck the gateway logs or run `hermes update` manually for details."
+
+            result = await adapter.send(chat_id, msg, metadata=metadata)
+            if result is not None and getattr(result, "success", True) is False:
+                raise RuntimeError(getattr(result, "error", "send returned success=False"))
+            logger.info(
+                "Sent post-update notification to %s:%s (exit=%s)",
+                platform_str,
+                chat_id,
+                exit_code,
+            )
+
+            claimed_path.unlink(missing_ok=True)
+            pending_path.unlink(missing_ok=True)
+            output_path.unlink(missing_ok=True)
+            exit_code_path.unlink(missing_ok=True)
+            sentinel_path.unlink(missing_ok=True)
+            return True
+        except Exception as e:
+            logger.warning("Post-update notification failed: %s", e)
+            if claimed:
+                _restore_claim_for_retry()
+            return False
 
     async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
         """Notify the chat that initiated /restart that the gateway is back."""

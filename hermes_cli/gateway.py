@@ -306,6 +306,9 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
         "hermes_cli/main.py -p",
         "hermes gateway",
         "gateway/run.py",
+        "cli.py --gateway",
+        "cli.py\" --gateway",
+        "cli.py' --gateway",
     ]
     current_home = str(get_hermes_home().resolve())
     current_profile_arg = _profile_arg(current_home)

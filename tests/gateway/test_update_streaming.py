@@ -228,6 +228,7 @@ class TestUpdateCommandGatewayFlag:
         mock_popen = MagicMock()
         with patch("gateway.run._hermes_home", hermes_home), \
              patch("gateway.run.__file__", fake_file), \
+             patch("gateway.run.sys.platform", "linux"), \
              patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
              patch("subprocess.Popen", mock_popen):
             result = await runner._handle_update_command(event)
@@ -237,7 +238,8 @@ class TestUpdateCommandGatewayFlag:
         cmd_string = call_args[-1] if isinstance(call_args, list) else str(call_args)
         assert "--gateway" in cmd_string
         assert "PYTHONUNBUFFERED" in cmd_string
-        assert "rc=$?" in cmd_string
+        assert "tee -a" in cmd_string
+        assert "PIPESTATUS[0]" in cmd_string
         assert "status=$?" not in cmd_string
         assert "stream progress" in result
 
@@ -286,6 +288,42 @@ class TestWatchUpdateProgress:
         # Should have sent at least the output and a success message
         assert mock_adapter.send.call_count >= 1
         all_sent = " ".join(str(c) for c in mock_adapter.send.call_args_list)
+        assert "update finished" in all_sent.lower()
+
+
+    @pytest.mark.asyncio
+    async def test_reads_update_output_as_utf8_when_locale_charmap(self, tmp_path, monkeypatch):
+        """Watcher reads UTF-8 update output explicitly, avoiding Windows charmap decode failures."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        pending = {
+            "platform": "telegram",
+            "chat_id": "111",
+            "user_id": "222",
+            "session_key": "agent:main:telegram:dm:111",
+        }
+        pending_path = hermes_home / ".update_pending.json"
+        output_path = hermes_home / ".update_output.txt"
+        exit_code_path = hermes_home / ".update_exit_code"
+        pending_path.write_text(json.dumps(pending), encoding="utf-8")
+        output_path.write_bytes("→ Fetching updates...\n✅ Done\n".encode("utf-8"))
+        exit_code_path.write_text("0", encoding="utf-8")
+
+        orig_read_text = Path.read_text
+        def fail_if_output_read_without_encoding(self, *args, **kwargs):
+            if self == output_path and kwargs.get("encoding") is None:
+                raise UnicodeDecodeError("charmap", b"\x81", 0, 1, "character maps to <undefined>")
+            return orig_read_text(self, *args, **kwargs)
+        monkeypatch.setattr(Path, "read_text", fail_if_output_read_without_encoding)
+
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._watch_update_progress(poll_interval=0.1, stream_interval=0.1, timeout=5.0)
+
+        all_sent = " ".join(str(c) for c in mock_adapter.send.call_args_list)
+        assert "Fetching updates" in all_sent
         assert "update finished" in all_sent.lower()
 
     @pytest.mark.asyncio
@@ -395,9 +433,15 @@ class TestWatchUpdateProgress:
         pending_path = hermes_home / ".update_pending.json"
         output_path = hermes_home / ".update_output.txt"
         exit_code_path = hermes_home / ".update_exit_code"
-        pending_path.write_text(json.dumps(pending))
-        output_path.write_text("done\n")
-        exit_code_path.write_text("0")
+        sentinel_path = hermes_home / ".update_in_progress"
+        transcript_path = hermes_home / "logs" / "safe-update-test.log"
+        transcript_path.parent.mkdir()
+        pending["transcript_path"] = str(transcript_path)
+        pending_path.write_text(json.dumps(pending), encoding="utf-8")
+        output_path.write_text("done\n", encoding="utf-8")
+        exit_code_path.write_text("0", encoding="utf-8")
+        sentinel_path.write_text("now", encoding="utf-8")
+        transcript_path.write_text("durable", encoding="utf-8")
 
         mock_adapter = AsyncMock()
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
@@ -412,6 +456,77 @@ class TestWatchUpdateProgress:
         assert not pending_path.exists()
         assert not output_path.exists()
         assert not exit_code_path.exists()
+        assert not sentinel_path.exists()
+        assert transcript_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_final_send_failure_preserves_markers_for_retry(self, tmp_path):
+        """A transient final-send failure must not lose update completion markers."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {"platform": "telegram", "chat_id": "111", "user_id": "222",
+                   "session_key": "agent:main:telegram:dm:111"}
+        pending_path = hermes_home / ".update_pending.json"
+        output_path = hermes_home / ".update_output.txt"
+        exit_code_path = hermes_home / ".update_exit_code"
+        sentinel_path = hermes_home / ".update_in_progress"
+        pending_path.write_text(json.dumps(pending), encoding="utf-8")
+        output_path.write_text("done\n", encoding="utf-8")
+        exit_code_path.write_text("0", encoding="utf-8")
+        sentinel_path.write_text("now", encoding="utf-8")
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send.side_effect = RuntimeError("network down")
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._watch_update_progress(
+                poll_interval=0.1,
+                stream_interval=0.2,
+                timeout=5.0,
+            )
+
+        assert pending_path.exists()
+        assert output_path.exists()
+        assert exit_code_path.exists()
+        assert sentinel_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_final_send_failure_retries_in_same_watcher(self, tmp_path):
+        """A transient final-send failure is retried by the active watcher."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {"platform": "telegram", "chat_id": "111", "user_id": "222",
+                   "session_key": "agent:main:telegram:dm:111"}
+        pending_path = hermes_home / ".update_pending.json"
+        output_path = hermes_home / ".update_output.txt"
+        exit_code_path = hermes_home / ".update_exit_code"
+        sentinel_path = hermes_home / ".update_in_progress"
+        pending_path.write_text(json.dumps(pending), encoding="utf-8")
+        output_path.write_text("done\n", encoding="utf-8")
+        exit_code_path.write_text("0", encoding="utf-8")
+        sentinel_path.write_text("now", encoding="utf-8")
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send.side_effect = [RuntimeError("network down"), None]
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._watch_update_progress(
+                poll_interval=0.1,
+                stream_interval=0.2,
+                timeout=5.0,
+            )
+
+        assert mock_adapter.send.call_count >= 2
+        assert not pending_path.exists()
+        assert not output_path.exists()
+        assert not exit_code_path.exists()
+        assert not sentinel_path.exists()
 
     @pytest.mark.asyncio
     async def test_failure_exit_code(self, tmp_path):

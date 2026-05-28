@@ -209,10 +209,14 @@ class TestHandleUpdateCommand:
 
         pending_path = hermes_home / ".update_pending.json"
         assert pending_path.exists()
-        data = json.loads(pending_path.read_text())
+        data = json.loads(pending_path.read_text(encoding="utf-8"))
         assert data["platform"] == "telegram"
         assert data["chat_id"] == "99999"
         assert "timestamp" in data
+        assert data["sentinel_path"].endswith(".update_in_progress")
+        assert "safe-update-" in data["transcript_path"]
+        assert data["transcript_path"].endswith(".log")
+        assert (hermes_home / ".update_in_progress").exists()
         assert not (hermes_home / ".update_exit_code").exists()
 
     @pytest.mark.asyncio
@@ -261,6 +265,7 @@ class TestHandleUpdateCommand:
         mock_popen = MagicMock()
         with patch("gateway.run._hermes_home", hermes_home), \
              patch("gateway.run.__file__", fake_file), \
+             patch("gateway.run.sys.platform", "linux"), \
              patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
              patch("subprocess.Popen", mock_popen):
             result = await runner._handle_update_command(event)
@@ -269,7 +274,11 @@ class TestHandleUpdateCommand:
         call_args = mock_popen.call_args[0][0]
         assert call_args[0] == "/usr/bin/setsid"
         assert call_args[1] == "bash"
-        assert ".update_exit_code" in call_args[-1]
+        update_cmd = call_args[-1]
+        assert ".update_exit_code" in update_cmd
+        assert "safe-update-" in update_cmd
+        assert "tee -a" in update_cmd
+        assert "PIPESTATUS[0]" in update_cmd
         assert "Starting Hermes update" in result
 
     @pytest.mark.asyncio
@@ -298,6 +307,7 @@ class TestHandleUpdateCommand:
 
         with patch("gateway.run._hermes_home", hermes_home), \
              patch("gateway.run.__file__", fake_file), \
+             patch("gateway.run.sys.platform", "linux"), \
              patch("shutil.which", side_effect=which_no_setsid), \
              patch("subprocess.Popen", mock_popen):
             result = await runner._handle_update_command(event)
@@ -307,10 +317,144 @@ class TestHandleUpdateCommand:
         assert call_args[0] == "bash"
         assert "nohup" not in call_args[2]
         assert ".update_exit_code" in call_args[2]
+        assert "safe-update-" in call_args[2]
+        assert "tee -a" in call_args[2]
         # start_new_session=True should be in kwargs
         call_kwargs = mock_popen.call_args[1]
         assert call_kwargs.get("start_new_session") is True
         assert "Starting Hermes update" in result
+
+
+    @pytest.mark.asyncio
+    async def test_windows_update_helper_forces_utf8_and_transcript(self, tmp_path):
+        """Windows update helper forces UTF-8 and writes a durable transcript."""
+        import sys
+        runner = _make_runner()
+        event = _make_event()
+
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / ".git").mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        mock_popen = MagicMock()
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.__file__", fake_file), \
+             patch("gateway.run.sys.platform", "win32"), \
+             patch("shutil.which", return_value="/usr/bin/hermes"), \
+             patch("hermes_cli._subprocess_compat.windows_detach_popen_kwargs", return_value={}), \
+             patch("subprocess.Popen", mock_popen):
+            result = await runner._handle_update_command(event)
+
+        assert "Starting Hermes update" in result
+        argv = mock_popen.call_args[0][0]
+        helper = argv[2]
+        assert argv[0] == sys.executable
+        assert argv[1] == "-c"
+        assert 'env["PYTHONUNBUFFERED"] = "1"' in helper
+        assert 'env["PYTHONUTF8"] = "1"' in helper
+        assert 'env["PYTHONIOENCODING"] = "utf-8"' in helper
+        assert "transcript_path" in json.loads((hermes_home / ".update_pending.json").read_text(encoding="utf-8"))
+        assert any("safe-update-" in str(part) for part in argv)
+        assert "--gateway" in argv
+
+    @pytest.mark.asyncio
+    async def test_update_already_running_does_not_spawn_second_update(self, tmp_path):
+        """A fresh update sentinel blocks duplicate /update runs from overwriting markers."""
+        runner = _make_runner()
+        event = _make_event()
+
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / ".git").mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / ".update_in_progress").write_text("now", encoding="utf-8")
+        (hermes_home / ".update_pending.json").write_text(json.dumps({
+            "platform": "telegram", "chat_id": "111", "user_id": "222",
+        }), encoding="utf-8")
+
+        mock_popen = MagicMock()
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.__file__", fake_file), \
+             patch("shutil.which", return_value="/usr/bin/hermes"), \
+             patch("subprocess.Popen", mock_popen):
+            result = await runner._handle_update_command(event)
+
+        assert "already in progress" in result
+        mock_popen.assert_not_called()
+        assert (hermes_home / ".update_pending.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_update_completed_sentinel_retries_notification_without_spawning(self, tmp_path):
+        """A completed preserved update is retried instead of overwritten by a new /update."""
+        runner = _make_runner()
+        event = _make_event()
+
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / ".git").mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / ".update_in_progress").write_text("now", encoding="utf-8")
+        (hermes_home / ".update_exit_code").write_text("0", encoding="utf-8")
+        (hermes_home / ".update_output.txt").write_text("done", encoding="utf-8")
+        (hermes_home / ".update_pending.json").write_text(json.dumps({
+            "platform": "telegram", "chat_id": "111", "user_id": "222",
+        }), encoding="utf-8")
+
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+        mock_popen = MagicMock()
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.__file__", fake_file), \
+             patch("shutil.which", side_effect=lambda x: "/usr/bin/hermes" if x == "hermes" else "/usr/bin/setsid"), \
+             patch("subprocess.Popen", mock_popen):
+            result = await runner._handle_update_command(event)
+
+        assert "Previous Hermes update result was delivered" in result
+        mock_adapter.send.assert_called_once()
+        mock_popen.assert_not_called()
+        assert not (hermes_home / ".update_pending.json").exists()
+        assert not (hermes_home / ".update_exit_code").exists()
+        assert not (hermes_home / ".update_in_progress").exists()
+
+    @pytest.mark.asyncio
+    async def test_stale_sentinel_without_markers_is_ignored(self, tmp_path):
+        """A lone stale sentinel should not permanently block future /update runs."""
+        runner = _make_runner()
+        event = _make_event()
+
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / ".git").mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / ".update_in_progress").write_text("stale", encoding="utf-8")
+
+        mock_popen = MagicMock()
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.__file__", fake_file), \
+             patch("shutil.which", side_effect=lambda x: "/usr/bin/hermes" if x == "hermes" else "/usr/bin/setsid"), \
+             patch("subprocess.Popen", mock_popen):
+            result = await runner._handle_update_command(event)
+
+        assert "Starting Hermes update" in result
+        mock_popen.assert_called_once()
+        assert (hermes_home / ".update_pending.json").exists()
 
     @pytest.mark.asyncio
     async def test_popen_failure_cleans_up(self, tmp_path):
@@ -486,6 +630,38 @@ class TestSendUpdateNotification:
 
         assert mock_adapter.send.call_args.kwargs["metadata"] == {"thread_id": "777"}
 
+
+    @pytest.mark.asyncio
+    async def test_send_notification_reads_output_as_utf8_when_locale_charmap(self, tmp_path, monkeypatch):
+        """Post-update notifier reads UTF-8 output explicitly on Windows/charmap locales."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        pending_path = hermes_home / ".update_pending.json"
+        output_path = hermes_home / ".update_output.txt"
+        exit_code_path = hermes_home / ".update_exit_code"
+        pending_path.write_text(json.dumps({
+            "platform": "telegram", "chat_id": "111", "user_id": "222",
+        }), encoding="utf-8")
+        output_path.write_bytes("→ Fetching updates...\n✅ Done\n".encode("utf-8"))
+        exit_code_path.write_text("0", encoding="utf-8")
+
+        orig_read_text = Path.read_text
+        def fail_if_output_read_without_encoding(self, *args, **kwargs):
+            if self == output_path and kwargs.get("encoding") is None:
+                raise UnicodeDecodeError("charmap", b"\x81", 0, 1, "character maps to <undefined>")
+            return orig_read_text(self, *args, **kwargs)
+        monkeypatch.setattr(Path, "read_text", fail_if_output_read_without_encoding)
+
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+        with patch("gateway.run._hermes_home", hermes_home):
+            result = await runner._send_update_notification()
+
+        assert result is True
+        mock_adapter.send.assert_called_once()
+        assert "Fetching updates" in mock_adapter.send.call_args[0][1]
+
     @pytest.mark.asyncio
     async def test_strips_ansi_codes(self, tmp_path):
         """ANSI escape codes are removed from output."""
@@ -496,7 +672,7 @@ class TestSendUpdateNotification:
         pending = {"platform": "telegram", "chat_id": "111", "user_id": "222"}
         (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
         (hermes_home / ".update_output.txt").write_text(
-            "\x1b[32m✓ Code updated!\x1b[0m\n\x1b[1mDone\x1b[0m"
+            "\x1b[32m✓ Code updated!\x1b[0m\n\x1b[2K\x1b[1mDone\x1b[0m"
         )
         (hermes_home / ".update_exit_code").write_text("0")
 
@@ -605,33 +781,34 @@ class TestSendUpdateNotification:
         assert not exit_code_path.exists()
 
     @pytest.mark.asyncio
-    async def test_cleans_up_on_error(self, tmp_path):
-        """Files are cleaned up even if notification fails."""
+    async def test_restores_pending_marker_on_send_error_for_retry(self, tmp_path):
+        """Transient send failures preserve marker/output files for retry."""
         runner = _make_runner()
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
 
         pending_path = hermes_home / ".update_pending.json"
+        claimed_path = hermes_home / ".update_pending.claimed.json"
         output_path = hermes_home / ".update_output.txt"
         exit_code_path = hermes_home / ".update_exit_code"
         pending_path.write_text(json.dumps({
             "platform": "telegram", "chat_id": "111", "user_id": "222",
-        }))
-        output_path.write_text("✓ Done")
-        exit_code_path.write_text("0")
+        }), encoding="utf-8")
+        output_path.write_text("✓ Done", encoding="utf-8")
+        exit_code_path.write_text("0", encoding="utf-8")
 
-        # Adapter send raises
         mock_adapter = AsyncMock()
         mock_adapter.send.side_effect = RuntimeError("network error")
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
 
         with patch("gateway.run._hermes_home", hermes_home):
-            await runner._send_update_notification()
+            result = await runner._send_update_notification()
 
-        # Files should still be cleaned up (finally block)
-        assert not pending_path.exists()
-        assert not output_path.exists()
-        assert not exit_code_path.exists()
+        assert result is False
+        assert pending_path.exists()
+        assert not claimed_path.exists()
+        assert output_path.exists()
+        assert exit_code_path.exists()
 
     @pytest.mark.asyncio
     async def test_handles_corrupt_pending_file(self, tmp_path):
@@ -641,14 +818,23 @@ class TestSendUpdateNotification:
         hermes_home.mkdir()
 
         pending_path = hermes_home / ".update_pending.json"
-        pending_path.write_text("{corrupt json!!")
+        output_path = hermes_home / ".update_output.txt"
+        exit_code_path = hermes_home / ".update_exit_code"
+        sentinel_path = hermes_home / ".update_in_progress"
+        pending_path.write_text("{corrupt json!!", encoding="utf-8")
+        output_path.write_text("stale output", encoding="utf-8")
+        exit_code_path.write_text("0", encoding="utf-8")
+        sentinel_path.write_text("stale sentinel", encoding="utf-8")
 
         with patch("gateway.run._hermes_home", hermes_home):
             # Should not raise
             await runner._send_update_notification()
 
-        # File should be cleaned up
+        # Corrupt lifecycle files should be cleaned up rather than leaving a stale sentinel.
         assert not pending_path.exists()
+        assert not output_path.exists()
+        assert not exit_code_path.exists()
+        assert not sentinel_path.exists()
 
     @pytest.mark.asyncio
     async def test_no_adapter_for_platform(self, tmp_path):
@@ -674,9 +860,9 @@ class TestSendUpdateNotification:
 
         # send should not have been called (wrong platform)
         mock_adapter.send.assert_not_called()
-        # Files should still be cleaned up
-        assert not pending_path.exists()
-        assert not exit_code_path.exists()
+        # Adapter-unavailable is retryable; markers/output are preserved.
+        assert pending_path.exists()
+        assert exit_code_path.exists()
 
 
 # ---------------------------------------------------------------------------
