@@ -265,8 +265,8 @@ def _read_tail(
         # For large files, read last 10K lines and filter down.
         raw_lines = _read_last_n_lines(path, max(num_lines * 20, 2000))
         filtered = [
-            l for l in raw_lines
-            if _matches_filters(l, min_level=min_level,
+            line for line in raw_lines
+            if _matches_filters(line, min_level=min_level,
                                 session_filter=session_filter, since=since,
                                 component_prefixes=component_prefixes)
         ]
