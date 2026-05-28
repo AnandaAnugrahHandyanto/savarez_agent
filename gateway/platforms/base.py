@@ -847,6 +847,13 @@ MEDIA_DELIVERY_SAFE_ROOTS = (
     _HERMES_HOME / "video_cache",
     _HERMES_HOME / "document_cache",
     _HERMES_HOME / "browser_screenshots",
+    # Hardcoded cache subdirectories used by image_gen_provider.save_b64_image()
+    # and other built-in tooling that writes to get_hermes_home() / "cache" / *
+    _HERMES_HOME / "cache" / "images",
+    _HERMES_HOME / "cache" / "audio",
+    _HERMES_HOME / "cache" / "videos",
+    _HERMES_HOME / "cache" / "documents",
+    _HERMES_HOME / "cache" / "screenshots",
 )
 
 # Default recency window for trusting freshly-produced files (seconds).
