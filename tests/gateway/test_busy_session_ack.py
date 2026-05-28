@@ -441,10 +441,10 @@ class TestBusySessionAck:
         await runner._handle_active_session_busy_message(event, sk)
 
         content = adapter._send_with_retry.call_args.kwargs.get("content", "")
-        assert "Interrupting current task" in content
+        assert "正在中断当前任务" in content
         assert "21/60" not in content
         assert "terminal" not in content
-        assert "10 min" not in content
+        assert "10 分钟" not in content
 
     @pytest.mark.asyncio
     async def test_draining_still_works(self):
