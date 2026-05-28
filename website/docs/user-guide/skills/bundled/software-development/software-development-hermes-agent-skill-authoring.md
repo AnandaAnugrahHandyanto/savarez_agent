@@ -44,6 +44,14 @@ There are two places a SKILL.md can live:
 - You're committing a reusable workflow that should ship with hermes-agent
 - You're editing an existing skill under `/home/bb/hermes-agent/skills/` (use `patch` for small edits, `write_file` for rewrites; `skill_manage` still works for patch on in-repo skills, but not for `create`)
 
+## Contract
+
+1. **Runtime surface:** Treat `SKILL.md` as executable agent guidance; put must-follow rules where the model will see them early.
+2. **Scope boundary:** Keep in-repo skills concise and peer-matched; split bulky operator config, maintainer notes, or concepts into linked files or docs.
+3. **Provenance law:** Any external pattern graft must name source, license/access, adapted subset, rejected subset, safety impact, and verification evidence.
+4. **Solution-note law:** Reusable procedural lessons belong in structured solution notes or skills with verification and drift signals, not in durable personal memory.
+5. **Verification law:** Before shipping, validate frontmatter/size, update generated docs when applicable, run targeted checks, and record review evidence.
+
 ## Required Frontmatter
 
 Source of truth: `tools/skill_manager_tool.py::_validate_frontmatter`. Hard requirements:
@@ -110,6 +118,74 @@ Named scenarios → concrete command sequences.
 
 Not every section is mandatory, but `Overview` + `When to Use` + actionable body + pitfalls are the minimum for the skill to feel like a peer.
 
+## Top-Loaded Runtime Contract
+
+Treat `SKILL.md` as the runtime contract the agent will actually read, not as passive documentation. Long skills should put the laws that must survive truncation, skimming, and tool pressure near the top, immediately after `Overview` / `When to Use` and before detailed recipes.
+
+Use a short `## Contract` or `## Non-Negotiable Rules` section when the skill has safety, output, or workflow constraints that are more important than examples:
+
+```markdown
+## Contract
+
+1. **Scope boundary:** Use this skill only for <trigger>. Do not use it for <near-miss>.
+2. **Safety law:** Never <dangerous action> without <approval / verification>.
+3. **Output law:** Final output must include <required fields / artifact / evidence>.
+4. **Verification law:** Before reporting DONE, run <specific checker/test> or state why it is not applicable.
+```
+
+Keep the contract brief: 4-7 bullets, imperative, and specific enough to audit. Put nuance, examples, and operator background later. If a rule is merely helpful advice, it belongs in `Workflow` or `Common Pitfalls`, not in the top-loaded contract.
+
+## Structured Solution Notes
+
+When a task produces a reusable postmortem, procedural lesson, or fix pattern, prefer a structured solution note or a promoted skill over durable personal memory. Memory is for stable user/environment facts; solution notes are for reusable engineering knowledge with provenance and verification.
+
+Use this template for a lightweight note under a relevant repo docs, `references/`, or project artifact directory:
+
+```markdown
+---
+title: <short solution title>
+status: draft | verified | deprecated
+source: <issue/task/source artifact/repo URL>
+provenance: <commit, task id, artifact path, retrieval method, or rationale>
+applies_to: [<skill>, <tool>, <repo area>]
+last_verified: YYYY-MM-DD | not-yet-verified
+---
+
+# <Solution title>
+
+## Problem
+What recurring failure or decision this note resolves.
+
+## Contract / Laws
+- Non-negotiable constraints that must be followed when reusing this solution.
+
+## Procedure
+1. Exact steps, commands, or file edits.
+
+## Verification
+- Command/checker/test to run.
+- Expected result or acceptance evidence.
+
+## Provenance
+- Source artifact, upstream license/access note, adaptation summary, and known risks.
+
+## Retirement / Drift Signals
+- Conditions that mean this note is stale and should be revised or deleted.
+```
+
+Promote a solution note to a full skill when it becomes a repeatable workflow with a clear trigger, tools, pitfalls, and verification checklist.
+
+## Provenance for Pattern Grafts
+
+This contract-and-solution-note pattern was grafted from the Spearhead `last30days-skill` source spike (`/home/filip/spearhead-execution/20260528-source-spikes/last30days-skill/closure-summary.md`, source repo `mvanhorn/last30days-skill` commit `1e03af19e0ad435ee6d227a3593b0c6e5d2ecbe8`, MIT). The adopted subset is procedural only:
+
+- `SKILL.md` as runtime contract/product surface;
+- top-loaded non-negotiable laws for long skills;
+- structured solution notes instead of dumping procedural lessons into memory;
+- contract/checker mindset for metadata, drift, install/update surfaces, and removed legacy paths.
+
+Do not copy the source's monolithic skill style wholesale. Hermes should keep skills concise, split operator config / maintainer docs / concepts where useful, and require separate security review before adopting any auth, browser-cookie, or social/search behavior from external sources.
+
 ## Directory Placement
 
 ```
@@ -128,8 +204,9 @@ Pick the closest existing category. Don't invent new top-level categories casual
    ```
    Read 2-3 peer SKILL.md files to match tone and structure.
 2. **Check validator constraints** in `tools/skill_manager_tool.py` if unsure.
-3. **Draft** with `write_file` to `skills/<category>/<name>/SKILL.md`.
-4. **Validate locally**:
+3. **Draft** with `write_file` to `skills/<category>/<name>/SKILL.md`. If the skill has non-negotiable safety/workflow/output constraints, add a top-loaded `Contract` / `Non-Negotiable Rules` section before detailed recipes.
+4. **Capture reusable lessons** as a structured solution note or a promoted skill, not as durable personal memory, when the lesson is procedural and source-specific.
+5. **Validate locally**:
    ```python
    import yaml, re, pathlib
    content = pathlib.Path("skills/<category>/<name>/SKILL.md").read_text()
@@ -140,8 +217,8 @@ Pick the closest existing category. Don't invent new top-level categories casual
    assert len(fm["description"]) <= 1024
    assert len(content) <= 100_000
    ```
-5. **Git add + commit** on the active branch.
-6. **Note:** the CURRENT session's skill loader is cached — `skill_view` / `skills_list` will not see the new skill until a new session. This is expected, not a bug.
+6. **Git add + commit** on the active branch.
+7. **Note:** the CURRENT session's skill loader is cached — `skill_view` / `skills_list` will not see the new skill until a new session. This is expected, not a bug.
 
 ## Cross-Referencing Other Skills
 
@@ -170,6 +247,10 @@ Pick the closest existing category. Don't invent new top-level categories casual
 
 7. **Linking to skills that don't exist in-repo.** `related_skills: [some-user-local-skill]` works for you but breaks for other clones. Prefer only in-repo links.
 
+8. **Burying the laws below examples.** If the skill has non-negotiable safety/output/workflow constraints, place them before long recipes so they survive truncation and model attention drift.
+
+9. **Saving procedural lessons as memory.** Reusable fix patterns, postmortems, and checker rules belong in solution notes or skills with provenance and verification, not in personal memory entries that will be injected forever without context.
+
 ## Verification Checklist
 
 - [ ] File is at `skills/<category>/<name>/SKILL.md` (not in `~/.hermes/skills/`)
@@ -179,5 +260,8 @@ Pick the closest existing category. Don't invent new top-level categories casual
 - [ ] Description ≤ 1024 chars and starts with "Use when ..."
 - [ ] Total file ≤ 100,000 chars (aim for 8-15k)
 - [ ] Structure: `# Title` → `## Overview` → `## When to Use` → body → `## Common Pitfalls` → `## Verification Checklist`
+- [ ] Long/safety-sensitive skills top-load a short `Contract` / `Non-Negotiable Rules` section before detailed recipes
+- [ ] Reusable procedural lessons are captured as solution notes or skills with source, provenance, verification, and drift/retirement signals
+- [ ] External pattern grafts record source, license/access, adapted subset, rejected subset, safety impact, and tests/checks run
 - [ ] `related_skills` references resolve in-repo (or are explicitly OK to be user-local)
 - [ ] `git add skills/<category>/<name>/ && git commit` completed on the intended branch
