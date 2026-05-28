@@ -192,6 +192,61 @@ def test_board_query_param_default_overrides_current_board_pointer(client):
     assert pinned_ids == {default_task["id"]}
 
 
+def test_active_workers_scans_all_boards_when_board_omitted(client):
+    """Gateway-embedded dispatch ticks all boards, so the active-worker API must too.
+
+    Regression: a SuperOptions worker could be alive while ``/workers/active``
+    returned count=0 because the endpoint only read the current/default board.
+    """
+    kb.create_board("superoptions")
+    conn = kb.connect(board="superoptions")
+    try:
+        task_id = kb.create_task(conn, title="superoptions worker", assignee="default")
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None
+        kb._set_worker_pid(conn, task_id, os.getpid())
+    finally:
+        conn.close()
+
+    data = client.get("/api/plugins/kanban/workers/active").json()
+    assert data["scope"] == "all"
+    assert data["count"] == 1
+    assert data["workers"][0]["board"] == "superoptions"
+    assert data["workers"][0]["task_id"] == task_id
+    assert data["workers"][0]["worker_pid"] == os.getpid()
+    assert {b["board"]: b["count"] for b in data["boards"]}["superoptions"] == 1
+
+    default_only = client.get("/api/plugins/kanban/workers/active?board=default").json()
+    assert default_only["scope"] == "board"
+    assert default_only["board"] == "default"
+    assert default_only["count"] == 0
+
+
+def test_active_workers_falls_back_to_task_worker_pid(client):
+    """Expose legacy/racy rows where the task PID was set but run PID is blank."""
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(conn, title="pid fallback", assignee="default")
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET worker_pid = ? WHERE id = ?", (os.getpid(), task_id))
+            conn.execute(
+                "UPDATE task_runs SET worker_pid = NULL WHERE task_id = ?",
+                (task_id,),
+            )
+    finally:
+        conn.close()
+
+    data = client.get("/api/plugins/kanban/workers/active?board=default").json()
+    assert data["count"] == 1
+    worker = data["workers"][0]
+    assert worker["task_id"] == task_id
+    assert worker["worker_pid"] == os.getpid()
+    assert worker["pid_source"] == "task"
+    assert "task.worker_pid fallback" in worker["diagnostic"]
+
+
 def test_dashboard_select_filters_use_sdk_value_change_handler():
     """Tenant/assignee filters must work with the dashboard SDK Select API.
 
