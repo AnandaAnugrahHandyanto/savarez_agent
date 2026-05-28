@@ -20,6 +20,7 @@ from enum import Enum
 from typing import Optional
 
 from pydantic import BaseModel
+import requests
 
 from agent.modules.event_emitter import EventEmitter
 from agent.modules.interpreter import Interpretation
@@ -42,12 +43,12 @@ class Route(str, Enum):
         A registered MCP or built-in tool must be called.
     DELEGATE_SPECIALIST
         Route to a Tier-1 specialist agent via the CEO orchestrator.
-    SUBMIT_OPENCLAW_JOB
-        Long-running work; submit to the OpenClaw durable-job engine.
+    EXECUTE_WORKFLOW
+        Long-running work; execute through the workflow engine.
     CLARIFY_FIRST
         Message is ambiguous; ask a clarifying question before acting.
-    DRAFT_FOR_APPROVAL
-        Generate a draft response/action and surface it for Atti's approval.
+    PROPOSE_ACTION
+        Generate a proposed response/action and surface it for Atti's approval.
     ESCALATE_TO_ATTI
         Requires human judgment; escalate to Atti directly.
     """
@@ -56,9 +57,9 @@ class Route(str, Enum):
     RECALL_MEMORY = "RECALL_MEMORY"
     INVOKE_TOOL = "INVOKE_TOOL"
     DELEGATE_SPECIALIST = "DELEGATE_SPECIALIST"
-    SUBMIT_OPENCLAW_JOB = "SUBMIT_OPENCLAW_JOB"
+    EXECUTE_WORKFLOW = "EXECUTE_WORKFLOW"
     CLARIFY_FIRST = "CLARIFY_FIRST"
-    DRAFT_FOR_APPROVAL = "DRAFT_FOR_APPROVAL"
+    PROPOSE_ACTION = "PROPOSE_ACTION"
     ESCALATE_TO_ATTI = "ESCALATE_TO_ATTI"
 
 
@@ -168,6 +169,26 @@ def _detect_content_production(text: str) -> Optional[dict]:
         },
     }
 
+def _detect_mission_pack(text: str) -> Optional[str]:
+    """Fetch mission packs and match via regex."""
+    if not text or not text.strip():
+        return None
+    try:
+        resp = requests.get("http://localhost:3000/api/v1/mission-packs", timeout=2.0)
+        if resp.status_code == 200:
+            packs = resp.json()
+            for pack in packs:
+                pattern = pack.get("intentPattern")
+                if pattern and pack.get("isActive"):
+                    try:
+                        if re.search(pattern, text, re.IGNORECASE):
+                            return pack.get("id")
+                    except re.error:
+                        pass
+    except Exception:
+        pass
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Submodule entry point
@@ -188,16 +209,30 @@ def classify_intent(interpretation: Interpretation) -> ClassifiedIntent:
     Emits ``hermes.intent.classified`` on completion.
     """
     content_meta = _detect_content_production(interpretation.raw_text)
+    pack_id = _detect_mission_pack(interpretation.raw_text)
 
     if content_meta is not None:
         # Enrich the interpretation metadata in-place (interpretation is a
         # Pydantic model; build a new instance to avoid mutating a shared obj).
+        metadata = {**interpretation.metadata, **content_meta}
+        if pack_id:
+            metadata["missionPackId"] = pack_id
         enriched = interpretation.model_copy(
-            update={"metadata": {**interpretation.metadata, **content_meta}}
+            update={"metadata": metadata}
         )
         result = ClassifiedIntent(
             route=Route.DELEGATE_SPECIALIST,
             confidence=0.9,
+            interpretation=enriched,
+        )
+    elif pack_id:
+        metadata = {**interpretation.metadata, "missionPackId": pack_id}
+        enriched = interpretation.model_copy(
+            update={"metadata": metadata}
+        )
+        result = ClassifiedIntent(
+            route=Route.DELEGATE_SPECIALIST,
+            confidence=0.8,
             interpretation=enriched,
         )
     else:
@@ -208,14 +243,18 @@ def classify_intent(interpretation: Interpretation) -> ClassifiedIntent:
         )
 
     if _emitter is not None:
+        payload = {
+            "route": result.route.value,
+            "confidence": result.confidence,
+            "intent": result.interpretation.metadata.get("intent", interpretation.intent),
+            "topic": result.interpretation.topic,
+        }
+        if "missionPackId" in result.interpretation.metadata:
+            payload["missionPackId"] = result.interpretation.metadata["missionPackId"]
+
         _emitter.emit(
             "hermes.intent.classified",
-            {
-                "route": result.route.value,
-                "confidence": result.confidence,
-                "intent": result.interpretation.metadata.get("intent", interpretation.intent),
-                "topic": result.interpretation.topic,
-            },
+            payload,
         )
 
     return result

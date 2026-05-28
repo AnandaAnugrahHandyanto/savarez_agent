@@ -146,9 +146,9 @@ def _to_mc_route(route: Route) -> _mc.Route:
         RECALL_MEMORY       → direct   (memory recall handled inline for stubs)
         INVOKE_TOOL         → mcp-tool
         DELEGATE_SPECIALIST → state-engine
-        SUBMIT_OPENCLAW_JOB → openclaw
+        EXECUTE_WORKFLOW    → openclaw
         CLARIFY_FIRST       → clarify
-        DRAFT_FOR_APPROVAL  → approve
+        PROPOSE_ACTION      → approve
         ESCALATE_TO_ATTI    → escalate
     """
     _ROUTE_MAP: dict[str, str] = {
@@ -156,9 +156,9 @@ def _to_mc_route(route: Route) -> _mc.Route:
         "RECALL_MEMORY": "direct",
         "INVOKE_TOOL": "mcp-tool",
         "DELEGATE_SPECIALIST": "state-engine",
-        "SUBMIT_OPENCLAW_JOB": "openclaw",
+        "EXECUTE_WORKFLOW": "openclaw",
         "CLARIFY_FIRST": "clarify",
-        "DRAFT_FOR_APPROVAL": "approve",
+        "PROPOSE_ACTION": "approve",
         "ESCALATE_TO_ATTI": "escalate",
     }
     target = _ROUTE_MAP.get(route.value, "direct")

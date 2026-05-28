@@ -14,32 +14,38 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 
-# 23-event allowlist mirroring @agrv/hermes-events/src/allowlist.ts
-EVENT_ALLOWLIST = {
-    "hermes.identity.bootstrap",
-    "hermes.context.assembled",
-    "hermes.interp.done",
-    "hermes.intent.classified",
-    "hermes.mission.compiled",
-    "hermes.route.dispatched",
-    "hermes.response.shaped",
-    "hermes.summary.emitted",
-    "mission.submitted",
-    "specialist.dispatch.started",
-    "specialist.dispatch.completed",
-    "specialist.dispatch.failed",
-    "write.payload.created",
-    "write.payload.updated",
-    "write.payload.published",
-    "write.medusa.created",
-    "write.medusa.updated",
-    "write.twenty.created",
-    "write.twenty.updated",
-    "approval.requested",
-    "approval.granted",
-    "approval.denied",
-    "approval.timeout",
-}
+# Allowlist sourced from the generated agent/events_allowlist.py, which mirrors
+# packages/hermes-events/src/allowlist.ts (ATTI AI extended set incl. Baumbad events).
+# Falls back to the hardcoded baseline if the generated file is absent.
+try:
+    from agent.events_allowlist import EVENT_ALLOWLIST as _GENERATED_ALLOWLIST
+    EVENT_ALLOWLIST: set = set(_GENERATED_ALLOWLIST)
+except ImportError:
+    EVENT_ALLOWLIST = {
+        "hermes.identity.bootstrap",
+        "hermes.context.assembled",
+        "hermes.interp.done",
+        "hermes.intent.classified",
+        "hermes.mission.compiled",
+        "hermes.route.dispatched",
+        "hermes.response.shaped",
+        "hermes.summary.emitted",
+        "mission.submitted",
+        "specialist.dispatch.started",
+        "specialist.dispatch.completed",
+        "specialist.dispatch.failed",
+        "write.payload.created",
+        "write.payload.updated",
+        "write.payload.published",
+        "write.medusa.created",
+        "write.medusa.updated",
+        "write.twenty.created",
+        "write.twenty.updated",
+        "approval.requested",
+        "approval.granted",
+        "approval.denied",
+        "approval.timeout",
+    }
 
 
 class EventEmitter:

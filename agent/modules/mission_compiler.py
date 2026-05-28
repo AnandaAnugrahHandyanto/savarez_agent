@@ -62,6 +62,7 @@ class MissionContract(BaseModel):
     context: dict[str, Any]
     payload: dict[str, Any]
     mode: str = "prose"  # 'prose'|'typed' — shim flag per Phase 3 §0.2
+    missionPackId: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +127,7 @@ def compile_mission(
         },
         payload=route.payload,
         mode="prose",  # shim: typed mode enabled in C§1.9 after @agrv/mission-contract import
+        missionPackId=interpretation.metadata.get("missionPackId"),
     )
 
     if _emitter is not None:
