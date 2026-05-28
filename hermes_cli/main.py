@@ -2431,6 +2431,7 @@ def select_provider_and_model(args=None):
         "alibaba",
         "huggingface",
         "xiaomi",
+        "modelark-coding-plan",
         "arcee",
         "gmi",
         "nvidia",

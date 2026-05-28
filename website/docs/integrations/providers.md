@@ -34,6 +34,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Alibaba Cloud (Coding Plan)** | `DASHSCOPE_API_KEY` (provider: `alibaba-coding-plan`, alias: `alibaba_coding`) — separate billing SKU, different endpoint |
 | **Kilo Code** | `KILOCODE_API_KEY` in `~/.hermes/.env` (provider: `kilocode`) |
 | **Xiaomi MiMo** | `XIAOMI_API_KEY` in `~/.hermes/.env` (provider: `xiaomi`, aliases: `mimo`, `xiaomi-mimo`) |
+| **BytePlus/VolcEngine ModelArk Coding Plan** | `BYTEPLUS_API_KEY` in `~/.hermes/.env` (provider: `modelark-coding-plan`, aliases: `modelark`, `byteplus-coding`, `volcengine-coding`, `bytedance`) — Seed, Kimi, GLM, DeepSeek models via BytePlus ModelArk |
 | **Tencent TokenHub** | `TOKENHUB_API_KEY` in `~/.hermes/.env` (provider: `tencent-tokenhub`, aliases: `tencent`, `tokenhub`, `tencentmaas`) |
 | **OpenCode Zen** | `OPENCODE_ZEN_API_KEY` in `~/.hermes/.env` (provider: `opencode-zen`) |
 | **OpenCode Go** | `OPENCODE_GO_API_KEY` in `~/.hermes/.env` (provider: `opencode-go`) |
@@ -395,6 +396,24 @@ hermes chat --provider alibaba_coding --model qwen3-coder-plus
 ```
 
 `alibaba_coding` uses the same `DASHSCOPE_API_KEY` your `alibaba` entry already uses — no separate key needed, just a different routing target. Before this provider was registered, users who set `provider: alibaba_coding` in `config.yaml` silently fell through to OpenRouter routing.
+
+### BytePlus/VolcEngine ModelArk Coding Plan
+
+BytePlus/VolcEngine **ModelArk Coding Plan**. A curated set of coding-optimized models (Seed 2.0, Kimi, GLM, DeepSeek) with a single API key.
+
+```yaml
+model:
+  provider: modelark-coding-plan
+  model: dola-seed-2.0-lite
+```
+
+Or from the CLI:
+
+```bash
+hermes chat --provider modelark-coding-plan --model dola-seed-2.0-lite
+```
+
+Set `BYTEPLUS_API_KEY` in `~/.hermes/.env`. The base URL defaults to `https://ark.ap-southeast.bytepluses.com/api/coding/v3`. You can also use `ark-code-latest` as the model name and switch the underlying model in the BytePlus console.
 
 ### MiniMax (OAuth)
 
