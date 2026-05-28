@@ -563,6 +563,89 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     }
 
 
+def _patch_skill_v4a(name: str, patch_text: str, file_path: str = None) -> Dict[str, Any]:
+    """Apply a V4A-format patch to a skill file.
+
+    Parses the patch text using the shared V4A patch parser, then applies
+    the resulting old_string → new_string replacements via _patch_skill.
+    Supports single-file patches scoped to the skill directory.
+    """
+    from tools.patch_parser import OperationType, parse_v4a_patch
+
+    operations, error = parse_v4a_patch(patch_text)
+    if error:
+        return {"success": False, "error": f"V4A patch parse error: {error}"}
+    if not operations:
+        return {"success": False, "error": "V4A patch contains no operations."}
+
+    existing = _find_skill(name)
+    if not existing:
+        return {"success": False, "error": _skill_not_found_error(name)}
+
+    skill_dir = existing["path"]
+    results = []
+
+    for op in operations:
+        if op.operation == OperationType.DELETE:
+            # Delete a supporting file
+            rel_path = op.file_path
+            result = _remove_file(name, rel_path)
+            results.append(result)
+            continue
+
+        if op.operation == OperationType.ADD:
+            # Add a new supporting file
+            added_lines = [line.content for hunk in op.hunks for line in hunk.lines if line.prefix == "+"]
+            file_content = "\n".join(added_lines)
+            result = _write_file(name, op.file_path, file_content)
+            results.append(result)
+            continue
+
+        if op.operation == OperationType.UPDATE:
+            # Convert hunks to old_string/new_string and apply via _patch_skill.
+            # Only include -/+ lines (skip context/unchanged lines marked with space)
+            # because _patch_skill does find-and-replace, not unified-diff apply.
+            old_chunks: list[str] = []
+            new_chunks: list[str] = []
+            for hunk in op.hunks:
+                old_lines = [line.content for line in hunk.lines if line.prefix == "-"]
+                new_lines = [line.content for line in hunk.lines if line.prefix == "+"]
+                if old_lines or new_lines:
+                    old_chunks.append("\n".join(old_lines))
+                    new_chunks.append("\n".join(new_lines))
+
+            old_text = "\n".join(chunk for chunk in old_chunks if chunk)
+            new_text = "\n".join(chunk for chunk in new_chunks if chunk)
+
+            # Determine the target file: V4A header path takes precedence.
+            # Normalize 'SKILL.md' to None so _patch_skill uses its default path
+            # (avoids _validate_file_path rejecting it as a non-supporting-file).
+            target_file = op.file_path if op.file_path else file_path
+            if target_file and target_file.replace("\\", "/").endswith("SKILL.md"):
+                target_file = None
+
+            result = _patch_skill(name, old_text, new_text, target_file)
+            results.append(result)
+            continue
+
+    # Aggregate results
+    failures = [r for r in results if not r.get("success")]
+    successes = [r for r in results if r.get("success")]
+
+    if failures and not successes:
+        return failures[0]
+    if failures:
+        return {
+            "success": True,
+            "message": f"V4A patch partially applied: {len(successes)} succeeded, {len(failures)} failed.",
+            "errors": [r.get("error", "unknown") for r in failures],
+        }
+    return {
+        "success": True,
+        "message": f"V4A patch applied: {len(successes)} operation(s) to skill '{name}'.",
+    }
+
+
 def _patch_skill(
     name: str,
     old_string: str,
@@ -824,6 +907,8 @@ def skill_manage(
     new_string: str = None,
     replace_all: bool = False,
     absorbed_into: str = None,
+    mode: str = None,
+    patch: str = None,
 ) -> str:
     """
     Manage user-created skills. Dispatches to the appropriate action handler.
@@ -841,11 +926,16 @@ def skill_manage(
         result = _edit_skill(name, content)
 
     elif action == "patch":
-        if not old_string:
+        # Support V4A patch format: when mode='patch' and a V4A patch string is
+        # provided instead of old_string/new_string, parse it and apply.
+        if (mode == "patch" or (patch and not old_string)) and patch:
+            result = _patch_skill_v4a(name, patch, file_path)
+        elif not old_string:
             return tool_error("old_string is required for 'patch'. Provide the text to find.", success=False)
-        if new_string is None:
+        elif new_string is None:
             return tool_error("new_string is required for 'patch'. Use empty string to delete matched text.", success=False)
-        result = _patch_skill(name, old_string, new_string, file_path, replace_all)
+        else:
+            result = _patch_skill(name, old_string, new_string, file_path, replace_all)
 
     elif action == "delete":
         result = _delete_skill(name, absorbed_into=absorbed_into)
@@ -904,7 +994,7 @@ SKILL_MANAGE_SCHEMA = {
         "memory — reusable approaches for recurring task types. "
         f"New skills go to {display_hermes_home()}/skills/; existing skills can be modified wherever they live.\n\n"
         "Actions: create (full SKILL.md + optional category), "
-        "patch (old_string/new_string — preferred for fixes), "
+        "patch (old_string/new_string — preferred for fixes; also accepts V4A patch format via mode='patch' + patch='...' for multi-hunk edits), "
         "edit (full SKILL.md rewrite — major overhauls only), "
         "delete, write_file, remove_file.\n\n"
         "On delete, pass `absorbed_into=<umbrella>` when you're merging this "
@@ -1006,6 +1096,25 @@ SKILL_MANAGE_SCHEMA = {
                     "rewriting) will have to guess at intent."
                 )
             },
+            "mode": {
+                "type": "string",
+                "enum": ["replace", "patch"],
+                "description": (
+                    "For 'patch' action: 'replace' (default) uses old_string/new_string "
+                    "find-and-replace. 'patch' uses V4A patch format (the same format as the "
+                    "standalone patch tool) passed via the 'patch' parameter, enabling "
+                    "multi-hunk and multi-file edits in a single call."
+                )
+            },
+            "patch": {
+                "type": "string",
+                "description": (
+                    "For 'patch' action with mode='patch': V4A-format patch string. "
+                    "Example: '*** Begin Patch\n*** Update File: SKILL.md\n@@ context @@\n "
+                    "context line\n-removed line\n+added line\n*** End Patch'. "
+                    "When provided (even without mode='patch'), replaces old_string/new_string."
+                )
+            },
         },
         "required": ["action", "name"],
     },
@@ -1029,6 +1138,8 @@ registry.register(
         old_string=args.get("old_string"),
         new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False),
-        absorbed_into=args.get("absorbed_into")),
+        absorbed_into=args.get("absorbed_into"),
+        mode=args.get("mode"),
+        patch=args.get("patch")),
     emoji="📝",
 )

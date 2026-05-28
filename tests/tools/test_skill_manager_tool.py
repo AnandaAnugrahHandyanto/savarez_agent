@@ -352,6 +352,98 @@ word word
         assert outside_file.read_text() == "old text here"
 
 
+class TestPatchSkillV4A:
+    """Tests for V4A patch mode in skill_manage(action='patch')."""
+
+    def test_v4a_single_hunk(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            v4a_patch = (
+                "*** Begin Patch\n"
+                "*** Update File: SKILL.md\n"
+                "@@ context @@\n"
+                " Do the thing.\n"
+                "-Do the thing.\n"
+                "+Do the NEW thing.\n"
+                "*** End Patch\n"
+            )
+            result = skill_manage(action="patch", name="my-skill", mode="patch", patch=v4a_patch)
+        r = json.loads(result)
+        assert r["success"] is True
+        content = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        assert "Do the NEW thing." in content
+
+    def test_v4a_multi_hunk(self, tmp_path):
+        content = """\
+---
+name: test-skill
+description: A test skill.
+---
+
+# Test
+
+Line A.
+Line B.
+"""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", content)
+            v4a_patch = (
+                "*** Begin Patch\n"
+                "*** Update File: SKILL.md\n"
+                "@@ context @@\n"
+                "-Line A.\n"
+                "+Line X.\n"
+                "-Line B.\n"
+                "+Line Y.\n"
+                "*** End Patch\n"
+            )
+            result = skill_manage(action="patch", name="my-skill", patch=v4a_patch)
+        r = json.loads(result)
+        assert r["success"] is True
+        file_content = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        assert "Line X." in file_content
+        assert "Line Y." in file_content
+
+    def test_v4a_supporting_file(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            refs = tmp_path / "my-skill" / "references"
+            refs.mkdir(parents=True, exist_ok=True)
+            (refs / "data.md").write_text("old content\n")
+            v4a_patch = (
+                "*** Begin Patch\n"
+                "*** Update File: references/data.md\n"
+                "-old content\n"
+                "+new content\n"
+                "*** End Patch\n"
+            )
+            result = skill_manage(action="patch", name="my-skill", mode="patch", patch=v4a_patch)
+        r = json.loads(result)
+        assert r["success"] is True
+        assert (tmp_path / "my-skill" / "references" / "data.md").read_text().strip() == "new content"
+
+    def test_v4a_invalid_patch_returns_error(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = skill_manage(action="patch", name="my-skill", mode="patch", patch="not a valid patch")
+        r = json.loads(result)
+        assert r["success"] is False
+        assert "no operations" in r["error"].lower() or "parse" in r["error"].lower()
+
+    def test_v4a_skill_not_found(self, tmp_path):
+        with _skill_dir(tmp_path):
+            v4a_patch = (
+                "*** Begin Patch\n"
+                "*** Update File: SKILL.md\n"
+                "-old\n"
+                "+new\n"
+                "*** End Patch\n"
+            )
+            result = skill_manage(action="patch", name="nonexistent", mode="patch", patch=v4a_patch)
+        r = json.loads(result)
+        assert r["success"] is False
+
+
 class TestDeleteSkill:
     def test_delete_existing(self, tmp_path):
         with _skill_dir(tmp_path):
