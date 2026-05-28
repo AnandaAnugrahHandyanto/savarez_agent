@@ -30,6 +30,13 @@ function ctxBarColor(pct: number | undefined, t: Theme) {
   return t.color.statusGood
 }
 
+function ctxBar(pct: number | undefined, w = 10) {
+  const p = Math.max(0, Math.min(100, pct ?? 0))
+  const filled = Math.round((p / 100) * w)
+
+  return '█'.repeat(filled) + '░'.repeat(w - filled)
+}
+
 export function statusRuleWidths(cols: number, cwdLabel: string) {
   const width = Math.max(1, Math.floor(cols || 1))
   const desiredSeparatorWidth = width >= 24 ? 3 : 1
@@ -123,6 +130,7 @@ export function StatusRule({
     : usage.total > 0
       ? `${fmtK(usage.total)} tok`
       : ''
+  const bar = usage.context_max ? ctxBar(pct) : ''
 
   return (
     <Box height={1}>
@@ -134,16 +142,26 @@ export function StatusRule({
           {modelLabel(model, modelReasoningEffort, modelFast)}
         </Text>
         {ctxLabel ? (
-          <Text color={contextColor} wrap="truncate-end">
-            {' │ '}
-            Context {ctxLabel}
-          </Text>
+          <>
+            <Text color={contextColor} wrap="truncate-end">
+              {' │ '}
+              Context {ctxLabel}
+            </Text>
+            {bar ? (
+              <Text color={contextColor} wrap="truncate-end">
+                {' '}
+                [{bar}]
+              </Text>
+            ) : null}
+          </>
         ) : null}
         {sessionStartedAt ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            <SessionDuration startedAt={sessionStartedAt} />
-          </Text>
+          <>
+            <Text color={ctxLabel ? contextColor : t.color.muted}> │ </Text>
+            <Text color={t.color.muted} wrap="truncate-end">
+              <SessionDuration startedAt={sessionStartedAt} />
+            </Text>
+          </>
         ) : null}
       </Box>
     </Box>

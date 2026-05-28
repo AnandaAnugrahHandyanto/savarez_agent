@@ -89,7 +89,7 @@ describe('StatusRule compact footer', () => {
     const text = textContent(element)
 
     expect(text).toContain('gpt 5.5 xhigh')
-    expect(text).toContain('Context 74.9k/272k 28%')
+    expect(text).toContain('Context 74.9k/272k 28% [███░░░░░░░]')
     expect(text).not.toContain('Ctrl+C interrupt')
     expect(text).not.toContain('voice')
     expect(text).not.toContain('sessions')
