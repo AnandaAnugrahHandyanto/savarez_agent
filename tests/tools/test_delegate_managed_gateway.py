@@ -463,6 +463,56 @@ def test_claude_code_cli_runtime_preserves_context_in_prompt(tmp_path, monkeypat
     assert child._goal == "complex refactor\n\nContext:\npreserve this context"
 
 
+def test_external_cli_runtime_does_not_inherit_stdin(tmp_path):
+    child = ExternalCliChild(
+        goal="hello",
+        command=["fake-cli"],
+        prompt_args=["-p"],
+        cwd=str(tmp_path),
+        runtime_name="claude-code-cli",
+    )
+
+    process = MagicMock()
+    process.communicate.return_value = ("ok", "")
+    process.returncode = 0
+
+    with patch("tools.delegate_tool.subprocess.Popen", return_value=process) as popen:
+        result = child.run_conversation("ignored")
+
+    assert result["completed"] is True
+    assert popen.call_args.kwargs["stdin"] is delegate_tool.subprocess.DEVNULL
+
+
+def test_claude_external_cli_runtime_strips_hermes_anthropic_credentials(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-stale")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "sk-stale-auth")
+    monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-stale-token")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://ai.flashapi.top")
+    child = ExternalCliChild(
+        goal="hello",
+        command=["fake-cli"],
+        prompt_args=["-p"],
+        cwd=str(tmp_path),
+        runtime_name="claude-code-cli",
+    )
+
+    process = MagicMock()
+    process.communicate.return_value = ("ok", "")
+    process.returncode = 0
+
+    with patch("tools.delegate_tool.subprocess.Popen", return_value=process) as popen:
+        result = child.run_conversation("ignored")
+
+    env = popen.call_args.kwargs["env"]
+    assert result["completed"] is True
+    assert "ANTHROPIC_API_KEY" not in env
+    assert "ANTHROPIC_AUTH_TOKEN" not in env
+    assert "ANTHROPIC_TOKEN" not in env
+    assert env["ANTHROPIC_BASE_URL"] == "https://ai.flashapi.top"
+
+
 def test_codex_agent_uses_external_codex_cli_runtime(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

@@ -254,6 +254,23 @@ class ExternalCliChild:
         self._runtime_name = runtime_name
         self.output_last_message = output_last_message
 
+    def _subprocess_env(self) -> dict[str, str]:
+        env = dict(os.environ)
+        if self._runtime_name == "claude-code-cli":
+            # Hermes model preflight may resolve Anthropic-compatible models
+            # for managed agents and leave ANTHROPIC_* API credentials in the
+            # process environment. Claude Code CLI should use its own auth
+            # source (OAuth/keychain or its settings), not a transient Hermes
+            # model key. If this key is stale, delegated Claude runs fail with
+            # 401 even when direct Claude Code works.
+            for key in (
+                "ANTHROPIC_API_KEY",
+                "ANTHROPIC_AUTH_TOKEN",
+                "ANTHROPIC_TOKEN",
+            ):
+                env.pop(key, None)
+        return env
+
     def get_activity_summary(self) -> Dict[str, Any]:
         return {
             "current_tool": self._current_tool,
@@ -303,8 +320,10 @@ class ExternalCliChild:
             self._process = subprocess.Popen(
                 cmd,
                 cwd=self.cwd or None,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                env=self._subprocess_env(),
                 text=True,
             )
             stdout, stderr = self._process.communicate()
@@ -3918,7 +3937,8 @@ def _build_external_cli_child(
     child._delegate_depth = getattr(parent_agent, "_delegate_depth", 0) + 1
     child._delegate_role = "leaf"
     child._subagent_id = f"sa-{task_index}-{uuid.uuid4().hex[:8]}"
-    child._parent_subagent_id = getattr(parent_agent, "_subagent_id", None)
+    parent_subagent_id = getattr(parent_agent, "_subagent_id", None)
+    child._parent_subagent_id = parent_subagent_id if isinstance(parent_subagent_id, str) else None
     child._subagent_goal = prompt
     child._subagent_agent_id = agent_id
     child._subagent_effective_toolsets = [toolset_name]
