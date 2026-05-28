@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from wisdom.classify import classify_capture, detect_explicit_trigger
 from wisdom.config import load_wisdom_config
 from wisdom.db import WisdomDB
-from wisdom.models import CaptureOutcome, WisdomConfig
+from wisdom.models import (
+    CaptureOutcome,
+    Category,
+    SourceType,
+    VALID_CATEGORIES,
+    VALID_SOURCE_TYPES,
+    WisdomConfig,
+)
 from wisdom.redaction import detect_secret_like_text, ensure_salt, stable_hash
 
 
@@ -35,6 +43,9 @@ def capture_text(
     config: WisdomConfig | None = None,
     db: WisdomDB | None = None,
     cleaned_text: str | None = None,
+    category: Category | str | None = None,
+    source_type: SourceType | str | None = None,
+    context_note: str | None = None,
     require_enabled: bool = True,
 ) -> CaptureOutcome:
     config = config or load_wisdom_config()
@@ -49,10 +60,21 @@ def capture_text(
     trigger = detect_explicit_trigger(text)
     cleaned = cleaned_text if cleaned_text is not None else (trigger.cleaned_text if trigger else text.strip())
     classification = classify_capture(text, cleaned, trigger)
+    category_override = _valid_category(category)
+    source_type_override = _valid_source_type(source_type)
+    if category_override or source_type_override:
+        classification = replace(
+            classification,
+            category=category_override or classification.category,
+            source_type=source_type_override or classification.source_type,
+            confidence=max(classification.confidence, 0.82),
+        )
     salt = ensure_salt()
     raw_metadata = _safe_metadata(metadata or {})
     if trigger:
         raw_metadata["trigger"] = trigger.prefix
+    if context_note:
+        raw_metadata["context_note"] = str(context_note)[:500]
 
     record = db.create_capture(
         original_text=text,
@@ -77,3 +99,17 @@ def _safe_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         if isinstance(value, (str, int, float, bool)) or value is None:
             allowed[key_text] = value
     return allowed
+
+
+def _valid_category(value: Category | str | None) -> Category | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    return text if text in VALID_CATEGORIES else None
+
+
+def _valid_source_type(value: SourceType | str | None) -> SourceType | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    return text if text in VALID_SOURCE_TYPES else None

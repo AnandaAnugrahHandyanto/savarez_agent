@@ -4,13 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from wisdom.apply import create_application_proposals
-from wisdom.capture import capture_text, effective_capture_mode, effective_enabled
 from wisdom.config import load_wisdom_config
 from wisdom.db import WisdomDB
-from wisdom.interpret import interpret_capture
 from wisdom.models import WisdomConfig
-from wisdom.redaction import detect_secret_like_text
 from wisdom.render import (
     render_applications,
     render_blocked_secret,
@@ -23,6 +19,20 @@ from wisdom.render import (
     render_original,
     render_review,
     render_status,
+)
+from wisdom.service import (
+    WisdomServiceContext,
+    apply,
+    archive,
+    can_natural_capture as service_can_natural_capture,
+    capture,
+    inbox,
+    interpret,
+    original as get_original_capture,
+    review,
+    search,
+    set_enabled,
+    status_snapshot,
 )
 
 
@@ -49,34 +59,33 @@ def handle_wisdom_command(
     raw_args = (raw_args or "").strip()
     subcommand, arg = _split(raw_args)
     subcommand = subcommand.lower() if subcommand else "help"
+    service_context = WisdomServiceContext(
+        channel=context.channel,
+        source_kind=context.source_kind,
+        session_key=context.session_key,
+        message_ref=context.message_ref,
+    )
 
     if subcommand in {"help", "-h", "--help"}:
         return render_help()
     if subcommand == "status":
-        return render_status(db.status_snapshot(config))
+        return render_status(status_snapshot(config=config, db=db))
     if subcommand == "on":
-        db.set_setting("enabled", "true")
-        db.set_setting("capture_mode", "explicit")
+        set_enabled(True, config=config, db=db)
         return "Wisdom is on. Capture mode: explicit."
     if subcommand == "off":
-        db.set_setting("enabled", "false")
-        db.set_setting("capture_mode", "off")
+        set_enabled(False, config=config, db=db)
         return "Wisdom is off. Status/help/on still work."
 
-    if not effective_enabled(db, config):
+    if not status_snapshot(config=config, db=db).enabled:
         return "Wisdom is off. Use /wisdom on to enable it."
 
     if subcommand == "capture":
         if not arg:
             return "Usage: /wisdom capture <text>"
-        if detect_secret_like_text(arg):
-            return render_blocked_secret()
-        outcome = capture_text(
+        outcome = capture(
             arg,
-            channel=context.channel,
-            source_kind=context.source_kind,
-            session_key=context.session_key,
-            message_ref=context.message_ref,
+            context=service_context,
             config=config,
             db=db,
             require_enabled=True,
@@ -88,52 +97,51 @@ def handle_wisdom_command(
         return outcome.message or render_error()
 
     if subcommand == "inbox":
-        return render_captures("Wisdom inbox", db.list_captures(limit=config.max_results))
+        return render_captures("Wisdom inbox", inbox(config=config, db=db))
 
     if subcommand == "search":
         if not arg:
             return "Usage: /wisdom search <query>"
-        return render_captures("Wisdom search", db.search(arg, limit=config.max_results))
+        return render_captures("Wisdom search", search(arg, config=config, db=db))
 
     if subcommand == "original":
         capture_id = _parse_id(arg)
         if capture_id is None:
             return "Usage: /wisdom original <id>"
-        capture = db.get_capture(capture_id)
-        return render_original(capture) if capture else render_not_found(capture_id)
+        capture_record = get_original_capture(capture_id, config=config, db=db)
+        return render_original(capture_record) if capture_record else render_not_found(capture_id)
 
     if subcommand == "interpret":
         capture_id = _parse_id(arg)
         if capture_id is None:
             return "Usage: /wisdom interpret <id>"
-        if db.get_capture(capture_id) is None:
+        if get_original_capture(capture_id, config=config, db=db) is None:
             return render_not_found(capture_id)
-        return render_interpretation(interpret_capture(db, capture_id, create=True))
+        return render_interpretation(interpret(capture_id, config=config, db=db, create=True))
 
     if subcommand == "apply":
         capture_id = _parse_id(arg)
         if capture_id is None:
             return "Usage: /wisdom apply <id>"
-        if db.get_capture(capture_id) is None:
+        if get_original_capture(capture_id, config=config, db=db) is None:
             return render_not_found(capture_id)
-        return render_applications(capture_id, create_application_proposals(db, capture_id))
+        return render_applications(capture_id, apply(capture_id, config=config, db=db))
 
     if subcommand == "archive":
         capture_id = _parse_id(arg)
         if capture_id is None:
             return "Usage: /wisdom archive <id>"
-        return f"Archived #{capture_id}." if db.archive_capture(capture_id) else render_not_found(capture_id)
+        return f"Archived #{capture_id}." if archive(capture_id, config=config, db=db) else render_not_found(capture_id)
 
     if subcommand == "review":
-        recent = db.list_captures(limit=config.max_results)
-        unapplied = db.unapplied_captures(limit=config.max_results)
-        return render_review(db.count_by_category(), recent, unapplied)
+        data = review(config=config, db=db)
+        return render_review(data.counts, data.recent, data.unapplied)
 
     return render_help()
 
 
 def can_natural_capture(db: WisdomDB, config: WisdomConfig) -> bool:
-    return effective_enabled(db, config) and effective_capture_mode(db, config) == "explicit"
+    return service_can_natural_capture(config=config, db=db)
 
 
 def _split(raw_args: str) -> tuple[str, str]:

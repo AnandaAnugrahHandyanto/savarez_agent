@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 
 Category = Literal["business", "investing", "health", "life", "inbox"]
@@ -32,6 +32,10 @@ ApplicationType = Literal[
     "writing_idea",
     "decision_rule",
 ]
+
+VALID_CATEGORIES = set(get_args(Category))
+VALID_SOURCE_TYPES = set(get_args(SourceType))
+VALID_APPLICATION_TYPES = set(get_args(ApplicationType))
 
 
 @dataclass(frozen=True)
