@@ -259,6 +259,39 @@ def test_rollback_rejects_unsafe_tarball(backup_env, monkeypatch):
     assert "unsafe" in msg.lower() or "refus" in msg.lower() or "extract" in msg.lower()
 
 
+def test_rollback_rejects_symlink_tarball(backup_env):
+    """Symlink/hardlink members in a snapshot tarball must be refused.
+
+    Python 3.12+ rejects them via ``extractall(filter='data')``, but the
+    Python 3.11 fallback (project minimum) has no filter kwarg and would
+    otherwise materialise a symlink under ``skills/`` whose target points
+    outside the tree — a later ``read_file`` on the link would then leak
+    the symlink's target. Sibling defense to the update-ZIP and
+    skills-hub-quarantine symlink rejects.
+    """
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    _write_skill(skills, "alpha")
+    cb.snapshot_skills(reason="legit")
+
+    rows = cb.list_backups()
+    snap_dir = Path(rows[0]["path"])
+    mal = snap_dir / "skills.tar.gz"
+    mal.unlink()
+    with tarfile.open(mal, "w:gz") as tf:
+        info = tarfile.TarInfo(name="pwn")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "/etc/passwd"
+        tf.addfile(info)
+
+    ok, msg, _ = cb.rollback()
+    assert not ok, f"rollback should refuse a tarball with a symlink member, got: {msg}"
+    assert "symlink" in msg.lower(), f"error should mention symlink, got: {msg}"
+    # Belt: nothing materialised under skills/
+    assert not (skills / "pwn").exists()
+    assert not (skills / "pwn").is_symlink()
+
+
 # ---------------------------------------------------------------------------
 # Integration with run_curator_review
 # ---------------------------------------------------------------------------
