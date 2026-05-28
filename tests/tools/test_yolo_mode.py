@@ -12,6 +12,7 @@ from tools.approval import (
     detect_dangerous_command,
     disable_session_yolo,
     enable_session_yolo,
+    get_current_session_key,
     is_session_yolo_enabled,
     reset_current_session_key,
     set_current_session_key,
@@ -216,3 +217,28 @@ class TestYoloMode:
         approval_module.clear_session("session-a")
 
         assert is_session_yolo_enabled("session-a") is False
+
+    def test_cli_toggle_yolo_uses_session_yolo(self, monkeypatch):
+        """CLI /yolo must use enable_session_yolo, not the frozen env var."""
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.setenv("HERMES_SESSION_KEY", "cli-test")
+
+        # Simulate what cli._toggle_yolo now does
+        from tools.approval import get_current_session_key
+
+        session_key = get_current_session_key()
+        assert not is_session_yolo_enabled(session_key)
+
+        enable_session_yolo(session_key)
+        assert is_session_yolo_enabled(session_key)
+
+        # Approval check honours session-scoped yolo
+        token = set_current_session_key(session_key)
+        try:
+            result = check_dangerous_command("rm -rf /tmp/stuff", "local")
+            assert result["approved"] is True
+        finally:
+            reset_current_session_key(token)
+
+        disable_session_yolo(session_key)
+        assert not is_session_yolo_enabled(session_key)

@@ -9609,18 +9609,24 @@ class HermesCLI:
 
     def _toggle_yolo(self):
         """Toggle YOLO mode — skip all dangerous command approval prompts."""
-        import os
         from hermes_cli.colors import Colors as _Colors
+        from tools.approval import (
+            disable_session_yolo,
+            enable_session_yolo,
+            get_current_session_key,
+            is_session_yolo_enabled,
+        )
 
-        current = is_truthy_value(os.environ.get("HERMES_YOLO_MODE"))
+        session_key = get_current_session_key()
+        current = is_session_yolo_enabled(session_key)
         if current:
-            os.environ.pop("HERMES_YOLO_MODE", None)
+            disable_session_yolo(session_key)
             _cprint(
                 f"  ⚠ YOLO mode {_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET}"
                 " — dangerous commands will require approval."
             )
         else:
-            os.environ["HERMES_YOLO_MODE"] = "1"
+            enable_session_yolo(session_key)
             _cprint(
                 f"  ⚡ YOLO mode {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}"
                 " — all commands auto-approved. Use with caution."
