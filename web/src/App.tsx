@@ -340,6 +340,7 @@ export default function App() {
   }, []);
   const isMobile = useBelowBreakpoint(1024);
   const isDesktopCollapsed = collapsed && !isMobile;
+  const tooltipWarmRef = useRef(0);
   const sidebarStatus = useSidebarStatus();
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
@@ -589,6 +590,7 @@ export default function App() {
                     item={item}
                     key={item.path}
                     t={t}
+                    tooltipWarmRef={tooltipWarmRef}
                   />
                 ))}
               </ul>
@@ -618,6 +620,7 @@ export default function App() {
                         item={item}
                         key={item.path}
                         t={t}
+                        tooltipWarmRef={tooltipWarmRef}
                       />
                     ))}
                   </ul>
@@ -629,6 +632,7 @@ export default function App() {
               collapsed={isDesktopCollapsed}
               onNavigate={closeMobile}
               status={sidebarStatus}
+              tooltipWarmRef={tooltipWarmRef}
             />
 
             <div
@@ -652,6 +656,7 @@ export default function App() {
                 <SidebarIconWithTooltip
                   collapsed={isDesktopCollapsed}
                   label={t.theme?.switchTheme ?? "Switch theme"}
+                  tooltipWarmRef={tooltipWarmRef}
                 >
                   <ThemeSwitcher collapsed={isDesktopCollapsed} dropUp />
                 </SidebarIconWithTooltip>
@@ -659,6 +664,7 @@ export default function App() {
                 <SidebarIconWithTooltip
                   collapsed={isDesktopCollapsed}
                   label={t.language.switchTo}
+                  tooltipWarmRef={tooltipWarmRef}
                 >
                   <LanguageSwitcher collapsed={isDesktopCollapsed} dropUp />
                 </SidebarIconWithTooltip>
@@ -752,6 +758,7 @@ function SidebarNavLink({
   closeMobile,
   collapsed,
   item,
+  tooltipWarmRef,
   t,
 }: SidebarNavLinkProps) {
   const { path, label, labelKey, icon: Icon } = item;
@@ -819,7 +826,7 @@ function SidebarNavLink({
       </NavLink>
 
       {collapsed && hovered && liRef.current && (
-        <SidebarTooltip anchor={liRef.current} label={navLabel} />
+        <SidebarTooltip anchor={liRef.current} label={navLabel} warmRef={tooltipWarmRef} />
       )}
     </li>
   );
@@ -829,6 +836,7 @@ function SidebarSystemActions({
   collapsed,
   onNavigate,
   status,
+  tooltipWarmRef,
 }: SidebarSystemActionsProps) {
   const { t } = useI18n();
   const navigate = useNavigate();
@@ -881,7 +889,7 @@ function SidebarSystemActions({
         <SidebarStatusStrip status={status} />
       </div>
 
-      {collapsed && <GatewayDot status={status} />}
+      {collapsed && <GatewayDot status={status} tooltipWarmRef={tooltipWarmRef} />}
 
       <ul className="flex flex-col">
         {items.map((item) => (
@@ -889,6 +897,7 @@ function SidebarSystemActions({
             key={item.action}
             collapsed={collapsed}
             disabled={isBusy && !(pendingAction === item.action || (activeAction === item.action && isRunning))}
+            tooltipWarmRef={tooltipWarmRef}
             isPending={pendingAction === item.action}
             isRunning={activeAction === item.action && isRunning && pendingAction !== item.action}
             item={item}
@@ -907,6 +916,7 @@ function SystemActionButton({
   isRunning: isActionRunning,
   item,
   onClick,
+  tooltipWarmRef,
 }: SystemActionButtonProps) {
   const { icon: Icon, label, runningLabel, spin } = item;
   const liRef = useRef<HTMLLIElement>(null);
@@ -973,7 +983,7 @@ function SystemActionButton({
       </button>
 
       {collapsed && hovered && liRef.current && (
-        <SidebarTooltip anchor={liRef.current} label={displayLabel} />
+        <SidebarTooltip anchor={liRef.current} label={displayLabel} warmRef={tooltipWarmRef} />
       )}
     </li>
   );
@@ -983,6 +993,7 @@ function SidebarIconWithTooltip({
   children,
   collapsed,
   label,
+  tooltipWarmRef,
 }: SidebarIconWithTooltipProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [hovered, setHovered] = useState(false);
@@ -1007,13 +1018,13 @@ function SidebarIconWithTooltip({
       )}
 
       {collapsed && hovered && ref.current && (
-        <SidebarTooltip anchor={ref.current} label={label} />
+        <SidebarTooltip anchor={ref.current} label={label} warmRef={tooltipWarmRef} />
       )}
     </div>
   );
 }
 
-function GatewayDot({ status }: GatewayDotProps) {
+function GatewayDot({ status, tooltipWarmRef }: GatewayDotProps) {
   const { t } = useI18n();
   const ref = useRef<HTMLDivElement>(null);
   const [hovered, setHovered] = useState(false);
@@ -1055,16 +1066,26 @@ function GatewayDot({ status }: GatewayDotProps) {
       />
 
       {hovered && ref.current && (
-        <SidebarTooltip anchor={ref.current} label={label} />
+        <SidebarTooltip anchor={ref.current} label={label} warmRef={tooltipWarmRef} />
       )}
     </div>
   );
 }
 
-function SidebarTooltip({ anchor, label }: SidebarTooltipProps) {
+function SidebarTooltip({ anchor, label, warmRef }: SidebarTooltipProps) {
   const rect = anchor.getBoundingClientRect();
   const sidebar = document.getElementById("app-sidebar");
   const sidebarRight = sidebar?.getBoundingClientRect().right ?? rect.right;
+
+  const isWarm = warmRef ? Date.now() - warmRef.current < 300 : false;
+
+  useEffect(() => {
+    if (warmRef) warmRef.current = Date.now();
+    return () => {
+      if (warmRef) warmRef.current = Date.now();
+    };
+  }, [warmRef]);
+
   return createPortal(
     <span
       className={cn(
@@ -1077,6 +1098,8 @@ function SidebarTooltip({ anchor, label }: SidebarTooltipProps) {
         top: rect.top + rect.height / 2,
         left: sidebarRight + 8,
         transform: "translateY(-50%)",
+        opacity: isWarm ? 1 : undefined,
+        animation: isWarm ? "none" : "sidebar-tooltip-in 120ms ease-out",
       }}
     >
       {label}
@@ -1085,8 +1108,11 @@ function SidebarTooltip({ anchor, label }: SidebarTooltipProps) {
   );
 }
 
+type TooltipWarmRef = React.RefObject<number>;
+
 interface GatewayDotProps {
   status: StatusResponse | null;
+  tooltipWarmRef: TooltipWarmRef;
 }
 
 interface NavItem {
@@ -1100,6 +1126,7 @@ interface SidebarIconWithTooltipProps {
   children: ReactNode;
   collapsed: boolean;
   label: string;
+  tooltipWarmRef: TooltipWarmRef;
 }
 
 interface SidebarNavLinkProps {
@@ -1107,17 +1134,20 @@ interface SidebarNavLinkProps {
   collapsed: boolean;
   item: NavItem;
   t: Translations;
+  tooltipWarmRef: TooltipWarmRef;
 }
 
 interface SidebarSystemActionsProps {
   collapsed: boolean;
   onNavigate: () => void;
   status: StatusResponse | null;
+  tooltipWarmRef: TooltipWarmRef;
 }
 
 interface SidebarTooltipProps {
   anchor: HTMLElement;
   label: string;
+  warmRef?: TooltipWarmRef;
 }
 
 interface SystemActionButtonProps {
@@ -1127,6 +1157,7 @@ interface SystemActionButtonProps {
   isRunning: boolean;
   item: SystemActionItem;
   onClick: () => void;
+  tooltipWarmRef: TooltipWarmRef;
 }
 
 interface SystemActionItem {

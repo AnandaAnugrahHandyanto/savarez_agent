@@ -127,6 +127,7 @@ export const af: Translations = {
 
   sessions: {
     title: "Sessies",
+    history: "Geskiedenis",
     overview: "Oorsig",
     searchPlaceholder: "Soek boodskap-inhoud...",
     noSessions: "Nog geen sessies nie",

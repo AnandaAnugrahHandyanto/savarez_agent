@@ -127,6 +127,7 @@ export const it: Translations = {
 
   sessions: {
     title: "Sessioni",
+    history: "Cronologia",
     overview: "Panoramica",
     searchPlaceholder: "Cerca nel contenuto dei messaggi...",
     noSessions: "Nessuna sessione",

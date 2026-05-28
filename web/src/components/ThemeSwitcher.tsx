@@ -64,18 +64,30 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
     <div ref={wrapperRef} className="relative">
       <Button
         ghost
-        size="icon"
+        size={collapsed ? "icon" : undefined}
         onClick={() => setOpen((o) => !o)}
         className={cn(
-          "text-text-secondary hover:text-foreground",
-          collapsed && "hover:bg-transparent",
+          collapsed
+            ? "text-text-secondary hover:text-foreground hover:bg-transparent"
+            : "px-2 py-1 normal-case tracking-normal font-normal text-xs text-text-secondary hover:text-foreground",
         )}
         title={`${t.theme?.switchTheme ?? "Switch theme"}: ${label}`}
         aria-label={t.theme?.switchTheme ?? "Switch theme"}
         aria-expanded={open}
         aria-haspopup="listbox"
       >
-        <Palette className="h-3.5 w-3.5" />
+        <span className="inline-flex items-center gap-1.5">
+          <Palette className="h-3.5 w-3.5" />
+
+          {!collapsed && (
+            <Typography
+              mondwest
+              className="hidden sm:inline text-display tracking-wide text-xs"
+            >
+              {label}
+            </Typography>
+          )}
+        </span>
       </Button>
 
       {useMobileSheet && (

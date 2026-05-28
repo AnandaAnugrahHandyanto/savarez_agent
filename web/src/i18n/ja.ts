@@ -127,6 +127,7 @@ export const ja: Translations = {
 
   sessions: {
     title: "セッション",
+    history: "履歴",
     overview: "概要",
     searchPlaceholder: "メッセージ内容を検索...",
     noSessions: "まだセッションがありません",

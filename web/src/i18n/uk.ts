@@ -127,6 +127,7 @@ export const uk: Translations = {
 
   sessions: {
     title: "Сесії",
+    history: "Історія",
     overview: "Огляд",
     searchPlaceholder: "Пошук у вмісті повідомлень...",
     noSessions: "Поки немає сесій",
