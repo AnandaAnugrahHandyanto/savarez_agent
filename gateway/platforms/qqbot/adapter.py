@@ -1680,28 +1680,28 @@ class QQAdapter(BasePlatformAdapter):
 
     @overload
     async def _download_limited_bytes(
-            self,
-            url: str,
-            headers: Optional[Dict[str, str]] = None,
-            context: str = "attachment",
-            return_content_type: Literal[False] = False,
+        self,
+        url: str,
+        headers: Optional[Dict[str, str]] = None,
+        context: str = "attachment",
+        return_content_type: Literal[False] = False,
     ) -> Optional[bytes]: ...
 
     @overload
     async def _download_limited_bytes(
-            self,
-            url: str,
-            headers: Optional[Dict[str, str]] = None,
-            context: str = "attachment",
-            return_content_type: Literal[True] = True,
+        self,
+        url: str,
+        headers: Optional[Dict[str, str]] = None,
+        context: str = "attachment",
+        return_content_type: Literal[True] = True,
     ) -> Optional[Tuple[bytes, str]]: ...
 
     async def _download_limited_bytes(
-            self,
-            url: str,
-            headers: Optional[Dict[str, str]] = None,
-            context: str = "attachment",
-            return_content_type: bool = False,
+        self,
+        url: str,
+        headers: Optional[Dict[str, str]] = None,
+        context: str = "attachment",
+        return_content_type: bool = False,
     ) -> Optional[Union[bytes, Tuple[bytes, str]]]:
         """Download bytes while rejecting oversized responses."""
         if not self._http_client:
@@ -1712,50 +1712,60 @@ class QQAdapter(BasePlatformAdapter):
             )
             return None
 
-        async with self._http_client.stream(
-                "GET",
-                url,
-                headers=headers or {},
-                follow_redirects=True,
-                timeout=30.0,
-        ) as resp:
-            resp.raise_for_status()
-            content_type = resp.headers.get("content-type", "unknown")
-            content_length = resp.headers.get("content-length")
-            if content_length is not None:
-                try:
-                    if int(content_length) > MAX_DOWNLOAD_BYTES:
-                        logger.warning(
-                            "[%s] %s too large (%s bytes): %s",
+        try:
+            async with self._http_client.stream(
+                    "GET",
+                    url,
+                    headers=headers or {},
+                    follow_redirects=True,
+                    timeout=30.0,
+            ) as resp:
+                resp.raise_for_status()
+                content_type = resp.headers.get("content-type", "unknown")
+                content_length = resp.headers.get("content-length")
+                if content_length is not None:
+                    try:
+                        if int(content_length) > MAX_DOWNLOAD_BYTES:
+                            logger.warning(
+                                "[%s] %s too large (%s bytes): %s",
+                                self._log_tag,
+                                context,
+                                content_length,
+                                url[:80],
+                            )
+                            return None
+                    except ValueError:
+                        logger.debug(
+                            "[%s] Ignoring invalid content-length header for %s: %r",
                             self._log_tag,
                             context,
                             content_length,
+                        )
+
+                chunks = bytearray()
+                async for chunk in resp.aiter_bytes():
+                    chunks.extend(chunk)
+                    if len(chunks) > MAX_DOWNLOAD_BYTES:
+                        logger.warning(
+                            "[%s] %s exceeded size limit while downloading: %s",
+                            self._log_tag,
+                            context,
                             url[:80],
                         )
                         return None
-                except ValueError:
-                    logger.debug(
-                        "[%s] Ignoring invalid content-length header for %s: %r",
-                        self._log_tag,
-                        context,
-                        content_length,
-                    )
-
-            chunks = bytearray()
-            async for chunk in resp.aiter_bytes():
-                chunks.extend(chunk)
-                if len(chunks) > MAX_DOWNLOAD_BYTES:
-                    logger.warning(
-                        "[%s] %s exceeded size limit while downloading: %s",
-                        self._log_tag,
-                        context,
-                        url[:80],
-                    )
-                    return None
-            data = bytes(chunks)
-            if return_content_type:
-                return data, content_type
-            return data
+                data = bytes(chunks)
+                if return_content_type:
+                    return data, content_type
+                return data
+        except httpx.HTTPError as exc:
+            logger.debug(
+                "[%s] %s download failed for %s: %s",
+                self._log_tag,
+                context,
+                url[:80],
+                exc,
+            )
+            return None
 
     async def _stt_voice_attachment(
             self,
