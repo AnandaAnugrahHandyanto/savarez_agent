@@ -72,6 +72,56 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
             with pytest.raises(RuntimeError):
                 _resolve_runtime_agent_kwargs()
 
+    def test_fallback_forwards_base_url_inline_key_and_target_model(
+        self, tmp_path, monkeypatch
+    ):
+        """Gateway must forward per-entry base_url, api_key (or api_key_env)
+        AND target_model into resolve_runtime_provider so env-backed
+        fallbacks like azure-foundry don't crash on "Azure Foundry requires
+        a base URL". Pairs with the CLI-side fix for #33540 — both paths
+        share ``resolve_explicit_api_key_for_fallback`` to stay in lockstep.
+        """
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "fallback_providers:\n"
+            "  - provider: azure-foundry\n"
+            "    model: Kimi-K2.6\n"
+            "    base_url: https://aoai.example.com/openai/v1\n"
+            "    api_key_env: AZURE_FOUNDRY_GW_TEST_KEY\n"
+        )
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        monkeypatch.setenv("AZURE_FOUNDRY_GW_TEST_KEY", "azure-secret-from-env")
+
+        captured: list[dict] = []
+
+        def _mock_resolve(**kwargs):
+            captured.append(kwargs)
+            return {
+                "api_key": kwargs["explicit_api_key"],
+                "base_url": kwargs["explicit_base_url"],
+                "provider": "azure-foundry",
+                "api_mode": "chat_completions",
+                "command": None,
+                "args": None,
+                "credential_pool": None,
+            }
+
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            side_effect=_mock_resolve,
+        ):
+            from gateway.run import _try_resolve_fallback_provider
+            result = _try_resolve_fallback_provider()
+
+        assert result is not None
+        assert result["api_key"] == "azure-secret-from-env"
+        assert result["base_url"] == "https://aoai.example.com/openai/v1"
+        assert result["model"] == "Kimi-K2.6"
+        # The resolver received all three explicit_* args plus target_model.
+        assert captured[0]["explicit_base_url"] == "https://aoai.example.com/openai/v1"
+        assert captured[0]["explicit_api_key"] == "azure-secret-from-env"
+        assert captured[0]["target_model"] == "Kimi-K2.6"
+
     def test_legacy_fallback_is_appended_after_fallback_providers(self, tmp_path, monkeypatch):
         """When both keys exist, the legacy entry still participates in resolution."""
         config_path = tmp_path / "config.yaml"
