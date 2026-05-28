@@ -903,3 +903,37 @@ class TestProxyKwargsForAiohttp:
             sess_kw, req_kw = proxy_kwargs_for_aiohttp("http://proxy:8080")
             assert sess_kw == {}
             assert req_kw == {"proxy": "http://proxy:8080"}
+
+class TestMediaDeliverySafeRootsDefaults:
+    """Verify default MEDIA_DELIVERY_SAFE_ROOTS includes both legacy and canonical paths."""
+
+    def test_includes_canonical_cache_paths(self):
+        """Canonical ~/.hermes/cache/{images,audio,...} paths must be in safe roots
+        even when get_hermes_dir() resolves to a legacy location."""
+        from gateway.platforms.base import MEDIA_DELIVERY_SAFE_ROOTS, _HERMES_HOME
+
+        canonical = {
+            _HERMES_HOME / "cache" / "images",
+            _HERMES_HOME / "cache" / "audio",
+            _HERMES_HOME / "cache" / "videos",
+            _HERMES_HOME / "cache" / "documents",
+            _HERMES_HOME / "cache" / "screenshots",
+        }
+        roots_set = set(MEDIA_DELIVERY_SAFE_ROOTS)
+        missing = canonical - roots_set
+        assert not missing, f"Canonical cache paths missing from MEDIA_DELIVERY_SAFE_ROOTS: {missing}"
+
+    def test_includes_legacy_paths(self):
+        """Legacy ~/.hermes/{image_cache,audio_cache,...} paths must be in safe roots."""
+        from gateway.platforms.base import MEDIA_DELIVERY_SAFE_ROOTS, _HERMES_HOME
+
+        legacy = {
+            _HERMES_HOME / "image_cache",
+            _HERMES_HOME / "audio_cache",
+            _HERMES_HOME / "video_cache",
+            _HERMES_HOME / "document_cache",
+            _HERMES_HOME / "browser_screenshots",
+        }
+        roots_set = set(MEDIA_DELIVERY_SAFE_ROOTS)
+        missing = legacy - roots_set
+        assert not missing, f"Legacy cache paths missing from MEDIA_DELIVERY_SAFE_ROOTS: {missing}"
