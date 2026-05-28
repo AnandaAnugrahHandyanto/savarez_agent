@@ -143,3 +143,7 @@ class TestBuildChildSystemPrompt:
             profile_constraints="- TDD only",
         )
         assert "YOUR TASK:\nBuild login" in result
+
+    def test_whitespace_only_profile_system_prompt_falls_back_to_default(self):
+        result = _build_child_system_prompt("Do something", profile_system_prompt="   ")
+        assert result.startswith("You are a focused subagent")
