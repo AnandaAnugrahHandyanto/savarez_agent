@@ -470,6 +470,19 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 continue
             raise
 
+        if event_stream is None:
+            message = "Codex Responses create(stream=True) returned no event stream"
+            if attempt < max_stream_retries:
+                logger.warning(
+                    "%s (attempt %s/%s); retrying. %s",
+                    message,
+                    attempt + 1,
+                    max_stream_retries + 1,
+                    agent._client_log_context(),
+                )
+                continue
+            raise RuntimeError(message)
+
         try:
             # Compatibility: some mocks/providers return a concrete response
             # instead of an iterable.  Pass it straight through.
