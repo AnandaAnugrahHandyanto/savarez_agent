@@ -239,6 +239,80 @@ class TestCLIStatusBar:
 
         assert "🗜️" not in text
 
+    def test_status_bar_text_treats_false_like_yolo_env_as_disabled(self, monkeypatch):
+        monkeypatch.setenv("HERMES_YOLO_MODE", "false")
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "YOLO" not in text
+
+    def test_status_bar_text_shows_yolo_for_truthy_env(self, monkeypatch):
+        monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "⚠ YOLO" in text
+
+    def test_status_bar_fragments_treat_false_like_yolo_env_as_disabled(self, monkeypatch):
+        monkeypatch.setenv("HERMES_YOLO_MODE", "false")
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj._status_bar_visible = True
+
+        mock_app = MagicMock()
+        mock_app.output.get_size.return_value = MagicMock(columns=120)
+        with patch("prompt_toolkit.application.get_app", return_value=mock_app):
+            frags = cli_obj._get_status_bar_fragments()
+        frag_text = "".join(text for _, text in frags)
+
+        assert "YOLO" not in frag_text
+
+    def test_status_bar_fragments_show_yolo_for_truthy_env(self, monkeypatch):
+        monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj._status_bar_visible = True
+
+        mock_app = MagicMock()
+        mock_app.output.get_size.return_value = MagicMock(columns=120)
+        with patch("prompt_toolkit.application.get_app", return_value=mock_app):
+            frags = cli_obj._get_status_bar_fragments()
+        frag_text = "".join(text for _, text in frags)
+
+        assert "⚠ YOLO" in frag_text
+
     def test_compression_count_shown_in_medium_status_bar(self):
         cli_obj = _attach_agent(
             _make_cli(),
