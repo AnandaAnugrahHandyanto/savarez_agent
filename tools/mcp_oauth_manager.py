@@ -475,6 +475,7 @@ class MCPOAuthManager:
             _configure_callback_port,
             _is_interactive,
             _maybe_preregister_client,
+            _reuse_stored_redirect_port,
             _redirect_handler,
             _wait_for_callback,
         )
@@ -493,6 +494,7 @@ class MCPOAuthManager:
                 server_name,
             )
 
+        _reuse_stored_redirect_port(storage, cfg)
         _configure_callback_port(cfg)
         client_metadata = _build_client_metadata(cfg)
         _maybe_preregister_client(storage, cfg, client_metadata)
