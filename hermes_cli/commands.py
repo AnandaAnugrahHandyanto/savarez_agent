@@ -195,6 +195,12 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("plugins", "List installed plugins and their status",
                "Tools & Skills", cli_only=True),
 
+    # James 2.0 operational shortcuts
+    CommandDef("licenca", "James: consultar licenciamento direto por RENAVAM", "James",
+               aliases=("licença", "licenciamento"), args_hint="<renavam>", gateway_only=True),
+    CommandDef("transferencia", "James: consultar transferência direto por RENAVAM", "James",
+               aliases=("transferência",), args_hint="<renavam>", gateway_only=True),
+
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
                gateway_only=True, args_hint="[page]"),

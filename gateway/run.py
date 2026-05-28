@@ -38,6 +38,9 @@ import tempfile
 import threading
 import time
 import sqlite3
+import unicodedata
+import urllib.error
+import urllib.request
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
@@ -66,6 +69,30 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_JAMES_VEHICLE_COMMANDS = {
+    "licenca": "licenca",
+    "licenciamento": "licenca",
+    "transferencia": "transferencia",
+}
+_JAMES_RENAVAM_RE = re.compile(r"(?<!\d)(?:\d[.\-\s]?){9,11}(?!\d)")
+
+
+def _normalize_james_vehicle_command(command: str | None) -> str | None:
+    if not command:
+        return None
+    raw = command.strip().lower().replace("_", "-")
+    normalized = "".join(
+        ch for ch in unicodedata.normalize("NFKD", raw) if not unicodedata.combining(ch)
+    ).replace("-", "_")
+    return _JAMES_VEHICLE_COMMANDS.get(normalized)
+
+
+def _extract_james_renavam(text: str) -> str | None:
+    for match in _JAMES_RENAVAM_RE.finditer(text or ""):
+        candidate = re.sub(r"\D", "", match.group(0))
+        if 9 <= len(candidate) <= 11:
+            return candidate
+    return None
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
@@ -7664,6 +7691,10 @@ class GatewayRunner:
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 
+        james_vehicle_command = _normalize_james_vehicle_command(command)
+        if james_vehicle_command:
+            return await self._handle_james_vehicle_direct_command(event, james_vehicle_command)
+
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
             if isinstance(self.config, dict):
@@ -9334,6 +9365,75 @@ class GatewayRunner:
             lines.append(f"◆ Endpoint: {base_url}")
 
         return "\n".join(lines)
+
+    async def _handle_james_vehicle_direct_command(self, event: MessageEvent, command: str) -> str:
+        args = event.get_command_args().strip()
+        renavam = _extract_james_renavam(args)
+        if not renavam:
+            example = f"/{command} 123456789"
+            return (
+                "Me manda o RENAVAM para continuar.\n"
+                f"Exemplo: {example}\n"
+                "Pode mandar só os números."
+            )
+
+        service_path = {
+            "licenca": "/api-interna/consultar-licenciamento",
+            "transferencia": "/api-interna/consultar-transferencia",
+        }[command]
+        payload = {"renavam": renavam}
+        result = await self._call_james_vehicle_direct_adapter(service_path, payload)
+        return self._format_james_vehicle_direct_response(command, service_path, payload, result)
+
+    async def _call_james_vehicle_direct_adapter(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        base_url = os.environ.get("JAMES_TELEGRAM_DIRECT_ADAPTER_BASE_URL", "http://127.0.0.1:18083").rstrip("/")
+        url = f"{base_url}{path}"
+
+        def _post() -> dict[str, Any]:
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            request = urllib.request.Request(
+                url,
+                data=body,
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    raw = response.read().decode("utf-8", errors="replace")
+                    return {"ok": True, "status": response.status, "body": raw}
+            except urllib.error.HTTPError as exc:
+                raw = exc.read().decode("utf-8", errors="replace")
+                return {"ok": False, "status": exc.code, "body": raw}
+            except Exception as exc:
+                return {"ok": False, "status": None, "body": f"adapter_request_failed: {exc}"}
+
+        return await asyncio.to_thread(_post)
+
+    def _format_james_vehicle_direct_response(
+        self,
+        command: str,
+        path: str,
+        payload: dict[str, Any],
+        result: dict[str, Any],
+    ) -> str:
+        label = "Licenciamento" if command == "licenca" else "Transferência"
+        status = result.get("status")
+        body = str(result.get("body") or "")
+        try:
+            parsed = json.loads(body)
+            body = json.dumps(parsed, ensure_ascii=False, indent=2, sort_keys=True)
+        except Exception:
+            pass
+        if len(body) > 3300:
+            body = body[:3300].rstrip() + "\n...[truncado]"
+        placa_note = "sem PLACA" if "placa" not in payload else f"PLACA {payload['placa']}"
+        return (
+            f"James direto — {label}\n"
+            f"Adapter: {path}\n"
+            f"Payload: RENAVAM {payload['renavam']} ({placa_note})\n"
+            f"HTTP: {status}\n"
+            f"Retorno:\n{body}"
+        )
 
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""

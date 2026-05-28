@@ -133,6 +133,56 @@ async def test_unknown_slash_command_underscored_form_also_guarded(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_james_accented_license_command_prompts_for_renavam(monkeypatch):
+    """/licença is a James direct shortcut, not an unknown Hermes command."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(side_effect=AssertionError("James shortcut leaked to the agent"))
+    runner._call_james_vehicle_direct_adapter = AsyncMock(side_effect=AssertionError("should not call adapter without RENAVAM"))
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/licença"))
+
+    assert result is not None
+    assert "Unknown command" not in result
+    assert "Me manda o RENAVAM" in result
+    assert "/licenca 123456789" in result
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_james_transfer_command_calls_adapter_directly(monkeypatch):
+    """/transferência <renavam> bypasses the agent/Core and calls Adapter."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(side_effect=AssertionError("James shortcut leaked to the agent"))
+    runner._call_james_vehicle_direct_adapter = AsyncMock(
+        return_value={"ok": True, "status": 200, "body": '{"valorFinal":469.91}'}
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/transferência 123.456.789"))
+
+    assert result is not None
+    assert "James direto — Transferência" in result
+    assert "consultar-transferencia" in result
+    assert "123456789" in result
+    assert "valorFinal" in result
+    runner._call_james_vehicle_direct_adapter.assert_awaited_once_with(
+        "/api-interna/consultar-transferencia", {"renavam": "123456789"}
+    )
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_known_slash_command_not_flagged_as_unknown(monkeypatch):
     """A real built-in like /status must NOT hit the unknown-command guard."""
     runner = _make_runner()
