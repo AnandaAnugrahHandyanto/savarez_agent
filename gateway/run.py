@@ -279,6 +279,41 @@ _STILL_WORKING_EXCEPTION_RE = re.compile(
     re.IGNORECASE,
 )
 
+_PUBLIC_RUNTIME_ARTIFACT_PATTERNS = (
+    re.compile(
+        r"^\s*\W*\s*empty\s+response\s+from\s+model\s+[—-]\s+retrying\s*\(\s*\d+\s*/\s*\d+\s*\)\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*\W*\s*operation\s+interrupted:\s+waiting\s+for\s+model\s+response\s+\([0-9.]+s\s+elapsed\)\.?\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*\W*\s*the\s+model\s+returned\s+no\s+response\s+after\s+processing\s+tool\s+results\.\s+this\s+can\s+happen\s+with\s+some\s+models\s+[—-]\s+try\s+again\s+or\s+rephrase\s+your\s+question\.\s*$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*\W*\s*processing\s+completed\s+but\s+no\s+response\s+was\s+generated\.\s+this\s+may\s+be\s+a\s+transient\s+error\s+[—-]\s+try\s+sending\s+your\s+message\s+again\.\s*$",
+        re.IGNORECASE,
+    ),
+)
+_PUBLIC_CHAT_TYPES = {"group", "supergroup", "channel", "thread", "forum"}
+
+
+def _should_suppress_public_runtime_artifact(text: str, source: Any) -> bool:
+    """Keep gateway/runtime failure boilerplate out of public rooms.
+
+    DMs can still surface retry/no-response notices because they help the user
+    decide whether to resend. Group/forum/channel contexts should not receive
+    runtime artifacts as if they were conversational assistant output.
+    """
+    if not text:
+        return False
+    chat_type = str(getattr(source, "chat_type", "") or "").strip().lower()
+    if chat_type not in _PUBLIC_CHAT_TYPES:
+        return False
+    return any(pattern.match(str(text).strip()) for pattern in _PUBLIC_RUNTIME_ARTIFACT_PATTERNS)
+
 
 def _looks_like_gateway_provider_error(text: str) -> bool:
     """True when text is infrastructure/provider failure, not normal content.
@@ -415,7 +450,12 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return _lint_telegram_closeout_packet(redacted)
 
 
-def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
+def _prepare_gateway_status_message(
+    platform: Any,
+    event_type: str,
+    message: str,
+    source: Any = None,
+) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery."""
     text = str(message or "").strip()
     if not text:
@@ -425,6 +465,8 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
 
     text = _redact_gateway_user_facing_secrets(text)
     if _TELEGRAM_NOISY_STATUS_RE.search(text):
+        return None
+    if _should_suppress_public_runtime_artifact(text, source):
         return None
     if _looks_like_gateway_provider_error(text):
         return _gateway_provider_error_reply(text)
@@ -8933,6 +8975,17 @@ class GatewayRunner:
                 agent_result, response, history_len=len(history),
             )
             response = _sanitize_gateway_final_response(source.platform, response)
+            suppress_public_runtime_response = _should_suppress_public_runtime_artifact(
+                response, source
+            )
+            if suppress_public_runtime_response:
+                logger.info(
+                    "Suppressing public runtime artifact for %s/%s: %s",
+                    getattr(source.platform, "value", source.platform),
+                    getattr(source, "chat_type", ""),
+                    _redact_gateway_user_facing_secrets(response)[:160],
+                )
+                response = ""
 
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.
@@ -9229,6 +9282,8 @@ class GatewayRunner:
                         logger.debug("trailing footer send failed: %s", _e)
                 return None
 
+            if suppress_public_runtime_response:
+                return None
             return response
             
         except Exception as e:
@@ -16567,6 +16622,7 @@ class GatewayRunner:
                 source.platform,
                 event_type,
                 message,
+                source=source,
             )
             if prepared_message is None:
                 logger.debug(
