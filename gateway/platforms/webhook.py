@@ -501,15 +501,22 @@ class WebhookAdapter(BasePlatformAdapter):
             for k, v in self._seen_deliveries.items()
             if now - v < self._idempotency_ttl
         }
-        if delivery_id in self._seen_deliveries:
+        dedup_key = f"{route_name}:{delivery_id}"
+        if dedup_key in self._seen_deliveries:
             logger.info(
-                "[webhook] Skipping duplicate delivery %s", delivery_id
+                "[webhook] Skipping duplicate delivery %s on route %s",
+                delivery_id,
+                route_name,
             )
             return web.json_response(
-                {"status": "duplicate", "delivery_id": delivery_id},
+                {
+                    "status": "duplicate",
+                    "delivery_id": delivery_id,
+                    "route": route_name,
+                },
                 status=200,
             )
-        self._seen_deliveries[delivery_id] = now
+        self._seen_deliveries[dedup_key] = now
 
         # ── Direct delivery mode (deliver_only) ─────────────────
         # Skip the agent entirely — the rendered prompt IS the message we
