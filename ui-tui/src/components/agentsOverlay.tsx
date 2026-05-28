@@ -30,6 +30,7 @@ import {
   widthByDepth
 } from '../lib/subagentTree.js'
 import { compactPreview } from '../lib/text.js'
+import { summarizeDelegationControls } from '../lib/toolVisibility.js'
 import type { Theme } from '../theme.js'
 import type { SubagentNode, SubagentProgress } from '../types.js'
 
@@ -967,22 +968,23 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
     .map(([k, v]) => `${k}×${v}`)
     .join(' · ')
 
-  const capsLabel = delegation.maxSpawnDepth
-    ? `caps d${delegation.maxSpawnDepth}/${delegation.maxConcurrentChildren ?? '?'}`
-    : ''
+  const { capsLabel, controlsHint, titleSuffix } = summarizeDelegationControls(
+    {
+      maxConcurrentChildren: delegation.maxConcurrentChildren ?? undefined,
+      maxSpawnDepth: delegation.maxSpawnDepth ?? undefined,
+      paused: delegation.paused
+    },
+    replayMode
+  )
 
   const title =
     replayMode && effectiveSnapshot
       ? `${historyIndex > 0 ? `Replay ${historyIndex}/${history.length}` : 'Last turn'} · finished ${new Date(
           effectiveSnapshot.finishedAt
-        ).toLocaleTimeString()}`
-      : `Spawn tree${delegation.paused ? ' · ⏸ paused' : ''}`
+        ).toLocaleTimeString()}${titleSuffix}`
+      : `Spawn tree${titleSuffix}`
 
   const metaLine = [formatSummary(totals), spark, capsLabel, mix ? `· ${mix}` : ''].filter(Boolean).join('  ')
-
-  const controlsHint = replayMode
-    ? ' · controls locked'
-    : ` · x kill · X subtree · p ${delegation.paused ? 'resume' : 'pause'}`
 
   // ── Rendering ──────────────────────────────────────────────────────
 
