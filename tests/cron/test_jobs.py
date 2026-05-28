@@ -661,9 +661,13 @@ class TestGetDueJobs:
         assert due[0]["id"] == job["id"]
 
     def test_stale_past_due_skipped(self, tmp_cron_dir):
-        """Recurring jobs past their dynamic grace window are fast-forwarded, not fired.
+        """Recurring jobs past their dynamic grace window are fast-forwarded AND
+        still execute once (burst-catchup prevention + single execution).
 
         For an hourly job, grace = 30 min. Setting 35 min late exceeds the window.
+        The job should run now (not be silently skipped) and next_run_at should
+        be advanced to the next future slot.
+        (ref: https://github.com/NousResearch/hermes-agent/issues/33315)
         """
         job = create_job(prompt="Stale", schedule="every 1h")
         # Force next_run_at to 35 minutes ago (beyond the 30-min grace for hourly)
@@ -672,7 +676,9 @@ class TestGetDueJobs:
         save_jobs(jobs)
 
         due = get_due_jobs()
-        assert len(due) == 0
+        # Job executes once (no longer silently skipped)
+        assert len(due) == 1
+        assert due[0]["id"] == job["id"]
         # next_run_at should be fast-forwarded to the future
         updated = get_job(job["id"])
         from cron.jobs import _ensure_aware, _hermes_now

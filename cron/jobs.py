@@ -1048,7 +1048,12 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                             rj["next_run_at"] = new_next
                             needs_save = True
                             break
-                    continue  # Skip this run
+                    # Fall through to due.append(job) — skip accumulated
+                    # missed slots (burst-catchup prevention) but still
+                    # execute once now.  Previously this was `continue`,
+                    # which caused perpetual-defer loops when a job's
+                    # execution time exceeded interval + grace.
+                    # (ref: https://github.com/NousResearch/hermes-agent/issues/33315)
 
             due.append(job)
 
