@@ -399,3 +399,44 @@ class TestDelegateTaskSchema:
     def test_per_task_profile_description_present(self):
         items_props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"]["items"]["properties"]
         assert items_props["profile"]["description"]
+
+
+class TestDynamicSchemaProfileEnum:
+    @patch("tools.delegate_tool._load_config", return_value=_PROFILE_CFG)
+    def test_profile_enum_populated_when_profiles_configured(self, _mock_cfg):
+        from tools.delegate_tool import _build_dynamic_schema_overrides
+        overrides = _build_dynamic_schema_overrides()
+        profile_prop = overrides["parameters"]["properties"].get("profile")
+        assert profile_prop is not None
+        assert set(profile_prop["enum"]) == {"coder", "critic", "copilot-runner"}
+
+    @patch("tools.delegate_tool._load_config", return_value=_PROFILE_CFG)
+    def test_profile_description_lists_summaries(self, _mock_cfg):
+        from tools.delegate_tool import _build_dynamic_schema_overrides
+        overrides = _build_dynamic_schema_overrides()
+        desc = overrides["parameters"]["properties"]["profile"]["description"]
+        assert "Writes code with TDD" in desc
+        assert "Code review" in desc
+
+    @patch("tools.delegate_tool._load_config", return_value={"max_iterations": 10})
+    def test_no_profiles_configured_no_enum(self, _mock_cfg):
+        from tools.delegate_tool import _build_dynamic_schema_overrides
+        overrides = _build_dynamic_schema_overrides()
+        profile_prop = overrides["parameters"]["properties"].get("profile", {})
+        assert "enum" not in profile_prop
+
+    @patch("tools.delegate_tool._load_config", return_value=_PROFILE_CFG)
+    def test_tasks_items_profile_also_gets_enum(self, _mock_cfg):
+        from tools.delegate_tool import _build_dynamic_schema_overrides
+        overrides = _build_dynamic_schema_overrides()
+        tasks_items = overrides["parameters"]["properties"]["tasks"]["items"]
+        profile_prop = tasks_items["properties"].get("profile", {})
+        assert set(profile_prop.get("enum", [])) == {"coder", "critic", "copilot-runner"}
+
+    @patch("tools.delegate_tool._load_config", return_value=_PROFILE_CFG)
+    def test_static_schema_not_mutated(self, _mock_cfg):
+        from tools.delegate_tool import _build_dynamic_schema_overrides, DELEGATE_TASK_SCHEMA
+        before = "enum" in DELEGATE_TASK_SCHEMA["parameters"]["properties"].get("profile", {})
+        _build_dynamic_schema_overrides()
+        after = "enum" in DELEGATE_TASK_SCHEMA["parameters"]["properties"].get("profile", {})
+        assert before == after  # static schema unchanged

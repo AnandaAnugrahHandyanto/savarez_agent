@@ -2762,6 +2762,39 @@ def _build_dynamic_schema_overrides() -> dict:
     }
     overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
     overrides_params["properties"]["role"]["description"] = _build_role_param_description()
+
+    # Inject profile enum so the orchestrator sees actual profile names, not a
+    # free-form string field — prevents hallucinated profile names.
+    cfg = _load_config()
+    profiles = cfg.get("profiles", {})
+    if profiles:
+        profile_lines = "\n".join(
+            f"  - **{k}**: {v.get('summary', k)}" for k, v in profiles.items()
+        )
+        profile_prop = {
+            **overrides_params["properties"].get("profile", {}),
+            "type": "string",
+            "enum": list(profiles.keys()),
+            "description": (
+                f"Named delegation profile from config.yaml. Available:\n{profile_lines}"
+            ),
+        }
+        overrides_params["properties"]["profile"] = profile_prop
+
+        # Also update tasks.items without mutating the static tasks dict.
+        tasks_prop = dict(overrides_params["properties"]["tasks"])
+        tasks_items = dict(tasks_prop.get("items", {}))
+        tasks_items_props = dict(tasks_items.get("properties", {}))
+        tasks_items_props["profile"] = {
+            **tasks_items_props.get("profile", {}),
+            "type": "string",
+            "enum": list(profiles.keys()),
+            "description": "Per-task profile override. See top-level 'profile' for semantics.",
+        }
+        tasks_items["properties"] = tasks_items_props
+        tasks_prop["items"] = tasks_items
+        overrides_params["properties"]["tasks"] = tasks_prop
+
     return {
         "description": _build_top_level_description(),
         "parameters": overrides_params,
