@@ -370,6 +370,27 @@ def _telegramize_command_mentions(text: str, platform: Any) -> str:
 # is still classified fresh.  Override via
 # ``config.yaml`` ``agent.gateway_auto_continue_freshness``.
 _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
+_RUNTIME_CONTEXT_PREFIX_MAX_CHARS = 8 * 1024
+
+
+def _runtime_context_prefix_from_hook_context(hook_ctx: dict) -> str:
+    """Render model-visible runtime context produced by gateway hooks."""
+    blocks: list[str] = []
+    remaining = _RUNTIME_CONTEXT_PREFIX_MAX_CHARS
+    for key in ("brain_context", "suggested_skills"):
+        value = hook_ctx.get(key)
+        if not isinstance(value, str):
+            continue
+        block = value.strip()
+        if not block:
+            continue
+        separator_len = 2 if blocks else 0
+        if len(block) + separator_len > remaining:
+            logger.warning("Skipping oversized hook runtime context block: %s", key)
+            continue
+        blocks.append(block)
+        remaining -= len(block) + separator_len
+    return "\n\n".join(blocks)
 
 
 def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
@@ -8620,9 +8641,15 @@ class GatewayRunner:
                 "user_id": source.user_id,
                 "chat_id": source.chat_id or "",
                 "session_id": session_entry.session_id,
-                "message": message_text[:500],
+                "message": message_text,
             }
-            await self.hooks.emit("agent:start", hook_ctx)
+            try:
+                await self.hooks.emit("agent:start", hook_ctx)
+            except Exception as e:
+                logger.warning("agent:start hook emit failed: %s", e)
+            runtime_prefix = _runtime_context_prefix_from_hook_context(hook_ctx)
+            if runtime_prefix:
+                message_text = f"{runtime_prefix}\n\n{message_text}"
 
             # Run the agent
             agent_result = await self._run_agent(
