@@ -51,6 +51,7 @@ class NativeToolCallingChatClient(
         sessionId: String,
         userText: String,
         userContentParts: List<ChatContentPart> = emptyList(),
+        priorMessages: List<ChatMessage> = emptyList(),
     ): Result {
         val normalizedBaseUrl = baseUrl.trimEnd('/')
         require(normalizedBaseUrl.startsWith("http://") || normalizedBaseUrl.startsWith("https://")) {
@@ -68,15 +69,12 @@ class NativeToolCallingChatClient(
         var executedToolCalls = 0
         var latestToolResult = ""
         var activeToolSpecs = compactToolSpecsFor(userText)
-        var messages = JSONArray()
-            .put(systemMessage(toolsEnabled = activeToolSpecs.length() > 0))
-            .put(
-                ChatMessage(
-                    role = "user",
-                    content = userText,
-                    contentParts = userContentParts,
-                ).toJsonObject()
-            )
+        var messages = buildInitialNativeMessages(
+            systemMessage = systemMessage(toolsEnabled = activeToolSpecs.length() > 0),
+            priorMessages = priorMessages,
+            userText = userText,
+            userContentParts = userContentParts,
+        )
         val initialResponse = postChatCompletionWithContextRecovery(
             normalizedBaseUrl = normalizedBaseUrl,
             modelName = modelName,
@@ -472,7 +470,12 @@ class NativeToolCallingChatClient(
         if (message.isNotBlank()) {
             return message
         }
-        return toolResult.ifBlank { "Tool call completed." }
+        val summary = NativeToolContextCompressor.visibleToolResultSummary(toolResult).trim()
+        return if (summary.isNotBlank()) {
+            "Tool call completed: $summary"
+        } else {
+            "Tool call completed."
+        }
     }
 
     private data class NativeChatCompletionResponse(
@@ -622,6 +625,12 @@ class NativeToolCallingChatClient(
             .put("output", truncate(result.optString("output")))
             .put("error", truncate(result.optString("error")))
             .put("cwd", result.optString("cwd"))
+            .put("shell", result.optString("shell"))
+            .put("execution_mode", result.optString("execution_mode"))
+            .put("uses_termux", result.optBoolean("uses_termux", false))
+            .put("available_package_count", result.optInt("available_package_count", 0))
+            .put("package_manager_status", result.optString("package_manager_status"))
+            .put("package_management_hint", result.optString("package_management_hint"))
             .toString()
     }
 
@@ -3228,6 +3237,26 @@ class NativeToolCallingChatClient(
     }
 
     internal companion object {
+        fun buildInitialNativeMessages(
+            systemMessage: JSONObject,
+            priorMessages: List<ChatMessage>,
+            userText: String,
+            userContentParts: List<ChatContentPart> = emptyList(),
+        ): JSONArray {
+            val messages = JSONArray().put(systemMessage)
+            NativeToolContextCompressor.compactPriorChatRequestMessages(priorMessages).forEach { priorMessage ->
+                messages.put(priorMessage.toJsonObject())
+            }
+            messages.put(
+                ChatMessage(
+                    role = "user",
+                    content = userText,
+                    contentParts = userContentParts,
+                ).toJsonObject(),
+            )
+            return messages
+        }
+
         fun buildSystemPromptContent(
             toolsEnabled: Boolean,
             customSystemPrompt: String = "",
@@ -4302,6 +4331,8 @@ internal object NativeToolContextCompressor {
     private const val MAX_RECOVERED_TOOL_DESCRIPTION_CHARS = 240
     private const val MAX_RECOVERED_TOOL_PROPERTY_DESCRIPTION_CHARS = 160
     private const val MAX_SUMMARY_CHARS = 2_400
+    private const val MAX_PRIOR_CHAT_HISTORY_MESSAGES = 12
+    private const val MAX_PRIOR_CHAT_HISTORY_MESSAGE_CHARS = 1_200
     private const val STRING_FIELD_LIMIT = 600
     private const val OUTPUT_FIELD_LIMIT = 1_400
 
@@ -4352,6 +4383,41 @@ internal object NativeToolContextCompressor {
 
     fun compactPromotedMemoryContext(promotedMemoryContext: String): String {
         return compactStringValue(promotedMemoryContext.trim(), MAX_PROMOTED_MEMORY_CONTEXT_CHARS)
+    }
+
+    fun compactPriorChatRequestMessages(
+        priorMessages: List<ChatMessage>,
+        maxMessages: Int = MAX_PRIOR_CHAT_HISTORY_MESSAGES,
+    ): List<ChatMessage> {
+        return priorMessages
+            .mapNotNull { message ->
+                if (message.role != "user" && message.role != "assistant") {
+                    return@mapNotNull null
+                }
+                val content = message.content.trim().ifBlank {
+                    message.contentParts
+                        .filter { it.type == "text" }
+                        .joinToString("\n") { it.text.trim() }
+                        .trim()
+                }
+                if (content.isBlank()) {
+                    null
+                } else {
+                    ChatMessage(
+                        role = message.role,
+                        content = compactStringValue(content, MAX_PRIOR_CHAT_HISTORY_MESSAGE_CHARS),
+                    )
+                }
+            }
+            .takeLast(maxMessages.coerceAtLeast(0))
+    }
+
+    fun visibleToolResultSummary(toolResult: String): String {
+        if (toolResult.isBlank()) {
+            return ""
+        }
+        val compacted = compactToolResult(toolResult)
+        return toolResultSummary(compacted)
     }
 
     fun recoverMessagesAfterContextOverflow(messages: JSONArray): JSONArray {
@@ -4684,6 +4750,11 @@ internal object NativeToolContextCompressor {
                 "message",
                 "error",
                 "cwd",
+                "shell",
+                "execution_mode",
+                "package_manager_status",
+                "package_management_hint",
+                "available_package_count",
                 "result_count",
                 "total_scan_result_count",
                 "wifi_scan_age_ms",
@@ -4908,6 +4979,18 @@ internal object NativeToolContextCompressor {
             }
             if (parts.isNotEmpty()) {
                 return parts.joinToString("; ")
+            }
+            val keys = buildList {
+                val iterator = parsed.keys()
+                while (iterator.hasNext() && size < 8) {
+                    val key = iterator.next()
+                    if (!key.startsWith("_")) {
+                        add(key)
+                    }
+                }
+            }
+            if (keys.isNotEmpty()) {
+                return "json_fields=${keys.joinToString(", ")}"
             }
         }
         return singleLine(content, 260)

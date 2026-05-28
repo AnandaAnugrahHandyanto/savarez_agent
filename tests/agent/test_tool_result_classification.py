@@ -2,6 +2,8 @@
 
 import json
 
+from agent.display import _detect_tool_failure
+from agent.tool_guardrails import classify_tool_failure
 from agent.tool_result_classification import file_mutation_result_landed
 
 
@@ -28,3 +30,10 @@ def test_top_level_file_mutation_error_does_not_count_as_landed():
     result = json.dumps({"success": True, "error": "post-write verification failed"})
 
     assert file_mutation_result_landed("patch", result) is False
+
+
+def test_display_and_guardrail_classifiers_share_file_mutation_landed_import():
+    result = json.dumps({"bytes_written": 12})
+
+    assert _detect_tool_failure("write_file", result) == (False, "")
+    assert classify_tool_failure("write_file", result) == (False, "")
