@@ -1,3 +1,5 @@
+from unittest.mock import MagicMock
+
 from hermes_state import SessionDB
 from run_agent import AIAgent
 
@@ -69,3 +71,17 @@ def test_flush_still_uses_in_memory_cursor_to_avoid_duplicate_writes(tmp_path):
 
     persisted = db.get_messages("s1")
     assert [m["content"] for m in persisted] == ["one", "two"]
+
+
+def test_flush_ignores_non_integer_mocked_message_count():
+    db = MagicMock()
+    agent = _agent(db)
+
+    messages = [
+        {"role": "user", "content": "one"},
+        {"role": "assistant", "content": "two"},
+    ]
+
+    agent._flush_messages_to_session_db(messages, conversation_history=[])
+
+    assert db.append_message.call_count == 2

@@ -1520,23 +1520,41 @@ class AIAgent:
             # gets zero rows while the raw session JSON has the full chat.
             try:
                 if hasattr(self._session_db, "message_count"):
-                    persisted_count = self._session_db.message_count(self.session_id)
+                    _raw_persisted_count = self._session_db.message_count(self.session_id)
                 else:
-                    persisted_count = len(self._session_db.get_messages(self.session_id))
+                    _raw_persisted_count = len(self._session_db.get_messages(self.session_id))
+                persisted_count = (
+                    _raw_persisted_count
+                    if isinstance(_raw_persisted_count, int)
+                    and not isinstance(_raw_persisted_count, bool)
+                    and _raw_persisted_count >= 0
+                    else None
+                )
             except Exception:
                 persisted_count = None
-            if persisted_count is not None and persisted_count < flush_from:
-                # SessionDB appends messages in the same order as ``messages``;
-                # a smaller persisted count is therefore the durable prefix
-                # already written for this session.
+            durable_flush_from = None
+            if persisted_count is not None:
+                durable_flush_from = (
+                    persisted_count
+                    if start_idx >= len(messages)
+                    else start_idx + persisted_count
+                )
+            if durable_flush_from is not None and durable_flush_from < flush_from:
+                # SessionDB appends messages in the same relative order as the
+                # suffix being flushed.  When ``conversation_history`` is a
+                # prefix boundary, persisted rows correspond to messages after
+                # that boundary; when it covers the whole local transcript, the
+                # durable count is an absolute prefix for this session row.
                 logger.warning(
                     "Session DB flush cursor ahead of persisted messages for %s "
-                    "(flush_from=%s, persisted=%s); resuming from persisted count",
+                    "(flush_from=%s, persisted=%s, durable_flush_from=%s); "
+                    "resuming from durable cursor",
                     self.session_id,
                     flush_from,
                     persisted_count,
+                    durable_flush_from,
                 )
-                flush_from = persisted_count
+                flush_from = durable_flush_from
 
             for msg in messages[flush_from:]:
                 role = msg.get("role", "unknown")
