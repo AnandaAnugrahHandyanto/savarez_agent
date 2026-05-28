@@ -1097,6 +1097,26 @@ class TestWaitTimeoutMetadata:
         assert not ProcessRegistry._is_codex_command("echo codex-yuna")
         assert not ProcessRegistry._is_codex_command("python -c 'print(\"codex-yuna\")'")
 
+    def test_codex_command_detection_malformed_quotes_does_not_raise(self):
+        assert not ProcessRegistry._is_codex_command("codex-yuna exec 'unterminated")
+
+    def test_poll_and_list_tolerate_malformed_command_quotes(self, registry):
+        s = _make_session(
+            sid="proc_malformed_command",
+            command="codex-yuna exec 'unterminated",
+            exited=True,
+            exit_code=2,
+        )
+        registry._finished[s.id] = s
+
+        poll_result = registry.poll(s.id)
+        list_result = registry.list_sessions()
+
+        assert poll_result["status"] == "exited"
+        assert poll_result["exit_code"] == 2
+        assert list_result[0]["session_id"] == s.id
+        assert list_result[0]["status"] == "exited"
+
     def test_wait_returns_exited_if_process_finishes_at_deadline_boundary(self, registry, monkeypatch):
         s = _make_session(sid="proc_wait_boundary", command="codex-yuna exec --full-auto task")
         registry._running[s.id] = s

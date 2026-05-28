@@ -436,7 +436,7 @@ class ProcessRegistry:
             lexer.whitespace_split = True
             tokens = list(lexer)
         except (TypeError, ValueError):
-            tokens = shlex.split(command or "") if command else []
+            return False
 
         command_position = True
         for index, token in enumerate(tokens):
