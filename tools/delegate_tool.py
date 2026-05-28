@@ -586,8 +586,8 @@ def _build_child_system_prompt(
     the LLM doesn't confabulate nesting capabilities that don't exist.
     """
     parts = [
-        profile_system_prompt.strip() if profile_system_prompt else
-        "You are a focused subagent working on a specific delegated task.",
+        profile_system_prompt.strip() if (profile_system_prompt and profile_system_prompt.strip())
+        else "You are a focused subagent working on a specific delegated task.",
         "",
         f"YOUR TASK:\n{goal}",
     ]
