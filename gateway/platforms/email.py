@@ -331,6 +331,10 @@ class EmailAdapter(BasePlatformAdapter):
             return True
 
         self._running = True
+        if os.getenv("EMAIL_DISABLE_AUTO_REPLY", "").lower() in ("1", "true", "yes"):
+            logger.info("[Email] Platform PAUSED — IMAP polling disabled by EMAIL_DISABLE_AUTO_REPLY. "
+                        "Cron job triage (email_watch_hourly.py) is unaffected.")
+            return True
         self._poll_task = asyncio.create_task(self._poll_loop())
         print(f"[Email] Connected as {self._address}")
         return True
