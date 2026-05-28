@@ -273,7 +273,15 @@ async def auth_middleware(request: Request, call_next):
     # and is skipped here so the gate's session attachment isn't overridden.
     if getattr(request.app.state, "auth_required", False):
         return await call_next(request)
-    path = request.url.path
+    # CVE-2026-48710 (BadHost) defense-in-depth: read the raw ASGI path from
+    # scope, not request.url.path. The reconstructed request.url derives from
+    # the (attacker-controllable) Host header — pre-Starlette 1.0.1, a Host
+    # containing `/`, `?`, or `#` shifts the re-parsed path/query boundary so
+    # request.url.path no longer matches the path the ASGI server actually
+    # routed against. Middleware sees the poisoned path; the router dispatches
+    # on the real wire path → auth bypass.
+    # See https://www.cve.org/CVERecord?id=CVE-2026-48710
+    path = request.scope["path"]
     if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
         if not _has_valid_session_token(request):
             return JSONResponse(

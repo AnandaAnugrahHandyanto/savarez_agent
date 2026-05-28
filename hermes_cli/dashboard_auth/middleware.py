@@ -82,7 +82,10 @@ def _unauth_response(request: Request, *, reason: str) -> Response:
     """
     from hermes_cli.dashboard_auth.prefix import prefix_from_request
 
-    path = request.url.path
+    # CVE-2026-48710 (BadHost): use the raw ASGI path so a poisoned Host header
+    # cannot bias the API-vs-HTML branching below (which decides between a
+    # JSON 401 envelope and a 302 redirect to the OAuth flow).
+    path = request.scope["path"]
     next_param = _safe_next_target(request)
     prefix = prefix_from_request(request)
     login_url = (
@@ -120,7 +123,13 @@ def _safe_next_target(request: Request) -> str:
     string return means the caller produces a bare ``/login`` URL — fine,
     user lands at the dashboard root after re-auth.
     """
-    path = request.url.path
+    # CVE-2026-48710 (BadHost): read the raw ASGI path so the open-redirect
+    # guard below ("must start with /, must not start with //") evaluates on
+    # what the server actually routed against, not the (attacker-poisoned)
+    # reconstructed URL. The risk here is narrower than the auth bypass since
+    # the path is only used to build a same-origin `next=` param, but the
+    # defense-in-depth fix is identical and free.
+    path = request.scope["path"]
     # Reject anything that doesn't start with "/" or starts with "//"
     # (protocol-relative URL — would open-redirect to an attacker host).
     if not path or not path.startswith("/") or path.startswith("//"):
@@ -151,7 +160,14 @@ async def gated_auth_middleware(
     if not getattr(request.app.state, "auth_required", False):
         return await call_next(request)
 
-    path = request.url.path
+    # CVE-2026-48710 (BadHost): read the raw ASGI path. The reconstructed
+    # request.url derives from the Host header — pre-Starlette 1.0.1, a Host
+    # containing `/`, `?`, or `#` shifts the parsed path boundary so a request
+    # for `/api/sensitive` re-parses as `/login` (in _path_is_public's
+    # allowlist), middleware lets it through, the router still dispatches to
+    # `/api/sensitive` → auth bypass on the OAuth-gated path.
+    # See https://www.cve.org/CVERecord?id=CVE-2026-48710
+    path = request.scope["path"]
     if _path_is_public(path):
         return await call_next(request)
 
