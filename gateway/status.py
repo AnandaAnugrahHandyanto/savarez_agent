@@ -164,6 +164,19 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
     return None
 
 
+# CLI wrappers that match the broad "hermes gateway" prefix but are
+# short-lived helper commands, not the long-lived daemon. A hung
+# wrapper (e.g. a `hermes gateway restart` parent that never exits)
+# would otherwise satisfy the gateway-identity check and squat on
+# gateway.pid/gateway.lock, blocking every subsequent `gateway run`.
+_GATEWAY_WRAPPER_SUBCOMMANDS = (
+    "gateway restart",
+    "gateway stop",
+    "gateway status",
+    "gateway kill",
+)
+
+
 def _looks_like_gateway_process(pid: int) -> bool:
     """Return True when the live PID still looks like the Hermes gateway."""
     cmdline = _read_process_cmdline(pid)
@@ -177,7 +190,9 @@ def _looks_like_gateway_process(pid: int) -> bool:
         "hermes-gateway",
         "gateway/run.py",
     )
-    return any(pattern in cmdline for pattern in patterns)
+    if not any(pattern in cmdline for pattern in patterns):
+        return False
+    return not any(sub in cmdline for sub in _GATEWAY_WRAPPER_SUBCOMMANDS)
 
 
 def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
@@ -197,7 +212,9 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
         "hermes gateway",
         "gateway/run.py",
     )
-    return any(pattern in cmdline for pattern in patterns)
+    if not any(pattern in cmdline for pattern in patterns):
+        return False
+    return not any(sub in cmdline for sub in _GATEWAY_WRAPPER_SUBCOMMANDS)
 
 
 def _build_pid_record() -> dict:
