@@ -97,9 +97,9 @@ hermes mcp serve
 Before publishing to `registry.modelcontextprotocol.io`:
 
 - Add or verify a root `server.json` that uses the official schema URL.
-- Use a GitHub namespace such as `io.github.NousResearch/hermes-agent` unless a domain namespace has been authenticated.
+- Use the canonical GitHub namespace `io.github.nousresearch/hermes-agent` unless a domain namespace has been authenticated.
 - Reference the PyPI package `hermes-agent` with `registryType: "pypi"` and fixed package arguments `mcp` and `serve`.
-- Include the PyPI package ownership marker in the package README: `mcp-name: io.github.NousResearch/hermes-agent`.
+- Include the PyPI package ownership marker in the package README: `mcp-name: io.github.nousresearch/hermes-agent`.
 - Validate `server.json` against the declared schema.
 - Confirm `hermes mcp serve` starts from an installed wheel or editable install with the `[mcp]` extra.
 - Document the fallback install path for clients that cannot parse PyPI extras.
