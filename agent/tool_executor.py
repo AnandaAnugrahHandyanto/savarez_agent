@@ -62,6 +62,13 @@ def _ra():
     return run_agent
 
 
+def _record_turn_tool_trace(agent, **entry: Any) -> None:
+    """Record trace data when the agent supports per-turn tool tracing."""
+    recorder = getattr(agent, "_record_turn_tool_trace", None)
+    if callable(recorder):
+        recorder(**entry)
+
+
 def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
     """Execute multiple tool calls concurrently using a thread pool.
 
@@ -90,7 +97,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 skipped_content,
                 tc.id,
             ))
-            agent._record_turn_tool_trace(
+            _record_turn_tool_trace(
+                agent,
                 tool_call_id=tc.id,
                 name=tc.function.name,
                 arguments=skipped_args,
@@ -473,7 +481,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # Same as the sequential path: drain between each collected
         # result so the steer lands as early as possible.
         agent._apply_pending_steer_to_tool_results(messages, 1)
-        agent._record_turn_tool_trace(
+        _record_turn_tool_trace(
+            agent,
             tool_call_id=tc.id,
             name=name,
             arguments=args,
@@ -528,7 +537,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     "tool_call_id": skipped_tc.id,
                 }
                 messages.append(skip_msg)
-                agent._record_turn_tool_trace(
+                _record_turn_tool_trace(
+                    agent,
                     tool_call_id=skipped_tc.id,
                     name=skipped_name,
                     arguments=skipped_args,
@@ -919,7 +929,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # injection lands as soon as a tool finishes — not after the
         # entire batch.  The model sees it on the next API iteration.
         agent._apply_pending_steer_to_tool_results(messages, 1)
-        agent._record_turn_tool_trace(
+        _record_turn_tool_trace(
+            agent,
             tool_call_id=tool_call.id,
             name=function_name,
             arguments=function_args,
@@ -958,7 +969,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     skipped_content,
                     skipped_tc.id,
                 ))
-                agent._record_turn_tool_trace(
+                _record_turn_tool_trace(
+                    agent,
                     tool_call_id=skipped_tc.id,
                     name=skipped_name,
                     arguments=skipped_args,
