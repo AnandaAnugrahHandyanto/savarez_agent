@@ -2847,6 +2847,12 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "profile": {
+                            "type": "string",
+                            "description": (
+                                "Per-task profile override. See top-level 'profile' for semantics."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -2880,6 +2886,15 @@ DELEGATE_TASK_SCHEMA = {
                     "Arguments for the ACP command (default: ['--acp', '--stdio']). "
                     "Only used when acp_command is set. "
                     "Leave empty unless acp_command is explicitly provided."
+                ),
+            },
+            "profile": {
+                "type": "string",
+                "description": (
+                    "Named delegation profile from config.yaml (delegation.profiles). "
+                    "Sets model, provider, toolsets, system_prompt, and constraints for the subagent. "
+                    "Available profiles are shown at runtime via the dynamic schema. "
+                    "Omit to use default delegation settings."
                 ),
             },
         },

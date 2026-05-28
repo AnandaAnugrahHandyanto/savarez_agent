@@ -379,3 +379,23 @@ class TestDelegateTaskProfileRouting:
         models = [c.get("model") for c in call_cfgs]
         assert "deepseek-v4-flash" in models
         assert "claude-sonnet-4-20250514" in models
+
+
+class TestDelegateTaskSchema:
+    def test_profile_in_root_properties(self):
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        assert "profile" in props
+        assert props["profile"]["type"] == "string"
+
+    def test_profile_in_tasks_items_properties(self):
+        tasks_items = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"]["items"]
+        assert "profile" in tasks_items["properties"]
+        assert tasks_items["properties"]["profile"]["type"] == "string"
+
+    def test_profile_description_mentions_config(self):
+        desc = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["profile"]["description"]
+        assert "delegation.profiles" in desc
+
+    def test_per_task_profile_description_present(self):
+        items_props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"]["items"]["properties"]
+        assert items_props["profile"]["description"]
