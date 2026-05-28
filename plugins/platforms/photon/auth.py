@@ -7,7 +7,7 @@ project, create user, register webhook) talk to Photon's HTTP API
 directly:
 
     Dashboard API   https://app.photon.codes/api/...
-                    OAuth bearer token from device flow
+                    access_token from the device flow response body
 
     Spectrum API    https://spectrum.photon.codes/projects/{id}/...
                     HTTP Basic with (projectId, projectSecret)
@@ -37,7 +37,7 @@ from collections.abc import Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, Optional, Tuple
 
 try:
     import fcntl
@@ -84,6 +84,13 @@ _setup_lock_holder = threading.local()
 PHOTON_DASHBOARD_TOKEN_ENV = "PHOTON_DASHBOARD_TOKEN"
 
 
+class PhotonDashboardAuthError(RuntimeError):
+    """Raised when Photon rejects the saved dashboard bearer token."""
+
+
+AuthDebugCallback = Callable[[Dict[str, Any]], None]
+
+
 def _env_path() -> Path:
     """Resolve the active Hermes profile's ``.env`` path."""
     try:
@@ -120,6 +127,16 @@ def store_photon_token(token: str) -> None:
         ) from exc
 
     save_env_value(PHOTON_DASHBOARD_TOKEN_ENV, token)
+
+
+def clear_photon_token() -> bool:
+    """Remove the saved dashboard bearer token from Hermes' canonical ``.env``."""
+    try:
+        from hermes_cli.config import remove_env_value  # type: ignore
+    except ImportError:
+        return os.environ.pop(PHOTON_DASHBOARD_TOKEN_ENV, None) is not None
+
+    return remove_env_value(PHOTON_DASHBOARD_TOKEN_ENV)
 
 
 def _get_hermes_env_value(key: str) -> Optional[str]:
@@ -266,12 +283,14 @@ def poll_for_token(
     timeout: Optional[int] = None,
     interval: Optional[int] = None,
     on_pending: Optional[callable] = None,
+    on_debug: Optional[AuthDebugCallback] = None,
 ) -> str:
     """Poll ``/api/auth/device/token`` until the user approves.
 
-    Returns the bearer token from the ``set-auth-token`` response header
-    (Photon's documented mechanism).  Falls back to ``session.access_token``
-    in the JSON body if the header is absent — see the API spec.
+    Returns the bearer token from the JSON response body.  This matches the
+    official Photon CLI.  A short ``set-auth-token`` response header may also
+    be present, but hosted Photon currently rejects that value on dashboard
+    bearer API endpoints, so Hermes must not persist it.
     """
     if httpx is None:
         raise RuntimeError("httpx is required for Photon device login")
@@ -294,14 +313,30 @@ def poll_for_token(
             time.sleep(sleep)
             continue
         if resp.status_code == 200:
-            token = resp.headers.get("set-auth-token")
-            if not token:
-                body = resp.json() or {}
-                session = body.get("session") or {}
-                token = session.get("access_token") or body.get("access_token")
+            body: Dict[str, Any] = {}
+            body_is_json = True
+            try:
+                decoded = resp.json() or {}
+                body = decoded if isinstance(decoded, dict) else {}
+                body_is_json = isinstance(decoded, dict)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                body = {}
+                body_is_json = False
+            token, source = _device_response_access_token_with_source(body)
+            _emit_auth_debug(
+                on_debug,
+                _device_token_debug_event(
+                    resp,
+                    body=body,
+                    body_is_json=body_is_json,
+                    token=token,
+                    token_source=source,
+                ),
+            )
             if not token:
                 raise RuntimeError(
-                    "Photon returned 200 but no token in headers or body"
+                    "Photon returned 200 but no access_token in the response "
+                    "body; refusing to save the unusable session header token"
                 )
             return token
         if resp.status_code == 400:
@@ -335,11 +370,82 @@ def poll_for_token(
     raise TimeoutError("Photon device login timed out")
 
 
+def _device_response_access_token(body: Dict[str, Any]) -> Optional[str]:
+    """Extract the API bearer token from known device-token response shapes."""
+    token, _source = _device_response_access_token_with_source(body)
+    return token
+
+
+def _device_response_access_token_with_source(
+    body: Dict[str, Any],
+) -> Tuple[Optional[str], Optional[str]]:
+    candidates: list[tuple[str, Any]] = [
+        ("access_token", body.get("access_token")),
+        ("accessToken", body.get("accessToken")),
+    ]
+    data = body.get("data")
+    if isinstance(data, dict):
+        candidates.extend([
+            ("data.access_token", data.get("access_token")),
+            ("data.accessToken", data.get("accessToken")),
+        ])
+    for source, candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip(), source
+    return None, None
+
+
+def _device_token_debug_event(
+    resp: Any,
+    *,
+    body: Dict[str, Any],
+    body_is_json: bool,
+    token: Optional[str],
+    token_source: Optional[str],
+) -> Dict[str, Any]:
+    data = body.get("data")
+    session = body.get("session")
+    user = body.get("user")
+    return {
+        "event": "device-token-response",
+        "status": getattr(resp, "status_code", "-"),
+        "body_is_json": body_is_json,
+        "body_keys": _safe_dict_keys(body),
+        "data_keys": _safe_dict_keys(data),
+        "session_keys": _safe_dict_keys(session),
+        "user_present": isinstance(user, dict),
+        "has_set_auth_token_header": bool(
+            getattr(resp, "headers", {}).get("set-auth-token")
+        ),
+        "access_token_source": token_source or "missing",
+        "token": _token_shape(token),
+    }
+
+
+def _safe_dict_keys(value: Any) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    return sorted(str(key) for key in value.keys())[:50]
+
+
+def _emit_auth_debug(
+    on_debug: Optional[AuthDebugCallback],
+    event: Dict[str, Any],
+) -> None:
+    if not on_debug:
+        return
+    try:
+        on_debug(event)
+    except Exception:
+        pass
+
+
 def login_device_flow(
     *,
     client_id: str = DEFAULT_CLIENT_ID,
     open_browser: bool = True,
     on_user_code: Optional[callable] = None,
+    on_debug: Optional[AuthDebugCallback] = None,
 ) -> str:
     """Run the full device-code login flow and persist the token.
 
@@ -359,9 +465,134 @@ def login_device_flow(
             webbrowser.open(target, new=2)
         except Exception:
             pass
-    token = poll_for_token(code, client_id=client_id)
+    token = poll_for_token(code, client_id=client_id, on_debug=on_debug)
+    try:
+        validate_photon_token(token)
+    except Exception:
+        _emit_auth_debug(on_debug, _dashboard_validation_debug_event(token))
+        raise
+    _emit_auth_debug(on_debug, _dashboard_validation_debug_event(token))
     store_photon_token(token)
     return token
+
+
+def validate_photon_token(token: str) -> Dict[str, Any]:
+    """Verify that a device-flow token is usable for dashboard project APIs."""
+    if httpx is None:
+        raise RuntimeError("httpx is required for Photon device login")
+    resp = _dashboard_get("/api/auth/get-session", token)
+    resp.raise_for_status()
+    data = resp.json()
+    user = data.get("user") if isinstance(data, dict) else None
+    if not isinstance(user, dict) or not user:
+        raise PhotonDashboardAuthError(
+            "Photon issued a device token, but the dashboard session lookup "
+            "did not recognize it."
+        )
+    projects_resp = _dashboard_get("/api/projects/", token)
+    _raise_for_dashboard_status(
+        projects_resp,
+        action="validate Photon project API access",
+    )
+    return user
+
+
+def dashboard_auth_diagnostics(token: Optional[str] = None) -> Dict[str, Any]:
+    """Return sanitized Photon auth diagnostics for CLI/debug output."""
+    token = token if token is not None else load_photon_token()
+    result: Dict[str, Any] = {
+        "env_path": str(_env_path()),
+        "dashboard_host": _dashboard_host(),
+        "token": _token_shape(token),
+        "checks": [],
+    }
+    if not token:
+        return result
+    if httpx is None:
+        result["checks"].append({
+            "name": "httpx",
+            "path": "-",
+            "status": "missing",
+            "ok": False,
+            "detail": "httpx is required for Photon auth diagnostics",
+        })
+        return result
+
+    for name, path in (
+        ("session", "/api/auth/get-session"),
+        ("profile", "/api/profile"),
+        ("projects", "/api/projects/"),
+    ):
+        check: Dict[str, Any] = {
+            "name": name,
+            "path": path,
+            "status": "-",
+            "ok": False,
+            "detail": "",
+        }
+        try:
+            resp = _dashboard_get(path, token)
+        except Exception as exc:
+            check["status"] = "error"
+            check["detail"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+            result["checks"].append(check)
+            continue
+
+        check["status"] = resp.status_code
+        check["ok"] = 200 <= resp.status_code < 300
+        check["detail"] = _diagnostic_response_detail(name, resp)
+        result["checks"].append(check)
+    return result
+
+
+def _dashboard_validation_debug_event(token: Optional[str]) -> Dict[str, Any]:
+    event = dashboard_auth_diagnostics(token)
+    event["event"] = "dashboard-validation"
+    return event
+
+
+def _token_shape(token: Optional[str]) -> Dict[str, Any]:
+    if not token:
+        return {
+            "present": False,
+            "length": 0,
+            "dot_count": 0,
+            "looks_jwt": False,
+        }
+    return {
+        "present": True,
+        "length": len(token),
+        "dot_count": token.count("."),
+        "looks_jwt": token.count(".") == 2,
+    }
+
+
+def _dashboard_get(path: str, token: str) -> Any:
+    url = f"{_dashboard_host()}{path}"
+    return httpx.get(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30.0,
+    )
+
+
+def _diagnostic_response_detail(name: str, resp: Any) -> str:
+    if not (200 <= resp.status_code < 300):
+        return _response_error_detail(resp) or "request failed"
+    if name == "session":
+        try:
+            body = resp.json() or {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return "ok; non-json body"
+        user = body.get("user") if isinstance(body, dict) else None
+        return "ok; user=yes" if isinstance(user, dict) else "ok; user=no"
+    if name == "projects":
+        try:
+            items = _project_items(resp.json() or {})
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return "ok; non-json body"
+        return f"ok; projects={len(items)}"
+    return "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +626,7 @@ def create_project(
         headers={"Authorization": f"Bearer {token}"},
         timeout=30.0,
     )
-    resp.raise_for_status()
+    _raise_for_dashboard_status(resp, action="create a Photon project")
     return resp.json()
 
 
@@ -409,9 +640,38 @@ def list_projects(token: str) -> list[Dict[str, Any]]:
         headers={"Authorization": f"Bearer {token}"},
         timeout=30.0,
     )
-    resp.raise_for_status()
+    _raise_for_dashboard_status(resp, action="list Photon projects")
     data = resp.json() or {}
     return _project_items(data)
+
+
+def _raise_for_dashboard_status(resp: Any, *, action: str) -> None:
+    if resp.status_code in (401, 403):
+        detail = _response_error_detail(resp)
+        suffix = f" Photon returned: {detail}" if detail else ""
+        raise PhotonDashboardAuthError(
+            f"Photon dashboard token was rejected while trying to {action}."
+            f"{suffix}"
+        )
+    resp.raise_for_status()
+
+
+def _response_error_detail(resp: Any) -> str:
+    try:
+        body = resp.json() or {}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        body = {}
+    if isinstance(body, dict):
+        detail = (
+            body.get("error_description")
+            or body.get("message")
+            or body.get("error")
+            or body.get("detail")
+        )
+        if detail:
+            return str(detail).strip()[:200]
+    text = str(getattr(resp, "text", "") or "").strip()
+    return text[:200]
 
 
 def _project_items(data: Any) -> list[Dict[str, Any]]:

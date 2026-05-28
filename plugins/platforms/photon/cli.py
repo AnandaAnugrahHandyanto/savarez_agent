@@ -47,6 +47,8 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     p_login = subs.add_parser("login", help="Authenticate with Photon (device flow)")
     p_login.add_argument("--no-browser", action="store_true",
                          help="Don't try to open a browser; print the URL only")
+    p_login.add_argument("--debug-auth", action="store_true",
+                         help="Print sanitized Photon auth exchange diagnostics")
 
     p_quick = subs.add_parser(
         "quick-setup",
@@ -76,6 +78,7 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
                          help="Skip `npm install` inside the sidecar directory")
 
     subs.add_parser("status", help="Show login + project + sidecar dep state")
+    subs.add_parser("diagnose-auth", help="Print sanitized Photon auth diagnostics")
     subs.add_parser("install-sidecar", help="Run npm install inside the sidecar directory")
 
     p_projects = subs.add_parser("projects", help="List or select Photon projects")
@@ -117,6 +120,8 @@ def dispatch(args: argparse.Namespace) -> int:
         return _cmd_setup(args)
     if sub == "status":
         return _cmd_status(args)
+    if sub == "diagnose-auth":
+        return _cmd_diagnose_auth(args)
     if sub == "install-sidecar":
         return _cmd_install_sidecar(args)
     if sub == "projects":
@@ -145,7 +150,21 @@ def _cmd_login(args: argparse.Namespace) -> int:
         token = photon_auth.login_device_flow(
             open_browser=not args.no_browser,
             on_user_code=_print_code,
+            on_debug=(
+                _print_login_auth_debug
+                if getattr(args, "debug_auth", False)
+                else None
+            ),
         )
+    except photon_auth.PhotonDashboardAuthError as e:
+        if not getattr(args, "debug_auth", False):
+            print(
+                "For sanitized endpoint diagnostics, retry with "
+                "`hermes photon login --debug-auth`.",
+                file=sys.stderr,
+            )
+        print(f"login failed: {e}", file=sys.stderr)
+        return 1
     except Exception as e:
         print(f"login failed: {e}", file=sys.stderr)
         return 1
@@ -337,6 +356,9 @@ def _resolve_setup_project(
     print(f"[2/{total_steps}] Looking for an existing Photon project...")
     try:
         projects = photon_auth.list_projects(token)
+    except photon_auth.PhotonDashboardAuthError as e:
+        _handle_dashboard_auth_error(e)
+        return "", ""
     except Exception as e:
         print(
             "could not list Photon projects, so no new project was created. "
@@ -399,6 +421,9 @@ def _resolve_setup_project(
 def _create_and_store_project(token: str, *, name: str, source: str) -> tuple[str, str]:
     try:
         data = photon_auth.create_project(token, name=name)
+    except photon_auth.PhotonDashboardAuthError as e:
+        _handle_dashboard_auth_error(e)
+        return "", ""
     except Exception as e:
         print(f"create-project failed: {e}", file=sys.stderr)
         return "", ""
@@ -494,6 +519,11 @@ def _cmd_status(_args: argparse.Namespace) -> int:
     print(f"  managed tunnel      : {tunnel_label}")
     print(f"  next step           : {_next_status_step(sidecar_status, tunnel_state)}")
     print(f"  docs                : {_docs_paths()}")
+    return 0
+
+
+def _cmd_diagnose_auth(_args: argparse.Namespace) -> int:
+    _print_auth_diagnostics(photon_auth.dashboard_auth_diagnostics())
     return 0
 
 
@@ -596,6 +626,9 @@ def _cmd_projects(args: argparse.Namespace) -> int:
     sub = getattr(args, "photon_projects_command", None)
     try:
         projects = photon_auth.list_projects(token)
+    except photon_auth.PhotonDashboardAuthError as e:
+        _handle_dashboard_auth_error(e)
+        return 1
     except Exception as e:
         print(f"project list failed: {e}", file=sys.stderr)
         return 1
@@ -645,6 +678,112 @@ def _cmd_projects(args: argparse.Namespace) -> int:
 
     print(f"unknown projects subcommand: {sub}", file=sys.stderr)
     return 2
+
+
+def _handle_dashboard_auth_error(exc: photon_auth.PhotonDashboardAuthError) -> None:
+    diagnostics = photon_auth.dashboard_auth_diagnostics()
+    if diagnostics.get("token", {}).get("present"):
+        _print_auth_diagnostics(diagnostics, stream=sys.stderr)
+    photon_auth.clear_photon_token()
+    print(str(exc), file=sys.stderr)
+    print(
+        "Cleared the saved Photon login token. Run `hermes photon login`, "
+        "then retry the Photon command.",
+        file=sys.stderr,
+    )
+
+
+def _print_auth_diagnostics(
+    diagnostics: dict[str, Any],
+    *,
+    stream: Any = sys.stdout,
+) -> None:
+    token = diagnostics.get("token") or {}
+    print("Photon auth diagnostics", file=stream)
+    print("───────────────────────", file=stream)
+    print(f"  env path        : {diagnostics.get('env_path')}", file=stream)
+    print(f"  dashboard host  : {diagnostics.get('dashboard_host')}", file=stream)
+    if token.get("present"):
+        print(
+            "  token           : present "
+            f"(len={token.get('length')}, dots={token.get('dot_count')}, "
+            f"jwt={_yes_no(bool(token.get('looks_jwt')))})",
+            file=stream,
+        )
+    else:
+        print("  token           : missing", file=stream)
+    checks = diagnostics.get("checks") or []
+    if checks:
+        print("  endpoint checks :", file=stream)
+        for check in checks:
+            status = check.get("status")
+            state = "ok" if check.get("ok") else "fail"
+            detail = check.get("detail") or ""
+            print(
+                f"    - {check.get('name')} {check.get('path')} -> "
+                f"{status} {state}; {detail}",
+                file=stream,
+            )
+
+
+def _print_login_auth_debug(event: dict[str, Any]) -> None:
+    kind = event.get("event")
+    if kind == "device-token-response":
+        token = event.get("token") or {}
+        print("Photon login debug", file=sys.stderr)
+        print("──────────────────", file=sys.stderr)
+        print(
+            f"  device token POST : {event.get('status')} "
+            f"json={_yes_no(bool(event.get('body_is_json')))}",
+            file=sys.stderr,
+        )
+        print(
+            "  body keys         : "
+            f"{_format_key_list(event.get('body_keys') or [])}",
+            file=sys.stderr,
+        )
+        print(
+            "  data keys         : "
+            f"{_format_key_list(event.get('data_keys') or [])}",
+            file=sys.stderr,
+        )
+        print(
+            "  session keys      : "
+            f"{_format_key_list(event.get('session_keys') or [])}",
+            file=sys.stderr,
+        )
+        print(
+            "  user object       : "
+            f"{_yes_no(bool(event.get('user_present')))}",
+            file=sys.stderr,
+        )
+        print(
+            "  set-auth-token    : "
+            f"{_yes_no(bool(event.get('has_set_auth_token_header')))}",
+            file=sys.stderr,
+        )
+        print(
+            "  selected token    : "
+            f"{event.get('access_token_source')} "
+            f"(len={token.get('length')}, dots={token.get('dot_count')}, "
+            f"jwt={_yes_no(bool(token.get('looks_jwt')))})",
+            file=sys.stderr,
+        )
+        return
+
+    if kind == "dashboard-validation":
+        _print_auth_diagnostics(event, stream=sys.stderr)
+        return
+
+    print(f"Photon auth debug: {kind or 'unknown event'}", file=sys.stderr)
+
+
+def _format_key_list(keys: list[Any]) -> str:
+    return ", ".join(str(key) for key in keys) if keys else "-"
+
+
+def _yes_no(value: bool) -> str:
+    return "yes" if value else "no"
 
 
 def _cmd_webhook(args: argparse.Namespace) -> int:

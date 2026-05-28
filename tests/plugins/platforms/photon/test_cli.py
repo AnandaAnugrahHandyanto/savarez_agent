@@ -57,6 +57,10 @@ def test_register_cli_parses_quick_setup_and_tunnel_commands() -> None:
     assert quick.photon_command == "quick-setup"
     assert quick.phone == "+1234567"
 
+    login = parser.parse_args(["login", "--debug-auth"])
+    assert login.photon_command == "login"
+    assert login.debug_auth is True
+
     tunnel = parser.parse_args(["webhook", "tunnel", "start"])
     assert tunnel.photon_command == "webhook"
     assert tunnel.photon_webhook_command == "tunnel"
@@ -163,6 +167,34 @@ def test_setup_noninteractive_does_not_create_without_flag(monkeypatch: Any) -> 
     assert rc == 1
 
 
+def test_setup_clears_bad_dashboard_token_on_project_list_auth_error(
+    monkeypatch: Any,
+    capsys: Any,
+) -> None:
+    _patch_setup_basics(monkeypatch)
+    cleared: list[bool] = []
+    monkeypatch.setattr(photon_auth, "load_project_credentials", lambda: (None, None))
+    monkeypatch.setattr(
+        photon_auth,
+        "list_projects",
+        lambda _token: (_ for _ in ()).throw(
+            photon_auth.PhotonDashboardAuthError("Photon rejected token")
+        ),
+    )
+    monkeypatch.setattr(
+        photon_auth,
+        "clear_photon_token",
+        lambda: cleared.append(True) or True,
+    )
+
+    rc = photon_cli._cmd_setup(_setup_args())
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert cleared == [True]
+    assert "hermes photon login" in captured.err
+
+
 def test_quick_setup_auto_creates_when_no_remote_project(monkeypatch: Any) -> None:
     _patch_setup_basics(monkeypatch)
     stored: dict[str, Any] = {}
@@ -234,6 +266,33 @@ def test_setup_new_project_flag_creates_and_stores(monkeypatch: Any) -> None:
     assert stored["project_id"] == "spectrum-1"
     assert stored["project_secret"] == "secret-1"
     assert stored["extra"]["source"] == "explicit-new"
+
+
+def test_setup_new_project_clears_bad_dashboard_token_on_create_auth_error(
+    monkeypatch: Any,
+    capsys: Any,
+) -> None:
+    _patch_setup_basics(monkeypatch)
+    cleared: list[bool] = []
+    monkeypatch.setattr(
+        photon_auth,
+        "create_project",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            photon_auth.PhotonDashboardAuthError("Photon rejected token")
+        ),
+    )
+    monkeypatch.setattr(
+        photon_auth,
+        "clear_photon_token",
+        lambda: cleared.append(True) or True,
+    )
+
+    rc = photon_cli._cmd_setup(_setup_args(new_project=True))
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert cleared == [True]
+    assert "hermes photon login" in captured.err
 
 
 def test_setup_new_project_writes_project_env(
