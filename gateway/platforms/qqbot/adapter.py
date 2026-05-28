@@ -1629,7 +1629,7 @@ class QQAdapter(BasePlatformAdapter):
             data = await self._download_limited_bytes(
                 url,
                 headers=self._qq_media_headers(url),
-                context=media_type or "attachment",
+                context=media_type or "media",
             )
             if data is None:
                 return None
