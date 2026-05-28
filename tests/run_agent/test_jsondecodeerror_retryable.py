@@ -154,3 +154,29 @@ class TestAgentLoopSourceHasNoneTypeCarveOut:
             "agent/conversation_loop.py must carve out 'NoneType is not iterable' "
             "TypeErrors from the is_local_validation_error classification — see #33136."
         )
+
+
+class TestAgentLoopFallbackStatusGuards:
+    """Do not advertise fallback recovery when no fallback provider exists."""
+
+    def test_trying_fallback_statuses_are_guarded_by_available_fallback_chain(self):
+        import inspect
+        from agent import conversation_loop
+
+        src = inspect.getsource(conversation_loop)
+        guarded_messages = [
+            "Max retries ({max_retries}) for invalid responses — trying fallback",
+            "Non-retryable error (HTTP {status_code}) — trying fallback",
+            "Provider safety filter blocked this request — trying fallback",
+            "Max retries ({max_retries}) exhausted — trying fallback",
+        ]
+        guard = "agent._fallback_index < len(agent._fallback_chain)"
+
+        for message in guarded_messages:
+            idx = src.find(message)
+            assert idx != -1, f"missing fallback status message: {message}"
+            guard_window = src[max(0, idx - 700):idx]
+            assert guard in guard_window, (
+                f"{message!r} must be guarded so users do not see 'trying fallback' "
+                "when no fallback provider is configured."
+            )
