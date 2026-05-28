@@ -992,12 +992,18 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Log tool errors to the persistent error log so [error] tags
         # in the UI always have a corresponding detailed entry on disk.
         _is_error_result, _ = _detect_tool_failure(function_name, function_result)
+        # The agent-runtime tools above (todo, session_search, memory,
+        # context-engine, memory-manager, clarify, delegate_task) are
+        # dispatched inline — they never reach handle_function_call, so the
+        # executor is the one that has to fire post_tool_call. For
+        # registry-dispatched tools the else-branch above invoked
+        # handle_function_call, which already fires the hook.
         from agent.agent_runtime_helpers import agent_runtime_owns_post_tool_hook
-        _executor_owns_post_hook = (
+        _executor_must_emit_post_hook = (
             not _execution_blocked
             and agent_runtime_owns_post_tool_hook(agent, function_name)
         )
-        if _executor_owns_post_hook:
+        if _executor_must_emit_post_hook:
             _emit_terminal_post_tool_call(
                 agent,
                 function_name=function_name,

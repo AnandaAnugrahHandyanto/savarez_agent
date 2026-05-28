@@ -5,6 +5,8 @@ pieces. The OpenAI client and tool loading are mocked so no network calls
 are made.
 """
 
+import ast
+import inspect
 import io
 import json
 import logging
@@ -2425,6 +2427,135 @@ class TestConcurrentToolExecution:
 
         assert json.loads(result) == {"error": "Blocked"}
         assert agent._turns_since_memory == 5
+
+
+class TestAgentRuntimePostHookOwnershipSync:
+    """Pin the inline-dispatch tool list against the post-hook ownership set.
+
+    The post_tool_call hook fires from two places: the inline dispatcher in
+    agent/tool_executor.py:execute_tool_calls_sequential (for agent-runtime
+    tools that never reach handle_function_call) and
+    model_tools.handle_function_call itself (for registry-dispatched tools).
+    To prevent the executor from silently dropping or double-emitting,
+    AGENT_RUNTIME_POST_HOOK_TOOL_NAMES has to match exactly the static
+    `function_name == "..."` branches in the inline dispatch chain.
+
+    The chain is the if/elif tower anchored on `_block_msg is not None`.
+    Pre-dispatch `function_name == "..."` checks (counter resets, checkpoint
+    triggers) live outside the dispatch chain and are explicitly skipped.
+    """
+
+    _DISPATCH_ANCHOR_LEFT = "_block_msg"
+
+    @classmethod
+    def _is_dispatch_anchor(cls, test_node) -> bool:
+        # Looking for `_block_msg is not None`.
+        if not isinstance(test_node, ast.Compare):
+            return False
+        if not (isinstance(test_node.left, ast.Name) and test_node.left.id == cls._DISPATCH_ANCHOR_LEFT):
+            return False
+        if not (len(test_node.ops) == 1 and isinstance(test_node.ops[0], ast.IsNot)):
+            return False
+        comparator = test_node.comparators[0]
+        return isinstance(comparator, ast.Constant) and comparator.value is None
+
+    @staticmethod
+    def _function_name_literal(test_node) -> str | None:
+        """Return the string literal X for `function_name == "X"`, else None."""
+        if not isinstance(test_node, ast.Compare):
+            return None
+        if not (isinstance(test_node.left, ast.Name) and test_node.left.id == "function_name"):
+            return None
+        if not (len(test_node.ops) == 1 and isinstance(test_node.ops[0], ast.Eq)):
+            return None
+        comparator = test_node.comparators[0]
+        if isinstance(comparator, ast.Constant) and isinstance(comparator.value, str):
+            return comparator.value
+        return None
+
+    @classmethod
+    def _extract_dispatch_chain_names(cls, func) -> set[str]:
+        """Find the if/elif chain anchored on `_block_msg is not None`, return its
+        `function_name == "..."` literals."""
+        source = inspect.cleandoc("\n" + inspect.getsource(func))
+        tree = ast.parse(source)
+        names: set[str] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If):
+                continue
+            if not cls._is_dispatch_anchor(node.test):
+                continue
+            current = node
+            while current is not None:
+                literal = cls._function_name_literal(current.test)
+                if literal is not None:
+                    names.add(literal)
+                if current.orelse and len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
+                    current = current.orelse[0]
+                else:
+                    current = None
+            break
+        return names
+
+    @classmethod
+    def _extract_invoke_tool_names(cls, func) -> set[str]:
+        """invoke_tool uses a flat if/elif on function_name directly; walk every
+        Compare in the function body (no other static `function_name == "..."`
+        checks live there)."""
+        source = inspect.cleandoc("\n" + inspect.getsource(func))
+        tree = ast.parse(source)
+        names: set[str] = set()
+        for node in ast.walk(tree):
+            literal = cls._function_name_literal(node)
+            if literal is not None:
+                names.add(literal)
+        return names
+
+    def test_frozenset_matches_inline_dispatch_chain(self):
+        from agent import tool_executor
+        from agent.agent_runtime_helpers import AGENT_RUNTIME_POST_HOOK_TOOL_NAMES
+
+        inline_names = self._extract_dispatch_chain_names(
+            tool_executor.execute_tool_calls_sequential
+        )
+        assert inline_names, (
+            "Could not find the dispatch chain (anchored on "
+            "`_block_msg is not None`) in execute_tool_calls_sequential. "
+            "If the dispatcher was refactored, update _DISPATCH_ANCHOR_LEFT "
+            "and the walker in this test."
+        )
+        assert inline_names == set(AGENT_RUNTIME_POST_HOOK_TOOL_NAMES), (
+            "Inline dispatch chain in "
+            "agent/tool_executor.py:execute_tool_calls_sequential has drifted "
+            "from AGENT_RUNTIME_POST_HOOK_TOOL_NAMES in "
+            "agent/agent_runtime_helpers.py.\n"
+            f"  Inline branches:     {sorted(inline_names)}\n"
+            f"  Ownership frozenset: {sorted(AGENT_RUNTIME_POST_HOOK_TOOL_NAMES)}\n"
+            "Update both together so post_tool_call fires exactly once per "
+            "tool execution."
+        )
+
+    def test_invoke_tool_dispatch_matches_inline_dispatch_chain(self):
+        """invoke_tool (concurrent path) and the inline dispatcher (sequential
+        path) must cover the same set of agent-runtime tools — otherwise
+        post_tool_call fires inconsistently depending on which executor ran
+        the tool."""
+        from agent import agent_runtime_helpers, tool_executor
+
+        invoke_tool_names = self._extract_invoke_tool_names(
+            agent_runtime_helpers.invoke_tool
+        )
+        inline_names = self._extract_dispatch_chain_names(
+            tool_executor.execute_tool_calls_sequential
+        )
+        assert invoke_tool_names == inline_names, (
+            "Static `function_name == \"...\"` branches diverged between "
+            "agent/agent_runtime_helpers.py:invoke_tool (concurrent path) "
+            "and agent/tool_executor.py:execute_tool_calls_sequential "
+            "(sequential path).\n"
+            f"  invoke_tool:                   {sorted(invoke_tool_names)}\n"
+            f"  execute_tool_calls_sequential: {sorted(inline_names)}"
+        )
 
 
 class TestPathsOverlap:

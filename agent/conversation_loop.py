@@ -1013,6 +1013,16 @@ def run_conversation(
                         # mutated by the agent loop, so a shallow copy is
                         # sufficient; a deepcopy would walk every tool result
                         # and base64 image on every API call.
+                        #
+                        # The ``request_messages`` and ``conversation_history``
+                        # kwargs below are pre-existing raw passthroughs
+                        # consumed by the bundled langfuse plugin
+                        # (``plugins/observability/langfuse/__init__.py:_coerce_request_messages``).
+                        # They predate ``request`` and are intentionally NOT
+                        # sanitised — secrets are not expected here because
+                        # ``api_kwargs`` is the same object passed to the
+                        # provider client.  New consumers should read the
+                        # sanitised view from ``request["body"]["messages"]``.
                         _request_payload = agent._api_request_payload_for_hook(api_kwargs)
                         _invoke_hook(
                             "pre_api_request",

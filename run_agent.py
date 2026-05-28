@@ -1666,6 +1666,13 @@ class AIAgent:
         *,
         finish_reason: Optional[str],
     ) -> Dict[str, Any]:
+        # ``tool_calls`` is the raw list of provider SDK objects (e.g.
+        # OpenAI ``ChatCompletionMessageToolCall``).  We deliberately hand
+        # the raw objects to ``_sanitize_hook_payload`` and rely on
+        # ``_hook_jsonable`` to normalise them via ``model_dump`` /
+        # ``__dict__`` / dataclass introspection — a future refactor of
+        # the sanitiser MUST preserve that capability or hook subscribers
+        # will receive opaque ``str(obj)`` blobs here.
         tool_calls = getattr(assistant_message, "tool_calls", None) or []
         return self._sanitize_hook_payload(
             {
@@ -1697,16 +1704,17 @@ class AIAgent:
         retryable: Optional[bool] = None,
         reason: Optional[str] = None,
     ) -> None:
+        # Lazy module import (not from-import) so tests that
+        # ``monkeypatch.setattr("hermes_cli.plugins.has_hook", ...)`` still
+        # take effect on this call site. After first call the import is a
+        # ``sys.modules`` dict lookup, so retries don't repay any real cost.
         try:
-            from hermes_cli.plugins import (
-                has_hook,
-                invoke_hook as _invoke_hook,
-            )
+            from hermes_cli import plugins as _plugins
 
-            if not has_hook("api_request_error"):
+            if not _plugins.has_hook("api_request_error"):
                 return
             ended_at = time.time()
-            _invoke_hook(
+            _plugins.invoke_hook(
                 "api_request_error",
                 task_id=task_id,
                 turn_id=turn_id,
