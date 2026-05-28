@@ -2613,7 +2613,7 @@ async def get_logs(
     # trim to the requested line count afterward.
     if search:
         needle = search.lower()
-        result = [l for l in result if needle in l.lower()][-min(lines, 500):]
+        result = [line for line in result if needle in line.lower()][-min(lines, 500):]
     return {"file": file, "lines": result}
 
 

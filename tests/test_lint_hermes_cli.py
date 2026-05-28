@@ -43,3 +43,19 @@ class TestHermesCliE741:
             f"hermes_cli/logs.py has E741 violations:\n"
             f"{result.stdout}\n"
         )
+
+    def test_hermes_cli_web_server_py_has_zero_e741_violations(self) -> None:
+        """hermes_cli/web_server.py must have zero E741 violations."""
+        target = REPO_ROOT / "hermes_cli" / "web_server.py"
+        assert target.exists(), f"Target file not found: {target}"
+
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=E741",
+             "--output-format=concise", str(target)],
+            capture_output=True, text=True, check=False,
+        )
+
+        assert result.returncode == 0, (
+            f"hermes_cli/web_server.py has E741 violations:\n"
+            f"{result.stdout}\n"
+        )
