@@ -448,9 +448,16 @@ def cronjob(
         normalized = (action or "").strip().lower()
 
         if normalized == "create":
-            if not schedule:
-                return tool_error("schedule is required for create", success=False)
             canonical_skills = _canonical_skills(skill, skills)
+            if not schedule:
+                return tool_error(
+                    "schedule is required for create. schedule must be a non-empty string "
+                    "(e.g. '30m', 'every 2h', '0 9 * * *', or an ISO timestamp). "
+                    f"Received: action=create, schedule={schedule!r}, "
+                    f"prompt={prompt!r}, skills={canonical_skills!r} "
+                    "— review your tool call and ensure schedule is included.",
+                    success=False,
+                )
             _no_agent = bool(no_agent)
             # Job-shape validation differs by mode:
             #   - no_agent=True → script is the job; prompt/skills are optional
@@ -706,7 +713,13 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
         "properties": {
             "action": {
                 "type": "string",
-                "description": "One of: create, list, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
+                "description": "One of: create, list, update, pause, resume, remove, run. "
+                               "REQUIRED PARAMETERS per action: "
+                               "create => schedule (REQUIRED) + prompt (unless skills is set); "
+                               "list => no extra params needed; "
+                               "update => schedule (REQUIRED) + job_id (REQUIRED); "
+                               "pause/resume/remove/run => job_id (REQUIRED). "
+                               "Always include schedule when action is create or update."
             },
             "job_id": {
                 "type": "string",
@@ -714,11 +727,14 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "prompt": {
                 "type": "string",
-                "description": "For create: the full self-contained prompt. If skills are also provided, this becomes the task instruction paired with those skills."
+                "description": "REQUIRED for create (unless skills is set). The full self-contained prompt. If skills are also provided, this becomes the task instruction paired with those skills."
             },
             "schedule": {
                 "type": "string",
-                "description": "REQUIRED for action=create. For create/update: '30m', 'every 2h', '0 9 * * *', or ISO timestamp. Examples: '30m' (every 30 minutes), 'every 2h' (every 2 hours), '0 9 * * *' (daily at 9am), '2026-06-01T09:00:00' (one-shot). You MUST include this field when action=create."
+                "description": "REQUIRED for create/update (ALWAYS include this when action is create or update). "
+                               "'30m', 'every 2h', '0 9 * * *', or ISO timestamp. "
+                               "CRITICAL: If you omit schedule on a create or update call, "
+                               "the tool will reject the request."
             },
             "name": {
                 "type": "string",
@@ -735,7 +751,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             "skills": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional ordered list of skill names to load before executing the cron prompt. On update, pass an empty array to clear attached skills."
+                "description": "Optional ordered list of skill names to load before executing the cron prompt. On create, at least one of prompt or skills is required. On update, pass an empty array to clear attached skills."
             },
             "model": {
                 "type": "object",
@@ -801,7 +817,42 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "description": "Optional Hermes profile name to run the job under. When set, the scheduler resolves that profile, applies a context-local Hermes home override, loads that profile's config/.env for the run, and bridges HERMES_HOME into subprocesses. Any temporary process-environment changes from profile .env loading are restored after the job exits. Use 'default' for the root Hermes profile. Named profiles must already exist. When unset (default), preserves the scheduler's existing profile. On update, pass an empty string to clear. Jobs with profile run sequentially (not parallel) to keep profile-scoped runtime state isolated."
             },
         },
-        "required": ["action"]
+        "required": ["action"],
+        "allOf": [
+            {
+                "if": {
+                    "properties": {"action": {"const": "create"}},
+                    "required": ["action"]
+                },
+                "then": {
+                    "required": ["schedule"]
+                }
+            },
+            {
+                "if": {
+                    "properties": {"action": {"const": "update"}},
+                    "required": ["action"]
+                },
+                "then": {
+                    "required": ["schedule"]
+                }
+            },
+            {
+                "if": {
+                    "properties": {"action": {"not": {"const": "list"}}},
+                    "required": ["action"]
+                },
+                "then": {
+                    "if": {
+                        "properties": {"action": {"not": {"const": "create"}}},
+                        "required": ["action"]
+                    },
+                    "then": {
+                        "required": ["job_id"]
+                    }
+                }
+            }
+        ]
     }
 }
 
