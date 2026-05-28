@@ -2325,6 +2325,28 @@ class TestConcurrentToolExecution:
 
         assert json.loads(result) == {"error": "Blocked"}
 
+    def test_invoke_tool_pre_tool_hook_gets_session_and_tool_call_ids(self, agent, monkeypatch):
+        """Direct _invoke_tool path should pass the same hook metadata as executors."""
+        seen = []
+
+        def block(*args, **kwargs):
+            seen.append((args, kwargs))
+            return "Blocked"
+
+        agent.session_id = "session-direct"
+        monkeypatch.setattr("hermes_cli.plugins.get_pre_tool_call_block_message", block)
+
+        result = agent._invoke_tool("web_search", {"q": "x"}, "task-direct", "call-direct")
+
+        assert json.loads(result) == {"error": "Blocked"}
+        assert seen == [
+            (("web_search", {"q": "x"}), {
+                "task_id": "task-direct",
+                "session_id": "session-direct",
+                "tool_call_id": "call-direct",
+            })
+        ]
+
     def test_sequential_blocked_tool_skips_checkpoints_and_callbacks(self, agent, monkeypatch):
         """Sequential path: blocked tool should not trigger checkpoints or start callbacks."""
         tool_call = _mock_tool_call(name="write_file",
@@ -2354,6 +2376,35 @@ class TestConcurrentToolExecution:
         assert messages[0]["role"] == "tool"
         assert json.loads(messages[0]["content"]) == {"error": "Blocked by policy"}
 
+    def test_concurrent_blocked_tool_skips_checkpoints_and_callbacks(self, agent, monkeypatch):
+        """Concurrent path should not checkpoint or emit starts for blocked tools."""
+        tool_call = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"test.txt","content":"hello"}',
+            call_id="c1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: "Blocked by policy",
+        )
+        agent._checkpoint_mgr.enabled = True
+        agent._checkpoint_mgr.ensure_checkpoint = MagicMock(
+            side_effect=AssertionError("checkpoint should not run")
+        )
+        starts = []
+        agent.tool_start_callback = lambda *a: starts.append(a)
+
+        with patch("run_agent.handle_function_call", side_effect=AssertionError("should not run")):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        agent._checkpoint_mgr.ensure_checkpoint.assert_not_called()
+        assert starts == []
+        assert len(messages) == 1
+        assert json.loads(messages[0]["content"]) == {"error": "Blocked by policy"}
+
     def test_blocked_memory_tool_does_not_reset_counter(self, agent, monkeypatch):
         """Blocked memory tool should not reset the nudge counter."""
         agent._turns_since_memory = 5
@@ -2368,6 +2419,74 @@ class TestConcurrentToolExecution:
 
         assert json.loads(result) == {"error": "Blocked"}
         assert agent._turns_since_memory == 5
+
+    def test_concurrent_blocked_memory_tool_does_not_reset_counter(self, agent, monkeypatch):
+        """Concurrent path should match sequential: blocked memory is not actual memory use."""
+        agent._turns_since_memory = 5
+        tool_call = _mock_tool_call(
+            name="memory",
+            arguments='{"action":"add","target":"memory","content":"x"}',
+            call_id="memory-call",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: "Blocked",
+        )
+
+        with patch("tools.memory_tool.memory_tool", side_effect=AssertionError("should not run")):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert agent._turns_since_memory == 5
+        assert len(messages) == 1
+        assert json.loads(messages[0]["content"]) == {"error": "Blocked"}
+
+    def test_sequential_pre_tool_hook_gets_session_and_tool_call_ids(self, agent, monkeypatch):
+        """Agent-level pre-tool hooks should see the same metadata model_tools can pass."""
+        seen = []
+
+        def block(*args, **kwargs):
+            seen.append((args, kwargs))
+            return "Blocked"
+
+        agent.session_id = "session-123"
+        monkeypatch.setattr("hermes_cli.plugins.get_pre_tool_call_block_message", block)
+        tool_call = _mock_tool_call(name="web_search", arguments='{"q":"x"}', call_id="call-123")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+
+        agent._execute_tool_calls_sequential(mock_msg, [], "task-1")
+
+        assert seen == [
+            (("web_search", {"q": "x"}), {
+                "task_id": "task-1",
+                "session_id": "session-123",
+                "tool_call_id": "call-123",
+            })
+        ]
+
+    def test_concurrent_pre_tool_hook_gets_session_and_tool_call_ids(self, agent, monkeypatch):
+        """Concurrent preflight should preserve plugin hook metadata too."""
+        seen = []
+
+        def block(*args, **kwargs):
+            seen.append((args, kwargs))
+            return "Blocked"
+
+        agent.session_id = "session-456"
+        monkeypatch.setattr("hermes_cli.plugins.get_pre_tool_call_block_message", block)
+        tool_call = _mock_tool_call(name="web_search", arguments='{"q":"x"}', call_id="call-456")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+
+        agent._execute_tool_calls_concurrent(mock_msg, [], "task-2")
+
+        assert seen == [
+            (("web_search", {"q": "x"}), {
+                "task_id": "task-2",
+                "session_id": "session-456",
+                "tool_call_id": "call-456",
+            })
+        ]
 
 
 class TestPathsOverlap:

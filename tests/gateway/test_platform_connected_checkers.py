@@ -30,17 +30,22 @@ def test_all_builtins_have_checker_or_generic_token_path():
         Platform.HOMEASSISTANT,
     }}
 
-    # Platforms with a bespoke checker
+    # Platforms with a bespoke checker table entry.
     checker_values = {p.value for p in set(_PLATFORM_CONNECTED_CHECKERS.keys())}
 
-    # Every built-in should be in one of the two sets
+    # Platforms handled by explicit branches in GatewayConfig._is_platform_connected().
+    # Keep this set small: broad platform-specific auth belongs in the checker table.
+    explicit_branch_values = {Platform.WEIXIN.value}
+
+    # Every built-in should be in one of the covered sets.
     all_builtins = set(_BUILTIN_PLATFORM_VALUES)
-    missing = all_builtins - generic_token_values - checker_values - {"local"}
+    missing = all_builtins - generic_token_values - checker_values - explicit_branch_values - {"local"}
 
     assert not missing, (
         f"Built-in platforms missing a connection checker: "
         f"{sorted(missing)}.  "
-        f"Add them to _PLATFORM_CONNECTED_CHECKERS or generic_token_platforms."
+        f"Add them to _PLATFORM_CONNECTED_CHECKERS, generic_token_platforms, "
+        f"or explicit_branch_values."
     )
 
 

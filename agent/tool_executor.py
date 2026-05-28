@@ -20,7 +20,7 @@ import os
 import random
 import threading
 import time
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from agent.display import (
     KawaiiSpinner,
@@ -87,12 +87,6 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     for tool_call in tool_calls:
         function_name = tool_call.function.name
 
-        # Reset nudge counters
-        if function_name == "memory":
-            agent._turns_since_memory = 0
-        elif function_name == "skill_manage":
-            agent._iters_since_skill = 0
-
         try:
             function_args = json.loads(tool_call.function.arguments)
         except json.JSONDecodeError:
@@ -100,34 +94,16 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         if not isinstance(function_args, dict):
             function_args = {}
 
-        # Checkpoint for file-mutating tools
-        if function_name in {"write_file", "patch"} and agent._checkpoint_mgr.enabled:
-            try:
-                file_path = function_args.get("path", "")
-                if file_path:
-                    work_dir = agent._checkpoint_mgr.get_working_dir_for_path(file_path)
-                    agent._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
-            except Exception:
-                pass
-
-        # Checkpoint before destructive terminal commands
-        if function_name == "terminal" and agent._checkpoint_mgr.enabled:
-            try:
-                cmd = function_args.get("command", "")
-                if _is_destructive_command(cmd):
-                    cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
-                    agent._checkpoint_mgr.ensure_checkpoint(
-                        cwd, f"before terminal: {cmd[:60]}"
-                    )
-            except Exception:
-                pass
-
         block_result = None
         blocked_by_guardrail = False
         try:
             from hermes_cli.plugins import get_pre_tool_call_block_message
             block_message = get_pre_tool_call_block_message(
-                function_name, function_args, task_id=effective_task_id or "",
+                function_name,
+                function_args,
+                task_id=effective_task_id or "",
+                session_id=agent.session_id or "",
+                tool_call_id=tool_call.id or "",
             )
         except Exception:
             block_message = None
@@ -139,6 +115,35 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             if not guardrail_decision.allows_execution:
                 block_result = agent._guardrail_block_result(guardrail_decision)
                 blocked_by_guardrail = True
+
+        if block_result is None:
+            # Checkpoint only after policy hooks and guardrails allow execution.
+            # Blocked tools should match the sequential path: no callbacks,
+            # no checkpoints, no activity mutation, and no nudge-counter reset.
+            if function_name in {"write_file", "patch"} and agent._checkpoint_mgr.enabled:
+                try:
+                    file_path = function_args.get("path", "")
+                    if file_path:
+                        work_dir = agent._checkpoint_mgr.get_working_dir_for_path(file_path)
+                        agent._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
+                except Exception:
+                    pass
+
+            if function_name == "terminal" and agent._checkpoint_mgr.enabled:
+                try:
+                    cmd = function_args.get("command", "")
+                    if _is_destructive_command(cmd):
+                        cwd = function_args.get("workdir") or os.getenv("TERMINAL_CWD", os.getcwd())
+                        agent._checkpoint_mgr.ensure_checkpoint(
+                            cwd, f"before terminal: {cmd[:60]}"
+                        )
+                except Exception:
+                    pass
+
+            if function_name == "memory":
+                agent._turns_since_memory = 0
+            elif function_name == "skill_manage":
+                agent._iters_since_skill = 0
 
         parsed_calls.append((tool_call, function_name, function_args, block_result, blocked_by_guardrail))
 
@@ -176,7 +181,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
     # ── Concurrent execution ─────────────────────────────────────────
     # Each slot holds (function_name, function_args, function_result, duration, error_flag, blocked_flag)
-    results = [None] * num_tools
+    results: list[Any] = [None] * num_tools
     for i, (tc, name, args, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
         if block_result is not None:
             results[i] = (name, args, block_result, 0.0, True, True)
@@ -202,72 +207,79 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         _worker_tid = threading.current_thread().ident
         with agent._tool_worker_threads_lock:
             agent._tool_worker_threads.add(_worker_tid)
-        # Race: if the agent was interrupted between fan-out (which
-        # snapshotted an empty/earlier set) and our registration, apply
-        # the interrupt to our own tid now so is_interrupted() inside
-        # the tool returns True on the next poll.
-        if agent._interrupt_requested:
+        try:
+            # Race: if the agent was interrupted between fan-out (which
+            # snapshotted an empty/earlier set) and our registration, apply
+            # the interrupt to our own tid now so is_interrupted() inside
+            # the tool returns True on the next poll.
+            if agent._interrupt_requested:
+                try:
+                    _ra()._set_interrupt(True, _worker_tid)
+                except Exception:
+                    pass
+            # Set the activity callback on THIS worker thread so
+            # _wait_for_process (terminal commands) can fire heartbeats.
+            # The callback is thread-local; the main thread's callback
+            # is invisible to worker threads.
             try:
-                _ra()._set_interrupt(True, _worker_tid)
+                from tools.environments.base import set_activity_callback
+                set_activity_callback(agent._touch_activity)
             except Exception:
                 pass
-        # Set the activity callback on THIS worker thread so
-        # _wait_for_process (terminal commands) can fire heartbeats.
-        # The callback is thread-local; the main thread's callback
-        # is invisible to worker threads.
-        try:
-            from tools.environments.base import set_activity_callback
-            set_activity_callback(agent._touch_activity)
-        except Exception:
-            pass
-        # Propagate approval/sudo callbacks to this worker thread.
-        # Mirrors cli.py run_agent() pattern (GHSA-qg5c-hvr5-hjgr).
-        if _parent_approval_cb is not None:
+            # Propagate approval/sudo callbacks to this worker thread.
+            # Mirrors cli.py run_agent() pattern (GHSA-qg5c-hvr5-hjgr).
+            if _parent_approval_cb is not None:
+                try:
+                    _set_approval_callback(_parent_approval_cb)
+                except Exception:
+                    pass
+            if _parent_sudo_cb is not None:
+                try:
+                    _set_sudo_password_callback(_parent_sudo_cb)
+                except Exception:
+                    pass
+            start = time.time()
             try:
-                _set_approval_callback(_parent_approval_cb)
+                result = agent._invoke_tool(
+                    function_name,
+                    function_args,
+                    effective_task_id,
+                    tool_call.id,
+                    messages=messages,
+                    pre_tool_block_checked=True,
+                )
+            except Exception as tool_error:
+                result = f"Error executing tool '{function_name}': {tool_error}"
+                logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
+            duration = time.time() - start
+            try:
+                is_error, _ = _detect_tool_failure(function_name, result)
+                if is_error:
+                    logger.info("tool %s failed (%.2fs): %s", function_name, duration, str(result)[:200])
+                else:
+                    logger.info("tool %s completed (%.2fs, %d chars)", function_name, duration, len(result))
+            except Exception as result_error:
+                is_error = True
+                result = f"Error processing tool result for '{function_name}': {result_error}"
+                logger.error("tool result processing failed for %s: %s", function_name, result_error, exc_info=True)
+            results[index] = (function_name, function_args, result, duration, is_error, False)
+        finally:
+            # Tear down worker-tid tracking.  Clear any interrupt bit we may
+            # have set so the next task scheduled onto this recycled tid
+            # starts with a clean slate.
+            with agent._tool_worker_threads_lock:
+                agent._tool_worker_threads.discard(_worker_tid)
+            try:
+                _ra()._set_interrupt(False, _worker_tid)
             except Exception:
                 pass
-        if _parent_sudo_cb is not None:
+            # Clear thread-local callbacks so a recycled worker thread
+            # doesn't hold stale references to a disposed CLI instance.
             try:
-                _set_sudo_password_callback(_parent_sudo_cb)
+                _set_approval_callback(None)
+                _set_sudo_password_callback(None)
             except Exception:
                 pass
-        start = time.time()
-        try:
-            result = agent._invoke_tool(
-                function_name,
-                function_args,
-                effective_task_id,
-                tool_call.id,
-                messages=messages,
-                pre_tool_block_checked=True,
-            )
-        except Exception as tool_error:
-            result = f"Error executing tool '{function_name}': {tool_error}"
-            logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
-        duration = time.time() - start
-        is_error, _ = _detect_tool_failure(function_name, result)
-        if is_error:
-            logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
-        else:
-            logger.info("tool %s completed (%.2fs, %d chars)", function_name, duration, len(result))
-        results[index] = (function_name, function_args, result, duration, is_error, False)
-        # Tear down worker-tid tracking.  Clear any interrupt bit we may
-        # have set so the next task scheduled onto this recycled tid
-        # starts with a clean slate.
-        with agent._tool_worker_threads_lock:
-            agent._tool_worker_threads.discard(_worker_tid)
-        try:
-            _ra()._set_interrupt(False, _worker_tid)
-        except Exception:
-            pass
-        # Clear thread-local callbacks so a recycled worker thread
-        # doesn't hold stale references to a disposed CLI instance.
-        try:
-            _set_approval_callback(None)
-            _set_sudo_password_callback(None)
-        except Exception:
-            pass
 
     # Start spinner for CLI mode (skip when TUI handles tool progress)
     spinner = None
@@ -431,7 +443,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             if _is_multimodal_tool_result(function_result):
                 # Append the hint to the text summary part so the model
                 # still sees it; don't touch the image blocks.
-                _append_subdir_hint_to_multimodal(function_result, subdir_hints)
+                _append_subdir_hint_to_multimodal(cast(dict[str, Any], function_result), subdir_hints)
             else:
                 function_result += subdir_hints
 
@@ -502,7 +514,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         try:
             from hermes_cli.plugins import get_pre_tool_call_block_message
             _block_msg = get_pre_tool_call_block_message(
-                function_name, function_args, task_id=effective_task_id or "",
+                function_name,
+                function_args,
+                task_id=effective_task_id or "",
+                session_id=agent.session_id or "",
+                tool_call_id=tool_call.id or "",
             )
         except Exception:
             pass

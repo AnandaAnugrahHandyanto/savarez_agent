@@ -416,30 +416,6 @@ def _isolate_hermes_home(_hermetic_environment):
 # approvals from one test's session into another's.
 
 
-@pytest.fixture()
-def tmp_dir(tmp_path):
-    """Provide a temporary directory that is cleaned up automatically."""
-    return tmp_path
-
-
-@pytest.fixture()
-def mock_config():
-    """Return a minimal hermes config dict suitable for unit tests."""
-    return {
-        "model": "test/mock-model",
-        "toolsets": ["terminal", "file"],
-        "max_turns": 10,
-        "terminal": {
-            "backend": "local",
-            "cwd": "/tmp",
-            "timeout": 30,
-        },
-        "compression": {"enabled": False},
-        "memory": {"memory_enabled": False, "user_profile_enabled": False},
-        "command_allowlist": [],
-    }
-
-
 # ── Per-test timeout — handled by the isolation plugin ─────────────────────
 #
 # The subprocess-per-test plugin enforces the configured ``isolate_timeout``
