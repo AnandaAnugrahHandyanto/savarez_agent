@@ -78,6 +78,7 @@ class TestBundledPluginsRegister:
         from agent.web_search_registry import list_providers
 
         names = sorted(p.name for p in list_providers())
+        # All eight bundled providers should be present (including xai).
         assert names == [
             "brave-free",
             "ddgs",
