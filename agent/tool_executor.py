@@ -627,6 +627,25 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
+        elif function_name == "session_search_exact":
+            session_db = agent._get_session_db_for_recall()
+            if not session_db:
+                from hermes_state import format_session_db_unavailable
+                function_result = json.dumps({"success": False, "error": format_session_db_unavailable()})
+            else:
+                from tools.session_search_exact_tool import session_search_exact as _session_search_exact
+                function_result = _session_search_exact(
+                    query=function_args.get("query", ""),
+                    role_filter=function_args.get("role_filter") or None,
+                    source_filter=function_args.get("source_filter") or None,
+                    limit=function_args.get("limit", 10),
+                    group_by_session=function_args.get("group_by_session", True),
+                    match_mode=function_args.get("match_mode", "auto"),
+                    db=session_db,
+                )
+            tool_duration = time.time() - tool_start_time
+            if agent._should_emit_quiet_tool_messages():
+                agent._vprint(f"  {_get_cute_tool_message_impl('session_search_exact', function_args, tool_duration, result=function_result)}")
         elif function_name == "memory":
             target = function_args.get("target", "memory")
             from tools.memory_tool import memory_tool as _memory_tool
