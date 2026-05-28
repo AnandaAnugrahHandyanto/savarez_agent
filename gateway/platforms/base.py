@@ -1063,9 +1063,11 @@ SUPPORTED_IMAGE_DOCUMENT_TYPES = {
 }
 
 # Union of all media extensions the gateway can recognise in MEDIA:<path>
-# tags and bare local-file-path patterns.  Kept in sync with the four
-# extension dicts directly above so adding a new supported type
-# automatically picks up MEDIA-tag / local-file delivery.
+# tags and bare local-file-path patterns.  Built from the four extension
+# dicts in this module (_AUDIO_EXTS, SUPPORTED_VIDEO_TYPES,
+# SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES) so adding
+# a new supported type automatically picks up MEDIA-tag / local-file
+# delivery.
 _MEDIA_EXTS: frozenset[str] = (
     _AUDIO_EXTS
     | frozenset(SUPPORTED_VIDEO_TYPES)

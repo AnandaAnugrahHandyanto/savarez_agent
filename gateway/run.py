@@ -16988,15 +16988,15 @@ class GatewayRunner:
             # from the current turn's extraction. This is compression-safe:
             # even if the message list shrinks, we know which paths are old.
             _history_media_paths: set = set()
+            _ext_part = '|'.join(e.lstrip('.') for e in _MEDIA_EXTS)
+            _TOOL_MEDIA_RE = re.compile(
+                r'MEDIA:((?:/|~\/)\S+\.(?:' + _ext_part + r'))',
+                re.IGNORECASE
+            )
             for _hm in agent_history:
                 if _hm.get("role") in {"tool", "function"}:
                     _hc = _hm.get("content", "")
                     if "MEDIA:" in _hc:
-                        _ext_part = '|'.join(e.lstrip('.') for e in _MEDIA_EXTS)
-                        _TOOL_MEDIA_RE = re.compile(
-                            r'MEDIA:((?:/|~\/)\S+\.(?:' + _ext_part + r'))',
-                            re.IGNORECASE
-                        )
                         for _match in _TOOL_MEDIA_RE.finditer(_hc):
                             _p = _match.group(1).strip().rstrip('",}')
                             if _p:
@@ -17292,15 +17292,15 @@ class GatewayRunner:
             if "MEDIA:" not in final_response:
                 media_tags = []
                 has_voice_directive = False
+                _ext_part = '|'.join(e.lstrip('.') for e in _MEDIA_EXTS)
+                _TOOL_MEDIA_RE = re.compile(
+                    r'MEDIA:((?:/|~\/)\S+\.(?:' + _ext_part + r'))',
+                    re.IGNORECASE
+                )
                 for msg in result.get("messages", []):
                     if msg.get("role") in {"tool", "function"}:
                         content = msg.get("content", "")
                         if "MEDIA:" in content:
-                            _ext_part = '|'.join(e.lstrip('.') for e in _MEDIA_EXTS)
-                            _TOOL_MEDIA_RE = re.compile(
-                                r'MEDIA:((?:/|~\/)\S+\.(?:' + _ext_part + r'))',
-                                re.IGNORECASE
-                            )
                             for match in _TOOL_MEDIA_RE.finditer(content):
                                 path = match.group(1).strip().rstrip('",}')
                                 if path and path not in _history_media_paths:
