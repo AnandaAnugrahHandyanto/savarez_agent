@@ -274,6 +274,37 @@ def _extract_output_tail(
     return tail
 
 
+def _stringify_tool_content(content: Any) -> str:
+    """Best-effort flatten of a tool message ``content`` value to a string.
+
+    The OpenAI/Anthropic-style tool result format permits ``content`` to be a
+    list of content blocks (e.g. ``[{"type": "text", "text": "..."}, ...]``)
+    rather than a plain string.  String-only helpers like
+    :func:`_looks_like_error_output` crash on such payloads.  This helper
+    extracts text blocks when possible and falls back to ``str(content)`` so
+    callers always receive a string.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                text = block.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        if parts:
+            return "\n".join(parts)
+    try:
+        return str(content)
+    except Exception:
+        return ""
+
+
 def _looks_like_error_output(content: str) -> bool:
     """Conservative stderr/error detector for tool-result previews.
 
@@ -1654,6 +1685,11 @@ def _run_single_child(
                             trace_by_id[tc_id] = entry_t
                 elif msg.get("role") == "tool":
                     content = msg.get("content", "")
+                    # Tool message content may be a list of content blocks
+                    # (multimodal format), not always a string.  Normalise to
+                    # text before running string-only error heuristics.
+                    if not isinstance(content, str):
+                        content = _stringify_tool_content(content)
                     is_error = _looks_like_error_output(content)
                     result_meta = {
                         "result_bytes": len(content),
