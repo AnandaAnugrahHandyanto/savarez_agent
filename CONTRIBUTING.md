@@ -862,27 +862,34 @@ After the [litellm supply chain compromise](https://github.com/BerriAI/litellm/i
 
 ### Fork & branch
 
-> **Note:** If you cloned the repo directly (and have write access), skip the fork step and push branches to `origin` instead.
+Most contributors should work from a fork so they can push branches without
+needing write access to `NousResearch/hermes-agent`:
 
-1. **Sync your fork** with upstream before starting:
+```bash
+# Fork the repository on GitHub, then clone your fork
+gh repo fork NousResearch/hermes-agent --clone
+cd hermes-agent
 
-   ```bash
-   git fetch upstream
-   git checkout main
-   git merge upstream/main
-   ```
+# Verify the remotes (origin = your fork, upstream = NousResearch)
+git remote -v
+```
 
-2. **Create a feature branch** from `main`:
+If you already cloned the repo directly and have write access, skip the fork step and push branches to `origin` instead.
 
-   ```bash
-   git checkout -b fix/my-description
-   ```
+Start from the latest upstream main and create a focused branch:
+
+```bash
+git fetch upstream
+git checkout main
+git merge --ff-only upstream/main
+git checkout -b fix/my-description
+```
 
 ### Make changes & commit
 
 ```bash
 # Make your changes, then:
-git add .
+git add <changed-files>
 git commit -m "fix(scope): description"
 ```
 
@@ -891,7 +898,7 @@ See [Commit messages](#commit-messages) below for the required format.
 ### Push & open a PR
 
 ```bash
-git push origin fix/my-description
+git push -u origin HEAD
 gh pr create --repo NousResearch/hermes-agent
 ```
 
@@ -908,7 +915,7 @@ After opening the PR, CI will run automatically. A maintainer will review and ma
 ```bash
 git fetch upstream
 git checkout main
-git merge upstream/main
+git merge --ff-only upstream/main
 git push origin main
 ```
 
