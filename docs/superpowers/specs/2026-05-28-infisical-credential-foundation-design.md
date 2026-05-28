@@ -7,7 +7,7 @@ Status: approved design direction, pending written-spec review
 
 Implement Hermes issue [#22791](https://github.com/NousResearch/hermes-agent/issues/22791) as a native Infisical external-vault backend, expanded into a complete credential foundation for a personal Hermes deployment.
 
-Hermes must be able to use a local self-hosted Infisical instance on this device, resolve secrets from multiple Infisical projects, store Infisical bootstrap credentials in the operating system credential store, and migrate existing plaintext `~/.hermes/.env` secrets into Infisical.
+Hermes must be able to use a local self-hosted Infisical instance on this device, secured for remote access by Tailscale, resolve secrets from multiple Infisical projects, store Infisical bootstrap credentials in the operating system credential store, and migrate existing plaintext `~/.hermes/.env` secrets into Infisical.
 
 The design must support future SimpleX, Gmail, Calendar, inbox-rules, and model-router work without forcing each feature to know Infisical-specific details.
 
@@ -16,8 +16,9 @@ The design must support future SimpleX, Gmail, Calendar, inbox-rules, and model-
 In scope:
 
 - Native `infisical` secret backend for Hermes.
-- Self-hosted Infisical on the current device as a first-class setup target.
-- Infisical Cloud or remote self-hosted Infisical as compatible targets.
+- Self-hosted Infisical on the current device as the primary setup target.
+- Tailscale-secured access to the local Infisical service for any same-user remote device access.
+- A generic Infisical host URL so the backend is not hardcoded to one deployment shape.
 - Universal Auth for machine identity.
 - Cross-platform OS credential stores for Infisical bootstrap credentials:
   - macOS Keychain.
@@ -37,6 +38,8 @@ Out of scope for this credential-foundation goal:
 - Full password/passphrase encrypted local keystore from issue [#3629](https://github.com/NousResearch/hermes-agent/issues/3629).
 - SimpleX calling, Gmail assistant behavior, inbox rules, or model-router optimization.
 - Public internet exposure of the local Infisical server.
+- Tailscale Funnel exposure for Infisical.
+- Optimized setup flows for Infisical Cloud or remote self-hosted Infisical.
 
 ## Research Findings
 
@@ -57,6 +60,12 @@ Infisical supports the needed deployment and auth model:
 - [Infisical Universal Auth](https://infisical.com/docs/documentation/platform/identities/universal-auth) provides machine-identity authentication.
 - [Infisical Agent](https://infisical.com/docs/integrations/platforms/infisical-agent) exists, but the chosen Hermes direction is native resolver support.
 - [Agent Vault](https://infisical.com/blog/agent-vault-the-open-source-credential-proxy-and-vault-for-agents) and Infisical credential-brokering work are relevant future directions, but not the first implementation target.
+
+Tailscale supports the desired private-network posture:
+
+- [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve) routes traffic from devices on the private tailnet to a service running locally on this device.
+- [Tailscale access controls](https://tailscale.com/docs/features/access-control) provide policy-based least-privilege access between tailnet devices.
+- [MagicDNS](https://tailscale.com/docs/features/magicdns/) and [Tailscale HTTPS certificates](https://tailscale.com/docs/how-to/set-up-https-certificates) can provide stable tailnet names and browser-friendly HTTPS when enabled.
 
 Local repo context:
 
@@ -159,27 +168,32 @@ hermes_cli/
 
 ## Local Self-Hosted Infisical
 
-This device should be the primary deployment target for the first personal Hermes setup.
+This device should be the primary deployment target for the first personal Hermes setup, and Tailscale should be the only supported remote-access path.
 
-Hermes should not vendor Infisical or fork its deployment stack. Instead, it should provide a local-first setup path that assumes Infisical is running on the same machine and validates it before migration.
+Hermes should not vendor Infisical or fork its deployment stack. Instead, it should provide a local-first setup path that assumes Infisical is running on the same machine, validates it before migration, and verifies that any remote access is limited to the user's tailnet.
 
 Default local posture:
 
 - Host URL defaults to a local address such as `http://127.0.0.1:<port>` when the user chooses local self-hosted Infisical.
-- Infisical should bind to localhost by default.
+- Infisical should bind to localhost by default for Hermes on the same device.
+- If access from another user-owned device is needed, expose Infisical through Tailscale Serve or an equivalent tailnet-only reverse proxy.
+- Tailscale Funnel must not be used for Infisical.
+- Tailnet policy should restrict Infisical access to explicitly approved user devices or device tags.
+- MagicDNS and Tailscale HTTPS should be preferred when the user wants a stable browser URL for Infisical from other tailnet devices.
 - Public internet exposure is out of scope.
-- Remote access, if ever needed, should be handled later through a deliberate private-network choice such as Tailscale.
 - The setup wizard should check the local health endpoint or equivalent API reachability before accepting the host.
+- The setup wizard should optionally check the Tailscale route or Serve URL when the user enables tailnet access.
 - The documentation should point to the official Infisical self-hosting docs instead of copying a stale compose file into Hermes.
 
 Local setup behavior:
 
 - `hermes secrets setup infisical` must offer a local-hosted profile.
 - If Docker or another supported local runtime is present, Hermes should print the exact next command or docs link needed to start Infisical.
+- The local-hosted profile must include a Tailscale-secured option for users who need to reach Infisical from a phone, laptop, or other tailnet device.
 - Hermes should not silently install or start privileged services.
 - Generated local Infisical passwords, database credentials, and encryption keys are Infisical deployment secrets, not Hermes runtime secrets. The first implementation should document where those live and avoid copying them into Hermes `.env`.
 
-For this goal, success means Hermes can connect to and use a self-hosted Infisical instance running on this device, with setup docs and preflight checks that make the local path reproducible. Fully automating Infisical installation is out of scope for the first implementation because it would require Hermes to own third-party service lifecycle, database lifecycle, and upgrade behavior.
+For this goal, success means Hermes can connect to and use a self-hosted Infisical instance running on this device, with setup docs and preflight checks that make the local and Tailscale-secured paths reproducible. Fully automating Infisical installation is out of scope for the first implementation because it would require Hermes to own third-party service lifecycle, database lifecycle, and upgrade behavior.
 
 ## Config Shape
 
@@ -192,6 +206,10 @@ secrets:
     infisical:
       type: infisical
       host: http://127.0.0.1:8080
+      remote_access:
+        mode: tailscale
+        tailnet_url: https://hermes-infisical.example-tailnet.ts.net
+        public_funnel_allowed: false
       environment: prod
       auth:
         method: universal_auth
@@ -212,7 +230,7 @@ secrets:
           path: /hermes/gateway
 ```
 
-The config contains host, environment, alias metadata, and the OS credential-store identity name. It must not contain Universal Auth client secrets or resolved application secrets.
+The config contains host, optional Tailscale remote-access metadata, environment, alias metadata, and the OS credential-store identity name. It must not contain Universal Auth client secrets or resolved application secrets.
 
 Secret references:
 
@@ -243,17 +261,20 @@ hermes secrets setup infisical
 
 Expected flow:
 
-1. Ask whether Infisical is local self-hosted, remote self-hosted, or cloud.
+1. Ask whether Infisical is local self-hosted on this device or an advanced custom host URL. The recommended path is local self-hosted on this device.
 2. For local self-hosted mode, default the host to a local address and validate that Infisical is reachable on this device.
-3. Prompt for Infisical environment.
-4. Prompt for Hermes identity name.
-5. Prompt for Universal Auth client ID and client secret.
-6. Store the Universal Auth bootstrap credentials in the OS credential store.
-7. Prompt for project aliases.
-8. Validate each alias against Infisical.
-9. Write and read a temporary verification secret per project alias, then delete it.
-10. Offer `.env` migration.
-11. Save `config.yaml` with the backend enabled only after validation succeeds.
+3. Ask whether to configure Tailscale-secured access for other user-owned devices.
+4. If Tailscale access is enabled, validate that Tailscale is installed, the device is joined to the tailnet, and the configured Serve or reverse-proxy URL reaches the local Infisical service.
+5. Refuse setup if the URL appears to use public Tailscale Funnel or another public exposure path.
+6. Prompt for Infisical environment.
+7. Prompt for Hermes identity name.
+8. Prompt for Universal Auth client ID and client secret.
+9. Store the Universal Auth bootstrap credentials in the OS credential store.
+10. Prompt for project aliases.
+11. Validate each alias against Infisical.
+12. Write and read a temporary verification secret per project alias, then delete it.
+13. Offer `.env` migration.
+14. Save `config.yaml` with the backend enabled only after validation succeeds.
 
 Credential-store behavior:
 
@@ -338,6 +359,8 @@ Required cases:
 
 - Missing OS credential entry: tell the user to rerun `hermes secrets setup infisical`.
 - Local Infisical not reachable: report the configured local host and suggest checking the local service.
+- Tailscale access not reachable: report the configured tailnet URL and suggest checking Tailscale status, Serve or reverse-proxy state, and tailnet policy.
+- Public exposure detected: fail setup unless the user changes to a local or tailnet-only URL.
 - Unknown project alias: fail fast and name the alias.
 - Permission denied: report the alias, project, and path where possible without exposing secret values.
 - Secret not found: report the reference name, not the value.
@@ -386,14 +409,16 @@ Platform tests:
 Manual verification:
 
 - Local self-hosted Infisical on this device.
-- Infisical Cloud or remote self-hosted instance.
+- Tailscale-secured access to the local Infisical service from another approved tailnet device.
 - Migration from a populated `.env`.
 - Restart Hermes after migration and confirm secrets still resolve.
 
 ## Acceptance Criteria
 
 - `hermes secrets setup infisical` can configure a local self-hosted Infisical instance running on this device.
-- The same setup flow can target Infisical Cloud or a remote self-hosted Infisical host.
+- Any remote access to the local Infisical service is through Tailscale, not public internet exposure.
+- Tailscale Funnel is not used for Infisical.
+- The backend remains host-URL based, but the guided setup and manual verification target local self-hosted Infisical secured by Tailscale.
 - Universal Auth bootstrap credentials are stored in the OS credential store, not plaintext config.
 - macOS, Windows, and Linux have equivalent credential-store adapter support.
 - Multiple project aliases work.
