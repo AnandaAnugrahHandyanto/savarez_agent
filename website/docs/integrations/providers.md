@@ -34,6 +34,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Alibaba Cloud (Coding Plan)** | `DASHSCOPE_API_KEY` (provider: `alibaba-coding-plan`, alias: `alibaba_coding`) — separate billing SKU, different endpoint |
 | **Kilo Code** | `KILOCODE_API_KEY` in `~/.hermes/.env` (provider: `kilocode`) |
 | **Xiaomi MiMo** | `XIAOMI_API_KEY` in `~/.hermes/.env` (provider: `xiaomi`, aliases: `mimo`, `xiaomi-mimo`) |
+| **Xiaomi MiMo Token Plan** | `XIAOMI_TOKEN_PLAN_API_KEY` in `~/.hermes/.env` (provider: `xiaomi-token-plan`, aliases: `xiaomi-token`, `mimo-token`, `token-plan`) — MiMo-V2.5 and V2 models via token subscription |
 | **BytePlus/VolcEngine ModelArk Coding Plan** | `BYTEPLUS_API_KEY` in `~/.hermes/.env` (provider: `modelark-coding-plan`, aliases: `modelark`, `byteplus-coding`, `volcengine-coding`, `bytedance`) — Seed, Kimi, GLM, DeepSeek models via BytePlus ModelArk |
 | **Tencent TokenHub** | `TOKENHUB_API_KEY` in `~/.hermes/.env` (provider: `tencent-tokenhub`, aliases: `tencent`, `tokenhub`, `tencentmaas`) |
 | **OpenCode Zen** | `OPENCODE_ZEN_API_KEY` in `~/.hermes/.env` (provider: `opencode-zen`) |

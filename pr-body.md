@@ -25,7 +25,7 @@ Adds first-class support for **BytePlus/VolcEngine ModelArk Coding Plan** as a b
 | `plugins/model-providers/modelark-coding-plan/__init__.py` | New — `ProviderProfile` with aliases |
 | `hermes_cli/auth.py` | Add `ProviderConfig` |
 | `hermes_cli/providers.py` | Add `HermesOverlay` + aliases |
-| `hermes_cli/models.py` | Add `_PROVIDER_MODELS` static list + validation skip + `provider_model_ids()` early return |
+| `hermes_cli/models.py` | Add `_PROVIDER_MODELS` static list + validation skip + `provider_model_ids()` early return + hardcoded `CANONICAL_PROVIDERS` entries for `alibaba-coding-plan` and `modelark-coding-plan` |
 | `hermes_cli/config.py` | Add `BYTEPLUS_API_KEY` / `BYTEPLUS_BASE_URL` metadata |
 | `hermes_cli/main.py` | Add to explicit provider set |
 | `hermes_cli/doctor.py` | Add to `_PROVIDER_ENV_HINTS` |

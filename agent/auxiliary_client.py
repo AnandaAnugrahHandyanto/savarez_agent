@@ -275,6 +275,7 @@ _API_KEY_PROVIDER_AUX_MODELS_FALLBACK: Dict[str, str] = {
     "ollama-cloud": "nemotron-3-nano:30b",
     "tencent-tokenhub": "hy3-preview",
     "modelark-coding-plan": "dola-seed-2.0-lite",
+    "xiaomi-token-plan": "mimo-v2.5",
 }
 
 # Legacy alias — callers that haven't been updated to _get_aux_model_for_provider()
