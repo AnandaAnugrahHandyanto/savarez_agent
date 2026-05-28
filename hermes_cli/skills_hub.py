@@ -244,12 +244,11 @@ def _prompt_for_category(c: Console, existing: List[str]) -> str:
 
 
 def do_search(query: str, source: str = "all", limit: int = 10,
-              console: Optional[Console] = None) -> None:
-    """Search registries and display results as a Rich table."""
+              json_output: bool = False, console: Optional[Console] = None) -> None:
+    """Search registries and display results as a Rich table or JSON."""
     from tools.skills_hub import GitHubAuth, create_source_router, unified_search
 
     c = console or _console
-    c.print(f"\n[bold]Searching for:[/] {query}")
 
     auth = GitHubAuth()
     sources = create_source_router(auth)
@@ -257,15 +256,35 @@ def do_search(query: str, source: str = "all", limit: int = 10,
         results = unified_search(query, sources, source_filter=source, limit=limit)
 
     if not results:
-        c.print("[dim]No skills found matching your query.[/]\n")
+        if json_output:
+            print("[]")
+        else:
+            c.print("[dim]No skills found matching your query.[/]\n")
         return
 
+    if json_output:
+        import json
+        data = [
+            {
+                "name": r.name,
+                "description": r.description,
+                "source": r.source,
+                "trust_level": r.trust_level,
+                "identifier": r.identifier,
+            }
+            for r in results
+        ]
+        print(json.dumps(data, indent=2))
+        return
+
+    c.print(f"\n[bold]Searching for:[/] {query}")
+
     table = Table(title=f"Skills Hub — {len(results)} result(s)")
-    table.add_column("Name", style="bold cyan")
-    table.add_column("Description", max_width=60)
-    table.add_column("Source", style="dim")
-    table.add_column("Trust", style="dim")
-    table.add_column("Identifier", style="dim")
+    table.add_column("Name", style="bold cyan", max_width=20)
+    table.add_column("Description", max_width=40)
+    table.add_column("Source", style="dim", width=10)
+    table.add_column("Trust", width=8)
+    table.add_column("Identifier", style="dim", no_wrap=True)
 
     for r in results:
         trust_style = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow"}.get(r.trust_level, "dim")
@@ -1346,7 +1365,8 @@ def skills_command(args) -> None:
     if action == "browse":
         do_browse(page=args.page, page_size=args.size, source=args.source)
     elif action == "search":
-        do_search(args.query, source=args.source, limit=args.limit)
+        do_search(args.query, source=args.source, limit=args.limit,
+                  json_output=getattr(args, "json", False))
     elif action == "install":
         do_install(args.identifier, category=args.category, force=args.force,
                    skip_confirm=getattr(args, "yes", False),
