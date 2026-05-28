@@ -3387,9 +3387,23 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     OAuth gate + single-use ``?ticket=`` is the auth at that point; the
     Host/Origin guard in :func:`_ws_host_origin_is_allowed` is what
     blocks DNS-rebinding here, not the peer IP.
+
+    Reverse-proxy mode: when ``HERMES_DASHBOARD_TRUST_PROXY_WS`` is truthy,
+    skip the loopback peer check. Use this only behind a trusted reverse proxy
+    that already enforces Host/Origin boundaries and network access controls.
     """
     if getattr(app.state, "auth_required", False):
         return True
+
+    trust_proxy_ws = os.getenv("HERMES_DASHBOARD_TRUST_PROXY_WS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if trust_proxy_ws:
+        return True
+
     client_host = ws.client.host if ws.client else ""
     if not client_host:
         return True
