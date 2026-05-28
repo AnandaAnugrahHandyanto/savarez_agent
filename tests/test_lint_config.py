@@ -113,3 +113,28 @@ class TestLintWorkflow:
             pytest.fail(f"lint.yml is not valid YAML: {exc}")
         assert isinstance(parsed, dict)
         assert "jobs" in parsed
+
+
+class TestToolsLint:
+    """Lint-regression guards for specific rules in tools/."""
+
+    def test_tools_dir_has_zero_f541_violations(self):
+        """tools/ must have zero F541 (f-string without placeholders) violations.
+        F541 catches f-strings that have no interpolation expressions, which
+        are a bug-magnet when auto-formatters or refactoring tools replace
+        a regular string with an f-string without adding placeholders.
+        Having the test means CI catches re-introductions."""
+        import subprocess, sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "ruff", "check", "--select=F541",
+             "--output-format=concise", str(REPO_ROOT / "tools")],
+            capture_output=True, text=True,
+        )
+
+        assert result.returncode == 0, (
+            "tools/ has %d F541 violation(s):\n%s" % (
+                result.stdout.count(": error[F541]"),
+                result.stdout,
+            )
+        )
