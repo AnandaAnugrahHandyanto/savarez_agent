@@ -909,6 +909,53 @@ test(tools): add unit tests for file_operations
 
 ---
 
+
+## Submitting Changes
+
+### Workflow
+
+```
+fork -> clone -> branch -> code -> push -> open PR -> review -> merge
+```
+
+1. **Fork the repo** on GitHub (click the Fork button at the top of the repository page).
+   - **Fine-grained token gotcha:** GitHub fine-grained personal access tokens cannot fork repos the user doesn't own. If `gh repo fork` returns 403, use `gh auth login --web -p https` to authenticate with full OAuth scopes instead.
+2. **Clone your fork:**
+   ```bash
+   git clone https://github.com/your-username/hermes-agent.git
+   cd hermes-agent
+   ```
+3. **Create a feature branch:**
+   ```bash
+   git checkout -b fix/issue-number-description
+   ```
+4. **Make your changes** and commit:
+   ```bash
+   git add <changed-files>
+   git commit -m "scope: description (fixes #N)"
+   ```
+5. **Push to your fork:**
+   ```bash
+   git push origin HEAD
+   ```
+6. **Open a pull request** against `NousResearch/hermes-agent:main` on GitHub. Use the PR template and include `Closes #N` in the body for auto-linking.
+
+### PR Guidelines
+
+- Keep PRs focused on a single change. Split unrelated fixes into separate PRs.
+- Include test coverage where practical. For bug fixes, add a test that reproduces the bug.
+- Run the test suite locally before opening: `python -m pytest tests/ -x --timeout=30`.
+- For docs-only changes, no tests are needed but the change should be content-accurate.
+- If your PR addresses a reviewer's suggestion to pivot approach, update the code, rebase onto main if needed, and reply on the review thread with what you changed. Do not close the PR and open a new one.
+
+### What Maintainers Look For
+
+- Clear commit messages that explain the why, not just the what.
+- Minimal diffs -- don't include whitespace changes or unrelated reformats.
+- A PR body that links the issue it closes and explains the approach.
+- Responses to reviewer feedback within a few days.
+
+
 ## Community
 
 - **Discord**: [discord.gg/NousResearch](https://discord.gg/NousResearch) — for questions, showcasing projects, and sharing skills
