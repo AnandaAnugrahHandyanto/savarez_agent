@@ -300,7 +300,7 @@ profiles:
 
         assert _maybe_block_internal_matrix_profile_send("matrix", "!pa:matrix.org") is None
 
-    def test_allows_explicit_matrix_internal_send_override(self, tmp_path, monkeypatch):
+    def test_blocks_even_when_legacy_matrix_internal_send_override_is_set(self, tmp_path, monkeypatch):
         routes = tmp_path / "matrix_routes.yaml"
         routes.write_text(
             """
@@ -314,7 +314,11 @@ profiles:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profiles" / "pa_yunuen"))
         monkeypatch.setenv("HERMES_ALLOW_MATRIX_INTERNAL_PROFILE_SEND", "1")
 
-        assert _maybe_block_internal_matrix_profile_send("matrix", "!coord:matrix.org") is None
+        result = _maybe_block_internal_matrix_profile_send("matrix", "!coord:matrix.org")
+
+        assert result is not None
+        assert result["error"] == "matrix_internal_profile_room_blocked"
+        assert "no override" in result["message"]
 
     def test_mirror_receives_current_session_user_id(self):
         config, _telegram_cfg = _make_config()

@@ -499,9 +499,11 @@ def _maybe_block_internal_matrix_profile_send(platform_name: str, chat_id: str) 
     Profile-owned Matrix rooms are human-facing contact surfaces. Sending from
     one Hermes profile into another profile's Matrix room creates same-account
     E2EE/key-sharing ambiguity and is ignored as an own-user event by the
-    destination gateway. Use Kanban/profile-runner/internal messaging instead.
+    destination gateway. This is a hard deterministic invariant: there is no
+    environment-variable override. Use Kanban/profile-runner/internal messaging
+    instead.
     """
-    if platform_name != "matrix" or os.getenv("HERMES_ALLOW_MATRIX_INTERNAL_PROFILE_SEND") == "1":
+    if platform_name != "matrix":
         return None
     owner = _matrix_profile_room_owner(chat_id)
     current = _current_profile_name()
@@ -515,9 +517,8 @@ def _maybe_block_internal_matrix_profile_send(platform_name: str, chat_id: str) 
         "message": (
             "Refusing to send a Matrix message into another Hermes profile's room. "
             "Matrix profile rooms are human-facing contact rooms, not an internal "
-            "profile-to-profile bus. Use Kanban, a profile runner, or structured "
-            "internal messaging instead. Set HERMES_ALLOW_MATRIX_INTERNAL_PROFILE_SEND=1 "
-            "only for an explicit one-off Matrix diagnostic/proof send."
+            "profile-to-profile bus. This block is deterministic and has no override; "
+            "use Kanban, a profile runner, or structured internal messaging instead."
         ),
     }
 
