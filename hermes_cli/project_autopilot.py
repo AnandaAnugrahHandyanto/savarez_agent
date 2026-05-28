@@ -394,6 +394,11 @@ def render_status_md(
         f"Tasks: {total_tasks} total"
         + (f" ({count_bits})" if count_bits else "")
     )
+    task_lines = [
+        f"- `{node['id']}` [{node['status']}] {node['title']}"
+        for node in graph.get("nodes", [])
+    ]
+    task_snapshot = "\n".join(task_lines) if task_lines else "- no tasks cached"
     return f"""# Status: {doc["title"]}
 
 State: {doc["state"]}
@@ -407,6 +412,10 @@ Blocker: {blocker_text}
 ## Next action
 
 {action}
+
+## Board tasks
+
+{task_snapshot}
 """
 
 
@@ -471,6 +480,7 @@ def derive_task_graph(conn: Any, root_task_id: str) -> dict[str, Any]:
 
     ordered_ids: list[str] = []
     seen: set[str] = set()
+
     queue = [root_task_id]
     while queue:
         task_id = queue.pop(0)
@@ -483,6 +493,11 @@ def derive_task_graph(conn: Any, root_task_id: str) -> dict[str, Any]:
             for child_id in kanban_db.child_ids(conn, task_id)
             if child_id not in seen
         )
+
+    for task in kanban_db.list_tasks(conn, include_archived=False):
+        if task.id not in seen:
+            seen.add(task.id)
+            ordered_ids.append(task.id)
 
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, str]] = []

@@ -117,6 +117,77 @@ def test_sync_project_home_rewrites_project_files_from_board_truth(tmp_path):
         conn.close()
 
 
+def test_sync_project_home_includes_unlinked_live_board_tasks(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    conn = kanban_db.connect(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO tasks (
+                id, title, body, assignee, status, priority, created_by,
+                created_at, workspace_kind
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "t_root",
+                "Root project",
+                "Project root body",
+                "codexapp",
+                "done",
+                0,
+                "tester",
+                1,
+                "scratch",
+            ),
+        )
+        implementation_id = kanban_db.create_task(
+            conn,
+            title="Implement board execution slice",
+            body="Implementation body",
+            assignee="codexapp",
+            created_by="tester",
+        )
+        conn.execute(
+            "UPDATE tasks SET status = 'done' WHERE id = ?",
+            (implementation_id,),
+        )
+        review_id = kanban_db.create_task(
+            conn,
+            title="Review board execution slice",
+            body="Review body",
+            assignee="reviewer",
+            created_by="tester",
+            parents=[implementation_id],
+        )
+        conn.execute(
+            "UPDATE tasks SET status = 'review' WHERE id = ?",
+            (review_id,),
+        )
+
+        project_home = _bootstrap_demo_project(tmp_path)
+
+        sync_project_home(project_home, db_path=db_path)
+
+        saved = json.loads((project_home / "project.json").read_text())
+        node_ids = {node["id"] for node in saved["task_graph"]["nodes"]}
+        assert {"t_root", implementation_id, review_id} <= node_ids
+        assert {"parent": implementation_id, "child": review_id} in saved[
+            "task_graph"
+        ]["edges"]
+
+        tasks_md = (project_home / "TASKS.md").read_text(encoding="utf-8")
+        assert implementation_id in tasks_md
+        assert review_id in tasks_md
+        assert "Implement board execution slice" in tasks_md
+        assert "Review board execution slice" in tasks_md
+
+        status_md = (project_home / "STATUS.md").read_text(encoding="utf-8")
+        assert "Tasks: 3 total" in status_md
+        assert review_id in status_md
+    finally:
+        conn.close()
+
+
 @pytest.mark.parametrize("schema_version", [None, "legacy-project/v0"])
 def test_sync_project_home_upgrades_legacy_project_json_before_validation(
     tmp_path, schema_version
