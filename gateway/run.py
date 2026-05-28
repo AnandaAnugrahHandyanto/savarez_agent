@@ -5461,6 +5461,19 @@ class GatewayRunner:
                 or "database disk image is malformed" in msg
             )
 
+        def _dispatcher_boards() -> "list[dict[str, object]]":
+            """Return boards without touching SQLite files in Postgres mode."""
+            if store_backend != "sqlite":
+                try:
+                    slug = _kb.get_current_board()
+                except Exception:
+                    slug = _kb.DEFAULT_BOARD
+                return [{"slug": slug or _kb.DEFAULT_BOARD}]
+            try:
+                return _kb.list_boards(include_archived=False)
+            except Exception:
+                return [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+
         def _connect_store_for_board(slug: str):
             """Open the selected Kanban store and return (conn, context)."""
             if store_backend == "sqlite":
@@ -5489,7 +5502,11 @@ class GatewayRunner:
             """
             conn = None
             conn_context = None
-            fingerprint = _board_db_fingerprint(slug)
+            fingerprint = (
+                _board_db_fingerprint(slug)
+                if store_backend == "sqlite"
+                else (f"postgres:{slug}", None, None)
+            )
             disabled_entry = disabled_corrupt_boards.get(slug)
             if disabled_entry is not None:
                 disabled_fingerprint, disabled_at = disabled_entry
@@ -5544,7 +5561,7 @@ class GatewayRunner:
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)
                 return None
             except Exception as exc:
-                if _is_corrupt_board_db_error(exc):
+                if store_backend == "sqlite" and _is_corrupt_board_db_error(exc):
                     disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())
                     logger.error(
                         "kanban dispatcher: board %s database %s is not a valid "
@@ -5568,12 +5585,8 @@ class GatewayRunner:
             when users create a new board mid-run: no restart required,
             the next tick picks it up automatically.
             """
-            try:
-                boards = _kb.list_boards(include_archived=False)
-            except Exception:
-                boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
             out: list[tuple[str, "Optional[object]"]] = []
-            for b in boards:
+            for b in _dispatcher_boards():
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
                 out.append((slug, _tick_once_for_board(slug)))
             return out
@@ -5590,11 +5603,7 @@ class GatewayRunner:
             here keeps the stuck-warn fire only on real failures (broken
             PATH, missing venv, credential loss for a real Hermes profile).
             """
-            try:
-                boards = _kb.list_boards(include_archived=False)
-            except Exception:
-                boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
-            for b in boards:
+            for b in _dispatcher_boards():
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
                 conn = None
                 conn_context = None
@@ -5631,6 +5640,8 @@ class GatewayRunner:
             boards. Returns the number of triage tasks that were
             successfully decomposed or specified this tick.
             """
+            if store_backend != "sqlite":
+                return 0
             try:
                 from hermes_cli import kanban_decompose as _decomp
             except Exception as exc:  # pragma: no cover
@@ -5638,13 +5649,9 @@ class GatewayRunner:
                     "kanban auto-decompose: import failed (%s); skipping", exc,
                 )
                 return 0
-            try:
-                boards = _kb.list_boards(include_archived=False)
-            except Exception:
-                boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
             attempted = 0
             successes = 0
-            for b in boards:
+            for b in _dispatcher_boards():
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
                 if attempted >= auto_decompose_per_tick:
                     break
