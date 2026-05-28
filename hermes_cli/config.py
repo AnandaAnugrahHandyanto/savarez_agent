@@ -717,6 +717,16 @@ DEFAULT_CONFIG = {
         "image_input_mode": "auto",
         "disabled_toolsets": [],
     },
+    "wisdom": {
+        "enabled": True,
+        "db_path": "",
+        "capture_mode": "explicit",
+        "max_results": 5,
+        "interpret_timeout_seconds": 5,
+        "interpretation": {
+            "mode": "deterministic",
+        },
+    },
     
     "terminal": {
         "backend": "local",
