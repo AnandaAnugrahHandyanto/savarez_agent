@@ -111,6 +111,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/debug` | Upload debug report (system info + logs) and get shareable links. Also available in messaging. |
 | `/profile` | Show active profile name and home directory |
 | `/gquota` | Show Google Gemini Code Assist quota usage with progress bars (only available when the `google-gemini-cli` provider is active). |
+| `/codex-usage` | Show your OpenAI Codex / ChatGPT subscription usage, remaining percentage, and reset time. |
 
 ### Exit
 

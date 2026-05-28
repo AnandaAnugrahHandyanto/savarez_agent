@@ -1204,6 +1204,14 @@ class TestGquotaCommand:
         assert "/gquota" in COMMANDS
 
 
+class TestCodexUsageCommand:
+    def test_codex_usage_registered(self):
+        from hermes_cli.commands import COMMANDS, GATEWAY_KNOWN_COMMANDS
+
+        assert "/codex-usage" in COMMANDS
+        assert "codex-usage" in GATEWAY_KNOWN_COMMANDS
+
+
 class TestRunGeminiOauthLoginPure:
     def test_returns_pool_compatible_dict(self, monkeypatch):
         from agent import google_oauth

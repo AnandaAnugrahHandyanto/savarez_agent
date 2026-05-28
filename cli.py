@@ -8104,6 +8104,25 @@ class HermesCLI:
             self._console_print(f"    {header:40s}  {bar}  {pct_str}")
         self._console_print()
 
+    def _handle_codex_usage_command(self, cmd_original: str) -> None:
+        """Show OpenAI Codex / ChatGPT subscription usage for the signed-in account."""
+        try:
+            from agent.account_usage import fetch_account_usage, render_account_usage_lines
+        except ImportError as exc:
+            self._console_print(f"  [red]Codex usage modules unavailable: {exc}[/]")
+            return
+
+        snapshot = fetch_account_usage("openai-codex")
+        if not snapshot:
+            self._console_print("  [yellow]No OpenAI Codex usage data available.[/]")
+            self._console_print("  Make sure you're signed in with the OpenAI Codex / ChatGPT account first.")
+            return
+
+        self._console_print()
+        for line in render_account_usage_lines(snapshot):
+            self._console_print(f"  {line}")
+        self._console_print()
+
     def _handle_personality_command(self, cmd: str):
         """Handle the /personality command to set predefined personalities."""
         parts = cmd.split(maxsplit=1)
@@ -8708,6 +8727,8 @@ class HermesCLI:
             self._handle_codex_runtime(cmd_original)
         elif canonical == "gquota":
             self._handle_gquota_command(cmd_original)
+        elif canonical == "codex-usage":
+            self._handle_codex_usage_command(cmd_original)
 
         elif canonical == "personality":
             # Use original case (handler lowercases the personality name itself)

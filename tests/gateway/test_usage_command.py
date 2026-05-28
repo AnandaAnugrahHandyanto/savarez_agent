@@ -250,3 +250,30 @@ class TestUsageAccountSection:
         assert calls["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
         assert "📊 **Session Info**" in result
         assert "📈 **Account limits**" in result
+
+
+class TestCodexUsageCommand:
+    @pytest.mark.asyncio
+    async def test_codex_usage_command_returns_markdown_usage(self, monkeypatch):
+        runner = _make_runner(SK)
+        event = MagicMock()
+
+        snapshot = object()
+        monkeypatch.setattr(
+            "gateway.run.fetch_account_usage",
+            lambda provider, base_url=None, api_key=None: snapshot if provider == "openai-codex" else None,
+        )
+        monkeypatch.setattr(
+            "gateway.run.render_account_usage_lines",
+            lambda snap, markdown=False: [
+                "📈 **Account limits**",
+                "Provider: openai-codex (Pro)",
+                "Session: 85% remaining (15% used) • resets in 2h (2026-05-28 18:30 CEST)",
+            ],
+        )
+
+        result = await runner._handle_codex_usage_command(event)
+
+        assert "openai-codex (Pro)" in result
+        assert "85% remaining" in result
+        assert "resets in 2h" in result
