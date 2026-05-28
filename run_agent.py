@@ -2720,7 +2720,10 @@ class AIAgent:
         return False
 
     @staticmethod
-    def _build_keepalive_http_client(base_url: str = "") -> Any:
+    def _build_keepalive_http_client(base_url: str = "", proxy: Optional[str] = None) -> Any:
+        # proxy param is a v2 stub. In v2, replace _get_proxy_for_base_url(base_url)
+        # with: proxy or _get_proxy_for_base_url(base_url)
+        # In v1 it is always None — existing env-based logic is unchanged.
         try:
             import httpx as _httpx
             import socket as _socket
