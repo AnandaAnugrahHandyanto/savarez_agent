@@ -2802,6 +2802,14 @@ class OptionalSkillSource(SkillSource):
     (search / install / inspect) and labelled "official" with "builtin" trust.
     """
 
+    # Canonical upstream location for the official optional skills.  Emitted
+    # on every ``SkillMeta`` so the published skills index has a usable
+    # ``repo`` + ``path`` pair that ``HermesIndexSource.fetch`` can resolve
+    # against GitHub when the local optional-skills tree isn't present
+    # (e.g. ``hermes skills install official/<skill>`` on a packaged install).
+    UPSTREAM_REPO = "NousResearch/hermes-agent"
+    UPSTREAM_PATH_PREFIX = "optional-skills"
+
     def __init__(self):
         from hermes_constants import get_optional_skills_dir
 
@@ -2940,7 +2948,15 @@ class OptionalSkillSource(SkillSource):
                 source="official",
                 identifier=f"official/{rel_path}",
                 trust_level="builtin",
-                path=rel_path,
+                # ``repo`` + ``path`` describe the upstream GitHub location so
+                # ``HermesIndexSource.fetch`` can fall back to a direct
+                # ``owner/repo/path`` GitHub fetch when the user doesn't have
+                # the optional-skills tree on disk.  Without these, the
+                # published skills index emits empty ``repo`` for all 81
+                # official skills and ``hermes skills install official/<x>``
+                # fails for everyone (#30482).
+                repo=self.UPSTREAM_REPO,
+                path=f"{self.UPSTREAM_PATH_PREFIX}/{rel_path}",
                 tags=tags if isinstance(tags, list) else [],
             ))
 

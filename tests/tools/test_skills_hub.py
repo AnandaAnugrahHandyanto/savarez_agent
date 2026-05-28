@@ -1690,6 +1690,33 @@ class TestOptionalSkillSourceBinaryAssets:
         assert bundle.files["assets/neutts-cli/samples/jo.txt"] == b"hello\n"
         assert "assets/neutts-cli/src/neutts_cli/__pycache__/cli.cpython-312.pyc" not in bundle.files
 
+    def test_search_emits_upstream_repo_and_path(self, tmp_path):
+        """Regression test for #30482.
+
+        Every ``official/*`` entry in the published skills index must carry a
+        non-empty ``repo`` + ``path`` so ``HermesIndexSource.fetch`` can fall
+        back to a direct GitHub fetch.  Empty values made all 81 official
+        skills uninstallable via the ``official/<skill>`` identifier.
+        """
+        optional_root = tmp_path / "optional-skills"
+        skill_dir = optional_root / "finance" / "3-statement-model"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: 3-statement-model\ndescription: model\n---\n\nBody\n",
+            encoding="utf-8",
+        )
+
+        src = OptionalSkillSource()
+        src._optional_dir = optional_root
+
+        results = src.search("3-statement-model", limit=10)
+
+        assert len(results) == 1
+        meta = results[0]
+        assert meta.identifier == "official/finance/3-statement-model"
+        assert meta.repo == "NousResearch/hermes-agent"
+        assert meta.path == "optional-skills/finance/3-statement-model"
+
 
 class TestQuarantineBundleBinaryAssets:
     def test_quarantine_bundle_writes_binary_files(self, tmp_path):
