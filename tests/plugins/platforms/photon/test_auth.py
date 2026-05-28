@@ -45,6 +45,8 @@ def tmp_hermes_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.delenv("PHOTON_PROJECT_SECRET", raising=False)
     monkeypatch.delenv("PHOTON_WEBHOOK_SECRET", raising=False)
     monkeypatch.delenv("PHOTON_DASHBOARD_TOKEN", raising=False)
+    monkeypatch.delenv("PHOTON_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("PHOTON_ALLOW_ALL_USERS", raising=False)
     # The auth module memoises by reading get_hermes_home at call time
     # so the env var is what matters.
     return home
@@ -81,6 +83,57 @@ def test_store_and_load_project_credentials(tmp_hermes_home: Path) -> None:
     assert "PHOTON_PROJECT_ID=proj-uuid" in env_text
     assert "PHOTON_PROJECT_SECRET=secret-key" in env_text
     assert not (tmp_hermes_home / "auth.json").exists()
+
+
+def test_ensure_phone_allowed_adds_photon_allowlist(
+    tmp_hermes_home: Path,
+) -> None:
+    result = photon_auth.ensure_phone_allowed("+15551234567")
+
+    assert result == "added"
+    assert photon_auth.load_allowed_phone_numbers() == ["+15551234567"]
+    env_text = (tmp_hermes_home / ".env").read_text(encoding="utf-8")
+    assert "PHOTON_ALLOWED_USERS=+15551234567" in env_text
+
+
+def test_ensure_phone_allowed_preserves_existing_entries(
+    tmp_hermes_home: Path,
+) -> None:
+    photon_auth.ensure_phone_allowed("+15551234567")
+    result = photon_auth.ensure_phone_allowed("+15557654321")
+
+    assert result == "added"
+    assert photon_auth.load_allowed_phone_numbers() == [
+        "+15551234567",
+        "+15557654321",
+    ]
+
+
+def test_ensure_phone_allowed_dedupes_existing_phone(
+    tmp_hermes_home: Path,
+) -> None:
+    photon_auth.ensure_phone_allowed("+15551234567")
+    result = photon_auth.ensure_phone_allowed("+15551234567")
+
+    assert result == "already_allowed"
+    assert photon_auth.load_allowed_phone_numbers() == ["+15551234567"]
+
+
+def test_ensure_phone_allowed_rejects_non_e164(
+    tmp_hermes_home: Path,
+) -> None:
+    with pytest.raises(ValueError):
+        photon_auth.ensure_phone_allowed("415-555-1234")
+
+
+def test_ensure_phone_allowed_honors_allow_all(
+    tmp_hermes_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PHOTON_ALLOW_ALL_USERS", "true")
+
+    assert photon_auth.ensure_phone_allowed("+15551234567") == "allow_all"
+    assert not (tmp_hermes_home / ".env").exists()
 
 
 def test_load_project_credentials_reads_env_file_without_preload(
@@ -379,7 +432,16 @@ def test_login_device_flow_validates_before_storing(
             interval=0,
         ),
     )
-    monkeypatch.setattr(photon_auth, "poll_for_token", lambda *_args, **_kwargs: "token")
+    monkeypatch.setattr(
+        photon_auth,
+        "poll_for_token_candidates",
+        lambda *_args, **_kwargs: [
+            photon_auth._DeviceTokenCandidate(
+                source="access_token",
+                token="token",
+            )
+        ],
+    )
     monkeypatch.setattr(
         photon_auth,
         "validate_photon_token",
@@ -392,6 +454,96 @@ def test_login_device_flow_validates_before_storing(
         photon_auth.login_device_flow(open_browser=False)
 
     assert photon_auth.load_photon_token() is None
+
+
+def test_login_device_flow_reports_no_project_valid_candidate(
+    tmp_hermes_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        photon_auth,
+        "request_device_code",
+        lambda client_id=photon_auth.DEFAULT_CLIENT_ID: photon_auth.DeviceCode(
+            device_code="d",
+            user_code="u",
+            verification_uri="https://x",
+            verification_uri_complete=None,
+            expires_in=10,
+            interval=0,
+        ),
+    )
+    monkeypatch.setattr(
+        photon_auth,
+        "poll_for_token_candidates",
+        lambda *_args, **_kwargs: [
+            photon_auth._DeviceTokenCandidate(
+                source="access_token",
+                token="session-only-token",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        photon_auth,
+        "validate_photon_token",
+        lambda _token: (_ for _ in ()).throw(
+            photon_auth.PhotonDashboardAuthError("invalid_token")
+        ),
+    )
+
+    with pytest.raises(
+        photon_auth.PhotonDashboardAuthError,
+        match="no project-valid dashboard token candidate.*access_token",
+    ) as exc_info:
+        photon_auth.login_device_flow(open_browser=False)
+
+    assert "session-only-token" not in str(exc_info.value)
+    assert photon_auth.load_photon_token() is None
+
+
+def test_login_device_flow_can_use_project_valid_header_candidate(
+    tmp_hermes_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        photon_auth,
+        "request_device_code",
+        lambda client_id=photon_auth.DEFAULT_CLIENT_ID: photon_auth.DeviceCode(
+            device_code="d",
+            user_code="u",
+            verification_uri="https://x",
+            verification_uri_complete=None,
+            expires_in=10,
+            interval=0,
+        ),
+    )
+
+    def fake_post(url: str, *, json: Dict[str, Any], timeout: float) -> _FakeResponse:
+        return _FakeResponse(
+            status=200,
+            json_body={"access_token": "session-body-token"},
+            headers={"set-auth-token": "project-header-token"},
+        )
+
+    def fake_get(url: str, *, headers: Dict[str, str], timeout: float) -> _FakeResponse:
+        token = headers["Authorization"].removeprefix("Bearer ")
+        if token == "session-body-token" and "/api/projects/" in url:
+            return _FakeResponse(
+                status=401,
+                json_body={"error": "invalid_token"},
+                text="invalid_token",
+            )
+        return _FakeResponse(json_body={
+            "session": {"id": "session-id"},
+            "user": {"id": "user-id"},
+        } if "/api/auth/get-session" in url else [])
+
+    monkeypatch.setattr(photon_auth.httpx, "post", fake_post)
+    monkeypatch.setattr(photon_auth.httpx, "get", fake_get)
+
+    token = photon_auth.login_device_flow(open_browser=False)
+
+    assert token == "project-header-token"
+    assert photon_auth.load_photon_token() == "project-header-token"
 
 
 def test_poll_for_token_propagates_access_denied(
@@ -482,6 +634,23 @@ def test_list_projects_normalizes_collection_response(
     assert normalized["imessage_enabled"] is True
 
 
+def test_normalize_project_accepts_single_data_wrapper() -> None:
+    normalized = photon_auth.normalize_project({
+        "data": {
+            "id": "dash-uuid",
+            "name": "Hermes Agent",
+            "spectrum": True,
+            "platforms": ["imessage"],
+            "spectrumProjectId": "spectrum-uuid",
+            "projectSecret": "secret",
+        },
+    })
+
+    assert normalized["dashboard_project_id"] == "dash-uuid"
+    assert normalized["spectrum_project_id"] == "spectrum-uuid"
+    assert normalized["project_secret"] == "secret"
+
+
 def test_list_projects_rejects_bad_dashboard_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -518,6 +687,47 @@ def test_create_project_rejects_bad_dashboard_token(
 
     with pytest.raises(photon_auth.PhotonDashboardAuthError, match="Unauthorized"):
         photon_auth.create_project("bad-token", name="Hermes Agent")
+
+
+def test_get_project_uses_dashboard_bearer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: Dict[str, Any] = {}
+
+    def fake_get(url: str, *, headers: Dict[str, str], timeout: float) -> _FakeResponse:
+        captured["url"] = url
+        captured["headers"] = headers
+        return _FakeResponse(json_body={
+            "id": "dash-1",
+            "spectrumProjectId": "spectrum-1",
+        })
+
+    monkeypatch.setattr(photon_auth.httpx, "get", fake_get)
+
+    project = photon_auth.get_project("token-xyz", "dash-1")
+
+    assert "/api/projects/dash-1" in captured["url"]
+    assert captured["headers"]["Authorization"] == "Bearer token-xyz"
+    assert project["spectrumProjectId"] == "spectrum-1"
+
+
+def test_regenerate_project_secret_uses_dashboard_bearer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: Dict[str, Any] = {}
+
+    def fake_post(url: str, *, headers: Dict[str, str], timeout: float) -> _FakeResponse:
+        captured["url"] = url
+        captured["headers"] = headers
+        return _FakeResponse(json_body={"projectSecret": "secret-1"})
+
+    monkeypatch.setattr(photon_auth.httpx, "post", fake_post)
+
+    data = photon_auth.regenerate_project_secret("token-xyz", "dash-1")
+
+    assert "/api/projects/dash-1/regenerate-secret" in captured["url"]
+    assert captured["headers"]["Authorization"] == "Bearer token-xyz"
+    assert data["projectSecret"] == "secret-1"
 
 
 def test_reusable_projects_match_requested_name_only() -> None:

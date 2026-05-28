@@ -7,7 +7,7 @@ project, create user, register webhook) talk to Photon's HTTP API
 directly:
 
     Dashboard API   https://app.photon.codes/api/...
-                    access_token from the device flow response body
+                    project-valid token candidate from the device flow
 
     Spectrum API    https://spectrum.photon.codes/projects/{id}/...
                     HTTP Basic with (projectId, projectSecret)
@@ -35,7 +35,7 @@ import threading
 import time
 from collections.abc import Iterable
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, Optional, Tuple
 
@@ -82,6 +82,7 @@ _setup_lock_holder = threading.local()
 # Hermes env helpers — Photon secrets live in the active profile's .env.
 
 PHOTON_DASHBOARD_TOKEN_ENV = "PHOTON_DASHBOARD_TOKEN"
+PHOTON_ALLOWED_USERS_ENV = "PHOTON_ALLOWED_USERS"
 
 
 class PhotonDashboardAuthError(RuntimeError):
@@ -154,6 +155,54 @@ def load_project_credentials() -> Tuple[Optional[str], Optional[str]]:
         _get_hermes_env_value("PHOTON_PROJECT_ID"),
         _get_hermes_env_value("PHOTON_PROJECT_SECRET"),
     )
+
+
+def load_allowed_phone_numbers() -> list[str]:
+    """Return the Photon sender allowlist from the active Hermes profile."""
+    raw = _get_hermes_env_value(PHOTON_ALLOWED_USERS_ENV) or ""
+    seen: set[str] = set()
+    phones: list[str] = []
+    for item in raw.split(","):
+        phone = item.strip()
+        if not phone or phone in seen:
+            continue
+        seen.add(phone)
+        phones.append(phone)
+    return phones
+
+
+def ensure_phone_allowed(phone_number: str) -> str:
+    """Allow an E.164 sender to control Hermes through Photon.
+
+    Returns ``"added"``, ``"already_allowed"``, or ``"allow_all"``.
+    """
+    phone = phone_number.strip()
+    if not E164_RE.match(phone):
+        raise ValueError(
+            "phone_number must be E.164 (format +<country-code><number>); "
+            f"got {phone_number!r}"
+        )
+    if (_get_hermes_env_value("PHOTON_ALLOW_ALL_USERS") or "").strip().lower() in {
+        "true",
+        "1",
+        "yes",
+    }:
+        return "allow_all"
+
+    phones = load_allowed_phone_numbers()
+    if "*" in phones or phone in phones:
+        return "already_allowed"
+
+    try:
+        from hermes_cli.config import save_env_value  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError(
+            "hermes_cli.config is required to save Photon gateway access"
+        ) from exc
+
+    phones.append(phone)
+    save_env_value(PHOTON_ALLOWED_USERS_ENV, ",".join(phones))
+    return "added"
 
 
 def store_project_credentials(project_id: str, project_secret: str, **extra: Any) -> None:
@@ -245,6 +294,12 @@ class DeviceCode:
     interval: int
 
 
+@dataclass(frozen=True)
+class _DeviceTokenCandidate:
+    source: str
+    token: str = field(repr=False)
+
+
 def _dashboard_host() -> str:
     return (os.getenv("PHOTON_DASHBOARD_HOST") or DEFAULT_DASHBOARD_HOST).rstrip("/")
 
@@ -287,10 +342,40 @@ def poll_for_token(
 ) -> str:
     """Poll ``/api/auth/device/token`` until the user approves.
 
-    Returns the bearer token from the JSON response body.  This matches the
-    official Photon CLI.  A short ``set-auth-token`` response header may also
-    be present, but hosted Photon currently rejects that value on dashboard
-    bearer API endpoints, so Hermes must not persist it.
+    Returns the bearer token from the JSON response body. This compatibility
+    wrapper matches the official Photon CLI; the full login path validates all
+    token-like candidates before saving anything.
+    """
+    candidates = poll_for_token_candidates(
+        code,
+        client_id=client_id,
+        timeout=timeout,
+        interval=interval,
+        on_pending=on_pending,
+        on_debug=on_debug,
+    )
+    for candidate in candidates:
+        if candidate.source != "set-auth-token":
+            return candidate.token
+    raise RuntimeError(
+        "Photon returned 200 but no access_token in the response "
+        "body; refusing to save the unusable session header token"
+    )
+
+
+def poll_for_token_candidates(
+    code: DeviceCode,
+    *,
+    client_id: str = DEFAULT_CLIENT_ID,
+    timeout: Optional[int] = None,
+    interval: Optional[int] = None,
+    on_pending: Optional[callable] = None,
+    on_debug: Optional[AuthDebugCallback] = None,
+) -> list[_DeviceTokenCandidate]:
+    """Poll ``/api/auth/device/token`` and return all token-like candidates.
+
+    Candidate token bytes are intentionally kept internal. Callers must validate
+    a candidate against the dashboard project API before persisting it.
     """
     if httpx is None:
         raise RuntimeError("httpx is required for Photon device login")
@@ -322,23 +407,20 @@ def poll_for_token(
             except (TypeError, ValueError, json.JSONDecodeError):
                 body = {}
                 body_is_json = False
-            token, source = _device_response_access_token_with_source(body)
+            candidates = _device_response_token_candidates(
+                body,
+                headers=getattr(resp, "headers", {}),
+            )
             _emit_auth_debug(
                 on_debug,
                 _device_token_debug_event(
                     resp,
                     body=body,
                     body_is_json=body_is_json,
-                    token=token,
-                    token_source=source,
+                    candidates=candidates,
                 ),
             )
-            if not token:
-                raise RuntimeError(
-                    "Photon returned 200 but no access_token in the response "
-                    "body; refusing to save the unusable session header token"
-                )
-            return token
+            return candidates
         if resp.status_code == 400:
             # RFC 8628 §3.5 — error codes are returned with 400.
             body: Dict[str, Any] = {}
@@ -379,20 +461,66 @@ def _device_response_access_token(body: Dict[str, Any]) -> Optional[str]:
 def _device_response_access_token_with_source(
     body: Dict[str, Any],
 ) -> Tuple[Optional[str], Optional[str]]:
-    candidates: list[tuple[str, Any]] = [
-        ("access_token", body.get("access_token")),
-        ("accessToken", body.get("accessToken")),
-    ]
+    for candidate in _device_response_token_candidates(
+        body,
+        include_set_auth_token=False,
+    ):
+        return candidate.token, candidate.source
+    return None, None
+
+
+def _device_response_token_candidates(
+    body: Dict[str, Any],
+    *,
+    headers: Optional[Any] = None,
+    include_set_auth_token: bool = True,
+) -> list[_DeviceTokenCandidate]:
+    candidates: list[_DeviceTokenCandidate] = []
+    seen: set[str] = set()
+
+    def add(source: str, value: Any) -> None:
+        token = _clean_bearer_token(value)
+        if not token or token in seen:
+            return
+        seen.add(token)
+        candidates.append(_DeviceTokenCandidate(source=source, token=token))
+
+    add("access_token", body.get("access_token"))
+    add("accessToken", body.get("accessToken"))
     data = body.get("data")
     if isinstance(data, dict):
-        candidates.extend([
-            ("data.access_token", data.get("access_token")),
-            ("data.accessToken", data.get("accessToken")),
-        ])
-    for source, candidate in candidates:
-        if isinstance(candidate, str) and candidate.strip():
-            return candidate.strip(), source
-    return None, None
+        add("data.access_token", data.get("access_token"))
+        add("data.accessToken", data.get("accessToken"))
+    if include_set_auth_token:
+        add("set-auth-token", _header_value(headers, "set-auth-token"))
+    return candidates
+
+
+def _clean_bearer_token(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    token = value.strip()
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    return token or None
+
+
+def _header_value(headers: Optional[Any], name: str) -> Optional[str]:
+    if not headers:
+        return None
+    try:
+        value = headers.get(name)
+        if value:
+            return str(value)
+    except AttributeError:
+        pass
+    try:
+        for key, value in dict(headers).items():
+            if str(key).lower() == name.lower() and value:
+                return str(value)
+    except (TypeError, ValueError):
+        return None
+    return None
 
 
 def _device_token_debug_event(
@@ -400,12 +528,19 @@ def _device_token_debug_event(
     *,
     body: Dict[str, Any],
     body_is_json: bool,
-    token: Optional[str],
-    token_source: Optional[str],
+    candidates: list[_DeviceTokenCandidate],
 ) -> Dict[str, Any]:
     data = body.get("data")
     session = body.get("session")
     user = body.get("user")
+    access_candidate = next(
+        (
+            candidate
+            for candidate in candidates
+            if candidate.source != "set-auth-token"
+        ),
+        None,
+    )
     return {
         "event": "device-token-response",
         "status": getattr(resp, "status_code", "-"),
@@ -415,10 +550,19 @@ def _device_token_debug_event(
         "session_keys": _safe_dict_keys(session),
         "user_present": isinstance(user, dict),
         "has_set_auth_token_header": bool(
-            getattr(resp, "headers", {}).get("set-auth-token")
+            _header_value(getattr(resp, "headers", {}), "set-auth-token")
         ),
-        "access_token_source": token_source or "missing",
-        "token": _token_shape(token),
+        "access_token_source": (
+            access_candidate.source if access_candidate else "missing"
+        ),
+        "token": _token_shape(access_candidate.token if access_candidate else None),
+        "candidates": [
+            {
+                "source": candidate.source,
+                "token": _token_shape(candidate.token),
+            }
+            for candidate in candidates
+        ],
     }
 
 
@@ -465,15 +609,66 @@ def login_device_flow(
             webbrowser.open(target, new=2)
         except Exception:
             pass
-    token = poll_for_token(code, client_id=client_id, on_debug=on_debug)
-    try:
-        validate_photon_token(token)
-    except Exception:
-        _emit_auth_debug(on_debug, _dashboard_validation_debug_event(token))
-        raise
-    _emit_auth_debug(on_debug, _dashboard_validation_debug_event(token))
+    candidates = poll_for_token_candidates(
+        code,
+        client_id=client_id,
+        on_debug=on_debug,
+    )
+    token = _validated_dashboard_token(candidates, on_debug=on_debug)
     store_photon_token(token)
     return token
+
+
+def _validated_dashboard_token(
+    candidates: list[_DeviceTokenCandidate],
+    *,
+    on_debug: Optional[AuthDebugCallback] = None,
+) -> str:
+    if not candidates:
+        raise RuntimeError(
+            "Photon returned 200 but no token candidate in the device-token "
+            "response. Expected access_token, data.access_token, or "
+            "set-auth-token."
+        )
+    last_error: Optional[BaseException] = None
+    dashboard_error: Optional[PhotonDashboardAuthError] = None
+    for candidate in candidates:
+        try:
+            validate_photon_token(candidate.token)
+        except Exception as exc:
+            _emit_auth_debug(
+                on_debug,
+                _dashboard_validation_debug_event(
+                    candidate.token,
+                    candidate_source=candidate.source,
+                ),
+            )
+            last_error = exc
+            if isinstance(exc, PhotonDashboardAuthError):
+                dashboard_error = exc
+            continue
+        _emit_auth_debug(
+            on_debug,
+            _dashboard_validation_debug_event(
+                candidate.token,
+                candidate_source=candidate.source,
+            ),
+        )
+        return candidate.token
+    if dashboard_error:
+        sources = ", ".join(candidate.source for candidate in candidates)
+        raise PhotonDashboardAuthError(
+            f"{dashboard_error} Device login returned no project-valid "
+            f"dashboard token candidate to save (tried: {sources or 'none'}). "
+            "The returned token can authenticate the Better Auth session "
+            "lookup, but Photon project/profile APIs reject it. Photon must "
+            "return a dashboard API bearer token from the device flow, "
+            "document another token exchange, or accept device-flow tokens on "
+            "the project APIs."
+        ) from dashboard_error
+    if last_error:
+        raise last_error
+    raise RuntimeError("Photon did not return a usable dashboard token")
 
 
 def validate_photon_token(token: str) -> Dict[str, Any]:
@@ -545,9 +740,15 @@ def dashboard_auth_diagnostics(token: Optional[str] = None) -> Dict[str, Any]:
     return result
 
 
-def _dashboard_validation_debug_event(token: Optional[str]) -> Dict[str, Any]:
+def _dashboard_validation_debug_event(
+    token: Optional[str],
+    *,
+    candidate_source: Optional[str] = None,
+) -> Dict[str, Any]:
     event = dashboard_auth_diagnostics(token)
     event["event"] = "dashboard-validation"
+    if candidate_source:
+        event["candidate_source"] = candidate_source
     return event
 
 
@@ -628,6 +829,36 @@ def create_project(
     )
     _raise_for_dashboard_status(resp, action="create a Photon project")
     return resp.json()
+
+
+def get_project(token: str, project_id: str) -> Dict[str, Any]:
+    """Return dashboard details for one Photon project."""
+    if httpx is None:
+        raise RuntimeError("httpx is required for Photon project lookup")
+    url = f"{_dashboard_host()}/api/projects/{project_id}"
+    resp = httpx.get(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30.0,
+    )
+    _raise_for_dashboard_status(resp, action="fetch Photon project details")
+    data = resp.json() or {}
+    return data if isinstance(data, dict) else {}
+
+
+def regenerate_project_secret(token: str, project_id: str) -> Dict[str, Any]:
+    """Rotate and return the Spectrum API secret for a dashboard project."""
+    if httpx is None:
+        raise RuntimeError("httpx is required for Photon project secret rotation")
+    url = f"{_dashboard_host()}/api/projects/{project_id}/regenerate-secret"
+    resp = httpx.post(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30.0,
+    )
+    _raise_for_dashboard_status(resp, action="regenerate Photon project secret")
+    data = resp.json() or {}
+    return data if isinstance(data, dict) else {}
 
 
 def list_projects(token: str) -> list[Dict[str, Any]]:
@@ -723,6 +954,9 @@ def _coerce_platforms(value: Any) -> list[str]:
 
 def normalize_project(project: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize dashboard project shapes across Photon API revisions."""
+    nested_data = project.get("data")
+    if isinstance(nested_data, dict):
+        project = {**nested_data, **{k: v for k, v in project.items() if k != "data"}}
     spectrum = project.get("spectrum") if isinstance(project.get("spectrum"), dict) else {}
     credentials = project.get("credentials") if isinstance(project.get("credentials"), dict) else {}
     platforms = _coerce_platforms(

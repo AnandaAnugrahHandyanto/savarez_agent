@@ -7,6 +7,7 @@ Subcommands:
     login              run the device-code OAuth flow
     quick-setup        guided setup + managed webhook tunnel registration
     setup              full first-time setup (login + project + user + sidecar)
+    allow-phone        authorize another E.164 sender for Photon gateway use
     status             show login + project + sidecar dep state
     install-sidecar    npm install inside plugins/platforms/photon/sidecar/
     webhook register   register the local webhook URL with Photon
@@ -77,6 +78,12 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     p_setup.add_argument("--skip-sidecar-install", action="store_true",
                          help="Skip `npm install` inside the sidecar directory")
 
+    p_allow = subs.add_parser(
+        "allow-phone",
+        help="Allow a phone number to control Hermes over Photon",
+    )
+    p_allow.add_argument("phone", help=f"E.164 phone number (format: {_PHONE_FORMAT})")
+
     subs.add_parser("status", help="Show login + project + sidecar dep state")
     subs.add_parser("diagnose-auth", help="Print sanitized Photon auth diagnostics")
     subs.add_parser("install-sidecar", help="Run npm install inside the sidecar directory")
@@ -118,6 +125,8 @@ def dispatch(args: argparse.Namespace) -> int:
         return _cmd_quick_setup(args)
     if sub == "setup":
         return _cmd_setup(args)
+    if sub == "allow-phone":
+        return _cmd_allow_phone(args)
     if sub == "status":
         return _cmd_status(args)
     if sub == "diagnose-auth":
@@ -176,7 +185,11 @@ def _cmd_login(args: argparse.Namespace) -> int:
 
 
 def _cmd_quick_setup(args: argparse.Namespace) -> int:
-    if not photon_auth.load_photon_token():
+    project_id, project_secret = photon_auth.load_project_credentials()
+    if (
+        not photon_auth.load_photon_token()
+        and not (project_id and project_secret)
+    ):
         print_login_first_guidance()
         return 1
 
@@ -207,7 +220,11 @@ def _cmd_quick_setup(args: argparse.Namespace) -> int:
 
 def interactive_setup() -> None:
     """Entry point used by `hermes setup gateway` when Photon is selected."""
-    if not photon_auth.load_photon_token():
+    project_id, project_secret = photon_auth.load_project_credentials()
+    if (
+        not photon_auth.load_photon_token()
+        and not (project_id and project_secret)
+    ):
         print_incomplete_setup_guidance()
         return
 
@@ -240,7 +257,11 @@ def print_incomplete_setup_guidance() -> None:
     """Print explicit next steps when Photon setup did not finish."""
     print()
     print("Photon iMessage setup is not complete yet.")
-    if not photon_auth.load_photon_token():
+    project_id, project_secret = photon_auth.load_project_credentials()
+    if (
+        not photon_auth.load_photon_token()
+        and not (project_id and project_secret)
+    ):
         print("  First:")
         print("        hermes photon login")
         print("  Then:")
@@ -275,7 +296,8 @@ def _cmd_setup(args: argparse.Namespace) -> int:
 def _run_base_setup(args: argparse.Namespace, *, total_steps: int) -> int:
     # 1. Login (skip if we already have a token).
     token = photon_auth.load_photon_token()
-    if not token:
+    existing_id, existing_secret = photon_auth.load_project_credentials()
+    if not token and not (existing_id and existing_secret):
         print(f"[1/{total_steps}] No Photon token found — running device login...")
         rc = _cmd_login(args)
         if rc != 0:
@@ -285,6 +307,9 @@ def _run_base_setup(args: argparse.Namespace, *, total_steps: int) -> int:
             print("login completed but token was not stored", file=sys.stderr)
             return 1
         print("  Next: Hermes will reuse/adopt/create the Photon project.")
+    elif existing_id and existing_secret:
+        print(f"[1/{total_steps}] Reusing existing Photon project credentials")
+        print("  Next: Hermes will bind your phone number to the Photon project.")
     else:
         print(f"[1/{total_steps}] Reusing existing Photon token")
         print("  Next: Hermes will verify the Photon project.")
@@ -322,6 +347,8 @@ def _run_base_setup(args: argparse.Namespace, *, total_steps: int) -> int:
             print(f"create-user failed: {e}", file=sys.stderr)
             return 1
         print("  ✓ user created — check `hermes photon status` or the dashboard for the assigned iMessage line")
+        if not _ensure_operator_phone_allowed(phone):
+            return 1
     print("  Next: Hermes will verify/install the Node sidecar dependencies.")
 
     # 4. Sidecar deps.
@@ -335,6 +362,30 @@ def _run_base_setup(args: argparse.Namespace, *, total_steps: int) -> int:
     if total_steps > 4:
         print("  Next: Hermes will start a Cloudflare Quick Tunnel and register the webhook.")
     return 0
+
+
+def _cmd_allow_phone(args: argparse.Namespace) -> int:
+    return 0 if _ensure_operator_phone_allowed(args.phone, explicit=True) else 1
+
+
+def _ensure_operator_phone_allowed(phone: str, *, explicit: bool = False) -> bool:
+    try:
+        status = photon_auth.ensure_phone_allowed(phone)
+    except Exception as e:
+        print(f"allow-phone failed: {e}", file=sys.stderr)
+        return False
+
+    if status == "added":
+        print("  ✓ phone authorized for Photon gateway access")
+    elif status == "allow_all":
+        print("  ✓ Photon gateway access is already open via PHOTON_ALLOW_ALL_USERS")
+    else:
+        print("  ✓ phone already authorized for Photon gateway access")
+
+    if explicit:
+        print("  Next: restart the gateway if it is already running:")
+        print("        hermes gateway restart")
+    return True
 
 
 def _resolve_setup_project(
@@ -369,7 +420,7 @@ def _resolve_setup_project(
 
     candidates = photon_auth.reusable_projects(projects, preferred_name=name)
     if len(candidates) == 1:
-        candidate = candidates[0]
+        candidate = _refresh_project_details(token, candidates[0])
         project_id = str(candidate.get("spectrum_project_id") or "")
         project_secret = str(candidate.get("project_secret") or "")
         if project_id and project_secret:
@@ -428,6 +479,7 @@ def _create_and_store_project(token: str, *, name: str, source: str) -> tuple[st
         print(f"create-project failed: {e}", file=sys.stderr)
         return "", ""
 
+    data = _complete_created_project_credentials(token, data)
     normalized = photon_auth.normalize_project(data)
     project_id = str(normalized.get("spectrum_project_id") or data.get("id") or "")
     project_secret = str(normalized.get("project_secret") or "")
@@ -454,6 +506,95 @@ def _create_and_store_project(token: str, *, name: str, source: str) -> tuple[st
     photon_auth.store_project_credentials(project_id, project_secret, **extra)
     print("  ✓ project provisioned (run `hermes photon status` to see the id)")
     return project_id, project_secret
+
+
+def _complete_created_project_credentials(token: str, data: dict[str, Any]) -> dict[str, Any]:
+    normalized = photon_auth.normalize_project(data)
+    dashboard_project_id = str(
+        normalized.get("dashboard_project_id") or data.get("id") or ""
+    )
+    if not dashboard_project_id:
+        return data
+    if normalized.get("spectrum_project_id") and normalized.get("project_secret"):
+        return data
+
+    try:
+        details = photon_auth.get_project(token, dashboard_project_id)
+    except photon_auth.PhotonDashboardAuthError as e:
+        _handle_dashboard_auth_error(e)
+        return data
+    except Exception as e:
+        print(
+            "created Photon project, but could not fetch its Spectrum "
+            f"credentials: {e}",
+            file=sys.stderr,
+        )
+        details = {}
+    if details:
+        data = _merge_project_payloads(data, details)
+        normalized = photon_auth.normalize_project(data)
+        if normalized.get("spectrum_project_id") and normalized.get("project_secret"):
+            print("  ✓ fetched Spectrum credentials for the new project")
+            return data
+
+    try:
+        secret_data = photon_auth.regenerate_project_secret(
+            token,
+            dashboard_project_id,
+        )
+    except photon_auth.PhotonDashboardAuthError as e:
+        _handle_dashboard_auth_error(e)
+        return data
+    except Exception as e:
+        print(
+            "created Photon project, but could not retrieve its Spectrum "
+            f"secret: {e}",
+            file=sys.stderr,
+        )
+        return data
+
+    merged = _merge_project_payloads(data, secret_data)
+    normalized = photon_auth.normalize_project(merged)
+    if normalized.get("project_secret"):
+        print("  ✓ retrieved Spectrum secret for the new project")
+    return merged
+
+
+def _refresh_project_details(token: str, project: dict[str, Any]) -> dict[str, Any]:
+    normalized = photon_auth.normalize_project(project)
+    dashboard_project_id = str(
+        normalized.get("dashboard_project_id")
+        or project.get("dashboard_project_id")
+        or project.get("id")
+        or ""
+    )
+    if not dashboard_project_id:
+        return normalized
+    if normalized.get("spectrum_project_id") and normalized.get("project_secret"):
+        return normalized
+
+    try:
+        details = photon_auth.get_project(token, dashboard_project_id)
+    except photon_auth.PhotonDashboardAuthError as e:
+        _handle_dashboard_auth_error(e)
+        return normalized
+    except Exception as e:
+        print(
+            f"could not fetch Photon project details for {dashboard_project_id}: {e}",
+            file=sys.stderr,
+        )
+        return normalized
+    return photon_auth.normalize_project(
+        _merge_project_payloads(project, details)
+    )
+
+
+def _merge_project_payloads(*payloads: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for payload in payloads:
+        if isinstance(payload, dict):
+            merged.update(payload)
+    return merged
 
 
 def _store_selected_project(project: dict[str, Any], *, source: str) -> None:
@@ -515,6 +656,7 @@ def _cmd_status(_args: argparse.Namespace) -> int:
     tunnel_label = _format_tunnel_status(tunnel_state)
     print(f"  node binary         : {node_bin or '✗ missing (install Node 20.18.1+)'}")
     print(f"  sidecar deps        : {sidecar_status}")
+    print(f"  authorized phones   : {_photon_sender_access_status()}")
     print(f"  webhook public URL  : {public_url}")
     print(f"  managed tunnel      : {tunnel_label}")
     print(f"  next step           : {_next_status_step(sidecar_status, tunnel_state)}")
@@ -658,7 +800,7 @@ def _cmd_projects(args: argparse.Namespace) -> int:
         if len(matches) > 1:
             _print_project_choices(matches, "Multiple projects matched that id.")
             return 1
-        project = matches[0]
+        project = _refresh_project_details(token, matches[0])
         if not (project.get("spectrum_enabled") and project.get("imessage_enabled")):
             print(
                 "selected project is not a Spectrum iMessage project",
@@ -703,6 +845,11 @@ def _print_auth_diagnostics(
     print("───────────────────────", file=stream)
     print(f"  env path        : {diagnostics.get('env_path')}", file=stream)
     print(f"  dashboard host  : {diagnostics.get('dashboard_host')}", file=stream)
+    if diagnostics.get("candidate_source"):
+        print(
+            f"  token source    : {diagnostics.get('candidate_source')}",
+            file=stream,
+        )
     if token.get("present"):
         print(
             "  token           : present "
@@ -769,6 +916,13 @@ def _print_login_auth_debug(event: dict[str, Any]) -> None:
             f"jwt={_yes_no(bool(token.get('looks_jwt')))})",
             file=sys.stderr,
         )
+        candidates = event.get("candidates") or []
+        if candidates:
+            print(
+                "  token candidates : "
+                + _format_token_candidates(candidates),
+                file=sys.stderr,
+            )
         return
 
     if kind == "dashboard-validation":
@@ -780,6 +934,21 @@ def _print_login_auth_debug(event: dict[str, Any]) -> None:
 
 def _format_key_list(keys: list[Any]) -> str:
     return ", ".join(str(key) for key in keys) if keys else "-"
+
+
+def _format_token_candidates(candidates: list[Any]) -> str:
+    parts = []
+    for candidate in candidates[:8]:
+        if not isinstance(candidate, dict):
+            continue
+        shape = candidate.get("token") or {}
+        parts.append(
+            f"{candidate.get('source')}("
+            f"len={shape.get('length')},"
+            f"dots={shape.get('dot_count')},"
+            f"jwt={_yes_no(bool(shape.get('looks_jwt')))})"
+        )
+    return ", ".join(parts) if parts else "-"
 
 
 def _yes_no(value: bool) -> str:
@@ -1062,6 +1231,30 @@ def _get_env_value(key: str) -> Optional[str]:
         return os.getenv(key)
 
 
+def _truthy_env(key: str) -> bool:
+    return (_get_env_value(key) or "").strip().lower() in {"true", "1", "yes"}
+
+
+def _photon_sender_access_configured() -> bool:
+    if _truthy_env("PHOTON_ALLOW_ALL_USERS") or _truthy_env("GATEWAY_ALLOW_ALL_USERS"):
+        return True
+    allowed = photon_auth.load_allowed_phone_numbers()
+    return bool(allowed)
+
+
+def _photon_sender_access_status() -> str:
+    if _truthy_env("PHOTON_ALLOW_ALL_USERS"):
+        return "open (PHOTON_ALLOW_ALL_USERS=true)"
+    if _truthy_env("GATEWAY_ALLOW_ALL_USERS"):
+        return "open (GATEWAY_ALLOW_ALL_USERS=true)"
+    allowed = photon_auth.load_allowed_phone_numbers()
+    if "*" in allowed:
+        return "open (PHOTON_ALLOWED_USERS=*)"
+    if allowed:
+        return f"{len(allowed)} configured"
+    return "✗ none (unknown senders will request pairing)"
+
+
 def _save_public_webhook_url(url: str) -> bool:
     try:
         from hermes_cli.config import save_env_value  # type: ignore
@@ -1085,9 +1278,9 @@ def _format_tunnel_status(state: dict[str, Any]) -> str:
 
 
 def _next_status_step(sidecar_status: str, tunnel_state: dict[str, Any]) -> str:
-    if not photon_auth.load_photon_token():
-        return "hermes photon login"
     project_id, project_secret = photon_auth.load_project_credentials()
+    if not photon_auth.load_photon_token() and not (project_id and project_secret):
+        return "hermes photon login"
     if not (project_id and project_secret):
         return f"hermes photon quick-setup --phone {_PHONE_ARG_PLACEHOLDER}"
     if sidecar_status.startswith("✗"):
@@ -1097,6 +1290,8 @@ def _next_status_step(sidecar_status: str, tunnel_state: dict[str, Any]) -> str:
         return "hermes photon webhook tunnel start"
     if photon_tunnel.is_trycloudflare_url(public_url) and not tunnel_state.get("running"):
         return "hermes photon webhook tunnel start"
+    if not _photon_sender_access_configured():
+        return f"hermes photon allow-phone {_PHONE_ARG_PLACEHOLDER}"
     return "hermes gateway run -v  (or `hermes gateway restart` if already running)"
 
 

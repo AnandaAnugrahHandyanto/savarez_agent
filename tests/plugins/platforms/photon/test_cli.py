@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from plugins.platforms.photon import adapter as photon_adapter
 from plugins.platforms.photon import cli as photon_cli
 from plugins.platforms.photon import auth as photon_auth
@@ -19,6 +21,12 @@ class _Proc:
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
+
+
+@pytest.fixture(autouse=True)
+def _clear_photon_gateway_auth_env(monkeypatch: Any) -> None:
+    monkeypatch.delenv("PHOTON_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("PHOTON_ALLOW_ALL_USERS", raising=False)
 
 
 def _setup_args(**overrides: Any) -> argparse.Namespace:
@@ -56,6 +64,10 @@ def test_register_cli_parses_quick_setup_and_tunnel_commands() -> None:
     quick = parser.parse_args(["quick-setup", "--phone", "+1234567"])
     assert quick.photon_command == "quick-setup"
     assert quick.phone == "+1234567"
+
+    allow = parser.parse_args(["allow-phone", "+1234567"])
+    assert allow.photon_command == "allow-phone"
+    assert allow.phone == "+1234567"
 
     login = parser.parse_args(["login", "--debug-auth"])
     assert login.photon_command == "login"
@@ -116,6 +128,48 @@ def test_setup_adopts_single_named_remote_project(monkeypatch: Any) -> None:
     assert stored["project_id"] == "spectrum-1"
     assert stored["project_secret"] == "secret-1"
     assert stored["extra"]["dashboard_project_id"] == "dash-1"
+    assert stored["extra"]["source"] == "remote-adopted"
+
+
+def test_setup_fetches_details_before_adopting_remote_project(
+    monkeypatch: Any,
+) -> None:
+    _patch_setup_basics(monkeypatch)
+    stored: dict[str, Any] = {}
+    monkeypatch.setattr(photon_auth, "load_project_credentials", lambda: (None, None))
+    monkeypatch.setattr(photon_auth, "list_projects", lambda _token: [{
+        "id": "dash-1",
+        "name": "Hermes Agent",
+        "spectrum": True,
+        "platforms": ["imessage"],
+        "spectrumProjectId": "spectrum-1",
+    }])
+    monkeypatch.setattr(photon_auth, "get_project", lambda _token, _project_id: {
+        "id": "dash-1",
+        "name": "Hermes Agent",
+        "spectrum": True,
+        "platforms": ["imessage"],
+        "spectrumProjectId": "spectrum-1",
+        "projectSecret": "secret-1",
+    })
+    monkeypatch.setattr(
+        photon_auth,
+        "create_project",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("created")),
+    )
+
+    def fake_store(project_id: str, project_secret: str, **extra: Any) -> None:
+        stored["project_id"] = project_id
+        stored["project_secret"] = project_secret
+        stored["extra"] = extra
+
+    monkeypatch.setattr(photon_auth, "store_project_credentials", fake_store)
+
+    rc = photon_cli._cmd_setup(_setup_args())
+
+    assert rc == 0
+    assert stored["project_id"] == "spectrum-1"
+    assert stored["project_secret"] == "secret-1"
     assert stored["extra"]["source"] == "remote-adopted"
 
 
@@ -222,10 +276,106 @@ def test_quick_setup_auto_creates_when_no_remote_project(monkeypatch: Any) -> No
     assert rc == 0
     assert stored["project_id"] == "spectrum-quick"
     assert stored["extra"]["source"] == "auto-new"
+    assert photon_auth.load_allowed_phone_numbers() == ["+1234567"]
+
+
+def test_quick_setup_fetches_created_project_credentials(monkeypatch: Any) -> None:
+    _patch_setup_basics(monkeypatch)
+    stored: dict[str, Any] = {}
+    monkeypatch.setattr(photon_auth, "load_project_credentials", lambda: (None, None))
+    monkeypatch.setattr(photon_auth, "list_projects", lambda _token: [])
+    monkeypatch.setattr(photon_auth, "create_project", lambda _token, *, name: {
+        "id": "dash-new",
+        "name": name,
+        "spectrum": True,
+        "platforms": ["imessage"],
+    })
+    monkeypatch.setattr(photon_auth, "get_project", lambda _token, _project_id: {
+        "id": "dash-new",
+        "name": "Hermes Agent",
+        "spectrum": True,
+        "platforms": ["imessage"],
+        "spectrumProjectId": "spectrum-new",
+        "projectSecret": "secret-new",
+    })
+    monkeypatch.setattr(
+        photon_auth,
+        "regenerate_project_secret",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("regenerated")
+        ),
+    )
+    monkeypatch.setattr(photon_auth, "create_user", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(photon_cli, "_start_managed_tunnel_and_register", lambda: 0)
+
+    def fake_store(project_id: str, project_secret: str, **extra: Any) -> None:
+        stored["project_id"] = project_id
+        stored["project_secret"] = project_secret
+        stored["extra"] = extra
+
+    monkeypatch.setattr(photon_auth, "store_project_credentials", fake_store)
+
+    rc = photon_cli._cmd_quick_setup(_setup_args(phone="+1234567"))
+
+    assert rc == 0
+    assert stored["project_id"] == "spectrum-new"
+    assert stored["project_secret"] == "secret-new"
+    assert stored["extra"]["dashboard_project_id"] == "dash-new"
+
+
+def test_quick_setup_regenerates_secret_for_new_project(
+    monkeypatch: Any,
+) -> None:
+    _patch_setup_basics(monkeypatch)
+    stored: dict[str, Any] = {}
+    regenerated: list[str] = []
+    monkeypatch.setattr(photon_auth, "load_project_credentials", lambda: (None, None))
+    monkeypatch.setattr(photon_auth, "list_projects", lambda _token: [])
+    monkeypatch.setattr(photon_auth, "create_project", lambda _token, *, name: {
+        "id": "dash-new",
+        "name": name,
+        "spectrum": True,
+        "platforms": ["imessage"],
+    })
+    monkeypatch.setattr(photon_auth, "get_project", lambda _token, _project_id: {
+        "id": "dash-new",
+        "name": "Hermes Agent",
+        "spectrum": True,
+        "platforms": ["imessage"],
+        "spectrumProjectId": "spectrum-new",
+    })
+
+    def fake_regenerate(_token: str, project_id: str) -> dict[str, str]:
+        regenerated.append(project_id)
+        return {"projectSecret": "secret-new"}
+
+    monkeypatch.setattr(photon_auth, "regenerate_project_secret", fake_regenerate)
+    monkeypatch.setattr(photon_auth, "create_user", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(photon_cli, "_start_managed_tunnel_and_register", lambda: 0)
+
+    def fake_store(project_id: str, project_secret: str, **extra: Any) -> None:
+        stored["project_id"] = project_id
+        stored["project_secret"] = project_secret
+        stored["extra"] = extra
+
+    monkeypatch.setattr(photon_auth, "store_project_credentials", fake_store)
+
+    rc = photon_cli._cmd_quick_setup(_setup_args(phone="+1234567"))
+
+    assert rc == 0
+    assert regenerated == ["dash-new"]
+    assert stored["project_id"] == "spectrum-new"
+    assert stored["project_secret"] == "secret-new"
+    assert stored["extra"]["dashboard_project_id"] == "dash-new"
 
 
 def test_quick_setup_requires_login_first(monkeypatch: Any, capsys: Any) -> None:
     monkeypatch.setattr(photon_auth, "load_photon_token", lambda: None)
+    monkeypatch.setattr(
+        photon_auth,
+        "load_project_credentials",
+        lambda: (None, None),
+    )
     monkeypatch.setattr(
         photon_cli,
         "_run_base_setup",
@@ -238,6 +388,45 @@ def test_quick_setup_requires_login_first(monkeypatch: Any, capsys: Any) -> None
     assert rc == 1
     assert "hermes photon login" in out
     assert "hermes photon quick-setup --phone '+<country-code><number>'" in out
+
+
+def test_quick_setup_reuses_project_credentials_without_login(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(photon_auth, "load_photon_token", lambda: None)
+    monkeypatch.setattr(
+        photon_auth,
+        "load_project_credentials",
+        lambda: ("spectrum-local", "secret-local"),
+    )
+    monkeypatch.setattr(photon_auth, "setup_lock", lambda: nullcontext())
+    monkeypatch.setattr(
+        photon_auth,
+        "list_projects",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("listed")),
+    )
+    monkeypatch.setattr(
+        photon_auth,
+        "create_project",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("created")),
+    )
+    monkeypatch.setattr(photon_auth, "create_user", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(photon_cli, "_start_managed_tunnel_and_register", lambda: 0)
+
+    rc = photon_cli._cmd_quick_setup(_setup_args(phone="+1234567"))
+
+    assert rc == 0
+    assert photon_auth.load_allowed_phone_numbers() == ["+1234567"]
+
+
+def test_allow_phone_command_writes_photon_allowlist(capsys: Any) -> None:
+    rc = photon_cli._cmd_allow_phone(argparse.Namespace(phone="+15551234567"))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert photon_auth.load_allowed_phone_numbers() == ["+15551234567"]
+    assert "phone authorized" in captured.out
+    assert "hermes gateway restart" in captured.out
 
 
 def test_setup_new_project_flag_creates_and_stores(monkeypatch: Any) -> None:
@@ -355,6 +544,44 @@ def test_projects_select_stores_existing_project(monkeypatch: Any) -> None:
 
     assert rc == 0
     assert stored["project_id"] == "spectrum-1"
+    assert stored["extra"]["source"] == "manual-select"
+
+
+def test_projects_select_fetches_missing_project_secret(monkeypatch: Any) -> None:
+    stored: dict[str, Any] = {}
+    monkeypatch.setattr(photon_auth, "load_photon_token", lambda: "token")
+    monkeypatch.setattr(photon_auth, "list_projects", lambda _token: [{
+        "id": "dash-1",
+        "name": "Hermes Agent",
+        "spectrum": True,
+        "platforms": ["imessage"],
+        "spectrumProjectId": "spectrum-1",
+    }])
+    monkeypatch.setattr(photon_auth, "get_project", lambda _token, _project_id: {
+        "id": "dash-1",
+        "name": "Hermes Agent",
+        "spectrum": True,
+        "platforms": ["imessage"],
+        "spectrumProjectId": "spectrum-1",
+        "projectSecret": "secret-1",
+    })
+
+    def fake_store(project_id: str, project_secret: str, **extra: Any) -> None:
+        stored["project_id"] = project_id
+        stored["project_secret"] = project_secret
+        stored["extra"] = extra
+
+    monkeypatch.setattr(photon_auth, "store_project_credentials", fake_store)
+    args = argparse.Namespace(
+        photon_projects_command="select",
+        project_id="dash-1",
+    )
+
+    rc = photon_cli._cmd_projects(args)
+
+    assert rc == 0
+    assert stored["project_id"] == "spectrum-1"
+    assert stored["project_secret"] == "secret-1"
     assert stored["extra"]["source"] == "manual-select"
 
 
@@ -569,6 +796,8 @@ def test_managed_tunnel_missing_cloudflared_is_actionable(
 def test_status_next_step_selection(monkeypatch: Any) -> None:
     env: dict[str, str] = {}
     monkeypatch.setattr(photon_cli, "_get_env_value", lambda key: env.get(key))
+    allowed: list[str] = []
+    monkeypatch.setattr(photon_auth, "load_allowed_phone_numbers", lambda: allowed)
     monkeypatch.setattr(photon_auth, "load_photon_token", lambda: None)
     monkeypatch.setattr(photon_auth, "load_project_credentials", lambda: (None, None))
     assert photon_cli._next_status_step("✓ installed", {}) == "hermes photon login"
@@ -585,6 +814,13 @@ def test_status_next_step_selection(monkeypatch: Any) -> None:
         == "hermes photon install-sidecar"
     )
 
+    monkeypatch.setattr(photon_auth, "load_photon_token", lambda: None)
+    assert (
+        photon_cli._next_status_step("✗ run `hermes photon install-sidecar`", {})
+        == "hermes photon install-sidecar"
+    )
+    monkeypatch.setattr(photon_auth, "load_photon_token", lambda: "token")
+
     assert photon_cli._next_status_step("✓ installed", {}) == "hermes photon webhook tunnel start"
 
     env["PHOTON_WEBHOOK_SECRET"] = "secret"
@@ -595,6 +831,12 @@ def test_status_next_step_selection(monkeypatch: Any) -> None:
     )
 
     env["PHOTON_WEBHOOK_PUBLIC_URL"] = "https://example.com/photon/webhook"
+    assert (
+        photon_cli._next_status_step("✓ installed", {})
+        == "hermes photon allow-phone '+<country-code><number>'"
+    )
+
+    allowed.append("+15551234567")
     assert "hermes gateway run -v" in photon_cli._next_status_step("✓ installed", {})
 
 
@@ -617,6 +859,12 @@ def test_adapter_registers_gateway_setup_fn() -> None:
 def test_interactive_setup_prints_incomplete_guidance(
     monkeypatch: Any, capsys: Any,
 ) -> None:
+    monkeypatch.setattr(photon_auth, "load_photon_token", lambda: "token")
+    monkeypatch.setattr(
+        photon_auth,
+        "load_project_credentials",
+        lambda: (None, None),
+    )
     monkeypatch.setattr(photon_cli, "_cmd_quick_setup", lambda _args: 1)
 
     photon_cli.interactive_setup()

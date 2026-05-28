@@ -75,9 +75,17 @@ The wizard:
    named `Hermes Agent`, or creates one when none exists
 3. Calls the Spectrum `create-user` endpoint with `type: shared` so
    Photon allocates an iMessage line from the free pool
-4. Runs `npm install` inside the plugin's sidecar directory
-5. Starts a local Cloudflare Quick Tunnel and registers the public
+4. Adds the same `--phone` value to `PHOTON_ALLOWED_USERS` as the
+   initial Hermes/Photon operator
+5. Runs `npm install` inside the plugin's sidecar directory
+6. Starts a local Cloudflare Quick Tunnel and registers the public
    `trycloudflare.com` webhook URL with Photon
+
+Important: quick setup does not start the Hermes gateway. It prepares
+Photon, the tunnel, and the local credentials, but iMessage replies only
+work while `hermes gateway run -v` is running in a terminal or the
+gateway service is installed and started. If you used a custom
+`HERMES_HOME`, export the same value before starting the gateway.
 
 `hermes setup gateway` runs the same guided Photon setup when you choose
 Photon. Running setup again is safe: Hermes will not silently duplicate
@@ -87,6 +95,9 @@ replacement project, run `hermes photon setup --new-project --phone
 '+<country-code><number>'`. To bind Hermes to an existing project, use
 `hermes photon projects list` and `hermes photon projects select
 <project-id>`.
+
+To let another phone control Hermes later, run
+`hermes photon allow-phone '+<country-code><number>'`.
 
 Photon secrets are written to `~/.hermes/.env`. The dashboard token is
 stored as `PHOTON_DASHBOARD_TOKEN`; the Spectrum project credentials
@@ -175,6 +186,7 @@ hermes photon projects list
 hermes photon projects select <dashboard-or-spectrum-project-id>
 hermes photon setup --phone '+<country-code><number>'
 hermes photon setup --new-project --phone '+<country-code><number>'
+hermes photon allow-phone '+<country-code><number>'
 hermes photon install-sidecar
 
 # Webhooks.
@@ -279,7 +291,7 @@ hermes photon webhook delete <webhook-id>   # remove one
 | `PHOTON_SIDECAR_AUTOSTART`| `true`             | Whether the adapter spawns the sidecar     |
 | `PHOTON_NODE_BIN`         | `which node`       | Override the Node binary path              |
 | `PHOTON_HOME_CHANNEL`     | (unset)            | Default space ID for cron / notifications  |
-| `PHOTON_ALLOWED_USERS`    | (unset)            | Comma-separated E.164 allowlist            |
+| `PHOTON_ALLOWED_USERS`    | (unset)            | Comma-separated E.164 allowlist; setup seeds `--phone` |
 | `PHOTON_ALLOW_ALL_USERS`  | `false`            | Dev only — accept any sender               |
 
 [photon]: https://photon.codes/

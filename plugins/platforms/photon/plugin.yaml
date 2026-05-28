@@ -73,7 +73,7 @@ optional_env:
     prompt: "Dashboard host"
     password: false
   - name: PHOTON_ALLOWED_USERS
-    description: "Comma-separated E.164 phone numbers allowed to talk to the bot"
+    description: "Comma-separated E.164 phone numbers allowed to talk to the bot; setup seeds --phone"
     prompt: "Allowed users (comma-separated)"
     password: false
   - name: PHOTON_ALLOW_ALL_USERS

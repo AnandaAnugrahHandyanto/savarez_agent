@@ -72,11 +72,18 @@ then adopts a matching Photon dashboard project named `Hermes Agent` if
 one exists, creates one if none exists, and stops if multiple matching
 projects require an explicit selection.
 
+After Spectrum user creation succeeds, setup also authorizes the same
+`--phone` value as the initial Photon sender for this Hermes gateway.
+That writes the E.164 number to `PHOTON_ALLOWED_USERS`, so the first
+iMessage from that phone goes to the agent instead of the generic DM
+pairing flow. To grant another phone access later, run
+`hermes photon allow-phone '+<country-code><number>'`.
+
 After login, quick setup performs the same work as:
 
 ```bash
 # 1. Reuse/adopt/create the Photon project, create the shared user,
-#    and install the sidecar dependencies.
+#    authorize that phone for Hermes, and install the sidecar dependencies.
 hermes photon setup --phone '+<country-code><number>'
 
 # 2. Start the managed local webhook tunnel and register it with Photon.
@@ -88,6 +95,13 @@ hermes photon status
 # 4. Start the gateway in foreground QA mode.
 hermes gateway run -v
 ```
+
+Important: `quick-setup` does not start the Hermes gateway. It creates
+or adopts Photon resources, starts/registers the webhook tunnel, and
+writes credentials, but iMessage replies only work while
+`hermes gateway run -v` is running in a terminal or the gateway service
+is installed and started. If you used a custom `HERMES_HOME`, export the
+same value before starting the gateway.
 
 If the gateway was already running when the webhook was registered,
 restart it so the adapter loads `PHOTON_WEBHOOK_SECRET`:
@@ -171,6 +185,7 @@ hermes photon login
 hermes photon quick-setup --phone '+<country-code><number>'
 hermes photon setup --phone '+<country-code><number>'
 hermes photon setup --new-project --phone '+<country-code><number>'
+hermes photon allow-phone '+<country-code><number>'
 hermes photon projects list
 hermes photon projects select <dashboard-or-spectrum-project-id>
 hermes photon install-sidecar
@@ -223,7 +238,7 @@ All env vars are documented in `plugin.yaml`. The most important are:
 | `PHOTON_WEBHOOK_PATH`    | /photon/webhook    | Path under which the listener mounts    |
 | `PHOTON_SIDECAR_PORT`    | 8789               | Loopback port for sidecar control      |
 | `PHOTON_HOME_CHANNEL`    | (unset)            | Default space ID for cron delivery     |
-| `PHOTON_ALLOWED_USERS`   | (unset)            | Comma-separated E.164 allowlist        |
+| `PHOTON_ALLOWED_USERS`   | (unset)            | Comma-separated E.164 allowlist; setup seeds `--phone` |
 
 ## Limitations (current Photon API)
 
