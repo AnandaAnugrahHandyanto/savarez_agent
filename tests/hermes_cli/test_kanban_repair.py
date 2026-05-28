@@ -178,3 +178,119 @@ def test_kanban_repair_apply_removes_malformed_projection_rows(kanban_home, caps
     assert [(row["task_id"], row["platform"], row["chat_id"], row["thread_id"]) for row in rows] == [
         (live, "discord", "forum-1", "thread-live")
     ]
+
+
+def _write_discord_projection_config(home: Path) -> None:
+    board_dir = home / "kanban" / "boards" / "default"
+    board_dir.mkdir(parents=True, exist_ok=True)
+    (board_dir / "discord-forum-tags.json").write_text(
+        json.dumps(
+            {
+                "forum_channel_id": "forum-1",
+                "status_to_tag": {
+                    "ready": "ready-tag",
+                    "blocked": "blocked-tag",
+                    "running": "running-tag",
+                    "done": "done-tag",
+                },
+                "assignee_to_tag": {
+                    "default": "hermes-tag",
+                    "hermes": "hermes-tag",
+                    "daedalus": "daedalus-tag",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_kanban_repair_discord_audit_reports_thread_tag_and_title_mismatches(
+    kanban_home, monkeypatch, capsys
+):
+    """Dry-run Discord audit should compare projected thread state to Kanban truth."""
+    _write_discord_projection_config(kanban_home)
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="Canonical task title",
+            assignee="hermes",
+            initial_status="blocked",
+        )
+        _insert_notify_sub(conn, task_id=task_id, chat_id="forum-1", thread_id="thread-live")
+
+    def fake_fetch_thread(thread_id: str) -> dict:
+        assert thread_id == "thread-live"
+        return {
+            "id": "thread-live",
+            "name": "● [running] Stale task title",
+            "applied_tags": ["running-tag", "daedalus-tag"],
+        }
+
+    monkeypatch.setattr(kanban_cli, "_fetch_discord_thread_snapshot", fake_fetch_thread, raising=False)
+
+    rc = _run_cli("repair", "--audit-discord", "--json")
+
+    assert rc == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["dry_run"] is True
+    discord = report["discord_projection"]
+    assert discord["scanned"] == 1
+    assert discord["mismatched"] == 1
+    assert discord["missing"] == 0
+    assert discord["mismatches"] == [
+        {
+            "task_id": task_id,
+            "thread_id": "thread-live",
+            "chat_id": "forum-1",
+            "expected": {
+                "name": "🛑 [blocked] Canonical task title",
+                "tags": ["blocked-tag", "hermes-tag"],
+            },
+            "actual": {
+                "name": "● [running] Stale task title",
+                "tags": ["running-tag", "daedalus-tag"],
+            },
+            "missing_tags": ["blocked-tag", "hermes-tag"],
+            "unexpected_tags": ["running-tag", "daedalus-tag"],
+        }
+    ]
+
+
+def test_kanban_repair_discord_audit_reports_missing_threads_without_mutating(
+    kanban_home, monkeypatch, capsys
+):
+    """A vanished Discord thread should be reported, not silently treated as repaired."""
+    _write_discord_projection_config(kanban_home)
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="Gone thread", assignee="hermes")
+        _insert_notify_sub(conn, task_id=task_id, chat_id="forum-1", thread_id="thread-gone")
+
+    def fake_fetch_thread(thread_id: str) -> dict | None:
+        assert thread_id == "thread-gone"
+        return None
+
+    monkeypatch.setattr(kanban_cli, "_fetch_discord_thread_snapshot", fake_fetch_thread, raising=False)
+
+    rc = _run_cli("repair", "--audit-discord", "--json")
+
+    assert rc == 0
+    report = json.loads(capsys.readouterr().out)
+    discord = report["discord_projection"]
+    assert discord["scanned"] == 1
+    assert discord["mismatched"] == 0
+    assert discord["missing"] == 1
+    assert discord["missing_threads"] == [
+        {
+            "task_id": task_id,
+            "thread_id": "thread-gone",
+            "chat_id": "forum-1",
+            "expected": {
+                "name": "▶ [ready] Gone thread",
+                "tags": ["ready-tag", "hermes-tag"],
+            },
+        }
+    ]
+
+    with kb.connect() as conn:
+        rows = kb.list_notify_subs(conn)
+    assert [(row["task_id"], row["thread_id"]) for row in rows] == [(task_id, "thread-gone")]

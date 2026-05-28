@@ -21,6 +21,8 @@ import os
 import shlex
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
@@ -719,6 +721,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Apply safe repairs instead of reporting only",
     )
     p_repair.add_argument("--json", action="store_true")
+    p_repair.add_argument(
+        "--audit-discord",
+        action="store_true",
+        help="Dry-run audit of Discord forum thread names/tags against Kanban task state",
+    )
 
     # --- log ---
     p_log = sub.add_parser(
@@ -2479,6 +2486,164 @@ def _cmd_notify_unsubscribe(args: argparse.Namespace) -> int:
     return 0
 
 
+_DISCORD_PROJECTION_STATUS_ICONS = {
+    "triage": "◇",
+    "todo": "◻",
+    "ready": "▶",
+    "running": "●",
+    "scheduled": "⏱",
+    "blocked": "🛑",
+    "review": "◆",
+    "done": "✅",
+    "archived": "—",
+}
+
+
+def _discord_projection_config_path() -> Path:
+    return kb.board_dir(kb.get_current_board()) / "discord-forum-tags.json"
+
+
+def _load_discord_projection_config() -> dict[str, Any]:
+    path = _discord_projection_config_path()
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"error": f"invalid_json:{path}"}
+    return data if isinstance(data, dict) else {}
+
+
+def _expected_discord_projection(task: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    status = str(task.get("status") or "")
+    assignee = str(task.get("assignee") or "").strip()
+    title = str(task.get("title") or "").strip()
+    icon = _DISCORD_PROJECTION_STATUS_ICONS.get(status, _STATUS_ICONS.get(status, "?"))
+    raw_status_to_tag = config.get("status_to_tag")
+    raw_assignee_to_tag = config.get("assignee_to_tag")
+    status_to_tag: dict[str, Any] = raw_status_to_tag if isinstance(raw_status_to_tag, dict) else {}
+    assignee_to_tag: dict[str, Any] = raw_assignee_to_tag if isinstance(raw_assignee_to_tag, dict) else {}
+    tags: list[str] = []
+    status_tag = status_to_tag.get(status)
+    if status_tag:
+        tags.append(str(status_tag))
+    assignee_tag = assignee_to_tag.get(assignee) or assignee_to_tag.get("default")
+    if assignee_tag:
+        tags.append(str(assignee_tag))
+    return {"name": f"{icon} [{status}] {title}", "tags": tags}
+
+
+def _fetch_discord_thread_snapshot(thread_id: str) -> dict[str, Any] | None:
+    """Fetch a Discord thread via REST for projection audits.
+
+    Only a tiny, non-secret snapshot is returned. A 404 means the projected
+    thread is missing; other API failures are surfaced as redacted errors.
+    """
+    token = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
+    if not token:
+        return {"id": thread_id, "error": "DISCORD_BOT_TOKEN not configured"}
+    req = urllib.request.Request(
+        f"https://discord.com/api/v10/channels/{thread_id}",
+        headers={
+            "Authorization": f"Bot {token}",
+            "User-Agent": "DiscordBot (hermes-agent, 0.14.0)",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.load(resp)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        return {"id": thread_id, "error": f"discord_http_{exc.code}"}
+    except Exception as exc:
+        return {"id": thread_id, "error": f"discord_fetch_failed:{type(exc).__name__}"}
+    return {
+        "id": str(data.get("id") or thread_id),
+        "name": str(data.get("name") or ""),
+        "applied_tags": [str(tag) for tag in data.get("applied_tags", [])],
+    }
+
+
+def _audit_discord_projection(conn) -> dict[str, Any]:
+    config = _load_discord_projection_config()
+    if config.get("error"):
+        return {
+            "scanned": 0,
+            "mismatched": 0,
+            "missing": 0,
+            "mismatches": [],
+            "missing_threads": [],
+            "errors": [config["error"]],
+        }
+    rows = conn.execute(
+        """
+        SELECT s.task_id, s.chat_id, s.thread_id,
+               t.title, t.assignee, t.status
+          FROM kanban_notify_subs AS s
+          JOIN tasks AS t ON t.id = s.task_id
+         WHERE s.platform = 'discord'
+           AND COALESCE(s.chat_id, '') != ''
+           AND COALESCE(s.thread_id, '') != ''
+         ORDER BY s.task_id, s.chat_id, s.thread_id
+        """
+    ).fetchall()
+    mismatches: list[dict[str, Any]] = []
+    missing_threads: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    for row in rows:
+        expected = _expected_discord_projection(
+            {"title": row["title"], "assignee": row["assignee"], "status": row["status"]},
+            config,
+        )
+        thread_id = str(row["thread_id"] or "")
+        chat_id = str(row["chat_id"] or "")
+        snapshot = _fetch_discord_thread_snapshot(thread_id)
+        if snapshot is None:
+            missing_threads.append({
+                "task_id": str(row["task_id"]),
+                "thread_id": thread_id,
+                "chat_id": chat_id,
+                "expected": expected,
+            })
+            continue
+        if snapshot.get("error"):
+            errors.append({
+                "task_id": str(row["task_id"]),
+                "thread_id": thread_id,
+                "error": str(snapshot["error"]),
+            })
+            continue
+        actual = {
+            "name": str(snapshot.get("name") or ""),
+            "tags": [str(tag) for tag in snapshot.get("applied_tags", [])],
+        }
+        expected_tags = list(expected["tags"])
+        actual_tags = list(actual["tags"])
+        missing_tags = [tag for tag in expected_tags if tag not in actual_tags]
+        unexpected_tags = [tag for tag in actual_tags if tag not in expected_tags]
+        if actual["name"] != expected["name"] or missing_tags or unexpected_tags:
+            mismatches.append({
+                "task_id": str(row["task_id"]),
+                "thread_id": thread_id,
+                "chat_id": chat_id,
+                "expected": expected,
+                "actual": actual,
+                "missing_tags": missing_tags,
+                "unexpected_tags": unexpected_tags,
+            })
+    return {
+        "scanned": len(rows),
+        "mismatched": len(mismatches),
+        "missing": len(missing_threads),
+        "mismatches": mismatches,
+        "missing_threads": missing_threads,
+        "errors": errors,
+    }
+
+
 def _cmd_repair(args: argparse.Namespace) -> int:
     apply_changes = bool(getattr(args, "apply", False))
     with kb.connect_closing() as conn:
@@ -2486,10 +2651,13 @@ def _cmd_repair(args: argparse.Namespace) -> int:
             conn,
             apply=apply_changes,
         )
+        discord_report = _audit_discord_projection(conn) if getattr(args, "audit_discord", False) else None
     report = {
         "dry_run": not apply_changes,
         "projection_subscriptions": projection_report,
     }
+    if discord_report is not None:
+        report["discord_projection"] = discord_report
     if getattr(args, "json", False):
         print(json.dumps(report, indent=2, ensure_ascii=False))
         return 0
@@ -2524,6 +2692,24 @@ def _cmd_repair(args: argparse.Namespace) -> int:
             f"{binding['platform']}:{binding['chat_id']}:{binding['thread_id']} "
             f"-> {task_ids}"
         )
+    if discord_report is not None:
+        print(
+            "  discord_projection: "
+            f"scanned={discord_report['scanned']} "
+            f"mismatched={discord_report['mismatched']} "
+            f"missing={discord_report['missing']} "
+            f"errors={len(discord_report['errors'])}"
+        )
+        for mismatch in discord_report["mismatches"]:
+            print(
+                "    mismatch "
+                f"{mismatch['task_id']} -> discord:{mismatch['chat_id']}:{mismatch['thread_id']}"
+            )
+        for missing in discord_report["missing_threads"]:
+            print(
+                "    missing_thread "
+                f"{missing['task_id']} -> discord:{missing['chat_id']}:{missing['thread_id']}"
+            )
     return 0
 
 
