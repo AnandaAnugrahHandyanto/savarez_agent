@@ -1967,6 +1967,41 @@ class TestReactions:
         adapter._app.client.reactions_remove.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_reactions_skipped_for_listed_user(self, adapter, monkeypatch):
+        """SLACK_REACTIONS_SKIP_USERS should suppress reactions on listed posters."""
+        monkeypatch.setenv("SLACK_REACTIONS_SKIP_USERS", "U_FORWARDER,U_OTHER")
+        monkeypatch.setenv("SLACK_ALLOW_BOTS", "all")
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Forwarder Bot"}}
+        })
+
+        event = {
+            "text": "escalation",
+            "user": "U_FORWARDER",
+            "channel": "C123",
+            "channel_type": "im",
+            "ts": "1234567890.000005",
+        }
+        await adapter._handle_slack_message(event)
+
+        # Should NOT register for reactions when poster is in the skip list
+        assert "1234567890.000005" not in adapter._reacting_message_ids
+        adapter._app.client.reactions_add.assert_not_called()
+
+        # Other users in the same DM still get reactions
+        event2 = {
+            "text": "hello",
+            "user": "U_HUMAN",
+            "channel": "C123",
+            "channel_type": "im",
+            "ts": "1234567890.000006",
+        }
+        await adapter._handle_slack_message(event2)
+        assert "1234567890.000006" in adapter._reacting_message_ids
+
+    @pytest.mark.asyncio
     async def test_reactions_enabled_by_default(self, adapter):
         """SLACK_REACTIONS defaults to true (matches existing behavior)."""
         assert adapter._reactions_enabled() is True

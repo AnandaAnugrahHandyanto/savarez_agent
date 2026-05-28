@@ -1323,6 +1323,25 @@ class SlackAdapter(BasePlatformAdapter):
         """Check if message reactions are enabled via config/env."""
         return os.getenv("SLACK_REACTIONS", "true").lower() not in {"false", "0", "no"}
 
+    def _reactions_skip_user_ids(self) -> set:
+        """Slack user IDs whose messages should not receive bot reactions.
+
+        Configured via the comma-separated ``SLACK_REACTIONS_SKIP_USERS`` env
+        var or the ``reactions_skip_users`` adapter config key. Intended for
+        suppressing the :eyes:/:white_check_mark:/:x: reaction cycle on
+        messages posted by forwarder / escalation bots whose own triage
+        workflow relies on those emojis (e.g. the "Just a Chill Guy"
+        Need-Developers-Help bot used by Kaching CS).
+        """
+        raw = self.config.extra.get("reactions_skip_users", "")
+        if not raw:
+            raw = os.getenv("SLACK_REACTIONS_SKIP_USERS", "")
+        if not raw:
+            return set()
+        if isinstance(raw, (list, tuple, set)):
+            return {str(x).strip() for x in raw if str(x).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction when message processing begins."""
         if not self._reactions_enabled():
@@ -2231,7 +2250,17 @@ class SlackAdapter(BasePlatformAdapter):
         # Only react when bot is directly addressed (DM or @mention).
         # In listen-all channels (require_mention=false), reacting to every
         # casual message would be noisy.
-        _should_react = (is_dm or is_mentioned) and self._reactions_enabled()
+        # Also skip reactions when the message is posted by a Slack user/bot
+        # listed in ``SLACK_REACTIONS_SKIP_USERS`` — used to keep our reactions
+        # off forwarder/escalation bot messages whose own triage workflow owns
+        # the ✅/❌ markers.
+        _skip_user_ids = self._reactions_skip_user_ids()
+        _poster_id = event.get("user") or ""
+        _should_react = (
+            (is_dm or is_mentioned)
+            and self._reactions_enabled()
+            and _poster_id not in _skip_user_ids
+        )
         if _should_react:
             self._reacting_message_ids.add(ts)
 
