@@ -574,6 +574,8 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    profile_system_prompt: Optional[str] = None,
+    profile_constraints: Optional[str] = None,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -584,6 +586,7 @@ def _build_child_system_prompt(
     the LLM doesn't confabulate nesting capabilities that don't exist.
     """
     parts = [
+        profile_system_prompt.strip() if profile_system_prompt else
         "You are a focused subagent working on a specific delegated task.",
         "",
         f"YOUR TASK:\n{goal}",
@@ -596,6 +599,8 @@ def _build_child_system_prompt(
             f"{workspace_path}\n"
             "Use this exact path for local repository/workdir operations unless the task explicitly says otherwise."
         )
+    if profile_constraints and profile_constraints.strip():
+        parts.append(f"\nCONSTRAINTS:\n{profile_constraints.strip()}")
     parts.append(
         "\nComplete this task using the tools available to you. "
         "When finished, provide a clear, concise summary of:\n"
