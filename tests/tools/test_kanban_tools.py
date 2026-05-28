@@ -1329,16 +1329,13 @@ def test_worker_complete_rejects_stale_run_id(worker_env, monkeypatch):
     # detect_crashed_workers now gates each running task behind a
     # launch-window grace period (c002668ff) so a freshly-spawned worker
     # whose PID isn't yet visible on /proc isn't reclaimed. The fixture
-    # creates the task moments before this assertion, so the grace
-    # period (default 30s) would skip the liveness check. Zero it out
+    # rows below intentionally use impossible dead PIDs, so disable grace
     # for this test — we WANT immediate reclamation here.
     monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
-
     conn = kb.connect()
     try:
         run1 = kb.latest_run(conn, worker_env)
         kb._set_worker_pid(conn, worker_env, 98765)
-        monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
         monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
         assert kb.detect_crashed_workers(conn) == [worker_env]
 
