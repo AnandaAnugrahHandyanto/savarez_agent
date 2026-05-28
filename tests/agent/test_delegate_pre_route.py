@@ -81,6 +81,14 @@ class TestShouldDelegate:
         """'take a screenshot' should NOT pre-route — doesn't start with 'screenshot'."""
         assert self._call("take a screenshot of the current page") is False
 
+    def test_screenshot_plural_not_delegated(self):
+        """'screenshots work...' should NOT pre-route — trailing space required (F3 fix)."""
+        assert self._call("screenshots work better than text descriptions") is False
+
+    def test_screenshot_question_not_delegated(self):
+        """'screenshots are broken...' should NOT pre-route — 'screenshot' must be followed by space."""
+        assert self._call("screenshots are broken in hermes, how do I debug?") is False
+
     def test_search_the_web(self):
         assert self._call("search the web for recent news") is True
 

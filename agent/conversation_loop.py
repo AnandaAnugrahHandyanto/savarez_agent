@@ -294,7 +294,7 @@ def _should_delegate_to_claude_code(user_message: Any) -> bool:
     # "please do NOT screenshot this" and similar negation constructs don't
     # accidentally trigger the pre-route.
     tool_prefixes = (
-        "browse to ", "screenshot", "search the web", "web search: ",
+        "browse to ", "screenshot ", "search the web", "web search: ",
         "run command", "run this command", "shell command",
         "use playwright", "open browser", "inspect this page",
     )
@@ -469,8 +469,10 @@ def run_conversation(
                 pass
         try:
             from tools.claude_code_delegate_tool import delegate_to_claude_code
-            # Count this as a user turn before early-returning so that
-            # memory-nudge counters accumulate correctly for pre-routed turns.
+            # Count this turn only on the success path (import succeeded).
+            # If the import fails and we fall through to the normal loop, the
+            # normal loop's own increment at the top of run_conversation handles
+            # it — keeping the total at exactly 1 increment per turn.
             agent._user_turn_count = getattr(agent, "_user_turn_count", 0) + 1
             raw_delegate_result = delegate_to_claude_code({
                 "prompt": str(user_message),
