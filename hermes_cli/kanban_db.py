@@ -714,6 +714,67 @@ def list_boards(*, include_archived: bool = True) -> list[dict]:
     return entries
 
 
+def _normalize_dispatch_profile(profile: Optional[str]) -> str:
+    val = str(profile or "").strip()
+    return val or "default"
+
+
+def board_dispatch_skip_reason(meta: dict, active_profile: Optional[str]) -> Optional[str]:
+    """Return why ``active_profile`` must not dispatch ``meta``, or None.
+
+    Project boards are dispatchable only when ownership.dispatch_owner exactly
+    matches the active gateway profile. The legacy default board is the one
+    safe exception: if it has no explicit dispatch owner, only the default/admin
+    gateway may dispatch it so project coordinator gateways do not fight over
+    admin work.
+    """
+    profile = _normalize_dispatch_profile(active_profile)
+    slug = str(meta.get("slug") or DEFAULT_BOARD)
+    raw_ownership = meta.get("ownership")
+    ownership: dict[str, Any] = raw_ownership if isinstance(raw_ownership, dict) else {}
+    dispatch_owner = str(ownership.get("dispatch_owner") or "").strip()
+    if dispatch_owner:
+        if dispatch_owner == profile:
+            return None
+        return f"dispatch_owner={dispatch_owner!r} does not match active profile {profile!r}"
+    if slug == DEFAULT_BOARD:
+        if profile in {"default", "admin"}:
+            return None
+        return "legacy default board has no dispatch_owner and active profile is not default/admin"
+    return "missing ownership.dispatch_owner"
+
+
+def dispatchable_boards_for_profile(
+    active_profile: Optional[str],
+    *,
+    include_archived: bool = False,
+) -> list[dict]:
+    """Return boards this gateway profile is allowed to dispatch.
+
+    Notifier subscriptions are intentionally not considered here: this helper
+    is for dispatcher/auto-decomposer ownership only.
+    """
+    boards = list_boards(include_archived=include_archived)
+    return [
+        board for board in boards
+        if board_dispatch_skip_reason(board, active_profile) is None
+    ]
+
+
+def skipped_dispatch_boards_for_profile(
+    active_profile: Optional[str],
+    *,
+    include_archived: bool = False,
+) -> list[tuple[dict, str]]:
+    """Return ``(board, reason)`` pairs skipped by dispatcher ownership."""
+    skipped: list[tuple[dict, str]] = []
+    for board in list_boards(include_archived=include_archived):
+        reason = board_dispatch_skip_reason(board, active_profile)
+        if reason is not None:
+            skipped.append((board, reason))
+    return skipped
+
+
 def remove_board(slug: str, *, archive: bool = True) -> dict:
     """Remove or archive a board.
 
