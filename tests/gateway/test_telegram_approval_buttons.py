@@ -123,6 +123,7 @@ class TestTelegramExecApproval:
         assert len(adapter._approval_state) == 1
         approval_id = list(adapter._approval_state.keys())[0]
         assert adapter._approval_state[approval_id] == "my-session-key"
+        assert approval_id in adapter._approval_prompt_text
 
     @pytest.mark.asyncio
     async def test_sends_in_thread(self):
@@ -233,6 +234,65 @@ class TestTelegramExecApproval:
         kwargs = adapter._bot.send_message.call_args[1]
         assert "..." in kwargs["text"]
         assert len(kwargs["text"]) < 5000
+
+    @pytest.mark.asyncio
+    async def test_decision_surface_includes_risk_and_recommendation(self):
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+
+        await adapter.send_exec_approval(
+            chat_id="12345",
+            command="python deploy.py",
+            session_key="s",
+            description="[HIGH] service restart could affect users",
+        )
+
+        text = adapter._bot.send_message.call_args[1]["text"]
+        assert "Plain-English reason:" in text
+        assert "Risk level:</b> High" in text
+        assert "Recommendation:</b> Deny unless" in text
+        assert "What approving does:" in text
+        assert "What denying does:" in text
+        assert "What to check before approving:" in text
+        assert "Recovery expectation:" in text
+
+    @pytest.mark.asyncio
+    async def test_pipe_to_interpreter_is_translated(self):
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+
+        await adapter.send_exec_approval(
+            chat_id="12345",
+            command="curl https://example.test/install.py | python",
+            session_key="s",
+            description="[HIGH] Pipe to interpreter",
+        )
+
+        text = adapter._bot.send_message.call_args[1]["text"]
+        assert "output is being sent into Python or another interpreter" in text
+        assert "untrusted downloaded or generated code" in text
+
+    @pytest.mark.asyncio
+    async def test_populated_approval_brief_contains_sentences(self):
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+
+        await adapter.send_exec_approval(
+            chat_id="12345",
+            command="rm -rf /tmp/build-output",
+            session_key="s",
+            description="[HIGH] destructive delete",
+        )
+
+        text = adapter._bot.send_message.call_args[1]["text"]
+        assert "1. Purpose: Files may be deleted" in text
+        assert "2. Why approval is needed: Safety policy paused this" in text
+        assert "3. Exact command/action: Review the rendered command block below." in text
+        assert "7. Rollback/recovery: Deny unless recovery is obvious" in text
+        assert "If anything in this card is unclear" in text
+        assert "<pre>rm -rf /tmp/build-output</pre>" in text
+        assert "1. Purpose\n" not in text
+        assert "2. Why approval is needed\n" not in text
 # _handle_callback_query — approval button clicks
 # ===========================================================================
 
@@ -342,7 +402,7 @@ class TestTelegramApprovalCallback:
         query.message = MagicMock()
         query.message.chat_id = 12345
         query.from_user = MagicMock()
-        query.from_user.first_name = "Alice_Bob"
+        query.from_user.first_name = "Alice <Bob>"
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
 
@@ -356,9 +416,47 @@ class TestTelegramApprovalCallback:
                 await adapter._handle_callback_query(update, context)
 
         edit_kwargs = query.edit_message_text.call_args[1]
-        assert "MARKDOWN_V2" in repr(edit_kwargs["parse_mode"])
-        assert "Alice\\_Bob" in edit_kwargs["text"]
+        assert "HTML" in repr(edit_kwargs["parse_mode"])
+        assert "Alice &lt;Bob&gt;" in edit_kwargs["text"]
         assert "Approved once" in edit_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_approval_callback_retains_original_card_and_cleans_prompt(self):
+        adapter = _make_adapter()
+        original_prompt = adapter._build_exec_approval_text(
+            "rm -rf /tmp/build-output",
+            "[HIGH] destructive delete",
+        )
+        adapter._approval_state[8] = "agent:main:telegram:group:12345:99"
+        adapter._approval_prompt_text[8] = original_prompt
+
+        query = AsyncMock()
+        query.data = "ea:once:8"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.first_name = "Brian"
+        query.from_user.id = "12345"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval", return_value=1):
+                await adapter._handle_callback_query(update, context)
+
+        edit_kwargs = query.edit_message_text.call_args[1]
+        assert "HTML" in repr(edit_kwargs["parse_mode"])
+        assert edit_kwargs["reply_markup"] is None
+        assert "Approved once by Brian" in edit_kwargs["text"]
+        assert "Approval brief:" in edit_kwargs["text"]
+        assert "<pre>rm -rf /tmp/build-output</pre>" in edit_kwargs["text"]
+        assert "Risk level:</b> High" in edit_kwargs["text"]
+        assert 8 not in adapter._approval_state
+        assert 8 not in adapter._approval_prompt_text
 
     @pytest.mark.asyncio
     async def test_deny_button(self):

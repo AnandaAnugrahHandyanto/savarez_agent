@@ -472,6 +472,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
+        # Original rendered approval card text, retained after button resolution.
+        self._approval_prompt_text: Dict[int, str] = {}
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
@@ -565,6 +567,149 @@ class TelegramAdapter(BasePlatformAdapter):
             return None
         thread_id = metadata.get("thread_id") or metadata.get("message_thread_id")
         return str(thread_id) if thread_id is not None else None
+
+    @staticmethod
+    def _exec_approval_risk_level(text: str) -> str:
+        upper = (text or "").upper()
+        for level in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+            if f"[{level}]" in upper or re.search(rf"\b{level}\b", upper):
+                return level.title()
+        return "Unknown"
+
+    @staticmethod
+    def _exec_approval_plain_reason(command: str, description: str) -> str:
+        combined = f"{description or ''}\n{command or ''}".lower()
+        if "pipe to interpreter" in combined:
+            return (
+                "Another program's output is being sent into Python or another interpreter. "
+                "That can execute untrusted downloaded or generated code."
+            )
+        if "rm -rf" in combined or "delete" in combined or "destructive" in combined:
+            return (
+                "Files may be deleted, overwritten, or changed. Wrong paths are dangerous."
+            )
+        if "curl" in combined or "download" in combined or "network" in combined:
+            return (
+                "The command may contact an external service or use downloaded content."
+            )
+        if "service" in combined or "launchd" in combined or "restart" in combined:
+            return (
+                "The command may affect a running service and could interrupt production work."
+            )
+        if description:
+            return str(description)
+        return (
+            "The scanner matched a safety rule. Hermes's surrounding message should "
+            "explain the command and why it is needed."
+        )
+
+    @staticmethod
+    def _exec_approval_recommendation(risk_level: str) -> str:
+        if risk_level in {"Critical", "High"}:
+            return (
+                "Deny unless the target is exactly right, the purpose is clear, "
+                "and the recovery plan is acceptable."
+            )
+        if risk_level == "Medium":
+            return "Approve only after checking the target, inputs, and expected side effects."
+        if risk_level == "Low":
+            return "Approve if the command matches Hermes's explanation and the target is expected."
+        return "Deny if anything is unclear or Hermes has not explained the purpose and verification."
+
+    @staticmethod
+    def _exec_approval_scope(command: str) -> str:
+        stripped = (command or "").strip()
+        if not stripped:
+            return "No command text was provided; deny and ask Hermes to explain the action."
+        path_match = re.search(r"(?<!\S)(/[^\s;&|`]+|~/?[^\s;&|`]*)", stripped)
+        if path_match:
+            return f"Primary visible target appears to be {path_match.group(1)}; verify this is intended."
+        return "Scope is limited to the shown command, but no path or target was obvious."
+
+    @classmethod
+    def _exec_approval_side_effects(cls, command: str, description: str) -> str:
+        combined = f"{description or ''}\n{command or ''}".lower()
+        if "rm -rf" in combined or "delete" in combined or "destructive" in combined:
+            return "Files can be removed or overwritten; a wrong target can destroy useful data."
+        if "service" in combined or "launchd" in combined or "restart" in combined:
+            return "Running services may restart or stop, which can interrupt users or jobs."
+        if "curl" in combined or "download" in combined or "network" in combined:
+            return "External systems may be contacted and downloaded content may influence execution."
+        if "pipe to interpreter" in combined:
+            return "Piped content may execute as code inside the interpreter."
+        return "Expected side effects are whatever the exact command performs once it runs."
+
+    @classmethod
+    def _build_exec_approval_text(cls, command: str, description: str) -> str:
+        risk_level = cls._exec_approval_risk_level(description)
+        plain_reason = cls._exec_approval_plain_reason(command, description)
+        recommendation = cls._exec_approval_recommendation(risk_level)
+        scope = cls._exec_approval_scope(command)
+        side_effects = cls._exec_approval_side_effects(command, description)
+        scanner_detail = description or "No scanner detail was provided."
+
+        def short(value: str, limit: int) -> str:
+            value = str(value or "")
+            return value[:limit] + "..." if len(value) > limit else value
+
+        plain_reason = short(plain_reason, 420)
+        recommendation = short(recommendation, 260)
+        scope = short(scope, 260)
+        side_effects = short(side_effects, 260)
+        scanner_detail = short(scanner_detail, 520)
+
+        def render(cmd_preview: str) -> str:
+            return (
+                "⚠️ <b>Command Approval Required</b>\n\n"
+                f"<b>Plain-English reason:</b> {_html.escape(plain_reason)}\n"
+                f"<b>Risk level:</b> {_html.escape(risk_level)}\n"
+                f"<b>Recommendation:</b> {_html.escape(recommendation)}\n"
+                "<b>What approving does:</b> Runs exactly the shown command once, unless you choose a broader session or always-allow button.\n"
+                "<b>What denying does:</b> Blocks the command and forces Hermes to choose a safer method or explain better.\n"
+                "<b>What to check before approving:</b> Confirm the target/path, look for visible secrets, and verify Hermes explained the purpose plus verification.\n"
+                "<b>Recovery expectation:</b> If files, services, data, money, external systems, or production can change, require clear rollback or recovery.\n\n"
+                "<b>Approval brief:</b>\n"
+                f"1. Purpose: {_html.escape(plain_reason)}\n"
+                f"2. Why approval is needed: Safety policy paused this because scanner detail says {_html.escape(scanner_detail)}\n"
+                f"3. Exact command/action: Review the rendered command block below.\n"
+                f"4. Scope/target: {_html.escape(scope)}\n"
+                f"5. Expected side effects: {_html.escape(side_effects)}\n"
+                f"6. Risk/failure mode: {_html.escape(recommendation)}\n"
+                "7. Rollback/recovery: Deny unless recovery is obvious or Hermes has explained how to undo risky changes.\n"
+                "8. What happens if denied: Hermes must avoid this command and use a safer path or provide a better explanation.\n"
+                "9. Verification plan: Hermes should verify the result after the command and report what changed.\n"
+                "10. Secret/privacy note: Deny if the command exposes tokens, private files, personal data, or credentials.\n\n"
+                "<b>Command:</b>\n"
+                f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
+                f"<b>Scanner/security detail:</b> {_html.escape(scanner_detail)}\n\n"
+                "If anything in this card is unclear or does not match Hermes's plain-English explanation, deny."
+            )
+
+        cmd = command or ""
+        preview = cmd
+        if len(preview) > 1800:
+            preview = preview[:1800] + "..."
+        text = render(preview)
+        while utf16_len(text) > 4096 and len(preview) > 160:
+            keep = max(160, len(preview) - (utf16_len(text) - 4096) - 80)
+            preview = cmd[:keep] + "..."
+            text = render(preview)
+        return text
+
+    @staticmethod
+    def _prepend_exec_approval_decision(label: str, user_display: str, prompt_text: Optional[str]) -> str:
+        header = f"<b>{_html.escape(label)} by {_html.escape(user_display or 'User')}</b>"
+        if not prompt_text:
+            return header
+        text = f"{header}\n\n{prompt_text}"
+        if utf16_len(text) <= 4096:
+            return text
+        suffix = "\n\n<i>Original approval card truncated after resolution.</i>"
+        allowed = 4096 - utf16_len(header) - utf16_len(suffix) - 2
+        if allowed <= 0:
+            return header
+        truncated = prompt_text[:allowed]
+        return f"{header}\n\n{truncated}{suffix}"
 
     @classmethod
     def _metadata_direct_messages_topic_id(cls, metadata: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -2592,12 +2737,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
-            text = (
-                f"⚠️ <b>Command Approval Required</b>\n\n"
-                f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
-                f"Reason: {_html.escape(description)}"
-            )
+            text = self._build_exec_approval_text(command, description)
 
             # Resolve thread context for thread replies
             thread_id = self._metadata_thread_id(metadata)
@@ -2644,6 +2784,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
             # Store session_key keyed by approval_id for the callback handler
             self._approval_state[approval_id] = session_key
+            self._approval_prompt_text[approval_id] = text
 
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -3150,6 +3291,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     return
 
                 session_key = self._approval_state.pop(approval_id, None)
+                original_prompt = self._approval_prompt_text.pop(approval_id, None)
                 if not session_key:
                     await query.answer(text="This approval has already been resolved.")
                     return
@@ -3166,11 +3308,16 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 await query.answer(text=label)
 
-                # Edit message to show decision, remove buttons
+                # Edit message to show decision while retaining the original card, remove buttons
                 try:
+                    resolved_text = self._prepend_exec_approval_decision(
+                        label,
+                        str(user_display or "User"),
+                        original_prompt,
+                    )
                     await query.edit_message_text(
-                        text=self.format_message(f"{label} by {user_display}"),
-                        parse_mode=ParseMode.MARKDOWN_V2,
+                        text=resolved_text,
+                        parse_mode=ParseMode.HTML,
                         reply_markup=None,
                     )
                 except Exception:
