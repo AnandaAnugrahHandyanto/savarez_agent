@@ -25,6 +25,33 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+try:
+    import openai.lib._parsing._responses as _openai_parse_responses
+
+    if not getattr(_openai_parse_responses.parse_response, "_hermes_none_guard", False):
+        _hermes_orig_parse_response = _openai_parse_responses.parse_response
+
+        def _hermes_patched_parse_response(*, text_format, input_tools, response):
+            # The ChatGPT Codex backend can close after response.output_item.done
+            # without response.completed, leaving SDK snapshots with output=None.
+            if getattr(response, "output", None) is None:
+                response.output = []
+            return _hermes_orig_parse_response(
+                text_format=text_format,
+                input_tools=input_tools,
+                response=response,
+            )
+
+        _hermes_patched_parse_response._hermes_none_guard = True
+        _openai_parse_responses.parse_response = _hermes_patched_parse_response
+except Exception as _e:
+    logger.warning(
+        "Hermes: failed to apply openai SDK parse_response None-guard (%s); "
+        "Codex streams that close without response.completed may crash with TypeError.",
+        _e,
+    )
+
+
 def run_codex_app_server_turn(
     agent,
     *,
