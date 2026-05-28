@@ -1074,6 +1074,23 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         )
         return agent._try_activate_fallback()
 
+    # Skip fallback models that don't support image input when the
+    # current request contains image content parts (#33872).
+    if getattr(agent, "_request_has_images", False):
+        try:
+            from agent.models_dev import get_model_capabilities
+            caps = get_model_capabilities(fb_provider, fb_model)
+            if caps is not None and not caps.supports_vision:
+                logger.warning(
+                    "Fallback skip: %s/%s does not support image input "
+                    "but request contains images",
+                    fb_provider, fb_model,
+                )
+                agent._fallback_skipped_modality = True
+                return agent._try_activate_fallback()
+        except Exception:
+            pass  # don't let capability lookup break fallback
+
     # Use centralized router for client construction.
     # raw_codex=True because the main agent needs direct responses.stream()
     # access for Codex providers.

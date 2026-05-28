@@ -467,6 +467,9 @@ def run_conversation(
     # rejection and kept False for the rest of the session so we never re-send
     # images to a text-only endpoint.  Scoped per `_run()` call, not per instance.
     agent._vision_supported = True
+    # Reset modality-skip tracking for this turn (#33872).
+    agent._fallback_skipped_modality = False
+    agent._request_has_images = False
 
     # Pre-turn connection health check: detect and clean up dead TCP
     # connections left over from provider outages or dropped streams.
@@ -1008,6 +1011,17 @@ def run_conversation(
         # manual message manipulation are always caught.
         api_messages = agent._sanitize_api_messages(api_messages)
 
+        # Flag whether the current request contains image content parts,
+        # so fallback routing can skip text-only models (#33872).
+        agent._request_has_images = any(
+            isinstance(m.get("content"), list)
+            and any(
+                isinstance(p, dict) and p.get("type") in ("image_url", "image")
+                for p in m["content"]
+            )
+            for m in api_messages
+        )
+
         # Drop thinking-only assistant turns (reasoning but no visible
         # output and no tool_calls) and merge any adjacent user messages
         # left behind. Prevents Anthropic 400s ("The final block in an
@@ -1479,7 +1493,14 @@ def run_conversation(
                             continue
                         # Terminal — flush buffered retry trace so user sees what happened.
                         agent._flush_status_buffer()
-                        agent._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
+                        _modality_hint = ""
+                        if getattr(agent, "_fallback_skipped_modality", False):
+                            _modality_hint = (
+                                " Some fallback models were skipped because they "
+                                "don't support image input. Add an image-capable "
+                                "fallback provider in config.yaml."
+                            )
+                        agent._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.{_modality_hint}")
                         logger.error(f"{agent.log_prefix}Invalid API response after {max_retries} retries.")
                         agent._persist_session(messages, conversation_history)
                         return {
