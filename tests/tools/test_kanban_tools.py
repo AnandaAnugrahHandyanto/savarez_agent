@@ -1326,6 +1326,7 @@ def test_worker_complete_rejects_stale_run_id(worker_env, monkeypatch):
     from hermes_cli import kanban_db as kb
     import hermes_cli.kanban_db as _kb
 
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
     conn = kb.connect()
     try:
         run1 = kb.latest_run(conn, worker_env)
