@@ -2137,3 +2137,42 @@ def test_run_conversation_codex_invalid_encrypted_content_without_replay_state_d
     assert all(not any(item.get("type") == "reasoning" for item in payload["input"]) for payload in request_payloads)
     assert agent._codex_reasoning_replay_enabled is True
     assert result["messages"][0].get("codex_reasoning_items") is None
+
+
+def test_patch_openai_parse_response_none_output(monkeypatch):
+    """The ChatGPT Codex backend may send output=None in response.completed.
+    The monkey-patch in codex_responses_adapter must normalise it to [] so
+    the SDK's parse_response does not raise TypeError."""
+    from agent.codex_responses_adapter import _patch_openai_parse_response_none_output
+    from openai.lib._parsing import _responses as _pr
+
+    # Ensure the patch is applied
+    _patch_openai_parse_response_none_output()
+    assert getattr(_pr.parse_response, "_hermes_patched", False)
+
+    # Build a Response with output=None via construct to skip validation
+    from openai._models import construct_type_unchecked
+    from openai.types.responses import Response
+
+    response = construct_type_unchecked(
+        type_=Response,
+        value={
+            "id": "resp_test",
+            "created_at": 0,
+            "model": "gpt-5.5",
+            "object": "response",
+            "output": None,
+            "parallel_tool_calls": True,
+            "temperature": 1.0,
+            "tool_choice": "auto",
+            "tools": [],
+            "top_p": 1.0,
+            "truncation": "disabled",
+        },
+    )
+    assert response.output is None  # confirm None survived construction
+
+    # Without the patch this would raise TypeError: 'NoneType' object is not iterable
+    from openai._types import NOT_GIVEN
+    result = _pr.parse_response(text_format=NOT_GIVEN, input_tools=NOT_GIVEN, response=response)
+    assert result.output == []

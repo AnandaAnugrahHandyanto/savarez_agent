@@ -1219,3 +1219,36 @@ def _normalize_codex_response(
     else:
         finish_reason = "stop"
     return assistant_message, finish_reason
+
+
+# ---------------------------------------------------------------------------
+# SDK compatibility patch: guard against None response.output (#20xxx)
+# ---------------------------------------------------------------------------
+# The ChatGPT Codex backend (chatgpt.com/backend-api/codex) may send
+# output: null in the response.completed streaming event.  The
+# OpenAI Python SDK (<= 2.32.0) iterates response.output without a
+# None guard in openai.lib._parsing._responses.parse_response,
+# raising TypeError: 'NoneType' object is not iterable.
+#
+# This monkey-patch survives pip upgrades of the SDK (re-applied on every
+# import) and is safe to remove once the upstream SDK fixes it.
+# ---------------------------------------------------------------------------
+def _patch_openai_parse_response_none_output() -> None:
+    try:
+        from openai.lib._parsing import _responses as _pr
+    except ImportError:
+        return
+
+    _original_parse_response = _pr.parse_response
+
+    def _patched_parse_response(**kwargs):
+        response = kwargs.get("response")
+        if response is not None and getattr(response, "output", None) is None:
+            response.output = []
+        return _original_parse_response(**kwargs)
+
+    if not getattr(_pr.parse_response, "_hermes_patched", False):
+        _patched_parse_response._hermes_patched = True  # type: ignore[attr-defined]
+        _pr.parse_response = _patched_parse_response
+
+_patch_openai_parse_response_none_output()
