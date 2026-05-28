@@ -138,6 +138,10 @@ VALID_HOOKS: Set[str] = {
     "post_llm_call",
     "pre_api_request",
     "post_api_request",
+    # Allow plugins to modify the system prompt before it is sent.
+    # Plugins return the modified prompt string, or None to leave unchanged.
+    # Last non-None return wins. Useful for skill auto-loading.
+    "pre_system_prompt",
     "on_session_start",
     "on_session_end",
     "on_session_finalize",
