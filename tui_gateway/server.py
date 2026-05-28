@@ -500,7 +500,7 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
         # Exempt: session.create (creates a new session), session.resume (uses provided params)
         if method not in ("session.create", "session.resume"):
             session_id = params.get("session_id", "") if isinstance(params, dict) else ""
-            if session_id and _sessions.get(session_id) is None:
+            if not session_id or _sessions.get(session_id) is None:
                 return _err(rid, -32000, "unauthorized: invalid session")
 
         if method not in _LONG_HANDLERS:
