@@ -10,6 +10,10 @@ approval:
   allowed_always: '      ✓ 已加入永久允许列表'
   denied: '      ✗ 已拒绝'
   cancelled: '      ✗ 已取消'
+  approved_icon: "✅"
+  denied_icon: "❌"
+  resolved: "已解决"
+  update_prompt_answered: "{icon} 更新提示已回答：{label}"
   blocklist_message: 此命令位于无条件拦截列表中，无法被批准。
   reason:
     delete_root_path: 删除根路径文件
@@ -71,6 +75,9 @@ approval:
     sudo_combined_flag: sudo 组合标志提权
     security_scan_prefix: 安全扫描
     security_issue_detected: 检测到安全问题
+    reason_prefix: 原因
+    resolved: 已解决
+    resolved_by: 由
 agent:
   rate_limited_fallback: ⚠️ 请求频率受限 — 正在切换到备用提供方...
   stream_interrupted: ↻ 流式传输中断 — 使用已传输内容作为最终回复
@@ -81,6 +88,8 @@ agent:
   switched_fallback: '↻ 已切换到备用模型: {model} ({provider})'
   reasoning_no_content: ⚠️ 模型产生了推理内容但无可见回复，所有重试已耗尽。返回空内容。
   primary_model_failed: '🔄 主模型失败 — 正在切换到备用: {model} ({provider})'
+  preflight_compression: "📦 预压缩：约 {tokens} 个 token >= {threshold} 阈值。请稍候。"
+  compacting_context: "  ⟳ 正在压缩上下文…"
   max_iterations: ⚠️ 已达到最大迭代次数 ({max})。正在请求摘要...
   no_response_reconnect: '⚠️ 提供方 {time} 秒无响应（模型: {model}, 上下文: ~{tokens} tokens）。正在重连...'
   api_key_warning: '⚠️ 警告: API 密钥似乎无效或缺失'
@@ -596,6 +605,18 @@ gateway:
     _文字回复方式：回复 `/approve`、`/always` 或 `/cancel`。_'
   detail_new: 这将开启一个新会话并丢弃当前对话历史。
   detail_undo: 这将移除最后一组用户/助手对话。
+  cancelled_command: "🟡 /{command} 已取消，对话未改变。"
+  always_note: "\n\nℹ️ 未来执行 /clear、/new、/reset、/undo 将不再需要确认。如需重新启用，在 config.yaml 中设置 `approvals.destructive_slash_confirm: true`。"
+  provider_auth_failed: "⚠️ 供应商认证失败。请检查已配置的凭据；原始供应商详情在网关日志中。"
+  provider_rejected: "⚠️ 模型供应商拒绝了请求。我保留了原始供应商错误，不显示在聊天中；检查网关日志获取详情或尝试重新表述。"
+  provider_failed_retries: "⚠️ 模型供应商在重试后仍然失败。我保留了原始供应商详情，不显示在聊天中；检查网关日志获取诊断信息。"
+  session_too_large: "⚠️ 会话对于模型的上下文窗口来说太大了。\n"
+  context_compression_aborted: "⚠️ 上下文压缩已中止 "
+  compression_model_info: "ℹ️ 已配置的压缩模型 `{model}` "
+  model_no_response: "⚠️ 模型在处理工具调用后没有返回响应 "
+  background_task_complete: "✅ 后台任务完成\n提示：\"{preview}\"\n\n"
+  background_task_no_response: "✅ 后台任务完成\n提示：\"{preview}\"\n\n（未生成响应）"
+  gateway_already_running: "\n❌ 网关已在运行中（PID {pid}）。\n"
   steer_failed: ⚠️ 转向失败：{error}
   resume:
     db_unavailable: 会话数据库不可用。
@@ -1122,6 +1143,12 @@ platform:
     sent_to_update: 已向更新进程发送「{answer}」。
     invalid_gmail_data: 无效的 gmail-triage 数据。
     unauthorized_email: ⛔ 您无权处理此邮件。
+background_review:
+  memory: 记忆
+  user_profile: 用户资料
+  updated: "{label} 已更新"
+  label: 后台审查
+  tool_denied: "后台审查拒绝了非白名单工具：{tool_name}。仅允许记忆/技能工具。"
 cli:
   compression_count: 🗜️ {count}
   model_normalized: ⚠️ 已将模型 '{from_model}' 标准化为 '{to_model}'（{provider}）。
@@ -1129,6 +1156,14 @@ cli:
   provider_stripped: ⚠️ 已从 '{from_model}' 中移除提供商前缀；对 {provider} 使用 '{to_model}'。
   context_length_warning: ⚠️ 上下文长度仅 {length:,} 个 token — {detail}
   command_destroys: ⚠️ /{command} — 将销毁对话状态
+  approve_once: 仅批准一次
+  approve_once_desc: 仅本次执行
+  always_approve: 始终批准
+  always_approve_desc: 执行并永久取消此提示
+  cancel: 取消
+  cancel_desc: 保持当前对话
+  cancelled_no_input: "🟡 /{command} 已取消（无输入）。"
+  cancelled_unrecognized: "🟡 无法识别的选择 '{raw}'。/{command} 已取消。"
   steered: ⏩ 已将消息引导至当前运行{detail}。你的消息将在下一次工具调用后到达。
 setup:
   edit_config_hint: 📝 编辑您的配置：
@@ -1508,7 +1543,7 @@ gateway.handoff.session.failed: 'Handoff for 会话 %s 失败: %s'
 log.handoff.watcher.tick.error: 'Handoff watcher tick 错误: %s'
 gateway.execute.one.handoff.row: Execute one handoff row. Raises on failure (caller
   marks 失败).
-gateway.home.channel.configured.platformname: 'no home channel configured 对于 {platform_name}; '
+gateway.home.channel.configured.platformname: '未为 {platform_name} 配置主频道；'
 gateway.hermes.clititle: Hermes — {cli_title}
 gateway.handoff.createhandoffthread.raised: 'Handoff: create_handoff_thread raised
   在 %s: %s'
@@ -1884,12 +1919,11 @@ gateway.briefly.introduce.yourself.mention: 'Briefly introduce yourself and ment
   that /help shows 可用 commands. '
 gateway.keep.introduction.concise.one: Keep the introduction concise -- one 或 two
   sentences max.]
-gateway.home.channel.set.platformnametitle: '📬 No home channel 是 set 对于 {platform_name.title()}. '
-gateway.home.channel.where.hermes: 'A home channel 是 where Hermes delivers cron job
-  results '
-gateway.crossplatform.messagesnn: and cross-平台 messages.\n\n
-gateway.type.sethomecmd.make.chat: '类型 {sethome_cmd} to make this chat your home channel, '
-gateway.ignore.skip: 或 ignore 到 skip.
+gateway.home.channel.set.platformnametitle: '📬 未为 {platform_name.title()} 设置主频道。'
+gateway.home.channel.where.hermes: '主频道是 Hermes 投递定时任务结果和
+  跨平台消息的地方。'
+gateway.type.sethomecmd.make.chat: '输入 {sethome_cmd} 将此聊天设为主频道，'
+gateway.ignore.skip: 或忽略跳过。
 gateway.discarding.stale.agent.result: Discarding stale 代理 result for %s — generation
   %d is no longer current
 gateway.model.returned.response.after: '⚠️ The 模型 returned no response after 处理中 工具 '
@@ -2786,24 +2820,25 @@ feishu.feishu.file.upload.missing: Feishu 文件 upload 缺失 file_key
 feishu.fetching.configuration.results: '  Fetching 配置uration results...'
 feishu.fetching.configuration.results_1: Fetching 配置uration results...
 feishu.connecting.feishu.lark: '  Connecting 到 Feishu / Lark...'
-feishu.command.approval.required: ⚠️ Command Approval 必需
+feishu.command.approval.required: ⚠️ 命令需要审批
 feishu.invalid.verification.token: 无效 verification token
 feishu.update.needs.input: ⚕ 更新 Needs Your Input
 feishu.unsupported.media.type: Unsupported Media 类型
 feishu.request.body.too.large: 请求 body too large
-feishu.approved.session: Approved for 会话
-feishu.approved.permanently: Approved permanently
+feishu.approved.session: 已批准本次会话
+feishu.approved.permanently: 已永久批准
 feishu.feishu.send.failed: Feishu 发送 失败
 feishu.too.many.requests: Too Many Requests
 feishu.invalid.signature: 无效 signature
-feishu.request.timeout: Request 超时
-feishu.approved.once: Approved once
-feishu.not.connected: Not 已连接
-feishu.allow.once: ✅ Allow Once
-feishu.session: ✅ 会话
-feishu.always: ✅ Always
-feishu.deny: ❌ Deny
-feishu.yes: ✓ Yes
+feishu.request.timeout: 请求超时
+feishu.approved.once: 已批准一次
+feishu.not.connected: 未连接
+feishu.allow.once: ✅ 仅允许一次
+feishu.session: ✅ 本次会话
+feishu.always: ✅ 永久允许
+feishu.deny: ❌ 拒绝
+feishu.yes: ✓ 是
+feishu.no: ✓ 否
 feishu_comment.referenced.documents.comments: 'Referenced documents 在 comments:'
 feishu_comment.wholedocument.comment: 这个 是 a whole-document comment.
 feishu_comment.current.commented.document: '当前 commented document:'
@@ -2826,6 +2861,11 @@ matrix.matrix.matrixhomeserver.set: 'Matrix: MATRIX_HOMESERVER 不 set'
 matrix.client.empty.text: No 客户端 or empty text
 matrix.matrix.disconnected: 'Matrix: 已断开'
 matrix.not.connected: Not 已连接
+matrix.dangerous_command_approval: "⚠️ **需要危险命令审批**\n"
+matrix.approve_instructions: "回复 `/approve` 执行，`/approve session` 本次会话批准，`/approve always` 永久批准，或 `/deny` 取消。\n\n"
+matrix.reaction_approve: "您也可以点击反应来批准：\n"
+matrix.approve_emoji: "✅ = /approve\n"
+matrix.deny_emoji: "❎ = /deny"
 matrix.hermes.agent: Hermes 代理
 msgraph_webhook.microsoft.graph: Microsoft Graph
 signal.signal.signalhttpurl.signalaccount.required: 'Signal: SIGNAL_HTTP_URL and SIGNAL_ACCOUNT
@@ -2854,8 +2894,15 @@ slack.running.cmd: 运行中 /cmd…
 slack.not.connected: Not 已连接
 slack.allow.session: Allow 会话
 slack.always.allow: Always Allow
-slack.approve.once: Approve Once
-slack.allow.once: Allow Once
+slack.approve.once: ✅ 批准一次
+slack.allow.once: ✅ 允许一次
+slack.command_approval_required: "⚠️ 需要命令审批：{preview}"
+slack.approved_once_by: "✅ {user_name} 已批准一次"
+slack.always_approved_by: "🔒 {user_name} 已永久批准"
+slack.cancelled_by: "❌ {user_name} 已取消"
+slack.approved_session_by: "✅ {user_name} 已批准本次会话"
+slack.approved_permanently_by: "✅ {user_name} 已永久批准"
+slack.denied_by: "❌ {user_name} 已拒绝"
 telegram.telegram.topic.delivery.requires: Telegram DM topic delivery requires a reply
   anchor; refusing to 发送 outside the requested topic
 telegram.authorized.answer.update.prompts: ⛔ You are not 已授权 to answer 更新 prompts.
@@ -2891,6 +2938,11 @@ telegram.invalid.page: 无效 page.
 telegram.allow.once: ✅ Allow Once
 telegram.marked.vip: ✓ marked VIP
 telegram.cancelled: ❌ 已取消
+telegram.command_approval_required: "⚠️ <b>需要命令审批</b>\n\n"
+telegram.script_missing: "❌ {script_name} 缺失"
+telegram.gmail_triage_failed: "❌ {verb} 失败：{error}"
+telegram.gmail_triage_timeout: "❌ {verb} 超时"
+telegram.gmail_triage_error: "❌ {verb} 错误：{error}"
 telegram.session: ✅ 会话
 telegram.url.photo: URL photo
 telegram.always: ✅ Always
@@ -2935,6 +2987,8 @@ wecom.websocket.initialized: WebSocket not 已初始化
 wecom.cannot.upload.empty.media: Cannot upload empty media
 wecom.connecting.wecom: '  Connecting 到 WeCom...'
 wecom.websocket.connected: WebSocket not 已连接
+wecom.reject_reason: "⚠️ {reason}"
+wecom.downgrade_note: "ℹ️ {note}"
 wecom.wecom.websocket.closed: WeCom websocket 关闭d
 wecom_crypto.malformed.pkcs7.padding: malformed PKCS7 padding
 wecom_crypto.invalid.pkcs7.padding: 无效 PKCS7 padding

@@ -1277,14 +1277,13 @@ class MatrixAdapter(BasePlatformAdapter):
 
         cmd_preview = command[:2000] + "..." if len(command) > 2000 else command
         text = (
-            "⚠️ **Dangerous command requires approval**\n"
-            f"```\n{cmd_preview}\n```\n"
-            f"Reason: {description}\n\n"
-            "Reply `/approve` to execute, `/approve session` to approve this pattern for the session, "
-            "`/approve always` to approve permanently, or `/deny` to cancel.\n\n"
-            "You can also click the reaction to approve:\n"
-            "✅ = /approve\n"
-            "❎ = /deny"
+            t("matrix.dangerous_command_approval")
+            + f"```\n{cmd_preview}\n```\n"
+            + f"原因：{description}\n\n"
+            + t("matrix.approve_instructions")
+            + t("matrix.reaction_approve")
+            + t("matrix.approve_emoji")
+            + t("matrix.deny_emoji")
         )
 
         result = await self.send(chat_id, text, metadata=metadata)

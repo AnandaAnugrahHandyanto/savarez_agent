@@ -288,14 +288,14 @@ def summarize_background_review_actions(
         elif "updated" in message.lower():
             actions.append(message)
         elif "added" in message.lower() or (target and "add" in message.lower()):
-            label = "Memory" if target == "memory" else "User profile" if target == "user" else target
-            actions.append(f"{label} updated")
+            label = t("background_review.memory") if target == "memory" else t("background_review.user_profile") if target == "user" else target
+            actions.append(t("background_review.updated", label=label))
         elif "Entry added" in message:
-            label = "Memory" if target == "memory" else "User profile" if target == "user" else target
-            actions.append(f"{label} updated")
+            label = t("background_review.memory") if target == "memory" else t("background_review.user_profile") if target == "user" else target
+            actions.append(t("background_review.updated", label=label))
         elif "removed" in message.lower() or "replaced" in message.lower():
-            label = "Memory" if target == "memory" else "User profile" if target == "user" else target
-            actions.append(f"{label} updated")
+            label = t("background_review.memory") if target == "memory" else t("background_review.user_profile") if target == "user" else target
+            actions.append(t("background_review.updated", label=label))
     return actions
 
 
@@ -467,10 +467,7 @@ def _run_review_in_thread(
             }
             set_thread_tool_whitelist(
                 review_whitelist,
-                deny_msg_fmt=(
-                    "Background review denied non-whitelisted tool: "
-                    "{tool_name}. Only memory/skill tools are allowed."
-                ),
+                deny_msg_fmt=t("background_review.tool_denied"),
             )
             try:
                 review_agent.run_conversation(
@@ -527,7 +524,7 @@ def _run_review_in_thread(
 
     except Exception as e:
         logger.warning("Background memory/skill review failed: %s", e)
-        agent._emit_auxiliary_failure("background review", e)
+        agent._emit_auxiliary_failure(t("background_review.label"), e)
     finally:
         # Safety-net cleanup for the exception path.  Normal
         # completion already shut down inside redirect_stdout above.

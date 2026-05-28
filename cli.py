@@ -10216,21 +10216,21 @@ class HermesCLI:
         # labels visible above the composer and avoids raw input()/EOF races with
         # the running TUI.
         choices = [
-            ("once", "Approve Once", "proceed this time only"),
-            ("always", "Always Approve", "proceed and silence this prompt permanently"),
-            ("cancel", "Cancel", "keep current conversation"),
+            ("once", t("cli.approve_once"), t("cli.approve_once_desc")),
+            ("always", t("cli.always_approve"), t("cli.always_approve_desc")),
+            ("cancel", t("cli.cancel"), t("cli.cancel_desc")),
         ]
         raw = self._prompt_text_input_modal(
-            title=f"⚠️  /{command} — destroys conversation state",
+            title=t("cli.command_destroys", command=command),
             detail=detail,
             choices=choices,
         )
         if raw is None:
-            print(f"🟡 /{command} cancelled (no input).")
+            print(t("cli.cancelled_no_input", command=command))
             return None
         choice = self._normalize_slash_confirm_choice(raw, choices)
         if choice is None:
-            print(f"🟡 Unrecognized choice '{raw}'. /{command} cancelled.")
+            print(t("cli.cancelled_unrecognized", raw=raw, command=command))
             return None
 
         if choice == "cancel":

@@ -1027,12 +1027,12 @@ def _format_tirith_description(tirith_result: dict) -> str:
     """Build a human-readable description from tirith findings.
 
     Includes severity, title, and description for each finding so users
-    can make an informed approval decision.
     """
+    from agent.i18n import t
     findings = tirith_result.get("findings") or []
     if not findings:
-        summary = tirith_result.get("summary") or "security issue detected"
-        return f"Security scan: {summary}"
+        summary = tirith_result.get("summary") or t('approval.reason.security_issue_detected')
+        return f"{t('approval.security_scan_prefix')}: {summary}"
 
     parts = []
     for f in findings:
@@ -1044,10 +1044,10 @@ def _format_tirith_description(tirith_result: dict) -> str:
         elif title:
             parts.append(f"[{severity}] {title}" if severity else title)
     if not parts:
-        summary = tirith_result.get("summary") or "security issue detected"
-        return f"Security scan: {summary}"
+        summary = tirith_result.get("summary") or t('approval.reason.security_issue_detected')
+        return f"{t('approval.security_scan_prefix')}: {summary}"
 
-    return "Security scan — " + "; ".join(parts)
+    return f"{t('approval.security_scan_prefix')} — " + "; ".join(parts)
 
 
 def check_all_command_guards(command: str, env_type: str,

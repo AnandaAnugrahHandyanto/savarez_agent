@@ -2304,7 +2304,7 @@ class SlackAdapter(BasePlatformAdapter):
 
             kwargs: Dict[str, Any] = {
                 "channel": chat_id,
-                "text": f"⚠️ Command approval required: {cmd_preview[:100]}",
+                "text": t("slack.command_approval_required", preview=cmd_preview[:100]),
                 "blocks": blocks,
             }
             if thread_ts:
@@ -2421,9 +2421,9 @@ class SlackAdapter(BasePlatformAdapter):
         choice = choice_map.get(action_id, "cancel")
 
         label_map = {
-            "once": f"✅ Approved once by {user_name}",
-            "always": f"🔒 Always approved by {user_name}",
-            "cancel": f"❌ Cancelled by {user_name}",
+            "once": t("slack.approved_once_by", user_name=user_name),
+            "always": t("slack.always_approved_by", user_name=user_name),
+            "cancel": t("slack.cancelled_by", user_name=user_name),
         }
         decision_text = label_map.get(choice, f"Resolved by {user_name}")
 
@@ -2522,10 +2522,10 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Update the message to show the decision and remove buttons
         label_map = {
-            "once": f"✅ Approved once by {user_name}",
-            "session": f"✅ Approved for session by {user_name}",
-            "always": f"✅ Approved permanently by {user_name}",
-            "deny": f"❌ Denied by {user_name}",
+            "once": t("slack.approved_once_by", user_name=user_name),
+            "session": t("slack.approved_session_by", user_name=user_name),
+            "always": t("slack.approved_permanently_by", user_name=user_name),
+            "deny": t("slack.denied_by", user_name=user_name),
         }
         decision_text = label_map.get(choice, f"Resolved by {user_name}")
 

@@ -225,7 +225,7 @@ _APPROVAL_LABEL_MAP: Dict[str, str] = {
     "once": t('feishu.approved.once'),
     "session": t('feishu.approved.session'),
     "always": t('feishu.approved.permanently'),
-    "deny": "Denied",
+    "deny": t('feishu.denied'),
 }
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
@@ -1889,7 +1889,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 "elements": [
                     {
                         "tag": "markdown",
-                        "content": f"```\n{cmd_preview}\n```\n**Reason:** {description}",
+                        "content": f"```\\n{cmd_preview}\\n```\\n**{t('approval.reason_prefix')}:** {description}",
                     },
                     {
                         "tag": "action",
@@ -1995,8 +1995,9 @@ class FeishuAdapter(BasePlatformAdapter):
     @staticmethod
     def _build_resolved_approval_card(*, choice: str, user_name: str) -> Dict[str, Any]:
         """Build raw card JSON for a resolved approval action."""
-        icon = "❌" if choice == "deny" else "✅"
-        label = _APPROVAL_LABEL_MAP.get(choice, "Resolved")
+        from agent.i18n import t
+        icon = t("approval.denied_icon") if choice == "deny" else t("approval.approved_icon")
+        label = _APPROVAL_LABEL_MAP.get(choice, t('approval.resolved'))
         return {
             "config": {"wide_screen_mode": True},
             "header": {
@@ -2006,19 +2007,20 @@ class FeishuAdapter(BasePlatformAdapter):
             "elements": [
                 {
                     "tag": "markdown",
-                    "content": f"{icon} **{label}** by {user_name}",
+                    "content": f"{icon} **{label}** {t('approval.resolved_by')} {user_name}",
                 },
             ],
         }
 
     @staticmethod
     def _build_resolved_update_prompt_card(*, answer: str, user_name: str) -> Dict[str, Any]:
+        from agent.i18n import t
         yes = answer == "y"
-        label = "Yes" if yes else "No"
+        label = t('feishu.yes') if yes else t('feishu.no')
         return {
             "config": {"wide_screen_mode": True},
             "header": {
-                "title": {"content": f"{'✅' if yes else '❌'} Update prompt answered: {label}", "tag": "plain_text"},
+                "title": {"content": t("approval.update_prompt_answered", icon="✅" if yes else "❌", label=label), "tag": "plain_text"},
                 "template": "green" if yes else "red",
             },
             "elements": [

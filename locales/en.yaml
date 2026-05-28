@@ -73,6 +73,9 @@ approval:
     sudo_combined_flag: sudo with combined-flag privilege escalation
     security_scan_prefix: Security scan
     security_issue_detected: security issue detected
+    reason_prefix: Reason
+    resolved: Resolved
+    resolved_by: by
 gateway:
   approval_expired: ⚠️ Approval expired (agent is no longer waiting). Ask the agent
     to try again.

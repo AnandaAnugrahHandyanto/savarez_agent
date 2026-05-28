@@ -2595,9 +2595,9 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
             text = (
-                f"⚠️ <b>Command Approval Required</b>\n\n"
-                f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
-                f"Reason: {_html.escape(description)}"
+                t("telegram.command_approval_required")
+                + f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
+                + f"原因：{_html.escape(description)}"
             )
 
             # Resolve thread context for thread replies
@@ -3222,7 +3222,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     return
 
                 label_map = {
-                    "once": "✅ Approved once",
+                    "once": t("telegram.approved.once"),
                     "always": t('telegram.always.approve_1'),
                     "cancel": t('telegram.cancelled'),
                 }
@@ -3497,7 +3497,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         script_path = _Path.home() / ".hermes" / "scripts" / "gmail-triage" / script_name
         if not script_path.exists():
-            await query.answer(text=f"❌ {script_name} missing")
+            await query.answer(text=t("telegram.script_missing", script_name=script_name))
             logger.error("[%s] gmail-triage script missing: %s", self.name, script_path)
             return
 
@@ -3522,16 +3522,16 @@ class TelegramAdapter(BasePlatformAdapter):
             else:
                 stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
                 last_line = stderr_text.splitlines()[-1] if stderr_text else f"exit {proc.returncode}"
-                label = f"❌ {verb} failed: {last_line[:80]}"
+                label = t("telegram.gmail_triage_failed", verb=verb, error=last_line[:80])
                 logger.error(
                     "[%s] gmail-triage callback failed: verb=%s arg=%s rc=%s stderr=%s",
                     self.name, verb, arg, proc.returncode, stderr_text,
                 )
         except asyncio.TimeoutError:
-            label = f"❌ {verb} timed out"
+            label = t("telegram.gmail_triage_timeout", verb=verb)
             logger.error("[%s] gmail-triage callback timed out: verb=%s arg=%s", self.name, verb, arg)
         except Exception as exc:
-            label = f"❌ {verb} error: {exc}"
+            label = t("telegram.gmail_triage_error", verb=verb, error=str(exc))
             logger.error(
                 "[%s] gmail-triage callback exception: verb=%s arg=%s err=%s",
                 self.name, verb, arg, exc, exc_info=True,

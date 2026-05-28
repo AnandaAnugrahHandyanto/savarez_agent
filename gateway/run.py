@@ -229,21 +229,12 @@ def _redact_gateway_user_facing_secrets(text: str) -> str:
 def _gateway_provider_error_reply(text: str) -> str:
     """Map raw provider/API errors to a short user-safe Telegram reply."""
     if _GATEWAY_AUTH_ERROR_RE.search(text):
-        return (
-            "⚠️ Provider authentication failed. Check the configured credentials; "
-            "raw provider details are in the gateway logs."
-        )
+        return t("gateway.provider_auth_failed")
     if _GATEWAY_PROVIDER_POLICY_RE.search(text):
-        return (
-            "⚠️ The model provider rejected the request. I kept the raw provider "
-            "error out of chat; check gateway logs for details or try rephrasing."
-        )
+        return t("gateway.provider_rejected")
     if _GATEWAY_RATE_LIMIT_RE.search(text):
         return t('gateway.model.provider.ratelimiting.requests')
-    return (
-        "⚠️ The model provider failed after retries. I kept raw provider details "
-        "out of chat; check gateway logs for diagnostics."
-    )
+    return t("gateway.provider_failed_retries")
 
 
 _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
@@ -1569,11 +1560,7 @@ def _normalize_empty_agent_response(
             for p in ("context", "token", "too large", "too long", "exceed", "payload")
         ) or ("400" in error_str and history_len > 50)
         if is_context_failure:
-            return (
-                "⚠️ Session too large for the model's context window.\n"
-                "Use /compact to compress the conversation, or "
-                "/reset to start fresh."
-            )
+            return t("gateway.session_too_large") + "使用 /compact 压缩对话，或 /reset 重新开始。"
         return (
             f"The request failed: {str(error_detail)[:300]}\n"
             "Try again or use /reset to start a fresh session."
@@ -7433,10 +7420,7 @@ class GatewayRunner:
                 event=event,
                 command="new",
                 title="/new",
-                detail=(
-                    "This starts a fresh session and discards the current "
-                    "conversation history."
-                ),
+                detail=t("gateway.detail_new"),
                 execute=_do_reset,
             )
 
@@ -8557,12 +8541,11 @@ class GatewayRunner:
                                     if _comp is not None and getattr(_comp, "_last_compress_aborted", False):
                                         _err = getattr(_comp, "_last_summary_error", None) or "unknown error"
                                         _warn_msg = (
-                                            "⚠️ Context compression aborted "
-                                            f"({_err}). No messages were dropped — "
-                                            "conversation is unchanged. Run /compress "
-                                            "to retry, /reset for a clean session, or "
-                                            "check your auxiliary.compression model "
-                                            "configuration."
+                                            t("gateway.context_compression_aborted")
+                                            + f"({_err}). 未丢弃任何消息 — "
+                                            "对话未改变。运行 /compress 重试，"
+                                            "/reset 开始新会话，或检查您的 "
+                                            "auxiliary.compression 模型配置。"
                                         )
                                         try:
                                             _adapter = self.adapters.get(source.platform)
@@ -8583,10 +8566,10 @@ class GatewayRunner:
                                         _aux_model = getattr(_comp, "_last_aux_model_failure_model", "")
                                         _aux_err = getattr(_comp, "_last_aux_model_failure_error", None) or "unknown error"
                                         _aux_msg = (
-                                            f"ℹ️ Configured compression model `{_aux_model}` "
-                                            f"failed ({_aux_err}). Recovered using your main "
-                                            "model — context is intact — but you may want to "
-                                            "check `auxiliary.compression.model` in config.yaml."
+                                            t("gateway.compression_model_info", model=_aux_model)
+                                            + f"失败（{_aux_err}）。已使用您的主模型恢复 — "
+                                            "上下文完整 — 但您可能需要检查 config.yaml 中的 "
+                                            "`auxiliary.compression.model`。"
                                         )
                                         try:
                                             _adapter = self.adapters.get(source.platform)
@@ -8738,11 +8721,7 @@ class GatewayRunner:
             # prefill, empty-retry, fallback).  Sending the raw sentinel
             # looks like a bug; a short explanation is more helpful.
             if response == "(empty)":
-                response = (
-                    "⚠️ The model returned no response after processing tool "
-                    "results. This can happen with some models — try again or "
-                    "rephrase your question."
-                )
+                response = t("gateway.model_no_response") + "这种情况可能发生在某些模型上 — 请重试或重新表述您的问题。"
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
@@ -9121,11 +9100,7 @@ class GatewayRunner:
                 # 500 with a large session often means the payload is too large
                 # for the API to process — treat it the same way.
                 if _hist_len > 50:
-                    return (
-                        "⚠️ Session too large for the model's context window.\n"
-                        "Use /compact to compress the conversation, or "
-                        "/reset to start fresh."
-                    )
+                    return t("gateway.session_too_large") + "使用 /compact 压缩对话，或 /reset 重新开始。"
                 elif status_code == 400:
                     status_hint = t('gateway.request.rejected.api')
             return (
@@ -11754,7 +11729,7 @@ class GatewayRunner:
                 images, text_content = adapter.extract_images(response)
 
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
-                header = f'✅ Background task complete\nPrompt: "{preview}"\n\n'
+                header = t("gateway.background_task_complete", preview=preview)
 
                 if text_content:
                     await adapter.send(
@@ -11795,7 +11770,7 @@ class GatewayRunner:
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
                 await adapter.send(
                     chat_id=source.chat_id,
-                    content=f'✅ Background task complete\nPrompt: "{preview}"\n\n(No response generated)',
+                    content=t("gateway.background_task_no_response", preview=preview),
                     metadata=_thread_metadata,
                 )
 
@@ -13584,7 +13559,7 @@ class GatewayRunner:
 
         async def _on_confirm(choice: str):
             if choice == "cancel":
-                return f"🟡 /{command} cancelled. Conversation unchanged."
+                return t("gateway.cancelled_command", command=command)
             if choice == "always":
                 try:
                     from cli import save_config_value
@@ -13599,11 +13574,7 @@ class GatewayRunner:
                     )
             result = await execute()
             if choice == "always":
-                note = (
-                    "\n\nℹ️ Future /clear, /new, /reset, and /undo will run "
-                    "without confirmation. Re-enable via "
-                    "`approvals.destructive_slash_confirm: true` in config.yaml."
-                )
+                note = t("gateway.always_note")
                 if isinstance(result, str):
                     return result + note
                 # EphemeralReply or other — leave untouched; the opt-out note
@@ -13612,15 +13583,7 @@ class GatewayRunner:
                 return result
             return result
 
-        prompt_message = (
-            t("gateway.confirm_command", command=command)
-            + f"{detail}\n\n"
-            "Choose:\n"
-            "• **Approve Once** — proceed this time only\n"
-            "• **Always Approve** — proceed and silence this prompt permanently\n"
-            "• **Cancel** — keep current conversation\n\n"
-            "_Text fallback: reply `/approve`, `/always`, or `/cancel`._"
-        )
+        prompt_message = t("gateway.dangerous_confirm", command=command, detail=detail)
         return await self._request_slash_confirm(
             event=event,
             command=command,
@@ -17407,9 +17370,9 @@ class GatewayRunner:
                 if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
                     try:
                         _a = _agent_ref.get_activity_summary()
-                        _parts = [t("gateway.iteration", current=_a['api_call_count'], max=_a['max_iterations'])]
+                        _parts = [t("activity.iteration", current=_a['api_call_count'], max=_a['max_iterations'])]
                         if _a.get("current_tool"):
-                            _parts.append(t("gateway.running_tool", tool=_a['current_tool']))
+                            _parts.append(t("activity.running_tool", tool=_a['current_tool']))
                         else:
                             _parts.append(_a.get("last_activity_desc", ""))
                         _status_detail = " — " + ", ".join(_parts)
@@ -18220,10 +18183,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 existing_pid, hermes_home,
             )
             print(
-                f"\n❌ Gateway already running (PID {existing_pid}).\n"
-                f"   Use 'hermes gateway restart' to replace it,\n"
-                f"   or 'hermes gateway stop' to kill it first.\n"
-                f"   Or use 'hermes gateway run --replace' to auto-replace.\n"
+                t("gateway.gateway_already_running", pid=existing_pid)
+                + "   使用 'hermes gateway restart' 替换它，\n"
+                "   或 'hermes gateway stop' 先停止它。\n"
+                "   或使用 'hermes gateway run --replace' 自动替换。\n"
             )
             return False
 
