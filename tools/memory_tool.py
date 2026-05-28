@@ -31,7 +31,7 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 
 from utils import atomic_replace
 
@@ -135,21 +135,21 @@ class MemoryStore:
         # This prevents the system-prompt banner from visually duplicating a memory line
         # if the file on disk somehow accumulated identical entries (e.g. due to a race
         # in concurrent memory writes, or mid-session flush-without-reload).
-        _seen: set[str] = set()
-        _deduped_mem: list[str] = []
+        # _read_file already strips entries and drops blanks, so plain
+        # identity-based dedup is sufficient here.
+        _seen: Set[str] = set()
+        _deduped_mem: List[str] = []
         for e in self.memory_entries:
-            _key = e.strip()
-            if _key and _key not in _seen:
-                _seen.add(_key)
+            if e not in _seen:
+                _seen.add(e)
                 _deduped_mem.append(e)
         self.memory_entries = _deduped_mem
 
-        _seen_user: set[str] = set()
-        _deduped_user: list[str] = []
+        _seen_user: Set[str] = set()
+        _deduped_user: List[str] = []
         for e in self.user_entries:
-            _key = e.strip()
-            if _key and _key not in _seen_user:
-                _seen_user.add(_key)
+            if e not in _seen_user:
+                _seen_user.add(e)
                 _deduped_user.append(e)
         self.user_entries = _deduped_user
 
