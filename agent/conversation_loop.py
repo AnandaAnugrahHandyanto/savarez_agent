@@ -260,6 +260,47 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
         )
 
 
+def _should_delegate_to_claude_code(user_message: Any) -> bool:
+    """Return True for high-confidence tool-heavy gateway requests.
+
+    This is deliberately narrower than "any message that might use a tool".
+    The normal LLM-decided meta-tool path still handles ambiguous cases; this
+    pre-route protects common operator flows where direct OAuth should never
+    burn a turn trying memory/chat before reaching the Claude Code cascade.
+
+    All matching uses ``str.startswith`` to avoid false positives from
+    negations mid-sentence ("please do NOT screenshot this" must not pre-route).
+    The substring-in approach would fire on those; prefix matching does not.
+
+    Gated by ``HERMES_DELEGATE_HEURISTICS`` (default "1"). Set to "0" or
+    "false" to disable and fall through to the normal conversation loop.
+    """
+    if os.environ.get("HERMES_DELEGATE_HEURISTICS", "1").lower() in ("0", "false", "no", "off"):
+        return False
+    if not isinstance(user_message, str):
+        return False
+    text = user_message.strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    # High-confidence capture/memory flows that always need tools.
+    capture_prefixes = (
+        "capture this", "capture:", "/capture ", "save this thought",
+        "remember this:", "log this:", "write this to my vault",
+    )
+    if lowered.startswith(capture_prefixes):
+        return True
+    # High-confidence browser/terminal flows — prefix match only so that
+    # "please do NOT screenshot this" and similar negation constructs don't
+    # accidentally trigger the pre-route.
+    tool_prefixes = (
+        "browse to ", "screenshot", "search the web", "web search: ",
+        "run command", "run this command", "shell command",
+        "use playwright", "open browser", "inspect this page",
+    )
+    return lowered.startswith(tool_prefixes)
+
+
 def run_conversation(
     agent,
     user_message: str,
@@ -405,6 +446,64 @@ def run_conversation(
 
     # Initialize conversation (copy to avoid mutating the caller's list)
     messages = list(conversation_history) if conversation_history else []
+
+    # ── Pre-route: bypass the main loop for high-confidence tool-heavy turns ──
+    # When the delegate tool is available AND the message matches a tool-heavy
+    # pattern, skip the main loop entirely and call delegate_to_claude_code
+    # directly.  This saves one OAuth turn (the turn that would normally spin up
+    # the main agent just to pick the delegate meta-tool).  Gated by the
+    # HERMES_DELEGATE_HEURISTICS env var (default on).
+    if (
+        "delegate_to_claude_code" in getattr(agent, "valid_tool_names", set())
+        and _should_delegate_to_claude_code(user_message)
+    ):
+        logger.info(
+            "pre-routing tool-heavy turn to delegate_to_claude_code: session=%s platform=%s",
+            agent.session_id or "none",
+            agent.platform or "unknown",
+        )
+        if agent.status_callback:
+            try:
+                agent.status_callback("Delegating tool-heavy request to Claude Code...")
+            except Exception:
+                pass
+        try:
+            from tools.claude_code_delegate_tool import delegate_to_claude_code
+            # Count this as a user turn before early-returning so that
+            # memory-nudge counters accumulate correctly for pre-routed turns.
+            agent._user_turn_count = getattr(agent, "_user_turn_count", 0) + 1
+            raw_delegate_result = delegate_to_claude_code({
+                "prompt": str(user_message),
+                "timeout_s": int(os.environ.get("HERMES_DELEGATE_TIMEOUT_S", "120")),
+                "max_budget_usd": float(os.environ.get("HERMES_DELEGATE_MAX_BUDGET_USD", "1.0")),
+                "model": os.environ.get("HERMES_DELEGATE_MODEL", "sonnet"),
+            })
+            try:
+                delegate_result = json.loads(raw_delegate_result)
+            except ValueError:
+                # Non-JSON output is a valid response (plain text), not a failure.
+                delegate_result = {"success": True, "result": raw_delegate_result}
+            final_response = str(
+                delegate_result.get("result")
+                or delegate_result.get("error")
+                or raw_delegate_result
+            ).strip()
+            if not final_response:
+                final_response = "Claude Code delegation completed without a text result."
+            messages.append({"role": "user", "content": user_message})
+            messages.append({"role": "assistant", "content": final_response})
+            if hasattr(agent, "_persist_session"):
+                agent._persist_session(messages, conversation_history)
+            return {
+                "final_response": final_response,
+                "messages": messages,
+                "api_calls": 0,
+                "completed": bool(delegate_result.get("success", True)),
+                "delegate_result": delegate_result,
+            }
+        except Exception as exc:
+            logger.exception("delegate_to_claude_code pre-route failed; falling back to normal loop")
+            # Fall through to the normal conversation loop rather than surfacing a hard failure.
 
     # Hydrate todo store from conversation history (gateway creates a fresh
     # AIAgent per message, so the in-memory store is empty -- we need to
