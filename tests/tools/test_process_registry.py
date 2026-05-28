@@ -916,6 +916,89 @@ class TestKillProcess:
         assert killpg_calls == [(23456, signal.SIGTERM)]
         pty.terminate.assert_not_called()
 
+    def test_codex_kill_after_wait_timeout_requires_force(self, registry):
+        """A wait-window timeout must not let Hermes kill Codex by mistake."""
+        s = _make_session(sid="proc_codex_guard", command="codex-yuna exec --full-auto task")
+        s.last_wait_timeout_at = time.time()
+        s.last_wait_timeout_seconds = 60
+        registry._running[s.id] = s
+
+        result = registry.kill_process(s.id)
+
+        assert result["status"] == "refused"
+        assert result["requires_force"] is True
+        assert result["codex_process"] is True
+        assert s.exited is False
+        assert s.kill_attempted is False
+        assert s.trusted_completion is True
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group fallback")
+    def test_codex_kill_after_wait_timeout_allows_explicit_force(self, registry, monkeypatch):
+        """Explicit stop/hard-deadline paths can still terminate Codex."""
+        proc = MagicMock()
+        proc.pid = 45678
+        s = _make_session(sid="proc_codex_force", command="codex-yuna exec --full-auto task")
+        s.process = proc
+        s.pid = proc.pid
+        s.pgid = proc.pid
+        s.last_wait_timeout_at = time.time()
+        s.last_wait_timeout_seconds = 60
+        registry._running[s.id] = s
+
+        monkeypatch.setattr(
+            "tools.process_registry.ProcessRegistry._terminate_host_pid",
+            staticmethod(lambda *args, **kwargs: {"method": "os.killpg", "fallback_used": True}),
+        )
+
+        result = registry.kill_process(s.id, force=True, reason="user requested stop")
+
+        assert result["status"] == "killed"
+        assert result["trusted_completion"] is False
+        assert s.kill_attempted is True
+
+    def test_scoped_kill_all_respects_codex_wait_timeout_guard(self, registry):
+        """Agent close/cache cleanup should not force-kill a healthy Codex worker."""
+        s = _make_session(
+            sid="proc_codex_scoped_cleanup",
+            command="codex-yuna exec --full-auto task",
+            task_id="agent-session",
+        )
+        s.last_wait_timeout_at = time.time()
+        s.last_wait_timeout_seconds = 60
+        registry._running[s.id] = s
+
+        killed = registry.kill_all(task_id="agent-session")
+
+        assert killed == 0
+        assert s.exited is False
+        assert s.kill_attempted is False
+
+    def test_global_kill_all_forces_codex_wait_timeout_guard(self, registry, monkeypatch):
+        """Explicit global stop/shutdown can still kill guarded Codex workers."""
+        proc = MagicMock()
+        proc.pid = 56789
+        s = _make_session(
+            sid="proc_codex_global_stop",
+            command="codex-yuna exec --full-auto task",
+            task_id="agent-session",
+        )
+        s.process = proc
+        s.pid = proc.pid
+        s.last_wait_timeout_at = time.time()
+        s.last_wait_timeout_seconds = 60
+        registry._running[s.id] = s
+
+        monkeypatch.setattr(
+            "tools.process_registry.ProcessRegistry._terminate_host_pid",
+            staticmethod(lambda *args, **kwargs: {"method": "os.kill", "fallback_used": True}),
+        )
+
+        killed = registry.kill_all()
+
+        assert killed == 1
+        assert s.exited is True
+        assert s.kill_attempted is True
+
     def test_kill_failed_records_state(self, registry, monkeypatch):
         proc = MagicMock()
         proc.pid = 34567
@@ -964,6 +1047,25 @@ class TestWaitTimeoutMetadata:
         assert result["effective_timeout"] == 1
         assert result["max_wait_timeout"] == 1
         assert result["clamped"] is True
+
+    def test_codex_command_detection_handles_quoted_wrapper_path(self):
+        assert ProcessRegistry._is_codex_command('"$HOME/.local/bin/codex" exec --full-auto task')
+
+    def test_wait_timeout_is_marked_as_wait_window_not_failure(self, registry, monkeypatch):
+        s = _make_session(sid="proc_wait_window", command="codex-yuna exec --full-auto task")
+        registry._running[s.id] = s
+        monkeypatch.setenv("TERMINAL_TIMEOUT", "1")
+
+        result = registry.wait(s.id, timeout=1)
+
+        assert result["status"] == "timeout"
+        assert result["timeout_kind"] == "wait_window_expired"
+        assert result["process_still_running"] is True
+        assert result["is_failure"] is False
+        assert result["codex_guard"] is True
+        assert result["codex_process"] is True
+        assert result["last_wait_timeout_kind"] == "wait_window_expired"
+        assert s.last_wait_timeout_seconds == 1
 
     def test_exited_after_kill_request_is_not_trusted_completion(self, registry):
         s = _make_session(sid="proc_killed_then_zero", exited=True, exit_code=0)

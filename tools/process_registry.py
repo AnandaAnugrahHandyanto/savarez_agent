@@ -112,6 +112,8 @@ class ProcessSession:
     termination_method: str = ""                # psutil/taskkill/os.killpg/os.kill/env.kill/etc.
     terminated_by_agent: bool = False           # Hermes process tool marked this as terminated
     trusted_completion: bool = True             # False after any kill/termination attempt
+    last_wait_timeout_at: float = 0.0           # Last process(wait) window expiry while still running
+    last_wait_timeout_seconds: int = 0           # Effective wait window that expired
     # Watcher/notification metadata (persisted for crash recovery)
     watcher_platform: str = ""
     watcher_chat_id: str = ""
@@ -422,6 +424,54 @@ class ProcessRegistry:
         return _pid_exists(pid)
 
     @staticmethod
+    def _is_codex_command(command: str) -> bool:
+        """Return True for Codex CLI worker commands.
+
+        This intentionally keys off the executable/wrapper name rather than
+        model/provider strings. It protects tracked Codex background processes
+        from being killed just because a Hermes wait window expired.
+        """
+        command_lower = (command or "").lower()
+        if "codex-yuna" in command_lower:
+            return True
+        try:
+            tokens = shlex.split(command or "")
+        except ValueError:
+            tokens = (command or "").replace(";", " ").split()
+        for index, token in enumerate(tokens):
+            exe = os.path.basename(token.strip("'\""))
+            if exe == "codex" and any(t.strip("'\"") == "exec" for t in tokens[index + 1:index + 4]):
+                return True
+        return False
+
+    @staticmethod
+    def _wait_timeout_metadata(session: ProcessSession) -> dict:
+        """Structured metadata for wait-window expiries.
+
+        A process(wait) timeout means Hermes stopped waiting; it does not mean
+        the process failed. Make that machine-readable so the agent can avoid
+        treating a healthy long-running Codex task as failed.
+        """
+        data = {
+            "timeout_kind": "wait_window_expired",
+            "process_still_running": True,
+            "is_failure": False,
+            "recommended_next_action": (
+                "Poll status or wait again; do not kill solely because the wait window expired."
+            ),
+        }
+        if ProcessRegistry._is_codex_command(session.command):
+            data.update({
+                "codex_guard": True,
+                "recommended_next_action": (
+                    "Codex is still running. Use process(action='poll') and inspect git status/diff stat; "
+                    "only kill with force after an explicit user stop request, hard deadline, "
+                    "or evidence that the process is no longer making progress."
+                ),
+            })
+        return data
+
+    @staticmethod
     def _process_state_metadata(session: ProcessSession) -> dict:
         """Return process-state fields that disambiguate natural vs forced exits."""
         kill_related = bool(
@@ -433,6 +483,14 @@ class ProcessRegistry:
         )
         trusted = bool(session.trusted_completion and not kill_related)
         data = {"trusted_completion": trusted}
+        if ProcessRegistry._is_codex_command(session.command):
+            data["codex_process"] = True
+        if session.last_wait_timeout_at:
+            data.update({
+                "last_wait_timeout_at": session.last_wait_timeout_at,
+                "last_wait_timeout_seconds": session.last_wait_timeout_seconds,
+                "last_wait_timeout_kind": "wait_window_expired",
+            })
         if kill_related:
             data.update({
                 "kill_attempted": session.kill_attempted,
@@ -1244,13 +1302,18 @@ class ProcessRegistry:
             "output": strip_ansi(session.output_buffer[-1000:]),
         }
         result.update(timeout_metadata)
+        with session._lock:
+            session.last_wait_timeout_at = time.time()
+            session.last_wait_timeout_seconds = int(effective_timeout)
+        result.update(self._wait_timeout_metadata(session))
+        result.update(self._process_state_metadata(session))
         if timeout_note:
             result["timeout_note"] = timeout_note
         else:
             result["timeout_note"] = f"Waited {effective_timeout}s, process still running"
         return result
 
-    def kill_process(self, session_id: str) -> dict:
+    def kill_process(self, session_id: str, *, force: bool = False, reason: str = "") -> dict:
         """Kill a background process."""
         session = self.get(session_id)
         if session is None:
@@ -1263,6 +1326,26 @@ class ProcessRegistry:
             }
             result.update(self._process_state_metadata(session))
             return result
+
+        if self._is_codex_command(session.command) and session.last_wait_timeout_at and not force:
+            return {
+                "status": "refused",
+                "session_id": session.id,
+                "error": (
+                    "Refusing to kill a running Codex process solely after a process(wait) "
+                    "wait-window timeout. A wait timeout is not a Codex failure."
+                ),
+                "requires_force": True,
+                "force_allowed_when": (
+                    "the user explicitly requested stop, a hard deadline was exceeded, "
+                    "the diff is sufficient and continued work is risky, or polling shows no progress"
+                ),
+                "recommended_next_action": (
+                    "Use process(action='poll') and inspect git status/diff stat before stopping; "
+                    "retry kill with force=true only when one of the force conditions is met."
+                ),
+                **self._process_state_metadata(session),
+            }
 
         self._mark_kill_attempt(session)
         termination_info: dict = {}
@@ -1474,17 +1557,26 @@ class ProcessRegistry:
                 for s in self._running.values()
             )
 
-    def kill_all(self, task_id: str = None) -> int:
-        """Kill all running processes, optionally filtered by task_id. Returns count killed."""
+    def kill_all(self, task_id: str = None, *, force: Optional[bool] = None, reason: str = "") -> int:
+        """Kill running processes, optionally filtered by task_id.
+
+        Global stop/shutdown calls (task_id is None) are explicit operator
+        actions and force termination. Per-agent cleanup calls pass a task_id;
+        those should respect the Codex wait-timeout guard so a normal agent
+        close/cache cleanup does not stop a healthy long-running Codex worker.
+        """
         with self._lock:
             targets = [
                 s for s in self._running.values()
                 if (task_id is None or s.task_id == task_id) and not s.exited
             ]
 
+        kill_force = task_id is None if force is None else force
+        kill_reason = reason or ("global kill_all" if kill_force else "scoped kill_all")
+
         killed = 0
         for session in targets:
-            result = self.kill_process(session.id)
+            result = self.kill_process(session.id, force=kill_force, reason=kill_reason)
             if result.get("status") in {"killed", "already_exited"}:
                 killed += 1
         return killed
@@ -1731,6 +1823,15 @@ PROCESS_SCHEMA = {
                 "type": "integer",
                 "description": "Max lines to return for 'log' action",
                 "minimum": 1
+            },
+            "force": {
+                "type": "boolean",
+                "description": "For 'kill': bypass Codex wait-timeout guard. Use only after an explicit user stop request, hard deadline, sufficient candidate diff, or no-progress evidence.",
+                "default": False
+            },
+            "reason": {
+                "type": "string",
+                "description": "For 'kill': short reason for force=true, e.g. 'user requested stop' or 'hard deadline exceeded'."
             }
         },
         "required": ["action"]
@@ -1757,7 +1858,11 @@ def _handle_process(args, **kw):
         elif action == "wait":
             return json.dumps(process_registry.wait(session_id, timeout=args.get("timeout")), ensure_ascii=False)
         elif action == "kill":
-            return json.dumps(process_registry.kill_process(session_id), ensure_ascii=False)
+            return json.dumps(process_registry.kill_process(
+                session_id,
+                force=bool(args.get("force", False)),
+                reason=str(args.get("reason", "")),
+            ), ensure_ascii=False)
         elif action == "write":
             return json.dumps(process_registry.write_stdin(session_id, str(args.get("data", ""))), ensure_ascii=False)
         elif action == "submit":
