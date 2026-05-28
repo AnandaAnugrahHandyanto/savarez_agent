@@ -380,21 +380,45 @@ def compress_context(
             agent.commit_memory_session(messages)
             agent._session_db.end_session(agent.session_id, "compression")
             old_session_id = agent.session_id
-            agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+            new_session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+            # Retry create_session to survive transient SQLite lock contention.
+            # Without this, the new session_id is set but state.db has no row,
+            # producing an orphan session invisible in the WebUI sidebar (#33906).
+            import sqlite3 as _sqlite3
+            import time as _time
+
+            _created = False
+            for _attempt in range(3):
+                try:
+                    agent._session_db.create_session(
+                        session_id=new_session_id,
+                        source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                        model=agent.model,
+                        model_config=agent._session_init_model_config,
+                        parent_session_id=old_session_id,
+                    )
+                    _created = True
+                    break
+                except _sqlite3.OperationalError:
+                    if _attempt < 2:
+                        _time.sleep(0.1 * (_attempt + 1))
+                    else:
+                        raise
+
+            if not _created:
+                # Should be unreachable (the loop either succeeds or raises),
+                # but guard against logic errors.
+                raise RuntimeError("create_session retry loop exited without success")
+
+            # Only commit the session_id rotation AFTER state.db write succeeds.
+            agent.session_id = new_session_id
             try:
                 from gateway.session_context import set_current_session_id
 
                 set_current_session_id(agent.session_id)
             except Exception:
                 os.environ["HERMES_SESSION_ID"] = agent.session_id
-            agent._session_db_created = False
-            agent._session_db.create_session(
-                session_id=agent.session_id,
-                source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
-                model=agent.model,
-                model_config=agent._session_init_model_config,
-                parent_session_id=old_session_id,
-            )
             agent._session_db_created = True
             # Auto-number the title for the continuation session
             if old_title:
@@ -408,6 +432,19 @@ def compress_context(
             agent._last_flushed_db_idx = 0
         except Exception as e:
             logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
+            # Roll back session_id so the agent stays on the old, registered session
+            # instead of continuing with an orphan session_id that state.db knows nothing about.
+            _rollback_sid = locals().get("old_session_id")
+            if _rollback_sid and agent.session_id != _rollback_sid:
+                logger.info("Rolling back session_id to %s after compression split failure", _rollback_sid)
+                agent.session_id = _rollback_sid
+            # Reopen the old session in state.db — end_session() already marked it
+            # as ended, but we're staying on it, so it must be active again.
+            if _rollback_sid:
+                try:
+                    agent._session_db.reopen_session(_rollback_sid)
+                except Exception:
+                    logger.debug("Could not reopen old session %s after rollback", _rollback_sid, exc_info=True)
 
     # Notify the context engine that the session_id rotated because of
     # compression (not a fresh /new). Plugin engines (e.g. hermes-lcm) use
