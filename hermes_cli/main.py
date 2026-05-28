@@ -9538,6 +9538,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
             except OSError:
                 pass
 
+        # Local patch: allow external schedulers (cron/systemd timer) to skip
+        # the gateway restart.  When --no-restart is passed, print a hint and
+        # return cleanly; the external orchestrator is responsible for running
+        # a delayed restart (see hermes-auto-update-restart-gateway.sh).
+        if getattr(args, "no_restart", False):
+            print("  ℹ Skipping gateway restart (--no-restart flag set)")
+            print("    Restart later with: hermes gateway restart")
+            print()
+            print("Tip: You can now select a provider and model:")
+            print("  hermes model              # Select provider and model")
+            return
+
         # Auto-restart ALL gateways after update.
         # The code update (git pull) is shared across all profiles, so every
         # running gateway needs restarting to pick up the new code.
@@ -13752,6 +13764,12 @@ Examples:
         action="store_true",
         default=False,
         help="Windows: proceed with the update even when another hermes.exe is detected. The concurrent process will likely cause WinError 32 warnings and may leave a reboot-deferred .exe replacement.",
+    )
+    update_parser.add_argument(
+        "--no-restart",
+        action="store_true",
+        default=False,
+        help="Skip the automatic gateway restart after update. Use this when an external scheduler (cron/systemd timer) will restart the gateway at a later time.",
     )
     update_parser.set_defaults(func=cmd_update)
 
