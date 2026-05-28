@@ -33,7 +33,7 @@ import os
 import re
 import traceback
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set
 
 try:
@@ -218,6 +218,9 @@ class DingTalkAdapter(BasePlatformAdapter):
         # (tool-progress + stream-consumer both finalizing their cards).
         # Reset each inbound message.
         self._done_emoji_fired: Set[str] = set()
+        # OAPI token cache for media upload + groupMessages/send
+        self._oapi_token: Optional[str] = None
+        self._oapi_token_expiry: Optional[datetime] = None
         # Cards in streaming state per chat: chat_id -> { out_track_id -> last_content }.
         # Every `send()` creates+finalizes a card (closed state).  A subsequent
         # `edit_message(finalize=False)` re-opens the card (DingTalk's API
@@ -357,19 +360,6 @@ class DingTalkAdapter(BasePlatformAdapter):
                 task.cancel()
             await asyncio.gather(*self._bg_tasks, return_exceptions=True)
             self._bg_tasks.clear()
-
-        # Finalize any open streaming cards before the HTTP client closes so
-        # they don't stay stuck in streaming state on DingTalk's UI after
-        # a gateway restart.  _close_streaming_siblings handles its own
-        # per-card exceptions; the outer try is a safety net for token fetch.
-        for _chat_id in list(self._streaming_cards):
-            try:
-                await self._close_streaming_siblings(_chat_id)
-            except Exception as _exc:
-                logger.debug(
-                    "[%s] Failed to finalize streaming card on disconnect for %s: %s",
-                    self.name, _chat_id, _exc,
-                )
 
         if self._http_client:
             await self._http_client.aclose()
@@ -764,6 +754,17 @@ class DingTalkAdapter(BasePlatformAdapter):
                 media_types.append("image")
                 msg_type = MessageType.PHOTO
 
+        # Check for raw file payload preserved from msgtype=file callbacks.
+        # dingtalk-stream does not currently map msgtype=file content into
+        # a first-class SDK attribute.
+        file_content = getattr(message, "file_content", None)
+        if file_content:
+            dl_code = file_content.get("downloadCode") or file_content.get("download_code")
+            if dl_code:
+                media_urls.append(dl_code)
+                media_types.append("application/octet-stream")
+                msg_type = MessageType.DOCUMENT
+
         # Check for rich text with mixed content
         rich_text = getattr(message, "rich_text_content", None) or getattr(
             message, "rich_text", None
@@ -787,14 +788,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                             elif mapped == "audio":
                                 media_types.append("audio")
                                 if msg_type == MessageType.TEXT:
-                                    # DingTalk's "voice" rich-text item is a
-                                    # native voice note — route through STT.
-                                    # "audio" comes from file uploads only;
-                                    # keep those as AUDIO (no auto-STT).
-                                    if item_type == "voice":
-                                        msg_type = MessageType.VOICE
-                                    else:
-                                        msg_type = MessageType.AUDIO
+                                    msg_type = MessageType.AUDIO
                             elif mapped == "video":
                                 media_types.append("video")
                                 if msg_type == MessageType.TEXT:
@@ -807,12 +801,21 @@ class DingTalkAdapter(BasePlatformAdapter):
         msg_type_str = getattr(message, "message_type", "") or ""
         if msg_type_str == "picture" and not media_urls:
             msg_type = MessageType.PHOTO
+        elif msg_type_str == "file":
+            if media_urls:
+                msg_type = MessageType.DOCUMENT
+            else:
+                msg_type = MessageType.TEXT
         elif msg_type_str == "richText":
-            msg_type = (
-                MessageType.PHOTO
-                if any("image" in t for t in media_types)
-                else MessageType.TEXT
-            )
+            if any("image" in t for t in media_types):
+                msg_type = MessageType.PHOTO
+            elif media_urls:
+                # Rich-text file messages arrive as richText with a downloadCode.
+                # Preserve them as documents so the gateway document pipeline can
+                # parse cached spreadsheets instead of reducing the event to text.
+                msg_type = MessageType.DOCUMENT
+            else:
+                msg_type = MessageType.TEXT
 
         return msg_type, media_urls, media_types
 
@@ -898,7 +901,7 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         payload = {
             "msgtype": "markdown",
-            "markdown": {"title": "Hermes", "text": normalized},
+            "markdown": {"title": "智能院bot", "text": normalized},
         }
 
         try:
@@ -929,6 +932,137 @@ class DingTalkAdapter(BasePlatformAdapter):
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """DingTalk does not support typing indicators."""
         pass
+
+    # -- OAPI helpers (media upload + OpenAPI send) -------------------------
+
+    async def _get_oapi_access_token(self) -> Optional[str]:
+        """Get OAPI access token with 7000s cache for media upload + groupMessages/send."""
+        now = datetime.now(tz=timezone.utc)
+        if self._oapi_token and self._oapi_token_expiry and now < self._oapi_token_expiry:
+            return self._oapi_token
+
+        if not self._client_id or not self._client_secret:
+            logger.warning("[%s] Missing DINGTALK_CLIENT_ID/SECRET for OAPI", self.name)
+            return None
+
+        try:
+            resp = await self._http_client.get(
+                "https://oapi.dingtalk.com/gettoken",
+                params={"appkey": self._client_id, "appsecret": self._client_secret},
+                timeout=10.0,
+            )
+            data = resp.json()
+            if data.get("errcode") != 0:
+                logger.warning("[%s] OAPI gettoken failed: %s", self.name, data)
+                return None
+            self._oapi_token = data["access_token"]
+            self._oapi_token_expiry = now + timedelta(seconds=7000)
+            return self._oapi_token
+        except Exception as e:
+            logger.warning("[%s] OAPI gettoken error: %s", self.name, e)
+            return None
+
+    async def _upload_media(self, file_path: str, media_type: str = "image", file_name: Optional[str] = None) -> Optional[str]:
+        """Upload media to DingTalk OAPI, return media_id.
+
+        ``file_name`` overrides the multipart filename (for display purposes).
+        Chinese filenames are fully supported via UTF-8 encoding.
+        """
+        token = await self._get_oapi_access_token()
+        if not token:
+            return None
+
+        try:
+            # Use ASCII-safe filename for upload (Chinese names cause 40035)
+            upload_name = file_name or os.path.basename(file_path)
+            files = {"media": (upload_name, open(file_path, "rb"), "application/octet-stream")}
+            resp = await self._http_client.post(
+                "https://oapi.dingtalk.com/media/upload",
+                params={"access_token": token, "type": media_type},
+                files=files,
+                timeout=30.0,
+            )
+            data = resp.json()
+            if data.get("errcode") != 0:
+                logger.warning("[%s] Media upload failed: %s", self.name, data)
+                return None
+            media_id = data.get("media_id")
+            logger.info("[%s] Media uploaded: %s -> %s", self.name, file_path, media_id)
+            return media_id
+        except Exception as e:
+            logger.warning("[%s] Media upload error: %s", self.name, e)
+            return None
+
+    async def _send_via_openapi(
+        self, chat_id: str, msg_key: str, msg_param: str
+    ) -> SendResult:
+        """Send a message via DingTalk OpenAPI groupMessages/send."""
+        token = await self._get_oapi_access_token()
+        if not token:
+            return SendResult(success=False, error="No OAPI access token")
+
+        headers = {
+            "x-acs-dingtalk-access-token": token,
+            "Content-Type": "application/json",
+        }
+        body = {
+            "robotCode": self._robot_code,
+            "openConversationId": chat_id,
+            "msgKey": msg_key,
+            "msgParam": msg_param,
+        }
+
+        try:
+            resp = await self._http_client.post(
+                "https://api.dingtalk.com/v1.0/robot/groupMessages/send",
+                headers=headers,
+                json=body,
+                timeout=15.0,
+            )
+            if resp.status_code < 300:
+                return SendResult(success=True, message_id=resp.json().get("processQueryKey", ""))
+            logger.warning("[%s] OpenAPI send failed HTTP %d: %s", self.name, resp.status_code, resp.text[:200])
+            return SendResult(success=False, error=f"HTTP {resp.status_code}")
+        except Exception as e:
+            logger.warning("[%s] OpenAPI send error: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    async def _send_via_openapi_dm(
+        self, staff_id: str, msg_key: str, msg_param: str
+    ) -> SendResult:
+        """Send a message via DingTalk OpenAPI oToMessages/batchSend (DM)."""
+        token = await self._get_oapi_access_token()
+        if not token:
+            return SendResult(success=False, error="No OAPI access token")
+
+        headers = {
+            "x-acs-dingtalk-access-token": token,
+            "Content-Type": "application/json",
+        }
+        body = {
+            "robotCode": self._robot_code,
+            "userIds": [staff_id],
+            "msgKey": msg_key,
+            "msgParam": msg_param,
+        }
+
+        try:
+            resp = await self._http_client.post(
+                "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend",
+                headers=headers,
+                json=body,
+                timeout=15.0,
+            )
+            if resp.status_code < 300:
+                return SendResult(success=True, message_id=resp.json().get("processQueryKey", ""))
+            logger.warning(
+                "[%s] OpenAPI DM send failed HTTP %d: %s",
+                self.name, resp.status_code, resp.text[:200],
+            )
+            return SendResult(success=False, error=f"HTTP {resp.status_code}")
+        except Exception as e:
+            logger.warning("[%s] OpenAPI DM send error: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
 
     async def send_image(
         self,
@@ -963,14 +1097,52 @@ class DingTalkAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """DingTalk webhook replies cannot send local image files directly."""
-        return SendResult(
-            success=False,
-            error=(
-                "DingTalk session webhook replies do not support local image uploads. "
-                "Only markdown/text replies are supported without OpenAPI media upload."
-            ),
-        )
+        """Send a local image file via DingTalk OpenAPI media upload + send.
+
+        Uploads the image via OAPI media/upload, then sends it as a native
+        image message via robot/groupMessages/send (group) or
+        robot/oToMessages/batchSend (DM). Falls back to markdown if upload
+        or send fails.
+        """
+        # Upload to DingTalk media store
+        media_id = await self._upload_media(image_path, "image")
+        if not media_id:
+            logger.warning("[%s] Image upload failed, falling back to markdown", self.name)
+            return await self._send_image_fallback(chat_id, image_path, caption)
+
+        msg_param = json.dumps({"photoURL": media_id})
+
+        # Determine DM vs group and send
+        message = self._message_contexts.get(chat_id)
+        staff_id = getattr(message, "sender_staff_id", "") if message else ""
+        if staff_id:
+            result = await self._send_via_openapi_dm(staff_id, "sampleImageMsg", msg_param)
+        else:
+            result = await self._send_via_openapi(chat_id, "sampleImageMsg", msg_param)
+
+        if result.success:
+            logger.info(
+                "[%s] Image sent via OpenAPI: %s -> %s",
+                self.name, image_path, result.message_id,
+            )
+            if caption:
+                await self.send(chat_id, content=caption, metadata=metadata)
+            return result
+
+        logger.warning("[%s] Image OpenAPI send failed, falling back to markdown", self.name)
+        return await self._send_image_fallback(chat_id, image_path, caption)
+
+    async def _send_image_fallback(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+    ) -> SendResult:
+        """Fallback: send image as markdown when OpenAPI upload/send fails."""
+        content = f"[图片上传失败: {os.path.basename(image_path)}]"
+        if caption:
+            content = f"{caption}\n\n{content}"
+        return await self.send(chat_id, content=content)
 
     async def send_document(
         self,
@@ -982,14 +1154,59 @@ class DingTalkAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """DingTalk webhook replies cannot send local file attachments directly."""
-        return SendResult(
-            success=False,
-            error=(
-                "DingTalk session webhook replies do not support local file attachments. "
-                "Only markdown/text replies are supported without OpenAPI message send."
-            ),
-        )
+        """Send a local file via DingTalk OpenAPI media upload + send.
+
+        Uploads the file via OAPI media/upload?type=file, then sends it as a
+        native file message via robot/groupMessages/send (group) or
+        robot/oToMessages/batchSend (DM) using msgKey=sampleFile.
+
+        Falls back to markdown announcement if upload or send fails.
+        """
+        # Determine display name
+        display_name = file_name or os.path.basename(file_path)
+
+        media_id = await self._upload_media(file_path, "file")
+        if not media_id:
+            logger.warning("[%s] File upload failed, falling back to markdown", self.name)
+            return await self._send_document_fallback(chat_id, display_name, caption)
+
+        msg_param = json.dumps({
+            "mediaId": media_id,
+            "fileName": display_name,
+            "fileType": "file",
+        })
+
+        # Determine DM vs group and send
+        message = self._message_contexts.get(chat_id)
+        staff_id = getattr(message, "sender_staff_id", "") if message else ""
+        if staff_id:
+            result = await self._send_via_openapi_dm(staff_id, "sampleFile", msg_param)
+        else:
+            result = await self._send_via_openapi(chat_id, "sampleFile", msg_param)
+
+        if result.success:
+            logger.info(
+                "[%s] File sent via OpenAPI: %s (%s) -> %s",
+                self.name, display_name, file_path, result.message_id,
+            )
+            if caption:
+                await self.send(chat_id, content=caption, metadata=metadata)
+            return result
+
+        logger.warning("[%s] File OpenAPI send failed, falling back to markdown", self.name)
+        return await self._send_document_fallback(chat_id, display_name, caption)
+
+    async def _send_document_fallback(
+        self,
+        chat_id: str,
+        display_name: str,
+        caption: Optional[str] = None,
+    ) -> SendResult:
+        """Fallback: announce file upload failure as markdown."""
+        content = f"[文件发送失败: {display_name}]"
+        if caption:
+            content = f"{caption}\n\n{content}"
+        return await self.send(chat_id, content=content)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about a DingTalk conversation."""
@@ -1149,6 +1366,8 @@ class DingTalkAdapter(BasePlatformAdapter):
         progress) track their own ids independently so two parallel flows
         on the same chat_id don't interfere.
         """
+        if not self._card_sdk:
+            return SendResult(success=False, error="Card SDK not available")
         if not message_id:
             return SendResult(success=False, error="message_id required")
         token = await self._get_access_token()
@@ -1304,9 +1523,19 @@ class DingTalkAdapter(BasePlatformAdapter):
         # 1. Single image content
         img_content = getattr(message, "image_content", None)
         if img_content and getattr(img_content, "download_code", None):
-            codes_to_resolve.append((img_content, "download_code"))
+            codes_to_resolve.append((img_content, "download_code", None))
 
-        # 2. Rich text list
+        # 2. File content from msgtype=file callbacks
+        file_content = getattr(message, "file_content", None)
+        if file_content:
+            for key in ("downloadCode", "download_code"):
+                if file_content.get(key):
+                    # Extract original filename from file_content
+                    filename = file_content.get("fileName") or file_content.get("filename")
+                    codes_to_resolve.append((file_content, key, filename))
+                    break
+
+        # 3. Rich text list
         rich_text = getattr(message, "rich_text_content", None)
         if rich_text:
             rich_list = getattr(rich_text, "rich_text_list", []) or []
@@ -1314,33 +1543,53 @@ class DingTalkAdapter(BasePlatformAdapter):
                 if isinstance(item, dict):
                     for key in ("downloadCode", "pictureDownloadCode", "download_code"):
                         if item.get(key):
-                            codes_to_resolve.append((item, key))
+                            # Try to get filename from rich text item
+                            filename = item.get("fileName") or item.get("filename")
+                            codes_to_resolve.append((item, key, filename))
 
         if not codes_to_resolve:
             return
 
         # Resolve all codes in parallel
         tasks = []
-        for obj, key in codes_to_resolve:
+        for obj, key, filename in codes_to_resolve:
             code = getattr(obj, key, None) if hasattr(obj, key) else obj.get(key)
             if code:
                 tasks.append(
-                    self._fetch_download_url(code, robot_code, token, obj, key)
+                    self._fetch_download_url(code, robot_code, token, obj, key, filename)
                 )
 
         await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _fetch_download_url(
-        self, code: str, robot_code: str, token: str, obj, key: str
-    ) -> None:
-        """Fetch download URL for a single code using the robot SDK."""
+        self, code: str, robot_code: str, token: str, obj, key: str,
+        filename: Optional[str] = None,
+    ) -> Optional[str]:
+        """Download and cache a DingTalk media file, returning local path.
+        
+        For file messages (msgtype=file), downloads the actual file content
+        and saves it to the document cache with the original filename.
+        
+        Args:
+            code: Download code from DingTalk callback
+            robot_code: Robot's client ID
+            token: Access token
+            obj: Object to update (dict or attr object)
+            key: Attribute/key to set with the local path
+            filename: Original filename (from file_content.fileName)
+        
+        Returns:
+            Local file path if successful, None otherwise
+        """
         if not self._robot_sdk:
             logger.warning(
                 "[%s] Robot SDK not initialized, cannot resolve media code",
                 self.name,
             )
-            return
+            return None
+        
         try:
+            # Step 1: Get download URL from DingTalk API
             request = dingtalk_robot_models.RobotMessageFileDownloadRequest(
                 download_code=code,
                 robot_code=robot_code,
@@ -1353,21 +1602,77 @@ class DingTalkAdapter(BasePlatformAdapter):
                 request, headers, runtime
             )
             body = response.body if response else None
-            if body:
-                url = getattr(body, "download_url", None)
-                if url:
-                    if hasattr(obj, key):
-                        setattr(obj, key, url)
-                    elif isinstance(obj, dict):
-                        obj[key] = url
-            else:
+            if not body:
                 logger.warning(
                     "[%s] Failed to download media: empty response for code %s",
                     self.name,
                     code,
                 )
+                return None
+            
+            download_url = getattr(body, "download_url", None)
+            if not download_url:
+                logger.warning(
+                    "[%s] No download_url in response for code %s",
+                    self.name,
+                    code,
+                )
+                return None
+            
+            # Step 2: Download the file content
+            resp = await self._http_client.get(download_url, timeout=60.0)
+            resp.raise_for_status()
+            
+            # Step 3: Determine filename
+            if not filename:
+                # Try to extract from Content-Disposition header
+                content_disp = resp.headers.get("content-disposition", "")
+                if "filename=" in content_disp:
+                    import re
+                    match = re.search(r'filename[*]?=["\']?([^"\';\s]+)', content_disp)
+                    if match:
+                        filename = match.group(1)
+                if not filename:
+                    filename = f"dingtalk_file_{code[:8]}"
+            
+            # Sanitize filename (remove path separators, keep extension)
+            filename = os.path.basename(filename)
+            if not filename:
+                filename = f"dingtalk_file_{code[:8]}"
+            
+            # Step 4: Cache the file
+            from gateway.platforms.base import cache_document_from_bytes, get_document_cache_dir
+            
+            # Create dingtalk-specific subdirectory with date
+            cache_dir = get_document_cache_dir() / "dingtalk" / datetime.now().strftime("%Y-%m-%d")
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Generate unique filename with UUID prefix
+            import uuid
+            uuid_prefix = uuid.uuid4().hex[:8]
+            cached_filename = f"{uuid_prefix}_{filename}"
+            local_path = cache_dir / cached_filename
+            
+            # Write file
+            local_path.write_bytes(resp.content)
+            logger.info(
+                "[%s] Cached DingTalk media file: %s (%d bytes)",
+                self.name,
+                local_path,
+                len(resp.content),
+            )
+            
+            # Step 5: Update the object with local path
+            if hasattr(obj, key):
+                setattr(obj, key, str(local_path))
+            elif isinstance(obj, dict):
+                obj[key] = str(local_path)
+            
+            return str(local_path)
+            
         except Exception as e:
             logger.error("[%s] Error resolving media code %s: %s", self.name, code, e)
+            return None
 
     @staticmethod
     def _normalize_markdown(text: str) -> str:
@@ -1415,16 +1720,6 @@ class _IncomingHandler(
         self._adapter = adapter
         self._loop = loop
 
-    def pre_start(self) -> None:
-        """No-op pre-start hook required by dingtalk-stream SDK.
-
-        The SDK calls ``pre_start()`` on every registered handler before
-        opening the WebSocket connection.  Without this method, the SDK
-        raises ``AttributeError: '_IncomingHandler' object has no
-        attribute 'pre_start'`` and kills the stream connection.
-        """
-        return
-
     async def process(self, message: "CallbackMessage"):
         """Called by dingtalk-stream (>=0.20) when a message arrives.
 
@@ -1467,6 +1762,14 @@ class _IncomingHandler(
                 )
                 if raw_flag:
                     chatbot_msg.is_in_at_list = True
+
+            # Preserve raw file content for msgtype=file callbacks.
+            # dingtalk-stream does not map msgtype=file content into a first-class
+            # SDK attribute, so we preserve the raw file payload for media download.
+            if isinstance(data, dict) and data.get("msgtype") == "file":
+                raw_content = data.get("content")
+                if isinstance(raw_content, dict):
+                    chatbot_msg.file_content = raw_content
 
             msg_id = getattr(chatbot_msg, "message_id", None) or ""
             conversation_id = getattr(chatbot_msg, "conversation_id", None) or ""
