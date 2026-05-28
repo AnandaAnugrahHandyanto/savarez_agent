@@ -13,7 +13,7 @@ from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
 from hermes_cli.env_loader import load_hermes_dotenv
-from hermes_constants import display_hermes_home
+from hermes_constants import display_hermes_home, _is_hermes_config
 
 PROJECT_ROOT = get_project_root()
 HERMES_HOME = get_hermes_home()
@@ -541,6 +541,17 @@ def run_doctor(args):
             check_warn(name, "(optional, not installed)")
     
     _section("Configuration Files")
+
+    # Check for double-nested HERMES_HOME (#33913)
+    if HERMES_HOME.name == ".hermes" and _is_hermes_config(HERMES_HOME.parent / "config.yaml"):
+        check_warn(
+            "Double-nested Hermes home detected",
+            f"{HERMES_HOME} — parent {HERMES_HOME.parent} already has config.yaml",
+        )
+        issues.append(
+            f"Set HERMES_HOME={HERMES_HOME.parent} instead of {HERMES_HOME}"
+        )
+
     # Check ~/.hermes/.env (primary location for user config)
     env_path = HERMES_HOME / '.env'
     if env_path.exists():

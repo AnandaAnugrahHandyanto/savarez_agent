@@ -174,6 +174,128 @@ class TestParseReasoningEffort:
         assert documented.issubset(set(VALID_REASONING_EFFORTS))
 
 
+class TestDoubleNestingGuard:
+    """Tests for double-.hermes path guard (#33913)."""
+
+    # Minimal content that _is_hermes_config() recognizes
+    _HERMES_CONFIG = "model:\n  default: test\n  provider: custom\nterminal:\n  backend: local\n"
+
+    def test_fallback_no_double_nesting_when_parent_has_hermes_config(self, tmp_path, monkeypatch):
+        """When HOME contains a Hermes config, fallback returns HOME, not HOME/.hermes."""
+        fake_home = tmp_path / "opt" / "data"
+        fake_home.mkdir(parents=True)
+        (fake_home / "config.yaml").write_text(self._HERMES_CONFIG)
+
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+
+        from hermes_constants import set_hermes_home_override, get_hermes_home
+        import hermes_constants
+        hermes_constants._docker_guard_checked = False
+        hermes_constants._docker_home_override = None
+        set_hermes_home_override(None)
+
+        result = get_hermes_home()
+        assert result == fake_home, f"Expected {fake_home}, got {result}"
+        assert result.name != ".hermes"
+
+    def test_fallback_normal_when_parent_has_no_config(self, tmp_path, monkeypatch):
+        """When HOME has no config.yaml, fallback returns HOME/.hermes as usual."""
+        fake_home = tmp_path / "home" / "user"
+        fake_home.mkdir(parents=True)
+
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+
+        from hermes_constants import set_hermes_home_override, get_hermes_home
+        import hermes_constants
+        hermes_constants._docker_guard_checked = False
+        hermes_constants._docker_home_override = None
+        set_hermes_home_override(None)
+
+        result = get_hermes_home()
+        assert result == fake_home / ".hermes"
+
+    def test_fallback_ignores_non_hermes_config(self, tmp_path, monkeypatch):
+        """When HOME has a config.yaml from another tool (Ansible, Helm), guard does NOT fire."""
+        fake_home = tmp_path / "home" / "user"
+        fake_home.mkdir(parents=True)
+        # Non-Hermes config — no model:/terminal:/gateway: keys
+        (fake_home / "config.yaml").write_text("inventory:\n  hosts:\n    - localhost\n")
+
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+
+        from hermes_constants import set_hermes_home_override, get_hermes_home
+        import hermes_constants
+        hermes_constants._docker_guard_checked = False
+        hermes_constants._docker_home_override = None
+        set_hermes_home_override(None)
+
+        result = get_hermes_home()
+        # Should return the normal fallback, not the parent
+        assert result == fake_home / ".hermes"
+
+    def test_explicit_hermes_home_warns_on_double_nesting(self, tmp_path, monkeypatch, capsys):
+        """When HERMES_HOME=/opt/data/.hermes and parent has Hermes config, warn."""
+        nested = tmp_path / "opt" / "data" / ".hermes"
+        nested.mkdir(parents=True)
+        (nested.parent / "config.yaml").write_text(self._HERMES_CONFIG)
+
+        monkeypatch.setenv("HERMES_HOME", str(nested))
+
+        from hermes_constants import set_hermes_home_override, get_hermes_home
+        import hermes_constants
+        hermes_constants._explicit_hh_warned = False
+        set_hermes_home_override(None)
+
+        result = get_hermes_home()
+        assert result == nested  # Still returns the explicit value
+        captured = capsys.readouterr()
+        assert "did you mean" in captured.err.lower()
+
+    def test_explicit_hermes_home_no_warning_when_clean(self, tmp_path, monkeypatch, capsys):
+        """When HERMES_HOME=/opt/data (clean), no warning."""
+        clean = tmp_path / "opt" / "data"
+        clean.mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_HOME", str(clean))
+
+        from hermes_constants import set_hermes_home_override, get_hermes_home
+        import hermes_constants
+        hermes_constants._explicit_hh_warned = False
+        set_hermes_home_override(None)
+
+        result = get_hermes_home()
+        assert result == clean
+        captured = capsys.readouterr()
+        assert "double-nested" not in captured.err.lower()
+
+    def test_guard_warns_only_once_and_returns_consistent_path(self, tmp_path, monkeypatch, capsys):
+        """Guard caches and only warns once per process. Return value is consistent."""
+        fake_home = tmp_path / "opt" / "data"
+        fake_home.mkdir(parents=True)
+        (fake_home / "config.yaml").write_text(self._HERMES_CONFIG)
+
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+
+        from hermes_constants import set_hermes_home_override, get_hermes_home
+        import hermes_constants
+        hermes_constants._docker_guard_checked = False
+        hermes_constants._docker_home_override = None
+        set_hermes_home_override(None)
+
+        first_result = get_hermes_home()
+        first_err = capsys.readouterr().err
+        second_result = get_hermes_home()
+        second_err = capsys.readouterr().err
+
+        assert "guard" in first_err.lower()
+        assert second_err == ""  # No second warning
+        assert first_result == second_result == fake_home  # Consistent path
+
+
 class TestSecureParentDir:
     """Tests for secure_parent_dir() — prevents chmod on / or top-level dirs."""
 

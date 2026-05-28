@@ -604,6 +604,22 @@ def _print_setup_summary(config: dict, hermes_home):
     )
     print()
 
+    # Warn if wizard path differs from what the runtime will use (#33913)
+    # get_hermes_home() is safe here — its stderr warnings are once-cached.
+    from hermes_constants import get_hermes_home as _ghh
+    _runtime_home = _ghh()
+    _config_parent = get_config_path().parent
+    if _config_parent != _runtime_home:
+        print(
+            color(
+                f"   ⚠️  WARNING: Setup wrote to {_config_parent}\n"
+                f"      but runtime will read from {_runtime_home}\n"
+                f"      Fix: export HERMES_HOME={_config_parent}",
+                Colors.RED,
+            )
+        )
+        print()
+
     print(color("─" * 60, Colors.DIM))
     print()
     print(color("📝 To edit your configuration:", Colors.CYAN, Colors.BOLD))

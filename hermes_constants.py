@@ -40,6 +40,31 @@ def get_hermes_home_override() -> str | None:
     return str(override)
 
 
+def _is_hermes_config(path: "Path") -> bool:
+    """Check if a config.yaml looks like a Hermes config (not Ansible, Helm, etc.).
+
+    Hermes configs always have a top-level ``model:`` key with nested
+    ``default:`` or ``provider:``.  Checking for ``model:`` alone is
+    insufficient — we also require either ``terminal:`` or ``gateway:``
+    to avoid false-positives with other ML tools.
+    """
+    import re
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")[:2048]
+    except OSError:
+        return False
+    # Fast heuristic: look for distinctive top-level keys (anchored to start-of-line)
+    has_model = bool(re.search(r"^model:", text, re.MULTILINE))
+    has_hermes_specific = bool(re.search(r"^(terminal|gateway|skills):", text, re.MULTILINE))
+    return has_model and has_hermes_specific
+
+
+# Module-level cache for the Docker guard correction
+_docker_guard_checked: bool = False
+_docker_home_override: "Path | None" = None
+_explicit_hh_warned: bool = False
+
+
 def get_hermes_home() -> Path:
     """Return the Hermes home directory (default: ~/.hermes).
 
@@ -62,7 +87,24 @@ def get_hermes_home() -> Path:
 
     val = os.environ.get("HERMES_HOME", "").strip()
     if val:
-        return Path(val)
+        resolved = Path(val)
+        # Warn once if HERMES_HOME points to a double-nested .hermes path
+        # (e.g. HERMES_HOME=/opt/data/.hermes when /opt/data has a Hermes config)
+        global _explicit_hh_warned
+        if not _explicit_hh_warned and resolved.name == ".hermes" and _is_hermes_config(resolved.parent / "config.yaml"):
+            _explicit_hh_warned = True
+            import sys
+            msg = (
+                f"[HERMES_HOME warning] HERMES_HOME={val} looks double-nested — "
+                f"{resolved.parent} already contains a Hermes config. "
+                f"Did you mean HERMES_HOME={resolved.parent}?"
+            )
+            try:
+                sys.stderr.write(msg + "\n")
+                sys.stderr.flush()
+            except Exception:
+                pass
+        return resolved
 
     # Guard: if a non-default profile is sticky-active, warn once that
     # the fallback to the default profile is almost certainly wrong.
@@ -98,7 +140,35 @@ def get_hermes_home() -> Path:
             except Exception:
                 pass
 
-    return Path.home() / ".hermes"
+    default_path = Path.home() / ".hermes"
+
+    # Guard: if the fallback would produce a double-nested .hermes path
+    # (e.g. /opt/data/.hermes when HOME=/opt/data in Docker), detect it.
+    # This happens when the user's home directory already IS a Hermes home
+    # (contains a Hermes config) — appending .hermes would be wrong.
+    global _docker_guard_checked, _docker_home_override
+    if _docker_home_override is not None:
+        return _docker_home_override
+    if not _docker_guard_checked:
+        _docker_guard_checked = True
+        parent = Path.home()
+        if _is_hermes_config(parent / "config.yaml"):
+            _docker_home_override = parent
+            import sys
+            msg = (
+                f"[HERMES_HOME guard] ~/.hermes resolves to {default_path}, but "
+                f"{parent} already contains a Hermes config — this looks like a "
+                f"double-nested Hermes home. Using {parent} instead. "
+                f"Set HERMES_HOME={parent} explicitly to silence this warning."
+            )
+            try:
+                sys.stderr.write(msg + "\n")
+                sys.stderr.flush()
+            except Exception:
+                pass
+            return parent
+
+    return default_path
 
 
 def get_default_hermes_root() -> Path:
