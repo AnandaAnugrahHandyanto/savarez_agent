@@ -397,6 +397,21 @@ class ToolRegistry:
         entry = self.get_entry(name)
         if not entry:
             return json.dumps({"error": f"Unknown tool: {name}"})
+        # Filter kwargs by handler signature so callers can pass cross-cutting
+        # context kwargs (e.g. session_id) without breaking handlers that
+        # don't declare them. Handlers opt in by listing the parameter or
+        # accepting **kwargs. Also fixes a pre-existing latent bug where
+        # handlers with fixed signatures TypeError silently inside the broad
+        # except below when called with unexpected kwargs (e.g. user_task).
+        try:
+            import inspect
+            sig = inspect.signature(entry.handler)
+            params = sig.parameters
+            accepts_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+            if not accepts_var_kw:
+                kwargs = {k: v for k, v in kwargs.items() if k in params}
+        except (TypeError, ValueError):
+            pass  # builtins / C-impls — pass through unchanged
         try:
             if entry.is_async:
                 from model_tools import _run_async
