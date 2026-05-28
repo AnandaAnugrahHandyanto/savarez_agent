@@ -231,6 +231,39 @@ def _render_message_content(content: Any) -> str:
     return str(content).strip()
 
 
+def _extract_session_chunk_text(content: Any) -> str:
+    """Best-effort extraction for ACP session-update content blocks.
+
+    Copilot ACP may surface assistant/user chunks as typed block objects
+    rather than plain dicts.  Preserve their text so narration is not
+    dropped when a turn mixes tool calls and assistant text.
+
+    Co-authored-by: jdell64 <jdell64@users.noreply.github.com>
+    """
+    if content is None:
+        return ""
+    if isinstance(content, dict):
+        text = content.get("text")
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+        nested = content.get("content")
+        if isinstance(nested, str) and nested.strip():
+            return nested.strip()
+        return ""
+    if isinstance(content, list):
+        return _render_message_content(content)
+
+    # Handle objects with .text / .content attributes (typed blocks)
+    text = getattr(content, "text", None)
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+    nested = getattr(content, "content", None)
+    if isinstance(nested, str) and nested.strip():
+        return nested.strip()
+
+    return ""
+
+
 def _extract_tool_calls_from_text(text: str) -> tuple[list[SimpleNamespace], str]:
     if not isinstance(text, str) or not text.strip():
         return [], ""
@@ -613,9 +646,8 @@ class CopilotACPClient:
             update = params.get("update") or {}
             kind = str(update.get("sessionUpdate") or "").strip()
             content = update.get("content") or {}
-            chunk_text = ""
+            chunk_text = _extract_session_chunk_text(content)
             if isinstance(content, dict):
-                chunk_text = str(content.get("text") or "")
                 # ── tool_use / tool_result handling (#33636) ──────────
                 # Copilot CLI delivers tool calls as structured content
                 # blocks rather than embedding <tool_call> XML in the

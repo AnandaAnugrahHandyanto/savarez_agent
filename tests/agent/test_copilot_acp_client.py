@@ -283,3 +283,45 @@ def test_handle_server_message_tool_use_accepts_string_arguments():
     assert cleaned == ""
     assert len(tool_calls) == 1
     assert tool_calls[0].function.arguments == '{"command": "pwd"}'
+
+
+class _FakeContentBlock:
+    """Typed block object that Copilot ACP may emit instead of a plain dict."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+def test_session_update_agent_message_chunk_preserves_block_text():
+    """Typed content blocks (non-dict) preserve their text for agent_message_chunk.
+
+    Regression from jdell64 (#33668): Copilot ACP can surface content as
+    objects with .text attributes rather than plain dicts.
+    """
+    from unittest.mock import MagicMock
+
+    from agent.copilot_acp_client import CopilotACPClient
+
+    client = CopilotACPClient()
+    process = MagicMock()
+    process.stdin = MagicMock()
+    text_parts: list[str] = []
+    handled = client._handle_server_message(
+        {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": _FakeContentBlock("Removing both keys now"),
+                }
+            },
+        },
+        process=process,
+        cwd="/tmp",
+        text_parts=text_parts,
+        reasoning_parts=[],
+    )
+
+    assert handled is True
+    assert text_parts == ["Removing both keys now"]
