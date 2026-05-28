@@ -9,6 +9,7 @@ import type { Theme } from '../theme.js'
 import type { Msg, Usage } from '../types.js'
 
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
+const STATUS_SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
 
 function ctxBarColor(pct: number | undefined, t: Theme) {
   if (pct == null) {
@@ -88,6 +89,28 @@ const shortModelLabel = (model: string) =>
 const modelLabel = (model: string, effort?: string, fast?: boolean) =>
   [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
 
+function StatusBusyIndicator({ busy, t }: { busy: boolean; t: Theme }) {
+  const [frame, setFrame] = useState(0)
+
+  useEffect(() => {
+    if (!busy) {
+      setFrame(0)
+
+      return
+    }
+
+    const id = setInterval(() => setFrame(value => (value + 1) % STATUS_SPINNER_FRAMES.length), 120)
+
+    return () => clearInterval(id)
+  }, [busy])
+
+  if (!busy) {
+    return null
+  }
+
+  return <Text color={t.color.accent}>{STATUS_SPINNER_FRAMES[frame]} </Text>
+}
+
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
   const [color, setColor] = useState(t.color.accent)
@@ -114,6 +137,7 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
 }
 
 export function StatusRule({
+  busy,
   cols,
   model,
   modelFast,
@@ -138,13 +162,16 @@ export function StatusRule({
         <Text color={t.color.border} wrap="truncate-end">
           {'─ '}
         </Text>
+        <StatusBusyIndicator busy={busy} t={t} />
         <Text color={t.color.muted} wrap="truncate-end">
           {modelLabel(model, modelReasoningEffort, modelFast)}
         </Text>
         {ctxLabel ? (
           <>
-            <Text color={contextColor} wrap="truncate-end">
+            <Text color={t.color.muted} wrap="truncate-end">
               {' │ '}
+            </Text>
+            <Text color={contextColor} wrap="truncate-end">
               Context {ctxLabel}
             </Text>
             {bar ? (
@@ -157,7 +184,7 @@ export function StatusRule({
         ) : null}
         {sessionStartedAt ? (
           <>
-            <Text color={ctxLabel ? contextColor : t.color.muted}> │ </Text>
+            <Text color={t.color.muted}> │ </Text>
             <Text color={t.color.muted} wrap="truncate-end">
               <SessionDuration startedAt={sessionStartedAt} />
             </Text>

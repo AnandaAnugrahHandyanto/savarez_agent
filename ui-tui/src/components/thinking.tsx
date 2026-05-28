@@ -9,6 +9,7 @@ import {
   foldActionDetail,
   parseActionCall,
   selectVisibleActionFeedItems,
+  summarizeHiddenActionFeedItems,
   type ActionStatus
 } from '../lib/actionFeed.js'
 import {
@@ -254,15 +255,18 @@ function Chevron({
   tone?: 'dim' | 'error' | 'warn'
 }) {
   const color = tone === 'error' ? t.color.error : tone === 'warn' ? t.color.warn : t.color.muted
+  const emphasizedTitle = title === 'Action feed'
 
   return (
     <Box onClick={(e: any) => onClick(!!e?.shiftKey || !!e?.ctrlKey)}>
       <Text color={color} dim={tone === 'dim'}>
         <Text color={t.color.accent}>{open ? '▾ ' : '▸ '}</Text>
-        {title}
+        <Text bold={emphasizedTitle} color={emphasizedTitle ? t.color.label : color}>
+          {title}
+        </Text>
         {typeof count === 'number' ? ` (${count})` : ''}
         {suffix ? (
-          <Text color={t.color.statusFg} dim>
+          <Text color={t.color.statusFg} dim wrap="truncate-end">
             {'  '}
             {suffix}
           </Text>
@@ -908,7 +912,7 @@ export const ToolTrail = memo(function ToolTrail({
 
   // ── Derived ────────────────────────────────────────────────────
 
-  const { hidden: hiddenActionCount, items: visibleGroups } = selectVisibleActionFeedItems(groups)
+  const { hidden: hiddenActionCount, hiddenItems: hiddenActionGroups, items: visibleGroups } = selectVisibleActionFeedItems(groups)
   const hasTools = visibleGroups.length > 0
   const hasSubagents = subagents.length > 0
   const hasMeta = meta.length > 0
@@ -929,7 +933,11 @@ export const ToolTrail = memo(function ToolTrail({
   const visibleDelegateGroups = visibleGroups.filter(g => g.label.startsWith('Delegate Task'))
   const inlineDelegateKey =
     hasSubagents && allDelegateGroups.length === 1 && visibleDelegateGroups.length === 1 ? visibleDelegateGroups[0]!.key : null
-  const actionFeedSuffix = [hiddenActionCount > 0 ? `+${hiddenActionCount} hidden` : null, toolTokensLabel]
+  const hiddenActionSummary = summarizeHiddenActionFeedItems(hiddenActionGroups)
+  const actionFeedSuffix = [
+    hiddenActionCount > 0 ? `+${hiddenActionCount} hidden${hiddenActionSummary ? `: ${hiddenActionSummary}` : ''}` : null,
+    toolTokensLabel
+  ]
     .filter(Boolean)
     .join('  ')
 

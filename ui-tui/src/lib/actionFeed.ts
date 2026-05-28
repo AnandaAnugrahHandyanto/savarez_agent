@@ -2,7 +2,7 @@ import { compactPreview } from './text.js'
 
 export type ActionStatus = 'error' | 'running' | 'success'
 
-export const ACTION_FEED_VISIBLE_LIMIT = 5
+export const ACTION_FEED_VISIBLE_LIMIT = 3
 
 export interface ParsedActionCall {
   action: string
@@ -36,7 +36,7 @@ const tailPath = (value: string) => {
   return parts.length > 2 ? `…/${parts.slice(-2).join('/')}` : cleaned
 }
 
-const quoted = (value: string) => (value ? `"${compactPreview(cleanSubject(value), 56)}"` : '')
+const quoted = (value: string) => (value ? `"${compactPreview(cleanSubject(value), 72)}"` : '')
 
 const ACTIONS: Record<string, (subject: string) => ParsedActionCall> = {
   'Browser Back': () => ({ action: 'Went back', subject: '', title: 'Went back' }),
@@ -119,38 +119,83 @@ export interface ActionFeedItemLike {
   status: ActionStatus
 }
 
+export interface ActionFeedSelection<T extends ActionFeedItemLike> {
+  hidden: number
+  hiddenItems: T[]
+  items: T[]
+}
+
 const IMPORTANT_ACTION_LABEL_RE = /^(?:Browser (?:Click|Navigate|Type)|Delegate Task|Execute Code|Patch|Terminal|Todo|Write File)/
 
 export const isImportantActionLabel = (label: string): boolean => IMPORTANT_ACTION_LABEL_RE.test(label)
 
+const actionPriority = <T extends ActionFeedItemLike>(item: T, index: number): number => {
+  if (item.status === 'running') {
+    return 1_000 + index
+  }
+
+  if (item.status === 'error') {
+    return 900 + index
+  }
+
+  if (isImportantActionLabel(item.label)) {
+    return 600 + index
+  }
+
+  // Successful Read/Search calls are useful context, but too noisy as primary
+  // feed rows. Keep them available for the hidden summary unless there is
+  // nothing more meaningful to show.
+  return 0
+}
+
+export const summarizeHiddenActionFeedItems = <T extends ActionFeedItemLike>(
+  items: readonly T[],
+  maxKinds = 3,
+  maxChars = 48
+): string => {
+  if (!items.length) {
+    return ''
+  }
+
+  const counts = new Map<string, number>()
+
+  for (const item of items) {
+    const label = parseActionCall(item.label).action || 'Tool'
+    counts.set(label, (counts.get(label) ?? 0) + 1)
+  }
+
+  const entries = [...counts.entries()].sort((a, b) => b[1] - a[1])
+  const visible = entries.slice(0, maxKinds).map(([label, count]) => `${label}${count > 1 ? `×${count}` : ''}`)
+  const rest = entries.slice(maxKinds).reduce((sum, [, count]) => sum + count, 0)
+  const summary = [...visible, rest > 0 ? `+${rest}` : ''].filter(Boolean).join(' · ')
+
+  return compactPreview(summary, maxChars)
+}
+
 export const selectVisibleActionFeedItems = <T extends ActionFeedItemLike>(
   items: readonly T[],
   limit = ACTION_FEED_VISIBLE_LIMIT
-): { hidden: number; items: T[] } => {
-  if (items.length <= limit) {
-    return { hidden: 0, items: [...items] }
+): ActionFeedSelection<T> => {
+  const visibleLimit = Math.max(1, limit)
+
+  if (items.length <= visibleLimit) {
+    return { hidden: 0, hiddenItems: [], items: [...items] }
   }
 
-  const keep = new Set<number>()
+  const ranked = items
+    .map((item, index) => ({ index, priority: actionPriority(item, index) }))
+    .filter(({ priority }) => priority > 0)
+    .sort((a, b) => b.priority - a.priority)
 
-  items.forEach((item, index) => {
-    if (item.status !== 'success' || isImportantActionLabel(item.label)) {
-      keep.add(index)
-    }
-  })
-
-  for (let index = Math.max(0, items.length - 2); index < items.length; index += 1) {
-    keep.add(index)
-  }
-
-  for (let index = items.length - 1; keep.size < Math.min(limit, items.length) && index >= 0; index -= 1) {
-    keep.add(index)
-  }
-
-  const selected = [...keep].sort((a, b) => a - b).slice(-limit)
+  const selected = (ranked.length ? ranked.slice(0, visibleLimit).map(entry => entry.index) : [items.length - 1]).sort(
+    (a, b) => a - b
+  )
+  const selectedSet = new Set(selected)
+  const hiddenItems = items.filter((_, index) => !selectedSet.has(index))
 
   return {
     hidden: Math.max(0, items.length - selected.length),
+    hiddenItems,
     items: selected.map(index => items[index]!)
   }
 }

@@ -10,6 +10,7 @@ import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
+  composerInputSurfaceHeight,
   composerPromptWidth,
   inputVisualHeight,
   stableComposerColumns
@@ -158,6 +159,7 @@ const ComposerPane = memo(function ComposerPane({
   const promptBlank = ' '.repeat(promptWidth)
   const inputColumns = stableComposerColumns(composer.cols, promptWidth, TERMUX_TUI_MODE)
   const inputHeight = inputVisualHeight(composer.input, inputColumns)
+  const inputSurfaceHeight = composerInputSurfaceHeight(inputHeight)
   const inputMouseRef = useRef<null | TextInputMouseApi>(null)
 
   const captureInputDrag = (e: GutterMouseEvent) => {
@@ -250,7 +252,7 @@ const ComposerPane = memo(function ComposerPane({
         {!isBlocked && (
           <>
             {composer.inputBuf.map((line, i) => (
-              <Box key={i}>
+              <Box backgroundColor={ui.theme.color.completionBg} key={i} width={Math.max(1, composer.cols - 2)}>
                 <Box width={promptWidth}>
                   {i === 0 ? (
                     <PromptPrefix color={ui.theme.color.muted} promptText={promptText} width={promptWidth} />
@@ -264,6 +266,8 @@ const ComposerPane = memo(function ComposerPane({
             ))}
 
             <Box
+              backgroundColor={ui.theme.color.completionBg}
+              height={inputSurfaceHeight}
               onMouseDown={captureInputDrag}
               onMouseDrag={dragFromPromptRow}
               onMouseUp={endInputDrag}
@@ -289,6 +293,7 @@ const ComposerPane = memo(function ComposerPane({
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
                   placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
+                  placeholderColor={ui.theme.color.muted}
                   value={composer.input}
                   voiceRecordKey={composer.voiceRecordKey}
                 />

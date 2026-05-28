@@ -2,7 +2,13 @@ import { wrapAnsi } from '@hermes/ink'
 import { describe, expect, it } from 'vitest'
 
 import { offsetFromPosition } from '../components/textInput.js'
-import { composerPromptWidth, cursorLayout, inputVisualHeight, stableComposerColumns } from '../lib/inputMetrics.js'
+import {
+  composerInputSurfaceHeight,
+  composerPromptWidth,
+  cursorLayout,
+  inputVisualHeight,
+  stableComposerColumns
+} from '../lib/inputMetrics.js'
 
 // Helper: compute the "end of text" position that wrap-ansi would render
 // the input to. This is what Ink's <Text wrap="wrap"> uses, so cursorLayout
@@ -98,6 +104,11 @@ describe('input metrics helpers', () => {
     expect(inputVisualHeight('one\ntwo', 40)).toBe(2)
     // Multi-line wrap case sanity
     expect(inputVisualHeight('hello world', 8)).toBe(2)
+  })
+
+  it('keeps the composer background surface at least three rows tall', () => {
+    expect(composerInputSurfaceHeight(inputVisualHeight('', 80))).toBe(3)
+    expect(composerInputSurfaceHeight(inputVisualHeight('one\ntwo\nthree\nfour', 80))).toBe(4)
   })
 
   it('counts the prompt gap as its own cell', () => {

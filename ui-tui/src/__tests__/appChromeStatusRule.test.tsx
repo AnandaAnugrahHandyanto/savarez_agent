@@ -57,6 +57,24 @@ const findClickableWithText = (node: ReactNodeLike, needle: string): React.React
   return findClickableWithText(node.props.children, needle)
 }
 
+const findElementsWithExactText = (node: ReactNodeLike, exact: string): React.ReactElement<Record<string, any>>[] => {
+  if (node === null || node === undefined || typeof node === 'boolean') {
+    return []
+  }
+
+  if (Array.isArray(node)) {
+    return node.flatMap(child => findElementsWithExactText(child, exact))
+  }
+
+  if (!React.isValidElement(node)) {
+    return []
+  }
+
+  const here = node.props.children === exact ? [node] : []
+
+  return [...here, ...findElementsWithExactText(node.props.children, exact)]
+}
+
 describe('StatusRule compact footer', () => {
   it('keeps the footer to model, context, and session time only', () => {
     const openSwitcher = vi.fn()
@@ -90,6 +108,9 @@ describe('StatusRule compact footer', () => {
 
     expect(text).toContain('gpt 5.5 xhigh')
     expect(text).toContain('Context 74.9k/272k 28% [███░░░░░░░]')
+    const contextSeparators = findElementsWithExactText(element, ' │ ')
+    expect(contextSeparators.length).toBeGreaterThanOrEqual(2)
+    expect(contextSeparators.every(node => node.props.color === DEFAULT_THEME.color.muted)).toBe(true)
     expect(text).not.toContain('Ctrl+C interrupt')
     expect(text).not.toContain('voice')
     expect(text).not.toContain('sessions')

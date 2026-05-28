@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { actionStatusGlyph, foldActionDetail, parseActionCall, selectVisibleActionFeedItems } from '../lib/actionFeed.js'
+import {
+  actionStatusGlyph,
+  foldActionDetail,
+  parseActionCall,
+  selectVisibleActionFeedItems,
+  summarizeHiddenActionFeedItems
+} from '../lib/actionFeed.js'
 
 describe('actionFeed formatter', () => {
   it.each([
@@ -32,7 +38,7 @@ describe('actionFeed formatter', () => {
     expect(actionStatusGlyph('error')).toBe('✗')
   })
 
-  it('limits visible actions to important and recent items', () => {
+  it('limits visible actions to a few meaningful rows', () => {
     const actions = [
       { label: 'Read File("a")', status: 'success' as const },
       { label: 'Search Files("b")', status: 'success' as const },
@@ -46,13 +52,40 @@ describe('actionFeed formatter', () => {
 
     const selected = selectVisibleActionFeedItems(actions)
 
-    expect(selected.hidden).toBe(3)
+    expect(selected.hidden).toBe(5)
+    expect(summarizeHiddenActionFeedItems(selected.hiddenItems)).toBe('Read×3 · Searched×2')
     expect(selected.items.map(item => item.label)).toEqual([
       'Patch("src/app.ts")',
-      'Search Files("d")',
       'Todo',
-      'Read File("e")',
       'Terminal("npm test")'
     ])
+  })
+
+  it('falls back to one recent low-value row when no major actions exist', () => {
+    const actions = [
+      { label: 'Read File("a")', status: 'success' as const },
+      { label: 'Search Files("b")', status: 'success' as const },
+      { label: 'Read File("c")', status: 'success' as const },
+      { label: 'Search Files("d")', status: 'success' as const }
+    ]
+
+    const selected = selectVisibleActionFeedItems(actions)
+
+    expect(selected.hidden).toBe(3)
+    expect(selected.items.map(item => item.label)).toEqual(['Search Files("d")'])
+  })
+
+  it('summarizes hidden actions with a compact width budget', () => {
+    const summary = summarizeHiddenActionFeedItems(
+      [
+        { label: 'Very Long Custom Tool Name That Would Wrap("alpha")', status: 'success' as const },
+        { label: 'Another Extremely Long Hidden Tool Name("beta")', status: 'success' as const },
+        { label: 'Yet Another Hidden Tool Name("gamma")', status: 'success' as const }
+      ],
+      3,
+      28
+    )
+
+    expect(summary.length).toBeLessThanOrEqual(28)
   })
 })
