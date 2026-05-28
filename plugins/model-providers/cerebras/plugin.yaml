@@ -1,0 +1,5 @@
+name: cerebras
+description: Cerebras Inference API
+author: Hermes Agent
+homepage: https://cerebras.ai
+license: MIT
