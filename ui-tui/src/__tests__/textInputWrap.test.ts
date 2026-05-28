@@ -106,8 +106,8 @@ describe('input metrics helpers', () => {
     expect(inputVisualHeight('hello world', 8)).toBe(2)
   })
 
-  it('keeps the composer background surface at least three rows tall', () => {
-    expect(composerInputSurfaceHeight(inputVisualHeight('', 80))).toBe(3)
+  it('keeps the compact composer background surface at one row for empty input', () => {
+    expect(composerInputSurfaceHeight(inputVisualHeight('', 80))).toBe(1)
     expect(composerInputSurfaceHeight(inputVisualHeight('one\ntwo\nthree\nfour', 80))).toBe(4)
   })
 
