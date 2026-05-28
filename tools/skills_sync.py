@@ -416,13 +416,79 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
     return backfilled
 
 
+def _external_skill_index() -> Dict[str, Path]:
+    """Index skills resolvable via ``skills.external_dirs`` by name.
+
+    Returns ``{skill_name: source_skill_dir}`` for every SKILL.md found under
+    a configured external dir.  Both the on-disk directory name and the
+    frontmatter ``name:`` field are keyed (first hit wins per name, in
+    external_dirs config order — matching the loader's resolution order).
+
+    Used by ``sync_skills`` to detect when a bundled skill would be written
+    into a profile that already delegates that name to an external dir.
+    Writing it would create a same-name collision the loader refuses to
+    resolve, crashing any agent that auto-loads the skill (see #28126).
+    """
+    index: Dict[str, Path] = {}
+    try:
+        from agent.skill_utils import get_external_skills_dirs
+        external_dirs = get_external_skills_dirs()
+    except Exception:
+        logger.debug("Could not enumerate external skills dirs", exc_info=True)
+        return index
+
+    for ext_dir in external_dirs:
+        try:
+            for skill_md in sorted(ext_dir.rglob("SKILL.md")):
+                if is_excluded_skill_path(skill_md):
+                    continue
+                skill_dir = skill_md.parent
+                frontmatter_name = _read_skill_name(skill_md, skill_dir.name)
+                index.setdefault(frontmatter_name, skill_dir)
+                index.setdefault(skill_dir.name, skill_dir)
+        except OSError as e:
+            logger.debug("Could not walk external skills dir %s: %s", ext_dir, e)
+            continue
+    return index
+
+
+def _would_shadow_external(dest: Path, external_src: Path) -> bool:
+    """True iff writing to ``dest`` would create a same-name skill alongside
+    one already provided by ``external_src`` (i.e. they resolve to distinct
+    filesystem entries)."""
+    try:
+        ext_resolved = external_src.resolve()
+    except OSError:
+        ext_resolved = external_src
+    try:
+        # dest may not exist yet — resolve its parent and join the leaf.
+        if dest.exists():
+            dest_resolved = dest.resolve()
+        else:
+            try:
+                dest_resolved = dest.parent.resolve() / dest.name
+            except OSError:
+                dest_resolved = dest
+    except OSError:
+        dest_resolved = dest
+    return ext_resolved != dest_resolved
+
+
 def sync_skills(quiet: bool = False) -> dict:
     """
     Sync bundled skills into ~/.hermes/skills/ using the manifest.
 
+    Honours ``skills.external_dirs`` from the active profile's ``config.yaml``:
+    bundled skills that are already provided by an external dir are NOT
+    written into the local tree, since doing so would create a same-name
+    collision that the skill loader refuses to resolve (#28126).  In a profile
+    that delegates skills to another home via ``external_dirs: ["~/.hermes/skills"]``
+    this used to silently brick every worker that auto-loaded a bundled skill.
+
     Returns:
         dict with keys: copied (list), updated (list), skipped (int),
-                        user_modified (list), cleaned (list), total_bundled (int)
+                        user_modified (list), cleaned (list), total_bundled (int),
+                        shadowed_by_external (list of {name, external_source})
     """
     bundled_dir = _get_bundled_dir()
     if not bundled_dir.exists():
@@ -430,21 +496,71 @@ def sync_skills(quiet: bool = False) -> dict:
             "copied": [], "updated": [], "skipped": 0,
             "user_modified": [], "cleaned": [], "total_bundled": 0,
             "optional_provenance_backfilled": [],
+            "shadowed_by_external": [],
         }
 
     SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     manifest = _read_manifest()
     bundled_skills = _discover_bundled_skills(bundled_dir)
     bundled_names = {name for name, _ in bundled_skills}
+    external_index = _external_skill_index()
 
     copied = []
     updated = []
     user_modified = []
     skipped = 0
+    shadowed_by_external: List[Dict[str, str]] = []
 
     for skill_name, skill_src in bundled_skills:
         dest = _compute_relative_dest(skill_src, bundled_dir)
         bundled_hash = _dir_hash(skill_src)
+
+        # ── External-dir delegation guard (#28126) ──
+        # If the active profile's config.yaml delegates this skill to an
+        # external dir (e.g. the default profile's ~/.hermes/skills), do
+        # NOT write our own copy — that creates a same-name collision the
+        # loader refuses, crashing every worker that auto-loads the skill.
+        external_src = external_index.get(skill_name)
+        if external_src is not None and _would_shadow_external(dest, external_src):
+            shadowed_by_external.append({
+                "name": skill_name,
+                "external_source": str(external_src),
+            })
+            # Best-effort cleanup of a stale shadow left behind by a prior
+            # buggy sync.  Only delete if the on-disk copy is byte-identical
+            # to the bundled source AND its origin_hash in the manifest also
+            # matches bundled — i.e. we wrote it last time, the user hasn't
+            # touched it, and removing it just reverts a bug.
+            if dest.exists():
+                origin_hash = manifest.get(skill_name, "")
+                try:
+                    user_hash = _dir_hash(dest)
+                except OSError:
+                    user_hash = ""
+                if origin_hash and user_hash == origin_hash == bundled_hash:
+                    try:
+                        shutil.rmtree(dest)
+                        if not quiet:
+                            print(
+                                f"  ⤺ {skill_name} (removed shadow of external "
+                                f"{external_src})"
+                            )
+                    except OSError as e:
+                        logger.debug("Could not remove shadow %s: %s", dest, e)
+            # Pin manifest to the external's hash so future syncs treat the
+            # external as the canonical baseline.  Empty hash would re-trigger
+            # the "new skill" branch.
+            try:
+                manifest[skill_name] = _dir_hash(external_src)
+            except OSError:
+                manifest[skill_name] = bundled_hash
+            skipped += 1
+            if not quiet and not dest.exists():
+                print(
+                    f"  ↪ {skill_name} (provided by external_dir "
+                    f"{external_src} — not shadowing)"
+                )
+            continue
 
         if skill_name not in manifest:
             # ── New skill — never offered before ──
@@ -560,6 +676,7 @@ def sync_skills(quiet: bool = False) -> dict:
         "cleaned": cleaned,
         "total_bundled": len(bundled_skills),
         "optional_provenance_backfilled": optional_provenance_backfilled,
+        "shadowed_by_external": shadowed_by_external,
     }
 
 
