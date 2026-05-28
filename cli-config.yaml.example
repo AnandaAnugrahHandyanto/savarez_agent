@@ -676,6 +676,65 @@ platform_toolsets:
   google_chat: [hermes-google_chat]
 
 # =============================================================================
+# Platform Request Overrides (per-platform LLM request params)
+# =============================================================================
+# Override OpenAI-compatible chat-completion request fields per platform.
+# Useful when one surface needs different LLM behaviour from another —
+# e.g. lower `reasoning_effort` on a latency-sensitive HTTP integration,
+# a different `service_tier` for cron-scheduled runs, or
+# template-specific extra-body flags only some endpoints accept.
+#
+# Layered between the global `custom_providers[].extra_body` (low) and
+# caller-supplied `request_overrides` (high), so callers that already
+# thread overrides through (auxiliary clients, kanban workers, delegated
+# subagents) keep their precedence.
+#
+# Scope: applies to the main conversational LLM call inside the agent
+# loop (OpenAI chat completions, Anthropic messages, Codex responses)
+# for every platform that has a matching entry. It does NOT cover:
+#   * auxiliary model calls (vision, web_extract, compression, skills
+#     hub, etc.) — each of those has its own `auxiliary.<task>.extra_body`
+#     knob in the `auxiliary:` section above
+#   * non-conversational tool requests (embeddings, image generation,
+#     TTS / STT) — those are tool implementations with their own config
+#
+# Platform keys match the `Platform` enum / `platform_toolsets` keys:
+#   cli, telegram, discord, whatsapp, slack, signal, qqbot, teams,
+#   google_chat, homeassistant, api_server, yuanbao
+#
+# Shape: each platform maps to a `request_overrides`-shaped dict.  The
+# `extra_body` sub-key is shallow-merged onto whatever
+# `custom_providers[].extra_body` already supplied, so a platform can
+# add a key without erasing sibling keys.  Top-level keys (e.g.
+# `reasoning_effort`, `service_tier`) replace wholesale.
+#
+# Examples:
+#
+#   # Trim reasoning effort on the OpenAI-compatible HTTP endpoint
+#   # (api_server) while keeping CLI / messaging surfaces at the default.
+#   platform_request_overrides:
+#     api_server:
+#       reasoning_effort: minimal
+#
+#   # Use the priority service tier on CLI but the default everywhere else.
+#   platform_request_overrides:
+#     cli:
+#       service_tier: priority
+#
+#   # Pass a provider-specific extra_body flag for one surface only.
+#   # Example: hybrid-thinking model templates that accept
+#   # `chat_template_kwargs.enable_thinking` (Qwen3, GLM-4.6, Hunyuan, etc.).
+#   platform_request_overrides:
+#     api_server:
+#       extra_body:
+#         chat_template_kwargs:
+#           enable_thinking: false
+#     telegram:
+#       extra_body:
+#         chat_template_kwargs:
+#           enable_thinking: true
+
+# =============================================================================
 # Gateway Platform Settings
 # =============================================================================
 # Optional per-platform messaging settings.

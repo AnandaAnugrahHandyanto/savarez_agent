@@ -136,6 +136,99 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def _platform_request_overrides_for_agent(
+    *,
+    platform: Optional[str],
+    config: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Resolve the ``platform_request_overrides[<platform>]`` config block.
+
+    Reads the top-level ``platform_request_overrides`` mapping (platform
+    key → ``request_overrides``-shaped dict).  Platform keys are matched
+    case-insensitively against ``agent.platform`` (e.g. ``"api_server"``,
+    ``"telegram"``, ``"cli"``) — the same keys used by ``platform_toolsets``
+    and the gateway's ``Platform`` enum values.
+
+    Returns ``None`` when no block applies so callers can short-circuit.
+    Defensive ``isinstance`` guards protect against YAML deserialisation
+    surprises (e.g. a list where a dict was expected).
+    """
+    if not platform:
+        return None
+    if not isinstance(config, dict):
+        return None
+    raw = config.get("platform_request_overrides")
+    if not isinstance(raw, dict):
+        return None
+    key = str(platform).strip().lower()
+    if not key:
+        return None
+    entry = raw.get(key)
+    if not isinstance(entry, dict) or not entry:
+        return None
+    return dict(entry)
+
+
+def _merge_platform_request_overrides(
+    agent,
+    config: Dict[str, Any],
+    caller_overrides: Optional[Dict[str, Any]],
+) -> None:
+    """Layer per-platform request overrides into ``agent.request_overrides``.
+
+    Precedence (high → low):
+
+      1. Caller-supplied ``request_overrides`` (passed to ``init_agent``).
+      2. ``platform_request_overrides[<platform>]`` (this layer).
+      3. ``custom_providers[].extra_body`` (resolved earlier by
+         :func:`_merge_custom_provider_extra_body`).
+
+    For ``extra_body`` the merge is shallow at the second level so a
+    platform can set one nested key (e.g. ``chat_template_kwargs``)
+    without erasing a sibling key (e.g. ``reasoning_effort``) that a
+    custom-provider entry already supplied.
+
+    Caller-supplied keys always win — the platform layer only fills
+    keys the caller did not pass explicitly.  This preserves the
+    existing contract for code paths that already thread
+    ``request_overrides`` through (auxiliary clients, kanban workers,
+    delegated subagents) — those callers stay in control.
+
+    No-op when no ``platform_request_overrides`` block applies, so
+    untouched configs behave exactly as before.
+    """
+    platform_overrides = _platform_request_overrides_for_agent(
+        platform=getattr(agent, "platform", None),
+        config=config,
+    )
+    if not platform_overrides:
+        return
+
+    caller_top_keys = set((caller_overrides or {}).keys())
+    caller_extra_body = (caller_overrides or {}).get("extra_body")
+    if not isinstance(caller_extra_body, dict):
+        caller_extra_body = {}
+
+    current = dict(getattr(agent, "request_overrides", {}) or {})
+
+    platform_extra_body = platform_overrides.pop("extra_body", None)
+    if isinstance(platform_extra_body, dict) and platform_extra_body:
+        merged = dict(current.get("extra_body") or {})
+        for k, v in platform_extra_body.items():
+            if k in caller_extra_body:
+                continue
+            merged[k] = v
+        if merged:
+            current["extra_body"] = merged
+
+    for k, v in platform_overrides.items():
+        if k in caller_top_keys:
+            continue
+        current[k] = v
+
+    agent.request_overrides = current
+
+
 def init_agent(
     agent,
     base_url: str = None,
@@ -1290,6 +1383,7 @@ def init_agent(
     # compression model context-length detection needs the same list).
     agent._custom_providers = _custom_providers
     _merge_custom_provider_extra_body(agent, _custom_providers)
+    _merge_platform_request_overrides(agent, _agent_cfg, request_overrides)
 
     # Check custom_providers per-model context_length
     if _config_context_length is None and _custom_providers:
