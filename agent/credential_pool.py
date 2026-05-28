@@ -60,6 +60,7 @@ AUTH_TYPE_OAUTH = "oauth"
 AUTH_TYPE_API_KEY = "api_key"
 
 SOURCE_MANUAL = "manual"
+CODEX_SHARED_POOL_SOURCES = {"device_code", "manual:device_code"}
 
 STRATEGY_FILL_FIRST = "fill_first"
 STRATEGY_ROUND_ROBIN = "round_robin"
@@ -496,7 +497,7 @@ class CredentialPool:
         return entry
 
     def _sync_codex_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
-        """Sync a Codex device_code pool entry from auth.json if tokens differ.
+        """Sync a Codex device-code-backed pool entry from auth.json if tokens differ.
 
         When a Codex OAuth access token expires (or the ChatGPT account hits
         its 5h/weekly quota), the pool entry gets marked ``STATUS_EXHAUSTED``
@@ -508,13 +509,53 @@ class CredentialPool:
         though fresh credentials are sitting on disk — and every request
         fails with "no available entries (all exhausted or empty)".
 
-        Mirrors the Nous/Anthropic resync paths above.  Only applies to
-        device_code-sourced entries; env/API-key-sourced entries have no
-        auth.json shadow to sync from.
+        In profile mode, ``credential_pool.openai-codex`` is shared from the
+        global-root auth store because Codex refresh tokens are single-use.
+        Prefer that shared pool copy, then fall back to the singleton provider
+        state for legacy stores that have not materialised a pool entry yet.
         """
-        if self.provider != "openai-codex" or entry.source != "device_code":
+        if (
+            self.provider != "openai-codex"
+            or entry.auth_type != AUTH_TYPE_OAUTH
+            or entry.source not in CODEX_SHARED_POOL_SOURCES
+        ):
             return entry
         try:
+            shared_entries = read_credential_pool("openai-codex")
+            shared_payload = None
+            for payload in shared_entries:
+                if not isinstance(payload, dict):
+                    continue
+                if payload.get("id") == entry.id:
+                    shared_payload = payload
+                    break
+            if shared_payload is None:
+                for payload in shared_entries:
+                    if not isinstance(payload, dict):
+                        continue
+                    if payload.get("source") == entry.source:
+                        shared_payload = payload
+                        break
+            if isinstance(shared_payload, dict):
+                shared_entry = PooledCredential.from_dict("openai-codex", shared_payload)
+                if shared_entry.access_token and (
+                    shared_entry.access_token != (entry.access_token or "")
+                    or (
+                        shared_entry.refresh_token
+                        and shared_entry.refresh_token != (entry.refresh_token or "")
+                    )
+                    or shared_entry.last_status != entry.last_status
+                    or shared_entry.last_error_code != entry.last_error_code
+                    or shared_entry.last_error_reset_at != entry.last_error_reset_at
+                ):
+                    logger.debug(
+                        "Pool entry %s: syncing Codex tokens from shared credential pool",
+                        entry.id,
+                    )
+                    self._replace_entry(entry, shared_entry)
+                    return shared_entry
+            if entry.source != "device_code":
+                return entry
             with _auth_store_lock():
                 auth_store = _load_auth_store()
                 state = _load_provider_state(auth_store, "openai-codex")
@@ -818,6 +859,8 @@ class CredentialPool:
                 synced = self._sync_codex_entry_from_auth_store(entry)
                 if synced is not entry:
                     entry = synced
+                    if not self._entry_needs_refresh(entry):
+                        return entry
                 refreshed = auth_mod.refresh_codex_oauth_pure(
                     entry.access_token,
                     entry.refresh_token,
@@ -978,7 +1021,14 @@ class CredentialPool:
             # if they have rotated since.
             if self.provider == "openai-codex":
                 synced = self._sync_codex_entry_from_auth_store(entry)
-                if synced.refresh_token != entry.refresh_token:
+                if (
+                    synced is not entry
+                    and (
+                        synced.refresh_token != entry.refresh_token
+                        or synced.access_token != entry.access_token
+                        or not self._entry_needs_refresh(synced)
+                    )
+                ):
                     logger.debug(
                         "Codex OAuth refresh failed but auth.json has newer tokens — adopting"
                     )
@@ -1180,14 +1230,12 @@ class CredentialPool:
                 if synced is not entry:
                     entry = synced
                     cleared_any = True
-            # For openai-codex entries, same pattern: the user may have
-            # re-authed via `hermes model` / `hermes auth` after a 429/401,
-            # leaving fresh tokens on disk while the pool entry is still
-            # frozen behind last_error_reset_at (can be hours in the
-            # future for ChatGPT weekly windows).
+            # For openai-codex entries, sync before status checks even when
+            # they are not exhausted yet. In profile mode the global-root pool
+            # is the single source of truth for single-use refresh tokens.
             if (self.provider == "openai-codex"
-                    and entry.source == "device_code"
-                    and entry.last_status == STATUS_EXHAUSTED):
+                    and entry.auth_type == AUTH_TYPE_OAUTH
+                    and entry.source in CODEX_SHARED_POOL_SOURCES):
                 synced = self._sync_codex_entry_from_auth_store(entry)
                 if synced is not entry:
                     entry = synced

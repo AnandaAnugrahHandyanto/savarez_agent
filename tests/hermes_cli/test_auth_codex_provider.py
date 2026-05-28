@@ -385,6 +385,136 @@ def test_save_codex_tokens_syncs_manual_device_code_entries(tmp_path, monkeypatc
     assert "refresh_token" not in api_key or api_key.get("refresh_token") is None
 
 
+def test_codex_pool_reads_global_root_in_profile_mode(tmp_path, monkeypatch):
+    root_home = tmp_path / ".hermes"
+    profile_home = root_home / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    root_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    (root_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "id": "shared",
+                    "source": "device_code",
+                    "auth_type": "oauth",
+                    "access_token": "root-at",
+                    "refresh_token": "root-rt",
+                },
+            ],
+        },
+    }))
+    (profile_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "id": "shared",
+                    "source": "device_code",
+                    "auth_type": "oauth",
+                    "access_token": "profile-at",
+                    "refresh_token": "profile-rt",
+                },
+            ],
+        },
+    }))
+
+    from hermes_cli.auth import read_credential_pool
+
+    entries = read_credential_pool("openai-codex")
+    assert entries[0]["access_token"] == "root-at"
+    assert read_credential_pool(None)["openai-codex"][0]["refresh_token"] == "root-rt"
+
+
+def test_codex_pool_writes_global_root_in_profile_mode(tmp_path, monkeypatch):
+    root_home = tmp_path / ".hermes"
+    profile_home = root_home / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    root_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    from hermes_cli.auth import write_credential_pool
+
+    write_credential_pool("openai-codex", [
+        {
+            "id": "shared",
+            "source": "device_code",
+            "auth_type": "oauth",
+            "access_token": "root-at",
+            "refresh_token": "root-rt",
+        }
+    ])
+
+    root_auth = json.loads((root_home / "auth.json").read_text())
+    assert root_auth["credential_pool"]["openai-codex"][0]["access_token"] == "root-at"
+    assert not (profile_home / "auth.json").exists()
+
+
+def test_save_codex_tokens_syncs_global_pool_in_profile_mode(tmp_path, monkeypatch):
+    root_home = tmp_path / ".hermes"
+    profile_home = root_home / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    root_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    (root_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "id": "seeded",
+                    "source": "device_code",
+                    "auth_type": "oauth",
+                    "access_token": "old-at",
+                    "refresh_token": "old-rt",
+                    "last_status": "exhausted",
+                    "last_error_code": 401,
+                },
+                {
+                    "id": "manual-device",
+                    "source": "manual:device_code",
+                    "auth_type": "oauth",
+                    "access_token": "old-manual-at",
+                    "refresh_token": "old-manual-rt",
+                },
+                {
+                    "id": "api-key",
+                    "source": "manual:api_key",
+                    "auth_type": "api_key",
+                    "access_token": "user-api-key",
+                },
+            ],
+        },
+    }))
+
+    _save_codex_tokens(
+        {"access_token": "fresh-at", "refresh_token": "fresh-rt"},
+        last_refresh="2026-05-28T00:00:00Z",
+    )
+
+    root_auth = json.loads((root_home / "auth.json").read_text())
+    root_pool = root_auth["credential_pool"]["openai-codex"]
+    seeded = next(entry for entry in root_pool if entry["id"] == "seeded")
+    manual_device = next(entry for entry in root_pool if entry["id"] == "manual-device")
+    api_key = next(entry for entry in root_pool if entry["id"] == "api-key")
+
+    assert seeded["access_token"] == "fresh-at"
+    assert seeded["refresh_token"] == "fresh-rt"
+    assert seeded["last_status"] is None
+    assert seeded["last_error_code"] is None
+    assert manual_device["access_token"] == "fresh-at"
+    assert manual_device["refresh_token"] == "fresh-rt"
+    assert api_key["access_token"] == "user-api-key"
+
+    profile_auth = json.loads((profile_home / "auth.json").read_text())
+    assert profile_auth["providers"]["openai-codex"]["tokens"]["access_token"] == "fresh-at"
+
+
 def test_import_codex_cli_tokens(tmp_path, monkeypatch):
     codex_home = tmp_path / "codex-cli"
     codex_home.mkdir(parents=True, exist_ok=True)
