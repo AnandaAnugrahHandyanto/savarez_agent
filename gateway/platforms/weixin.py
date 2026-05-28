@@ -555,7 +555,11 @@ async def _upload_ciphertext(
     # "Timeout context manager should be used inside a task" errors when
     # invoked via asyncio.run_coroutine_threadsafe() from cron jobs.
     async def _do_upload() -> str:
-        async with session.post(upload_url, data=ciphertext, headers={"Content-Type": "application/octet-stream"}) as response:
+        headers = {
+            "Content-Type": "application/octet-stream",
+            "Content-Length": str(len(ciphertext)),
+        }
+        async with session.post(upload_url, data=ciphertext, headers=headers) as response:
             if response.status == 200:
                 encrypted_param = response.headers.get("x-encrypted-param")
                 if encrypted_param:
@@ -1926,18 +1930,32 @@ class WeixinAdapter(BasePlatformAdapter):
         # Prefer upload_full_url (direct CDN), fall back to constructed CDN URL
         # from upload_param.  Both paths use POST — the old PUT for
         # upload_full_url caused 404s on the WeChat CDN.
+        upload_urls: list[str] = []
         if upload_full_url:
-            upload_url = upload_full_url
-        elif upload_param:
-            upload_url = _cdn_upload_url(self._cdn_base_url, upload_param, filekey)
-        else:
+            upload_urls.append(upload_full_url)
+        if upload_param:
+            upload_param_url = _cdn_upload_url(self._cdn_base_url, upload_param, filekey)
+            if upload_param_url not in upload_urls:
+                upload_urls.append(upload_param_url)
+        if not upload_urls:
             raise RuntimeError(f"getUploadUrl returned neither upload_param nor upload_full_url: {upload_response}")
 
-        encrypted_query_param = await _upload_ciphertext(
-            self._send_session,
-            ciphertext=ciphertext,
-            upload_url=upload_url,
-        )
+        encrypted_query_param = None
+        upload_errors: list[str] = []
+        for upload_url in upload_urls:
+            try:
+                encrypted_query_param = await _upload_ciphertext(
+                    self._send_session,
+                    ciphertext=ciphertext,
+                    upload_url=upload_url,
+                )
+                break
+            except RuntimeError as exc:
+                upload_errors.append(str(exc))
+                if upload_url == upload_urls[-1]:
+                    raise
+        if encrypted_query_param is None:
+            raise RuntimeError(f"CDN upload failed: {'; '.join(upload_errors)}")
         context_token = self._token_store.get(self._account_id, chat_id)
         # The iLink API expects aes_key as base64(hex_string), not base64(raw_bytes).
         # Sending base64(raw_bytes) causes images to show as grey boxes on the

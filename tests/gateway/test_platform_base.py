@@ -330,6 +330,18 @@ class TestExtractMedia:
         assert media == [("/tmp/Jane Doe/speech.flac", False)]
         assert cleaned == ""
 
+    def test_media_tag_supports_windows_drive_paths(self):
+        content = "MEDIA:C:/Users/fkl26/Pictures/demo image.png"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("C:/Users/fkl26/Pictures/demo image.png", False)]
+        assert cleaned == ""
+
+    def test_media_tag_supports_windows_backslash_paths(self):
+        content = r"MEDIA:C:\Users\fkl26\Pictures\demo image.png"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [(r"C:\Users\fkl26\Pictures\demo image.png", False)]
+        assert cleaned == ""
+
     def test_as_document_directive_stripped_from_cleaned_text(self):
         """[[as_document]] is a routing directive — strip it from
         user-visible text just like [[audio_as_voice]]. Callers detect the
