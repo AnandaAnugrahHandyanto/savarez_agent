@@ -10,4 +10,8 @@ Currently shipped:
   - ``bitwarden`` — Bitwarden Secrets Manager (`bws` CLI).  See
     ``agent.secret_sources.bitwarden`` for the integration and
     ``hermes_cli.secrets_cli`` for the user-facing setup wizard.
+
+  - ``protonpass`` — Proton Pass (`pass-cli` CLI).  See
+    ``agent.secret_sources.protonpass`` for the integration and
+    ``hermes_cli.secrets_protonpass_cli`` for the user-facing setup wizard.
 """
