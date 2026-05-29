@@ -1692,6 +1692,16 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         )
     elif function_name == "delegate_task":
         return agent._dispatch_delegate_task(function_args)
+    elif function_name == "workflow_run":
+        from tools.workflow_tool import workflow_run as _workflow_run
+        return _workflow_run(
+            name=function_args.get("name"),
+            phases=function_args.get("phases"),
+            context=function_args.get("context"),
+            max_concurrency=function_args.get("max_concurrency"),
+            max_agents_per_run=function_args.get("max_agents_per_run"),
+            parent_agent=agent,
+        )
     else:
         return _ra().handle_function_call(
             function_name, function_args, effective_task_id,

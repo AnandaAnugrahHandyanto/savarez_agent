@@ -7704,6 +7704,9 @@ class GatewayRunner:
         if canonical == "background":
             return await self._handle_background_command(event)
 
+        if canonical == "deep-research":
+            return await self._handle_deep_research_command(event)
+
         if canonical == "steer":
             # No active agent — /steer has no tool call to inject into.
             # Strip the prefix so downstream treats it as a normal user
@@ -8850,6 +8853,7 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                ephemeral_toolsets=getattr(event, "ephemeral_toolsets", None),
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -11752,6 +11756,25 @@ class GatewayRunner:
                 reason=result["reason"],
             )
         return t("gateway.rollback.restore_failed", error=result["error"])
+
+    async def _handle_deep_research_command(self, event: MessageEvent) -> str:
+        """Handle /deep-research <question> with workflow_run exposed for this turn only."""
+        question = event.get_command_args().strip()
+        if not question:
+            return "Usage: /deep-research <question>"
+        prompt = (
+            "Run a dynamic workflow with the workflow_run tool for cross-checked research. "
+            "Use this exact research question:\n\n"
+            f"{question}\n\n"
+            "Suggested phases: "
+            "(1) fan out independent source-finding subagents; "
+            "(2) cross-check the strongest claims against primary sources; "
+            "(3) synthesize a concise cited report and explicitly drop unsupported claims. "
+            "Keep subagent toolsets minimal, usually ['web'], and keep the final answer readable."
+        )
+        event.text = prompt
+        setattr(event, "ephemeral_toolsets", ["workflow"])
+        return await self._handle_message(event)
 
     async def _handle_background_command(self, event: MessageEvent) -> str:
         """Handle /background <prompt> — run a prompt in a separate background session.
@@ -15956,6 +15979,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        ephemeral_toolsets: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -15995,6 +16019,8 @@ class GatewayRunner:
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        if ephemeral_toolsets:
+            enabled_toolsets = sorted(set(enabled_toolsets) | set(ephemeral_toolsets))
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 

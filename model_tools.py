@@ -358,9 +358,15 @@ def _compute_tool_definitions(
             elif not quiet_mode:
                 print(f"⚠️  Unknown toolset: {toolset_name}")
     else:
-        # Default: start with everything
+        # Default: start with everything except high-cost orchestration surfaces
+        # that are deliberately opt-in.  These tools are still available when a
+        # caller explicitly passes enabled_toolsets=[...], or via a turn-local
+        # grant such as /deep-research.
         from toolsets import get_all_toolsets
+        default_excluded_toolsets = {"workflow"}
         for ts_name in get_all_toolsets():
+            if ts_name in default_excluded_toolsets:
+                continue
             tools_to_include.update(resolve_toolset(ts_name))
 
     # Always apply disabled toolsets as a subtraction step at the end.

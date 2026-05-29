@@ -206,6 +206,14 @@ The single `video_generate` tool covers both modalities — pass `image_url` to 
 |------|-------------|----------------------|
 | `video_generate` | Generate a video from a text prompt (text-to-video) or animate a still image (image-to-video) using the user's configured video generation backend. Pass `image_url` to animate that image; omit it to generate from text alone. The backend auto-routes to the right endpoint. Returns either an HTTP URL or an absolute file path in the `video` field. | Active `video_gen` plugin + its credential (e.g. `XAI_API_KEY`, `FAL_KEY`) |
 
+## `workflow` toolset
+
+Opt-in toolset (not loaded in the default `hermes-cli` or messaging platform sets). Enable it explicitly with `--toolsets workflow` / `hermes tools`, or use `/deep-research`, which exposes it for that turn only and then restores the normal schema.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `workflow_run` | Run a dynamic workflow: a phased, bounded orchestration of many delegated subagents. The workflow runtime itself cannot run shell commands or edit files; each task is delegated to subagents with their own tool allowlists. Run state is saved under `$HERMES_HOME/workflows/runs/`. | — |
+
 ## `web` toolset
 
 | Tool | Description | Requires environment |

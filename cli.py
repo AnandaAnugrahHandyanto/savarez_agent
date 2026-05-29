@@ -783,6 +783,61 @@ def get_tool_definitions(*args, **kwargs):
     return _get_tool_definitions(*args, **kwargs)
 
 
+@contextmanager
+def apply_ephemeral_toolsets(agent, ephemeral_toolsets: list[str] | None):
+    """Expose extra toolsets on an agent for one turn, then restore.
+
+    Used by slash commands such as /deep-research to grant access to a noisy or
+    powerful opt-in tool only for the queued prompt without changing the
+    session's normal schema.
+    """
+    ephemeral_toolsets = list(ephemeral_toolsets or [])
+    if not ephemeral_toolsets or agent is None:
+        yield
+        return
+
+    original_tools = list(getattr(agent, "tools", None) or [])
+    original_valid_tool_names = set(getattr(agent, "valid_tool_names", None) or set())
+    try:
+        if not isinstance(getattr(agent, "valid_tool_names", None), set):
+            agent.valid_tool_names = set(getattr(agent, "valid_tool_names", None) or [])
+        extra_tools = get_tool_definitions(
+            enabled_toolsets=ephemeral_toolsets,
+            quiet_mode=True,
+        )
+        existing = {
+            t.get("function", {}).get("name")
+            for t in (getattr(agent, "tools", None) or [])
+            if isinstance(t, dict)
+        }
+        if getattr(agent, "tools", None) is None:
+            agent.tools = []
+        for tool in extra_tools:
+            name = tool.get("function", {}).get("name")
+            if name and name not in existing:
+                agent.tools.append(tool)
+                agent.valid_tool_names.add(name)
+                existing.add(name)
+        yield
+    finally:
+        agent.tools = original_tools
+        agent.valid_tool_names = original_valid_tool_names
+
+
+def build_deep_research_prompt(question: str) -> str:
+    """Build the prompt queued by /deep-research."""
+    return (
+        "Run a dynamic workflow with the workflow_run tool for cross-checked research. "
+        "Use this exact research question:\n\n"
+        f"{question}\n\n"
+        "Suggested phases: "
+        "(1) fan out independent source-finding subagents; "
+        "(2) cross-check the strongest claims against primary sources; "
+        "(3) synthesize a concise cited report and explicitly drop unsupported claims. "
+        "Keep subagent toolsets minimal, usually ['web'], and keep the final answer readable."
+    )
+
+
 def get_toolset_for_tool(*args, **kwargs):
     from model_tools import get_toolset_for_tool as _get_toolset_for_tool
 
@@ -8610,6 +8665,10 @@ class HermesCLI:
             self._handle_stop_command()
         elif canonical == "agents":
             self._handle_agents_command()
+        elif canonical == "workflows":
+            self._handle_workflows_command(cmd_original)
+        elif canonical == "deep-research":
+            self._handle_deep_research_command(cmd_original)
         elif canonical == "background":
             self._handle_background_command(cmd_original)
         elif canonical == "queue":
@@ -8796,6 +8855,41 @@ class HermesCLI:
         
         return True
     
+    def _handle_workflows_command(self, cmd: str):
+        """Handle /workflows — list or inspect dynamic workflow runs."""
+        parts = cmd.strip().split()
+        try:
+            from tools.workflow_tool import format_workflow_runs, get_workflow_run
+        except Exception as exc:
+            _cprint(f"  Dynamic workflow support is unavailable: {exc}")
+            return
+
+        if len(parts) >= 3 and parts[1].lower() == "show":
+            run = get_workflow_run(parts[2])
+            if not run:
+                _cprint(f"  Workflow run not found: {parts[2]}")
+                return
+            _cprint(json.dumps(run, ensure_ascii=False, indent=2))
+            return
+        if len(parts) >= 2 and parts[1].lower() not in {"list", "ls"}:
+            _cprint("  Usage: /workflows [list|show <run_id>]")
+            return
+        _cprint(format_workflow_runs(limit=10))
+
+    def _handle_deep_research_command(self, cmd: str):
+        """Handle /deep-research <question> by queueing a workflow_run prompt."""
+        parts = cmd.strip().split(maxsplit=1)
+        question = parts[1].strip() if len(parts) > 1 else ""
+        if not question:
+            _cprint("  Usage: /deep-research <question>")
+            return
+        prompt = build_deep_research_prompt(question)
+        self._pending_input.put((prompt, [], {"ephemeral_toolsets": ["workflow"]}))
+        _cprint(
+            "  Queued dynamic deep-research workflow with workflow tool enabled "
+            f"for this turn only: {question[:80]}{'...' if len(question) > 80 else ''}"
+        )
+
     def _handle_background_command(self, cmd: str):
         """Handle /background <prompt> — run a prompt in a separate background session.
 
@@ -11610,7 +11704,7 @@ class HermesCLI:
             except Exception:
                 pass
 
-    def chat(self, message, images: list = None) -> Optional[str]:
+    def chat(self, message, images: list = None, ephemeral_toolsets: list[str] | None = None) -> Optional[str]:
         """
         Send a message to the agent and get a response.
         
@@ -11625,6 +11719,7 @@ class HermesCLI:
         Args:
             message: The user's message (str or multimodal content list)
             images: Optional list of Path objects for attached images
+            ephemeral_toolsets: Optional toolsets exposed only for this turn.
             
         Returns:
             The agent's response, or None on error
@@ -11632,6 +11727,8 @@ class HermesCLI:
         # Single-query and direct chat callers do not go through run(), so
         # register secure secret capture here as well.
         set_secret_capture_callback(self._secret_capture_callback)
+
+        ephemeral_toolsets = list(ephemeral_toolsets or [])
 
         # Reset the per-turn interrupt flag. Any subsequent path that
         # discovers an interrupt (below, after run_conversation) will flip
@@ -11875,13 +11972,14 @@ class HermesCLI:
                     agent_message = _srn + "\n\n" + agent_message
                     self._pending_skills_reload_note = None
                 try:
-                    result = self.agent.run_conversation(
-                        user_message=agent_message,
-                        conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
-                        stream_callback=stream_callback,
-                        task_id=self.session_id,
-                        persist_user_message=message if _voice_prefix else None,
-                    )
+                    with apply_ephemeral_toolsets(self.agent, ephemeral_toolsets):
+                        result = self.agent.run_conversation(
+                            user_message=agent_message,
+                            conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
+                            stream_callback=stream_callback,
+                            task_id=self.session_id,
+                            persist_user_message=message if _voice_prefix else None,
+                        )
                 except Exception as exc:
                     logging.error("run_conversation raised: %s", exc, exc_info=True)
                     _summary = getattr(self.agent, '_summarize_api_error', lambda e: str(e)[:300])(exc)
@@ -14465,10 +14563,17 @@ class HermesCLI:
                     # post-resize transient suppression should end here.
                     self._status_bar_suppressed_after_resize = False
 
-                    # Unpack image payload: (text, [Path, ...]) or plain str
+                    # Unpack queued payload: (text, [Path, ...]),
+                    # (text, [Path, ...], metadata), or plain str. Metadata is
+                    # used by turn-local commands such as /deep-research.
                     submit_images = []
+                    submit_metadata = {}
                     if isinstance(user_input, tuple):
-                        user_input, submit_images = user_input
+                        if len(user_input) == 3:
+                            user_input, submit_images, submit_metadata = user_input
+                            submit_metadata = submit_metadata or {}
+                        else:
+                            user_input, submit_images = user_input
 
                     if isinstance(user_input, str):
                         user_input = _strip_leaked_bracketed_paste_wrappers(user_input)
@@ -14528,7 +14633,11 @@ class HermesCLI:
                     app.invalidate()  # Refresh status line
 
                     try:
-                        self.chat(user_input, images=submit_images or None)
+                        self.chat(
+                            user_input,
+                            images=submit_images or None,
+                            ephemeral_toolsets=submit_metadata.get("ephemeral_toolsets") or None,
+                        )
                     finally:
                         self._agent_running = False
                         self._spinner_text = ""

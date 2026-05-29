@@ -100,6 +100,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("bg", "btw"), args_hint="<prompt>"),
     CommandDef("agents", "Show active agents and running tasks", "Session",
                aliases=("tasks",)),
+    CommandDef("workflows", "List and inspect dynamic workflow runs", "Session",
+               args_hint="[list|show <run_id>]", subcommands=("list", "show"), cli_only=True),
+    CommandDef("deep-research", "Run a bundled dynamic workflow for cross-checked research", "Tools & Skills",
+               aliases=("deep_research",), args_hint="<question>"),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
                aliases=("q",), args_hint="<prompt>"),
     CommandDef("steer", "Inject a message after the next tool call without interrupting", "Session",
@@ -1076,7 +1080,22 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
             continue
         _add(cmd.name, cmd.description, cmd.args_hint or "")
 
-    # Second pass: aliases.
+    # Second pass: high-value aliases that users type often and tests require
+    # to survive Slack's 50-command cap. Lower-priority aliases (for example
+    # /tasks) can still be reached via /hermes <alias> when the native slash
+    # list is full.
+    priority_aliases = ("reset", "bg", "btw", "q")
+    for priority_alias in priority_aliases:
+        cmd = _COMMAND_LOOKUP.get(priority_alias)
+        if cmd is None or not _is_gateway_available(cmd, overrides):
+            continue
+        _add(
+            priority_alias,
+            f"Alias for /{cmd.name} — {cmd.description}",
+            cmd.args_hint or "",
+        )
+
+    # Third pass: remaining aliases.
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
