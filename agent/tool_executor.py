@@ -1286,6 +1286,50 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
             tool_duration = time.time() - tool_start_time
 
+        if not _execution_blocked:
+            try:
+                from hermes_cli.plugins import invoke_hook
+
+                hook_results = invoke_hook(
+                    "transform_tool_result",
+                    tool_name=function_name,
+                    args=function_args,
+                    result=function_result,
+                    task_id=effective_task_id or "",
+                    session_id=agent.session_id or "",
+                    tool_call_id=getattr(tool_call, "id", "") or "",
+                    duration_ms=int(tool_duration * 1000),
+                )
+                for hook_result in hook_results:
+                    if isinstance(hook_result, str):
+                        function_result = hook_result
+                        break
+            except Exception as _transform_err:
+                logger.debug("transform_tool_result hook error: %s", _transform_err)
+
+        if not _execution_blocked:
+            try:
+                from agent.agent_loop_observer import (
+                    append_observer_metadata,
+                    notify_agent_loop_tool,
+                )
+
+                _observer_annotations = notify_agent_loop_tool(
+                    agent,
+                    function_name,
+                    function_args,
+                    function_result,
+                    task_id=effective_task_id or "",
+                    tool_call_id=getattr(tool_call, "id", "") or "",
+                    duration_ms=int(tool_duration * 1000),
+                )
+                function_result = append_observer_metadata(
+                    function_result,
+                    _observer_annotations,
+                )
+            except Exception as _obs_err:
+                logger.debug("agent-loop observer dispatch failed: %s", _obs_err)
+
         if isinstance(function_result, str):
             result_preview = function_result if agent.verbose_logging else (
                 function_result[:200] if len(function_result) > 200 else function_result
