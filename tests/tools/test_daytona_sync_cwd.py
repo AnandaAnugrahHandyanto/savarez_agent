@@ -9,6 +9,7 @@ Scope per task t_f1c48e58:
 
 import ast
 import os
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -586,6 +587,10 @@ class TestDaytonaSyncCwdExclusionBehavior:
 class TestDaytonaSyncCwdSymlinkContainment:
     """CWD sync must not upload files through symlinks outside host_cwd."""
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Symlinks require elevated privileges on Windows",
+    )
     def test_symlink_file_pointing_outside_cwd_not_uploaded(self, tmp_path):
         """A symlinked file whose target is outside TERMINAL_CWD is skipped."""
         from tools.environments.daytona import DaytonaEnvironment
@@ -624,6 +629,10 @@ class TestDaytonaSyncCwdSymlinkContainment:
         assert all(Path(host).resolve() != (outside / "secret.txt").resolve()
                    for host, _ in uploaded_files)
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Symlinks require elevated privileges on Windows",
+    )
     def test_symlink_directory_pointing_outside_cwd_not_traversed(self, tmp_path):
         """A symlinked directory outside TERMINAL_CWD is not traversed/uploaded."""
         from tools.environments.daytona import DaytonaEnvironment
