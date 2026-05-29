@@ -2473,6 +2473,18 @@ def _(rid, params: dict) -> dict:
             agent = _make_agent(sid, target, session_id=target)
         finally:
             _clear_session_context(tokens)
+        # Restore context token tracking from loaded history so the status
+        # bar shows an accurate estimate immediately on resume instead of
+        # waiting for the first API call to populate last_prompt_tokens.
+        try:
+            from agent.model_metadata import estimate_messages_tokens_rough
+
+            est = estimate_messages_tokens_rough(history)
+            comp = getattr(agent, "context_compressor", None)
+            if comp and est > 0:
+                comp.last_prompt_tokens = est
+        except Exception:
+            pass
         _init_session(sid, target, agent, history, cols=int(params.get("cols", 80)))
     except Exception as e:
         return _err(rid, 5000, f"resume failed: {e}")
@@ -3044,6 +3056,18 @@ def _(rid, params: dict) -> dict:
             agent = _make_agent(new_sid, new_key, session_id=new_key)
         finally:
             _clear_session_context(tokens)
+        # Restore context token tracking from branched history so the status
+        # bar shows an accurate estimate immediately instead of waiting for
+        # the first API call to populate last_prompt_tokens.
+        try:
+            from agent.model_metadata import estimate_messages_tokens_rough
+
+            est = estimate_messages_tokens_rough(history)
+            comp = getattr(agent, "context_compressor", None)
+            if comp and est > 0:
+                comp.last_prompt_tokens = est
+        except Exception:
+            pass
         _init_session(
             new_sid, new_key, agent, list(history), cols=session.get("cols", 80)
         )
