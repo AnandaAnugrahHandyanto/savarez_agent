@@ -5,9 +5,86 @@ Provides a curses multi-select with keyboard navigation, plus a
 text-based numbered fallback for terminals without curses support.
 """
 import sys
-from typing import Callable, List, Optional, Set
+from typing import Any, Callable, List, Optional, Set
 
 from hermes_cli.colors import Colors, color
+
+
+def _clamp_cursor(cursor: int, item_count: int) -> int:
+    """Clamp *cursor* to a valid item index for a list of *item_count*."""
+    if item_count <= 0:
+        return 0
+    return max(0, min(cursor, item_count - 1))
+
+
+def _scroll_window_for_cursor(
+    cursor: int,
+    scroll_offset: int,
+    visible_rows: int,
+    item_count: int,
+) -> tuple[int, int, int]:
+    """Return ``(cursor, offset, visible_rows)`` with cursor visible.
+
+    ``visible_rows`` is coerced to at least one row so callers running inside
+    very small terminals never produce negative offsets or empty ``range()``
+    windows that make navigation look frozen.
+    """
+    visible_rows = max(1, visible_rows)
+    if item_count <= 0:
+        return 0, 0, visible_rows
+
+    cursor = _clamp_cursor(cursor, item_count)
+    max_offset = max(0, item_count - visible_rows)
+    scroll_offset = max(0, min(scroll_offset, max_offset))
+
+    if cursor < scroll_offset:
+        scroll_offset = cursor
+    elif cursor >= scroll_offset + visible_rows:
+        scroll_offset = cursor - visible_rows + 1
+
+    scroll_offset = max(0, min(scroll_offset, max_offset))
+    return cursor, scroll_offset, visible_rows
+
+
+def _scroll_status_text(
+    cursor: int,
+    scroll_offset: int,
+    visible_rows: int,
+    item_count: int,
+) -> str:
+    """Return compact footer text describing list position and overflow."""
+    if item_count <= 0:
+        return ""
+
+    visible_rows = max(1, visible_rows)
+    cursor = _clamp_cursor(cursor, item_count)
+    parts: list[str] = []
+    if scroll_offset > 0:
+        parts.append("↑ more")
+    parts.append(f"{cursor + 1}/{item_count}")
+    if scroll_offset + visible_rows < item_count:
+        parts.append("↓ more")
+    return "  ".join(parts)
+
+
+def _draw_footer(stdscr, row: int, max_x: int, text: str, attr=0) -> None:
+    """Best-effort footer draw helper; curses errors are harmless here."""
+    if row < 0 or max_x <= 1 or not text:
+        return
+    try:
+        stdscr.addnstr(row, 0, text, max_x - 1, attr)
+    except Exception:
+        pass
+
+
+def _draw_too_small(stdscr, max_y: int, max_x: int, message: str) -> None:
+    """Tell the user a curses menu cannot render in the current viewport."""
+    if max_y <= 0 or max_x <= 1:
+        return
+    try:
+        stdscr.addnstr(max_y - 1, 0, message, max_x - 1)
+    except Exception:
+        pass
 
 
 def flush_stdin() -> None:
@@ -36,6 +113,10 @@ def flush_stdin() -> None:
 # every menu's key-handling branch identical and free of raw escape-byte logic.
 NAV_UP = "up"
 NAV_DOWN = "down"
+NAV_PAGE_UP = "page_up"
+NAV_PAGE_DOWN = "page_down"
+NAV_HOME = "home"
+NAV_END = "end"
 NAV_SELECT = "select"
 NAV_TOGGLE = "toggle"
 NAV_CANCEL = "cancel"
@@ -66,6 +147,14 @@ def read_menu_key(stdscr) -> str:
         return NAV_UP
     if key in (curses.KEY_DOWN, ord("j")):
         return NAV_DOWN
+    if key in (curses.KEY_PPAGE, ord("b")):
+        return NAV_PAGE_UP
+    if key in (curses.KEY_NPAGE, ord("f")):
+        return NAV_PAGE_DOWN
+    if key == curses.KEY_HOME:
+        return NAV_HOME
+    if key == curses.KEY_END:
+        return NAV_END
     if key in (curses.KEY_ENTER, 10, 13):
         return NAV_SELECT
     if key == ord(" "):
@@ -118,19 +207,20 @@ def _run_curses_menu(
     on_action,
     reserve_bottom=1,
     draw_footer=None,
+    footer_text_fn=None,
     extra_color_pairs=False,
     fallback,
     cancel_value,
-):
+) -> Any:
     """Shared curses single-/multi-select event loop.
 
-    Owns every piece the three public menus used to duplicate verbatim:
-    the non-TTY guard, ``curses.wrapper`` setup (cursor hide + color pairs),
-    the per-frame ``clear``/``getmaxyx``/``refresh`` cycle, scroll-offset math,
-    row iteration, the ``read_menu_key`` dispatch with ``NAV_UP``/``NAV_DOWN``
-    cursor wrap, ``flush_stdin``, and the ``KeyboardInterrupt`` / curses-
-    unavailable fallback. Per-menu behavior is supplied as callbacks so the
-    rendered output stays byte-identical to the old hand-rolled loops.
+    Owns every piece the public menus otherwise duplicate: the non-TTY guard,
+    ``curses.wrapper`` setup (cursor hide + color pairs), the per-frame
+    ``clear``/``getmaxyx``/``refresh`` cycle, scroll-offset math, row
+    iteration, extended navigation, ``flush_stdin``, and the
+    ``KeyboardInterrupt`` / curses-unavailable fallback. Per-menu behavior is
+    supplied as callbacks so checklist, radio-list, and single-select menus
+    share the same scroll and key handling.
 
     Callbacks / params:
         draw_header(stdscr, max_y, max_x) -> int
@@ -141,12 +231,13 @@ def _run_curses_menu(
         on_action(action, cursor) -> value
             Reducer for SELECT/TOGGLE/CANCEL. Return ``_KEEP`` to continue the
             loop; return anything else to resolve the menu with that value.
-            (UP/DOWN cursor movement is handled by the driver itself.)
-        reserve_bottom: number of bottom screen rows kept clear of items
-            (1 = leave the final row blank, matching the old loops).
+            Cursor movement, paging, and Home/End are handled by the driver.
+        reserve_bottom: number of bottom screen rows kept clear of items.
         draw_footer(stdscr, max_y, max_x) -> None
-            Optional bottom-row painter (e.g. a status bar). Drawn after the
-            item rows; its row budget must be included in ``reserve_bottom``.
+            Optional legacy footer painter. Drawn when ``footer_text_fn`` is not
+            provided; its row budget must be included in ``reserve_bottom``.
+        footer_text_fn(cursor, scroll_offset, visible_rows) -> str
+            Optional bottom-row text supplier for scroll/status hints.
         extra_color_pairs: also init pair 3 (dim gray) for status bars.
         fallback() -> value
             Called when curses errors out on a real TTY (curses unavailable).
@@ -169,7 +260,7 @@ def _run_curses_menu(
                 curses.use_default_colors()
                 curses.init_pair(1, curses.COLOR_GREEN, -1)
                 curses.init_pair(2, curses.COLOR_YELLOW, -1)
-                if extra_color_pairs:
+                if extra_color_pairs or footer_text_fn is not None or draw_footer is not None:
                     curses.init_pair(
                         3, 8 if curses.COLORS > 8 else curses.COLOR_WHITE, -1
                     )
@@ -182,11 +273,24 @@ def _run_curses_menu(
 
                 items_start = draw_header(stdscr, max_y, max_x)
 
-                visible_rows = max_y - items_start - reserve_bottom
-                if cursor < scroll_offset:
-                    scroll_offset = cursor
-                elif cursor >= scroll_offset + visible_rows:
-                    scroll_offset = cursor - visible_rows + 1
+                raw_visible_rows = max_y - items_start - reserve_bottom
+                if raw_visible_rows <= 0:
+                    _draw_too_small(
+                        stdscr,
+                        max_y,
+                        max_x,
+                        "Terminal too small; enlarge window or press q",
+                    )
+                    stdscr.refresh()
+                    action = read_menu_key(stdscr)
+                    if action == NAV_CANCEL:
+                        result_holder[0] = cancel_value
+                        return
+                    continue
+
+                cursor, scroll_offset, visible_rows = _scroll_window_for_cursor(
+                    cursor, scroll_offset, raw_visible_rows, item_count
+                )
 
                 for draw_i, i in enumerate(
                     range(scroll_offset, min(item_count, scroll_offset + visible_rows))
@@ -196,16 +300,30 @@ def _run_curses_menu(
                         break
                     draw_row(stdscr, y, i, i == cursor, max_x)
 
-                if draw_footer is not None:
+                if footer_text_fn is not None:
+                    footer_text = footer_text_fn(cursor, scroll_offset, visible_rows)
+                    footer_attr = curses.A_DIM
+                    if curses.has_colors():
+                        footer_attr |= curses.color_pair(3)
+                    _draw_footer(stdscr, max_y - 1, max_x, footer_text, footer_attr)
+                elif draw_footer is not None:
                     draw_footer(stdscr, max_y, max_x)
 
                 stdscr.refresh()
                 action = read_menu_key(stdscr)
 
-                if action == NAV_UP:
+                if action == NAV_UP and item_count:
                     cursor = (cursor - 1) % item_count
-                elif action == NAV_DOWN:
+                elif action == NAV_DOWN and item_count:
                     cursor = (cursor + 1) % item_count
+                elif action == NAV_PAGE_UP and item_count:
+                    cursor = max(0, cursor - visible_rows)
+                elif action == NAV_PAGE_DOWN and item_count:
+                    cursor = min(item_count - 1, cursor + visible_rows)
+                elif action == NAV_HOME and item_count:
+                    cursor = 0
+                elif action == NAV_END and item_count:
+                    cursor = item_count - 1
                 elif action in (NAV_SELECT, NAV_TOGGLE, NAV_CANCEL):
                     outcome = on_action(action, cursor)
                     if outcome is not _KEEP:
@@ -255,7 +373,7 @@ def curses_checklist(
             stdscr.addnstr(0, 0, title, max_x - 1, hattr)
             stdscr.addnstr(
                 1, 0,
-                "  ↑↓ navigate  SPACE toggle  ENTER confirm  ESC cancel",
+                "  ↑↓/j/k navigate  PgUp/PgDn page  Home/End jump  SPACE toggle  ENTER confirm  ESC cancel",
                 max_x - 1, curses.A_DIM,
             )
         except curses.error:
@@ -277,19 +395,19 @@ def curses_checklist(
         except curses.error:
             pass
 
-    def _draw_footer(stdscr, max_y, max_x):
-        import curses
+    def _footer_text(cursor, scroll_offset, visible_rows):
+        scroll_text = _scroll_status_text(
+            cursor, scroll_offset, visible_rows, len(items)
+        )
+        if status_fn is None:
+            return scroll_text
         try:
             status_text = status_fn(chosen)
-            if status_text:
-                # Right-align on the bottom row
-                sx = max(0, max_x - len(status_text) - 1)
-                sattr = curses.A_DIM
-                if curses.has_colors():
-                    sattr |= curses.color_pair(3)
-                stdscr.addnstr(max_y - 1, sx, status_text, max_x - sx - 1, sattr)
-        except curses.error:
-            pass
+        except Exception:
+            status_text = ""
+        if status_text and scroll_text:
+            return f"{status_text}   {scroll_text}"
+        return status_text or scroll_text
 
     def _on_action(action, cursor):
         if action == NAV_TOGGLE:
@@ -305,9 +423,9 @@ def curses_checklist(
         draw_header=_draw_header,
         draw_row=_draw_row,
         on_action=_on_action,
-        reserve_bottom=(2 if status_fn else 1),
-        draw_footer=_draw_footer if status_fn else None,
-        extra_color_pairs=bool(status_fn),
+        reserve_bottom=1,
+        footer_text_fn=_footer_text,
+        extra_color_pairs=True,
         fallback=lambda: _numbered_fallback(title, items, selected, cancel_returns, status_fn),
         cancel_value=cancel_returns,
     )
@@ -358,7 +476,7 @@ def curses_radiolist(
 
             stdscr.addnstr(
                 row, 0,
-                "  \u2191\u2193 navigate  ENTER/SPACE select  ESC cancel",
+                "  \u2191\u2193/j/k navigate  PgUp/PgDn page  Home/End jump  ENTER/SPACE select  ESC cancel",
                 max_x - 1, curses.A_DIM,
             )
             row += 1
@@ -394,6 +512,10 @@ def curses_radiolist(
         draw_row=_draw_row,
         on_action=_on_action,
         reserve_bottom=1,
+        footer_text_fn=lambda cursor, scroll_offset, visible_rows: _scroll_status_text(
+            cursor, scroll_offset, visible_rows, len(items)
+        ),
+        extra_color_pairs=True,
         fallback=lambda: _radio_numbered_fallback(title, items, selected, cancel_returns),
         cancel_value=cancel_returns,
     )
@@ -449,7 +571,7 @@ def curses_single_select(
             stdscr.addnstr(0, 0, title, max_x - 1, hattr)
             stdscr.addnstr(
                 1, 0,
-                "  ↑↓ navigate  ENTER confirm  ESC/q cancel",
+                "  ↑↓/j/k navigate  PgUp/PgDn page  Home/End jump  ENTER confirm  ESC/q cancel",
                 max_x - 1, curses.A_DIM,
             )
         except curses.error:
@@ -486,6 +608,10 @@ def curses_single_select(
         draw_row=_draw_row,
         on_action=_on_action,
         reserve_bottom=1,
+        footer_text_fn=lambda cursor, scroll_offset, visible_rows: _scroll_status_text(
+            cursor, scroll_offset, visible_rows, len(all_items)
+        ),
+        extra_color_pairs=True,
         fallback=lambda: _numbered_single_fallback(title, all_items, cancel_idx),
         cancel_value=None,
     )
