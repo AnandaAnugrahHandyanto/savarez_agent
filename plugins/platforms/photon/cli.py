@@ -1266,13 +1266,20 @@ def _register_webhook_url(
             print("        hermes gateway restart")
             return 0
         if recreate_managed_without_secret and photon_tunnel.is_trycloudflare_url(url):
-            _delete_matching_webhook(
+            deleted = _delete_matching_webhook(
                 project_id,
                 project_secret,
                 matching_hooks,
                 url,
                 reason="managed webhook with missing local signing secret",
             )
+            if not deleted:
+                print(
+                    "webhook URL is already registered, but it is not owned by "
+                    "this Hermes profile. Refusing to delete it automatically.",
+                    file=sys.stderr,
+                )
+                return 1
         else:
             print(
                 "webhook URL is already registered, but PHOTON_WEBHOOK_SECRET "
@@ -1290,6 +1297,9 @@ def _register_webhook_url(
     except Exception as e:
         print(f"register failed: {e}", file=sys.stderr)
         return 1
+    webhook_id = _webhook_id(data)
+    if webhook_id and photon_tunnel.is_trycloudflare_url(url):
+        photon_tunnel.record_owned_webhook(webhook_id, url)
     # The helper does all the formatting + writing; cli.py never
     # touches the signing-secret value, the path it was written
     # to, or even the redacted-response dict. on_summary is a
@@ -1319,12 +1329,17 @@ def _delete_matching_webhook(
     url: str,
     *,
     reason: str,
-) -> None:
+) -> int:
+    owned_ids = photon_tunnel.owned_webhook_ids()
+    deleted = 0
     for hook in hooks:
         if _webhook_url(hook) != url:
             continue
         webhook_id = _webhook_id(hook)
         if not webhook_id:
+            continue
+        if webhook_id not in owned_ids:
+            print(f"refusing to delete unowned {reason}: {webhook_id}", file=sys.stderr)
             continue
         try:
             photon_auth.delete_webhook(
@@ -1333,7 +1348,10 @@ def _delete_matching_webhook(
         except Exception as e:
             print(f"could not delete {reason} {webhook_id}: {e}", file=sys.stderr)
             continue
+        photon_tunnel.forget_owned_webhook(webhook_id)
+        deleted += 1
         print(f"  ✓ deleted {reason}: {webhook_id}")
+    return deleted
 
 
 def _delete_stale_managed_webhooks(
@@ -1352,12 +1370,17 @@ def _delete_stale_managed_webhooks(
     """
     deleted_ids: set[str] = set()
     deleted_urls: set[str] = set()
+    owned_ids = photon_tunnel.owned_webhook_ids()
     for hook in hooks:
         url = _webhook_url(hook)
-        if not url or url == keep_url or not photon_tunnel.is_trycloudflare_url(url):
-            continue
         webhook_id = _webhook_id(hook)
-        if not webhook_id:
+        if (
+            not url
+            or url == keep_url
+            or not webhook_id
+            or webhook_id not in owned_ids
+            or not photon_tunnel.is_trycloudflare_url(url)
+        ):
             continue
         try:
             photon_auth.delete_webhook(
@@ -1374,6 +1397,7 @@ def _delete_stale_managed_webhooks(
             continue
         deleted_ids.add(webhook_id)
         deleted_urls.add(url)
+        photon_tunnel.forget_owned_webhook(webhook_id)
         print(f"  ✓ deleted stale managed trycloudflare.com webhook: {webhook_id}")
 
     if not deleted_ids and not deleted_urls:

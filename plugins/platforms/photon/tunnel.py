@@ -180,6 +180,82 @@ def save_state(data: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def owned_webhook_ids() -> set[str]:
+    """Return Photon webhook ids this Hermes profile created for its tunnel."""
+    state = load_state()
+    owned = state.get("owned_webhooks") or []
+    ids: set[str] = set()
+    if not isinstance(owned, list):
+        return ids
+    for item in owned:
+        if isinstance(item, dict):
+            value = item.get("id")
+        else:
+            value = item
+        if value:
+            ids.add(str(value))
+    return ids
+
+
+def record_owned_webhook(webhook_id: str, webhook_url: str) -> None:
+    """Persist ownership of a Photon webhook created by this profile."""
+    webhook_id = str(webhook_id or "").strip()
+    webhook_url = str(webhook_url or "").strip()
+    if not webhook_id:
+        return
+
+    state = load_state()
+    owned = state.get("owned_webhooks") or []
+    if not isinstance(owned, list):
+        owned = []
+
+    next_owned: list[dict[str, Any]] = []
+    seen = {webhook_id}
+    next_owned.append({
+        "id": webhook_id,
+        "url": webhook_url,
+        "recorded_at": int(time.time()),
+    })
+    for item in owned:
+        if isinstance(item, dict):
+            item_id = str(item.get("id") or "").strip()
+            if not item_id or item_id in seen:
+                continue
+            seen.add(item_id)
+            next_owned.append(item)
+        elif item:
+            item_id = str(item)
+            if item_id in seen:
+                continue
+            seen.add(item_id)
+            next_owned.append({"id": item_id, "url": "", "recorded_at": None})
+    state["owned_webhooks"] = next_owned
+    save_state(state)
+
+
+def forget_owned_webhook(webhook_id: str) -> None:
+    """Remove a Photon webhook id from this profile's ownership record."""
+    webhook_id = str(webhook_id or "").strip()
+    if not webhook_id:
+        return
+    state = load_state()
+    owned = state.get("owned_webhooks") or []
+    if not isinstance(owned, list):
+        return
+    remaining = []
+    for item in owned:
+        if isinstance(item, dict):
+            item_id = str(item.get("id") or "").strip()
+        else:
+            item_id = str(item or "").strip()
+        if item_id and item_id != webhook_id:
+            remaining.append(item)
+    if len(remaining) == len(owned):
+        return
+    state["owned_webhooks"] = remaining
+    save_state(state)
+
+
 def pid_is_running(pid: Any) -> bool:
     try:
         parsed = int(pid)
@@ -583,6 +659,7 @@ def start(
         )
 
     webhook_url = webhook_url_for_base(public_url)
+    previous_state = load_state()
     save_state({
         "managed": True,
         "pid": proc.pid,
@@ -592,6 +669,7 @@ def start(
         "command": command,
         "started_at": int(time.time()),
         "log_path": str(log_file),
+        "owned_webhooks": previous_state.get("owned_webhooks") or [],
     })
     return TunnelStartResult(
         success=True,
