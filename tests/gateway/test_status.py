@@ -52,6 +52,47 @@ class TestGatewayPidState:
         assert status.get_running_pid() is None
         assert not pid_path.exists()
 
+    def test_get_running_pid_cleans_gateway_record_reused_by_non_gateway_pid(self, tmp_path, monkeypatch):
+        """A stale gateway record must not be trusted when cmdline says non-gateway."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        lock_path = tmp_path / "gateway.lock"
+        record = {
+            "pid": 1,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "start_time": None,
+        }
+        pid_path.write_text(json.dumps(record))
+        lock_path.write_text(json.dumps(record))
+
+        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", lambda lock_path=None: True)
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "/sbin/init")
+
+        assert status.get_running_pid() is None
+        assert not pid_path.exists()
+        assert not lock_path.exists()
+
+    def test_remove_pid_file_unlinks_own_pidfile(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        pid_path.write_text(json.dumps({"pid": os.getpid(), "kind": "hermes-gateway"}))
+
+        status.remove_pid_file()
+
+        assert not pid_path.exists()
+
+    def test_remove_pid_file_preserves_other_process_pidfile(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        pid_path.write_text(json.dumps({"pid": os.getpid() + 1000, "kind": "hermes-gateway"}))
+
+        status.remove_pid_file()
+
+        assert pid_path.exists()
+
     def test_get_running_pid_cleans_stale_record_from_dead_process(self, tmp_path, monkeypatch):
         # Simulates the aftermath of a crash: the PID file still points at a
         # process that no longer exists. The next gateway startup must be
