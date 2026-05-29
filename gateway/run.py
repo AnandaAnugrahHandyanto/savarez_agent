@@ -11999,6 +11999,7 @@ class GatewayRunner:
             return t("gateway.reasoning.display_set_off", platform=platform_key)
 
         # Effort level change
+        from hermes_constants import VALID_REASONING_EFFORTS
         effort = args.strip()
         if effort == "reset":
             if persist_global:
@@ -12009,7 +12010,7 @@ class GatewayRunner:
             return t("gateway.reasoning.reset_done")
         if effort == "none":
             parsed = {"enabled": False}
-        elif effort in {"minimal", "low", "medium", "high", "xhigh"}:
+        elif effort in VALID_REASONING_EFFORTS:
             parsed = {"enabled": True, "effort": effort}
         else:
             return t(
