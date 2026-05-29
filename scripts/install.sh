@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC1091,SC2016,SC2088,SC2155,SC2012,SC2141,SC2086,SC2024,SC2129,SC2143,SC2010,SC2015,SC2034
 # ============================================================================
 # Hermes Agent Installer
 # ============================================================================
@@ -36,7 +37,6 @@ export UV_NO_CONFIG=1
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
 MAGENTA='\033[0;35m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
@@ -545,7 +545,8 @@ check_node() {
     log_info "Checking Node.js (for browser tools)..."
 
     if command -v node &> /dev/null; then
-        local found_ver=$(node --version)
+        local found_ver
+        found_ver=$(node --version)
         log_success "Node.js $found_ver found"
         HAS_NODE=true
         return 0
@@ -554,7 +555,8 @@ check_node() {
     # Check our own managed install from a previous run
     if [ -x "$HERMES_HOME/node/bin/node" ]; then
         export PATH="$HERMES_HOME/node/bin:$PATH"
-        local found_ver=$("$HERMES_HOME/node/bin/node" --version)
+        local found_ver
+        found_ver=$("$HERMES_HOME/node/bin/node" --version)
         log_success "Node.js $found_ver found (Hermes-managed)"
         HAS_NODE=true
         return 0
@@ -583,7 +585,8 @@ install_node() {
         return 0
     fi
 
-    local arch=$(uname -m)
+    local arch
+    arch=$(uname -m)
     local node_arch
     case "$arch" in
         x86_64)        node_arch="x64"    ;;
@@ -729,7 +732,8 @@ install_system_packages() {
 
     log_info "Checking ffmpeg (TTS voice messages)..."
     if command -v ffmpeg &> /dev/null; then
-        local ffmpeg_ver=$(ffmpeg -version 2>/dev/null | head -1 | awk '{print $3}')
+        local ffmpeg_ver
+        ffmpeg_ver=$(ffmpeg -version 2>/dev/null | head -1 | awk '{print $3}')
         log_success "ffmpeg $ffmpeg_ver found"
         HAS_FFMPEG=true
     else

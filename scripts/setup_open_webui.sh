@@ -161,7 +161,7 @@ install_open_webui() {
   py="$(choose_python)"
   log "Using Python interpreter: $py"
   "$py" -m venv "$OPEN_WEBUI_VENV"
-  # shellcheck disable=SC1090
+  # shellcheck disable=SC1090,SC1091
   source "$OPEN_WEBUI_VENV/bin/activate"
   "$py" -m pip install --upgrade pip setuptools wheel
   "$py" -m pip install open-webui

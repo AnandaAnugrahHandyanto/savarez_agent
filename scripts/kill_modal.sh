@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2162
 # Kill all running Modal apps (sandboxes, deployments, etc.)
 #
 # Usage:
