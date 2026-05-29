@@ -481,19 +481,23 @@ class CredentialPool:
         self,
         *,
         replace_shared_entries: bool = False,
+        add_entry_ids: Optional[Set[str]] = None,
         replace_entry_ids: Optional[Set[str]] = None,
         remove_entry_ids: Optional[Set[str]] = None,
         update_order_entry_ids: Optional[Set[str]] = None,
         update_status_entry_ids: Optional[Set[str]] = None,
+        clear_shared_provider_state: bool = False,
     ) -> None:
         write_credential_pool(
             self.provider,
             [entry.to_dict() for entry in self._entries],
             preserve_shared_entries=not replace_shared_entries,
+            add_entry_ids=frozenset(add_entry_ids or ()),
             replace_entry_ids=frozenset(replace_entry_ids or ()),
             remove_entry_ids=frozenset(remove_entry_ids or ()),
             update_order_entry_ids=frozenset(update_order_entry_ids or ()),
             update_status_entry_ids=frozenset(update_status_entry_ids or ()),
+            clear_shared_provider_state=clear_shared_provider_state,
         )
 
     def _is_terminal_auth_failure(
@@ -1158,6 +1162,21 @@ class CredentialPool:
                     logger.debug(
                         "Codex OAuth refresh token is terminally invalid; clearing local token state"
                     )
+                    if entry.source != "device_code":
+                        updated = replace(
+                            entry,
+                            last_status=STATUS_DEAD,
+                            last_status_at=time.time(),
+                            last_error_code=401,
+                            last_error_reason=getattr(exc, "code", "unknown"),
+                            last_error_message=str(exc),
+                            last_error_reset_at=None,
+                        )
+                        self._replace_entry(entry, updated)
+                        if self._current_id == entry.id:
+                            self._current_id = None
+                        self._persist(update_status_entry_ids={updated.id})
+                        return None
                     try:
                         with auth_mod._codex_auth_store_lock():
                             auth_file = auth_mod._codex_auth_file_path()
@@ -1623,6 +1642,9 @@ class CredentialPool:
             ),
             remove_entry_ids={removed.id},
             update_order_entry_ids={entry.id for entry in self._entries},
+            clear_shared_provider_state=(
+                self.provider == "openai-codex" and removed.source == "device_code"
+            ),
         )
         if self._current_id == removed.id:
             self._current_id = None
@@ -1656,7 +1678,7 @@ class CredentialPool:
     def add_entry(self, entry: PooledCredential) -> PooledCredential:
         entry = replace(entry, priority=_next_priority(self._entries))
         self._entries.append(entry)
-        self._persist()
+        self._persist(add_entry_ids={entry.id})
         return entry
 
 

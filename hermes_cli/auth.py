@@ -1373,6 +1373,7 @@ def _merge_credential_pool_snapshot_entries(
     current_entries: List[Dict[str, Any]],
     snapshot_entries: List[Dict[str, Any]],
     *,
+    add_entry_ids: Set[str],
     replace_entry_ids: Set[str],
     remove_entry_ids: Set[str],
     update_order_entry_ids: Set[str],
@@ -1418,6 +1419,7 @@ def _merge_credential_pool_snapshot_entries(
         dict(snapshot)
         for snapshot in snapshot_entries
         if snapshot.get("id") not in current_ids
+        and snapshot.get("id") in add_entry_ids
         and snapshot.get("id") not in remove_entry_ids
     )
     return merged
@@ -1495,10 +1497,12 @@ def write_credential_pool(
     entries: List[Dict[str, Any]],
     *,
     preserve_shared_entries: bool = False,
+    add_entry_ids: FrozenSet[str] = frozenset(),
     replace_entry_ids: FrozenSet[str] = frozenset(),
     remove_entry_ids: FrozenSet[str] = frozenset(),
     update_order_entry_ids: FrozenSet[str] = frozenset(),
     update_status_entry_ids: FrozenSet[str] = frozenset(),
+    clear_shared_provider_state: bool = False,
 ) -> Path:
     """Persist one provider's credential pool under auth.json.
 
@@ -1559,6 +1563,7 @@ def write_credential_pool(
                     profile_entries = _merge_credential_pool_snapshot_entries(
                         root_profile_entries,
                         profile_entries,
+                        add_entry_ids=set(add_entry_ids),
                         replace_entry_ids=set(replace_entry_ids),
                         remove_entry_ids=set(remove_entry_ids),
                         update_order_entry_ids=set(update_order_entry_ids),
@@ -1569,6 +1574,10 @@ def write_credential_pool(
                 if split_shared_store
                 else profile_entries + shared_entries
             )
+            if clear_shared_provider_state:
+                providers = shared_auth_store.get("providers")
+                if isinstance(providers, dict):
+                    providers.pop(provider_id, None)
             _save_auth_store(shared_auth_store, auth_file=shared_auth_file)
 
             if split_shared_store and (profile_entries or profile_auth_file.exists()):
@@ -1587,6 +1596,7 @@ def write_credential_pool(
                                 else []
                             ),
                             profile_entries,
+                            add_entry_ids=set(add_entry_ids),
                             replace_entry_ids=set(replace_entry_ids),
                             remove_entry_ids=set(remove_entry_ids),
                             update_order_entry_ids=set(update_order_entry_ids),
@@ -3735,7 +3745,7 @@ def _sync_codex_pool_entries(
     tokens: Dict[str, str],
     last_refresh: Optional[str],
     *,
-    refreshable_sources: FrozenSet[str] = frozenset({"device_code", "manual:device_code"}),
+    refreshable_sources: FrozenSet[str] = frozenset({"device_code"}),
 ) -> bool:
     """Mirror a fresh Codex re-auth into the credential_pool OAuth entries.
 
@@ -3750,23 +3760,11 @@ def _sync_codex_pool_entries(
     * ``device_code`` — the singleton-seeded entry written by the device-code
       OAuth flow when the user logged in via ``hermes setup`` / the model
       picker.  Always synced with the fresh tokens.
-    * ``manual:device_code`` — entries created by ``hermes auth add openai-codex``
-      that use the same device-code OAuth mechanism.  An interactive re-auth
-      proves the user owns the ChatGPT account, so it is safe (and expected)
-      to refresh these entries too.  Without this, a user who once ran the
-      ``hermes auth add`` workaround for #33000 would silently leave that
-      manual entry stale on every subsequent re-auth, recreating the issue
-      reported in #33538.
-
     What does NOT get refreshed:
 
-    * ``manual:api_key`` and any other non-device-code manual sources — those
-      are independent credentials (an explicit API key, a different ChatGPT
-      account, etc.) and must not be overwritten by a single re-auth.
-
-    Callers scope ``refreshable_sources`` to the store they are mutating. In
-    named-profile mode, the root store contains the shared ``device_code``
-    family while ``manual:device_code`` rows stay local to the active profile.
+    * ``manual:*`` entries — those are independent credentials (an explicit
+      API key, a different ChatGPT account, etc.) and must not be overwritten
+      by a canonical re-auth.
 
     Error markers (``last_status``, ``last_error_*``) are also cleared on
     every refreshed entry so that an interactive re-auth gives each relevant
@@ -3818,33 +3816,8 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None
         state["auth_mode"] = "chatgpt"
         state["refresh_owner"] = CODEX_REFRESH_OWNER
         _store_provider_state(auth_store, "openai-codex", state, set_active=False)
-        local_auth_file = _auth_file_path()
-        if auth_file == local_auth_file:
-            _sync_codex_pool_entries(auth_store, tokens, last_refresh)
-            _save_auth_store(auth_store, auth_file=auth_file)
-        else:
-            _sync_codex_pool_entries(
-                auth_store,
-                tokens,
-                last_refresh,
-                refreshable_sources=frozenset({"device_code"}),
-            )
-            _save_auth_store(auth_store, auth_file=auth_file)
-            # The root store is authoritative for the shared refresh-token
-            # family. A profile-local mirror failure must not prevent the
-            # already-rotated canonical token from reaching disk.
-            try:
-                with _auth_store_lock():
-                    local_auth_store = _load_auth_store(local_auth_file)
-                    if _sync_codex_pool_entries(
-                        local_auth_store,
-                        tokens,
-                        last_refresh,
-                        refreshable_sources=frozenset({"manual:device_code"}),
-                    ):
-                        _save_auth_store(local_auth_store, auth_file=local_auth_file)
-            except Exception as exc:
-                logger.warning("Failed to sync Codex tokens to profile auth store: %s", exc)
+        _sync_codex_pool_entries(auth_store, tokens, last_refresh)
+        _save_auth_store(auth_store, auth_file=auth_file)
 
 
 def refresh_codex_oauth_pure(

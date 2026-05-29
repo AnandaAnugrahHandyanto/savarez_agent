@@ -257,7 +257,7 @@ def test_save_codex_tokens_targets_canonical_root_in_profile_mode(tmp_path, monk
     assert _read_codex_tokens()["tokens"]["refresh_token"] == "profile-rt"
 
 
-def test_save_codex_tokens_syncs_only_active_profile_manual_entries(tmp_path, monkeypatch):
+def test_save_codex_tokens_preserves_profile_manual_entries(tmp_path, monkeypatch):
     root_home = tmp_path / "hermes"
     profile_home = root_home / "profiles" / "worker"
     sibling_home = root_home / "profiles" / "sibling"
@@ -319,12 +319,12 @@ def test_save_codex_tokens_syncs_only_active_profile_manual_entries(tmp_path, mo
     assert root_entries["shared-device"]["refresh_token"] == "new-rt"
     assert root_entries["root-manual"]["refresh_token"] == "root-manual-rt"
     profile_auth = json.loads((profile_home / "auth.json").read_text())
-    assert profile_auth["credential_pool"]["openai-codex"][0]["refresh_token"] == "new-rt"
+    assert profile_auth["credential_pool"]["openai-codex"][0]["refresh_token"] == "profile-manual-rt"
     sibling_auth = json.loads((sibling_home / "auth.json").read_text())
     assert sibling_auth["credential_pool"]["openai-codex"][0]["refresh_token"] == "sibling-manual-rt"
 
 
-def test_save_codex_tokens_commits_root_before_profile_mirror_failure(
+def test_save_codex_tokens_does_not_write_profile_manual_entries(
     tmp_path, monkeypatch, caplog,
 ):
     import hermes_cli.auth as auth_mod
@@ -376,7 +376,7 @@ def test_save_codex_tokens_commits_root_before_profile_mirror_failure(
     assert root_auth["credential_pool"]["openai-codex"][0]["refresh_token"] == "new-rt"
     profile_auth = json.loads((profile_home / "auth.json").read_text())
     assert profile_auth["credential_pool"]["openai-codex"][0]["refresh_token"] == "profile-old-rt"
-    assert "Failed to sync Codex tokens to profile auth store" in caplog.text
+    assert "Failed to sync Codex tokens to profile auth store" not in caplog.text
 
 
 def test_profile_mode_refuses_to_refresh_unclaimed_legacy_tokens(tmp_path, monkeypatch):
@@ -466,21 +466,8 @@ def test_save_codex_tokens_syncs_credential_pool(tmp_path, monkeypatch):
     assert auth["providers"]["openai-codex"]["tokens"]["access_token"] == "new-at"
 
 
-def test_save_codex_tokens_syncs_manual_device_code_entries(tmp_path, monkeypatch):
-    """Re-auth must also refresh ``manual:device_code`` pool entries.
-
-    Regression for #33538: a user who hit #33000 before the #33164 fix landed
-    would have run ``hermes auth add openai-codex`` as a workaround, leaving
-    a pool entry with ``source="manual:device_code"``.  On every subsequent
-    re-auth via setup/model picker, the singleton-seeded ``device_code`` entry
-    got refreshed but the ``manual:device_code`` entry stayed stale, recreating
-    the same 401 token_invalidated symptom that #33164 was supposed to fix.
-
-    An interactive Codex device-code re-auth proves the user owns the ChatGPT
-    account, so it is safe to refresh every device-code-backed entry in the
-    pool — but NOT independent ``manual:api_key`` entries (separate accounts /
-    explicit API keys).
-    """
+def test_save_codex_tokens_preserves_manual_device_code_entries(tmp_path, monkeypatch):
+    """Canonical re-auth must not overwrite independent manual OAuth rows."""
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
     (hermes_home / "auth.json").write_text(json.dumps({
@@ -533,14 +520,14 @@ def test_save_codex_tokens_syncs_manual_device_code_entries(tmp_path, monkeypatc
     assert seeded["access_token"] == "fresh-at"
     assert seeded["refresh_token"] == "fresh-rt"
 
-    # manual:device_code entry: ALSO refreshed (the new behavior).
+    # manual:device_code entry: untouched because it may belong to another account.
     manual_dc = next(e for e in pool if e["source"] == "manual:device_code")
-    assert manual_dc["access_token"] == "fresh-at"
-    assert manual_dc["refresh_token"] == "fresh-rt"
-    assert manual_dc["last_refresh"] == "2026-05-28T00:00:00Z"
-    assert manual_dc["last_status"] is None
-    assert manual_dc["last_error_code"] is None
-    assert manual_dc["last_error_reason"] is None
+    assert manual_dc["access_token"] == "stale-manual-at"
+    assert manual_dc["refresh_token"] == "stale-manual-rt"
+    assert "last_refresh" not in manual_dc
+    assert manual_dc["last_status"] == "exhausted"
+    assert manual_dc["last_error_code"] == 401
+    assert manual_dc["last_error_reason"] == "token_invalidated"
 
     # manual:api_key entry: untouched — independent credential.
     api_key = next(e for e in pool if e["source"] == "manual:api_key")
