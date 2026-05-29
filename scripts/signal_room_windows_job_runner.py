@@ -138,7 +138,18 @@ def next_queued_job(queue_root: Path) -> Path | None:
 
 
 def claim_job(queue_root: Path, queued_path: Path) -> tuple[Path, dict[str, Any]]:
-    job = read_json(queued_path)
+    try:
+        job = read_json(queued_path)
+    except json.JSONDecodeError as exc:
+        job = {
+            "id": queued_path.stem,
+            "job_type": "unknown",
+            "status": "queued",
+            "public_release": False,
+            "attempts": 0,
+            "command": [],
+            "manifest_error": f"invalid queued job manifest: {exc.msg}",
+        }
     job["status"] = "running"
     job["claimed_at"] = now_utc()
     job["attempts"] = int(job.get("attempts") or 0) + 1
@@ -263,6 +274,8 @@ def run_once(
 
     running_path, job = claimed
     try:
+        if job.get("manifest_error"):
+            raise ValueError(str(job["manifest_error"]))
         command = validate_command(job.get("command") or [])
         result = runner(
             command,

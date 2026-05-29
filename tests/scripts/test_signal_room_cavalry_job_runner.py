@@ -257,6 +257,28 @@ def test_run_once_records_empty_command_manifest_as_failed_job(tmp_path: Path) -
     assert not (queue_root / "running" / "empty-command.json").exists()
 
 
+def test_run_once_records_invalid_json_manifest_as_failed_job(tmp_path: Path) -> None:
+    module = load_module()
+    queue_root = tmp_path / "windows" / "cavalry" / "jobs"
+    queued_dir = queue_root / "queued"
+    queued_dir.mkdir(parents=True)
+    (queue_root / "running").mkdir()
+    (queue_root / "done").mkdir()
+    (queue_root / "failed").mkdir()
+    (queued_dir / "invalid-json.json").write_text("{not json\n")
+
+    result = module.run_once(queue_root=queue_root)
+
+    assert result["processed"] is True
+    assert result["status"] == "failed"
+    failed = json.loads((queue_root / "failed" / "invalid-json.json").read_text())
+    assert failed["id"] == "invalid-json"
+    assert failed["status"] == "failed"
+    assert failed["returncode"] == -1
+    assert "invalid queued job manifest" in failed["stderr_tail"]
+    assert not (queue_root / "running" / "invalid-json.json").exists()
+
+
 def test_write_windows_worker_bundle_points_to_queue_root(tmp_path: Path) -> None:
     module = load_module()
     queue_root = tmp_path / "windows" / "cavalry" / "jobs"
