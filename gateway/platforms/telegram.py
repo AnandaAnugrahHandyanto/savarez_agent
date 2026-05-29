@@ -331,6 +331,78 @@ def _wrap_markdown_tables(text: str) -> str:
     return '\n'.join(out)
 
 
+def _sanitize_tts_text(text: str) -> str:
+    """Strip all Pixie TTS markers so they never appear in Telegram.
+
+    Handles:
+    - Complete markers:  [[tts: ...]]  [[tts ...]]  [[ tts: ...]]
+    - Partial streaming fragments that arrive before the closing ]]:  [[tts ...
+    - MarkdownV2-escaped variants:  \\[\\[tts: ...\\]\\]
+    - 🔊 text_to_speech tool-noise lines
+    """
+    if not text:
+        return text or ""
+    t = str(text)
+    # MarkdownV2-escaped variant: \[\[tts: ...\]\]
+    t = re.sub(r"\s*\\\[\\\[\s*tts\b[:\s]*.*?\\\]\\\]\s*", "", t, flags=re.IGNORECASE | re.DOTALL)
+    # Complete markers: [[tts: ...]]
+    t = re.sub(r"\s*\[\[\s*tts\b[:\s]*.*?\]\]\s*", "", t, flags=re.IGNORECASE | re.DOTALL)
+    # Partial / streaming fragment (no closing ]]): [[tts ...
+    t = re.sub(r"\s*\[\[\s*tts\b.*", "", t, flags=re.IGNORECASE | re.DOTALL)
+    # MarkdownV2 partial fragment: \[\[tts ...
+    t = re.sub(r"\s*\\\[\\\[\s*tts\b.*", "", t, flags=re.IGNORECASE | re.DOTALL)
+    # 🔊 text_to_speech tool-noise lines
+    t = re.sub(r"(?m)\s*🔊\s*text_to_speech:.*$", "", t)
+    return t.strip()
+
+
+class _TelegramBotProxy:
+    """Proxy that sanitizes Pixie TTS markers on every send_message / edit_message_text call.
+
+    python-telegram-bot's ExtBot disallows attribute overrides, so we wrap the
+    real bot in this thin proxy.  All attribute look-ups and calls fall through
+    to the real bot except the two text-delivery methods that carry user-visible
+    content.
+    """
+
+    def __init__(self, real_bot: Any, strip_fn):
+        # Store in __dict__ directly to avoid our own __setattr__ guard.
+        object.__setattr__(self, "_real_bot", real_bot)
+        object.__setattr__(self, "_strip_fn", strip_fn)
+
+    # ------------------------------------------------------------------
+    # Transparent delegation for everything except the patched methods.
+    # ------------------------------------------------------------------
+
+    def __getattr__(self, name: str):
+        return getattr(object.__getattribute__(self, "_real_bot"), name)
+
+    def __setattr__(self, name: str, value):
+        setattr(object.__getattribute__(self, "_real_bot"), name, value)
+
+    # ------------------------------------------------------------------
+    # Sanitized overrides.
+    # ------------------------------------------------------------------
+
+    async def send_message(self, *args, **kwargs):
+        strip = object.__getattribute__(self, "_strip_fn")
+        if "text" in kwargs:
+            cleaned = strip(kwargs["text"] or "")
+            if not cleaned:
+                return None  # drop empty-after-strip messages silently
+            kwargs["text"] = cleaned
+        return await object.__getattribute__(self, "_real_bot").send_message(*args, **kwargs)
+
+    async def edit_message_text(self, *args, **kwargs):
+        strip = object.__getattribute__(self, "_strip_fn")
+        if "text" in kwargs:
+            cleaned = strip(kwargs["text"] or "")
+            if not cleaned:
+                return None  # skip editing to empty text
+            kwargs["text"] = cleaned
+        return await object.__getattribute__(self, "_real_bot").edit_message_text(*args, **kwargs)
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -1436,7 +1508,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     # Send a seed message so the topic is visible in Telegram's client.
                     # Empty topics are hidden by the client UI until they contain a message.
                     try:
-                        await self._bot.send_message(
+                        await self._clean_send_message(
                             chat_id=int(chat_id),
                             message_thread_id=thread_id,
                             text=f"\U0001f4cc {topic_name}",
@@ -1560,8 +1632,45 @@ class TelegramAdapter(BasePlatformAdapter):
 
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
-            self._bot = self._app.bot
-            
+            # Wrap the real bot in a sanitizing proxy so that every
+            # send_message / edit_message_text call on self._bot strips
+            # TTS markers regardless of which code path triggers it.
+            self._bot = _TelegramBotProxy(self._app.bot, _sanitize_tts_text)
+
+            # Patch Bot._post at the CLASS level — the single universal
+            # interception point that covers ALL outgoing Telegram API calls:
+            # context.bot, query.edit_message_text, message.reply_text, and
+            # everything else that bypasses self._bot.
+            #
+            # _post(endpoint, data) is called by EVERY Bot method before the
+            # HTTP payload is serialized.  Patching here is therefore
+            # unconditional and immune to code-path blind spots.
+            # The flag prevents re-patching on adapter reconnects.
+            try:
+                from telegram import Bot as _TelegramBot
+                if not getattr(_TelegramBot, "_pixie_tts_patched", False):
+                    _orig_post = _TelegramBot._post
+
+                    async def _sanitizing_post(_self_b, endpoint, data=None, **_kw):
+                        if data and endpoint in ("sendMessage", "editMessageText"):
+                            raw = data.get("text")
+                            if raw:
+                                cleaned = _sanitize_tts_text(str(raw))
+                                # Zero-width space keeps Telegram happy when
+                                # the entire content was a TTS marker.
+                                data["text"] = cleaned or "​"
+                        return await _orig_post(_self_b, endpoint, data, **_kw)
+
+                    _TelegramBot._post = _sanitizing_post
+                    _TelegramBot._pixie_tts_patched = True
+                    logger.info(
+                        "[%s] Patched Bot._post for TTS marker sanitization", self.name
+                    )
+            except Exception as _patch_err:
+                logger.warning(
+                    "[%s] Could not patch Bot._post: %s", self.name, _patch_err
+                )
+
             # Register handlers
             self._app.add_handler(TelegramMessageHandler(
                 filters.TEXT & ~filters.COMMAND,
@@ -1782,6 +1891,24 @@ class TelegramAdapter(BasePlatformAdapter):
         self._bot = None
         logger.info("[%s] Disconnected from Telegram", self.name)
 
+
+    def _clean_pixie_tts_text(self, text: str) -> str:
+        """Strip all Pixie TTS markers so they never appear in Telegram."""
+        return _sanitize_tts_text(text)
+
+    async def _clean_send_message(self, *args, **kwargs):
+        if "text" in kwargs:
+            kwargs["text"] = self._clean_pixie_tts_text(kwargs.get("text"))
+        bot = self._bot
+        return await bot.send_message(*args, **kwargs)
+
+    async def _clean_edit_message_text(self, *args, **kwargs):
+        if "text" in kwargs:
+            kwargs["text"] = self._clean_pixie_tts_text(kwargs.get("text"))
+        bot = self._bot
+        return await bot.edit_message_text(*args, **kwargs)
+
+
     def _should_thread_reply(self, reply_to: Optional[str], chunk_index: int) -> bool:
         """Determine if this message chunk should thread to the original message.
 
@@ -1820,7 +1947,72 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
-        
+
+        # Drop Pixie tool-noise lines.
+        if (content or "").strip().lower().startswith("🔊 text_to_speech:"):
+            return SendResult(success=True, message_id=None)
+
+        # Handle Pixie [[tts:...]] marker: send voice clip then show clean text.
+        # Check for the marker BEFORE stripping so voice code can run.
+        _tts_match = re.search(r"\[\[\s*tts\b[:\s]*(.*?)\]\]", content or "", flags=re.DOTALL)
+        if _tts_match:
+            _tts_text = _tts_match.group(1).strip()
+            _visible_text = re.sub(r"\s*\[\[\s*tts\b[:\s]*.*?\]\]\s*", "", content or "", flags=re.DOTALL).strip()
+            _voice_text = _tts_text or _visible_text
+            content = _visible_text or _tts_text
+
+            if _voice_text:
+                try:
+                    import json
+                    import tempfile
+                    import time
+                    import urllib.request
+
+                    now = time.monotonic()
+                    recent = getattr(self, "_pixie_tts_recent", {})
+                    recent = {k: v for k, v in recent.items() if now - v < 30}
+                    key = re.sub(r"\s+", " ", _voice_text).strip().lower()
+
+                    if key not in recent:
+                        recent[key] = now
+                        self._pixie_tts_recent = recent
+
+                        fd, audio_path = tempfile.mkstemp(prefix="pixie_tts_", suffix=".ogg")
+                        os.close(fd)
+
+                        def _make_tts() -> None:
+                            payload = json.dumps({
+                                "input": _voice_text,
+                                "voice": "af_heart",
+                                "response_format": "opus",
+                            }).encode("utf-8")
+                            req = urllib.request.Request(
+                                "http://127.0.0.1:8768/v1/audio/speech",
+                                data=payload,
+                                headers={"Content-Type": "application/json"},
+                                method="POST",
+                            )
+                            with urllib.request.urlopen(req, timeout=120) as resp:
+                                data = resp.read()
+                            with open(audio_path, "wb") as f:
+                                f.write(data)
+
+                        await asyncio.to_thread(_make_tts)
+                        await self.send_voice(chat_id=chat_id, audio_path=audio_path, caption=None, reply_to=reply_to, metadata=metadata)
+                        try:
+                            os.remove(audio_path)
+                        except OSError:
+                            pass
+                    else:
+                        self._pixie_tts_recent = recent
+                except Exception as e:
+                    logger.error("[%s] Pixie TTS failed; sending clean text only: %s", self.name, e, exc_info=True)
+
+        # Strip all TTS markers — complete and partial streaming fragments.
+        content = self._clean_pixie_tts_text(content or "")
+        if not content:
+            return SendResult(success=True, message_id=None)
+
         try:
             # Format and split message if needed
             formatted = self.format_message(content)
@@ -1904,7 +2096,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     try:
                         # Try Markdown first, fall back to plain text if it fails
                         try:
-                            msg = await self._bot.send_message(
+                            msg = await self._clean_send_message(
                                 chat_id=int(chat_id),
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
@@ -1918,7 +2110,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
                                 logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
                                 plain_chunk = _strip_mdv2(chunk)
-                                msg = await self._bot.send_message(
+                                msg = await self._clean_send_message(
                                     chat_id=int(chat_id),
                                     text=plain_chunk,
                                     parse_mode=None,
@@ -2129,6 +2321,78 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
+        # Drop Pixie tool-noise lines.
+        if (content or "").strip().lower().startswith("🔊 text_to_speech:"):
+            return SendResult(success=True, message_id=message_id)
+
+        # Handle Pixie [[tts:...]] marker: send voice on finalize, show clean text.
+        # Check for the marker BEFORE stripping so voice code can run on finalize.
+        _tts_match = re.search(r"\[\[\s*tts\b[:\s]*(.*?)\]\]", content or "", flags=re.DOTALL)
+        if _tts_match:
+            _tts_text = _tts_match.group(1).strip()
+            _visible_text = re.sub(r"\s*\[\[\s*tts\b[:\s]*.*?\]\]\s*", "", content or "", flags=re.DOTALL).strip()
+            _voice_text = _tts_text or _visible_text
+
+            if finalize and _voice_text:
+                try:
+                    import json
+                    import tempfile
+                    import time
+                    import urllib.request
+
+                    now = time.monotonic()
+                    recent = getattr(self, "_pixie_tts_recent", {})
+                    recent = {k: v for k, v in recent.items() if now - v < 30}
+                    key = re.sub(r"\s+", " ", _voice_text).strip().lower()
+
+                    if key not in recent:
+                        recent[key] = now
+                        self._pixie_tts_recent = recent
+
+                        fd, audio_path = tempfile.mkstemp(prefix="pixie_tts_edit_", suffix=".ogg")
+                        os.close(fd)
+
+                        def _make_tts() -> None:
+                            payload = json.dumps({
+                                "input": _voice_text,
+                                "voice": "af_heart",
+                                "response_format": "opus",
+                            }).encode("utf-8")
+                            req = urllib.request.Request(
+                                "http://127.0.0.1:8768/v1/audio/speech",
+                                data=payload,
+                                headers={"Content-Type": "application/json"},
+                                method="POST",
+                            )
+                            with urllib.request.urlopen(req, timeout=120) as resp:
+                                data = resp.read()
+                            with open(audio_path, "wb") as f:
+                                f.write(data)
+
+                        await asyncio.to_thread(_make_tts)
+                        await self.send_voice(
+                            chat_id=chat_id,
+                            audio_path=audio_path,
+                            caption=None,
+                            reply_to=None,
+                            metadata=metadata,
+                        )
+                        try:
+                            os.remove(audio_path)
+                        except OSError:
+                            pass
+                    else:
+                        self._pixie_tts_recent = recent
+                except Exception as e:
+                    logger.error("[%s] Pixie edit-message TTS failed; keeping clean text: %s", self.name, e, exc_info=True)
+
+            content = _visible_text or _tts_text
+
+        # Strip all TTS markers — complete and partial streaming fragments.
+        content = self._clean_pixie_tts_text(content or "")
+        if not content:
+            return SendResult(success=True, message_id=message_id)
+
         # Pre-flight: if content already exceeds the limit, split-and-deliver
         # without round-tripping a doomed edit.
         if utf16_len(content) > self.MAX_MESSAGE_LENGTH:
@@ -2138,7 +2402,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             if not finalize:
-                await self._bot.edit_message_text(
+                await self._clean_edit_message_text(
                     chat_id=int(chat_id),
                     message_id=int(message_id),
                     text=content,
@@ -2147,7 +2411,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
             formatted = self.format_message(content)
             try:
-                await self._bot.edit_message_text(
+                await self._clean_edit_message_text(
                     chat_id=int(chat_id),
                     message_id=int(message_id),
                     text=formatted,
@@ -2158,7 +2422,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 if "not modified" in str(fmt_err).lower():
                     return SendResult(success=True, message_id=message_id)
                 # Fallback: retry without markdown formatting
-                await self._bot.edit_message_text(
+                await self._clean_edit_message_text(
                     chat_id=int(chat_id),
                     message_id=int(message_id),
                     text=content,
@@ -2194,7 +2458,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     return SendResult(success=False, error=f"flood_control:{wait}")
                 await asyncio.sleep(wait)
                 try:
-                    await self._bot.edit_message_text(
+                    await self._clean_edit_message_text(
                         chat_id=int(chat_id),
                         message_id=int(message_id),
                         text=content,
@@ -2281,7 +2545,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 # mirror edit_message's main happy-path.
                 formatted = self.format_message(first_chunk)
                 try:
-                    await self._bot.edit_message_text(
+                    await self._clean_edit_message_text(
                         chat_id=int(chat_id),
                         message_id=int(message_id),
                         text=formatted,
@@ -2289,13 +2553,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception as fmt_err:
                     if "not modified" not in str(fmt_err).lower():
-                        await self._bot.edit_message_text(
+                        await self._clean_edit_message_text(
                             chat_id=int(chat_id),
                             message_id=int(message_id),
                             text=first_chunk,
                         )
             else:
-                await self._bot.edit_message_text(
+                await self._clean_edit_message_text(
                     chat_id=int(chat_id),
                     message_id=int(message_id),
                     text=first_chunk,
@@ -2334,7 +2598,7 @@ class TelegramAdapter(BasePlatformAdapter):
             for use_markdown in (True, False) if finalize else (False,):
                 try:
                     text = self.format_message(chunk) if use_markdown else chunk
-                    sent_msg = await self._bot.send_message(
+                    sent_msg = await self._clean_send_message(
                         chat_id=int(chat_id),
                         text=text,
                         parse_mode=ParseMode.MARKDOWN_V2 if use_markdown else None,
@@ -2357,7 +2621,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             )
                         )
                         try:
-                            sent_msg = await self._bot.send_message(
+                            sent_msg = await self._clean_send_message(
                                 chat_id=int(chat_id),
                                 text=chunk,
                                 **retry_thread_kwargs,
@@ -2518,7 +2782,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         message_thread_id = kwargs.get("message_thread_id")
         try:
-            return await self._bot.send_message(**kwargs)
+            return await self._clean_send_message(**kwargs)
         except Exception as send_err:
             if (
                 message_thread_id is not None
@@ -2532,7 +2796,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 retry_kwargs = dict(kwargs)
                 retry_kwargs.pop("message_thread_id", None)
-                return await self._bot.send_message(**retry_kwargs)
+                return await self._clean_send_message(**retry_kwargs)
             raise
 
     async def send_update_prompt(
