@@ -1651,6 +1651,19 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         )
     elif function_name == "memory":
         target = function_args.get("target", "memory")
+        # Guard: reject target="memory" writes when memory is disabled.
+        # See matching guard in tool_executor.py:execute_tool_calls_sequential.
+        if target == "memory" and not getattr(agent, "_memory_enabled", False):
+            return json.dumps({
+                "success": False,
+                "error": (
+                    "memory(target='memory') is disabled "
+                    f"(memory_enabled={getattr(agent, '_memory_enabled', False)}). "
+                    "Writes would be lost — not injected into the prompt. "
+                    "Use memory(target='user') for user profile, "
+                    "or configure an external memory provider."
+                ),
+            })
         from tools.memory_tool import memory_tool as _memory_tool
         result = _memory_tool(
             action=function_args.get("action"),
