@@ -30,7 +30,7 @@ def search(query, max_results=3):
     )
     try:
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=15) as r:
+        with urllib.request.urlopen(req, timeout=15) as r:  # SSRF: add IP block check
             return json.loads(r.read())
     except Exception as e:
         print(f"  API error: {e}", file=sys.stderr)
