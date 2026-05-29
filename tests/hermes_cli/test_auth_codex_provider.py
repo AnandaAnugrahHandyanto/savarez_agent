@@ -535,6 +535,101 @@ def test_save_codex_tokens_preserves_manual_device_code_entries(tmp_path, monkey
     assert "refresh_token" not in api_key or api_key.get("refresh_token") is None
 
 
+def test_save_codex_tokens_migrates_linked_legacy_manual_aliases(tmp_path, monkeypatch):
+    """Exact-match legacy aliases follow canonical rotation; independent rows do not."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "tokens": {"access_token": "old-at", "refresh_token": "old-rt"},
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "seeded",
+                "source": "device_code",
+                "access_token": "old-at",
+                "refresh_token": "old-rt",
+            }, {
+                "id": "linked-alias",
+                "source": "manual:device_code",
+                "access_token": "old-at",
+                "refresh_token": "old-rt",
+            }, {
+                "id": "independent",
+                "source": "manual:device_code",
+                "access_token": "other-at",
+                "refresh_token": "other-rt",
+            }],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    _save_codex_tokens({"access_token": "new-at", "refresh_token": "new-rt"})
+
+    auth = json.loads((hermes_home / "auth.json").read_text())
+    entries = {
+        entry["id"]: entry
+        for entry in auth["credential_pool"]["openai-codex"]
+    }
+    assert entries["linked-alias"]["refresh_token"] == "new-rt"
+    assert entries["independent"]["refresh_token"] == "other-rt"
+    from hermes_cli.auth import (
+        CODEX_SUPERSEDED_REFRESH_TOKEN_HASHES_KEY,
+        _codex_refresh_token_hash,
+    )
+    state = auth["providers"]["openai-codex"]
+    assert _codex_refresh_token_hash("old-rt") in state[
+        CODEX_SUPERSEDED_REFRESH_TOKEN_HASHES_KEY
+    ]
+
+
+def test_save_codex_tokens_migrates_linked_aliases_in_named_profiles(tmp_path, monkeypatch):
+    """Canonical rotation rewrites exact-match aliases in every named profile."""
+    root_home = tmp_path / "hermes"
+    profiles = [root_home / "profiles" / name for name in ("alpha", "beta")]
+    for profile in profiles:
+        profile.mkdir(parents=True)
+        (profile / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [{
+                    "id": f"{profile.name}-linked",
+                    "source": "manual:device_code",
+                    "access_token": "old-at",
+                    "refresh_token": "old-rt",
+                }, {
+                    "id": f"{profile.name}-independent",
+                    "source": "manual:device_code",
+                    "access_token": f"{profile.name}-at",
+                    "refresh_token": f"{profile.name}-rt",
+                }],
+            },
+        }))
+    (root_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "tokens": {"access_token": "old-at", "refresh_token": "old-rt"},
+            },
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(profiles[0]))
+
+    _save_codex_tokens({"access_token": "new-at", "refresh_token": "new-rt"})
+
+    for profile in profiles:
+        auth = json.loads((profile / "auth.json").read_text())
+        entries = {
+            entry["id"]: entry
+            for entry in auth["credential_pool"]["openai-codex"]
+        }
+        assert entries[f"{profile.name}-linked"]["refresh_token"] == "new-rt"
+        assert entries[f"{profile.name}-independent"]["refresh_token"] == f"{profile.name}-rt"
+
+
 def test_codex_tokens_not_written_to_shared_file(tmp_path, monkeypatch):
     """Verify _save_codex_tokens writes only to Hermes auth store, not ~/.codex/."""
     hermes_home = tmp_path / "hermes"
@@ -811,6 +906,34 @@ def test_login_openai_codex_force_new_login_skips_existing_reuse_prompt(monkeypa
 
     assert called["device_login"] == 1
     assert called["tokens"]["access_token"] == "fresh-at"
+
+
+def test_login_openai_codex_prints_canonical_profile_auth_path(tmp_path, monkeypatch, capsys):
+    root_home = tmp_path / "hermes"
+    profile_home = root_home / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.setattr(
+        "hermes_cli.auth._codex_device_code_login",
+        lambda: {
+            "tokens": {"access_token": "fresh-at", "refresh_token": "fresh-rt"},
+            "last_refresh": "2026-04-01T00:00:00Z",
+            "base_url": DEFAULT_CODEX_BASE_URL,
+        },
+    )
+    monkeypatch.setattr("hermes_cli.auth._save_codex_tokens", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "hermes_cli.auth._update_config_for_provider",
+        lambda *_args, **_kwargs: "/tmp/config.yaml",
+    )
+
+    _login_openai_codex(
+        SimpleNamespace(),
+        PROVIDER_REGISTRY["openai-codex"],
+        force_new_login=True,
+    )
+
+    assert f"Auth state: {root_home / 'auth.json'}" in capsys.readouterr().out
 
 
 def test_login_openai_codex_never_adopts_codex_cli_tokens(tmp_path, monkeypatch):

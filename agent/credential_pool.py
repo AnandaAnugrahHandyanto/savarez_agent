@@ -978,6 +978,10 @@ class CredentialPool:
                         return entry
                 if entry.source == "device_code":
                     auth_mod._require_codex_refresh_owner()
+                else:
+                    auth_mod._require_codex_refresh_token_not_superseded(
+                        entry.refresh_token,
+                    )
                 refreshed = auth_mod.refresh_codex_oauth_pure(
                     entry.access_token,
                     entry.refresh_token,

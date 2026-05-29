@@ -100,6 +100,8 @@ CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 DEFAULT_CODEX_OAUTH_REFRESH_TIMEOUT_SECONDS = 20.0
 CODEX_OAUTH_USER_AGENT = f"hermes-cli/{_HERMES_VERSION}"
 CODEX_REFRESH_OWNER = "hermes-auth-store-v1"
+CODEX_SUPERSEDED_REFRESH_TOKEN_HASHES_KEY = "superseded_refresh_token_hashes"
+MAX_CODEX_SUPERSEDED_REFRESH_TOKEN_HASHES = 32
 SHARED_CREDENTIAL_POOL_SOURCES = {
     "openai-codex": frozenset({"device_code"}),
 }
@@ -3860,12 +3862,82 @@ def _require_codex_refresh_owner(state: Optional[Dict[str, Any]] = None) -> None
     )
 
 
+def _codex_refresh_token_hash(refresh_token: Any) -> Optional[str]:
+    if not isinstance(refresh_token, str) or not refresh_token:
+        return None
+    return hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+
+
+def _record_superseded_codex_refresh_token(
+    state: Dict[str, Any],
+    previous_tokens: Any,
+    tokens: Dict[str, str],
+) -> None:
+    """Remember rotated refresh tokens so stale aliases fail before POST."""
+    if not isinstance(previous_tokens, dict):
+        return
+    previous_refresh = previous_tokens.get("refresh_token")
+    next_refresh = tokens.get("refresh_token")
+    if previous_refresh == next_refresh:
+        return
+    fingerprint = _codex_refresh_token_hash(previous_refresh)
+    if fingerprint is None:
+        return
+    stored = state.get(CODEX_SUPERSEDED_REFRESH_TOKEN_HASHES_KEY)
+    fingerprints = [
+        item for item in stored
+        if isinstance(item, str) and item
+    ] if isinstance(stored, list) else []
+    fingerprints = [item for item in fingerprints if item != fingerprint]
+    fingerprints.append(fingerprint)
+    state[CODEX_SUPERSEDED_REFRESH_TOKEN_HASHES_KEY] = (
+        fingerprints[-MAX_CODEX_SUPERSEDED_REFRESH_TOKEN_HASHES:]
+    )
+
+
+def _require_codex_refresh_token_not_superseded(refresh_token: str) -> None:
+    """Reject a stale manual alias before replaying a consumed token."""
+    fingerprint = _codex_refresh_token_hash(refresh_token)
+    if fingerprint is None:
+        return
+    auth_store = _load_auth_store(_codex_auth_file_path())
+    state = _load_provider_state(auth_store, "openai-codex")
+    stored = (
+        state.get(CODEX_SUPERSEDED_REFRESH_TOKEN_HASHES_KEY)
+        if isinstance(state, dict)
+        else None
+    )
+    if isinstance(stored, list) and fingerprint in stored:
+        raise AuthError(
+            "Codex refresh token was superseded by a newer Hermes-owned token.",
+            provider="openai-codex",
+            code="refresh_token_reused",
+            relogin_required=True,
+        )
+
+
+def _codex_pool_entry_matches_tokens(entry: Dict[str, Any], tokens: Any) -> bool:
+    if not isinstance(tokens, dict):
+        return False
+    access_token = tokens.get("access_token")
+    refresh_token = tokens.get("refresh_token")
+    return (
+        isinstance(access_token, str)
+        and bool(access_token)
+        and isinstance(refresh_token, str)
+        and bool(refresh_token)
+        and entry.get("access_token") == access_token
+        and entry.get("refresh_token") == refresh_token
+    )
+
+
 def _sync_codex_pool_entries(
     auth_store: Dict[str, Any],
     tokens: Dict[str, str],
     last_refresh: Optional[str],
     *,
     refreshable_sources: FrozenSet[str] = frozenset({"device_code"}),
+    linked_legacy_tokens: Any = None,
 ) -> bool:
     """Mirror a fresh Codex re-auth into the credential_pool OAuth entries.
 
@@ -3880,6 +3952,9 @@ def _sync_codex_pool_entries(
     * ``device_code`` — the singleton-seeded entry written by the device-code
       OAuth flow when the user logged in via ``hermes setup`` / the model
       picker.  Always synced with the fresh tokens.
+    * ``manual:device_code`` rows whose token pair exactly matches the prior
+      canonical pair. Older Hermes releases created these linked aliases; the
+      exact match distinguishes them from independent manual accounts.
     What does NOT get refreshed:
 
     * ``manual:*`` entries — those are independent credentials (an explicit
@@ -3906,7 +3981,11 @@ def _sync_codex_pool_entries(
         if not isinstance(entry, dict):
             continue
         source = entry.get("source")
-        if source not in refreshable_sources:
+        linked_legacy_alias = (
+            source == "manual:device_code"
+            and _codex_pool_entry_matches_tokens(entry, linked_legacy_tokens)
+        )
+        if source not in refreshable_sources and not linked_legacy_alias:
             continue
         entry["access_token"] = access_token
         if refresh_token:
@@ -3923,6 +4002,43 @@ def _sync_codex_pool_entries(
     return changed
 
 
+def _sync_codex_profile_legacy_aliases(
+    tokens: Dict[str, str],
+    last_refresh: str,
+    linked_legacy_tokens: Any,
+) -> None:
+    """Best-effort migration for exact-match aliases in named profiles."""
+    profiles_dir = _codex_auth_file_path().parent / "profiles"
+    if not profiles_dir.is_dir():
+        return
+    for profile_dir in sorted(profiles_dir.iterdir()):
+        profile_auth_file = profile_dir / "auth.json"
+        if not profile_dir.is_dir() or not profile_auth_file.exists():
+            continue
+        try:
+            with _file_lock(
+                profile_auth_file.with_suffix(".lock"),
+                threading.local(),
+                AUTH_LOCK_TIMEOUT_SECONDS,
+                f"Timed out waiting for Codex profile auth lock: {profile_auth_file}",
+            ):
+                auth_store = _load_auth_store(profile_auth_file)
+                if _sync_codex_pool_entries(
+                    auth_store,
+                    tokens,
+                    last_refresh,
+                    refreshable_sources=frozenset(),
+                    linked_legacy_tokens=linked_legacy_tokens,
+                ):
+                    _save_auth_store(auth_store, auth_file=profile_auth_file)
+        except Exception as exc:
+            logger.warning(
+                "Failed to migrate linked Codex credentials in %s: %s",
+                profile_auth_file,
+                exc,
+            )
+
+
 def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None:
     """Save Codex OAuth tokens to Hermes's canonical auth store."""
     if last_refresh is None:
@@ -3931,13 +4047,22 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None
         auth_file = _codex_auth_file_path()
         auth_store = _load_auth_store(auth_file)
         state = _load_provider_state(auth_store, "openai-codex") or {}
+        stored_tokens = state.get("tokens")
+        previous_tokens = dict(stored_tokens) if isinstance(stored_tokens, dict) else stored_tokens
+        _record_superseded_codex_refresh_token(state, previous_tokens, tokens)
         state["tokens"] = tokens
         state["last_refresh"] = last_refresh
         state["auth_mode"] = "chatgpt"
         state["refresh_owner"] = CODEX_REFRESH_OWNER
         _store_provider_state(auth_store, "openai-codex", state, set_active=False)
-        _sync_codex_pool_entries(auth_store, tokens, last_refresh)
+        _sync_codex_pool_entries(
+            auth_store,
+            tokens,
+            last_refresh,
+            linked_legacy_tokens=previous_tokens,
+        )
         _save_auth_store(auth_store, auth_file=auth_file)
+        _sync_codex_profile_legacy_aliases(tokens, last_refresh, previous_tokens)
 
 
 def refresh_codex_oauth_pure(
@@ -6821,8 +6946,7 @@ def _login_openai_codex(
     config_path = _update_config_for_provider("openai-codex", creds.get("base_url", DEFAULT_CODEX_BASE_URL))
     print()
     print("Login successful!")
-    from hermes_constants import display_hermes_home as _dhh
-    print(f"  Auth state: {_dhh()}/auth.json")
+    print(f"  Auth state: {_codex_auth_file_path()}")
     print(f"  Config updated: {config_path} (model.provider=openai-codex)")
 
 

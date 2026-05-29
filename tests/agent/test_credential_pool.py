@@ -3624,6 +3624,60 @@ def test_codex_manual_terminal_refresh_preserves_shared_family(tmp_path, monkeyp
     assert entries["shared-codex"]["refresh_token"] == "shared-refresh"
 
 
+def test_codex_superseded_manual_alias_fails_before_refresh_post(tmp_path, monkeypatch):
+    """A stale linked alias must never submit its consumed refresh token."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("CODEX_OAUTH_ACCESS_TOKEN", raising=False)
+    import hermes_cli.auth as auth_mod
+
+    auth_store = _codex_auth_store("shared-access", "shared-refresh")
+    state = auth_store["providers"]["openai-codex"]
+    state[auth_mod.CODEX_SUPERSEDED_REFRESH_TOKEN_HASHES_KEY] = [
+        auth_mod._codex_refresh_token_hash("manual-consumed-refresh"),
+    ]
+    auth_store["credential_pool"] = {
+        "openai-codex": [{
+            "id": "manual-codex",
+            "source": "manual:device_code",
+            "auth_type": "oauth",
+            "priority": 0,
+            "access_token": "manual-stale-access",
+            "refresh_token": "manual-consumed-refresh",
+        }, {
+            "id": "shared-codex",
+            "source": "device_code",
+            "auth_type": "oauth",
+            "priority": 1,
+            "access_token": "shared-access",
+            "refresh_token": "shared-refresh",
+        }],
+    }
+    _write_auth_store(tmp_path, auth_store)
+
+    from agent.credential_pool import STATUS_DEAD, load_pool
+
+    pool = load_pool("openai-codex")
+    manual = next(entry for entry in pool.entries() if entry.id == "manual-codex")
+    pool._current_id = manual.id
+    monkeypatch.setattr(
+        auth_mod,
+        "refresh_codex_oauth_pure",
+        lambda *_args, **_kwargs: pytest.fail("superseded alias must fail before POST"),
+    )
+
+    assert pool.try_refresh_current() is None
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = {
+        entry["id"]: entry
+        for entry in payload["credential_pool"]["openai-codex"]
+    }
+    assert entries["manual-codex"]["last_status"] == STATUS_DEAD
+    assert entries["manual-codex"]["last_error_reason"] == "refresh_token_reused"
+    assert entries["shared-codex"]["refresh_token"] == "shared-refresh"
+
+
 def test_codex_shared_terminal_refresh_preserves_newer_manual_entries(tmp_path, monkeypatch):
     """Shared quarantine must merge independently mutated manual rows."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
