@@ -2041,6 +2041,17 @@ def delegate_task(
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
 
+    # Resolve per-task credential overrides up front (precedence:
+    # per-task > delegation.* config > parent). Done before child construction
+    # so an invalid per-task provider surfaces a clean tool_error.
+    try:
+        task_creds_list = [
+            _resolve_task_credentials(t, cfg, creds, parent_agent)
+            for t in task_list
+        ]
+    except ValueError as exc:
+        return tool_error(str(exc))
+
     overall_start = time.monotonic()
     results = []
 
@@ -2065,26 +2076,27 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            tc = task_creds_list[i]
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=tc["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=tc["provider"],
+                override_base_url=tc["base_url"],
+                override_api_key=tc["api_key"],
+                override_api_mode=tc["api_mode"],
                 override_acp_command=t.get("acp_command")
                 or acp_command
-                or creds.get("command"),
+                or tc.get("command"),
                 override_acp_args=(
                     task_acp_args
                     if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
+                    else (acp_args if acp_args is not None else tc.get("args"))
                 ),
                 role=effective_role,
             )
@@ -2463,6 +2475,33 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     }
 
 
+def _resolve_task_credentials(task: dict, cfg: dict, batch_creds: dict, parent_agent) -> dict:
+    """Resolve per-task model/provider overrides.
+
+    Precedence: per-task field > delegation.* config > parent inherit. Returns
+    ``batch_creds`` unchanged when the task carries no override. A per-task
+    ``provider`` re-derives its own endpoint/credentials through the same
+    resolver used for config-level delegation, so the child does not reuse the
+    config provider's base_url/api_key. Per-task base_url/api_key are not
+    accepted (not in the schema) — only model and provider.
+    """
+    task_model = str(task.get("model") or "").strip() or None
+    task_provider = str(task.get("provider") or "").strip() or None
+    if not task_model and not task_provider:
+        return batch_creds
+    task_cfg = dict(cfg)
+    if task_model:
+        task_cfg["model"] = task_model
+    if task_provider:
+        task_cfg["provider"] = task_provider
+        # A per-task provider switch must re-derive the endpoint; drop any
+        # config-level base_url/api_key/api_mode tied to the previous provider.
+        task_cfg.pop("base_url", None)
+        task_cfg.pop("api_key", None)
+        task_cfg.pop("api_mode", None)
+    return _resolve_delegation_credentials(task_cfg, parent_agent)
+
+
 def _load_config() -> dict:
     """Load delegation config from CLI_CONFIG or persistent config.
 
@@ -2747,6 +2786,26 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "string",
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Per-task model override (e.g. "
+                                "'google/gemini-3-flash-preview'). Runs this "
+                                "task's child on a different model than the "
+                                "parent. Empty = inherit the parent / "
+                                "delegation-config model."
+                            ),
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": (
+                                "Per-task provider override (e.g. 'openrouter'). "
+                                "Must be a provider already configured with "
+                                "credentials; the child re-derives that "
+                                "provider's endpoint and key. Empty = inherit "
+                                "the parent / config provider."
+                            ),
                         },
                     },
                     "required": ["goal"],

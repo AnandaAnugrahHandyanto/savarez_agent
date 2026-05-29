@@ -2726,5 +2726,73 @@ class TestExplicitEndpointSkipsPool(unittest.TestCase):
         self.assertIs(getattr(child, "_credential_pool", None), sentinel)
 
 
+class TestPerTaskCredentialResolution(unittest.TestCase):
+    def test_no_override_returns_batch_creds_identity(self):
+        from tools.delegate_tool import _resolve_task_credentials
+        parent = _make_mock_parent(depth=0)
+        batch = {"model": "m", "provider": None, "base_url": None,
+                 "api_key": None, "api_mode": None}
+        out = _resolve_task_credentials({"goal": "x"}, {}, batch, parent)
+        self.assertIs(out, batch)  # untouched when no per-task fields
+
+    def test_per_task_model_only_keeps_config_provider(self):
+        from tools.delegate_tool import _resolve_task_credentials
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "cfg-model", "base_url": "http://localhost:1234/v1"}
+        batch = _resolve_delegation_credentials(cfg, parent)
+        out = _resolve_task_credentials({"goal": "x", "model": "task-model"},
+                                        cfg, batch, parent)
+        self.assertEqual(out["model"], "task-model")
+        self.assertEqual(out["base_url"], "http://localhost:1234/v1")  # config endpoint kept
+
+    def test_per_task_provider_redirects_endpoint(self):
+        from tools.delegate_tool import _resolve_task_credentials
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "cfg-model", "base_url": "http://localhost:1234/v1",
+               "api_key": "local-key"}
+        batch = _resolve_delegation_credentials(cfg, parent)
+        # Switching provider per task must drop the config base_url and re-resolve.
+        # Stub the resolver (don't call through — provider resolution needs live
+        # credentials); we only assert on the cfg it receives.
+        with patch("tools.delegate_tool._resolve_delegation_credentials",
+                   return_value={"model": "cfg-model", "provider": "openrouter",
+                                 "base_url": "https://openrouter.ai/api/v1",
+                                 "api_key": "k", "api_mode": "chat_completions"}) as spy:
+            _resolve_task_credentials({"goal": "x", "provider": "openrouter"},
+                                      cfg, batch, parent)
+        passed_cfg = spy.call_args.args[0]
+        self.assertEqual(passed_cfg["provider"], "openrouter")
+        self.assertNotIn("base_url", passed_cfg)  # config endpoint dropped
+        self.assertNotIn("api_key", passed_cfg)
+
+
+class TestPerTaskOverrideReachesChild(unittest.TestCase):
+    def test_per_task_model_threads_into_build_loop(self):
+        """Per-task model must be the model _build_child_agent receives."""
+        parent = _make_mock_parent(depth=0)
+        seen = []
+
+        def _stub_build(**kw):
+            seen.append(kw)
+            return MagicMock()
+
+        with patch("tools.delegate_tool._load_config", return_value={}), \
+             patch("tools.delegate_tool._build_child_agent",
+                   side_effect=_stub_build), \
+             patch("tools.delegate_tool._run_single_child",
+                   return_value={"task_index": 0, "status": "completed",
+                                 "summary": "ok", "api_calls": 1,
+                                 "duration_seconds": 0.1}):
+            delegate_task(
+                tasks=[{"goal": "a", "model": "task-A-model"},
+                       {"goal": "b"}],
+                parent_agent=parent,
+            )
+        self.assertEqual(seen[0]["model"], "task-A-model")
+        # inherit is signaled by None AT THE CALL BOUNDARY (parent-model
+        # fallback happens inside the patched-out _build_child_agent).
+        self.assertIsNone(seen[1]["model"])
+
+
 if __name__ == "__main__":
     unittest.main()
