@@ -1601,11 +1601,14 @@ def write_credential_pool(
     credentials. Callers may pass raw dictionaries, so sanitize here even when
     ``PooledCredential.to_dict()`` already did the same work upstream.
     """
-    sanitized_entries = [
-        sanitize_borrowed_credential_payload(entry, provider_id)
-        if isinstance(entry, dict) else entry
-        for entry in entries
-    ]
+    def _sanitize_entries(payloads: List[Any]) -> List[Any]:
+        return [
+            sanitize_borrowed_credential_payload(entry, provider_id)
+            if isinstance(entry, dict) else entry
+            for entry in payloads
+        ]
+
+    sanitized_entries = _sanitize_entries(entries)
     if provider_id in SHARED_CREDENTIAL_POOL_PROVIDERS:
         shared_auth_file = _codex_auth_file_path()
         profile_auth_file = _auth_file_path()
@@ -1670,7 +1673,7 @@ def write_credential_pool(
                     update_order_entry_ids=set(update_order_entry_ids),
                     update_status_entry_ids=set(update_status_entry_ids),
                 )
-            shared_pool[provider_id] = (
+            shared_pool[provider_id] = _sanitize_entries(
                 root_profile_entries + shared_entries
                 if split_shared_store
                 else profile_entries + shared_entries
@@ -1720,7 +1723,7 @@ def write_credential_pool(
                         update_order_entry_ids=set(update_order_entry_ids),
                         clear=not shared_entries,
                     )
-                    profile_pool[provider_id] = profile_entries
+                    profile_pool[provider_id] = _sanitize_entries(profile_entries)
                     return _save_auth_store(profile_auth_store, auth_file=profile_auth_file)
         return shared_auth_file
 

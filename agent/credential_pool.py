@@ -2349,6 +2349,11 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
 def load_pool(provider: str) -> CredentialPool:
     provider = (provider or "").strip().lower()
     raw_entries = read_credential_pool(provider)
+    raw_entries_by_id = {
+        payload["id"]: payload
+        for payload in raw_entries
+        if isinstance(payload, dict) and isinstance(payload.get("id"), str)
+    }
     raw_needs_sanitization = any(
         isinstance(payload, dict)
         and sanitize_borrowed_credential_payload(payload, provider) != payload
@@ -2369,10 +2374,32 @@ def load_pool(provider: str) -> CredentialPool:
         changed |= _normalize_pool_priorities(provider, entries)
 
     if changed:
+        serialized_entries = [
+            entry.to_dict()
+            for entry in sorted(entries, key=lambda item: item.priority)
+        ]
+        serialized_entries_by_id = {
+            payload["id"]: payload
+            for payload in serialized_entries
+            if isinstance(payload.get("id"), str)
+        }
+        entry_ids = set(serialized_entries_by_id)
+        raw_entry_ids = set(raw_entries_by_id)
         write_credential_pool(
             provider,
-            [entry.to_dict() for entry in sorted(entries, key=lambda item: item.priority)],
+            serialized_entries,
             preserve_shared_entries=True,
             preserve_profile_entries=True,
+            add_entry_ids=frozenset(entry_ids - raw_entry_ids),
+            replace_entry_ids=frozenset(
+                entry_id
+                for entry_id in entry_ids & raw_entry_ids
+                if is_borrowed_credential_source(
+                    serialized_entries_by_id[entry_id].get("source"),
+                    provider,
+                )
+                and serialized_entries_by_id[entry_id] != raw_entries_by_id[entry_id]
+            ),
+            remove_entry_ids=frozenset(raw_entry_ids - entry_ids),
         )
     return CredentialPool(provider, entries)

@@ -901,6 +901,45 @@ def test_load_pool_sanitizes_legacy_raw_borrowed_entry_when_value_unchanged(tmp_
 
 
 
+@pytest.mark.parametrize("profile_mode", [False, True])
+def test_load_pool_prunes_legacy_raw_codex_borrowed_entry(
+    tmp_path, monkeypatch, profile_mode,
+):
+    """Shared Codex persistence must not restore a stale borrowed row."""
+    sentinel = "S3NTINEL_DO_NOT_PERSIST_STALE_CODEX"
+    auth_home = tmp_path / "hermes"
+    if profile_mode:
+        auth_home = auth_home / "profiles" / "worker"
+    auth_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(auth_home))
+    (auth_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "id": "legacy-vault-codex",
+                    "label": "vault-ref",
+                    "auth_type": "oauth",
+                    "priority": 0,
+                    "source": "vault:codex",
+                    "access_token": sentinel,
+                    "refresh_token": f"refresh-{sentinel}",
+                }
+            ]
+        },
+    }))
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+
+    assert pool.entries() == []
+    auth_text = (auth_home / "auth.json").read_text()
+    assert sentinel not in auth_text
+    assert json.loads(auth_text)["credential_pool"]["openai-codex"] == []
+
+
+
 def test_pooled_credential_to_dict_strips_borrowed_secret_fields():
     from agent.credential_pool import PooledCredential
 
@@ -1089,6 +1128,53 @@ def test_write_credential_pool_treats_unowned_oauth_source_as_borrowed(tmp_path,
     assert sentinel not in auth_text
     persisted = json.loads(auth_text)["credential_pool"]["openrouter"][0]
     assert persisted["source"] == "oauth"
+    assert "access_token" not in persisted
+    assert "refresh_token" not in persisted
+    assert persisted["secret_fingerprint"].startswith("sha256:")
+
+
+
+@pytest.mark.parametrize("profile_mode", [False, True])
+def test_write_codex_pool_sanitizes_preserved_borrowed_payload(
+    tmp_path, monkeypatch, profile_mode,
+):
+    """Merged shared-store rows are sanitized at the final disk boundary."""
+    sentinel = "S3NTINEL_DO_NOT_PERSIST_PRESERVED_CODEX"
+    auth_home = tmp_path / "hermes"
+    if profile_mode:
+        auth_home = auth_home / "profiles" / "worker"
+    auth_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(auth_home))
+    (auth_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "id": "legacy-vault-codex",
+                    "label": "vault-ref",
+                    "auth_type": "oauth",
+                    "priority": 0,
+                    "source": "vault:codex",
+                    "access_token": sentinel,
+                    "refresh_token": f"refresh-{sentinel}",
+                }
+            ]
+        },
+    }))
+
+    from hermes_cli.auth import write_credential_pool
+
+    write_credential_pool(
+        "openai-codex",
+        [],
+        preserve_shared_entries=True,
+        preserve_profile_entries=True,
+    )
+
+    auth_text = (auth_home / "auth.json").read_text()
+    assert sentinel not in auth_text
+    persisted = json.loads(auth_text)["credential_pool"]["openai-codex"][0]
+    assert persisted["source"] == "vault:codex"
     assert "access_token" not in persisted
     assert "refresh_token" not in persisted
     assert persisted["secret_fingerprint"].startswith("sha256:")
