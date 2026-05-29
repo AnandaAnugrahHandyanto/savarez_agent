@@ -6782,6 +6782,8 @@ class AIAgent:
         # returns empty output (e.g. chatgpt.com backend-api sends
         # response.incomplete instead of response.completed).
         self._codex_streamed_text_parts: list = []
+        if self.provider == "openai-codex":
+            return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
         for attempt in range(max_stream_retries + 1):
             if self._interrupt_requested:
                 raise InterruptedError("Agent interrupted before Codex stream retry")
@@ -6840,7 +6842,7 @@ class AIAgent:
                     # but get_final_response() can return an empty output list.
                     # Backfill from collected items or synthesize from deltas.
                     _out = getattr(final_response, "output", None)
-                    if isinstance(_out, list) and not _out:
+                    if _out is None or (isinstance(_out, list) and not _out):
                         if collected_output_items:
                             final_response.output = list(collected_output_items)
                             logger.debug(
@@ -6942,7 +6944,7 @@ class AIAgent:
                 if terminal_response is not None:
                     # Backfill empty output from collected stream events
                     _out = getattr(terminal_response, "output", None)
-                    if isinstance(_out, list) and not _out:
+                    if _out is None or (isinstance(_out, list) and not _out):
                         if collected_output_items:
                             terminal_response.output = list(collected_output_items)
                             logger.debug(
@@ -12583,7 +12585,10 @@ class AIAgent:
                                 else:
                                     # output_text fallback: stream backfill may have failed
                                     # but normalize can still recover from output_text
-                                    _out_text = getattr(response, "output_text", None)
+                                    _out = getattr(response, "output", None)
+                                    _out_text = None
+                                    if isinstance(_out, list):
+                                        _out_text = getattr(response, "output_text", None)
                                     _out_text_stripped = _out_text.strip() if isinstance(_out_text, str) else ""
                                     if _out_text_stripped:
                                         logger.debug(

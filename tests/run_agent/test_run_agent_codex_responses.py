@@ -400,6 +400,7 @@ def test_build_api_kwargs_copilot_responses_omits_reasoning_for_non_reasoning_mo
 
 def test_run_codex_stream_retries_when_completed_event_missing(monkeypatch):
     agent = _build_agent(monkeypatch)
+    agent.provider = "xai"
     calls = {"stream": 0}
 
     def _fake_stream(**kwargs):
@@ -422,8 +423,35 @@ def test_run_codex_stream_retries_when_completed_event_missing(monkeypatch):
     assert response.output[0].content[0].text == "stream ok"
 
 
+def test_run_codex_stream_openai_codex_uses_create_stream_fallback(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    calls = {"stream": 0, "create": 0}
+
+    def _fake_stream(**kwargs):
+        calls["stream"] += 1
+        return _FakeResponsesStream(final_response=_codex_message_response("stream path"))
+
+    def _fake_create(**kwargs):
+        calls["create"] += 1
+        assert kwargs.get("stream") is True
+        assert "tools" not in kwargs
+        return _codex_message_response("create path")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=_fake_create,
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert calls == {"stream": 0, "create": 1}
+    assert response.output[0].content[0].text == "create path"
+
+
 def test_run_codex_stream_falls_back_to_create_after_stream_completion_error(monkeypatch):
     agent = _build_agent(monkeypatch)
+    agent.provider = "xai"
     calls = {"stream": 0, "create": 0}
 
     def _fake_stream(**kwargs):
@@ -451,6 +479,7 @@ def test_run_codex_stream_falls_back_to_create_after_stream_completion_error(mon
 
 def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     agent = _build_agent(monkeypatch)
+    agent.provider = "xai"
     calls = {"stream": 0, "create": 0}
     create_stream = _FakeCreateStream(
         [
@@ -483,6 +512,29 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert calls["create"] == 1
     assert create_stream.closed is True
     assert response.output[0].content[0].text == "streamed create ok"
+
+
+def test_run_codex_create_stream_backfills_none_terminal_output(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    terminal = SimpleNamespace(status="completed", output=None, output_text=None)
+    create_stream = _FakeCreateStream(
+        [
+            SimpleNamespace(
+                type="response.output_item.done",
+                item=_codex_message_response("backfilled ok").output[0],
+            ),
+            SimpleNamespace(type="response.completed", response=terminal),
+        ]
+    )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **kwargs: create_stream)
+    )
+
+    response = agent._run_codex_create_stream_fallback(_codex_request_kwargs())
+    assert response is terminal
+    assert create_stream.closed is True
+    assert response.output[0].content[0].text == "backfilled ok"
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):
