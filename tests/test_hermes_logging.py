@@ -163,6 +163,27 @@ class TestSetupLogging:
         content = agent_log.read_text()
         assert "test message for agent.log" in content
 
+    def test_removes_preexisting_root_stream_handler(self, hermes_home):
+        """Quiet setup must not leak INFO records through stale stderr handlers."""
+        import io
+
+        stream = io.StringIO()
+        stale_handler = logging.StreamHandler(stream)
+        logging.getLogger().addHandler(stale_handler)
+
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+
+        test_logger = logging.getLogger("test_hermes_logging.quiet_console")
+        test_logger.info("info should only go to agent.log")
+        for handler in logging.getLogger().handlers:
+            handler.flush()
+
+        assert stale_handler not in logging.getLogger().handlers
+        assert "info should only go to agent.log" not in stream.getvalue()
+        assert "info should only go to agent.log" in (
+            hermes_home / "logs" / "agent.log"
+        ).read_text()
+
     def test_warnings_appear_in_both_logs(self, hermes_home):
         hermes_logging.setup_logging(hermes_home=hermes_home)
 

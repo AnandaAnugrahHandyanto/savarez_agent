@@ -1370,17 +1370,98 @@ except Exception:
     Write-Success "All dependencies installed"
 }
 
+function Write-HermesWindowsLaunchers {
+    <#
+    .SYNOPSIS
+    Create stable Windows launchers that bypass uv/pip console-script EXE trampolines.
+
+    pip/uv generate small Windows ``hermes.exe`` launchers in ``venv\Scripts``.
+    Those launchers embed the venv Python path and fail before Python starts when
+    the venv is moved, repaired in-place, or invoked from some service/user shells
+    with: ``uv trampoline failed to spawn Python child process``.  Keep the EXE in
+    place for compatibility, but put a user-owned launcher directory earlier on
+    PATH.  The wrappers call ``python.exe -m hermes_cli.main`` directly, which is
+    transparent, profile-safe, and survives console-script trampoline breakage.
+    #>
+    if ($NoVenv) { return $InstallDir }
+
+    $launcherBin = Join-Path $env:USERPROFILE "bin"
+    New-Item -ItemType Directory -Force -Path $launcherBin | Out-Null
+
+    $pythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
+    $repoDir = $InstallDir
+    $homeDir = $HermesHome
+
+    $cmdPath = Join-Path $launcherBin "hermes.cmd"
+    $cmdContent = @"
+@echo off
+setlocal
+set "HERMES_REPO=$repoDir"
+set "HERMES_HOME=$homeDir"
+set "HERMES_PY=$pythonExe"
+if not exist "%HERMES_PY%" (
+  echo Hermes launcher error: Python not found at "%HERMES_PY%" 1>&2
+  echo Re-run the Hermes installer or repair the venv before launching Hermes. 1>&2
+  exit /b 9009
+)
+cd /d "%HERMES_REPO%"
+"%HERMES_PY%" -m hermes_cli.main %*
+exit /b %ERRORLEVEL%
+"@
+    Set-Content -Path $cmdPath -Value $cmdContent -Encoding ASCII
+
+    $ps1Path = Join-Path $launcherBin "hermes.ps1"
+    $ps1Content = @"
+`$ErrorActionPreference = 'Stop'
+`$env:HERMES_REPO = '$repoDir'
+`$env:HERMES_HOME = '$homeDir'
+`$pythonExe = '$pythonExe'
+if (-not (Test-Path `$pythonExe)) {
+    Write-Error "Hermes launcher error: Python not found at `$pythonExe. Re-run the Hermes installer or repair the venv before launching Hermes."
+    exit 9009
+}
+Set-Location -LiteralPath `$env:HERMES_REPO
+& `$pythonExe -m hermes_cli.main @args
+exit `$LASTEXITCODE
+"@
+    Set-Content -Path $ps1Path -Value $ps1Content -Encoding UTF8
+
+    $bashPath = Join-Path $launcherBin "hermes"
+    $bashRepo = $repoDir.Replace('\\', '/')
+    $bashHome = $homeDir.Replace('\\', '/')
+    $bashPython = $pythonExe.Replace('\\', '/')
+    $bashContent = @"
+#!/usr/bin/env bash
+set -euo pipefail
+export HERMES_REPO='$bashRepo'
+export HERMES_HOME='$bashHome'
+HERMES_PY='$bashPython'
+if [ ! -f "`$HERMES_PY" ]; then
+  printf 'Hermes launcher error: Python not found at %s\n' "`$HERMES_PY" >&2
+  printf 'Re-run the Hermes installer or repair the venv before launching Hermes.\n' >&2
+  exit 127
+fi
+cd "`$HERMES_REPO"
+exec "`$HERMES_PY" -m hermes_cli.main "`$@"
+"@
+    Set-Content -Path $bashPath -Value $bashContent -Encoding ASCII
+
+    return $launcherBin
+}
+
 function Set-PathVariable {
     Write-Info "Setting up hermes command..."
     
     if ($NoVenv) {
         $hermesBin = "$InstallDir"
     } else {
-        $hermesBin = "$InstallDir\venv\Scripts"
+        $hermesBin = Write-HermesWindowsLaunchers
     }
     
-    # Add the venv Scripts dir to user PATH so hermes is globally available
-    # On Windows, the hermes.exe in venv\Scripts\ has the venv Python baked in
+    # Add the stable launcher dir to user PATH so hermes is globally available.
+    # On Windows, the generated hermes.exe in venv\Scripts can fail with
+    # "uv trampoline failed to spawn Python child process" before Python starts;
+    # the wrappers in $hermesBin call the venv Python directly.
     $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
     
     if ($currentPath -notlike "*$hermesBin*") {
@@ -1404,8 +1485,14 @@ function Set-PathVariable {
     }
     $env:HERMES_HOME = $HermesHome
     
-    # Update current session
-    $env:Path = "$hermesBin;$env:Path"
+    # Update current session. Keep venv\Scripts as a fallback after the stable
+    # launcher directory so users still get bundled helper executables.
+    if ($NoVenv) {
+        $env:Path = "$hermesBin;$env:Path"
+    } else {
+        $venvScripts = "$InstallDir\venv\Scripts"
+        $env:Path = "$hermesBin;$venvScripts;$env:Path"
+    }
     
     Write-Success "hermes command ready"
 }

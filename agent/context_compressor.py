@@ -561,7 +561,7 @@ class ContextCompressor(ContextEngine):
         config_context_length: int | None = None,
         provider: str = "",
         api_mode: str = "",
-        abort_on_summary_failure: bool = False,
+        abort_on_summary_failure: bool = True,
     ):
         self.model = model
         self.base_url = base_url

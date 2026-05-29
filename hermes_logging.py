@@ -212,6 +212,15 @@ def setup_logging(
 
     root = logging.getLogger()
 
+    # In non-verbose CLI mode Hermes must stay terminal-quiet. A stray
+    # root StreamHandler can be installed before central logging runs by
+    # logging.warning()/basicConfig() in imports, tests, or plugin code. If we
+    # leave it attached, the root INFO level below makes every agent/tool log
+    # line print to stderr. Verbose mode adds its own marked stream handler via
+    # setup_verbose_logging(); gateway stderr output is installed after this
+    # setup path when requested.
+    _remove_unmanaged_root_stream_handlers(root)
+
     # --- agent.log (INFO+) — the main activity log -------------------------
     _add_rotating_handler(
         root,
@@ -260,35 +269,41 @@ def setup_logging(
 
 
 def setup_verbose_logging() -> None:
-    """Enable DEBUG-level console logging for ``--verbose`` / ``-v`` mode.
+    def setup_verbose_logging() -> None:
+        """Enable DEBUG-level console logging for ``--verbose`` / ``-v`` mode.
 
-    Called by ``AIAgent.__init__()`` when ``verbose_logging=True``.
-    """
-    from agent.redact import RedactingFormatter
+        Called by ``AIAgent.__init__()`` when ``verbose_logging=True``.
+        """
+        from agent.redact import RedactingFormatter
 
-    root = logging.getLogger()
+        root = logging.getLogger()
+        # Always clean stray/unmanaged handlers first — some import paths or
+        # third-party code can inject a StreamHandler between the initial
+        # setup_logging() call and the verbose upgrade. This was the source of
+        # the lingering console logger messages.
+        _remove_unmanaged_root_stream_handlers(root)
 
-    # Avoid adding duplicate stream handlers.
-    for h in root.handlers:
-        if isinstance(h, logging.StreamHandler) and not isinstance(h, RotatingFileHandler):
-            if getattr(h, "_hermes_verbose", False):
-                return
+        # Avoid adding duplicate stream handlers.
+        for h in root.handlers:
+            if isinstance(h, logging.StreamHandler) and not isinstance(h, RotatingFileHandler):
+                if getattr(h, "_hermes_verbose", False):
+                    return
 
-    handler = logging.StreamHandler()
-    handler.setLevel(logging.DEBUG)
-    handler.setFormatter(RedactingFormatter(_LOG_FORMAT_VERBOSE, datefmt="%H:%M:%S"))
-    handler._hermes_verbose = True  # type: ignore[attr-defined]
-    root.addHandler(handler)
+        handler = logging.StreamHandler()
+        handler.setLevel(logging.DEBUG)
+        handler.setFormatter(RedactingFormatter(_LOG_FORMAT_VERBOSE, datefmt="%H:%M:%S"))
+        handler._hermes_verbose = True  # type: ignore[attr-defined]
+        root.addHandler(handler)
 
-    # Lower root logger level so DEBUG records reach all handlers.
-    if root.level > logging.DEBUG:
-        root.setLevel(logging.DEBUG)
+        # Lower root logger level so DEBUG records reach all handlers.
+        if root.level > logging.DEBUG:
+            root.setLevel(logging.DEBUG)
 
-    # Keep third-party libraries at WARNING to reduce noise.
-    for name in _NOISY_LOGGERS:
-        logging.getLogger(name).setLevel(logging.WARNING)
-    # rex-deploy at INFO for sandbox status.
-    logging.getLogger("rex-deploy").setLevel(logging.INFO)
+        # Keep third-party libraries at WARNING to reduce noise.
+        for name in _NOISY_LOGGERS:
+            logging.getLogger(name).setLevel(logging.WARNING)
+        # rex-deploy at INFO for sandbox status.
+        logging.getLogger("rex-deploy").setLevel(logging.INFO)
 
 
 # ---------------------------------------------------------------------------
@@ -407,11 +422,51 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         return stream
 
     def doRollover(self):
-        super().doRollover()
+        try:
+            super().doRollover()
+        except (PermissionError, OSError):
+            # Windows: another process (gateway, kanban worker, another Hermes
+            # instance) still has the log file open. Skip this rotation cycle
+            # instead of crashing the handler and producing "Logging error"
+            # tracebacks on the user's terminal.
+            return
         self._chmod_if_managed()
         # Our own rollover writes a new baseFilename; refresh the snapshot
         # so the next emit doesn't mistake it for external rotation.
         self._record_stream_stat()
+
+    def handleError(self, record):
+        # Never let logging handler failures (including rotation errors) emit
+        # "Logging error ---" + traceback to the user's terminal in CLI mode.
+        # All such events stay in the log files only (or are dropped).
+        pass
+
+
+def _remove_unmanaged_root_stream_handlers(root: logging.Logger) -> None:
+    """Remove accidental root console handlers before quiet file logging.
+
+    A root ``StreamHandler`` can appear if any import path calls
+    ``logging.warning``/``logging.basicConfig`` before Hermes central logging is
+    configured. Quiet CLI sessions then leak every INFO record to stderr once
+    setup_logging() lowers the root level for file handlers.
+
+    Marked Hermes verbose handlers and file handlers are preserved; gateway
+    stderr handlers are attached after setup_logging() when requested.
+    """
+    for handler in list(root.handlers):
+        if isinstance(handler, RotatingFileHandler):
+            continue
+        if not isinstance(handler, logging.StreamHandler):
+            continue
+        if getattr(handler, "_hermes_verbose", False):
+            continue
+        if getattr(handler, "_hermes_preserve_console", False):
+            continue
+        root.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            pass
 
 
 def _add_rotating_handler(

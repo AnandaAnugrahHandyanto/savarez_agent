@@ -959,7 +959,7 @@ DEFAULT_CONFIG = {
                                       # 0 for long-running rolling-compaction sessions
                                       # where you want nothing pinned except the
                                       # system prompt + rolling summary + recent tail.
-        "abort_on_summary_failure": False,  # When True, auto-compression that fails
+        "abort_on_summary_failure": True,   # When True, auto-compression that fails
                                       # to generate a summary (aux LLM errored / returned
                                       # non-JSON / timed out) aborts entirely instead of
                                       # dropping the middle window with a static
@@ -967,9 +967,9 @@ DEFAULT_CONFIG = {
                                       # preserved unchanged and the session "freezes" at
                                       # its current size until the user runs /compress
                                       # (which bypasses the failure cooldown) or /new.
-                                      # Default False matches historical behavior; set to
-                                      # True if you'd rather pause than silently lose
-                                      # context turns when your aux model is flaky.
+                                      # Default True protects active mission context; set
+                                      # to False only if you explicitly prefer lossy
+                                      # historical behavior over pausing on aux failure.
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).

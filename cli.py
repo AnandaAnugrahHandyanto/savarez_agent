@@ -49,6 +49,17 @@ logger = logging.getLogger(__name__)
 # Suppress startup messages for clean CLI experience
 os.environ["HERMES_QUIET"] = "1"  # Our own modules
 
+# Initialize centralized logging as early as possible so that the
+# _remove_unmanaged_root_stream_handlers() cleanup runs before any
+# third-party imports can attach stray StreamHandlers via basicConfig
+# or direct logging calls. This is the definitive fix for console
+# logger leakage in non-verbose CLI sessions.
+try:
+    from hermes_logging import setup_logging
+    setup_logging(mode="cli")
+except Exception:
+    pass
+
 import yaml
 
 from hermes_cli.fallback_config import get_fallback_chain

@@ -442,7 +442,12 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
 def _embedded_profile_env_path(config: dict[str, Any]):
     from pathlib import Path
 
-    return Path.home() / ".hindsight" / "profiles" / f"{_embedded_profile_name(config)}.env"
+    # Respect HOME when tests or nonstandard launchers intentionally override
+    # it. On Windows, Path.home() ignores HOME and resolves through the Win32
+    # profile directory, which makes local_embedded setup write outside the
+    # caller-selected Hindsight profile root.
+    home = os.environ.get("HOME") or str(Path.home())
+    return Path(home) / ".hindsight" / "profiles" / f"{_embedded_profile_name(config)}.env"
 
 
 def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None):
