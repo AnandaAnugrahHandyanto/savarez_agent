@@ -97,36 +97,35 @@ export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> 
     // ``window.__HERMES_SESSION_TOKEN__`` from the previous HTML render,
     // so every fetch returns 401. The HTML is served ``Cache-Control:
     // no-store`` so a reload picks up the freshly-injected token. Trigger
-    // that reload once on the first stale-token 401 — gated mode is
-    // handled above, so reaching here in gated mode means a real
-    // middleware failure that should not reload-loop.
+    // that reload at most once every 30 seconds to avoid an infinite
+    // reload loop: the dashboard fires parallel requests on mount (e.g.
+    // public ``/api/status`` and protected endpoints at the same time).
+    // A boolean guard that gets cleared on any 2xx (the old approach)
+    // races — the 200 arrives, clears the guard, then the 401 fires and
+    // triggers another reload. Gated mode is handled above, so reaching
+    // here in gated mode means a real middleware failure that should not
+    // reload-loop.
     if (!window.__HERMES_AUTH_REQUIRED__) {
-      let alreadyReloaded = false;
+      const RELOAD_COOLDOWN_MS = 30_000;
+      let attemptedAt: string | null = null;
       try {
-        alreadyReloaded =
-          sessionStorage.getItem("hermes.tokenReloadAttempted") === "1";
+        attemptedAt = sessionStorage.getItem("hermes.tokenReloadAttemptedAt");
       } catch {
         /* SSR / privacy mode — fall through to throw */
       }
-      if (!alreadyReloaded) {
+      const now = Date.now();
+      const withinCooldown =
+        attemptedAt !== null &&
+        now - Number.parseInt(attemptedAt, 10) < RELOAD_COOLDOWN_MS;
+      if (!withinCooldown) {
         try {
-          sessionStorage.setItem("hermes.tokenReloadAttempted", "1");
+          sessionStorage.setItem("hermes.tokenReloadAttemptedAt", String(now));
         } catch {
           /* SSR / privacy mode — best effort */
         }
         window.location.reload();
         return new Promise<T>(() => {});
       }
-    }
-  }
-  if (res.ok) {
-    // Clear the stale-token reload guard: a successful 2xx proves the
-    // current ``window.__HERMES_SESSION_TOKEN__`` is valid, so the next
-    // 401 — if any — should be allowed to trigger its own reload cycle.
-    try {
-      sessionStorage.removeItem("hermes.tokenReloadAttempted");
-    } catch {
-      /* SSR / privacy mode — ignore */
     }
   }
   if (!res.ok) {
