@@ -251,7 +251,7 @@ def _handle_send(args):
     force_document_attachments = "[[as_document]]" in message
 
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    media_files, dropped_media = BasePlatformAdapter.partition_media_delivery_paths(media_files)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False
@@ -313,6 +313,19 @@ def _handle_send(args):
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
+
+        # Surface dropped MEDIA attachments so the send isn't a silent
+        # text-only success (issue #32644). Only attached when the underlying
+        # send succeeded — error results are left untouched.
+        if isinstance(result, dict) and result.get("success") and dropped_media:
+            dropped_paths = [p for p, _voice in dropped_media]
+            result["media_dropped"] = dropped_paths
+            warning = (
+                "MEDIA attachment(s) were dropped (outside allowed delivery "
+                f"roots or not found): {', '.join(dropped_paths)}. The text was "
+                "sent but the file(s) were not attached."
+            )
+            result.setdefault("warnings", []).append(warning)
 
         # Mirror the sent message into the target's gateway session
         if isinstance(result, dict) and result.get("success") and mirror_text:

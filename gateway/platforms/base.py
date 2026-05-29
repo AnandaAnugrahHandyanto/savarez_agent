@@ -2464,15 +2464,31 @@ class BasePlatformAdapter(ABC):
         return validate_media_delivery_path(path)
 
     @staticmethod
-    def filter_media_delivery_paths(media_files) -> List[Tuple[str, bool]]:
-        """Drop unsafe MEDIA paths and normalize accepted paths."""
+    def partition_media_delivery_paths(
+        media_files,
+    ) -> Tuple[List[Tuple[str, bool]], List[Tuple[str, bool]]]:
+        """Split MEDIA paths into (safe, dropped) using the delivery gate.
+
+        Same gate as ``validate_media_delivery_path``; the dropped list
+        preserves the caller's original ``(path, is_voice)`` pairs so the
+        caller can surface a warning instead of letting the send silently
+        succeed with text only (issue #32644).
+        """
         safe_media: List[Tuple[str, bool]] = []
+        dropped_media: List[Tuple[str, bool]] = []
         for media_path, is_voice in media_files or []:
             safe_path = validate_media_delivery_path(str(media_path))
             if safe_path:
                 safe_media.append((safe_path, bool(is_voice)))
             else:
+                dropped_media.append((str(media_path), bool(is_voice)))
                 logger.warning("Skipping unsafe MEDIA directive path outside allowed roots")
+        return safe_media, dropped_media
+
+    @staticmethod
+    def filter_media_delivery_paths(media_files) -> List[Tuple[str, bool]]:
+        """Drop unsafe MEDIA paths and normalize accepted paths."""
+        safe_media, _dropped = BasePlatformAdapter.partition_media_delivery_paths(media_files)
         return safe_media
 
     @staticmethod
