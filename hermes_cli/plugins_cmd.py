@@ -725,6 +725,24 @@ def _plugin_exists(name: str) -> bool:
             or (candidate / "plugin.yml").exists()
         ):
             return True
+    # Entry-point plugins (pip-installed)
+    try:
+        import importlib.metadata
+        from hermes_cli.plugins import ENTRY_POINTS_GROUP
+
+        eps = importlib.metadata.entry_points()
+        if hasattr(eps, "select"):
+            group_eps = eps.select(group=ENTRY_POINTS_GROUP)
+        elif isinstance(eps, dict):
+            group_eps = eps.get(ENTRY_POINTS_GROUP, [])
+        else:
+            group_eps = [ep for ep in eps if ep.group == ENTRY_POINTS_GROUP]
+
+        for ep in group_eps:
+            if ep.name == name:
+                return True
+    except Exception:
+        pass
     return False
 
 
@@ -807,6 +825,26 @@ def _discover_all_plugins() -> list:
     from hermes_cli.plugins import get_bundled_plugins_dir
     _scan(get_bundled_plugins_dir(), "bundled", "", 0)
     _scan(_plugins_dir(), "user", "", 0)
+
+    # Also discover pip-installed plugins via entry points so that
+    # ``hermes plugins list`` matches what the runtime loader sees.
+    try:
+        import importlib.metadata
+        from hermes_cli.plugins import ENTRY_POINTS_GROUP
+
+        eps = importlib.metadata.entry_points()
+        if hasattr(eps, "select"):
+            group_eps = eps.select(group=ENTRY_POINTS_GROUP)
+        elif isinstance(eps, dict):
+            group_eps = eps.get(ENTRY_POINTS_GROUP, [])
+        else:
+            group_eps = [ep for ep in eps if ep.group == ENTRY_POINTS_GROUP]
+
+        for ep in group_eps:
+            if ep.name not in seen:
+                seen[ep.name] = (ep.name, "", "", "entrypoint", None)
+    except Exception:
+        pass  # Best-effort; entry-point scan failure shouldn't break the command
 
     return list(seen.values())
 
