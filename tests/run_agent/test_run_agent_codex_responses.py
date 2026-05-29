@@ -108,6 +108,58 @@ def _codex_tool_call_response():
     )
 
 
+def _codex_max_output_message_response(text: str):
+    return SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                id="msg_partial",
+                status="incomplete",
+                content=[SimpleNamespace(type="output_text", text=text)],
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+        status="incomplete",
+        incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+        model="gpt-5-codex",
+    )
+
+
+def _codex_max_output_tool_call_response(arguments: str):
+    return SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="function_call",
+                id="fc_1",
+                call_id="call_1",
+                name="terminal",
+                arguments=arguments,
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=12, output_tokens=4, total_tokens=16),
+        status="incomplete",
+        incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+        model="gpt-5-codex",
+    )
+
+
+def _codex_max_output_reasoning_only_response():
+    return SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                id="rs_1",
+                encrypted_content="encrypted-reasoning-state",
+                summary=[SimpleNamespace(type="summary_text", text="Still reasoning")],
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=8, output_tokens=4, total_tokens=12),
+        status="incomplete",
+        incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+        model="gpt-5-codex",
+    )
+
+
 def _codex_incomplete_message_response(text: str):
     return SimpleNamespace(
         output=[
@@ -684,6 +736,134 @@ def test_run_conversation_codex_plain_text(monkeypatch):
     assert result["final_response"] == "OK"
     assert result["messages"][-1]["role"] == "assistant"
     assert result["messages"][-1]["content"] == "OK"
+
+
+def test_run_conversation_codex_incomplete_text_continuation(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    responses = [
+        _codex_max_output_message_response("Part 1 "),
+        _codex_message_response("Part 2"),
+    ]
+    requests = []
+
+    def _fake_api_call(api_kwargs):
+        requests.append(api_kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("Write a long answer")
+
+    assert result["completed"] is True
+    assert result["api_calls"] == 2
+    assert result["final_response"] == "Part 1 Part 2"
+    assert len(requests) == 2
+
+    second_input = requests[1]["input"]
+    assert second_input[-1]["role"] == "user"
+    assert "truncated by the output length limit" in second_input[-1]["content"]
+    assert any(
+        item.get("type") == "message" and item.get("status") == "incomplete"
+        for item in second_input
+    )
+
+
+def test_run_conversation_codex_incomplete_tool_call_fail_closed(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    bad_response = _codex_max_output_tool_call_response('{"cmd": "printf partial')
+    calls = {"api": 0, "tool": 0}
+
+    def _fake_api_call(api_kwargs):
+        calls["api"] += 1
+        return bad_response
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    def _fake_handle_function_call(*args, **kwargs):
+        calls["tool"] += 1
+        return "{}"
+
+    monkeypatch.setattr(run_agent, "handle_function_call", _fake_handle_function_call)
+
+    result = agent.run_conversation("Run a command")
+
+    assert result["completed"] is False
+    assert result["partial"] is True
+    assert "Codex" in result["error"]
+    assert "max_output_tokens" in result["error"]
+    assert "truncated tool call" in result["error"]
+    assert calls["api"] == 4
+    assert not any(
+        msg.get("role") == "assistant" and msg.get("tool_calls")
+        for msg in result["messages"]
+    )
+    assert calls["tool"] == 0
+
+
+def test_run_conversation_codex_truncated_tool_call_retries_until_valid(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    responses = [
+        _codex_max_output_tool_call_response('{"cmd": "printf partial'),
+        _codex_max_output_tool_call_response('{"cmd": "printf still partial'),
+        _codex_tool_call_response(),
+        _codex_message_response("done"),
+    ]
+    requests = []
+
+    def _fake_api_call(api_kwargs):
+        requests.append(api_kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    calls = {"tool": 0}
+
+    def _fake_handle_function_call(tool_name, args, task_id=None, **kwargs):
+        calls["tool"] += 1
+        assert tool_name == "terminal"
+        assert args == {}
+        return '{"ok": true}'
+
+    monkeypatch.setattr(run_agent, "handle_function_call", _fake_handle_function_call)
+
+    result = agent.run_conversation("Run a command")
+
+    assert result["completed"] is True
+    assert len(requests) == 4
+    assert result["final_response"] == "done"
+    assert calls["tool"] == 1
+    assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
+
+
+def test_run_conversation_codex_incomplete_no_visible_output_returns_recoverable_error(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    persisted = {"count": 0}
+
+    def _persist(messages, history=None):
+        persisted["count"] += 1
+
+    agent._persist_session = _persist
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_api_call",
+        lambda api_kwargs: _codex_max_output_reasoning_only_response(),
+    )
+
+    result = agent.run_conversation("Think silently")
+
+    assert result["completed"] is False
+    assert result["partial"] is True
+    assert persisted["count"] == 1
+    assert "codex_responses" in result["error"]
+    assert "max_output_tokens" in result["error"]
+    assert "no visible output" in result["error"]
+    preserved_reasoning = [
+        msg.get("codex_reasoning_items")
+        for msg in result["messages"]
+        if msg.get("role") == "assistant" and msg.get("codex_reasoning_items")
+    ]
+    assert preserved_reasoning
+    assert preserved_reasoning[-1][0]["encrypted_content"] == "encrypted-reasoning-state"
 
 
 def test_run_conversation_codex_empty_output_with_output_text(monkeypatch):

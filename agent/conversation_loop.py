@@ -63,6 +63,35 @@ from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
 
+TEXT_CONTINUATION_API_MODES = frozenset({
+    "chat_completions",
+    "bedrock_converse",
+    "anthropic_messages",
+    "codex_responses",
+})
+TRUNCATED_TOOL_CALL_API_MODES = TEXT_CONTINUATION_API_MODES
+TRUNCATED_TOOL_CALL_MAX_RETRIES = 3
+CODEX_LENGTH_REASONS = frozenset({"max_output_tokens", "length"})
+
+
+def _response_incomplete_reason(response: Any) -> Optional[str]:
+    incomplete_details = getattr(response, "incomplete_details", None)
+    if isinstance(incomplete_details, dict):
+        reason = incomplete_details.get("reason")
+    else:
+        reason = getattr(incomplete_details, "reason", None)
+    return reason if isinstance(reason, str) else None
+
+
+def _response_has_raw_tool_call_item(response: Any) -> bool:
+    output = getattr(response, "output", None)
+    if not isinstance(output, list):
+        return False
+    return any(
+        getattr(item, "type", None) in {"function_call", "custom_tool_call"}
+        for item in output
+    )
+
 
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
@@ -1508,15 +1537,11 @@ def run_conversation(
                     continue  # Retry the API call
 
                 # Check finish_reason before proceeding
+                codex_incomplete_reason = None
                 if agent.api_mode == "codex_responses":
                     status = getattr(response, "status", None)
-                    incomplete_details = getattr(response, "incomplete_details", None)
-                    incomplete_reason = None
-                    if isinstance(incomplete_details, dict):
-                        incomplete_reason = incomplete_details.get("reason")
-                    else:
-                        incomplete_reason = getattr(incomplete_details, "reason", None)
-                    if status == "incomplete" and incomplete_reason in {"max_output_tokens", "length"}:
+                    codex_incomplete_reason = _response_incomplete_reason(response)
+                    if status == "incomplete" and codex_incomplete_reason in CODEX_LENGTH_REASONS:
                         finish_reason = "length"
                     else:
                         finish_reason = "stop"
@@ -1561,10 +1586,10 @@ def run_conversation(
                     # Normalize the truncated response to a single OpenAI-style
                     # message shape so text-continuation and tool-call retry
                     # work uniformly across chat_completions, bedrock_converse,
-                    # and anthropic_messages.  For Anthropic we use the same
-                    # adapter the agent loop already relies on so the rebuilt
-                    # interim assistant message is byte-identical to what
-                    # would have been appended in the non-truncated path.
+                    # anthropic_messages, and codex_responses.  For Anthropic
+                    # we use the same adapter the agent loop already relies on
+                    # so the rebuilt interim assistant message is byte-identical
+                    # to what would have been appended in the non-truncated path.
                     _trunc_msg = None
                     _trunc_transport = agent._get_transport()
                     if agent.api_mode == "anthropic_messages":
@@ -1576,7 +1601,13 @@ def run_conversation(
                     _trunc_msg = _trunc_result
 
                     _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
-                    _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
+                    _codex_raw_tool_call = (
+                        agent.api_mode == "codex_responses"
+                        and _response_has_raw_tool_call_item(response)
+                    )
+                    _trunc_has_tool_calls = (
+                        bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
+                    ) or _codex_raw_tool_call
 
                     # ── Detect thinking-budget exhaustion ──────────────
                     # When the model spends ALL output tokens on reasoning
@@ -1639,7 +1670,40 @@ def run_conversation(
                             "error": _exhaust_error,
                         }
 
-                    if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
+                    if (
+                        agent.api_mode == "codex_responses"
+                        and not _trunc_has_tool_calls
+                        and not ((_trunc_content or "").strip())
+                    ):
+                        _reason = codex_incomplete_reason or "unknown"
+                        interim_msg = agent._build_assistant_message(_trunc_msg, "incomplete")
+                        if (
+                            interim_msg.get("reasoning")
+                            or interim_msg.get("codex_reasoning_items")
+                            or interim_msg.get("codex_message_items")
+                        ):
+                            messages.append(interim_msg)
+                        _no_output_error = (
+                            "codex_responses max_output_tokens response produced "
+                            f"no visible output (reason={_reason})"
+                        )
+                        agent._vprint(
+                            f"{agent.log_prefix}⚠️  Codex Responses exhausted output budget "
+                            "before producing visible text.",
+                            force=True,
+                        )
+                        agent._cleanup_task_resources(effective_task_id)
+                        agent._persist_session(messages, conversation_history)
+                        return {
+                            "final_response": None,
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": False,
+                            "partial": True,
+                            "error": _no_output_error,
+                        }
+
+                    if agent.api_mode in TEXT_CONTINUATION_API_MODES:
                         assistant_message = _trunc_msg
                         if assistant_message is not None and not _trunc_has_tool_calls:
                             length_continue_retries += 1
@@ -1700,13 +1764,15 @@ def run_conversation(
                                 "error": "Response remained truncated after 3 continuation attempts",
                             }
 
-                    if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
+                    if agent.api_mode in TRUNCATED_TOOL_CALL_API_MODES:
                         assistant_message = _trunc_msg
                         if assistant_message is not None and _trunc_has_tool_calls:
-                            if truncated_tool_call_retries < 1:
+                            if truncated_tool_call_retries < TRUNCATED_TOOL_CALL_MAX_RETRIES:
                                 truncated_tool_call_retries += 1
                                 agent._buffer_vprint(
-                                    f"⚠️  Truncated tool call detected — retrying API call..."
+                                    "⚠️  Truncated tool call detected — retrying "
+                                    f"API call ({truncated_tool_call_retries}/"
+                                    f"{TRUNCATED_TOOL_CALL_MAX_RETRIES})..."
                                 )
                                 # Don't append the broken response to messages;
                                 # just re-run the same API call from the current
@@ -1719,13 +1785,20 @@ def run_conversation(
                             )
                             agent._cleanup_task_resources(effective_task_id)
                             agent._persist_session(messages, conversation_history)
+                            _tool_error = (
+                                "Codex Responses max_output_tokens response contained "
+                                "a truncated tool call; refusing to execute incomplete "
+                                "tool arguments"
+                                if agent.api_mode == "codex_responses"
+                                else "Response truncated due to output length limit"
+                            )
                             return {
                                 "final_response": None,
                                 "messages": messages,
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "partial": True,
-                                "error": "Response truncated due to output length limit",
+                                "error": _tool_error,
                             }
 
                     # If we have prior messages, roll back to last complete state
