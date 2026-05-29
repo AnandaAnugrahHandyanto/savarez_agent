@@ -269,7 +269,7 @@ def _probe_anthropic_messages(base_url: str,
     req.add_header("content-type", "application/json")
     req.add_header("User-Agent", "hermes-agent/azure-detect")
     try:
-        with urllib_request.urlopen(req, timeout=6.0) as resp:
+        with urllib_request.urlopen(req, timeout=6.0) as resp:  # SSRF: add IP block check
             # Should never 200 — "probe" isn't a real deployment.  But
             # if it does, the endpoint definitely speaks Anthropic.
             return resp.status < 500
