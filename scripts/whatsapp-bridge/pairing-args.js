@@ -10,7 +10,8 @@ export function validateE164ForPairing(raw) {
   if (!E164_PAIRING_REGEX.test(s)) {
     return {
       ok: false,
-      error: 'Invalid phone number. Use E.164 (e.g. +15551234567): country code, digits only besides an optional leading +.',
+      error:
+        'Invalid phone number. Use 10–15 digits total with country code (e.g. +15551234567): digits only, optional leading +.',
     };
   }
   const digits = s.startsWith('+') ? s.slice(1) : s;
