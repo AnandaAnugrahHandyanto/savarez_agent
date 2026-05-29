@@ -86,7 +86,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Generator, Iterable, Optional
 
 from toolsets import get_toolset_names
 
@@ -1328,29 +1328,31 @@ def connect(
 
 
 @contextlib.contextmanager
-def connect_closing(
+def use_conn(
     db_path: Optional[Path] = None,
     *,
     board: Optional[str] = None,
-):
+) -> Generator[sqlite3.Connection, None, None]:
     """Open a kanban DB connection and guarantee it is closed on exit.
 
-    Use this instead of ``with kb.connect() as conn:`` — sqlite3's
-    built-in connection context manager only commits/rollbacks the
-    transaction; it does NOT close the file descriptor. In long-lived
-    processes (gateway, dashboard) that route every kanban operation
-    through ``connect()`` (e.g. ``run_slash`` dispatching ``/kanban …``
-    commands, ``decompose_task_endpoint`` calling
-    ``kanban_decompose.decompose_task``), the unclosed connections
-    accumulate as open FDs to ``kanban.db`` and ``kanban.db-wal``. After
-    enough operations the process hits the kernel FD limit and dies
-    with ``[Errno 24] Too many open files``.
+    Use this instead of ``with connect() as conn:`` — sqlite3's built-in
+    connection context manager only commits/rollbacks the transaction; it
+    does NOT close the file descriptor. In long-lived processes (gateway,
+    dashboard) that route every kanban operation through ``connect()``,
+    unclosed connections accumulate as open FDs to ``kanban.db`` and
+    ``kanban.db-wal``. After enough operations the process hits the kernel
+    FD limit and dies with ``[Errno 24] Too many open files``.
 
     See #33159 for the production incident.
 
+    Usage::
+
+        with kanban_db.use_conn(board=board) as conn:
+            tasks = kanban_db.list_tasks(conn, ...)
+
     The ``connect()`` function itself remains unchanged so callers that
     intentionally manage the connection lifetime (tests, long-lived
-    callers) continue to work.
+    callers) can still call it directly with explicit ``try/finally``.
     """
     conn = connect(db_path=db_path, board=board)
     try:
