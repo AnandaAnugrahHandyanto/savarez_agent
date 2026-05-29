@@ -376,5 +376,11 @@
     "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34931",
     "pr_number": 34931,
     "run_id": "20260529_222349"
+  },
+  "SSRF-copilot_auth.py-332": {
+    "status": "filed",
+    "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34932",
+    "pr_number": 34932,
+    "run_id": "20260529_222349"
   }
 }

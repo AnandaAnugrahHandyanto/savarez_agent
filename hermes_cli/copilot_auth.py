@@ -234,7 +234,7 @@ def copilot_device_code_login(
         )
 
         try:
-            with urllib.request.urlopen(poll_req, timeout=10) as resp:
+            with urllib.request.urlopen(poll_req, timeout=10) as resp:  # SSRF: add IP block check
                 result = json.loads(resp.read().decode())
         except Exception:
             print(".", end="", flush=True)
