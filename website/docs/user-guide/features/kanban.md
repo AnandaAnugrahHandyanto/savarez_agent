@@ -488,7 +488,7 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 | `auto_decompose` | `true` | Dispatcher auto-runs the decomposer every tick. |
 | `auto_decompose_per_tick` | `3` | Cap on decompositions per dispatcher tick. Excess defers to the next tick. |
 | `orchestrator_profile` | `""` | Profile that owns decomposition. Empty = fall back to active default profile. |
-| `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to active default. |
+| `default_assignee` | `""` | Fallback assignee for any unassigned `ready` task the dispatcher picks up — decomposer children whose LLM-picked profile is unknown, plus any other task left without an assignee. Empty = fall back to active default. |
 
 And the two auxiliary LLM slots:
 
@@ -654,12 +654,14 @@ All commands are also available as a slash command in the interactive CLI and in
 | Config key | Default | What it does |
 |------------|---------|--------------|
 | `kanban.max_in_progress` | unset (unlimited) | Caps the number of simultaneously running tasks. When the board already has N running, the dispatcher skips spawning more — useful for slow workers (local LLMs, resource-constrained hosts) so they finish what they have before more pile up and time out. Invalid or below-1 values log a warning and behave as unlimited. |
+| `kanban.max_in_progress_per_profile` | unset (unlimited) | Caps simultaneously running tasks **per profile**, layered on top of the global `max_in_progress`. Lets one busy profile (slow local model, limited API quota, small browser pool) drain its in-flight work before the dispatcher spawns more for *that* profile, while other profiles keep running. Invalid or below-1 values are ignored (no per-profile cap). |
 | `kanban.auto_promote_children` | `true` | After `decompose_triage_task()` produces children with no parent-blocker dependencies, they're automatically promoted to `ready` so the dispatcher can pick them up. Set to `false` to require manual review — children stay in `todo` until you promote them. |
 | `kanban.default_workdir` | unset | Board-level default working directory applied to new tasks when neither `--workspace` nor the task itself overrides it. Per-task `workspace:` still wins. |
 
 ```yaml
 kanban:
   max_in_progress: 2
+  max_in_progress_per_profile: 1
   auto_promote_children: false
   default_workdir: ~/work/active-project
 ```
