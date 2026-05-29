@@ -125,6 +125,10 @@
           "description": ""
         },
         {
+          "id": "deepseek/deepseek-v4-flash",
+          "description": ""
+        },
+        {
           "id": "openrouter/elephant-alpha",
           "description": "free"
         },

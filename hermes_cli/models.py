@@ -60,6 +60,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("x-ai/grok-4.3",                          ""),
     ("nvidia/nemotron-3-super-120b-a12b",      ""),
     ("deepseek/deepseek-v4-pro",               ""),
+    ("deepseek/deepseek-v4-flash",             ""),
     # Free tier
     ("openrouter/elephant-alpha",              "free"),
     ("openrouter/owl-alpha",                   "free"),
