@@ -550,6 +550,78 @@ def test_write_codex_credential_pool_splits_shared_and_profile_entries(profile_e
     ]
 
 
+def test_codex_profile_pool_flush_preserves_newer_shared_root_entry(profile_env):
+    from agent.credential_pool import PooledCredential, load_pool
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{
+            "id": "shared-codex",
+            "source": "device_code",
+            "auth_type": "oauth",
+            "access_token": "old-at",
+            "refresh_token": "old-rt",
+        }],
+    }))
+    pool = load_pool("openai-codex")
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{
+            "id": "shared-codex",
+            "source": "device_code",
+            "auth_type": "oauth",
+            "access_token": "new-at",
+            "refresh_token": "new-rt",
+        }],
+    }))
+    pool.add_entry(PooledCredential.from_dict("openai-codex", {
+        "id": "profile-api-key",
+        "source": "manual:api_key",
+        "auth_type": "api_key",
+        "access_token": "sk-profile",
+    }))
+
+    global_data = json.loads((profile_env["global"] / "auth.json").read_text())
+    shared = global_data["credential_pool"]["openai-codex"][0]
+    assert shared["access_token"] == "new-at"
+    assert shared["refresh_token"] == "new-rt"
+    profile_data = json.loads((profile_env["profile"] / "auth.json").read_text())
+    assert [e["id"] for e in profile_data["credential_pool"]["openai-codex"]] == [
+        "profile-api-key",
+    ]
+
+
+def test_codex_profile_pool_flush_does_not_restore_removed_shared_root_entry(profile_env):
+    from agent.credential_pool import PooledCredential, load_pool
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [{
+            "id": "shared-codex",
+            "source": "device_code",
+            "auth_type": "oauth",
+            "access_token": "old-at",
+            "refresh_token": "old-rt",
+        }],
+    }))
+    pool = load_pool("openai-codex")
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [],
+    }))
+    pool.add_entry(PooledCredential.from_dict("openai-codex", {
+        "id": "profile-api-key",
+        "source": "manual:api_key",
+        "auth_type": "api_key",
+        "access_token": "sk-profile",
+    }))
+
+    global_data = json.loads((profile_env["global"] / "auth.json").read_text())
+    assert global_data["credential_pool"]["openai-codex"] == []
+    profile_data = json.loads((profile_env["profile"] / "auth.json").read_text())
+    assert [e["id"] for e in profile_data["credential_pool"]["openai-codex"]] == [
+        "profile-api-key",
+    ]
+
+
 def test_clear_codex_auth_clears_profile_entries_and_shared_root_state(profile_env):
     from hermes_cli.auth import clear_provider_auth, read_credential_pool
 

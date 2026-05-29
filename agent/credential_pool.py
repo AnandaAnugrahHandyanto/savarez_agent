@@ -477,10 +477,11 @@ class CredentialPool:
                 self._entries[idx] = new
                 return
 
-    def _persist(self) -> None:
+    def _persist(self, *, replace_shared_entries: bool = False) -> None:
         write_credential_pool(
             self.provider,
             [entry.to_dict() for entry in self._entries],
+            preserve_shared_entries=not replace_shared_entries,
         )
 
     def _is_terminal_auth_failure(
@@ -1184,7 +1185,7 @@ class CredentialPool:
                     ]
                     if self._current_id == entry.id:
                         self._current_id = None
-                    self._persist()
+                    self._persist(replace_shared_entries=True)
                     return None
             # For nous: another process may have consumed the refresh token
             # between our proactive sync and the HTTP call.  Re-sync from
@@ -1262,11 +1263,19 @@ class CredentialPool:
             last_error_reset_at=None,
         )
         self._replace_entry(entry, updated)
+        if self.provider == "openai-codex" and updated.source == "device_code":
+            persisted = auth_mod._read_codex_tokens(_lock=False)
+            tokens = dict(persisted["tokens"])
+            tokens["access_token"] = updated.access_token
+            if updated.refresh_token:
+                tokens["refresh_token"] = updated.refresh_token
+            auth_mod._save_codex_tokens(tokens, updated.last_refresh)
         self._persist()
         # Sync refreshed tokens back to auth.json providers so that
         # _seed_from_singletons() on the next load_pool() sees fresh state
         # instead of re-seeding stale/consumed tokens.
-        self._sync_device_code_entry_to_auth_store(updated)
+        if self.provider != "openai-codex" or updated.source != "device_code":
+            self._sync_device_code_entry_to_auth_store(updated)
         return updated
 
     def _entry_needs_refresh(self, entry: PooledCredential) -> bool:
@@ -1581,7 +1590,11 @@ class CredentialPool:
             replace(entry, priority=new_priority)
             for new_priority, entry in enumerate(self._entries)
         ]
-        self._persist()
+        self._persist(
+            replace_shared_entries=(
+                self.provider == "openai-codex" and removed.source == "device_code"
+            ),
+        )
         if self._current_id == removed.id:
             self._current_id = None
         return removed
@@ -2250,5 +2263,6 @@ def load_pool(provider: str) -> CredentialPool:
         write_credential_pool(
             provider,
             [entry.to_dict() for entry in sorted(entries, key=lambda item: item.priority)],
+            preserve_shared_entries=True,
         )
     return CredentialPool(provider, entries)

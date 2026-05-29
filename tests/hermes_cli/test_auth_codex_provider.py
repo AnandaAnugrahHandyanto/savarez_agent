@@ -324,6 +324,61 @@ def test_save_codex_tokens_syncs_only_active_profile_manual_entries(tmp_path, mo
     assert sibling_auth["credential_pool"]["openai-codex"][0]["refresh_token"] == "sibling-manual-rt"
 
 
+def test_save_codex_tokens_commits_root_before_profile_mirror_failure(
+    tmp_path, monkeypatch, caplog,
+):
+    import hermes_cli.auth as auth_mod
+
+    root_home = tmp_path / "hermes"
+    profile_home = root_home / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    (root_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {
+            "openai-codex": {
+                "tokens": {"access_token": "old-at", "refresh_token": "old-rt"},
+            },
+        },
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "shared-device",
+                "source": "device_code",
+                "access_token": "old-at",
+                "refresh_token": "old-rt",
+            }],
+        },
+    }))
+    (profile_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "credential_pool": {
+            "openai-codex": [{
+                "id": "profile-manual",
+                "source": "manual:device_code",
+                "access_token": "profile-old-at",
+                "refresh_token": "profile-old-rt",
+            }],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    original_save = auth_mod._save_auth_store
+
+    def _fail_profile_save(auth_store, auth_file=None):
+        if auth_file == profile_home / "auth.json":
+            raise OSError("profile auth store is read-only")
+        return original_save(auth_store, auth_file=auth_file)
+
+    monkeypatch.setattr(auth_mod, "_save_auth_store", _fail_profile_save)
+
+    auth_mod._save_codex_tokens({"access_token": "new-at", "refresh_token": "new-rt"})
+
+    root_auth = json.loads((root_home / "auth.json").read_text())
+    assert root_auth["providers"]["openai-codex"]["tokens"]["refresh_token"] == "new-rt"
+    assert root_auth["credential_pool"]["openai-codex"][0]["refresh_token"] == "new-rt"
+    profile_auth = json.loads((profile_home / "auth.json").read_text())
+    assert profile_auth["credential_pool"]["openai-codex"][0]["refresh_token"] == "profile-old-rt"
+    assert "Failed to sync Codex tokens to profile auth store" in caplog.text
+
+
 def test_profile_mode_refuses_to_refresh_unclaimed_legacy_tokens(tmp_path, monkeypatch):
     root_home = tmp_path / "hermes"
     profile_home = root_home / "profiles" / "worker"

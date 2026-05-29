@@ -1340,7 +1340,12 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     return list(global_entries) if isinstance(global_entries, list) else []
 
 
-def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Path:
+def write_credential_pool(
+    provider_id: str,
+    entries: List[Dict[str, Any]],
+    *,
+    preserve_shared_entries: bool = False,
+) -> Path:
     """Persist one provider's credential pool under auth.json.
 
     This is the final disk-boundary guard for borrowed/reference-only
@@ -1378,7 +1383,17 @@ def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Pa
                 if isinstance(existing_shared_entries, list)
                 else []
             )
-            shared_pool[provider_id] = root_profile_entries + shared_entries
+            current_shared_entries = (
+                [
+                    entry for entry in existing_shared_entries
+                    if _is_shared_credential_pool_entry(provider_id, entry)
+                ]
+                if isinstance(existing_shared_entries, list)
+                else []
+            )
+            shared_pool[provider_id] = root_profile_entries + (
+                current_shared_entries if preserve_shared_entries else shared_entries
+            )
             _save_auth_store(shared_auth_store, auth_file=shared_auth_file)
 
             if profile_entries or profile_auth_file.exists():
@@ -3622,6 +3637,7 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None
         local_auth_file = _auth_file_path()
         if auth_file == local_auth_file:
             _sync_codex_pool_entries(auth_store, tokens, last_refresh)
+            _save_auth_store(auth_store, auth_file=auth_file)
         else:
             _sync_codex_pool_entries(
                 auth_store,
@@ -3629,16 +3645,22 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None
                 last_refresh,
                 refreshable_sources=frozenset({"device_code"}),
             )
-            with _auth_store_lock():
-                local_auth_store = _load_auth_store(local_auth_file)
-                if _sync_codex_pool_entries(
-                    local_auth_store,
-                    tokens,
-                    last_refresh,
-                    refreshable_sources=frozenset({"manual:device_code"}),
-                ):
-                    _save_auth_store(local_auth_store, auth_file=local_auth_file)
-        _save_auth_store(auth_store, auth_file=auth_file)
+            _save_auth_store(auth_store, auth_file=auth_file)
+            # The root store is authoritative for the shared refresh-token
+            # family. A profile-local mirror failure must not prevent the
+            # already-rotated canonical token from reaching disk.
+            try:
+                with _auth_store_lock():
+                    local_auth_store = _load_auth_store(local_auth_file)
+                    if _sync_codex_pool_entries(
+                        local_auth_store,
+                        tokens,
+                        last_refresh,
+                        refreshable_sources=frozenset({"manual:device_code"}),
+                    ):
+                        _save_auth_store(local_auth_store, auth_file=local_auth_file)
+            except Exception as exc:
+                logger.warning("Failed to sync Codex tokens to profile auth store: %s", exc)
 
 
 def refresh_codex_oauth_pure(
