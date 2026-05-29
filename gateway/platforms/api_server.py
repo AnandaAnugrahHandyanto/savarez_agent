@@ -1278,7 +1278,7 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             candidate.relative_to(root)
         except ValueError:
-            return None, None, None, web.json_response(_openai_error("Artifact path traversal is not allowed"), status=400)
+            return None, None, None, web.json_response(_openai_error("Artifact path must be within configured root directory"), status=400)
 
         return root, root_name, candidate, None
 
@@ -1305,7 +1305,8 @@ class APIServerAdapter(BasePlatformAdapter):
         root, root_name, target, err = self._resolve_artifact_path(raw_path)
         if err:
             return err
-        assert root is not None and root_name is not None and target is not None
+        if root is None or root_name is None or target is None:
+            return web.json_response(_openai_error("Failed to resolve artifact path", err_type="server_error"), status=500)
 
         if not target.exists():
             return web.json_response(_openai_error("Artifact path not found"), status=404)
@@ -1336,7 +1337,8 @@ class APIServerAdapter(BasePlatformAdapter):
         root, root_name, target, err = self._resolve_artifact_path(artifact_path)
         if err:
             return err
-        assert root is not None and root_name is not None and target is not None
+        if root is None or root_name is None or target is None:
+            return web.json_response(_openai_error("Failed to resolve artifact path", err_type="server_error"), status=500)
 
         if not target.exists():
             return web.json_response(_openai_error("Artifact not found"), status=404)
