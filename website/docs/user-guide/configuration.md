@@ -345,6 +345,10 @@ terminal:
 
 The `profile_id` is a stable 8-character hash derived from the profile's `HERMES_HOME` path. It ensures different profiles (e.g., `~/.hermes` vs `~/.hermes/profiles/dev-docker`) produce different sandbox namespaces without revealing the full path.
 
+:::caution
+Changing `daytona_name_scope` or custom `daytona_labels` can prevent Hermes from finding an already-running persistent Daytona sandbox through label fallback. The default `task` scope still resumes old `hermes-{task_id}` sandboxes by name, but changing scope/labels may leave older sandboxes running in Daytona until you stop or delete them there.
+:::
+
 #### Lifecycle Controls
 
 Control when Daytona sandboxes are automatically stopped, archived, or deleted:
@@ -457,7 +461,7 @@ terminal:
 ```
 
 :::warning Security and cost
-`daytona_sync_cwd` is **disabled by default** because uploading host directories to cloud sandboxes has security and cost implications. You must consciously enable it. The sync applies exclusion rules (`.git`, `node_modules`, `.venv`, `__pycache__`, etc.) and enforces a fixed total-size cap before any project files are uploaded. If the post-exclusion project exceeds the cap, Hermes aborts the entire CWD sync, leaves `/workspace` empty, and logs a warning instead of uploading a partial project.
+`daytona_sync_cwd` is **disabled by default** because uploading host directories to cloud sandboxes has security and cost implications. You must consciously enable it. The sync applies exclusion rules (`.git`, `node_modules`, `.venv`, `__pycache__`, `.docker`, `.env*`, common credential files, and private-key/certificate extensions) and enforces a fixed total-size cap before any project files are uploaded. If the post-exclusion project exceeds the cap, Hermes aborts the entire CWD sync, leaves `/workspace` empty, and logs a warning instead of uploading a partial project.
 :::
 
 #### Full Daytona Configuration Reference

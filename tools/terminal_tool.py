@@ -1838,8 +1838,17 @@ def terminal_tool(
                 "status": "error",
             }, ensure_ascii=False)
 
-        # Get configuration
-        config = _get_env_config()
+        # Get configuration. Bad config/env values should surface as a clean
+        # tool error, not as an unhandled traceback from the outer catch-all.
+        try:
+            config = _get_env_config()
+        except ValueError as e:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": str(e),
+                "status": "error",
+            }, ensure_ascii=False)
         env_type = config["env_type"]
 
         # Use task_id for environment isolation. By default all subagent

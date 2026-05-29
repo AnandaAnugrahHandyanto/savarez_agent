@@ -452,9 +452,9 @@ class TestImageModeBackwardCompat:
         env = make_env(cpu=2, memory=4096, disk=10240)
         call_args = daytona_sdk.Resources.call_args
         kw = call_args.kwargs if call_args else {}
-        assert kw.get("cpu") in (2, MagicMock), f"cpu={kw.get('cpu')}"
-        assert kw.get("memory") in (4, MagicMock), f"memory GiB={kw.get('memory')}"
-        assert kw.get("disk") in (10, MagicMock), f"disk GiB={kw.get('disk')}"
+        assert kw.get("cpu") == 2, f"cpu={kw.get('cpu')}"
+        assert kw.get("memory") == 4, f"memory GiB={kw.get('memory')}"
+        assert kw.get("disk") == 10, f"disk GiB={kw.get('disk')}"
 
 
 # ---------------------------------------------------------------------------
@@ -731,6 +731,22 @@ class TestVolumeMounts:
         call_kw = daytona_sdk.CreateSandboxFromImageParams.call_args.kwargs
         assert call_kw.get("volumes") in (None, [])
 
+    def test_missing_volume_mount_class_fails_closed(self, make_env, monkeypatch):
+        """Do not pass raw dict volumes if the SDK VolumeMount model is unavailable."""
+        from tools.environments import daytona as daytona_env
+
+        real_import = daytona_env.importlib.import_module
+
+        def fake_import_module(module_name):
+            if module_name in {"daytona.common.volume", "daytona_sdk.common.volume"}:
+                raise ImportError(module_name)
+            return real_import(module_name)
+
+        monkeypatch.setattr(daytona_env.importlib, "import_module", fake_import_module)
+
+        with pytest.raises(ImportError, match="VolumeMount"):
+            make_env(volume_mounts=[{"volume_id": "vol-123", "mount_path": "/data"}])
+
 
 # ---------------------------------------------------------------------------
 # GPU resources
@@ -936,6 +952,22 @@ class TestJsonTypeValidation:
         config = tt._get_env_config()
         assert config["daytona_volume_mounts"] == []
 
+    def test_terminal_tool_bad_json_returns_clean_error(self, monkeypatch):
+        """Runtime path should return a clean tool error for malformed JSON config."""
+        import importlib
+        import json
+        import tools.terminal_tool as tt
+
+        monkeypatch.setenv("TERMINAL_ENV", "daytona")
+        monkeypatch.setenv("TERMINAL_DAYTONA_LABELS", "{not-json")
+        importlib.reload(tt)
+
+        result = json.loads(tt.terminal_tool(command="true"))
+
+        assert result["exit_code"] == -1
+        assert "Invalid value for TERMINAL_DAYTONA_LABELS" in result["error"]
+        assert "traceback" not in result
+
 
 # ---------------------------------------------------------------------------
 # Profile ID derivation (P2)
@@ -1012,3 +1044,81 @@ class TestDeriveProfileId:
         # The 8-char hex hash must not contain the original path
         assert test_path not in pid
         assert len(pid) == 8
+
+
+# ---------------------------------------------------------------------------
+# Real Daytona SDK compatibility smoke
+# ---------------------------------------------------------------------------
+
+class TestDaytonaSdkParamCompatibility:
+    """Forwarded kwargs must be accepted by the real daytona 0.155.x models."""
+
+    def test_real_daytona_0155_accepts_forwarded_create_kwargs(self):
+        daytona = pytest.importorskip("daytona")
+        volume_mod = pytest.importorskip("daytona.common.volume")
+
+        fields = set(daytona.CreateSandboxFromImageParams.model_fields)
+        assert {
+            "name",
+            "labels",
+            "auto_stop_interval",
+            "auto_archive_interval",
+            "auto_delete_interval",
+            "resources",
+            "ephemeral",
+            "env_vars",
+            "network_block_all",
+            "network_allow_list",
+            "language",
+            "volumes",
+            "image",
+        }.issubset(fields)
+
+        snapshot_fields = set(daytona.CreateSandboxFromSnapshotParams.model_fields)
+        assert {
+            "name",
+            "labels",
+            "auto_stop_interval",
+            "auto_archive_interval",
+            "auto_delete_interval",
+            "ephemeral",
+            "env_vars",
+            "network_block_all",
+            "network_allow_list",
+            "language",
+            "volumes",
+            "snapshot",
+        }.issubset(snapshot_fields)
+        assert "resources" not in snapshot_fields
+
+        volume = volume_mod.VolumeMount(volume_id="vol-123", mount_path="/data")
+        resources = daytona.Resources(cpu=2, memory=4, disk=10, gpu=1)
+        daytona.CreateSandboxFromImageParams(
+            name="hermes-test",
+            labels={"hermes_backend": "daytona"},
+            auto_stop_interval=30,
+            auto_archive_interval=60,
+            auto_delete_interval=0,
+            resources=resources,
+            ephemeral=True,
+            env_vars={"DEBUG": "1"},
+            network_block_all=True,
+            network_allow_list="10.0.0.0/8",
+            language="python",
+            volumes=[volume],
+            image="python:3.11",
+        )
+        daytona.CreateSandboxFromSnapshotParams(
+            name="hermes-test",
+            labels={"hermes_backend": "daytona"},
+            auto_stop_interval=30,
+            auto_archive_interval=60,
+            auto_delete_interval=0,
+            ephemeral=True,
+            env_vars={"DEBUG": "1"},
+            network_block_all=True,
+            network_allow_list="10.0.0.0/8",
+            language="python",
+            volumes=[volume],
+            snapshot="snap-123",
+        )

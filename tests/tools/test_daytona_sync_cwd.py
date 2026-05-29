@@ -224,44 +224,47 @@ class TestDaytonaSyncCwdExcludes:
 
         assert "__pycache__" in DaytonaEnvironment._CWD_EXCLUDE_DIRS
 
-    def test_hermes_dir_excluded(self):
-        """The .hermes directory must be excluded from CWD sync.
-
-        .hermes is excluded via the separate conditional in directory
-        pruning (d != '.hermes') rather than in _CWD_EXCLUDE_DIRS because
-        .hermes files are synced separately via FileSyncManager.
-        """
-        from tools.environments.daytona import DaytonaEnvironment
-        import inspect
-
-        source = inspect.getsource(DaytonaEnvironment._sync_cwd_to_sandbox)
-        # Verify the walk prunes .hermes from dirnames
-        assert 'd != ".hermes"' in source or '".hermes"' in source, (
-            "_sync_cwd_to_sandbox must exclude .hermes directory from CWD walk"
-        )
-
-    def test_env_file_excluded(self):
-        """The .env file pattern must be in _CWD_EXCLUDE_FILES."""
+    def test_hermes_dir_excluded(self, tmp_path):
+        """The .hermes directory must be excluded from CWD sync."""
         from tools.environments.daytona import DaytonaEnvironment
 
-        assert ".env" in DaytonaEnvironment._CWD_EXCLUDE_FILES
+        (tmp_path / "README.md").write_text("allowed")
+        (tmp_path / ".hermes").mkdir()
+        (tmp_path / ".hermes" / "oauth.json").write_text("{}")
+
+        env = DaytonaEnvironment.__new__(DaytonaEnvironment)
+        env._sync_cwd = True
+        env._CWD_MAX_BYTES = 100 * 1024 * 1024
+        env._sandbox = MagicMock()
+        uploaded_files = []
+        env._daytona_bulk_upload = lambda files: uploaded_files.extend(files)
+
+        with patch.dict(os.environ, {"TERMINAL_CWD": str(tmp_path)}), \
+             patch("hermes_constants.get_hermes_home", return_value=Path("/fake/hermes/home")):
+            env._sync_cwd_to_sandbox()
+
+        assert [remote for _, remote in uploaded_files] == ["/workspace/README.md"]
+
+    @pytest.mark.parametrize("fname", [".env", ".env.local", ".env.staging", ".env.test", ".ENV.CI"])
+    def test_env_files_excluded_by_prefix(self, fname):
+        """All .env suffix variants must be excluded from CWD sync."""
+        from tools.environments.daytona import DaytonaEnvironment
+
+        assert DaytonaEnvironment._is_cwd_excluded_file(fname)
 
     def test_pem_extension_excluded(self):
         """.pem files must be excluded by extension check."""
         from tools.environments.daytona import DaytonaEnvironment
 
-        # .pem files are excluded via the extension check in _sync_cwd_to_sandbox
-        # We verify they're blocked by checking the implementation uses
-        # fname.endswith(".pem") in the extension exclusion list
-        # The actual exclusion happens in the method body, so we validate
-        # the _CWD_EXCLUDE_FILES tuple contains .pem
-        assert ".pem" in DaytonaEnvironment._CWD_EXCLUDE_FILES
+        assert ".pem" in DaytonaEnvironment._CWD_EXCLUDE_EXTENSIONS
+        assert DaytonaEnvironment._is_cwd_excluded_file("server.pem")
 
     def test_key_extension_excluded(self):
         """'.key' files must be excluded."""
         from tools.environments.daytona import DaytonaEnvironment
 
-        assert ".key" in DaytonaEnvironment._CWD_EXCLUDE_FILES
+        assert ".key" in DaytonaEnvironment._CWD_EXCLUDE_EXTENSIONS
+        assert DaytonaEnvironment._is_cwd_excluded_file("id_rsa.key")
 
     def test_max_bytes_is_reasonable(self):
         """_CWD_MAX_BYTES must be at least 10 MiB and at most 500 MiB."""
@@ -287,39 +290,69 @@ class TestDaytonaSyncCwdExcludes:
 class TestDaytonaSyncCwdBehavior:
     """Verify that _sync_cwd_to_sandbox is only called when sync_cwd=True."""
 
-    def test_sync_cwd_false_does_not_call_sync(self):
+    def test_sync_cwd_false_does_not_call_sync(self, monkeypatch):
         """When sync_cwd=False (default), _sync_cwd_to_sandbox must not be called."""
-        with patch("tools.environments.daytona.DaytaEnvironment", create=True) as MockDaytona, \
-             patch("tools.environments.daytona._derive_profile_id", return_value="test1234"), \
-             patch("tools.environments.daytona.FileSyncManager"), \
-             patch("tools.environments.daytona.DaytonaEnvironment._sync_cwd_to_sandbox") as mock_sync:
+        import types
 
-            # We can't easily instantiate DaytonaEnvironment without a real SDK,
-            # but we can verify the init path by checking the source.
-            from tools.environments.daytona import DaytonaEnvironment
-            import inspect
-            source = inspect.getsource(DaytonaEnvironment.__init__)
-            # The source must reference self._sync_cwd conditionally
-            assert "if self._sync_cwd" in source or "if sync_cwd" in source, (
-                "DaytonaEnvironment.__init__ must conditionally call _sync_cwd_to_sandbox"
-            )
-            # And the call must only fire when True
-            assert "self._sync_cwd_to_sandbox()" in source, (
-                "DaytonaEnvironment.__init__ must call self._sync_cwd_to_sandbox()"
-            )
+        fake_daytona = types.ModuleType("daytona")
 
-    def test_hermes_home_not_synced_as_cwd(self):
-        """If host_cwd resolves to .hermes home, sync must be skipped."""
-        # Verify the source checks for hermes_home
+        class DaytonaError(Exception):
+            pass
+
+        class Params:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        class Resources:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        sandbox = MagicMock()
+        sandbox.id = "sb-123"
+        sandbox.state = "started"
+        sandbox.process.exec.return_value = MagicMock(result="/root", exit_code=0)
+
+        client = MagicMock()
+        client.get.side_effect = DaytonaError("missing")
+        client.list.return_value = iter([])
+        client.create.return_value = sandbox
+
+        setattr(fake_daytona, "Daytona", MagicMock(return_value=client))
+        setattr(fake_daytona, "CreateSandboxFromImageParams", Params)
+        setattr(fake_daytona, "CreateSandboxFromSnapshotParams", Params)
+        setattr(fake_daytona, "DaytonaError", DaytonaError)
+        setattr(fake_daytona, "Resources", Resources)
+        setattr(fake_daytona, "SandboxState", types.SimpleNamespace(STOPPED="stopped", ARCHIVED="archived"))
+
+        monkeypatch.setitem(sys.modules, "daytona", fake_daytona)
+        monkeypatch.setattr("tools.environments.daytona._derive_profile_id", lambda: "test1234")
+        monkeypatch.setattr("tools.environments.daytona.FileSyncManager", MagicMock())
+
         from tools.environments.daytona import DaytonaEnvironment
-        import inspect
-        source = inspect.getsource(DaytonaEnvironment._sync_cwd_to_sandbox)
-        assert "hermes_home" in source, (
-            "_sync_cwd_to_sandbox must check if host_cwd is hermes_home and skip"
-        )
-        assert "skipping" in source.lower(), (
-            "_sync_cwd_to_sandbox must log a skip when host_cwd is .hermes home"
-        )
+
+        with patch("tools.environments.daytona.DaytonaEnvironment._sync_cwd_to_sandbox") as mock_sync:
+            DaytonaEnvironment(image="test-image:latest", sync_cwd=False)
+
+        mock_sync.assert_not_called()
+
+    def test_hermes_home_not_synced_as_cwd(self, tmp_path):
+        """If host_cwd resolves to .hermes home, sync must be skipped."""
+        from tools.environments.daytona import DaytonaEnvironment
+
+        (tmp_path / "config.yaml").write_text("terminal: {}")
+
+        env = DaytonaEnvironment.__new__(DaytonaEnvironment)
+        env._sync_cwd = True
+        env._host_cwd = str(tmp_path)
+        env._CWD_MAX_BYTES = 100 * 1024 * 1024
+        env._sandbox = MagicMock()
+        env._daytona_bulk_upload = MagicMock()
+
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            env._sync_cwd_to_sandbox()
+
+        env._sandbox.process.exec.assert_not_called()
+        env._daytona_bulk_upload.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -329,18 +362,12 @@ class TestDaytonaSyncCwdBehavior:
 class TestDaytonaSyncCwdExclusionLogic:
     """Unit tests for the file collection/exclusion logic in _sync_cwd_to_sandbox."""
 
-    def test_dot_env_file_skipped(self):
-        """.env files must be excluded from the sync list."""
+    @pytest.mark.parametrize("fname", [".env", ".env.staging", ".env.test", "server.pem"])
+    def test_sensitive_file_names_skipped(self, fname):
+        """Sensitive basenames and extensions must be excluded."""
         from tools.environments.daytona import DaytonaEnvironment
 
-        # Verify .env is in the exclusion list
-        assert ".env" in DaytonaEnvironment._CWD_EXCLUDE_FILES
-
-    def test_pem_extension_files_skipped(self):
-        """Files with .pem extension must be excluded."""
-        from tools.environments.daytona import DaytonaEnvironment
-
-        assert ".pem" in DaytonaEnvironment._CWD_EXCLUDE_FILES
+        assert DaytonaEnvironment._is_cwd_excluded_file(fname)
 
     def test_git_directory_skipped(self):
         """The .git directory must be excluded from directory traversal."""
@@ -372,6 +399,12 @@ class TestDaytonaSyncCwdExclusionLogic:
         from tools.environments.daytona import DaytonaEnvironment
 
         assert ".daytona" in DaytonaEnvironment._CWD_EXCLUDE_DIRS
+
+    def test_docker_directory_skipped(self):
+        """The .docker directory must be excluded to avoid uploading config.json auth."""
+        from tools.environments.daytona import DaytonaEnvironment
+
+        assert ".docker" in DaytonaEnvironment._CWD_EXCLUDE_DIRS
 
     def test_no_duplicate_exclude_dirs(self):
         """_CWD_EXCLUDE_DIRS must not contain duplicates."""
@@ -503,11 +536,20 @@ class TestDaytonaSyncCwdExclusionBehavior:
         (tmp_path / ".git" / "objects" / "ab" / "cd1234").write_bytes(b"git object")
         (tmp_path / "node_modules" / "pkg").mkdir(parents=True)
         (tmp_path / "node_modules" / "pkg" / "index.js").write_text("// excluded")
+        (tmp_path / ".docker").mkdir()
+        (tmp_path / ".docker" / "config.json").write_text('{"auths": {}}')
 
         # Create excluded files
         (tmp_path / ".env").write_text("SECRET=123")
+        (tmp_path / ".env.staging").write_text("STAGING_SECRET=123")
+        (tmp_path / ".env.test").write_text("TEST_SECRET=123")
+        (tmp_path / ".git-credentials").write_text("https://token@example.com")
+        (tmp_path / ".dockercfg").write_text('{"auths": {}}')
         (tmp_path / "server.pem").write_text("PEM DATA")
         (tmp_path / "id_rsa.key").write_text("KEY DATA")
+        (tmp_path / "server.crt").write_text("CERT DATA")
+        (tmp_path / "client.cert").write_text("CERT DATA")
+        (tmp_path / "bundle.pfx").write_text("PFX DATA")
 
         # Create a .venv directory (also excluded)
         (tmp_path / ".venv" / "bin").mkdir(parents=True)

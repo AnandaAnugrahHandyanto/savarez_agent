@@ -270,135 +270,6 @@ class TestDaytonaStatusLifecycle:
 # Doctor tests — focused on Daytona-specific validation logic
 # ---------------------------------------------------------------------------
 
-class TestDaytonaDoctorSnapshotValidation:
-    """Doctor catches snapshot-mode configuration issues."""
-
-    def test_snapshot_mode_with_snapshot_set_ok(self, monkeypatch, tmp_path):
-        """Snapshot mode with a snapshot set should produce no issues."""
-        monkeypatch.setenv("TERMINAL_ENV", "daytona")
-        monkeypatch.setenv("DAYTONA_API_KEY", "dcs-test-key")
-        monkeypatch.setenv("TERMINAL_DAYTONA_CREATE_MODE", "snapshot")
-        monkeypatch.setenv("TERMINAL_DAYTONA_SNAPSHOT", "my-snap")
-
-        # Verify snapshot requirement logic directly
-        terminal_env = os.getenv("TERMINAL_ENV", "local")
-        assert terminal_env == "daytona"
-        create_mode = os.getenv("TERMINAL_DAYTONA_CREATE_MODE") or "image"
-        snapshot = os.getenv("TERMINAL_DAYTONA_SNAPSHOT", "").strip()
-        assert create_mode == "snapshot"
-        assert snapshot  # Should be truthy — no issue
-
-    def test_snapshot_mode_without_snapshot_shows_error(self, monkeypatch, tmp_path):
-        """Snapshot mode without snapshot set should flag an issue."""
-        monkeypatch.setenv("TERMINAL_ENV", "daytona")
-        monkeypatch.setenv("TERMINAL_DAYTONA_CREATE_MODE", "snapshot")
-        monkeypatch.delenv("TERMINAL_DAYTONA_SNAPSHOT", raising=False)
-
-        create_mode = os.getenv("TERMINAL_DAYTONA_CREATE_MODE") or "image"
-        snapshot = os.getenv("TERMINAL_DAYTONA_SNAPSHOT", "").strip()
-        assert create_mode == "snapshot"
-        assert not snapshot  # Empty — should trigger issue
-
-    def test_invalid_create_mode(self, monkeypatch, tmp_path):
-        """Invalid create_mode should be caught."""
-        monkeypatch.setenv("TERMINAL_ENV", "daytona")
-        monkeypatch.setenv("TERMINAL_DAYTONA_CREATE_MODE", "bogus")
-
-        create_mode = os.getenv("TERMINAL_DAYTONA_CREATE_MODE") or "image"
-        assert create_mode not in ("image", "snapshot")  # Should trigger issue
-
-    def test_image_mode_no_snapshot_needed(self, monkeypatch, tmp_path):
-        """Image mode should not require a snapshot."""
-        monkeypatch.setenv("TERMINAL_ENV", "daytona")
-        monkeypatch.setenv("TERMINAL_DAYTONA_CREATE_MODE", "image")
-        monkeypatch.delenv("TERMINAL_DAYTONA_SNAPSHOT", raising=False)
-
-        create_mode = os.getenv("TERMINAL_DAYTONA_CREATE_MODE") or "image"
-        assert create_mode == "image"  # No snapshot needed
-
-
-class TestDaytonaDoctorJSONValidation:
-    """Doctor validates JSON env vars for labels, env_vars, volume_mounts."""
-
-    def test_valid_labels_json(self):
-        import json
-        raw = '{"env": "dev", "team": "backend"}'
-        parsed = json.loads(raw)
-        assert isinstance(parsed, dict)
-        assert len(parsed) == 2
-
-    def test_invalid_labels_json_not_object(self):
-        import json
-        raw = '["not", "a", "dict"]'
-        parsed = json.loads(raw)
-        assert not isinstance(parsed, dict)  # Should trigger warning
-
-    def test_valid_volume_mounts_json(self):
-        import json
-        raw = '[{"volume_id": "vol-123", "mount_path": "/mnt/data"}]'
-        parsed = json.loads(raw)
-        assert isinstance(parsed, list)
-        assert len(parsed) == 1
-
-    def test_invalid_volume_mounts_json_not_array(self):
-        import json
-        raw = '{"volume_id": "vol-123", "mount_path": "/mnt/data"}'
-        parsed = json.loads(raw)
-        assert not isinstance(parsed, list)  # Should trigger warning
-
-    def test_valid_env_vars_json(self):
-        import json
-        raw = '{"API_KEY": "secret", "DEBUG": "true"}'
-        parsed = json.loads(raw)
-        assert isinstance(parsed, dict)
-        assert len(parsed) == 2
-
-    def test_invalid_env_vars_json_not_object(self):
-        import json
-        raw = '42'
-        parsed = json.loads(raw)
-        assert not isinstance(parsed, dict)  # Should trigger warning
-
-    def test_invalid_json_syntax(self):
-        import json
-        raw = '{invalid json'
-        with pytest.raises(json.JSONDecodeError):
-            json.loads(raw)  # Doctor should catch this
-
-
-class TestDaytonaDoctorDiskWarning:
-    """Doctor warns when disk exceeds 10 GiB guidance."""
-
-    def test_disk_over_10gb_flags_warning(self):
-        disk_mb = "20480"  # 20 GiB
-        disk_gb = int(disk_mb) / 1024
-        assert disk_gb > 10  # Should trigger warning
-
-    def test_disk_at_10gb_no_warning(self):
-        disk_mb = "10240"  # 10 GiB
-        disk_gb = int(disk_mb) / 1024
-        assert disk_gb == 10  # At boundary, no warning
-
-    def test_disk_under_10gb_no_warning(self):
-        disk_mb = "5120"  # 5 GiB
-        disk_gb = int(disk_mb) / 1024
-        assert disk_gb < 10  # No warning
-
-
-class TestDaytonaDoctorLanguage:
-    """Doctor validates language field."""
-
-    def test_common_languages_accepted(self):
-        valid_languages = {"", "python", "javascript", "typescript", "go", "rust", "java", "csharp", "ruby"}
-        for lang in ["python", "javascript", "typescript", "go", "rust", "go"]:
-            assert lang in valid_languages
-
-    def test_unusual_language_flagged(self):
-        valid_languages = {"", "python", "javascript", "typescript", "go", "rust", "java", "csharp", "ruby"}
-        unusual = "brainfuck"
-        assert unusual not in valid_languages  # Should trigger warning
-
-
 class TestDaytonaDoctorConfigBackedPolish:
     """Doctor should validate Daytona settings from config.yaml, not env-only."""
 
@@ -447,6 +318,41 @@ class TestDaytonaDoctorConfigBackedPolish:
         )
 
         assert "Snapshot mode requires daytona_snapshot" in output
+
+    def test_config_backend_daytona_invalid_create_mode_is_reported(self, monkeypatch, tmp_path):
+        output = self._run_doctor_with_config(
+            monkeypatch,
+            tmp_path,
+            {"daytona_create_mode": "bogus"},
+        )
+
+        assert "Invalid daytona_create_mode" in output
+        assert "must be 'image' or 'snapshot'" in output
+
+    def test_config_backend_daytona_invalid_json_types_are_reported(self, monkeypatch, tmp_path):
+        output = self._run_doctor_with_config(
+            monkeypatch,
+            tmp_path,
+            {
+                "daytona_labels": ["not", "an", "object"],
+                "daytona_env_vars": 42,
+                "daytona_volume_mounts": {"volume_id": "vol-id"},
+            },
+        )
+
+        assert "daytona_labels must be a JSON object" in output
+        assert "daytona_env_vars must be a JSON object" in output
+        assert "daytona_volume_mounts must be a JSON array" in output
+
+    def test_config_backend_daytona_unusual_language_warns(self, monkeypatch, tmp_path):
+        output = self._run_doctor_with_config(
+            monkeypatch,
+            tmp_path,
+            {"daytona_language": "brainfuck"},
+        )
+
+        assert "Unusual Daytona language" in output
+        assert "brainfuck" in output
 
     def test_config_backed_json_lifecycle_sync_and_disk_guidance_show(self, monkeypatch, tmp_path):
         output = self._run_doctor_with_config(

@@ -278,14 +278,17 @@ class DaytonaEnvironment(BaseEnvironment):
                     except (ImportError, AttributeError):
                         continue
 
-                if VolumeMount is not None:
-                    create_params_kwargs["volumes"] = [
-                        VolumeMount(**vm) if isinstance(vm, dict) else vm
-                        for vm in volume_mounts
-                    ]
-                else:
-                    # Fallback: pass raw dicts if VolumeMount is unavailable
-                    create_params_kwargs["volumes"] = volume_mounts
+                if VolumeMount is None:
+                    raise ImportError(
+                        "Installed Daytona SDK does not expose VolumeMount; "
+                        "upgrade the daytona package or remove "
+                        "daytona_volume_mounts"
+                    )
+
+                create_params_kwargs["volumes"] = [
+                    VolumeMount(**vm) if isinstance(vm, dict) else vm
+                    for vm in volume_mounts
+                ]
 
             if create_mode == "snapshot":
                 if CreateSandboxFromSnapshotParams is None:
@@ -423,6 +426,7 @@ class DaytonaEnvironment(BaseEnvironment):
         ".gnupg",
         ".kube",
         ".ssh",
+        ".docker",
         # Daytona-specific: avoid recursive sync
         ".daytona",
     )
@@ -430,25 +434,45 @@ class DaytonaEnvironment(BaseEnvironment):
     # Individual file patterns (basename matches) that are never synced.
     # Covers secrets, credentials, and large binary artifacts.
     _CWD_EXCLUDE_FILES: tuple[str, ...] = (
-        ".env",
-        ".env.local",
-        ".env.production",
-        ".env.development",
         ".npmrc",
         ".pypirc",
         ".netrc",
+        ".git-credentials",
+        ".dockercfg",
         "credentials.json",
         "id_rsa",
         "id_ed25519",
+    )
+
+    _CWD_EXCLUDE_EXTENSIONS: tuple[str, ...] = (
         ".pem",
         ".key",
         ".p12",
+        ".pfx",
+        ".crt",
+        ".cert",
     )
 
     # Maximum total size of the CWD sync payload (bytes). Projects exceeding
     # this are not uploaded — the sandbox starts with /workspace empty and
     # the user must manage their own file transfer.
     _CWD_MAX_BYTES: int = 100 * 1024 * 1024  # 100 MiB
+
+    @classmethod
+    def _is_cwd_excluded_file(cls, fname: str) -> bool:
+        """Return True when a CWD-sync basename must never be uploaded."""
+        lower_fname = fname.lower()
+        if lower_fname.startswith(".env"):
+            return True
+        if lower_fname in cls._CWD_EXCLUDE_FILES:
+            return True
+        if (
+            lower_fname.startswith("secret")
+            or ".secret." in lower_fname
+            or lower_fname.endswith((".secret", ".secrets", ".secrets.yaml", ".secrets.yml"))
+        ):
+            return True
+        return lower_fname.endswith(cls._CWD_EXCLUDE_EXTENSIONS)
 
     def _sync_cwd_to_sandbox(self) -> None:
         """Sync the host CWD into /workspace in the Daytona sandbox.
@@ -501,17 +525,7 @@ class DaytonaEnvironment(BaseEnvironment):
 
             for fname in filenames:
                 # Skip excluded file patterns
-                if fname in self._CWD_EXCLUDE_FILES:
-                    continue
-                lower_fname = fname.lower()
-                if (
-                    lower_fname.startswith("secret")
-                    or ".secret." in lower_fname
-                    or lower_fname.endswith((".secret", ".secrets", ".secrets.yaml", ".secrets.yml"))
-                ):
-                    continue
-                # Skip files with excluded extensions
-                if any(fname.endswith(ext) for ext in (".pem", ".key", ".p12", ".pfx")):
+                if self._is_cwd_excluded_file(fname):
                     continue
 
                 local_path = os.path.join(dirpath, fname)
