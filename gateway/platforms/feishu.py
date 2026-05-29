@@ -5062,7 +5062,7 @@ def _probe_bot_http(app_id: str, app_secret: str, domain: str) -> Optional[dict]
                 "Content-Type": "application/json",
             },
         )
-        with urlopen(bot_req, timeout=_ONBOARD_REQUEST_TIMEOUT_S) as resp:
+        with urlopen(bot_req, timeout=_ONBOARD_REQUEST_TIMEOUT_S) as resp:  # SSRF: add IP block check
             bot_res = json.loads(resp.read().decode("utf-8"))
 
         return _parse_bot_response(bot_res)
