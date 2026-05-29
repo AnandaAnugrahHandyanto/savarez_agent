@@ -49,6 +49,7 @@ from typing import Any, Dict, List, Optional
 from hermes_cli.windows_env import (
     WINDOWS_ESSENTIAL_ENV_VARS as _SHARED_WINDOWS_ESSENTIAL_ENV_VARS,
 )
+from tools.thread_context import propagate_context_to_thread
 
 # Availability gate.  On Windows we fall back to loopback TCP for the
 # sandbox RPC transport (AF_UNIX is unreliable on Windows Python) — see
