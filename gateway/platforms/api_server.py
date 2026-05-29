@@ -16,7 +16,7 @@ Exposes an HTTP server with endpoints:
 - POST /api/sessions/{session_id}/chat[/stream] — chat with a persisted session
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}           — retrieve current run status
-- GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
+- GET  /v1/runs/{run_id}/events    — replayable SSE stream or JSON poll of structured lifecycle events
 - POST /v1/runs/{run_id}/approval — resolve a pending run approval
 - POST /v1/runs/{run_id}/stop       — interrupt a running agent
 - GET  /health                     — health check
@@ -713,6 +713,9 @@ class APIServerAdapter(BasePlatformAdapter):
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
         # Pollable run status for dashboards and external control-plane UIs.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
+        # Bounded per-run event log for reconnect/polling clients.
+        self._run_event_logs: Dict[str, List[Dict[str, Any]]] = {}
+        self._run_event_next_seq: Dict[str, int] = {}
         # Active approval session key for each run_id.  The approval core
         # resolves requests by session key, while API clients address the
         # in-flight run by run_id.
@@ -1103,6 +1106,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_submission": True,
                 "run_status": True,
                 "run_events_sse": True,
+                "run_events_polling": True,
+                "run_events_after_cursor": True,
                 "run_stop": True,
                 "run_approval_response": True,
                 "tool_progress_events": True,
@@ -3449,6 +3454,7 @@ class APIServerAdapter(BasePlatformAdapter):
     _MAX_CONCURRENT_RUNS = 10  # Prevent unbounded resource allocation
     _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
     _RUN_STATUS_TTL = 3600  # seconds to retain terminal run status for polling
+    _MAX_RUN_EVENTS = 1000  # bounded reconnect log per run
 
     def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, Any]:
         """Update pollable run status without exposing private agent objects."""
@@ -3465,21 +3471,51 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_statuses[run_id] = current
         return current
 
-    def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
-        """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
-        def _push(event: Dict[str, Any]) -> None:
-            self._set_run_status(
-                run_id,
-                self._run_statuses.get(run_id, {}).get("status", "running"),
-                last_event=event.get("event"),
-            )
-            q = self._run_streams.get(run_id)
-            if q is None:
-                return
+    def _record_run_event(self, run_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
+        """Append a structured run event and assign a reconnect cursor."""
+        seq = self._run_event_next_seq.get(run_id, 1)
+        recorded = dict(event)
+        recorded.setdefault("run_id", run_id)
+        recorded.setdefault("timestamp", time.time())
+        recorded["seq"] = seq
+        self._run_event_next_seq[run_id] = seq + 1
+
+        log = self._run_event_logs.setdefault(run_id, [])
+        log.append(recorded)
+        if len(log) > self._MAX_RUN_EVENTS:
+            del log[: len(log) - self._MAX_RUN_EVENTS]
+
+        self._set_run_status(
+            run_id,
+            self._run_statuses.get(run_id, {}).get("status", "running"),
+            last_event=recorded.get("event"),
+            last_event_seq=seq,
+        )
+        return recorded
+
+    def _queue_run_event(
+        self,
+        run_id: str,
+        event: Dict[str, Any],
+        loop: Optional["asyncio.AbstractEventLoop"] = None,
+    ) -> Dict[str, Any]:
+        """Record a run event and fan it out to the live SSE queue when present."""
+        recorded = self._record_run_event(run_id, event)
+        q = self._run_streams.get(run_id)
+        if q is not None:
             try:
-                loop.call_soon_threadsafe(q.put_nowait, event)
+                if loop is not None:
+                    loop.call_soon_threadsafe(q.put_nowait, recorded)
+                else:
+                    q.put_nowait(recorded)
             except Exception:
                 pass
+        return recorded
+
+    def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
+        """Return a tool_progress_callback that pushes structured events to the run event log/SSE queue."""
+        def _push(event: Dict[str, Any]) -> None:
+            self._queue_run_event(run_id, event, loop)
 
         def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
             ts = time.time()
@@ -3606,15 +3642,16 @@ class APIServerAdapter(BasePlatformAdapter):
         def _text_cb(delta: Optional[str]) -> None:
             if delta is None:
                 return
-            try:
-                loop.call_soon_threadsafe(q.put_nowait, {
+            self._queue_run_event(
+                run_id,
+                {
                     "event": "message.delta",
                     "run_id": run_id,
                     "timestamp": time.time(),
                     "delta": delta,
-                })
-            except Exception:
-                pass
+                },
+                loop,
+            )
 
         self._set_run_status(
             run_id,
@@ -3644,15 +3681,13 @@ class APIServerAdapter(BasePlatformAdapter):
                         "timestamp": time.time(),
                         "choices": ["once", "session", "always", "deny"],
                     })
+                    recorded = self._queue_run_event(run_id, event, loop)
                     self._set_run_status(
                         run_id,
                         "waiting_for_approval",
                         last_event="approval.request",
+                        last_event_seq=recorded["seq"],
                     )
-                    try:
-                        loop.call_soon_threadsafe(q.put_nowait, event)
-                    except Exception:
-                        pass
 
                 def _run_sync():
                     from gateway.session_context import clear_session_vars, set_session_vars
@@ -3708,7 +3743,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 # block below never fires — issue #15561).
                 if isinstance(result, dict) and result.get("failed"):
                     error_msg = result.get("error") or "agent run failed"
-                    q.put_nowait({
+                    failed_event = self._queue_run_event(run_id, {
                         "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -3719,10 +3754,11 @@ class APIServerAdapter(BasePlatformAdapter):
                         "failed",
                         error=error_msg,
                         last_event="run.failed",
+                        last_event_seq=failed_event["seq"],
                     )
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
-                    q.put_nowait({
+                    completed_event = self._queue_run_event(run_id, {
                         "event": "run.completed",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -3735,6 +3771,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         output=final_response,
                         usage=usage,
                         last_event="run.completed",
+                        last_event_seq=completed_event["seq"],
                     )
             except asyncio.CancelledError:
                 self._set_run_status(
@@ -3743,7 +3780,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     last_event="run.cancelled",
                 )
                 try:
-                    q.put_nowait({
+                    self._queue_run_event(run_id, {
                         "event": "run.cancelled",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -3760,7 +3797,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     last_event="run.failed",
                 )
                 try:
-                    q.put_nowait({
+                    self._queue_run_event(run_id, {
                         "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -3780,11 +3817,15 @@ class APIServerAdapter(BasePlatformAdapter):
                     unregister_gateway_notify(approval_session_key)
                 except Exception:
                     pass
-                # Sentinel: signal SSE stream to close
+                # Sentinel: signal any live SSE stream to close.  The bounded
+                # event log above remains available for reconnect/polling, so
+                # a completed run should not keep a live-stream concurrency slot.
                 try:
                     q.put_nowait(None)
                 except Exception:
                     pass
+                self._run_streams.pop(run_id, None)
+                self._run_streams_created.pop(run_id, None)
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
@@ -3823,22 +3864,42 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response(status)
 
     async def _handle_run_events(self, request: "web.Request") -> "web.StreamResponse":
-        """GET /v1/runs/{run_id}/events — SSE stream of structured agent lifecycle events."""
+        """GET /v1/runs/{run_id}/events — replayable SSE stream or JSON poll."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
 
         run_id = request.match_info["run_id"]
+        try:
+            after = int(request.query.get("after", "0") or 0)
+        except (TypeError, ValueError):
+            return web.json_response(
+                _openai_error("Invalid 'after' cursor", code="invalid_cursor"),
+                status=400,
+            )
+        after = max(after, 0)
+        stream = _coerce_request_bool(request.query.get("stream"), default=True)
 
-        # Allow subscribing slightly before the run is registered (race condition window)
+        # Allow subscribing slightly before the run is registered (race condition window).
         for _ in range(20):
-            if run_id in self._run_streams:
+            if run_id in self._run_streams or run_id in self._run_statuses or run_id in self._run_event_logs:
                 break
             await asyncio.sleep(0.05)
         else:
             return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
 
-        q = self._run_streams[run_id]
+        events = [event for event in self._run_event_logs.get(run_id, []) if int(event.get("seq", 0)) > after]
+        last_seq = self._run_event_next_seq.get(run_id, 1) - 1
+        if not stream:
+            return web.json_response({
+                "object": "list",
+                "run_id": run_id,
+                "data": events,
+                "last_seq": last_seq,
+                "has_more": False,
+            })
+
+        q = self._run_streams.get(run_id)
 
         response = web.StreamResponse(
             status=200,
@@ -3850,7 +3911,18 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         await response.prepare(request)
 
+        sent_seq = after
         try:
+            for event in events:
+                sent_seq = max(sent_seq, int(event.get("seq", 0) or 0))
+                payload = f"data: {json.dumps(event)}\n\n"
+                await response.write(payload.encode())
+
+            status = self._run_statuses.get(run_id, {})
+            if q is None or status.get("status") in {"completed", "failed", "cancelled"}:
+                await response.write(b": stream closed\n\n")
+                return response
+
             while True:
                 try:
                     event = await asyncio.wait_for(q.get(), timeout=30.0)
@@ -3861,6 +3933,10 @@ class APIServerAdapter(BasePlatformAdapter):
                     # Run finished — send final SSE comment and close
                     await response.write(b": stream closed\n\n")
                     break
+                event_seq = int(event.get("seq", 0) or 0)
+                if event_seq and event_seq <= sent_seq:
+                    continue
+                sent_seq = max(sent_seq, event_seq)
                 payload = f"data: {json.dumps(event)}\n\n"
                 await response.write(payload.encode())
         except Exception as exc:
@@ -3943,7 +4019,7 @@ class APIServerAdapter(BasePlatformAdapter):
         q = self._run_streams.get(run_id)
         if q is not None:
             try:
-                q.put_nowait({
+                self._queue_run_event(run_id, {
                     "event": "approval.responded",
                     "run_id": run_id,
                     "timestamp": time.time(),
@@ -4034,6 +4110,8 @@ class APIServerAdapter(BasePlatformAdapter):
             ]
             for run_id in stale_statuses:
                 self._run_statuses.pop(run_id, None)
+                self._run_event_logs.pop(run_id, None)
+                self._run_event_next_seq.pop(run_id, None)
 
     # ------------------------------------------------------------------
     # BasePlatformAdapter interface

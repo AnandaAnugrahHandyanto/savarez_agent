@@ -1213,10 +1213,18 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # Telegram
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
     if telegram_token:
-        if Platform.TELEGRAM not in config.platforms:
-            config.platforms[Platform.TELEGRAM] = PlatformConfig()
-        config.platforms[Platform.TELEGRAM].enabled = True
-        config.platforms[Platform.TELEGRAM].token = telegram_token
+        # Respect an explicit YAML/config disable. This Mac keeps Telegram tokens in
+        # .env for parity/history, but the VPS is the 24/7 Telegram owner; a local
+        # Desktop/API gateway must not silently re-enable Telegram from env alone.
+        telegram_cfg = config.platforms.get(Platform.TELEGRAM)
+        telegram_explicitly_disabled = telegram_cfg is not None and telegram_cfg.enabled is False
+        if not telegram_explicitly_disabled:
+            if Platform.TELEGRAM not in config.platforms:
+                config.platforms[Platform.TELEGRAM] = PlatformConfig()
+            config.platforms[Platform.TELEGRAM].enabled = True
+            config.platforms[Platform.TELEGRAM].token = telegram_token
+        elif telegram_cfg is not None:
+            telegram_cfg.token = telegram_token
     
     # Reply threading mode for Telegram (off/first/all)
     telegram_reply_mode = os.getenv("TELEGRAM_REPLY_TO_MODE", "").lower()
