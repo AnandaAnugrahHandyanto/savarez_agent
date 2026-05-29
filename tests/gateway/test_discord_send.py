@@ -160,6 +160,39 @@ async def test_send_does_not_retry_on_unrelated_errors():
     assert send_calls[0]["reference"] is reference_obj
 
 
+@pytest.mark.asyncio
+async def test_send_bundles_media_with_text(tmp_path):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    media_path = tmp_path / "attach.txt"
+    media_path.write_text("hello attachment", encoding="utf-8")
+
+    sent_msg = SimpleNamespace(id=5678)
+    send_calls = []
+
+    async def fake_send(*, content, reference=None, files=None):
+        send_calls.append({"content": content, "reference": reference, "files": files})
+        return sent_msg
+
+    channel = SimpleNamespace(
+        fetch_message=AsyncMock(),
+        send=AsyncMock(side_effect=fake_send),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", "hello", media_files=[(str(media_path), False)])
+
+    assert result.success is True
+    assert result.message_id == "5678"
+    assert channel.send.await_count == 1
+    assert send_calls[0]["files"] is not None
+    assert len(send_calls[0]["files"]) == 1
+    assert send_calls[0]["content"] == "hello"
+
+
 # ---------------------------------------------------------------------------
 # Forum channel tests
 # ---------------------------------------------------------------------------

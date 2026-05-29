@@ -487,6 +487,7 @@ async def _send_via_adapter(
          the runner weakref is ``None``).
       3. A descriptive error explaining both options.
     """
+    platform_name = platform.value if hasattr(platform, "value") else str(platform)
     runner = None
     try:
         from gateway.run import _gateway_runner_ref
@@ -502,7 +503,10 @@ async def _send_via_adapter(
         if adapter is not None:
             try:
                 metadata = {"thread_id": thread_id} if thread_id else None
-                result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
+                kwargs = {"chat_id": chat_id, "content": chunk, "metadata": metadata}
+                if platform_name == "discord":
+                    kwargs["media_files"] = media_files
+                result = await adapter.send(**kwargs)
             except asyncio.CancelledError:
                 raise
             except Exception as e:

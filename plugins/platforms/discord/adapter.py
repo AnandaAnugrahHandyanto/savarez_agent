@@ -1407,7 +1407,8 @@ class DiscordAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        media_files: Optional[list] = None,
     ) -> SendResult:
         """Send a message to a Discord channel or thread.
 
@@ -1421,6 +1422,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
+            media_files = media_files or []
             # Determine target channel: thread_id in metadata takes precedence.
             thread_id = None
             if metadata and metadata.get("thread_id"):
@@ -1443,7 +1445,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Forum channels reject channel.send() — create a thread post instead.
             if self._is_forum_parent(channel):
-                return await self._send_to_forum(channel, content)
+                return await self._send_to_forum(channel, content, media_files=media_files)
 
             # Format and split message if needed
             formatted = self.format_message(content)
@@ -1451,6 +1453,16 @@ class DiscordAdapter(BasePlatformAdapter):
 
             message_ids = []
             reference = None
+            files = None
+            if media_files:
+                files = []
+                for media_path, _is_voice in media_files:
+                    if not os.path.exists(media_path):
+                        logger.warning("[%s] Media file not found, skipping: %s", self.name, media_path)
+                        continue
+                    files.append(discord.File(media_path, filename=os.path.basename(media_path)))
+                if not files:
+                    files = None
 
             if reply_to and self._reply_to_mode != "off":
                 try:
@@ -1468,10 +1480,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
                 try:
-                    msg = await channel.send(
-                        content=chunk,
-                        reference=chunk_reference,
-                    )
+                    send_kwargs: Dict[str, Any] = {"content": chunk, "reference": chunk_reference}
+                    if files:
+                        send_kwargs["files"] = files
+                    msg = await channel.send(**send_kwargs)
                 except Exception as e:
                     err_text = str(e)
                     if (
@@ -1490,10 +1502,10 @@ class DiscordAdapter(BasePlatformAdapter):
                             reply_to,
                         )
                         reference = None
-                        msg = await channel.send(
-                            content=chunk,
-                            reference=None,
-                        )
+                        retry_kwargs: Dict[str, Any] = {"content": chunk, "reference": None}
+                        if files:
+                            retry_kwargs["files"] = files
+                        msg = await channel.send(**retry_kwargs)
                     else:
                         raise
                 message_ids.append(str(msg.id))
@@ -1514,7 +1526,7 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
-    async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
+    async def _send_to_forum(self, forum_channel: Any, content: str, media_files: Optional[list] = None) -> SendResult:
         """Create a thread post in a forum channel with the message as starter content.
 
         Forum channels (type 15) don't support direct messages.  Instead we
@@ -1533,11 +1545,22 @@ class DiscordAdapter(BasePlatformAdapter):
 
         starter_content = chunks[0] if chunks else thread_name
 
+        files = None
+        if media_files:
+            files = []
+            for media_path, _is_voice in media_files:
+                if not os.path.exists(media_path):
+                    logger.warning("[%s] Media file not found, skipping: %s", self.name, media_path)
+                    continue
+                files.append(discord.File(media_path, filename=os.path.basename(media_path)))
+            if not files:
+                files = None
+
         try:
-            thread = await forum_channel.create_thread(
-                name=thread_name,
-                content=starter_content,
-            )
+            thread_kwargs: Dict[str, Any] = {"name": thread_name, "content": starter_content}
+            if files:
+                thread_kwargs["files"] = files
+            thread = await forum_channel.create_thread(**thread_kwargs)
         except Exception as e:
             logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
             return SendResult(success=False, error=f"Forum thread creation failed: {e}")
@@ -5948,38 +5971,69 @@ async def _standalone_send(
             url = f"https://discord.com/api/v10/channels/{chat_id}/messages"
 
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
-            # Send text message (skip if empty and media is present)
-            if message.strip() or not media_files:
-                async with session.post(url, headers=json_headers, json={"content": message}, **_req_kw) as resp:
-                    if resp.status not in {200, 201}:
-                        body = await resp.text()
-                        return {"error": f"Discord API error ({resp.status}): {body}"}
-                    last_data = await resp.json()
-
-            # Send each media file as a separate multipart upload
+            valid_media = []
             for media_path, _is_voice in media_files:
                 if not os.path.exists(media_path):
                     warning = f"Media file not found, skipping: {media_path}"
                     logger.warning(warning)
                     warnings.append(warning)
                     continue
+                valid_media.append(media_path)
+
+            if valid_media:
+                media_bundle_failed = False
                 try:
                     form = aiohttp.FormData()
-                    filename = os.path.basename(media_path)
-                    with open(media_path, "rb") as f:
-                        form.add_field("files[0]", f, filename=filename)
-                        async with session.post(url, headers=auth_headers, data=form, **_req_kw) as resp:
-                            if resp.status not in {200, 201}:
-                                body = await resp.text()
-                                warning = _standalone_sanitize_error(f"Failed to send media {media_path}: Discord API error ({resp.status}): {body}")
-                                logger.error(warning)
-                                warnings.append(warning)
-                                continue
+                    attachments_meta = [
+                        {"id": str(idx), "filename": os.path.basename(path)}
+                        for idx, path in enumerate(valid_media)
+                    ]
+                    form.add_field(
+                        "payload_json",
+                        json.dumps({"content": message, "attachments": attachments_meta}),
+                        content_type="application/json",
+                    )
+                    for idx, media_path in enumerate(valid_media):
+                        with open(media_path, "rb") as f:
+                            form.add_field(
+                                f"files[{idx}]",
+                                f.read(),
+                                filename=os.path.basename(media_path),
+                            )
+                    async with session.post(url, headers=auth_headers, data=form, **_req_kw) as resp:
+                        if resp.status not in {200, 201}:
+                            body = await resp.text()
+                            warning = _standalone_sanitize_error(
+                                f"Discord API error ({resp.status}): {body}"
+                            )
+                            logger.error(warning)
+                            warnings.append(warning)
+                            media_bundle_failed = True
+                        else:
                             last_data = await resp.json()
                 except Exception as e:
-                    warning = _standalone_sanitize_error(f"Failed to send media {media_path}: {e}")
+                    warning = _standalone_sanitize_error(f"Failed to send Discord attachment bundle: {e}")
                     logger.error(warning)
                     warnings.append(warning)
+                    media_bundle_failed = True
+
+                if media_bundle_failed and message.strip():
+                    async with session.post(url, headers=json_headers, json={"content": message}, **_req_kw) as resp:
+                        if resp.status not in {200, 201}:
+                            body = await resp.text()
+                            warning = _standalone_sanitize_error(
+                                f"Discord fallback text send failed ({resp.status}): {body}"
+                            )
+                            logger.error(warning)
+                            warnings.append(warning)
+                        else:
+                            last_data = await resp.json()
+            elif message.strip() or not media_files:
+                async with session.post(url, headers=json_headers, json={"content": message}, **_req_kw) as resp:
+                    if resp.status not in {200, 201}:
+                        body = await resp.text()
+                        return {"error": f"Discord API error ({resp.status}): {body}"}
+                    last_data = await resp.json()
 
         if last_data is None:
             error = "No deliverable text or media remained after processing"

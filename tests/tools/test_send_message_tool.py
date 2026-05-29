@@ -396,7 +396,7 @@ class TestSendMessageTool:
                     {
                         "action": "send",
                         "target": "telegram:12345",
-                        "message": f"hello\nMEDIA:{secret}",
+                        "message": f"hello\nMEDIA:/{secret.as_posix()}",
                     }
                 )
             )
@@ -1349,7 +1349,7 @@ class TestSendDiscordMedia:
         return mock_session, mock_resp
 
     def test_text_and_media_sends_both(self, tmp_path):
-        """Text message is sent first, then each media file as multipart."""
+        """Text and media are bundled into one multipart Discord message."""
         img = tmp_path / "photo.png"
         img.write_bytes(b"\x89PNG fake image data")
 
@@ -1361,8 +1361,11 @@ class TestSendDiscordMedia:
 
         assert result["success"] is True
         assert result["message_id"] == "msg999"
-        # Two POSTs: one text JSON, one multipart upload
-        assert mock_session.post.call_count == 2
+        # One multipart POST bundles text and media
+        assert mock_session.post.call_count == 1
+        post_kwargs = mock_session.post.call_args.kwargs
+        assert post_kwargs["data"] is not None
+        assert "json" not in post_kwargs
 
     def test_media_only_skips_text_post(self, tmp_path):
         """When message is empty and media is present, text POST is skipped."""
@@ -1394,27 +1397,28 @@ class TestSendDiscordMedia:
         assert mock_session.post.call_count == 1
 
     def test_media_upload_failure_collected_as_warning(self, tmp_path):
-        """Failed media upload becomes a warning, text still succeeds."""
+        """Failed bundled media upload becomes a warning, text fallback still succeeds."""
         img = tmp_path / "photo.png"
         img.write_bytes(b"\x89PNG fake image data")
 
-        # First call (text) succeeds, second call (media) returns 413
-        text_resp = MagicMock()
-        text_resp.status = 200
-        text_resp.json = AsyncMock(return_value={"id": "txt_ok"})
-        text_resp.__aenter__ = AsyncMock(return_value=text_resp)
-        text_resp.__aexit__ = AsyncMock(return_value=None)
-
+        # First POST is the bundled attachment upload and fails with 413.
+        # The standalone sender then falls back to a plain text POST.
         media_resp = MagicMock()
         media_resp.status = 413
         media_resp.text = AsyncMock(return_value="Request Entity Too Large")
         media_resp.__aenter__ = AsyncMock(return_value=media_resp)
         media_resp.__aexit__ = AsyncMock(return_value=None)
 
+        text_resp = MagicMock()
+        text_resp.status = 200
+        text_resp.json = AsyncMock(return_value={"id": "txt_ok"})
+        text_resp.__aenter__ = AsyncMock(return_value=text_resp)
+        text_resp.__aexit__ = AsyncMock(return_value=None)
+
         mock_session = MagicMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=None)
-        mock_session.post = MagicMock(side_effect=[text_resp, media_resp])
+        mock_session.post = MagicMock(side_effect=[media_resp, text_resp])
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
             result = asyncio.run(
@@ -1425,6 +1429,12 @@ class TestSendDiscordMedia:
         assert result["message_id"] == "txt_ok"
         assert "warnings" in result
         assert any("413" in w for w in result["warnings"])
+        assert mock_session.post.call_count == 2
+        first_call = mock_session.post.call_args_list[0].kwargs
+        second_call = mock_session.post.call_args_list[1].kwargs
+        assert first_call.get("data") is not None
+        assert "json" not in first_call
+        assert second_call.get("json") == {"content": "hello"}
 
     def test_no_text_no_media_returns_error(self):
         """Empty text with no media returns error dict."""
@@ -1438,8 +1448,8 @@ class TestSendDiscordMedia:
         # (the "skip text if media present" condition isn't met)
         assert result["success"] is True
 
-    def test_multiple_media_files_uploaded_separately(self, tmp_path):
-        """Each media file gets its own multipart POST."""
+    def test_multiple_media_files_uploaded_in_one_bundle(self, tmp_path):
+        """Multiple media files are bundled into one multipart POST."""
         img1 = tmp_path / "a.png"
         img1.write_bytes(b"img1")
         img2 = tmp_path / "b.jpg"
@@ -1454,8 +1464,9 @@ class TestSendDiscordMedia:
             )
 
         assert result["success"] is True
-        # 1 text POST + 2 media POSTs = 3
-        assert mock_session.post.call_count == 3
+        assert mock_session.post.call_count == 1
+        post_kwargs = mock_session.post.call_args.kwargs
+        assert post_kwargs["data"] is not None
 
 
 class TestSendToPlatformDiscordMedia:
