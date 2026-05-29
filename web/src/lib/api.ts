@@ -438,6 +438,17 @@ export const api = {
     fetchJSON<ActionStatusResponse>(
       `/api/actions/${encodeURIComponent(name)}/status?lines=${lines}`,
     ),
+  getReadOnlyActions: () =>
+    fetchJSON<ReadOnlyActionListResponse>("/api/actions/read-only"),
+  runReadOnlyAction: (actionId: string, body: ReadOnlyActionRequest = {}) =>
+    fetchJSON<ReadOnlyActionResponse>(
+      `/api/actions/read-only/${encodeURIComponent(actionId)}/run`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
 
   // Dashboard plugins
   getPlugins: () =>
@@ -544,6 +555,33 @@ export interface ActionStatusResponse {
   name: string;
   pid: number | null;
   running: boolean;
+}
+
+export interface ReadOnlyActionInfo {
+  id: string;
+  label: string;
+  description: string;
+}
+
+export interface ReadOnlyActionListResponse {
+  actions: ReadOnlyActionInfo[];
+}
+
+export interface ReadOnlyActionRequest {
+  job_id?: string;
+  profile?: string;
+  lines?: number;
+  include_raw?: boolean;
+}
+
+export interface ReadOnlyActionResponse {
+  action_id: string;
+  status: string;
+  timestamp: string;
+  output_summary: string;
+  raw_output: string;
+  error: Record<string, unknown> | null;
+  metadata: Record<string, unknown>;
 }
 
 export interface PlatformStatus {
