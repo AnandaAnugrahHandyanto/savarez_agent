@@ -944,7 +944,7 @@ class TestSilenceDetection:
         mock_stream = MagicMock()
         mock_sd.InputStream.return_value = mock_stream
 
-        from tools.voice_mode import AudioRecorder, SAMPLE_RATE
+        from tools.voice_mode import AudioRecorder
 
         recorder = AudioRecorder()
         # Use very short durations for testing

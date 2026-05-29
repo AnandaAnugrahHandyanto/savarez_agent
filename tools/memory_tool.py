@@ -27,7 +27,6 @@ import json
 import locale
 import logging
 import os
-import re
 import tempfile
 import time
 from contextlib import contextmanager
