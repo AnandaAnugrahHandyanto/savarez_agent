@@ -4527,7 +4527,12 @@ def _resolve_task_provider_model(
         cfg_provider, cfg_base_url = _expand_direct_api_alias(cfg_provider, cfg_base_url)
 
     if base_url:
-        return "custom", resolved_model, base_url, api_key, resolved_api_mode
+        # Preserve named provider identity so downstream resolve_provider_client
+        # can resolve provider-specific credentials (e.g. XIAOMI_API_KEY).
+        # Without this, any explicit base_url forces provider="custom" which
+        # only checks OPENAI_API_KEY, causing 401 for non-OpenAI providers.
+        resolved_provider = provider if provider and provider not in ("", "auto") else "custom"
+        return resolved_provider, resolved_model, base_url, api_key, resolved_api_mode
     if provider:
         return provider, resolved_model, base_url, api_key, resolved_api_mode
 
