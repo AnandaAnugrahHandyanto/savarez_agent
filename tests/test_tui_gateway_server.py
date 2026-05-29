@@ -10,6 +10,22 @@ from unittest.mock import patch
 from tui_gateway import server
 
 
+def _pop_test_session(sid: str) -> None:
+    """Remove a TUI test session and stop its notification poller.
+
+    Several tests construct sessions with fake agents that intentionally do
+    not implement the full AIAgent surface. If those tests just pop the
+    session from ``server._sessions``, the daemon notification poller still
+    holds the session dict and can consume process-completion events from
+    later tests, racing the intended poller and failing with fake-agent
+    AttributeErrors.
+    """
+    session = server._sessions.pop(sid, None)
+    stop = session.get("_notif_stop") if isinstance(session, dict) else None
+    if stop is not None:
+        stop.set()
+
+
 class _ChunkyStdout:
     def __init__(self):
         self.parts: list[str] = []
@@ -843,7 +859,7 @@ def test_init_session_fires_reset_hook(monkeypatch):
         )
         assert ("on_session_reset", "session-key") in hooks
     finally:
-        server._sessions.pop(sid, None)
+        _pop_test_session(sid)
 
 
 def test_session_title_queues_when_db_row_not_ready(monkeypatch):
@@ -3377,7 +3393,7 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
     assert session.get("slash_worker") is not None
 
     # Cleanup
-    server._sessions.pop(sid, None)
+    _pop_test_session(sid)
 
 
 def test_get_db_degrades_cleanly_when_sessiondb_init_fails(monkeypatch):
@@ -3437,7 +3453,7 @@ def test_session_create_continues_when_state_db_is_unavailable(monkeypatch):
     assert session["agent"] is not None
     assert not any(args and args[0] == "error" for args in emits)
 
-    server._sessions.pop(sid, None)
+    _pop_test_session(sid)
 
 
 def test_session_list_returns_clean_error_when_state_db_is_unavailable(monkeypatch):
