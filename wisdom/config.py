@@ -13,6 +13,7 @@ from wisdom.models import WisdomConfig
 
 VALID_CAPTURE_MODES = {"off", "explicit"}
 VALID_INTERPRETATION_MODES = {"deterministic", "llm"}
+VALID_APPLICATION_MODES = {"deterministic", "llm"}
 
 
 def default_db_path() -> Path:
@@ -82,6 +83,11 @@ def load_wisdom_config(config: dict[str, Any] | None = None) -> WisdomConfig:
     if interpretation_mode not in VALID_INTERPRETATION_MODES:
         interpretation_mode = "deterministic"
 
+    application = raw.get("application", {}) if isinstance(raw.get("application"), dict) else {}
+    application_mode = str(application.get("mode") or "deterministic").strip().lower()
+    if application_mode not in VALID_APPLICATION_MODES:
+        application_mode = "deterministic"
+
     result = WisdomConfig(
         enabled=enabled,
         db_path=db_path,
@@ -91,6 +97,13 @@ def load_wisdom_config(config: dict[str, Any] | None = None) -> WisdomConfig:
             raw.get("interpret_timeout_seconds"), 5.0, 0.5, 60.0
         ),
         interpretation_mode=interpretation_mode,
+        application_mode=application_mode,
+        apply_timeout_seconds=_float_value(
+            application.get("timeout_seconds"),
+            30.0,
+            1.0,
+            180.0,
+        ),
     )
     return _apply_env_overrides(result)
 
@@ -112,6 +125,12 @@ def _apply_env_overrides(config: WisdomConfig) -> WisdomConfig:
     if interpretation_mode not in VALID_INTERPRETATION_MODES:
         interpretation_mode = config.interpretation_mode
 
+    application_mode = os.environ.get(
+        "HERMES_WISDOM_APPLICATION_MODE", config.application_mode
+    ).strip().lower()
+    if application_mode not in VALID_APPLICATION_MODES:
+        application_mode = config.application_mode
+
     return WisdomConfig(
         enabled=enabled,
         db_path=db_path,
@@ -124,4 +143,11 @@ def _apply_env_overrides(config: WisdomConfig) -> WisdomConfig:
             60.0,
         ),
         interpretation_mode=interpretation_mode,
+        application_mode=application_mode,
+        apply_timeout_seconds=_float_value(
+            os.environ.get("HERMES_WISDOM_APPLY_TIMEOUT"),
+            config.apply_timeout_seconds,
+            1.0,
+            180.0,
+        ),
     )

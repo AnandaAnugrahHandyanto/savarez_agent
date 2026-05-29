@@ -21,6 +21,8 @@ def wisdom_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "HERMES_WISDOM_MAX_RESULTS",
         "HERMES_WISDOM_INTERPRET_TIMEOUT",
         "HERMES_WISDOM_INTERPRETATION_MODE",
+        "HERMES_WISDOM_APPLICATION_MODE",
+        "HERMES_WISDOM_APPLY_TIMEOUT",
     ):
         monkeypatch.delenv(key, raising=False)
     return home
@@ -37,6 +39,7 @@ def wisdom_config(wisdom_home: Path) -> WisdomConfig:
                 "max_results": 5,
                 "interpret_timeout_seconds": 5,
                 "interpretation": {"mode": "deterministic"},
+                "application": {"mode": "deterministic", "timeout_seconds": 30},
             }
         }
     )

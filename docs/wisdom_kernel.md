@@ -263,6 +263,9 @@ wisdom:
   interpret_timeout_seconds: 5
   interpretation:
     mode: deterministic
+  application:
+    mode: deterministic   # deterministic | llm
+    timeout_seconds: 30
 ```
 
 Environment variables are accepted as runtime/test overrides:
@@ -274,6 +277,8 @@ HERMES_WISDOM_CAPTURE_MODE
 HERMES_WISDOM_MAX_RESULTS
 HERMES_WISDOM_INTERPRET_TIMEOUT
 HERMES_WISDOM_INTERPRETATION_MODE
+HERMES_WISDOM_APPLICATION_MODE
+HERMES_WISDOM_APPLY_TIMEOUT
 ```
 
 V1 supports `off` and `explicit` capture modes. Smart capture is intentionally not implemented.
@@ -285,6 +290,27 @@ Capture never calls an LLM.
 `/wisdom interpret <id>` creates a deterministic interpretation when none exists. The interpretation is conservative and includes a counterpoint.
 
 `/wisdom apply <id>` and `wisdom_apply` create internal application proposals only and mark the capture as applied. They do not create Hermes todos, reminders, files, calendar entries, Telegram messages, or old productivity DB rows.
+
+By default, application proposals are deterministic. If you set:
+
+```yaml
+wisdom:
+  application:
+    mode: llm
+
+auxiliary:
+  wisdom_apply:
+    provider: auto
+    model: ""
+```
+
+Wisdom asks Hermes' auxiliary LLM router for proposal drafts using the
+`auxiliary.wisdom_apply` slot. In a Codex-backed setup, `provider: auto` can
+route through the active Codex/main-model path. The model output is accepted
+only if it is valid JSON, uses allowed application types, covers the required
+proposal set for the capture category, has bounded non-secret text, and creates
+internal proposals only. Invalid output, provider errors, timeouts, or missing
+credentials fall back to deterministic templates.
 
 v4 deterministic application templates are domain-aware:
 

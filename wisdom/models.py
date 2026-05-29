@@ -48,6 +48,8 @@ class WisdomConfig:
     max_results: int = 5
     interpret_timeout_seconds: float = 5.0
     interpretation_mode: str = "deterministic"
+    application_mode: str = "deterministic"
+    apply_timeout_seconds: float = 30.0
 
 
 @dataclass(frozen=True)

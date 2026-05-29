@@ -6,18 +6,30 @@ from wisdom.db import WisdomDB
 from wisdom.models import ApplicationRecord, CaptureRecord
 
 
-def create_application_proposals(db: WisdomDB, capture_id: int) -> list[ApplicationRecord]:
+def create_application_proposals(
+    db: WisdomDB,
+    capture_id: int,
+    *,
+    mode: str = "deterministic",
+    timeout: float = 30.0,
+) -> list[ApplicationRecord]:
     capture = db.get_capture(capture_id)
     if capture is None:
         return []
     existing = db.list_applications(capture_id)
     if existing:
         return existing
-    proposals = _proposals_for_capture(capture)
+    proposals = None
+    if str(mode or "").strip().lower() == "llm":
+        from wisdom.llm_apply import llm_application_proposals
+
+        proposals = llm_application_proposals(capture, timeout=timeout)
+    if proposals is None:
+        proposals = deterministic_application_dicts(capture)
     return db.insert_applications(capture_id=capture_id, applications=proposals)
 
 
-def _proposals_for_capture(capture: CaptureRecord) -> list[dict[str, object]]:
+def deterministic_application_dicts(capture: CaptureRecord) -> list[dict[str, object]]:
     text = (capture.cleaned_text or capture.original_text).strip()
     short = _short(text)
     if capture.category == "business":

@@ -165,10 +165,15 @@ def apply(
     config: WisdomConfig | None = None,
     db: WisdomDB | None = None,
 ) -> list[ApplicationRecord]:
-    _config, db = _resolve(config, db)
+    config, db = _resolve(config, db)
     app_type = _valid(application_type, VALID_APPLICATION_TYPES)
     _ = context
-    records = create_application_proposals(db, capture_id)
+    records = create_application_proposals(
+        db,
+        capture_id,
+        mode=config.application_mode,
+        timeout=config.apply_timeout_seconds,
+    )
     if records:
         db.set_review_status(capture_id, "applied")
     return [record for record in records if record.application_type == app_type] if app_type else records

@@ -57,6 +57,8 @@ def capture_text(
         return CaptureOutcome("disabled", message="Wisdom is off.")
     if detect_secret_like_text(text):
         return CaptureOutcome("blocked_secret", message="Capture blocked because the text looks like it contains a secret.")
+    if context_note and detect_secret_like_text(str(context_note)):
+        return CaptureOutcome("blocked_secret", message="Capture blocked because the context looks like it contains a secret.")
 
     trigger = detect_explicit_trigger(text)
     cleaned = cleaned_text if cleaned_text is not None else (trigger.cleaned_text if trigger else text.strip())

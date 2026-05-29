@@ -83,20 +83,20 @@ live model.
 
 ## 4. LLM-Assisted Generation Decision
 
-LLM-assisted application generation is not safely available for v4.
+Initial v4 implementation used deterministic templates because Wisdom did not
+yet have a safe service boundary for model-written proposals.
 
-Repo reality:
+Follow-up implementation adds that boundary:
 
-- Wisdom has deterministic service functions and tests.
-- Plugin LLM helpers exist elsewhere, but Wisdom is not a plugin and has no
-  Wisdom-specific policy, schema validation, or deterministic test harness for
-  model-written proposals.
-- Tests must not require live model calls.
-- The model must not write directly to SQLite.
+- `wisdom.application.mode: deterministic | llm`
+- `auxiliary.wisdom_apply` as the configurable model slot
+- LLM output must be JSON with validated application types and bounded bodies
+- output is stored only as internal application proposals
+- invalid output, model errors, timeouts, or missing credentials fall back to
+  deterministic templates
+- tests mock the LLM call and never require live model access
 
-Decision: use high-quality deterministic templates now. A later version can add
-LLM proposal generation only behind a validated service boundary where output is
-schema-checked, stored as a proposal only, and tested with non-live fixtures.
+The model still never writes SQL or modifies the exact original.
 
 ## 5. Source/Context Metadata Handling
 

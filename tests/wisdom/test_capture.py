@@ -31,3 +31,14 @@ def test_secret_capture_blocked(wisdom_db, wisdom_config):
     )
     assert outcome.status == "blocked_secret"
     assert wisdom_db.counts()["raw_events"] == 0
+
+
+def test_secret_context_note_blocked(wisdom_db, wisdom_config):
+    outcome = capture_text(
+        "Remember this: harmless note",
+        context_note="Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
+        config=wisdom_config,
+        db=wisdom_db,
+    )
+    assert outcome.status == "blocked_secret"
+    assert wisdom_db.counts()["raw_events"] == 0
