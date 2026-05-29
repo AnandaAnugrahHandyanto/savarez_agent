@@ -2448,8 +2448,13 @@ def _apply_bracketed_paste_timeout_patch() -> None:
 # race past the input parser and end up in the input buffer as literal
 # text (see issue #14692). Also matches the visible-form ``^[[<row>;<col>R``
 # that appears when the ESC byte was stripped by a prior filter.
+# NOTE: visible form has TWO '[' after '^' — ESC (0x1b) is displayed as "^["
+# by terminals, followed by the literal "[<row>;<col>R".
 _DSR_CPR_ESC_RE = re.compile(r"\x1b\[\d+;\d+R")
 _DSR_CPR_VISIBLE_RE = re.compile(r"\^\[\[\d+;\d+R")
+# Bare-form CPR: ESC byte already stripped by a prior filter, leaving
+# "[[<row>;<col>R" or "[<row>;<col>R" in the buffer.
+_DSR_CPR_BARE_RE = re.compile(r"\[\d+;\d+R")
 _SGR_MOUSE_ESC_RE = re.compile(r"\x1b\[<\d+;\d+;\d+[Mm]")
 _SGR_MOUSE_VISIBLE_RE = re.compile(r"\^\[\[<\d+;\d+;\d+[Mm]")
 # Some terminals/filters can drop ESC and literal "^[[", leaving only
@@ -2572,7 +2577,12 @@ def _strip_leaked_terminal_responses_with_meta(text: str) -> tuple[str, bool]:
     has_esc = "\x1b[" in text
     has_visible = "^[" in text
     has_bare_mouse = "<" in text and ";" in text and ("M" in text or "m" in text)
-    if not (has_esc or has_visible or has_bare_mouse):
+    has_bare_cpr = False
+    if "[" in text and not (has_esc or has_visible):
+        # Quick check for bare CPR: "[<digit>;<digit>R" — remaining after
+        # intermediate filters stripped the ESC/^[ prefix.
+        has_bare_cpr = bool(_DSR_CPR_BARE_RE.search(text))
+    if not (has_esc or has_visible or has_bare_mouse or has_bare_cpr):
         return text, False
 
     had_mouse_reports = False
@@ -2590,6 +2600,9 @@ def _strip_leaked_terminal_responses_with_meta(text: str) -> tuple[str, bool]:
     if has_bare_mouse:
         text, count = _SGR_MOUSE_BARE_RE.subn("", text)
         had_mouse_reports = had_mouse_reports or count > 0
+
+    if has_bare_cpr:
+        text = _DSR_CPR_BARE_RE.sub("", text)
 
     return text, had_mouse_reports
 
