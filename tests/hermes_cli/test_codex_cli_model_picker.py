@@ -12,6 +12,7 @@ an independent login.
 
 import base64
 import json
+import os
 import time
 from pathlib import Path
 
@@ -100,6 +101,36 @@ def test_codex_picker_uses_live_codex_catalog(hermes_auth_only_env, tmp_path, mo
     codex = next(p for p in providers if p["slug"] == "openai-codex")
     assert "gpt-5.3-codex-spark" in codex["models"]
     assert codex["total_models"] == len(codex["models"])
+
+
+def test_codex_picker_cache_invalidates_when_shared_root_auth_changes(tmp_path, monkeypatch):
+    """Named profiles must observe canonical Codex token rotations."""
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    root_auth = root / "auth.json"
+    root_auth.write_text('{"tokens": "before"}')
+    (profile / "auth.json").write_text("{}")
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+
+    import hermes_cli.models as models
+
+    catalogs = iter([["old-model"], ["new-model"]])
+    calls = []
+
+    def _provider_model_ids(provider, *, force_refresh=False):
+        calls.append((provider, force_refresh))
+        return next(catalogs)
+
+    monkeypatch.setattr(models, "provider_model_ids", _provider_model_ids)
+
+    assert models.cached_provider_model_ids("openai-codex") == ["old-model"]
+    previous_mtime = root_auth.stat().st_mtime_ns
+    root_auth.write_text('{"tokens": "after"}')
+    os.utime(root_auth, ns=(previous_mtime + 1_000_000_000,) * 2)
+
+    assert models.cached_provider_model_ids("openai-codex") == ["new-model"]
+    assert calls == [("openai-codex", False), ("openai-codex", False)]
 
 
 @pytest.fixture()

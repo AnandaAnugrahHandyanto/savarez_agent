@@ -641,6 +641,23 @@ class TestMediaDeliveryDefaultMode:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(env_file)) is None
 
+    def test_denylist_blocks_profile_root_auth_store(self, tmp_path, monkeypatch):
+        """Named profiles must not deliver the shared root Codex auth store."""
+        self._patch_roots(monkeypatch)
+
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "worker"
+        profile.mkdir(parents=True)
+        root_auth = root / "auth.json"
+        root_auth.write_text('{"refresh_token": "shared-secret"}')
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        monkeypatch.setattr(
+            "gateway.platforms.base._HERMES_HOME",
+            profile,
+        )
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(root_auth)) is None
+
     def test_strict_mode_envvar_restores_legacy_behavior(self, tmp_path, monkeypatch):
         """Setting HERMES_MEDIA_DELIVERY_STRICT=1 reactivates the older
         allowlist+recency logic. A stale file outside the allowlist is

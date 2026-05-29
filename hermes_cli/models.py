@@ -2121,9 +2121,17 @@ def _credential_fingerprint(provider: str) -> str:
 
     # OAuth / external-file mtimes that change on re-auth
     try:
-        from hermes_constants import get_hermes_home
-        for rel in ("auth.json", "credentials.json"):
-            p = get_hermes_home() / rel
+        from hermes_constants import get_default_hermes_root, get_hermes_home
+        hermes_home = get_hermes_home()
+        credential_files = [
+            ("auth.json", hermes_home / "auth.json"),
+            ("credentials.json", hermes_home / "credentials.json"),
+        ]
+        if provider == "openai-codex":
+            codex_auth_file = get_default_hermes_root() / "auth.json"
+            if codex_auth_file != hermes_home / "auth.json":
+                credential_files.append(("codex-root-auth.json", codex_auth_file))
+        for rel, p in credential_files:
             try:
                 parts.append(f"{rel}@{p.stat().st_mtime_ns}")
             except FileNotFoundError:

@@ -484,7 +484,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.session import SessionSource, build_session_key
-from hermes_constants import get_hermes_dir, get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 
 
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
@@ -954,11 +954,16 @@ def _media_delivery_denied_paths() -> List[Path]:
     home = Path(os.path.expanduser("~"))
     for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS:
         denied.append(home / sub)
-    # The Hermes home itself contains credentials (auth.json, .env) — only the
-    # cache subdirectories under it are explicitly allowlisted above.
-    denied.append(_HERMES_HOME / ".env")
-    denied.append(_HERMES_HOME / "auth.json")
-    denied.append(_HERMES_HOME / "credentials")
+    # In profile mode, both the active profile and the canonical root contain
+    # credentials. Only cache subdirectories are explicitly allowlisted above.
+    hermes_homes = [_HERMES_HOME]
+    root = get_default_hermes_root()
+    if root not in hermes_homes:
+        hermes_homes.append(root)
+    for hermes_home in hermes_homes:
+        denied.append(hermes_home / ".env")
+        denied.append(hermes_home / "auth.json")
+        denied.append(hermes_home / "credentials")
     return denied
 
 
