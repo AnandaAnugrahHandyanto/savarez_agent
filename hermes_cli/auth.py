@@ -1542,13 +1542,54 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     return False
 
 
+def _clear_provider_auth_store(
+    auth_store: Dict[str, Any],
+    target: str,
+    *,
+    shared_pool_only: bool = False,
+    clear_active_provider: bool = True,
+) -> bool:
+    providers = auth_store.get("providers", {})
+    if not isinstance(providers, dict):
+        providers = {}
+        auth_store["providers"] = providers
+
+    pool = auth_store.get("credential_pool")
+    if not isinstance(pool, dict):
+        pool = {}
+        auth_store["credential_pool"] = pool
+
+    cleared = False
+    if target in providers:
+        del providers[target]
+        cleared = True
+    if target in pool:
+        if shared_pool_only and isinstance(pool[target], list):
+            retained_entries = [
+                entry for entry in pool[target]
+                if not _is_shared_credential_pool_entry(target, entry)
+            ]
+            if len(retained_entries) != len(pool[target]):
+                pool[target] = retained_entries
+                cleared = True
+        elif not shared_pool_only:
+            del pool[target]
+            cleared = True
+
+    if clear_active_provider and auth_store.get("active_provider") == target:
+        auth_store["active_provider"] = None
+        cleared = True
+    return cleared
+
+
 def clear_provider_auth(provider_id: Optional[str] = None) -> bool:
     """
     Clear auth state for a provider. Used by `hermes logout`.
     If provider_id is None, clears the active provider.
     Returns True if something was cleared.
     """
-    local_auth_store = _load_auth_store()
+    local_auth_file = _auth_file_path()
+    local_auth_store = _load_auth_store(local_auth_file)
     target = provider_id or local_auth_store.get("active_provider")
     if not target:
         return False
@@ -1560,36 +1601,24 @@ def clear_provider_auth(provider_id: Optional[str] = None) -> bool:
     lock = _codex_auth_store_lock if auth_file is not None else _auth_store_lock
     with lock():
         auth_store = _load_auth_store(auth_file)
-        target = provider_id or auth_store.get("active_provider")
-        if not target:
-            return False
+        split_shared_store = auth_file is not None and auth_file != local_auth_file
+        cleared = _clear_provider_auth_store(
+            auth_store,
+            target,
+            shared_pool_only=split_shared_store,
+            clear_active_provider=not split_shared_store,
+        )
+        if cleared:
+            _save_auth_store(auth_store, auth_file=auth_file)
 
-        providers = auth_store.get("providers", {})
-        if not isinstance(providers, dict):
-            providers = {}
-            auth_store["providers"] = providers
-
-        pool = auth_store.get("credential_pool")
-        if not isinstance(pool, dict):
-            pool = {}
-            auth_store["credential_pool"] = pool
-
-        cleared = False
-        if target in providers:
-            del providers[target]
-            cleared = True
-        if target in pool:
-            del pool[target]
-            cleared = True
-
-        if auth_store.get("active_provider") == target:
-            auth_store["active_provider"] = None
-            cleared = True
-
-        if not cleared:
-            return False
-        _save_auth_store(auth_store, auth_file=auth_file)
-    return True
+        if split_shared_store:
+            with _auth_store_lock():
+                local_auth_store = _load_auth_store(local_auth_file)
+                local_cleared = _clear_provider_auth_store(local_auth_store, target)
+                if local_cleared:
+                    _save_auth_store(local_auth_store, auth_file=local_auth_file)
+                cleared |= local_cleared
+        return cleared
 
 
 def deactivate_provider() -> None:
