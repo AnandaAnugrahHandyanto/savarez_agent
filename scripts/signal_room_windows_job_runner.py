@@ -256,7 +256,22 @@ def recover_stale_running_jobs(
     recovered = 0
     recovered_ids: list[str] = []
     for running_path in sorted((queue_root / "running").glob("*.json")):
-        job = read_json(running_path)
+        try:
+            job = read_json(running_path)
+        except json.JSONDecodeError as exc:
+            job = {
+                "id": running_path.stem,
+                "job_type": "unknown",
+                "status": "running",
+                "public_release": False,
+                "attempts": 1,
+                "command": [],
+            }
+            result = RunResult(returncode=-1, stderr=f"invalid running job manifest: {exc.msg}")
+            finish_job(queue_root, running_path, job, result)
+            recovered += 1
+            recovered_ids.append(running_path.stem)
+            continue
         claimed_at = parse_utc_timestamp(job.get("claimed_at"))
         if not claimed_at:
             continue

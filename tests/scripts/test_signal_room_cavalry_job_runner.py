@@ -253,6 +253,29 @@ def test_recover_stale_running_jobs_marks_old_claim_failed(tmp_path: Path) -> No
     assert "stale running job recovered" in failed["stderr_tail"]
 
 
+def test_recover_stale_running_jobs_handles_invalid_running_manifest(tmp_path: Path) -> None:
+    module = load_module()
+    queue_root = tmp_path / "windows" / "cavalry" / "jobs"
+    for state in ("queued", "running", "done", "failed"):
+        (queue_root / state).mkdir(parents=True)
+    (queue_root / "running" / "invalid-running.json").write_text("{not json\n")
+
+    result = module.recover_stale_running_jobs(
+        queue_root=queue_root,
+        max_age_seconds=60,
+        now="2026-05-29T00:05:00Z",
+    )
+
+    assert result["recovered"] == 1
+    failed_path = queue_root / "failed" / "invalid-running.json"
+    assert failed_path.exists()
+    failed = json.loads(failed_path.read_text())
+    assert failed["id"] == "invalid-running"
+    assert failed["status"] == "failed"
+    assert failed["returncode"] == -1
+    assert "invalid running job manifest" in failed["stderr_tail"]
+
+
 def test_run_once_records_empty_command_manifest_as_failed_job(tmp_path: Path) -> None:
     module = load_module()
     queue_root = tmp_path / "windows" / "cavalry" / "jobs"
