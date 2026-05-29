@@ -1100,7 +1100,7 @@ def interactive_setup() -> None:
             return
 
     print_info("You'll need the Teams CLI. If you haven't already:")
-    print_info("  npm install -g @microsoft/teams.cli@preview")
+    print_info("  npm install -g @microsoft/teams.cli")
     print_info("  teams login")
     print()
     print_info("Then expose port 3978 publicly (devtunnel / ngrok / cloudflared),")
