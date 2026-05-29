@@ -574,6 +574,8 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    profile_system_prompt: Optional[str] = None,
+    profile_constraints: Optional[str] = None,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -584,7 +586,8 @@ def _build_child_system_prompt(
     the LLM doesn't confabulate nesting capabilities that don't exist.
     """
     parts = [
-        "You are a focused subagent working on a specific delegated task.",
+        profile_system_prompt.strip() if (profile_system_prompt and profile_system_prompt.strip())
+        else "You are a focused subagent working on a specific delegated task.",
         "",
         f"YOUR TASK:\n{goal}",
     ]
@@ -596,6 +599,8 @@ def _build_child_system_prompt(
             f"{workspace_path}\n"
             "Use this exact path for local repository/workdir operations unless the task explicitly says otherwise."
         )
+    if profile_constraints and profile_constraints.strip():
+        parts.append(f"\nCONSTRAINTS:\n{profile_constraints.strip()}")
     parts.append(
         "\nComplete this task using the tools available to you. "
         "When finished, provide a clear, concise summary of:\n"
@@ -888,6 +893,13 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # v1 stub: stored for future async-proxy path (v2).
+    # When non-None, a warning is emitted and the proxy is NOT applied.
+    override_proxy: Optional[str] = None,
+    # Profile-supplied system prompt and constraints forwarded to
+    # _build_child_system_prompt.
+    profile_system_prompt: Optional[str] = None,
+    profile_constraints: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -900,6 +912,14 @@ def _build_child_agent(
     """
     from run_agent import AIAgent
     import uuid as _uuid
+
+    # ── Proxy warning (v1 stub) ────────────────────────────────────────
+    if override_proxy:
+        logger.warning(
+            "_build_child_agent: proxy='%s' not applied in v1 — "
+            "per-child proxy requires v2 async httpx.AsyncClient path",
+            override_proxy,
+        )
 
     # ── Role resolution ─────────────────────────────────────────────────
     # Honor the caller's role only when BOTH the kill switch and the
@@ -975,6 +995,8 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        profile_system_prompt=profile_system_prompt,
+        profile_constraints=profile_constraints,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -1924,6 +1946,7 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    profile: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -1987,16 +2010,6 @@ def delegate_task(
         )
     effective_max_iter = default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
-
     # Normalize to task list
     max_children = _get_max_concurrent_children()
     recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
@@ -2034,6 +2047,33 @@ def delegate_task(
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
 
+    # Resolve and cache all profiles referenced in this call.
+    # Validate ALL profiles before spawning any children — a typo in one
+    # batch item must not leave other children dangling.
+    _profiles_cache: Dict[str, dict] = {}
+    _profile_names_to_check: set = set()
+    if profile:
+        _profile_names_to_check.add(profile)
+    for _t in task_list:
+        if _t.get("profile"):
+            _profile_names_to_check.add(_t["profile"])
+    for _pname in _profile_names_to_check:
+        try:
+            _profiles_cache[_pname] = _resolve_profile(_pname)
+        except ValueError as exc:
+            return tool_error(str(exc))
+
+    # Lazy default credentials: resolved only when a task needs the default API
+    # path (no profile, or profile without acp_command). ACP-only calls never
+    # trigger provider resolution — users without delegation.provider configured
+    # can still use ACP profiles without an API-key error.
+    _default_creds: Optional[dict] = None
+
+    # Cache resolved credentials per profile name so _resolve_delegation_credentials
+    # is called once per unique profile, not once per task (avoids repeated
+    # provider lookups / env reads in large batches).
+    _creds_cache: Dict[str, dict] = {}
+
     overall_start = time.monotonic()
     results = []
 
@@ -2054,31 +2094,96 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
-            task_acp_args = t.get("acp_args") if "acp_args" in t else None
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+
+            # Resolve per-task profile (per-task beats top-level)
+            _task_profile_name = t.get("profile") or profile
+            _profile_cfg = _profiles_cache.get(_task_profile_name, {}) if _task_profile_name else {}
+
+            # ACP mode vs API mode — mutually exclusive.
+            # When profile defines acp_command, use ACP transport (no direct API creds).
+            if _profile_cfg.get("acp_command"):
+                _task_creds = {
+                    "model": None, "provider": None,
+                    "base_url": None, "api_key": None, "api_mode": None,
+                }
+                _task_acp_command = _profile_cfg["acp_command"]
+                # Priority: per-task > top-level call arg > profile default
+                _task_acp_args = (
+                    t.get("acp_args") if "acp_args" in t
+                    else (acp_args if acp_args is not None else _profile_cfg.get("acp_args"))
+                )
+            else:
+                # API mode: resolve credentials from profile dict (if set) or
+                # fall back to default delegation config.
+                # Use creds cache so N tasks sharing one profile don't trigger
+                # N provider lookups (env reads, token refreshes, etc.).
+                if _task_profile_name and _task_profile_name in _profiles_cache:
+                    if _task_profile_name not in _creds_cache:
+                        try:
+                            _creds_cache[_task_profile_name] = _resolve_delegation_credentials(
+                                _profile_cfg, parent_agent
+                            )
+                        except ValueError as exc:
+                            return tool_error(str(exc))
+                    _task_creds = _creds_cache[_task_profile_name]
+                else:
+                    # Default path (no profile) — resolve default credentials lazily
+                    # so ACP-only callers never trigger provider credential lookup.
+                    if _default_creds is None:
+                        try:
+                            _default_creds = _resolve_delegation_credentials(cfg, parent_agent)
+                        except ValueError as exc:
+                            return tool_error(str(exc))
+                    _task_creds = _default_creds
+                _task_acp_args_explicit = t.get("acp_args") if "acp_args" in t else None
+                _task_acp_command = (
+                    t.get("acp_command") or acp_command or _task_creds.get("command")
+                )
+                _task_acp_args = (
+                    _task_acp_args_explicit
+                    if _task_acp_args_explicit is not None
+                    else (acp_args if acp_args is not None else _task_creds.get("args"))
+                )
+
+            # Toolsets: explicit per-task > profile default > top-level arg.
+            # Use key-presence checks (not `or`) so an explicit empty list [] is
+            # respected at every level rather than falling through to the next tier.
+            _t_toolsets = t.get("toolsets")
+            _task_toolsets = (
+                _t_toolsets if _t_toolsets is not None
+                else (_profile_cfg["toolsets"] if "toolsets" in _profile_cfg else toolsets)
+            )
+
+            # Proxy from profile (v1: warning logged inside _build_child_agent, not applied)
+            _task_proxy = _profile_cfg.get("proxy") if _profile_cfg else None
+
+            # max_iterations: profile override > global delegation.max_iterations
+            _task_max_iter = (
+                _profile_cfg.get("max_iterations", effective_max_iter)
+                if _profile_cfg else effective_max_iter
+            )
+
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
-                max_iterations=effective_max_iter,
+                toolsets=_task_toolsets,
+                model=_task_creds["model"],
+                max_iterations=_task_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
-                override_acp_command=t.get("acp_command")
-                or acp_command
-                or creds.get("command"),
-                override_acp_args=(
-                    task_acp_args
-                    if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
-                ),
+                override_provider=_task_creds["provider"],
+                override_base_url=_task_creds["base_url"],
+                override_api_key=_task_creds["api_key"],
+                override_api_mode=_task_creds["api_mode"],
+                override_acp_command=_task_acp_command,
+                override_acp_args=_task_acp_args,
+                override_proxy=_task_proxy,
+                profile_system_prompt=_profile_cfg.get("system_prompt"),
+                profile_constraints=_profile_cfg.get("constraints"),
                 role=effective_role,
             )
             # Override with correct parent tool names (before child construction mutated global)
@@ -2481,6 +2586,21 @@ def _load_config() -> dict:
         return {}
 
 
+def _resolve_profile(name: str) -> dict:
+    """Return the named profile dict from delegation.profiles config.
+
+    Raises ValueError with available profile names if not found.
+    """
+    profiles = _load_config().get("profiles", {})
+    if name not in profiles:
+        available = sorted(profiles.keys())
+        raise ValueError(
+            f"Unknown profile '{name}'. "
+            f"Available: {available if available else '(none configured)'}"
+        )
+    return profiles[name]
+
+
 # ---------------------------------------------------------------------------
 # OpenAI Function-Calling Schema
 # ---------------------------------------------------------------------------
@@ -2651,6 +2771,39 @@ def _build_dynamic_schema_overrides() -> dict:
     }
     overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
     overrides_params["properties"]["role"]["description"] = _build_role_param_description()
+
+    # Inject profile enum so the orchestrator sees actual profile names, not a
+    # free-form string field — prevents hallucinated profile names.
+    cfg = _load_config()
+    profiles = cfg.get("profiles", {})
+    if profiles:
+        profile_lines = "\n".join(
+            f"  - **{k}**: {v.get('summary', k)}" for k, v in profiles.items()
+        )
+        profile_prop = {
+            **overrides_params["properties"].get("profile", {}),
+            "type": "string",
+            "enum": list(profiles.keys()),
+            "description": (
+                f"Named delegation profile from config.yaml. Available:\n{profile_lines}"
+            ),
+        }
+        overrides_params["properties"]["profile"] = profile_prop
+
+        # Also update tasks.items without mutating the static tasks dict.
+        tasks_prop = dict(overrides_params["properties"]["tasks"])
+        tasks_items = dict(tasks_prop.get("items", {}))
+        tasks_items_props = dict(tasks_items.get("properties", {}))
+        tasks_items_props["profile"] = {
+            **tasks_items_props.get("profile", {}),
+            "type": "string",
+            "enum": list(profiles.keys()),
+            "description": "Per-task profile override. See top-level 'profile' for semantics.",
+        }
+        tasks_items["properties"] = tasks_items_props
+        tasks_prop["items"] = tasks_items
+        overrides_params["properties"]["tasks"] = tasks_prop
+
     return {
         "description": _build_top_level_description(),
         "parameters": overrides_params,
@@ -2736,6 +2889,12 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "profile": {
+                            "type": "string",
+                            "description": (
+                                "Per-task profile override. See top-level 'profile' for semantics."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -2771,6 +2930,15 @@ DELEGATE_TASK_SCHEMA = {
                     "Leave empty unless acp_command is explicitly provided."
                 ),
             },
+            "profile": {
+                "type": "string",
+                "description": (
+                    "Named delegation profile from config.yaml (delegation.profiles). "
+                    "Sets model, provider, toolsets, system_prompt, and constraints for the subagent. "
+                    "Available profiles are shown at runtime via the dynamic schema. "
+                    "Omit to use default delegation settings."
+                ),
+            },
         },
         "required": [],
     },
@@ -2793,6 +2961,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        profile=args.get("profile"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

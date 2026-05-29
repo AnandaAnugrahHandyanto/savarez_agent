@@ -885,6 +885,60 @@ delegation:
   #                                           # Resolves full credentials (base_url, api_key) automatically.
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
 
+  # ---------------------------------------------------------------------------
+  # Named delegation profiles (delegation.profiles)
+  # ---------------------------------------------------------------------------
+  # Each profile defines a specialised subagent role with its own model,
+  # provider, toolsets, system_prompt, and optional constraints.
+  # Usage:  delegate_task(goal="...", profile="coder")
+  #         delegate_task(tasks=[{"goal": "...", "profile": "critic"}])
+  #
+  # Two routing modes — mutually exclusive per profile:
+  #   API mode:  model + provider (+ optional base_url / api_key / api_mode)
+  #   ACP mode:  acp_command (+ optional acp_args) — runs via terminal wrapper
+  #
+  # Toolset priority: explicit call arg > profile.toolsets > inherited from parent
+  # Proxy field is accepted but NOT applied in v1 (warning emitted); v2 will use it.
+  #
+  # profiles:
+  #   coder:
+  #     nickname: "👷 Coder"          # shown in tool description (informational)
+  #     summary: "Writes code, TDD"   # shown to LLM orchestrator in the schema enum
+  #     model: deepseek-v4-flash
+  #     provider: deepseek
+  #     toolsets: [terminal, file]
+  #     max_iterations: 80            # override delegation.max_iterations for this profile (default: inherited)
+  #     system_prompt: |
+  #       You are a focused developer. Follow TDD strictly.
+  #     constraints: |
+  #       - No changes outside the assigned task scope
+  #       - Tests before implementation
+  #
+  #   critic:
+  #     nickname: "🔍 Critic"
+  #     summary: "Code review, bug hunting"
+  #     model: claude-sonnet-4-20250514
+  #     provider: custom
+  #     base_url: https://api.anthropic.com/v1
+  #     api_mode: anthropic_messages
+  #     # proxy: http://localhost:8119   # v1: logged as warning, not applied
+  #     toolsets: [file]
+  #     system_prompt: |
+  #       You are a code reviewer. Check for logic errors, security issues,
+  #       and spec conformance.
+  #     constraints: |
+  #       - Do not write code
+  #       - Return JSON: {passed, issues, summary}
+  #
+  #   copilot-runner:
+  #     nickname: "🤖 Copilot"
+  #     summary: "Runs via Copilot CLI (ACP mode)"
+  #     acp_command: copilot
+  #     acp_args: ["--model", "claude-sonnet-4-5"]
+  #     toolsets: [terminal, file]
+  #     system_prompt: |
+  #       You are a developer agent running via Copilot CLI.
+
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)
 # =============================================================================
