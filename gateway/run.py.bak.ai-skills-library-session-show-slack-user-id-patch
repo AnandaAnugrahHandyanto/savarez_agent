@@ -6999,8 +6999,7 @@ class GatewayRunner:
             thread_sessions_per_user=_thread_sessions_per_user,
         )
         if _is_shared_multi_user and source.user_name:
-            _sender_label = f"{source.user_name} (ID: {source.user_id})" if source.user_id else source.user_name
-            message_text = f"[{_sender_label}] {message_text}"
+            message_text = f"[{source.user_name}] {message_text}"
 
         # Prepend channel context from history backfill (if any).  This
         # happens after sender-prefix so the prefix only applies to the
@@ -8137,46 +8136,8 @@ class GatewayRunner:
                 if response:
                     _media_adapter = self.adapters.get(source.platform)
                     if _media_adapter:
-                        # ai-skills-library-slack-image-media-collect-patch:
-                        # _deliver_media_from_response only sees `response`
-                        # (the model's final text block). When the agent
-                        # generates images mid-turn, each MEDIA: tag lands in
-                        # an intermediate assistant message, not in
-                        # final_response, and is silently discarded.
-                        #
-                        # Fix: walk every assistant message added this turn,
-                        # collect any MEDIA: lines, and append them to the text
-                        # passed for delivery. _deliver_media_from_response's
-                        # own os.path.exists guard prevents double-uploads for
-                        # paths that already appeared in final_response.
-                        _extra_media_lines: list[str] = []
-                        _seen_media_paths: set[str] = set()
-                        # Seed seen-set from final_response to avoid duplicates
-                        for _m in re.findall(r'MEDIA:\s*(\S+)', response):
-                            _seen_media_paths.add(_m)
-                        for _msg in agent_result.get("messages", [])[history_len:]:
-                            if not isinstance(_msg, dict):
-                                continue
-                            if _msg.get("role") != "assistant":
-                                continue
-                            _msg_content = _msg.get("content", "")
-                            _texts: list[str] = []
-                            if isinstance(_msg_content, str):
-                                _texts.append(_msg_content)
-                            elif isinstance(_msg_content, list):
-                                for _part in _msg_content:
-                                    if isinstance(_part, dict) and _part.get("type") == "text":
-                                        _texts.append(_part.get("text", ""))
-                            for _txt in _texts:
-                                for _mpath in re.findall(r'MEDIA:\s*(\S+)', _txt):
-                                    if _mpath not in _seen_media_paths:
-                                        _seen_media_paths.add(_mpath)
-                                        _extra_media_lines.append(f"MEDIA:{_mpath}")
-                        _full_media_text = response
-                        if _extra_media_lines:
-                            _full_media_text = response + "\n" + "\n".join(_extra_media_lines)
                         await self._deliver_media_from_response(
-                            _full_media_text, event, _media_adapter,
+                            response, event, _media_adapter,
                         )
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
