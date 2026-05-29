@@ -31,6 +31,7 @@ from concurrent.futures import (
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
+from hermes_cli.fallback_config import role_fallback_chain, sanitize_fallback_chain
 
 # Sentinel value used by the runtime provider system for providers that are
 # not natively known (named custom providers, third-party aggregators, etc.).
@@ -1076,11 +1077,16 @@ def _build_child_agent(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
-    # Inherit the parent's fallback provider chain so subagents can recover
-    # from rate-limits and credential exhaustion exactly like the top-level
-    # agent does.  _fallback_chain is a list accepted by AIAgent's
-    # fallback_model parameter (which handles both list and dict forms).
-    parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    # Delegated workers are builder-like runtime actors, so prefer the
+    # role-specific failover ladder when configured/available.  This wires the
+    # ALF-99 role ladder into a real child-agent construction path instead of
+    # leaving role_fallback_chain() as unit-tested dead code.  If the role ladder
+    # is intentionally empty, preserve the previous behavior and inherit the
+    # parent's sanitized fallback chain.
+    fallback_role = str(delegation_cfg.get("fallback_role") or "builder").strip().lower()
+    child_fallback = role_fallback_chain(fallback_role, delegation_cfg)
+    parent_fallback = sanitize_fallback_chain(getattr(parent_agent, "_fallback_chain", None))
+    effective_fallback = child_fallback or parent_fallback or None
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
@@ -1115,7 +1121,7 @@ def _build_child_agent(
         max_tokens=getattr(parent_agent, "max_tokens", None),
         reasoning_config=child_reasoning,
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
-        fallback_model=parent_fallback,
+        fallback_model=effective_fallback,
         enabled_toolsets=child_toolsets,
         quiet_mode=True,
         ephemeral_system_prompt=child_prompt,

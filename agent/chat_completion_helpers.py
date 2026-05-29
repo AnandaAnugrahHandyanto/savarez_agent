@@ -25,6 +25,7 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
+from hermes_cli.fallback_config import is_opus_48_model
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
@@ -1030,6 +1031,12 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     agent._fallback_index += 1
     fb_provider = (fb.get("provider") or "").strip().lower()
     fb_model = (fb.get("model") or "").strip()
+    if is_opus_48_model(fb_model):
+        logger.warning(
+            "Fallback skip: disallowed Opus 4.8 chain entry %s/%s",
+            fb_provider, fb_model,
+        )
+        return agent._try_activate_fallback()
     if not fb_provider or not fb_model:
         return agent._try_activate_fallback()  # skip invalid, try next
 
