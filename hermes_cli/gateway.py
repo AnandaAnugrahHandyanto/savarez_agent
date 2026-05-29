@@ -3168,6 +3168,18 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
         replace: If True, kill any existing gateway instance before starting.
                  This prevents systemd restart loops when the old process
                  hasn't fully exited yet.
+
+                 Refused (with non-zero exit) when the caller is in the
+                 target gateway's cgroup — killing the gateway from inside
+                 its own cgroup would SIGKILL the caller too via
+                 KillMode=mixed. Kanban workers spawned by the gateway's
+                 systemd unit hit this; operators in an independent shell
+                 don't. Use `systemctl --user restart hermes-gateway-<profile>`
+                 from inside the cgroup instead, or set
+                 HERMES_GATEWAY_REPLACE_FORCE=1 to override. See
+                 jetminds/engineering/substrate/2026-05-29-gateway-self-
+                 destruct-recurrence.md for the failure mode the guard
+                 prevents.
     """
     _guard_official_docker_root_gateway()
     sys.path.insert(0, str(PROJECT_ROOT))

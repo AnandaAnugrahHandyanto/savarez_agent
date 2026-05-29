@@ -11506,7 +11506,13 @@ def main():
     gateway_run.add_argument(
         "--replace",
         action="store_true",
-        help="Replace any existing gateway instance (useful for systemd)",
+        help=(
+            "Replace any existing gateway instance (useful for systemd). "
+            "Refused when the caller is in the target gateway's cgroup "
+            "(prevents kanban-worker self-destruct); use 'systemctl --user "
+            "restart hermes-gateway-<profile>' from inside the cgroup. "
+            "Override with HERMES_GATEWAY_REPLACE_FORCE=1."
+        ),
     )
     gateway_run.add_argument(
         "--no-supervise",

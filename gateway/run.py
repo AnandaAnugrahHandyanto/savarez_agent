@@ -18496,6 +18496,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         replace: If True, kill any existing gateway instance before starting.
                  Useful for systemd services to avoid restart-loop deadlocks
                  when the previous process hasn't fully exited yet.
+
+                 Refused (returns False, exit 1) when the caller is in the
+                 target gateway's cgroup — see caller_shares_target_cgroup
+                 in gateway/status.py for the rationale. Override with
+                 HERMES_GATEWAY_REPLACE_FORCE=1 if you understand the kill
+                 cascade.
     """
     # ── Duplicate-instance guard ──────────────────────────────────────
     # Prevent two gateways from running under the same HERMES_HOME.
@@ -18504,6 +18510,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # allow concurrent instances without tripping this guard.
     from gateway.status import (
         acquire_gateway_runtime_lock,
+        caller_shares_target_cgroup,
         get_running_pid,
         get_process_start_time,
         release_gateway_runtime_lock,
@@ -18513,6 +18520,37 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     existing_pid = get_running_pid()
     if existing_pid is not None and existing_pid != os.getpid():
         if replace:
+            # ── Cgroup-membership self-destruct guard ─────────────────
+            # Refuse `--replace` when the caller is in the same cgroup
+            # as the target. This catches the kanban-worker case where
+            # a worker spawned by the gateway's systemd unit calls
+            # `--replace` against its own parent gateway — the SIGTERM
+            # cascade via KillMode=mixed would SIGKILL the worker too,
+            # truncating its audit trail. See post-mortem at
+            # jetminds/engineering/substrate/2026-05-29-gateway-self-
+            # destruct-recurrence.md. Operator use (independent shell,
+            # different cgroup) is unaffected; the guard is fail-open
+            # on read errors and non-Linux hosts. Bypass with
+            # HERMES_GATEWAY_REPLACE_FORCE=1 for the rare legitimate
+            # intra-cgroup case (debugging, container scenarios).
+            if os.environ.get("HERMES_GATEWAY_REPLACE_FORCE") != "1":
+                shared, our_cg, target_cg = caller_shares_target_cgroup(existing_pid)
+                if shared:
+                    profile_hint = os.environ.get("HERMES_PROFILE", "<profile>")
+                    msg = (
+                        f"refusing --replace: caller (PID {os.getpid()}) shares the "
+                        f"target gateway's cgroup (PID {existing_pid}, cgroup "
+                        f"{our_cg!r}). Killing the gateway from inside its own "
+                        f"cgroup would SIGKILL this process too (KillMode=mixed). "
+                        f"Use 'systemctl --user restart hermes-gateway-"
+                        f"{profile_hint}' instead — systemd handles the swap "
+                        f"without involving the caller. Override with "
+                        f"HERMES_GATEWAY_REPLACE_FORCE=1 only if you understand "
+                        f"the kill cascade."
+                    )
+                    logger.error(msg)
+                    print(f"\n❌ {msg}\n")
+                    return False
             existing_start_time = get_process_start_time(existing_pid)
             logger.info(
                 "Replacing existing gateway instance (PID %d) with --replace.",
