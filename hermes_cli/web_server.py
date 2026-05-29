@@ -3073,6 +3073,22 @@ async def update_profile_soul(name: str, body: ProfileSoulUpdate):
     return {"ok": True}
 
 
+@app.post("/api/profiles/{name}/activate")
+async def activate_profile_endpoint(request: Request, name: str):
+    """Set the active profile (sticky — persists across restarts)."""
+    _require_token(request)
+    from hermes_cli import profiles as profiles_mod
+    canon = profiles_mod.normalize_profile_name(name)
+    if not profiles_mod.profile_exists(canon):
+        raise HTTPException(status_code=404, detail=f"Profile '{name}' not found")
+    profiles_mod.set_active_profile(canon)
+    return {
+        "ok": True,
+        "active_profile": canon,
+        "profile_dir": str(profiles_mod.get_profile_dir(canon)),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Skills & Tools endpoints
 # ---------------------------------------------------------------------------
@@ -3521,6 +3537,17 @@ def _resolve_chat_argv(
         if latest_resume:
             resume = latest_resume
         env["HERMES_TUI_RESUME"] = resume
+
+    # Use the sticky active profile (may differ from dashboard startup profile)
+    from hermes_cli import profiles as _profiles_mod
+    _active = _profiles_mod.get_active_profile()
+    if _active == "default":
+        env["HERMES_HOME"] = str(_profiles_mod._get_default_hermes_home())
+    elif _active:
+        _pd = _profiles_mod.get_profile_dir(_active).resolve()
+        _profiles_root = _profiles_mod._get_profiles_root().resolve()
+        if _pd.is_dir() and _pd.is_relative_to(_profiles_root):
+            env["HERMES_HOME"] = str(_pd)
 
     if sidecar_url:
         env["HERMES_TUI_SIDECAR_URL"] = sidecar_url
@@ -4824,6 +4851,11 @@ _mount_plugin_api_routes()
 # not whether the routes exist.
 from hermes_cli.dashboard_auth.routes import router as _dashboard_auth_router  # noqa: E402
 app.include_router(_dashboard_auth_router)
+
+@app.get("/api/active-profile")
+async def _get_active_profile():
+    from hermes_cli import profiles as _profiles_mod
+    return {"name": _profiles_mod.get_active_profile()}
 
 mount_spa(app)
 
