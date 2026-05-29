@@ -199,7 +199,7 @@ def test_unknown_adapter_does_not_crash_trust_check(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Layer 3: unauthorized-DM behavior reads config dm_policy
+# Layer 3: unauthorized-DM behavior reads config dm/group policy
 # ---------------------------------------------------------------------------
 
 
@@ -220,6 +220,41 @@ def test_unauthorized_dm_behavior_follows_config_dm_policy(monkeypatch, dm_polic
     runner, _adapter = _make_runner(Platform.WECOM, config, enforces=True)
 
     assert runner._get_unauthorized_dm_behavior(Platform.WECOM) == expected
+
+
+@pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
+@pytest.mark.parametrize("group_policy", ["allowlist", "disabled"])
+def test_unauthorized_dm_behavior_follows_config_group_policy(monkeypatch, platform, group_policy):
+    """Restrictive own-policy group configs should silence stranger DMs too."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            platform: PlatformConfig(enabled=True, extra={"group_policy": group_policy})
+        }
+    )
+    runner, _adapter = _make_runner(platform, config, enforces=True)
+
+    assert runner._get_unauthorized_dm_behavior(platform) == "ignore"
+
+
+@pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
+def test_explicit_pair_override_beats_group_policy_default(monkeypatch, platform):
+    """Per-platform pairing overrides the restrictive group-policy default."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            platform: PlatformConfig(
+                enabled=True,
+                extra={
+                    "group_policy": "allowlist",
+                    "unauthorized_dm_behavior": "pair",
+                },
+            )
+        }
+    )
+    runner, _adapter = _make_runner(platform, config, enforces=True)
+
+    assert runner._get_unauthorized_dm_behavior(platform) == "pair"
 
 
 def test_unauthorized_dm_behavior_open_policy_keeps_default(monkeypatch):
