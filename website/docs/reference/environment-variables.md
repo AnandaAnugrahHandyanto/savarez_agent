@@ -154,6 +154,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `HINDSIGHT_TIMEOUT` | Timeout in seconds for Hindsight memory-provider API calls (default: `60`). Bump this if your Hindsight instance is slow to respond during `/sync` or `on_session_switch` and you're seeing timeouts in `errors.log`. |
 | `SUPERMEMORY_API_KEY` | Semantic long-term memory with profile recall and session ingest ([supermemory.ai](https://supermemory.ai)) |
 | `DAYTONA_API_KEY` | Daytona cloud sandboxes ([daytona.io](https://daytona.io/)) |
+| `E2B_API_KEY` | E2B cloud sandboxes ([e2b.dev](https://e2b.dev/)) |
 
 ### Langfuse Observability
 
@@ -186,7 +187,7 @@ These variables configure the [Tool Gateway](/user-guide/features/tool-gateway) 
 
 | Variable | Description |
 |----------|-------------|
-| `TERMINAL_ENV` | Backend: `local`, `docker`, `ssh`, `singularity`, `modal`, `daytona` |
+| `TERMINAL_ENV` | Backend: `local`, `docker`, `ssh`, `singularity`, `modal`, `e2b`, `daytona` |
 | `HERMES_DOCKER_BINARY` | Override the container binary Hermes shells out to (e.g. `podman`, `/usr/local/bin/docker`). When unset, Hermes auto-discovers `docker` or `podman` on `PATH`. Needed when both are installed and you want the non-default, or when the binary lives outside `PATH`. |
 | `TERMINAL_DOCKER_IMAGE` | Docker image (default: `nikolaik/python-nodejs:python3.11-nodejs20`) |
 | `TERMINAL_DOCKER_FORWARD_ENV` | JSON array of env var names to explicitly forward into Docker terminal sessions. Note: skill-declared `required_environment_variables` are forwarded automatically — you only need this for vars not declared by any skill. |
@@ -195,6 +196,7 @@ These variables configure the [Tool Gateway](/user-guide/features/tool-gateway) 
 | `TERMINAL_SINGULARITY_IMAGE` | Singularity image or `.sif` path |
 | `TERMINAL_MODAL_IMAGE` | Modal container image |
 | `TERMINAL_DAYTONA_IMAGE` | Daytona sandbox image |
+| `TERMINAL_E2B_TEMPLATE` | E2B sandbox template |
 | `TERMINAL_TIMEOUT` | Command timeout in seconds |
 | `TERMINAL_LIFETIME_SECONDS` | Max lifetime for terminal sessions in seconds |
 | `TERMINAL_CWD` | Working directory for terminal sessions (gateway/cron only; CLI uses launch dir) |
@@ -212,7 +214,7 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `TERMINAL_SSH_KEY` | Path to private key |
 | `TERMINAL_SSH_PERSISTENT` | Override persistent shell for SSH (default: follows `TERMINAL_PERSISTENT_SHELL`) |
 
-## Container Resources (Docker, Singularity, Modal, Daytona)
+## Container Resources (Docker, Singularity, Modal, E2B, Daytona)
 
 | Variable | Description |
 |----------|-------------|

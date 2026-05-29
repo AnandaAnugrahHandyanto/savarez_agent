@@ -256,8 +256,21 @@ terminal:
 #   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"
 #   container_disk: 10240          # Daytona max is 10GB per sandbox
 
+# -----------------------------------------------------------------------------
+# OPTION 7: E2B cloud execution
+# Commands run in secure E2B cloud sandboxes
+# Great for: Cloud code execution, isolated internet-enabled sandboxes
+# Requires: pip install e2b, E2B_API_KEY env var
+# -----------------------------------------------------------------------------
+# terminal:
+#   backend: "e2b"
+#   cwd: "~"
+#   timeout: 180
+#   lifetime_seconds: 300
+#   e2b_template: "base"
+
 #
-# --- Container resource limits (docker, singularity, modal, daytona -- ignored for local/ssh) ---
+# --- Container resource limits (docker, singularity, modal, daytona, e2b -- ignored for local/ssh) ---
 # These settings apply to all container backends. They control the resources
 # allocated to the sandbox and whether its filesystem persists across sessions.
   container_cpu: 1              # CPU cores

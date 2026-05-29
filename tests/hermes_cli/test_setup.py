@@ -479,6 +479,39 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
     assert config["terminal"]["modal_mode"] == "direct"
 
 
+def test_e2b_setup_saves_api_key_and_template(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("E2B_API_KEY", raising=False)
+    config = load_config()
+
+    def fake_prompt_choice(question, choices, default=0):
+        if question == "Select terminal backend:":
+            assert any(choice.startswith("E2B -") for choice in choices)
+            return 3
+        raise AssertionError(f"Unexpected prompt_choice call: {question}")
+
+    prompt_values = iter(["e2b_test_key", "base"])
+    saved = {}
+
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: next(prompt_values))
+    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: False)
+    monkeypatch.setattr("hermes_cli.setup._prompt_container_resources", lambda config: None)
+    monkeypatch.setattr("hermes_cli.setup.get_env_value", lambda key: "")
+    monkeypatch.setattr("hermes_cli.setup.save_env_value", lambda key, value: saved.update({key: value}))
+    monkeypatch.setitem(sys.modules, "e2b", types.SimpleNamespace(Sandbox=object()))
+
+    from hermes_cli.setup import setup_terminal_backend
+
+    setup_terminal_backend(config)
+
+    assert config["terminal"]["backend"] == "e2b"
+    assert config["terminal"]["e2b_template"] == "base"
+    assert saved["E2B_API_KEY"] == "e2b_test_key"
+    assert saved["TERMINAL_E2B_TEMPLATE"] == "base"
+    assert saved["TERMINAL_ENV"] == "e2b"
+
+
 def test_setup_slack_saves_home_channel(monkeypatch):
     """_setup_slack() saves SLACK_HOME_CHANNEL when the user provides one."""
     saved = {}

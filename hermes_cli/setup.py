@@ -636,7 +636,7 @@ def _print_setup_summary(config: dict, hermes_home):
 
 
 def _prompt_container_resources(config: dict):
-    """Prompt for container resource settings (Docker, Singularity, Modal, Daytona)."""
+    """Prompt for container resource settings (Docker, Singularity, Modal, Daytona, E2B)."""
     terminal = config.setdefault("terminal", {})
 
     print()
@@ -1306,13 +1306,14 @@ def setup_terminal_backend(config: dict):
         "Local - run directly on this machine (default)",
         "Docker - isolated container with configurable resources",
         "Modal - serverless cloud sandbox",
+        "E2B - secure cloud sandbox",
         "SSH - run on a remote machine",
         "Daytona - persistent cloud development environment",
     ]
-    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona"}
-    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4}
+    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "e2b", 4: "ssh", 5: "daytona"}
+    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "e2b": 3, "ssh": 4, "daytona": 5}
 
-    next_idx = 5
+    next_idx = 6
     if is_linux:
         terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
         idx_to_backend[next_idx] = "singularity"
@@ -1555,6 +1556,59 @@ def setup_terminal_backend(config: dict):
         image = prompt("  Sandbox image", current_image)
         config["terminal"]["daytona_image"] = image
         save_env_value("TERMINAL_DAYTONA_IMAGE", image)
+
+        _prompt_container_resources(config)
+
+    elif selected_backend == "e2b":
+        print_success("Terminal backend: E2B")
+        print_info("Secure cloud sandboxes with pause/resume persistence.")
+        print_info("Sign up at: https://e2b.dev")
+
+        try:
+            __import__("e2b")
+        except ImportError:
+            print_info("Installing E2B SDK...")
+            import subprocess
+
+            uv_bin = shutil.which("uv")
+            if uv_bin:
+                result = subprocess.run(
+                    [uv_bin, "pip", "install", "--python", sys.executable, "e2b"],
+                    capture_output=True,
+                    text=True,
+                )
+            else:
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "e2b"],
+                    capture_output=True,
+                    text=True,
+                )
+            if result.returncode == 0:
+                print_success("E2B SDK installed")
+            else:
+                print_warning("Install failed — run manually: pip install e2b")
+                if result.stderr:
+                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+
+        print()
+        existing_key = get_env_value("E2B_API_KEY")
+        if existing_key:
+            print_info("  E2B API key: already configured")
+            if prompt_yes_no("  Update API key?", False):
+                api_key = prompt("    E2B API key", password=True)
+                if api_key:
+                    save_env_value("E2B_API_KEY", api_key)
+                    print_success("    Updated")
+        else:
+            api_key = prompt("    E2B API key", password=True)
+            if api_key:
+                save_env_value("E2B_API_KEY", api_key)
+                print_success("    Configured")
+
+        current_template = cfg_get(config, "terminal", "e2b_template", default="base")
+        template = prompt("  Sandbox template", current_template)
+        config["terminal"]["e2b_template"] = template or "base"
+        save_env_value("TERMINAL_E2B_TEMPLATE", config["terminal"]["e2b_template"])
 
         _prompt_container_resources(config)
 

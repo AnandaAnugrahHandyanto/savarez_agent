@@ -1,5 +1,7 @@
 import importlib
 import logging
+import sys
+import types
 
 
 terminal_tool_module = importlib.import_module("tools.terminal_tool")
@@ -22,6 +24,7 @@ def _clear_terminal_env(monkeypatch):
         "TERMINAL_TIMEOUT",
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
+        "E2B_API_KEY",
         "HOME",
         "USERPROFILE",
     ]
@@ -72,6 +75,29 @@ def test_ssh_backend_without_host_or_user_logs_and_returns_false(monkeypatch, ca
         "SSH backend selected but TERMINAL_SSH_HOST and TERMINAL_SSH_USER" in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_e2b_backend_without_api_key_logs_and_returns_false(monkeypatch, caplog):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "e2b")
+
+    with caplog.at_level(logging.ERROR):
+        ok = terminal_tool_module.check_terminal_requirements()
+
+    assert ok is False
+    assert any(
+        "E2B backend selected but E2B_API_KEY is not set" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_e2b_backend_with_api_key_checks_sdk(monkeypatch):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "e2b")
+    monkeypatch.setenv("E2B_API_KEY", "e2b_test")
+    monkeypatch.setitem(sys.modules, "e2b", types.SimpleNamespace(Sandbox=object()))
+
+    assert terminal_tool_module.check_terminal_requirements() is True
 
 
 def test_modal_backend_without_token_or_config_logs_specific_error(monkeypatch, caplog, tmp_path):

@@ -87,16 +87,17 @@ Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERM
 
 ## Terminal Backend Configuration
 
-Hermes supports six terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, or a Singularity/Apptainer container.
+Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), an E2B sandbox, a Daytona workspace, or a Singularity/Apptainer container.
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | singularity
+  backend: local    # local | docker | ssh | modal | e2b | daytona | singularity
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   timeout: 180      # Per-command timeout in seconds
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"  # Container image for Singularity backend
   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"                 # Container image for Modal backend
+  e2b_template: "base"                                                       # Sandbox template for E2B backend
   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"               # Container image for Daytona backend
 ```
 
@@ -110,6 +111,7 @@ For cloud sandboxes such as Modal and Daytona, `container_persistent: true` mean
 | **docker** | Single persistent Docker container (shared across session, `/new`, subagents) | Full (namespaces, cap-drop) | Safe sandboxing, CI/CD |
 | **ssh** | Remote server via SSH | Network boundary | Remote dev, powerful hardware |
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
+| **e2b** | E2B sandbox | Full (cloud container) | Secure cloud code execution |
 | **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
 | **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
 

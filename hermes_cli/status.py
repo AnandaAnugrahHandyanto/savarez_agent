@@ -413,6 +413,9 @@ def show_status(args):
     elif terminal_env == "daytona":
         daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20")
         print(f"  Daytona Image: {daytona_image}")
+    elif terminal_env == "e2b":
+        e2b_template = os.getenv("TERMINAL_E2B_TEMPLATE", "base")
+        print(f"  E2B Template: {e2b_template}")
 
     sudo_password = os.getenv("SUDO_PASSWORD", "")
     print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")

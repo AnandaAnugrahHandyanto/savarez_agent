@@ -460,6 +460,8 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 image = overrides.get("modal_image") or config["modal_image"]
             elif env_type == "daytona":
                 image = overrides.get("daytona_image") or config["daytona_image"]
+            elif env_type == "e2b":
+                image = overrides.get("e2b_template") or config["e2b_template"]
             else:
                 image = ""
 
@@ -467,12 +469,13 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
             container_config = None
-            if env_type in {"docker", "singularity", "modal", "daytona"}:
+            if env_type in {"docker", "singularity", "modal", "daytona", "e2b"}:
                 container_config = {
                     "container_cpu": config.get("container_cpu", 1),
                     "container_memory": config.get("container_memory", 5120),
                     "container_disk": config.get("container_disk", 51200),
                     "container_persistent": config.get("container_persistent", True),
+                    "lifetime_seconds": config.get("lifetime_seconds", 300),
                     "docker_volumes": config.get("docker_volumes", []),
                     "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                     "docker_forward_env": config.get("docker_forward_env", []),
