@@ -2980,6 +2980,78 @@ class TestAuxiliaryClientPoisonedCacheEviction:
                 _client_cache.clear()
 
 
+
+# ---------------------------------------------------------------------------
+# _build_call_kwargs — Copilot max_completion_tokens fix (#34530)
+# ---------------------------------------------------------------------------
+
+class TestBuildCallKwargsCopilotMaxTokens:
+    """_build_call_kwargs must send max_completion_tokens (not max_tokens)
+    for GitHub Copilot's api.githubcopilot.com endpoint, matching the
+    existing api.openai.com behavior.  Newer OpenAI models (gpt-5.x)
+    reject max_tokens with HTTP 400.
+    See: https://github.com/NousResearch/hermes-agent/issues/34530
+    """
+
+    def test_copilot_custom_base_uses_max_completion_tokens(self):
+        kwargs = _build_call_kwargs(
+            provider="custom",
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=2000,
+            base_url="https://api.githubcopilot.com/chat/completions",
+        )
+        assert kwargs.get("max_completion_tokens") == 2000
+        assert "max_tokens" not in kwargs
+
+    def test_copilot_custom_base_no_path_uses_max_completion_tokens(self):
+        kwargs = _build_call_kwargs(
+            provider="custom",
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=4096,
+            base_url="https://api.githubcopilot.com",
+        )
+        assert kwargs.get("max_completion_tokens") == 4096
+        assert "max_tokens" not in kwargs
+
+    def test_openai_custom_base_still_uses_max_completion_tokens(self):
+        """Regression guard: api.openai.com must keep working."""
+        kwargs = _build_call_kwargs(
+            provider="custom",
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=1024,
+            base_url="https://api.openai.com/v1",
+        )
+        assert kwargs.get("max_completion_tokens") == 1024
+        assert "max_tokens" not in kwargs
+
+    def test_other_custom_base_uses_max_tokens(self):
+        """Non-OpenAI/Copilot custom endpoints should still use max_tokens."""
+        kwargs = _build_call_kwargs(
+            provider="custom",
+            model="some-model",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=1024,
+            base_url="https://api.together.xyz/v1",
+        )
+        assert kwargs.get("max_tokens") == 1024
+        assert "max_completion_tokens" not in kwargs
+
+    def test_none_max_tokens_not_included(self):
+        """When max_tokens is None, neither key should appear."""
+        kwargs = _build_call_kwargs(
+            provider="custom",
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=None,
+            base_url="https://api.githubcopilot.com",
+        )
+        assert "max_tokens" not in kwargs
+        assert "max_completion_tokens" not in kwargs
+
+
 # ---------------------------------------------------------------------------
 # _build_call_kwargs — tool dedup at API boundary
 # ---------------------------------------------------------------------------

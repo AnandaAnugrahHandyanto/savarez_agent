@@ -4738,7 +4738,7 @@ def _build_call_kwargs(
             pass  # ZAI vision models do not accept max_tokens
         elif provider == "custom":
             custom_base = base_url or _current_custom_base_url()
-            if base_url_hostname(custom_base) == "api.openai.com":
+            if base_url_hostname(custom_base) in {"api.openai.com", "api.githubcopilot.com"}:
                 kwargs["max_completion_tokens"] = max_tokens
             else:
                 kwargs["max_tokens"] = max_tokens
