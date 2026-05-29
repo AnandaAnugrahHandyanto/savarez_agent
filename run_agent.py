@@ -160,7 +160,7 @@ from agent.model_metadata import (
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE, build_delegation_capabilities_prompt
+from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE, build_delegation_capabilities_prompt, build_delegation_capabilities_prompt
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
@@ -6024,6 +6024,13 @@ class AIAgent:
         if skills_prompt:
             stable_parts.append(skills_prompt)
 
+
+        # Delegation capabilities prompt: lists authenticated providers,
+        # reasoning effort guidance, and model selection tips.
+        # Built once per session — stable content for intelligent routing.
+        _delegation_cap_prompt = build_delegation_capabilities_prompt()
+        if _delegation_cap_prompt:
+            stable_parts.append(_delegation_cap_prompt)
         # Delegation capabilities prompt: lists authenticated providers,
         # reasoning effort guidance, and model selection tips.
         # Built once per session — stable content that helps the model know
@@ -10810,6 +10817,9 @@ class AIAgent:
             max_iterations=function_args.get("max_iterations"),
             acp_command=function_args.get("acp_command"),
             acp_args=function_args.get("acp_args"),
+                        provider=function_args.get("provider"),
+            model=function_args.get("model"),
+            reasoning_effort=function_args.get("reasoning_effort"),
             provider=function_args.get("provider"),
             model=function_args.get("model"),
             reasoning_effort=function_args.get("reasoning_effort"),
