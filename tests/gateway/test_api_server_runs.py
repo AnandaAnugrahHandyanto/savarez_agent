@@ -304,6 +304,82 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+    @pytest.mark.asyncio
+    async def test_events_poll_replays_completed_run_after_stream_closed(self, adapter):
+        """Polling clients can recover events after the live SSE queue is gone."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "replay me"}
+                mock_agent.session_prompt_tokens = 1
+                mock_agent.session_completion_tokens = 2
+                mock_agent.session_total_tokens = 3
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                for _ in range(20):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                assert run_id not in adapter._run_streams
+
+                events_resp = await cli.get(
+                    f"/v1/runs/{run_id}/events?stream=false&after=0"
+                )
+                assert events_resp.status == 200
+                payload = await events_resp.json()
+                assert payload["object"] == "list"
+                assert payload["run_id"] == run_id
+                assert payload["has_more"] is False
+                assert payload["last_seq"] >= 1
+                assert [event["seq"] for event in payload["data"]] == list(
+                    range(1, payload["last_seq"] + 1)
+                )
+                assert any(
+                    event["event"] == "run.completed"
+                    and event["output"] == "replay me"
+                    for event in payload["data"]
+                )
+
+                tail_resp = await cli.get(
+                    f"/v1/runs/{run_id}/events?stream=false&after={payload['last_seq']}"
+                )
+                assert tail_resp.status == 200
+                tail = await tail_resp.json()
+                assert tail["data"] == []
+
+    @pytest.mark.asyncio
+    async def test_status_exposes_last_event_seq_for_reconnect_cursor(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+
+                for _ in range(20):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                assert status["last_event"] == "run.completed"
+                assert status["last_event_seq"] >= 1
+
 
 
     @pytest.mark.asyncio

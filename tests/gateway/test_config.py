@@ -624,6 +624,32 @@ class TestLoadGatewayConfig:
         assert os.environ.get("TELEGRAM_PROXY") == "socks5://from-env:1080"
 
 
+class TestTelegramEnvOverrides:
+    def test_telegram_token_env_does_not_enable_explicitly_disabled_platform(self):
+        config = GatewayConfig(
+            platforms={Platform.TELEGRAM: PlatformConfig(enabled=False)}
+        )
+
+        with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "tok_env"}, clear=True):
+            _apply_env_overrides(config)
+
+        telegram = config.platforms[Platform.TELEGRAM]
+        assert telegram.enabled is False
+        assert telegram.token == "tok_env"
+        assert Platform.TELEGRAM not in config.get_connected_platforms()
+
+    def test_telegram_token_env_still_creates_enabled_platform_when_unconfigured(self):
+        config = GatewayConfig(platforms={})
+
+        with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "tok_env"}, clear=True):
+            _apply_env_overrides(config)
+
+        telegram = config.platforms[Platform.TELEGRAM]
+        assert telegram.enabled is True
+        assert telegram.token == "tok_env"
+        assert Platform.TELEGRAM in config.get_connected_platforms()
+
+
 class TestHomeChannelEnvOverrides:
     """Home channel env vars should apply even when the platform was already
     configured via config.yaml (not just when credential env vars create it)."""
