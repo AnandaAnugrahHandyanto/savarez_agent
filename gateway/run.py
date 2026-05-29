@@ -730,6 +730,38 @@ def _home_thread_env_var(platform_name: str) -> str:
     return f"{_home_target_env_var(platform_name)}_THREAD_ID"
 
 
+_STARTUP_NOTIFY_MARKER = ".startup_notify.json"
+_STARTUP_NOTIFY_TTL_SECONDS = 600
+
+
+def _startup_notification_path() -> Path:
+    """Return the service-restart startup notification marker path."""
+    return _hermes_home / _STARTUP_NOTIFY_MARKER
+
+
+def _read_startup_notification_targets(path: Path) -> list[dict]:
+    """Read startup-notification marker targets, tolerating legacy/malformed files.
+
+    Returns a list of per-platform target dicts. Supports both the current
+    ``{"targets": [...]}`` shape (one entry per configured home channel) and the
+    legacy single-target ``{"platform": ..., "chat_id": ...}`` shape so a marker
+    written by an older build is still consumed on the next startup. Missing or
+    unparseable files yield an empty list rather than raising.
+    """
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        return []
+    if isinstance(data, dict) and isinstance(data.get("targets"), list):
+        return [t for t in data["targets"] if isinstance(t, dict)]
+    if isinstance(data, dict) and data.get("platform") and data.get("chat_id"):
+        # Legacy single-target marker.
+        return [data]
+    return []
+
+
 def _restart_notification_pending() -> bool:
     """Return True when a /restart completion marker is waiting to be delivered."""
     return (_hermes_home / ".restart_notify.json").exists()
@@ -3552,6 +3584,12 @@ class GatewayRunner:
 
             dedup_key = (platform.value, str(home.chat_id), str(home.thread_id) if home.thread_id else None)
             if dedup_key in notified:
+                self._write_startup_notification_marker(
+                    platform=platform,
+                    chat_id=str(home.chat_id),
+                    thread_id=str(home.thread_id) if home.thread_id else None,
+                    reason="restart" if self._restart_requested else "signal_shutdown",
+                )
                 continue
 
             try:
@@ -3570,6 +3608,12 @@ class GatewayRunner:
                     continue
 
                 notified.add(dedup_key)
+                self._write_startup_notification_marker(
+                    platform=platform,
+                    chat_id=str(home.chat_id),
+                    thread_id=str(home.thread_id) if home.thread_id else None,
+                    reason="restart" if self._restart_requested else "signal_shutdown",
+                )
                 logger.info(
                     "Sent shutdown notification to home channel %s:%s",
                     platform.value,
@@ -3582,6 +3626,49 @@ class GatewayRunner:
                     home.chat_id,
                     e,
                 )
+
+    def _write_startup_notification_marker(
+        self,
+        *,
+        platform: Platform,
+        chat_id: str,
+        thread_id: Optional[str] = None,
+        reason: str = "signal_shutdown",
+    ) -> None:
+        """Record a home target to notify after the next startup.
+
+        Stores one entry per home-channel platform so every configured home
+        channel — not just the last one written — receives the "back up"
+        message on startup. Repeated writes for the same delivery target
+        replace the prior entry instead of accumulating duplicates.
+
+        Best-effort: this runs inside the shutdown teardown sequence, so a
+        disk / read-only / permission failure must never propagate out and
+        abort the rest of ``_stop_impl`` (exit code, runtime status, adapter
+        teardown). Errors are logged and swallowed.
+        """
+        try:
+            target = {
+                "platform": platform.value,
+                "chat_id": str(chat_id),
+                "created_at": time.time(),
+                "reason": reason,
+            }
+            if thread_id:
+                target["thread_id"] = str(thread_id)
+
+            path = _startup_notification_path()
+            key = (target["platform"], target["chat_id"], target.get("thread_id"))
+            targets = [
+                t
+                for t in _read_startup_notification_targets(path)
+                if (t.get("platform"), t.get("chat_id"), t.get("thread_id")) != key
+            ]
+            targets.append(target)
+
+            atomic_json_write(path, {"targets": targets}, indent=None)
+        except Exception as exc:
+            logger.warning("Failed to record startup notification marker: %s", exc)
 
     def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
         for agent in active_agents.values():
@@ -4403,22 +4490,7 @@ class GatewayRunner:
         if connected_count > 0:
             await asyncio.sleep(1.0)
 
-        # Notify the chat that initiated /restart that the gateway is back.
-        restart_notification_pending = _restart_notification_pending()
-        delivered_restart_target = await self._send_restart_notification()
-
-        # Broadcast a lightweight "gateway is back" message to configured
-        # home channels only when this startup is resuming from /restart. If a
-        # /restart requester already received a direct completion notice in the
-        # same chat, skip the generic broadcast there to avoid duplicates while
-        # still allowing a home-channel fallback when the direct send fails.
-        if restart_notification_pending or delivered_restart_target is not None:
-            skip_home_targets = (
-                {delivered_restart_target} if delivered_restart_target else None
-            )
-            await self._send_home_channel_startup_notifications(
-                skip_targets=skip_home_targets,
-            )
+        await self._send_startup_lifecycle_notifications()
 
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared
@@ -14654,6 +14726,29 @@ class GatewayRunner:
 
         return True
 
+    async def _send_startup_lifecycle_notifications(self) -> None:
+        """Send queued startup lifecycle notifications without duplicating targets."""
+        restart_notification_pending = _restart_notification_pending()
+        delivered_restart_target = await self._send_restart_notification()
+        skip_home_targets: set[tuple[str, str, Optional[str]]] = set()
+        if delivered_restart_target:
+            skip_home_targets.add(delivered_restart_target)
+
+        delivered_startup_targets = await self._send_startup_notification_from_marker(
+            skip_targets=set(skip_home_targets),
+        )
+        skip_home_targets.update(delivered_startup_targets)
+
+        # Broadcast a lightweight "gateway is back" message to configured
+        # home channels only when this startup is resuming from /restart. If a
+        # /restart requester already received a direct completion notice in the
+        # same chat, skip the generic broadcast there to avoid duplicates while
+        # still allowing a home-channel fallback when the direct send fails.
+        if restart_notification_pending or delivered_restart_target is not None:
+            await self._send_home_channel_startup_notifications(
+                skip_targets=skip_home_targets or None,
+            )
+
     async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
         """Notify the chat that initiated /restart that the gateway is back."""
         notify_path = _hermes_home / ".restart_notify.json"
@@ -14714,6 +14809,103 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("Restart notification failed: %s", e)
             return None
+        finally:
+            notify_path.unlink(missing_ok=True)
+
+    async def _send_startup_notification_from_marker(
+        self,
+        *,
+        skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None,
+    ) -> set[tuple[str, str, Optional[str]]]:
+        """Notify each recorded home channel that a service-managed restart completed.
+
+        The shutdown path records one entry per connected home channel, so every
+        configured home target receives the "back up" message — not just the
+        last platform written. Returns the set of targets actually delivered so
+        the caller can suppress duplicate generic home-channel broadcasts.
+        """
+        notify_path = _startup_notification_path()
+        if not notify_path.exists():
+            return set()
+
+        skipped = set(skip_targets) if skip_targets else set()
+        delivered: set[tuple[str, str, Optional[str]]] = set()
+        try:
+            now = time.time()
+            for entry in _read_startup_notification_targets(notify_path):
+                platform_str = entry.get("platform")
+                chat_id = entry.get("chat_id")
+                thread_id = entry.get("thread_id")
+                created_at = entry.get("created_at")
+
+                if not platform_str or not chat_id:
+                    continue
+                if not isinstance(created_at, (int, float)):
+                    continue
+                if now - float(created_at) > _STARTUP_NOTIFY_TTL_SECONDS:
+                    logger.info(
+                        "Startup notification marker target %s:%s expired; skipping",
+                        platform_str,
+                        chat_id,
+                    )
+                    continue
+
+                target = (str(platform_str), str(chat_id), str(thread_id) if thread_id else None)
+                if target in skipped or target in delivered:
+                    continue
+
+                try:
+                    platform = Platform(platform_str)
+                except ValueError:
+                    logger.debug("Startup notification skipped: unknown platform %s", platform_str)
+                    continue
+
+                platform_cfg = self.config.platforms.get(platform)
+                if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+                    logger.info(
+                        "Startup notification suppressed: %s has gateway_restart_notification=false",
+                        platform_str,
+                    )
+                    continue
+
+                adapter = self.adapters.get(platform)
+                if not adapter:
+                    logger.debug(
+                        "Startup notification skipped: %s adapter not connected",
+                        platform_str,
+                    )
+                    continue
+
+                try:
+                    metadata = {"thread_id": thread_id} if thread_id else None
+                    result = await adapter.send(
+                        str(chat_id),
+                        "♻ Gateway restarted successfully. Hermes is back and ready.",
+                        metadata=metadata,
+                    )
+                    if result is not None and getattr(result, "success", True) is False:
+                        logger.warning(
+                            "Startup notification to %s:%s was not delivered: %s",
+                            platform_str,
+                            chat_id,
+                            getattr(result, "error", "send returned success=False"),
+                        )
+                        continue
+
+                    logger.info("Sent startup notification to %s:%s", platform_str, chat_id)
+                    delivered.add(target)
+                except Exception as exc:
+                    logger.warning(
+                        "Startup notification to %s:%s failed: %s",
+                        platform_str,
+                        chat_id,
+                        exc,
+                    )
+
+            return delivered
+        except Exception as exc:
+            logger.warning("Startup notification failed: %s", exc)
+            return delivered
         finally:
             notify_path.unlink(missing_ok=True)
 
