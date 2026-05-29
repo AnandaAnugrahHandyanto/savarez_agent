@@ -492,6 +492,45 @@ class TestSend:
 # ---------------------------------------------------------------------------
 
 
+
+    def test_send_registers_outgoing_id_for_echo_prevention(self):
+        """When publish_topic == subscribe_topic, the outgoing message ID
+        should be registered in the dedup set so that the echoed message
+        from ntfy is skipped by _on_message()."""
+        adapter = self._make_adapter(topic="hermes-in")  # publish_topic falls back to topic
+        assert adapter._publish_topic == "hermes-in"
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"id": "echo-test-id"}
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        adapter._http_client = mock_client
+
+        result = _run(adapter.send("hermes-in", "Hello!"))
+        assert result.success is True
+        assert result.message_id == "echo-test-id"
+        # The outgoing ID must be in the dedup set
+        assert "echo-test-id" in adapter._seen_messages
+
+    def test_send_does_not_register_id_when_topics_differ(self):
+        """When publish_topic != subscribe_topic, no echo is possible,
+        so the outgoing ID should NOT be added to the dedup set."""
+        adapter = self._make_adapter(topic="hermes-in", publish_topic="hermes-out")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"id": "no-echo-id"}
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        adapter._http_client = mock_client
+
+        result = _run(adapter.send("hermes-in", "Hello!"))
+        assert result.success is True
+        assert "no-echo-id" not in adapter._seen_messages
+
 class TestOnMessage:
 
     def _make_adapter(self):

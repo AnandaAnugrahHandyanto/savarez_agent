@@ -408,6 +408,12 @@ class NtfyAdapter(BasePlatformAdapter):
                     returned_id = data.get("id") or uuid.uuid4().hex[:12]
                 except Exception:
                     returned_id = uuid.uuid4().hex[:12]
+                # Prevent echo loop: when publish_topic == subscribe_topic,
+                # ntfy echoes the agent's own reply back as an incoming
+                # message.  Register the outgoing message ID in the dedup
+                # set so _on_message() skips the echo.
+                if publish_topic == self._topic:
+                    self._seen_messages[returned_id] = time.time()
                 return SendResult(success=True, message_id=returned_id)
             body_text = resp.text
             logger.warning("[%s] Send failed HTTP %d: %s", self.name, resp.status_code, body_text[:200])
