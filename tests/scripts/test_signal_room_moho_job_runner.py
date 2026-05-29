@@ -109,12 +109,14 @@ def test_cli_submit_pose_export_rejects_unsafe_job_id_with_json_error(tmp_path: 
 def test_moho_run_once_uses_shared_durable_queue(tmp_path: Path) -> None:
     module = load_module()
     queue_root = tmp_path / "windows" / "moho" / "jobs"
+    project = tmp_path / "scene.moho"
+    project.write_text("moho project")
     module.submit_pose_export_job(
         queue_root=queue_root,
         job_id="moho-success",
         command=["Moho.exe", "--export", "scene.moho"],
         cwd=tmp_path,
-        project=tmp_path / "scene.moho",
+        project=project,
         output_dir=tmp_path / "frames",
         candidate_name="Suit_Male",
         expected_frame_count=8,
@@ -144,13 +146,15 @@ def test_moho_run_once_uses_shared_durable_queue(tmp_path: Path) -> None:
 def test_moho_success_requires_expected_output_directory(tmp_path: Path) -> None:
     module = load_module()
     queue_root = tmp_path / "windows" / "moho" / "jobs"
+    project = tmp_path / "scene.moho"
+    project.write_text("moho project")
     output_dir = tmp_path / "missing-frames"
     module.submit_pose_export_job(
         queue_root=queue_root,
         job_id="moho-missing-output",
         command=["Moho.exe", "--export", "scene.moho"],
         cwd=tmp_path,
-        project=tmp_path / "scene.moho",
+        project=project,
         output_dir=output_dir,
         candidate_name="Suit_Male",
         expected_frame_count=8,
@@ -173,13 +177,15 @@ def test_moho_success_requires_expected_output_directory(tmp_path: Path) -> None
 def test_moho_success_requires_expected_frame_count(tmp_path: Path) -> None:
     module = load_module()
     queue_root = tmp_path / "windows" / "moho" / "jobs"
+    project = tmp_path / "scene.moho"
+    project.write_text("moho project")
     output_dir = tmp_path / "short-frames"
     module.submit_pose_export_job(
         queue_root=queue_root,
         job_id="moho-short-frame-count",
         command=["Moho.exe", "--export", "scene.moho"],
         cwd=tmp_path,
-        project=tmp_path / "scene.moho",
+        project=project,
         output_dir=output_dir,
         candidate_name="Suit_Male",
         expected_frame_count=8,
@@ -200,6 +206,38 @@ def test_moho_success_requires_expected_frame_count(tmp_path: Path) -> None:
     assert failed["returncode"] == 3
     assert "expected at least 8 pose frames" in failed["stderr_tail"]
     assert "found 2" in failed["stderr_tail"]
+
+
+def test_moho_pose_export_requires_project_input_before_launch(tmp_path: Path) -> None:
+    module = load_module()
+    queue_root = tmp_path / "windows" / "moho" / "jobs"
+    missing_project = tmp_path / "missing-scene.moho"
+    module.submit_pose_export_job(
+        queue_root=queue_root,
+        job_id="moho-missing-project",
+        command=["Moho.exe", "--export", str(missing_project)],
+        cwd=tmp_path,
+        project=missing_project,
+        output_dir=tmp_path / "frames",
+        candidate_name="Suit_Male",
+        expected_frame_count=8,
+        license_status="licensed internal review",
+    )
+    calls = []
+
+    def fake_runner(command, *, cwd, timeout_seconds):
+        calls.append(command)
+        return module.RunResult(returncode=0, stdout="reported success", stderr="")
+
+    result = module.run_once(queue_root=queue_root, runner=fake_runner)
+
+    assert result["processed"] is True
+    assert result["status"] == "failed"
+    assert calls == []
+    failed = json.loads((queue_root / "failed" / "moho-missing-project.json").read_text())
+    assert failed["returncode"] == 4
+    assert "missing required input" in failed["stderr_tail"]
+    assert str(missing_project) in failed["stderr_tail"]
 
 
 def test_write_moho_worker_bundle_points_to_moho_runner(tmp_path: Path) -> None:

@@ -87,6 +87,7 @@ def submit_job(
     inputs: Sequence[Path] = (),
     outputs: Sequence[Path] = (),
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+    require_inputs: bool = False,
     require_outputs: bool = False,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -107,6 +108,7 @@ def submit_job(
         "cwd": str(cwd) if cwd else None,
         "command": validate_command(command),
         "inputs": [str(path) for path in inputs],
+        "require_inputs": bool(require_inputs),
         "outputs": [str(path) for path in outputs],
         "require_outputs": bool(require_outputs),
     }
@@ -171,6 +173,12 @@ def _missing_required_outputs(job: dict[str, Any]) -> list[str]:
     if not job.get("require_outputs"):
         return []
     return [path for path in job.get("outputs", []) if not Path(path).exists()]
+
+
+def _missing_required_inputs(job: dict[str, Any]) -> list[str]:
+    if not job.get("require_inputs"):
+        return []
+    return [path for path in job.get("inputs", []) if not Path(path).exists()]
 
 
 def _count_pose_frames(output_dir: Path) -> int:
@@ -276,6 +284,10 @@ def run_once(
     try:
         if job.get("manifest_error"):
             raise ValueError(str(job["manifest_error"]))
+        missing_inputs = _missing_required_inputs(job)
+        if missing_inputs:
+            result = RunResult(returncode=4, stderr="missing required input: " + ", ".join(missing_inputs))
+            return finish_job(queue_root, running_path, job, result)
         command = validate_command(job.get("command") or [])
         result = runner(
             command,

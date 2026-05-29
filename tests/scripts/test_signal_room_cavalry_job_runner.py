@@ -193,6 +193,35 @@ def test_run_once_fails_successful_job_with_missing_required_output(tmp_path: Pa
     assert str(missing_output) in failed["stderr_tail"]
 
 
+def test_run_once_fails_job_with_missing_required_input_before_launch(tmp_path: Path) -> None:
+    module = load_module()
+    queue_root = tmp_path / "windows" / "cavalry" / "jobs"
+    missing_input = tmp_path / "missing-scene.cav"
+    module.submit_job(
+        queue_root=queue_root,
+        job_id="missing-input-job",
+        command=["Cavalry.exe", "--render", str(missing_input)],
+        cwd=tmp_path,
+        inputs=[missing_input],
+        require_inputs=True,
+    )
+    calls = []
+
+    def fake_runner(command, *, cwd, timeout_seconds):
+        calls.append(command)
+        return module.RunResult(returncode=0, stdout="render complete", stderr="")
+
+    result = module.run_once(queue_root=queue_root, runner=fake_runner)
+
+    assert result["processed"] is True
+    assert result["status"] == "failed"
+    assert calls == []
+    failed = json.loads((queue_root / "failed" / "missing-input-job.json").read_text())
+    assert failed["returncode"] == 4
+    assert "missing required input" in failed["stderr_tail"]
+    assert str(missing_input) in failed["stderr_tail"]
+
+
 def test_recover_stale_running_jobs_marks_old_claim_failed(tmp_path: Path) -> None:
     module = load_module()
     queue_root = tmp_path / "windows" / "cavalry" / "jobs"

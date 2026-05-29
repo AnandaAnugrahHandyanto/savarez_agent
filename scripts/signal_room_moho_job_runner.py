@@ -59,6 +59,7 @@ def submit_pose_export_job(
         inputs=[project],
         outputs=[output_dir],
         timeout_seconds=timeout_seconds,
+        require_inputs=True,
         require_outputs=True,
         metadata=metadata,
     )

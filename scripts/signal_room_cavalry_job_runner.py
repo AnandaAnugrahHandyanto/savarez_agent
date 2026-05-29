@@ -39,6 +39,7 @@ def submit_job(
     inputs: Sequence[Path] = (),
     outputs: Sequence[Path] = (),
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+    require_inputs: bool = False,
     require_outputs: bool = False,
 ) -> dict[str, Any]:
     return _submit_job(
@@ -50,6 +51,7 @@ def submit_job(
         inputs=inputs,
         outputs=outputs,
         timeout_seconds=timeout_seconds,
+        require_inputs=require_inputs,
         require_outputs=require_outputs,
     )
 
@@ -112,6 +114,7 @@ def main() -> int:
     submit.add_argument("--cwd", type=Path)
     submit.add_argument("--timeout-seconds", type=int, default=DEFAULT_TIMEOUT_SECONDS)
     submit.add_argument("--input", action="append", type=Path, default=[])
+    submit.add_argument("--require-inputs", action="store_true")
     submit.add_argument("--output", action="append", type=Path, default=[])
     submit.add_argument("--require-outputs", action="store_true")
     submit.add_argument("command", nargs=argparse.REMAINDER)
@@ -146,6 +149,7 @@ def main() -> int:
                 inputs=args.input,
                 outputs=args.output,
                 timeout_seconds=args.timeout_seconds,
+                require_inputs=args.require_inputs,
                 require_outputs=args.require_outputs,
             )
         elif args.command_name == "run-once":
