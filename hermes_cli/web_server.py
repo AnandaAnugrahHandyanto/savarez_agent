@@ -1856,7 +1856,7 @@ def _submit_anthropic_pkce(session_id: str, code_input: str) -> Dict[str, Any]:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with urllib.request.urlopen(req, timeout=20) as resp:  # SSRF: add IP block check
             result = json.loads(resp.read().decode())
     except Exception as e:
         with _oauth_sessions_lock:
