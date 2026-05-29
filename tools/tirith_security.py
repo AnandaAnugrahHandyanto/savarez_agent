@@ -257,7 +257,7 @@ def _download_file(url: str, dest: str, timeout: int = 10):
     token = os.getenv("GITHUB_TOKEN")
     if token:
         req.add_header("Authorization", f"token {token}")
-    with urllib.request.urlopen(req, timeout=timeout) as resp, open(dest, "wb") as f:
+    with urllib.request.urlopen(req, timeout=timeout) as resp, open(dest, "wb") as f:  # SSRF: add IP block check
         shutil.copyfileobj(resp, f)
 
 
