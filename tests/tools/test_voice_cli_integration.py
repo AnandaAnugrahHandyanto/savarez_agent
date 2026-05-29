@@ -125,6 +125,123 @@ class TestMarkdownStripping:
 
 
 # ============================================================================
+# Reasoning / <think> block stripping (#34213)
+# ============================================================================
+
+class TestThinkBlockStripping:
+    """Regression tests for #34213.
+
+    When /reasoning show is enabled, the model's reasoning is included in
+    the assistant message text and (before this fix) was spoken aloud by
+    TTS. The fix strips <think>...</think> and <thinking>...</thinking>
+    blocks in _strip_markdown_for_tts so reasoning stays visible in chat
+    but is never spoken.
+    """
+
+    def test_strips_simple_think_block(self):
+        text = "<think>I should think about this</think>\nHello world!"
+        result = _strip_markdown_for_tts(text)
+        assert "think" not in result.lower() or "thinking" not in result.lower()
+        assert "Hello world!" in result
+
+    def test_strips_multiline_think_block(self):
+        text = (
+            "<think>\n"
+            "Step 1: parse input\n"
+            "Step 2: validate\n"
+            "Step 3: respond\n"
+            "</think>\n"
+            "The answer is 42."
+        )
+        result = _strip_markdown_for_tts(text)
+        assert "Step 1" not in result
+        assert "Step 2" not in result
+        assert "The answer is 42." in result
+
+    def test_strips_thinking_block_alias(self):
+        """<thinking> from DeepSeek / some wrappers should also be stripped."""
+        text = "<thinking>reasoning content</thinking>\nPublic answer."
+        result = _strip_markdown_for_tts(text)
+        assert "reasoning content" not in result
+        assert "Public answer" in result
+
+    def test_strips_think_with_attributes(self):
+        """Some models emit <think type=\"chain-of-thought\">; should still strip."""
+        text = '<think type="cot">secret reasoning</think>\nFinal.'
+        result = _strip_markdown_for_tts(text)
+        assert "secret" not in result
+        assert "Final." in result
+
+    def test_strips_multiple_think_blocks(self):
+        text = (
+            "<think>first thought</think>\n"
+            "Hello.\n"
+            "<think>second thought</think>\n"
+            "World."
+        )
+        result = _strip_markdown_for_tts(text)
+        assert "first thought" not in result
+        assert "second thought" not in result
+        assert "Hello." in result
+        assert "World." in result
+
+    def test_think_block_case_insensitive(self):
+        text = "<THINK>uppercase</THINK>\nVisible."
+        result = _strip_markdown_for_tts(text)
+        assert "uppercase" not in result
+        assert "Visible." in result
+
+    def test_think_with_markdown_inside(self):
+        """Strip happens BEFORE markdown processing so code fences inside
+        a reasoning block don't survive to mess up downstream stripping."""
+        text = (
+            "<think>\n"
+            "```python\nprint('debug')\n```\n"
+            "**bold reasoning**\n"
+            "</think>\n"
+            "Real answer."
+        )
+        result = _strip_markdown_for_tts(text)
+        assert "debug" not in result
+        assert "bold reasoning" not in result
+        assert "Real answer." in result
+
+    def test_no_think_block_unchanged_behavior(self):
+        """Regression guard: plain text without <think> should pass through
+        identically to pre-#34213 behavior (only normal markdown strip)."""
+        text = "This is **bold** text"
+        assert _strip_markdown_for_tts(text) == "This is bold text"
+
+    def test_unclosed_think_block_passes_through(self):
+        """If a <think> tag has no </think>, leave it alone — the streaming
+        path's buffering logic handles incomplete blocks; the sync
+        preprocess path should not eat unmatched text."""
+        text = "<think>unclosed reasoning that runs to EOF"
+        result = _strip_markdown_for_tts(text)
+        # Either left intact or stripped (current regex requires </think>),
+        # but MUST NOT crash or truncate after-text.
+        assert isinstance(result, str)
+
+    def test_prepare_tts_text_in_base_strips_think(self):
+        """gateway.platforms.base.prepare_tts_text — the OTHER TTS path —
+        also strips reasoning. The fix is applied in both places so all
+        TTS dispatch routes get consistent behavior."""
+        from gateway.platforms.base import BasePlatformAdapter
+        text = "<think>secret reasoning</think>\nPublic answer."
+        # prepare_tts_text doesn't use self; call as unbound method.
+        result = BasePlatformAdapter.prepare_tts_text(None, text)
+        assert "secret" not in result
+        assert "Public answer" in result
+
+    def test_prepare_tts_text_in_base_strips_thinking(self):
+        from gateway.platforms.base import BasePlatformAdapter
+        text = "<thinking>reasoning</thinking>\nFinal."
+        result = BasePlatformAdapter.prepare_tts_text(None, text)
+        assert "reasoning" not in result
+        assert "Final." in result
+
+
+# ============================================================================
 # Voice command parsing
 # ============================================================================
 

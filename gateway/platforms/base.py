@@ -2309,8 +2309,30 @@ class BasePlatformAdapter(ABC):
     def prepare_tts_text(self, text: str) -> str:
         """Prepare text for TTS. Override to filter tool output, code, etc.
 
-        Default strips markdown formatting and truncates to 4000 chars.
+        Default strips reasoning blocks (#34213) and markdown formatting,
+        then truncates to 4000 chars.
+
+        Reasoning blocks (``<think>...</think>`` / ``<thinking>...
+        </thinking>``) are removed so users can SEE reasoning content
+        in chat with ``/reasoning show`` while TTS skips it. Mirrors the
+        same strip applied by tools.tts_tool._strip_markdown_for_tts so
+        every TTS dispatch path gets the same treatment.
         """
+        # Strip reasoning blocks first — reasoning may contain markdown
+        # punctuation that would otherwise survive the inline-symbol
+        # scrub below.
+        text = re.sub(
+            r'<think[\s>].*?</think>',
+            '',
+            text,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        text = re.sub(
+            r'<thinking[\s>].*?</thinking>',
+            '',
+            text,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
         return re.sub(r'[*_`#\[\]()]', '', text)[:4000].strip()
 
     async def play_tts(

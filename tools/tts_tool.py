@@ -2248,9 +2248,32 @@ _MD_LIST_ITEM = re.compile(r'^\s*[-*]\s+', flags=re.MULTILINE)
 _MD_HR = re.compile(r'---+')
 _MD_EXCESS_NL = re.compile(r'\n{3,}')
 
+# Reasoning / thinking blocks emitted by some models when /reasoning show
+# is enabled. Users want to SEE reasoning in chat but not HEAR it spoken
+# by TTS (see #34213). Strip these blocks from TTS preprocessing so all
+# providers (Edge, OpenAI, ElevenLabs, Mistral, ...) skip them uniformly.
+#
+# The streaming-TTS path in stream_tts_to_speaker already had a local
+# copy of this regex; consolidating it here so non-streaming TTS
+# (provider sync paths, prepare_tts_text-driven sends) gets the same
+# behavior.
+_THINK_BLOCK = re.compile(r'<think[\s>].*?</think>', flags=re.DOTALL | re.IGNORECASE)
+# DeepSeek / some Anthropic / some OpenRouter wrappers emit reasoning as
+# <thinking>...</thinking>. Covered for parity.
+_THINKING_BLOCK = re.compile(r'<thinking[\s>].*?</thinking>', flags=re.DOTALL | re.IGNORECASE)
+
 
 def _strip_markdown_for_tts(text: str) -> str:
-    """Remove markdown formatting that shouldn't be spoken aloud."""
+    """Remove markdown formatting that shouldn't be spoken aloud.
+
+    Also strips <think>...</think> and <thinking>...</thinking> blocks
+    so reasoning content stays visible in chat but is never spoken (see
+    #34213). The strip happens FIRST so a reasoning block containing
+    e.g. code fences doesn't double-process through the markdown path.
+    """
+    # #34213: reasoning content stays visible in chat but never spoken.
+    text = _THINK_BLOCK.sub('', text)
+    text = _THINKING_BLOCK.sub('', text)
     text = _MD_CODE_BLOCK.sub(' ', text)
     text = _MD_LINK.sub(r'\1', text)
     text = _MD_URL.sub('', text)
