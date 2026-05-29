@@ -74,10 +74,15 @@ except (ImportError, AttributeError):
     _STEADY_CURSOR = None
 
 try:
-    from hermes_cli.pt_input_extras import install_shift_enter_alias, install_ctrl_enter_alias
+    from hermes_cli.pt_input_extras import (
+        install_ctrl_enter_alias,
+        install_ignored_terminal_sequences,
+        install_shift_enter_alias,
+    )
     install_shift_enter_alias()
     install_ctrl_enter_alias()
-    del install_shift_enter_alias, install_ctrl_enter_alias
+    install_ignored_terminal_sequences()
+    del install_shift_enter_alias, install_ctrl_enter_alias, install_ignored_terminal_sequences
 except Exception:
     pass
 import threading
@@ -12717,7 +12722,21 @@ class HermesCLI:
         
         # Key bindings for the input area
         kb = KeyBindings()
-        
+
+        from prompt_toolkit.keys import Keys as _IgnoreKeys
+
+        @kb.add(_IgnoreKeys.Ignore, eager=True)
+        def handle_ignored_terminal_sequence(event):
+            """Consume parser-level ignored terminal sequences before self-insert.
+
+            install_ignored_terminal_sequences() in hermes_cli.pt_input_extras
+            registers focus reports (CSI I / CSI O) as Keys.Ignore at the
+            VT100 parser level. Without this no-op binding the default
+            self-insert path would still fire and the bytes would land in
+            the buffer.
+            """
+            return None
+
         def handle_enter(event):
             """Handle Enter key - submit input.
             
@@ -13960,7 +13979,12 @@ class HermesCLI:
             reserved_below = 6
 
             available = max(0, term_rows - reserved_below)
-            mandatory_full = chrome_full + len(choice_wrapped) + len(other_wrapped)
+            # The compact decision must reserve room for at least one question
+            # row on top of the choices, otherwise full chrome (3 blank
+            # separators) gets kept when there is no room for it and the panel
+            # overflows the viewport — HSplit then clips the panel's tail,
+            # silently dropping the choices (the reported bug).
+            mandatory_full = chrome_full + 1 + len(choice_wrapped) + len(other_wrapped)
 
             use_compact_chrome = mandatory_full > available
             chrome_rows = chrome_tight if use_compact_chrome else chrome_full
@@ -13968,9 +13992,24 @@ class HermesCLI:
             max_question_rows = max(1, available - chrome_rows - len(choice_wrapped) - len(other_wrapped))
             max_question_rows = min(max_question_rows, 12)  # soft cap on huge terminals
 
+            # When the choices alone (plus compact chrome) already exceed the
+            # viewport, drop the question entirely — the choices are the only
+            # thing the user must see to make a selection. Without this the
+            # question would still claim its 1-row floor above and push the
+            # tail of the choices off-screen (HSplit clips the overflow).
+            choices_overflow = chrome_rows + len(choice_wrapped) + len(other_wrapped) >= available
+            if choices_overflow:
+                max_question_rows = 0
+
             question_wrapped = _wrap_panel_text(question, inner_text_width)
-            if len(question_wrapped) > max_question_rows:
-                keep = max(1, max_question_rows - 1)
+            if max_question_rows <= 0:
+                question_wrapped = []
+            elif len(question_wrapped) > max_question_rows:
+                # The truncation marker is itself a row, so it must count
+                # against the budget. With a 1-row budget there is no room for
+                # both a question line and the marker — show the marker alone
+                # so the rendered question never exceeds max_question_rows.
+                keep = max(0, max_question_rows - 1)
                 question_wrapped = question_wrapped[:keep] + ["… (question truncated)"]
 
             lines = []

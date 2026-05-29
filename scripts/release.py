@@ -46,6 +46,14 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
     "hermes-agent@users.noreply.github.com": "BROCCOLO1D",
+    "metalclaudbot@gmail.com": "HashClawAI",
+    "tonybear55665566@gmail.com": "TonyPepeBear",
+    "kaspersniels@gmail.com": "nielskaspers",
+    "kurobaryo@gmail.com": "kurobaryo",
+    "155192176+alelpoan@users.noreply.github.com": "alelpoan",
+    "aman@abacus.ai": "Aman113114-IITD",
+    "octavio.turra@gmail.com": "octavioturra",
+    "524706+Twanislas@users.noreply.github.com": "Twanislas",
     "9592417+adam91holt@users.noreply.github.com": "adam91holt",
     "kchuang1015@users.noreply.github.com": "kchuang1015",
     "45688690+fujinice@users.noreply.github.com": "fujinice",
@@ -60,6 +68,14 @@ AUTHOR_MAP = {
     "wangpuv@hotmail.com": "wangpuv",
     "202622897+ticketclosed-wontfix@users.noreply.github.com": "ticketclosed-wontfix",
     "wuxuebin1993@gmail.com": "victorGPT",
+    "frowte3k@gmail.com": "Frowtek",
+    "211828103+julio-cloudvisor@users.noreply.github.com": "julio-cloudvisor",
+    "17778+kweiner@users.noreply.github.com": "kweiner",
+    "223516181+faisfamilytravel@users.noreply.github.com": "faisfamilytravel",
+    "45189813+baofuen@users.noreply.github.com": "baofuen",
+    "interstellar.consulting@gmail.com": "Interstellar-code",
+    "33978413+Interstellar-code@users.noreply.github.com": "Interstellar-code",
+    "tillfalko@gmail.com": "tillfalko",
     # teknium (multiple emails)
     "teknium1@gmail.com": "teknium1",
     "kenyon1977@gmail.com": "kenyonxu",
@@ -105,6 +121,7 @@ AUTHOR_MAP = {
     "david@memorilabs.ai": "devwdave",
     "dave@devwdave.com": "devwdave",
     "1920071390@campus.ouj.ac.jp": "zapabob",
+    "zapabob@users.noreply.github.com": "zapabob",
     "gaia@gaia.local": "jfuenmayor",
     "jiahuigu@users.noreply.github.com": "Jiahui-Gu",
     "openhands@all-hands.dev": "YLChen-007",
@@ -117,6 +134,8 @@ AUTHOR_MAP = {
     "130975919+kylekahraman@users.noreply.github.com": "kylekahraman",
     "seppe@fushia.be": "seppegadeyne",
     "18264851+seppegadeyne@users.noreply.github.com": "seppegadeyne",
+    "blackpilledsoftware@gmail.com": "blackpilledsoftware-prog",
+    "266800570+blackpilledsoftware-prog@users.noreply.github.com": "blackpilledsoftware-prog",
     "dsr-restyn@users.noreply.github.com": "dsr-restyn",
     "210765158+WuKongAI-CMU@users.noreply.github.com": "WuKongAI-CMU",
     "lichriszhang@gmail.com": "codeblackhole1024",
@@ -266,6 +285,7 @@ AUTHOR_MAP = {
     "harryykyle1@gmail.com": "hharry11",
     "wysie@users.noreply.github.com": "wysie",
     "ronhi@buildabear1.localdomain": "RonHillDev",  # PR #29523 salvage (machine-local commit email)
+    "moikapy@devmoi.com": "Moikapy",  # PR #31527 salvage
     "barany.gabor@gmail.com": "gbarany",  # PR #27907 salvage (xAI sanitizer deepcopy)
     "hello@nami4d.tech": "Nami4D",  # PR #28490 salvage
     "jkausel@gmail.com": "jkausel-ai",
