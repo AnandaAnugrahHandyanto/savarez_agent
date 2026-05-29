@@ -1470,10 +1470,7 @@ def init_agent(
     # for reliable tool-calling workflows (64K tokens).
     from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
     _ctx = getattr(agent.context_compressor, "context_length", 0)
-    import logging
-    _logger = logging.getLogger("agent.init_agent")
-    _logger.warning("CONTEXT_CHECK: _ctx=%s, MINIMUM=%s, _config_context_length=%s (type=%s)", _ctx, MINIMUM_CONTEXT_LENGTH, _config_context_length, type(_config_context_length).__name__)
-    if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH and _config_context_length is None:
+    if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH:
         raise ValueError(
             f"Model {agent.model} has a context window of {_ctx:,} tokens, "
             f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
