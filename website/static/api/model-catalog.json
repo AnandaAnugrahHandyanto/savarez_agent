@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-05-28T17:19:08Z",
+  "updated_at": "2026-05-29T02:10:00Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -123,6 +123,10 @@
         {
           "id": "deepseek/deepseek-v4-pro",
           "description": ""
+        },
+        {
+          "id": "deepseek/deepseek-v4-flash",
+          "description": "cheap, fast — recommended for everyday use"
         },
         {
           "id": "openrouter/elephant-alpha",
