@@ -374,50 +374,73 @@ export function StatusRule({
       <Box flexDirection="row" flexShrink={1} overflow="hidden" width={leftWidth}>
         <Text color={t.color.border} wrap="truncate-end">
           {'─ '}
-          {busy ? (
-            <FaceTicker color={statusColor} startedAt={turnStartedAt} />
-          ) : (
-            <Text color={statusColor}>{i18n.tStatus(status)}</Text>
-          )}
-          <Text color={t.color.muted}> │ {modelLabel(model, modelReasoningEffort, modelFast)}</Text>
-          {ctxLabel ? <Text color={t.color.muted}> │ {ctxLabel}</Text> : null}
-          {bar ? (
-            <Text color={t.color.muted}>
-              {' │ '}
-              <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
-            </Text>
-          ) : null}
-          {sessionStartedAt ? (
-            <Text color={t.color.muted}>
-              {' │ '}
-              <SessionDuration startedAt={sessionStartedAt} />
-            </Text>
-          ) : null}
-          {typeof usage.compressions === 'number' && usage.compressions > 0 ? (
-            <Text color={t.color.muted}>
-              {' │ '}
-              <Text color={usage.compressions >= 10 ? t.color.error : usage.compressions >= 5 ? t.color.warn : t.color.muted}>
-                {i18n.t('usage.compressionsShort')} {usage.compressions}
-              </Text>
-            </Text>
-          ) : null}
-          <SpawnHud t={t} />
-          {voiceLabel ? (
+        </Text>
+        {busy ? (
+          <FaceTicker color={statusColor} startedAt={turnStartedAt} />
+        ) : (
+          <Text color={statusColor} wrap="truncate-end">
+            {i18n.tStatus(status)}
+          </Text>
+        )}
+        <Text color={t.color.muted} wrap="truncate-end">
+          {' │ '}
+          {modelLabel(model, modelReasoningEffort, modelFast)}
+        </Text>
+        {ctxLabel ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {ctxLabel}
+          </Text>
+        ) : null}
+        {bar ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
+          </Text>
+        ) : null}
+        {sessionStartedAt ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            <SessionDuration startedAt={sessionStartedAt} />
+          </Text>
+        ) : null}
+        {typeof usage.compressions === 'number' && usage.compressions > 0 ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
             <Text
               color={
-                voiceLabel.startsWith('●') ? t.color.error : voiceLabel.startsWith('◉') ? t.color.warn : t.color.muted
+                usage.compressions >= 10 ? t.color.error : usage.compressions >= 5 ? t.color.warn : t.color.muted
               }
             >
-              {' │ '}
-              {voiceLabel}
+              {i18n.t('usage.compressionsShort')} {usage.compressions}
             </Text>
-          ) : null}
-          {sessionCountNode}
-          {bgCount > 0 ? <Text color={t.color.muted}> │ {bgCount} {i18n.t('background.short')}</Text> : null}
-          {showCost && typeof usage.cost_usd === 'number' ? (
-            <Text color={t.color.muted}> │ ${usage.cost_usd.toFixed(4)}</Text>
-          ) : null}
-        </Text>
+          </Text>
+        ) : null}
+        <SpawnHud t={t} />
+        {voiceLabel ? (
+          <Text
+            color={
+              voiceLabel.startsWith('●') ? t.color.error : voiceLabel.startsWith('◉') ? t.color.warn : t.color.muted
+            }
+            wrap="truncate-end"
+          >
+            {' │ '}
+            {voiceLabel}
+          </Text>
+        ) : null}
+        {sessionCountNode}
+        {bgCount > 0 ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {bgCount} {i18n.t('background.short')}
+          </Text>
+        ) : null}
+        {showCost && typeof usage.cost_usd === 'number' ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ $'}
+            {usage.cost_usd.toFixed(4)}
+          </Text>
+        ) : null}
       </Box>
 
       {rightWidth > 0 ? (
