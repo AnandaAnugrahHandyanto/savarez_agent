@@ -185,6 +185,90 @@ class TestGenerateSummaryNoneContent:
         assert isinstance(summary, str)
         assert summary.startswith(SUMMARY_PREFIX)
 
+
+class TestCodexChunkedSummary:
+    @staticmethod
+    def _response(content: str):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = content
+        return mock_response
+
+    @staticmethod
+    def _large_messages(count=16):
+        return [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"turn {i} " + ("x" * 7000)}
+            for i in range(count)
+        ]
+
+    def test_codex_compression_uses_chunked_summary_for_large_inputs(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=200000):
+            c = ContextCompressor(
+                model="gpt-5.5",
+                provider="openai-codex",
+                quiet_mode=True,
+            )
+
+        prompts = []
+
+        def fake_call(**kwargs):
+            prompts.append(kwargs["messages"][0]["content"])
+            return self._response(f"summary {len(prompts)}")
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("openai-codex", "gpt-5.4", None, None, None),
+        ), patch("agent.context_compressor.call_llm", side_effect=fake_call):
+            summary = c._generate_summary(self._large_messages())
+
+        assert summary.startswith(SUMMARY_PREFIX)
+        assert len(prompts) >= 3
+        assert any("SOURCE CHUNK 1/" in prompt for prompt in prompts[:-1])
+        assert "PARTIAL SUMMARIES" in prompts[-1]
+        assert c._previous_summary == f"summary {len(prompts)}"
+
+    def test_non_codex_compression_keeps_single_summary_call_for_large_inputs(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=200000):
+            c = ContextCompressor(
+                model="gpt-4.1-mini",
+                provider="direct-openai",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("direct-openai", "gpt-4.1-mini", None, None, None),
+        ), patch("agent.context_compressor.call_llm", return_value=self._response("single summary")) as mock_call:
+            summary = c._generate_summary(self._large_messages())
+
+        assert summary.startswith(SUMMARY_PREFIX)
+        assert mock_call.call_count == 1
+
+    def test_openai_api_codex_model_uses_chunked_summary_for_large_inputs(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=200000):
+            c = ContextCompressor(
+                model="gpt-5.3-codex-spark",
+                provider="openai",
+                quiet_mode=True,
+            )
+
+        prompts = []
+
+        def fake_call(**kwargs):
+            prompts.append(kwargs["messages"][0]["content"])
+            return self._response(f"summary {len(prompts)}")
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("custom", "gpt-5.3-codex-spark", "https://api.openai.com/v1", None, None),
+        ), patch("agent.context_compressor.call_llm", side_effect=fake_call):
+            summary = c._generate_summary(self._large_messages())
+
+        assert summary.startswith(SUMMARY_PREFIX)
+        assert len(prompts) >= 3
+        assert any("SOURCE CHUNK 1/" in prompt for prompt in prompts[:-1])
+        assert "PARTIAL SUMMARIES" in prompts[-1]
+
     def test_none_content_in_system_message_compress(self):
         """System message with content=None should not crash during compress."""
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):

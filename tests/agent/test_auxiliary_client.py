@@ -1496,6 +1496,60 @@ class TestAuxiliaryFallbackLayering:
 
         assert main_client.chat.completions.create.called
 
+    def test_compression_task_skips_main_agent_fallback_when_chain_exhausted(self, monkeypatch):
+        """Compression uses only its configured chain and avoids main-agent fallback."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_payment_err()
+
+        main_called = MagicMock()
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "glm-4v-flash")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("glm", "glm-4v-flash", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                   side_effect=main_called):
+            with pytest.raises(Exception, match="Payment Required"):
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "hello"}],
+                )
+
+        # Compression should not reach main-agent fallback. Keep this path
+        # failure-only to avoid extra codex fallback latency.
+        main_called.assert_not_called()
+
+    def test_codex_auxiliary_timeout_is_rethrown_without_connection_fallback(self, monkeypatch):
+        """A Codex auxiliary timeout should not be treated as connection-fallback."""
+        from agent.auxiliary_client import _CodexAuxiliaryTimeoutError
+
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://chatgpt.com/backend-api/codex")
+
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = _CodexAuxiliaryTimeoutError(
+            "Codex auxiliary Responses stream exceeded 12.0s total timeout",
+        )
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "gpt-5.3-codex")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("openai-codex", "gpt-5.3-codex", None, None, None)), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                   return_value=(None, None, "")) as mock_pay, \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback") as mock_main:
+            with pytest.raises(_CodexAuxiliaryTimeoutError):
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "hello"}],
+                )
+
+        mock_pay.assert_not_called()
+        mock_main.assert_not_called()
+
     def test_warning_emitted_when_all_fallbacks_exhausted(self, monkeypatch, caplog):
         """When chain AND main model both fail, a user-visible warning fires before re-raise."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
@@ -1648,6 +1702,14 @@ class TestIsConnectionError:
         from agent.auxiliary_client import _is_connection_error
         err = Exception("Internal Server Error")
         err.status_code = 500
+        assert _is_connection_error(err) is False
+
+    def test_codex_auxiliary_timeout_is_not_connection_error(self):
+        from agent.auxiliary_client import (
+            _is_connection_error,
+            _CodexAuxiliaryTimeoutError,
+        )
+        err = _CodexAuxiliaryTimeoutError("Codex auxiliary Responses stream exceeded 12.0s total timeout")
         assert _is_connection_error(err) is False
 
 
@@ -2418,6 +2480,15 @@ class TestCodexAdapterReasoningTranslation:
         adapter, captured = self._build_adapter()
         adapter.create(messages=[{"role": "user", "content": "hi"}])
         assert "reasoning" not in captured
+        assert "include" not in captured
+
+    def test_compression_task_defaults_to_low_effort_without_reasoning_replay(self):
+        adapter, captured = self._build_adapter()
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            _hermes_auxiliary_task="compression",
+        )
+        assert captured.get("reasoning") == {"effort": "low", "summary": "auto"}
         assert "include" not in captured
 
     def test_extra_body_without_reasoning_key_is_noop(self):
