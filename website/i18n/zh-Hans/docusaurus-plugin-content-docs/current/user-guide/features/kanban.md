@@ -430,7 +430,7 @@ hermes dashboard        # 导航栏中出现 "Kanban" 标签页，位于 "Skills
 | `auto_decompose` | `true` | 调度器每 tick 自动运行分解器。 |
 | `auto_decompose_per_tick` | `3` | 每个调度器 tick 的分解上限。超出部分推迟到下一个 tick。 |
 | `orchestrator_profile` | `""` | 拥有分解权的配置文件。空 = 回退到活动默认配置文件。 |
-| `default_assignee` | `""` | LLM 选择未知配置文件时子任务的落地位置。空 = 回退到活动默认配置文件。 |
+| `default_assignee` | `""` | 调度器接管的任何无指派 `ready` 任务的回退指派对象 —— 包括 LLM 选择未知配置文件的分解器子任务，以及其他未指派的任务。空 = 回退到活动默认配置文件。 |
 
 以及两个辅助 LLM 槽：
 
