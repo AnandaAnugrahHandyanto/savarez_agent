@@ -1132,6 +1132,7 @@ class CredentialPool:
             return _codex_access_token_is_expiring(
                 entry.access_token,
                 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
+                last_refresh=getattr(entry, "last_refresh", None),
             )
         if self.provider == "xai-oauth":
             return auth_mod._xai_access_token_is_expiring(
