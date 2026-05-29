@@ -88,14 +88,17 @@ def test_extract_local_files_uses_shared_extension_set(tmp_path):
     assert paths == [str(f)]
 
 
-def test_tool_media_re_matches_broadened_extensions():
-    from gateway.platforms.base import _TOOL_MEDIA_RE
-    content = '{"success": true, "media_tag": "MEDIA:/tmp/notes.md"}'
-    paths = [m.group(1).rstrip('",}') for m in _TOOL_MEDIA_RE.finditer(content)]
-    assert paths == ["/tmp/notes.md"]
-
-    upper = '{"media_tag": "MEDIA:/tmp/IMG.PNG"}'
-    assert [m.group(1).rstrip('",}') for m in _TOOL_MEDIA_RE.finditer(upper)] == ["/tmp/IMG.PNG"]
+def test_tool_media_paths_salvages_from_tool_json():
+    # Behavioral coverage of the helper that run.py's history-dedup + salvage
+    # sites use (not the private regex): broadened exts, uppercase, Windows/UNC,
+    # JSON-token cleanup, order preserved, empty when there's no MEDIA: tag.
+    from gateway.platforms.base import tool_media_paths
+    assert tool_media_paths('{"success": true, "media_tag": "MEDIA:/tmp/notes.md"}') == ["/tmp/notes.md"]
+    assert tool_media_paths('{"media_tag": "MEDIA:/tmp/IMG.PNG"}') == ["/tmp/IMG.PNG"]
+    assert tool_media_paths(r'{"media_tag": "MEDIA:C:\out\img.png"}') == [r"C:\out\img.png"]
+    assert tool_media_paths(r'{"x": "MEDIA:\\srv\share\f.pdf"}') == [r"\\srv\share\f.pdf"]
+    assert tool_media_paths("a MEDIA:/a.png then MEDIA:/b.pdf") == ["/a.png", "/b.pdf"]
+    assert tool_media_paths('{"ok": true}') == []
 
 
 @pytest.mark.parametrize("ext", [".kml", ".kmz", ".geojson", ".gpx"])
@@ -147,11 +150,3 @@ def test_windows_unc_media_tag_recognized_and_stripped(path):
     assert "\\" not in cleaned  # no raw backslash path remains
 
 
-def test_tool_media_re_recognizes_windows_paths():
-    from gateway.platforms.base import _TOOL_MEDIA_RE
-    for content, expected in [
-        (r'{"media_tag": "MEDIA:C:\out\img.png"}', r"C:\out\img.png"),
-        (r'{"media_tag": "MEDIA:\\srv\share\f.pdf"}', r"\\srv\share\f.pdf"),
-    ]:
-        got = [m.group(1).rstrip('",}') for m in _TOOL_MEDIA_RE.finditer(content)]
-        assert got == [expected]

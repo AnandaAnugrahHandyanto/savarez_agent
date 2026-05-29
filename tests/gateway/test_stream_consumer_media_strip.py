@@ -1,5 +1,7 @@
+import pytest
+
 from gateway.stream_consumer import GatewayStreamConsumer
-from gateway.platforms.base import _MEDIA_TAG_RE
+from gateway.platforms.base import BasePlatformAdapter
 
 
 def _clean(text):
@@ -18,6 +20,20 @@ def test_bold_wrapped_media_stripped_from_display():
     assert "*" not in out
 
 
-def test_stream_consumer_shares_base_pattern_object():
-    # Guard against re-introducing a separate (driftable) copy.
-    assert GatewayStreamConsumer._MEDIA_RE is _MEDIA_TAG_RE
+@pytest.mark.parametrize("text", [
+    "Here MEDIA:/My Docs/x.pdf",
+    "**MEDIA:/tmp/x.png**",
+    "Done. MEDIA:/tmp/a.png and more prose",
+    r"got it MEDIA:C:\out\img.png",
+    "MEDIA:/tmp/notes.md MEDIA:/tmp/notes.md",
+    "no media here at all",
+    "lowercase media:/tmp/a.png stays",
+    "unknown MEDIA:/tmp/x.xyz stays",
+])
+def test_streaming_display_strip_matches_extractor_cleaning(text):
+    # Zero-drift contract (behavioral, not "same object"): the streaming display
+    # path must strip MEDIA: tags identically to the canonical extract_media
+    # cleaner, however each is implemented. Survives a refactor that achieves
+    # the same behavior without literally sharing one regex object.
+    _media, extractor_cleaned = BasePlatformAdapter.extract_media(text)
+    assert _clean(text).strip() == extractor_cleaned.strip()

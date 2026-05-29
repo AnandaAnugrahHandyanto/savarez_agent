@@ -923,6 +923,23 @@ _TOOL_MEDIA_RE = re.compile(
     re.IGNORECASE,
 )
 
+
+def tool_media_paths(content: str) -> List[str]:
+    """Salvage MEDIA: paths from raw tool/function JSON content, in order.
+
+    Single source for run.py's history-dedup and salvage sites: applies
+    ``_TOOL_MEDIA_RE`` and the same JSON-token cleanup (strip surrounding
+    whitespace + trailing ``",}``) both used, so the two sites can't drift.
+    """
+    if "MEDIA:" not in content:
+        return []
+    paths: List[str] = []
+    for match in _TOOL_MEDIA_RE.finditer(content):
+        path = match.group(1).strip().rstrip('",}')
+        if path:
+            paths.append(path)
+    return paths
+
 # Default recency window for trusting freshly-produced files (seconds).
 # The agent's actual work generally completes well inside 10 minutes; legitimate
 # build artifacts (PDFs from pandoc, plots from matplotlib, etc.) almost always
