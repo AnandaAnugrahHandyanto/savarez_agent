@@ -696,6 +696,10 @@ class Task:
     # set the env var. Lets clients render a per-session board without
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
+    # Timestamp set by block_task for worker/operator kanban_block.
+    # NULL = not a worker-initiated block.  Used by _has_sticky_block
+    # and recompute_ready to avoid auto-promoting sticky blocks.
+    sticky_blocked_at: Optional[int] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -764,6 +768,9 @@ class Task:
             ),
             session_id=(
                 row["session_id"] if "session_id" in keys else None
+            ),
+            sticky_blocked_at=(
+                row["sticky_blocked_at"] if "sticky_blocked_at" in keys else None
             ),
         )
 
@@ -902,7 +909,17 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- for tasks created from the CLI, dashboard, or any path that doesn't
     -- set the env var. Indexed so per-session list queries stay cheap on
     -- larger boards.
-    session_id           TEXT
+    session_id           TEXT,
+    -- Sticky-block timestamp.  Set by ``block_task`` (worker/operator
+    -- ``kanban_block``), cleared by ``unblock_task``, ``promote_task``,
+    -- and ``recompute_ready``.  NULL = not a sticky block (e.g. circuit-
+    -- breaker ``gave_up``).  Non-NULL = worker asked for human review;
+    -- ``recompute_ready`` must NOT auto-promote.  Stored directly on the
+    -- ``tasks`` row (not inferred from ``task_events``) so the check is
+    -- visible across SQLite connections in WAL mode — avoids the cross-
+    -- connection visibility gap that made the old ``_has_sticky_block``
+    -- event-query unreliable in production (#34689).
+    sticky_blocked_at    INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1516,6 +1533,16 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
 
     if "model_override" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN model_override TEXT")
+
+    if "sticky_blocked_at" not in cols:
+        # Timestamp set by block_task for worker/operator kanban_block.
+        # NULL = not a worker-initiated block.  Stored on the tasks row
+        # (not inferred from task_events) so recompute_ready sees it
+        # across SQLite connections in WAL mode (#34689).
+        _add_column_if_missing(
+            conn, "tasks", "sticky_blocked_at",
+            "sticky_blocked_at INTEGER",
+        )
 
     if "session_id" not in cols:
         # Originating agent/chat session id, populated when the task is
@@ -2449,12 +2476,10 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     for that path.
     """
     row = conn.execute(
-        "SELECT kind FROM task_events "
-        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
-        "ORDER BY id DESC LIMIT 1",
+        "SELECT sticky_blocked_at FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
-    return bool(row) and row["kind"] == "blocked"
+    return bool(row) and row["sticky_blocked_at"] is not None
 
 
 def recompute_ready(conn: sqlite3.Connection) -> int:
@@ -2499,7 +2524,8 @@ def recompute_ready(conn: sqlite3.Connection) -> int:
                 if cur_status == "blocked":
                     conn.execute(
                         "UPDATE tasks SET status = 'ready', "
-                        "consecutive_failures = 0, last_failure_error = NULL "
+                        "consecutive_failures = 0, last_failure_error = NULL, "
+                        "sticky_blocked_at = NULL "
                         "WHERE id = ? AND status = 'blocked'",
                         (task_id,),
                     )
@@ -3608,11 +3634,12 @@ def block_task(
                    SET status       = 'blocked',
                        claim_lock   = NULL,
                        claim_expires= NULL,
-                       worker_pid   = NULL
+                       worker_pid   = NULL,
+                       sticky_blocked_at = ?
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                 """,
-                (task_id,),
+                (int(time.time()), task_id),
             )
         else:
             cur = conn.execute(
@@ -3621,12 +3648,13 @@ def block_task(
                    SET status       = 'blocked',
                        claim_lock   = NULL,
                        claim_expires= NULL,
-                       worker_pid   = NULL
+                       worker_pid   = NULL,
+                       sticky_blocked_at = ?
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                    AND current_run_id = ?
                 """,
-                (task_id, int(expected_run_id)),
+                (int(time.time()), task_id, int(expected_run_id)),
             )
         if cur.rowcount != 1:
             return False
@@ -3702,7 +3730,7 @@ def promote_task(
 
     with write_txn(conn):
         upd = conn.execute(
-            "UPDATE tasks SET status = 'ready' "
+            "UPDATE tasks SET status = 'ready', sticky_blocked_at = NULL "
             "WHERE id = ? AND status IN ('todo', 'blocked')",
             (task_id,),
         )
@@ -3761,7 +3789,8 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         new_status = "todo" if undone_parents else "ready"
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "consecutive_failures = 0, last_failure_error = NULL "
+            "consecutive_failures = 0, last_failure_error = NULL, "
+            "sticky_blocked_at = NULL "
             "WHERE id = ? AND status IN ('blocked', 'scheduled')",
             (new_status, task_id),
         )
