@@ -232,7 +232,12 @@ def check_for_updates() -> Optional[int]:
     cache_file = hermes_home / ".update_check"
     embedded_rev = os.environ.get("HERMES_REVISION") or None
 
-    # Read cache — invalidate if the embedded rev has changed since last check
+    # Read cache — invalidate if either the embedded rev or the installed
+    # version has changed since the last check. The version guard matters for
+    # pip/uv installs: there ``embedded_rev`` is always ``None``, so the rev
+    # comparison alone (``None == None``) never invalidates the cache, and a
+    # stale "N commits behind" result would persist for the full TTL after an
+    # upgrade.
     now = time.time()
     try:
         if cache_file.exists():
@@ -240,6 +245,7 @@ def check_for_updates() -> Optional[int]:
             if (
                 now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
                 and cached.get("rev") == embedded_rev
+                and cached.get("version") == VERSION
             ):
                 return cached.get("behind")
     except Exception:
@@ -260,7 +266,11 @@ def check_for_updates() -> Optional[int]:
             behind = _check_via_local_git(repo_dir)
 
     try:
-        cache_file.write_text(json.dumps({"ts": now, "behind": behind, "rev": embedded_rev}))
+        cache_file.write_text(
+            json.dumps(
+                {"ts": now, "behind": behind, "rev": embedded_rev, "version": VERSION}
+            )
+        )
     except Exception:
         pass
 

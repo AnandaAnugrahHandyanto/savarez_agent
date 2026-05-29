@@ -17,8 +17,8 @@ def test_version_string_no_v_prefix():
 
 
 def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
-    """When cache is fresh, check_for_updates should return cached value without calling git."""
-    from hermes_cli.banner import check_for_updates
+    """When cache is fresh (same version), check_for_updates returns cached value without calling git."""
+    from hermes_cli.banner import check_for_updates, VERSION
 
     # Create a fake git repo and fresh cache
     repo_dir = tmp_path / "hermes-agent"
@@ -26,7 +26,7 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
     (repo_dir / ".git").mkdir()
 
     cache_file = tmp_path / ".update_check"
-    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3}))
+    cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3, "version": VERSION}))
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     with patch("hermes_cli.banner.subprocess.run") as mock_run:
@@ -34,6 +34,56 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
 
     assert result == 3
     mock_run.assert_not_called()
+
+
+def test_check_for_updates_invalidates_on_version_change(tmp_path, monkeypatch):
+    """Regression for stale 'N commits behind' after a pip/uv upgrade.
+
+    For pip installs ``HERMES_REVISION`` is unset, so the embedded-rev guard
+    (``None == None``) never invalidates the cache. A cache written by the old
+    version must therefore be invalidated by the version mismatch, forcing a
+    fresh git check instead of returning the stale ``behind`` value.
+    """
+    from hermes_cli.banner import check_for_updates
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    # Fresh-by-time cache, but written by a DIFFERENT (older) version.
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(
+        json.dumps({"ts": time.time(), "behind": 1, "rev": None, "version": "0.0.0-old"})
+    )
+
+    # git now reports up-to-date.
+    mock_result = MagicMock(returncode=0, stdout="0\n")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_REVISION", raising=False)
+    with patch("hermes_cli.banner.subprocess.run", return_value=mock_result) as mock_run:
+        result = check_for_updates()
+
+    # The stale cached value (1) must NOT be returned; a fresh check ran.
+    assert result == 0
+    assert mock_run.call_count >= 1
+
+
+def test_check_for_updates_writes_version_to_cache(tmp_path, monkeypatch):
+    """A fresh check must persist the current VERSION so subsequent upgrades invalidate."""
+    from hermes_cli.banner import check_for_updates, VERSION
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    mock_result = MagicMock(returncode=0, stdout="0\n")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_REVISION", raising=False)
+    with patch("hermes_cli.banner.subprocess.run", return_value=mock_result):
+        check_for_updates()
+
+    cached = json.loads((tmp_path / ".update_check").read_text())
+    assert cached.get("version") == VERSION
 
 
 def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
