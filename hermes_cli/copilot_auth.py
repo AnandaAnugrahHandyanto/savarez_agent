@@ -329,7 +329,7 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # SSRF: add IP block check
             data = json.loads(resp.read().decode())
     except Exception as exc:
         raise ValueError(f"Copilot token exchange failed: {exc}") from exc
