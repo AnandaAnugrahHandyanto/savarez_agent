@@ -39,6 +39,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 from dataclasses import asdict
@@ -155,11 +156,141 @@ BOARD_COLUMNS: list[str] = [
 
 _CARD_SUMMARY_PREVIEW_CHARS = 200
 
+_EMPTY_DASHBOARD_FACETS: dict[str, Optional[str]] = {
+    "work_mode": None,
+    "handoff_state": None,
+    "review_gate": None,
+    "monitor_state": None,
+    "origin_kind": None,
+    "origin_key": None,
+    "origin_fingerprint": None,
+}
+
+
+def _normalise_facet_value(value: Any) -> Optional[str]:
+    if value is None or isinstance(value, (dict, list, tuple, set)):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _parse_simple_spearhead_frontmatter(body: Optional[str]) -> dict[str, Optional[str]]:
+    """Parse the dashboard's tiny ``spearhead:`` frontmatter subset.
+
+    This deliberately avoids a YAML dependency and stays read-only: malformed
+    cards simply return no overrides. Supported shapes are the plain scalars the
+    dashboard facets need, plus ``origin.{kind,key,fingerprint}``.
+    """
+    if not body:
+        return {}
+    text = body.lstrip()
+    frontmatter = ""
+    if text.startswith("---"):
+        lines = text.splitlines()
+        end_idx = None
+        for idx, line in enumerate(lines[1:], start=1):
+            if line.strip() == "---":
+                end_idx = idx
+                break
+        if end_idx is None:
+            return {}
+        frontmatter = "\n".join(lines[1:end_idx])
+    elif text.startswith("spearhead:"):
+        frontmatter = text
+    else:
+        return {}
+
+    facets: dict[str, Optional[str]] = {}
+    in_spearhead = False
+    in_origin = False
+    saw_spearhead = False
+    for raw_line in frontmatter.splitlines():
+        line = raw_line.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        stripped = line.strip()
+        if indent == 0:
+            in_spearhead = stripped == "spearhead:"
+            saw_spearhead = saw_spearhead or in_spearhead
+            in_origin = False
+            continue
+        if not in_spearhead or ":" not in stripped:
+            continue
+        key, value = stripped.split(":", 1)
+        key = key.strip().replace("-", "_")
+        value = value.strip().strip('"\'')
+        if indent <= 2:
+            in_origin = key == "origin" and not value
+            if key in {"work_mode", "handoff_state", "review_gate", "monitor_state"}:
+                facets[key] = _normalise_facet_value(value)
+            continue
+        if in_origin and key in {"kind", "key", "fingerprint"}:
+            facets[f"origin_{key}"] = _normalise_facet_value(value)
+
+    return facets if saw_spearhead else {}
+
+
+def _parse_origin_idempotency_key(key: Optional[str]) -> dict[str, Optional[str]]:
+    if not key:
+        return {}
+    text = str(key).strip()
+    # Preferred Spearhead/Paperclip-inspired convention:
+    # origin:<kind>:<key>:<fingerprint>. The final two fields may contain
+    # colons, so only the first three separators are structural.
+    if text.startswith("origin:"):
+        parts = text.split(":", 3)
+        if len(parts) >= 3:
+            return {
+                "origin_kind": _normalise_facet_value(parts[1]),
+                "origin_key": _normalise_facet_value(parts[2]),
+                "origin_fingerprint": _normalise_facet_value(parts[3]) if len(parts) == 4 else None,
+            }
+    # Also tolerate key-value metadata used by automation ids.
+    found: dict[str, Optional[str]] = {}
+    for match in re.finditer(r"(?:^|[|;,\s])(origin_(?:kind|key|fingerprint)|originKind|originKey|originFingerprint)=([^|;,\s]+)", text):
+        raw_name = match.group(1)
+        snake = re.sub(r"(?<!^)([A-Z])", r"_\1", raw_name).lower()
+        found[snake] = _normalise_facet_value(match.group(2))
+    return found
+
+
+def _derive_dashboard_facets(
+    task: kanban_db.Task,
+    *,
+    block_reason: Optional[str] = None,
+    latest_comment: Optional[str] = None,
+) -> dict[str, Optional[str]]:
+    """Return read-only dashboard facets derived from existing Kanban data."""
+    facets = dict(_EMPTY_DASHBOARD_FACETS)
+    facets.update({k: v for k, v in _parse_origin_idempotency_key(task.idempotency_key).items() if v})
+    facets.update({k: v for k, v in _parse_simple_spearhead_frontmatter(task.body).items() if v})
+
+    current_block_reason = block_reason if task.status in ("blocked", "scheduled") else None
+    signal = _normalise_facet_value(current_block_reason) or _normalise_facet_value(latest_comment)
+    lowered = signal.lower() if signal else ""
+    if lowered.startswith("review-required:"):
+        facets["handoff_state"] = facets["handoff_state"] or "review-required"
+        facets["review_gate"] = facets["review_gate"] or "human-review"
+    elif lowered.startswith("monitor:"):
+        facets["monitor_state"] = facets["monitor_state"] or "monitoring"
+        facets["handoff_state"] = facets["handoff_state"] or "waiting"
+    elif lowered.startswith("recovery:"):
+        facets["work_mode"] = facets["work_mode"] or "recovery"
+        facets["handoff_state"] = facets["handoff_state"] or "needs-recovery"
+
+    if task.status == "scheduled":
+        facets["monitor_state"] = facets["monitor_state"] or "scheduled"
+        facets["handoff_state"] = facets["handoff_state"] or "waiting"
+    return facets
+
 
 def _task_dict(
     task: kanban_db.Task,
     *,
     latest_summary: Optional[str] = None,
+    block_reason: Optional[str] = None,
+    latest_comment: Optional[str] = None,
 ) -> dict[str, Any]:
     d = asdict(task)
     # Add derived age metrics so the UI can colour stale cards without
@@ -174,6 +305,11 @@ def _task_dict(
     # ``tasks.result``. ``None`` when no run has produced a summary yet.
     d["latest_summary"] = latest_summary
     # Keep body short on list endpoints; full body comes from /tasks/:id.
+    d["facets"] = _derive_dashboard_facets(
+        task,
+        block_reason=block_reason,
+        latest_comment=latest_comment,
+    )
     return d
 
 
@@ -633,6 +769,24 @@ def get_board(
                 "SELECT task_id, COUNT(*) AS n FROM task_comments GROUP BY task_id"
             )
         }
+        latest_comments: dict[str, str] = {}
+        for r in conn.execute(
+            "SELECT task_id, body FROM task_comments ORDER BY id ASC"
+        ).fetchall():
+            latest_comments[r["task_id"]] = r["body"]
+
+        block_reasons: dict[str, str] = {}
+        for r in conn.execute(
+            "SELECT task_id, payload FROM task_events "
+            "WHERE kind IN ('blocked', 'scheduled') ORDER BY id ASC"
+        ).fetchall():
+            try:
+                payload = json.loads(r["payload"] or "{}")
+            except Exception:
+                payload = {}
+            reason = payload.get("reason") if isinstance(payload, dict) else None
+            if reason:
+                block_reasons[r["task_id"]] = str(reason)
 
         # Progress rollup: for each parent, how many children are done / total.
         # One pass over task_links joined with child status — cheaper than
@@ -672,7 +826,12 @@ def get_board(
             preview = (
                 full[:_CARD_SUMMARY_PREVIEW_CHARS] if full else None
             )
-            d = _task_dict(t, latest_summary=preview)
+            d = _task_dict(
+                t,
+                latest_summary=preview,
+                block_reason=block_reasons.get(t.id),
+                latest_comment=latest_comments.get(t.id),
+            )
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
@@ -753,7 +912,23 @@ def get_task(
         # operators can read the complete worker handoff without making
         # a second round-trip. Cards on /board carry a 200-char preview.
         full_summary = kanban_db.latest_summary(conn, task_id)
-        task_d = _task_dict(task, latest_summary=full_summary)
+        events = kanban_db.list_events(conn, task_id)
+        comments = kanban_db.list_comments(conn, task_id)
+        block_reason: Optional[str] = None
+        for event in events:
+            if event.kind not in ("blocked", "scheduled"):
+                continue
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            reason = payload.get("reason")
+            if reason:
+                block_reason = str(reason)
+        latest_comment = comments[-1].body if comments else None
+        task_d = _task_dict(
+            task,
+            latest_summary=full_summary,
+            block_reason=block_reason,
+            latest_comment=latest_comment,
+        )
         # Attach diagnostics so the drawer's Diagnostics section can
         # render recovery actions without a second round-trip.
         diags = _compute_task_diagnostics(conn, task_ids=[task_id])
@@ -763,8 +938,8 @@ def get_task(
             task_d["warnings"] = _warnings_summary_from_diagnostics(diag_list)
         return {
             "task": task_d,
-            "comments": [_comment_dict(c) for c in kanban_db.list_comments(conn, task_id)],
-            "events": [_event_dict(e) for e in kanban_db.list_events(conn, task_id)],
+            "comments": [_comment_dict(c) for c in comments],
+            "events": [_event_dict(e) for e in events],
             "attachments": [_attachment_dict(a) for a in kanban_db.list_attachments(conn, task_id)],
             "links": _links_for(conn, task_id),
             "runs": [
@@ -1140,7 +1315,26 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 )
 
         updated = kanban_db.get_task(conn, task_id)
-        return {"task": _task_dict(updated) if updated else None}
+        if not updated:
+            return {"task": None}
+        events = kanban_db.list_events(conn, task_id)
+        comments = kanban_db.list_comments(conn, task_id)
+        block_reason: Optional[str] = None
+        for event in events:
+            if event.kind not in ("blocked", "scheduled"):
+                continue
+            payload_dict = event.payload if isinstance(event.payload, dict) else {}
+            reason = payload_dict.get("reason")
+            if reason:
+                block_reason = str(reason)
+        latest_comment = comments[-1].body if comments else None
+        return {
+            "task": _task_dict(
+                updated,
+                block_reason=block_reason,
+                latest_comment=latest_comment,
+            )
+        }
     finally:
         conn.close()
 

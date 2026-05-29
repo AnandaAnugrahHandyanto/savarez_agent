@@ -206,6 +206,160 @@ def test_duplicate_active_idempotency_keys_surface_on_board_task_and_diagnostics
     assert {row["task_id"] for row in duplicate_rows} == {first["id"], second["id"]}
 
 
+def _task_from_board(client, task_id: str) -> dict:
+    data = client.get("/api/plugins/kanban/board").json()
+    for column in data["columns"]:
+        for task in column["tasks"]:
+            if task["id"] == task_id:
+                return task
+    raise AssertionError(f"task {task_id} not found on board")
+
+
+def test_dashboard_facets_parse_spearhead_planning_frontmatter(client):
+    body = """---
+spearhead:
+  work_mode: planning
+  handoff_state: implementation-ready
+  review_gate: none
+  origin:
+    kind: notion
+    key: task-123
+    fingerprint: sha256:abc
+---
+
+Acceptance notes stay in the ordinary card body.
+"""
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "plan parser", "body": body, "idempotency_key": "ignored-by-frontmatter"},
+    ).json()["task"]
+
+    facets = _task_from_board(client, task["id"])["facets"]
+    assert facets == {
+        "work_mode": "planning",
+        "handoff_state": "implementation-ready",
+        "review_gate": "none",
+        "monitor_state": None,
+        "origin_kind": "notion",
+        "origin_key": "task-123",
+        "origin_fingerprint": "sha256:abc",
+    }
+
+
+def test_dashboard_facets_parse_review_required_block_reason(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "needs review", "assignee": "gond"},
+    ).json()["task"]
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"status": "blocked", "block_reason": "review-required: tests pass; needs human eyes"},
+    )
+    assert r.status_code == 200
+    assert r.json()["task"]["facets"]["review_gate"] == "human-review"
+
+    facets = _task_from_board(client, task["id"])["facets"]
+    assert facets["handoff_state"] == "review-required"
+    assert facets["review_gate"] == "human-review"
+    assert facets["work_mode"] is None
+
+
+def test_dashboard_facets_do_not_keep_stale_block_reason_after_unblock(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "review finished", "assignee": "gond"},
+    ).json()["task"]
+    client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"status": "blocked", "block_reason": "review-required: stale after unblock"},
+    )
+    r = client.patch(f"/api/plugins/kanban/tasks/{task['id']}", json={"status": "ready"})
+    assert r.status_code == 200
+
+    facets = _task_from_board(client, task["id"])["facets"]
+    assert facets["handoff_state"] is None
+    assert facets["review_gate"] is None
+
+
+def test_dashboard_facets_parse_monitor_state_and_origin_from_idempotency(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "monitor upstream",
+            "idempotency_key": "origin:notion:page-99:fp-20260529",
+        },
+    ).json()["task"]
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"status": "scheduled", "block_reason": "monitor: wake when source changes"},
+    )
+    assert r.status_code == 200
+
+    facets = _task_from_board(client, task["id"])["facets"]
+    assert facets["monitor_state"] == "monitoring"
+    assert facets["handoff_state"] == "waiting"
+    assert facets["origin_kind"] == "notion"
+    assert facets["origin_key"] == "page-99"
+    assert facets["origin_fingerprint"] == "fp-20260529"
+
+
+def test_dashboard_facets_parse_recovery_prefix(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "recover worker", "assignee": "gond"},
+    ).json()["task"]
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"status": "blocked", "block_reason": "recovery: crash loop after stale lock"},
+    )
+    assert r.status_code == 200
+
+    facets = _task_from_board(client, task["id"])["facets"]
+    assert facets["work_mode"] == "recovery"
+    assert facets["handoff_state"] == "needs-recovery"
+
+
+def test_dashboard_facets_can_derive_handoff_from_latest_comment(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "comment signal"},
+    ).json()["task"]
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{task['id']}/comments",
+        json={"author": "reviewer", "body": "review-required: comment asks for final sign-off"},
+    )
+    assert r.status_code == 200
+
+    facets = _task_from_board(client, task["id"])["facets"]
+    assert facets["handoff_state"] == "review-required"
+    assert facets["review_gate"] == "human-review"
+
+
+def test_dashboard_facets_tolerate_malformed_or_missing_frontmatter(client):
+    malformed = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "bad frontmatter", "body": "---\nspearhead:\n  origin:\n---\nbody"},
+    ).json()["task"]
+    plain = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "plain", "body": "normal body"},
+    ).json()["task"]
+
+    malformed_facets = _task_from_board(client, malformed["id"])["facets"]
+    plain_facets = _task_from_board(client, plain["id"])["facets"]
+
+    assert malformed_facets == {
+        "work_mode": None,
+        "handoff_state": None,
+        "review_gate": None,
+        "monitor_state": None,
+        "origin_kind": None,
+        "origin_key": None,
+        "origin_fingerprint": None,
+    }
+    assert plain_facets == malformed_facets
+
+
 def test_tenant_filter(client):
     client.post("/api/plugins/kanban/tasks", json={"title": "A", "tenant": "t1"})
     client.post("/api/plugins/kanban/tasks", json={"title": "B", "tenant": "t2"})
