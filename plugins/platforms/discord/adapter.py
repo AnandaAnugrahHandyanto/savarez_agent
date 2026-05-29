@@ -750,6 +750,64 @@ class DiscordAdapter(BasePlatformAdapter):
                     adapter_self._run_post_connect_initialization()
                 )
 
+            @self._client.listen("on_interaction")
+            async def _kanban_approval_on_interaction(interaction: discord.Interaction):
+                """Handle persistent Kanban approval components posted by watchers.
+
+                The Kanban Discord mirror posts raw Discord components via REST;
+                those buttons are not attached to an in-memory discord.py View,
+                so route their custom_id prefix here and leave every other
+                interaction to discord.py's normal command/component machinery.
+                """
+                data = getattr(interaction, "data", None) or {}
+                custom_id = data.get("custom_id") if isinstance(data, dict) else None
+                if not custom_id:
+                    return
+                try:
+                    from hermes_cli.kanban_discord_approvals import (
+                        apply_approval_decision,
+                        parse_custom_id,
+                    )
+                    parsed = parse_custom_id(str(custom_id))
+                    if not parsed:
+                        return
+                    task_id, action = parsed
+                    if not _component_check_auth(
+                        interaction,
+                        adapter_self._allowed_user_ids,
+                        adapter_self._allowed_role_ids,
+                    ):
+                        await interaction.response.send_message(
+                            "You're not authorized to approve Kanban gates~",
+                            ephemeral=True,
+                        )
+                        return
+                    actor = f"{getattr(interaction.user, 'display_name', '')} ({getattr(interaction.user, 'id', '')})"
+                    result = apply_approval_decision(task_id, action, actor)
+                    label = {
+                        "approve": "Approved",
+                        "deny": "Denied",
+                        "needs_changes": "Needs changes requested",
+                    }[action]
+                    for child in getattr(interaction.message, "components", []) or []:
+                        for item in getattr(child, "children", []) or []:
+                            try:
+                                item.disabled = True
+                            except Exception:
+                                pass
+                    content = (getattr(interaction.message, "content", "") or "")
+                    content = f"{content}\n\n**Decision:** {label} by {getattr(interaction.user, 'display_name', 'unknown')} (`{result}`)"[:1900]
+                    await interaction.response.edit_message(content=content, view=None)
+                except Exception as exc:
+                    logger.exception("Failed to handle Kanban approval component: %s", exc)
+                    try:
+                        await interaction.response.send_message(
+                            f"Failed to record Kanban approval: {exc}",
+                            ephemeral=True,
+                        )
+                    except Exception:
+                        pass
+
             @self._client.event
             async def on_message(message: DiscordMessage):
                 # Block until _resolve_allowed_usernames has swapped
