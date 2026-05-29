@@ -291,6 +291,68 @@
   color: var(--color-foreground);
 }
 
+/* ---- Spearhead facet chips (derived mode/handoff/monitor badges) ---- */
+/* Rendered on the card face between the id and the diagnostic badge, and  */
+/* again inside the drawer's Spearhead summary panel. Tones map to the     */
+/* derived attention semantics, NOT to board column status.                */
+.hermes-kanban-facet-chip {
+  --hermes-facet-human:    #b07cff;
+  --hermes-facet-waiting:  #4ea3ff;
+  --hermes-facet-recovery: #ff8a3d;
+  font-size: 0.6rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: 999px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--color-foreground) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  color: var(--color-foreground);
+}
+.hermes-kanban-facet-chip--mode {
+  background: color-mix(in srgb, var(--color-ring) 14%, transparent);
+  border-color: color-mix(in srgb, var(--color-ring) 38%, transparent);
+}
+.hermes-kanban-facet-chip--handoff {
+  background: color-mix(in srgb, var(--color-foreground) 10%, transparent);
+  border-color: color-mix(in srgb, var(--color-border) 90%, transparent);
+}
+.hermes-kanban-facet-chip--human {
+  background: color-mix(in srgb, var(--hermes-facet-human) 18%, transparent);
+  border-color: color-mix(in srgb, var(--hermes-facet-human) 50%, transparent);
+}
+.hermes-kanban-facet-chip--waiting {
+  background: color-mix(in srgb, var(--hermes-facet-waiting) 16%, transparent);
+  border-color: color-mix(in srgb, var(--hermes-facet-waiting) 45%, transparent);
+}
+.hermes-kanban-facet-chip--recovery {
+  background: color-mix(in srgb, var(--hermes-facet-recovery) 18%, transparent);
+  border-color: color-mix(in srgb, var(--hermes-facet-recovery) 50%, transparent);
+}
+
+/* ---- Drawer Spearhead summary panel --------------------------------- */
+.hermes-kanban-spearhead .hermes-kanban-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.hermes-kanban-spearhead-bucket {
+  align-self: flex-start;
+  font-size: 0.66rem;
+  padding: 0.1rem 0.5rem;
+}
+.hermes-kanban-spearhead-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.hermes-kanban-spearhead-origin {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.65rem;
+  color: var(--color-muted-foreground);
+  word-break: break-all;
+}
+
 .hermes-kanban-assignee {
   font-weight: 500;
   color: color-mix(in srgb, var(--color-foreground) 80%, var(--color-muted-foreground));

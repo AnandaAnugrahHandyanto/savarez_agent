@@ -261,6 +261,98 @@
     };
   }
 
+  // <facet-logic>
+  // Pure, framework-free Spearhead facet helpers.
+  // Shared by the card-face chips, the drawer's Spearhead summary panel,
+  // and the toolbar's attention filter so the three surfaces cannot drift.
+  // Reads ONLY the read-only `facets` object the backend derives
+  // (plugin_api._derive_dashboard_facets) plus the existing `warnings`
+  // rollup. Keep this block free of React/SDK references: the UI-facet
+  // test (tests/plugins/test_kanban_dashboard_facets_ui.py) extracts the
+  // text between these markers and evaluates it under Node, so any
+  // dependency on `h`, `SDK`, etc. would break it.
+  var FACET_BUCKETS = [
+    { key: "needs-human", label: "Needs human" },
+    { key: "waiting", label: "Waiting / monitoring" },
+    { key: "recovery", label: "Recovery" },
+    { key: "worker-fixable", label: "Worker-fixable" },
+  ];
+
+  // Collapse a task into at most one attention bucket. Order encodes
+  // precedence: a human gate outranks recovery, which outranks a passive
+  // wait, which outranks a worker-fixable diagnostic. Returns null when
+  // the task needs no special attention.
+  function facetBucket(task) {
+    var f = (task && task.facets) || {};
+    var handoff = f.handoff_state || "";
+    var review = f.review_gate || "";
+    var monitor = f.monitor_state || "";
+    var mode = f.work_mode || "";
+    if (review === "human-review" || handoff === "review-required") return "needs-human";
+    if (mode === "recovery" || handoff === "needs-recovery") return "recovery";
+    if (monitor || handoff === "waiting") return "waiting";
+    var warnCount = task && task.warnings && task.warnings.count;
+    if (warnCount > 0) return "worker-fixable";
+    return null;
+  }
+
+  // Ordered chip descriptors for the card face: work mode first, then
+  // handoff, then the review/monitor refinements. The diagnostic
+  // (warnings) badge is rendered separately by the card AFTER these chips,
+  // preserving the mode -> handoff -> diagnostic order from the spec.
+  // `tone` selects the colour class; it is data, not markup.
+  function facetChipSpecs(task) {
+    var f = (task && task.facets) || {};
+    var specs = [];
+    if (f.work_mode) {
+      specs.push({ kind: "mode", value: f.work_mode,
+                   tone: f.work_mode === "recovery" ? "recovery" : "mode" });
+    }
+    if (f.handoff_state) {
+      var tone = f.handoff_state === "review-required" ? "human"
+        : f.handoff_state === "needs-recovery" ? "recovery"
+        : f.handoff_state === "waiting" ? "waiting"
+        : "handoff";
+      specs.push({ kind: "handoff", value: f.handoff_state, tone: tone });
+    }
+    // Skip review_gate when handoff already says review-required (same signal).
+    if (f.review_gate && f.handoff_state !== "review-required") {
+      specs.push({ kind: "review", value: f.review_gate, tone: "human" });
+    }
+    if (f.monitor_state) {
+      specs.push({ kind: "monitor", value: f.monitor_state, tone: "waiting" });
+    }
+    return specs;
+  }
+
+  // Derived provenance, when any origin facet is present.
+  function facetOriginSummary(task) {
+    var f = (task && task.facets) || {};
+    if (!f.origin_kind && !f.origin_key && !f.origin_fingerprint) return null;
+    return {
+      kind: f.origin_kind || null,
+      key: f.origin_key || null,
+      fingerprint: f.origin_fingerprint || null,
+    };
+  }
+
+  function hasAnyFacet(task) {
+    var f = (task && task.facets) || {};
+    return !!(f.work_mode || f.handoff_state || f.review_gate || f.monitor_state ||
+              f.origin_kind || f.origin_key || f.origin_fingerprint);
+  }
+  // </facet-logic>
+
+  // Human-readable tooltip for a card-face facet chip (UI-only, not part
+  // of the pure logic block above).
+  function facetChipTitle(spec) {
+    var label = spec.kind === "mode" ? "Work mode"
+      : spec.kind === "handoff" ? "Handoff state"
+      : spec.kind === "review" ? "Review gate"
+      : "Monitor state";
+    return label + ": " + spec.value + " (derived, read-only)";
+  }
+
   // -------------------------------------------------------------------------
   // Minimal safe markdown renderer.
   //
@@ -485,6 +577,7 @@
     const [assigneeFilter, setAssigneeFilter] = useState("");
     const [includeArchived, setIncludeArchived] = useState(false);
     const [search, setSearch] = useState("");
+    const [facetFilter, setFacetFilter] = useState("");
     const [laneByProfile, setLaneByProfile] = useState(true);
     const [configApplied, setConfigApplied] = useState(false);
 
@@ -659,6 +752,7 @@
       const filterTask = function (t) {
         if (tenantFilter && t.tenant !== tenantFilter) return false;
         if (assigneeFilter && t.assignee !== assigneeFilter) return false;
+        if (facetFilter && facetBucket(t) !== facetFilter) return false;
         if (q) {
           const hay = `${t.id} ${t.title || ""} ${t.body || ""} ${t.result || ""} ${t.latest_summary || ""} ${t.assignee || ""} ${t.tenant || ""}`.toLowerCase();
           if (hay.indexOf(q) === -1) return false;
@@ -670,7 +764,7 @@
           return Object.assign({}, col, { tasks: col.tasks.filter(filterTask) });
         }),
       });
-    }, [boardData, tenantFilter, assigneeFilter, search]);
+    }, [boardData, tenantFilter, assigneeFilter, facetFilter, search]);
 
     // --- actions ------------------------------------------------------------
     const moveTask = useCallback(function (taskId, newStatus) {
@@ -912,6 +1006,7 @@
       setSearch("");
       setTenantFilter("");
       setAssigneeFilter("");
+      setFacetFilter("");
       setIncludeArchived(false);
       clearSelected();
     }, [board, clearSelected]);
@@ -1011,6 +1106,7 @@
           assigneeFilter, setAssigneeFilter,
           includeArchived, setIncludeArchived,
           laneByProfile, setLaneByProfile,
+          facetFilter, setFacetFilter,
           search, setSearch,
           onNudgeDispatch: function () {
             SDK.fetchJSON(withBoard(`${API}/dispatch?max=8`, board), { method: "POST" })
@@ -2004,6 +2100,19 @@
           }),
         ),
       ),
+      h("div", { className: "flex flex-col gap-1",
+                 title: "Filter the board to a derived Spearhead attention bucket: tasks needing a human gate, waiting/monitoring, in recovery, or carrying a worker-fixable diagnostic. Buckets are derived read-only from existing task data." },
+        h(Label, { className: "text-xs text-muted-foreground" }, tx(t, "attention", "Attention")),
+        h(Select, Object.assign({
+          value: props.facetFilter,
+          className: "h-8",
+        }, selectChangeHandler(props.setFacetFilter)),
+          h(SelectOption, { value: "" }, tx(t, "allAttention", "All tasks")),
+          FACET_BUCKETS.map(function (b) {
+            return h(SelectOption, { key: b.key, value: b.key }, b.label);
+          }),
+        ),
+      ),
       h("label", { className: "flex items-center gap-2 text-xs",
                    title: "Include archived tasks in the board view. Archived tasks are hidden by default." },
         h(Checkbox, {
@@ -2036,10 +2145,11 @@
           props.setSearch("");
           props.setTenantFilter("");
           props.setAssigneeFilter("");
+          if (props.setFacetFilter) props.setFacetFilter("");
           props.setIncludeArchived(false);
         },
         size: "sm",
-        title: "Clear all active filters (search, tenant, assignee, archived).",
+        title: "Clear all active filters (search, tenant, assignee, attention, archived).",
       }, tx(t, "clearFilters", "Clear filters")),
     );
   }
@@ -2524,6 +2634,16 @@
             ),
             h("span", { className: "hermes-kanban-card-id",
                         title: `Task id: ${t.id}. Use this id with kanban_show, /kanban show, or hermes kanban show.` }, t.id),
+            facetChipSpecs(t).map(function (spec) {
+              return h("span", {
+                key: spec.kind + ":" + spec.value,
+                className: cn(
+                  "hermes-kanban-facet-chip",
+                  "hermes-kanban-facet-chip--" + spec.tone,
+                ),
+                title: facetChipTitle(spec),
+              }, spec.value);
+            }),
             t.warnings && t.warnings.count > 0
               ? h("span", {
                   className: cn(
@@ -3174,6 +3294,70 @@
     );
   }
 
+  // Structured Spearhead summary panel for the drawer. Renders the derived
+  // attention bucket, the facet chips, a key/value list of the individual
+  // facets, and derived origin/provenance — all BEFORE the raw
+  // comments/events/runs sections further down the drawer. Returns null when
+  // the task carries no derived facets, so non-Spearhead boards are
+  // unaffected.
+  function SpearheadSummary(props) {
+    const { t: i18n } = useI18n();
+    const t = props.task;
+    if (!hasAnyFacet(t)) return null;
+    const f = t.facets || {};
+    const bucketKey = facetBucket(t);
+    const bucketDef = FACET_BUCKETS.filter(function (b) { return b.key === bucketKey; })[0];
+    const origin = facetOriginSummary(t);
+    const chips = facetChipSpecs(t);
+    const rows = [];
+    if (f.work_mode) rows.push(["Work mode", f.work_mode]);
+    if (f.handoff_state) rows.push(["Handoff", f.handoff_state]);
+    if (f.review_gate) rows.push(["Review gate", f.review_gate]);
+    if (f.monitor_state) rows.push(["Monitor", f.monitor_state]);
+    return h("div", { className: "hermes-kanban-section hermes-kanban-spearhead" },
+      h("div", { className: "hermes-kanban-section-head" },
+        tx(i18n, "spearheadSummary", "Spearhead summary")),
+      h("div", { className: "hermes-kanban-section-body" },
+        bucketDef
+          ? h("div", {
+              className: cn(
+                "hermes-kanban-facet-chip",
+                "hermes-kanban-spearhead-bucket",
+                "hermes-kanban-facet-chip--" + (
+                  bucketKey === "needs-human" ? "human"
+                    : bucketKey === "recovery" ? "recovery"
+                    : bucketKey === "waiting" ? "waiting"
+                    : "mode"
+                ),
+              ),
+              title: "Derived attention bucket (read-only). Drives the toolbar Attention filter.",
+            }, bucketDef.label)
+          : null,
+        chips.length
+          ? h("div", { className: "hermes-kanban-spearhead-chips" },
+              chips.map(function (spec) {
+                return h("span", {
+                  key: spec.kind + ":" + spec.value,
+                  className: cn(
+                    "hermes-kanban-facet-chip",
+                    "hermes-kanban-facet-chip--" + spec.tone,
+                  ),
+                  title: facetChipTitle(spec),
+                }, spec.value);
+              }))
+          : null,
+        rows.map(function (r) {
+          return h(MetaRow, { key: r[0], label: r[0], value: r[1] });
+        }),
+        origin
+          ? h("div", { className: "hermes-kanban-spearhead-origin",
+                       title: "Derived provenance from the task's idempotency key / spearhead frontmatter (read-only)." },
+              "origin: " + [origin.kind, origin.key, origin.fingerprint].filter(Boolean).join(" · "))
+          : null,
+      ),
+    );
+  }
+
   function TaskDetail(props) {
     const { t: i18n } = useI18n();
     const t = props.data.task;
@@ -3226,6 +3410,7 @@
         onSpecify: props.onSpecify,
         onDecompose: props.onDecompose,
       }),
+      h(SpearheadSummary, { task: t }),
       h(DiagnosticsSection, {
         task: t,
         boardSlug: props.boardSlug,

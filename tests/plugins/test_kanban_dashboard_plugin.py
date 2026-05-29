@@ -446,7 +446,9 @@ def test_dashboard_client_side_filtering_includes_tenant_filter():
     js = bundle.read_text()
 
     assert "if (tenantFilter && t.tenant !== tenantFilter) return false;" in js
-    assert "[boardData, tenantFilter, assigneeFilter, search]" in js
+    # facetFilter (Spearhead attention bucket) was added alongside the
+    # tenant/assignee filters; tenantFilter must remain in the memo deps.
+    assert "[boardData, tenantFilter, assigneeFilter, facetFilter, search]" in js
 
 
 def test_dashboard_initial_board_uses_backend_current_when_unpinned():
