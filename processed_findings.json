@@ -22,5 +22,11 @@
     "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34872",
     "pr_number": 34872,
     "run_id": "20260529_222349"
+  },
+  "SSRF-web_server.py-561": {
+    "status": "filed",
+    "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34873",
+    "pr_number": 34873,
+    "run_id": "20260529_222349"
   }
 }
