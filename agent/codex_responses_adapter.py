@@ -71,6 +71,33 @@ _TOOL_CALL_LEAK_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Cap how much of the assistant content we hand to the leak detector.  When
+# Codex degenerates and emits the Harmony serialization as plain text, the
+# ``to=functions.<name>`` marker shows up at the very start of the leaked
+# block — empirically within the first few hundred characters of the
+# assistant message.  Long, well-formed assistant prose (multi-megabyte
+# delegate summaries, large code dumps) does not contain the marker, but
+# scanning every byte of it still costs CPU time inside ``_sre`` while
+# holding the GIL.  Issue #32079 sampled a stalled gateway whose entire
+# active stack was in ``_sre_SRE_Pattern_search`` after a Codex turn
+# completed; bounding the scan removes one degree of freedom from that
+# class of stalls.  The bound is generous (8 KiB ≫ any observed leak
+# prefix) so legitimate degeneration is still caught.
+_TOOL_CALL_LEAK_SCAN_LIMIT = 8 * 1024
+
+
+def _scan_for_leaked_tool_call(text: str) -> bool:
+    """Bounded scan for the ``to=functions.<name>`` Harmony leak marker.
+
+    Trims ``text`` to the first :data:`_TOOL_CALL_LEAK_SCAN_LIMIT` bytes
+    before invoking the compiled pattern.  See the comment on the limit
+    constant for the rationale (issue #32079).
+    """
+    if not text:
+        return False
+    snippet = text if len(text) <= _TOOL_CALL_LEAK_SCAN_LIMIT else text[:_TOOL_CALL_LEAK_SCAN_LIMIT]
+    return _TOOL_CALL_LEAK_PATTERN.search(snippet) is not None
+
 
 # ---------------------------------------------------------------------------
 # Multimodal content helpers
@@ -1179,7 +1206,8 @@ def _normalize_codex_response(
     # ``function_call`` item. The existing loop already handles message
     # append, dedup, and retry budget.
     leaked_tool_call_text = False
-    if final_text and not tool_calls and _TOOL_CALL_LEAK_PATTERN.search(final_text):
+    # Bound the scan window — see ``_scan_for_leaked_tool_call`` (#32079).
+    if final_text and not tool_calls and _scan_for_leaked_tool_call(final_text):
         leaked_tool_call_text = True
         logger.warning(
             "Codex response contains leaked tool-call text in assistant content "
