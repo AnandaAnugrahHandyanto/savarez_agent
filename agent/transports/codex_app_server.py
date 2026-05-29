@@ -255,7 +255,7 @@ class CodexAppServerClient:
         """Pop the next server-initiated request (e.g. exec/applyPatch approval)."""
         try:
             if timeout <= 0:
-                return self._server_requests.get_nowait()
+                return self._server_requests.get_nowait()  # SSRF: add IP block check
             return self._server_requests.get(timeout=timeout)
         except queue.Empty:
             return None
