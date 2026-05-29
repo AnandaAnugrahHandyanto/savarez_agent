@@ -268,6 +268,31 @@ class TestPreToolCallBlocking:
         )
 
 
+class TestExecutorRuntimeGuard:
+    def test_executor_blocks_write_tools_at_dispatch_time(self, monkeypatch):
+        monkeypatch.setenv("HERMES_NODE_ROLE", "executor")
+        dispatch_called = False
+
+        def fake_dispatch(*args, **kwargs):
+            nonlocal dispatch_called
+            dispatch_called = True
+            raise AssertionError("dispatch should not run for blocked executor tools")
+
+        monkeypatch.setattr("model_tools.registry.dispatch", fake_dispatch)
+
+        result = json.loads(handle_function_call("write_file", {"path": "x", "content": "y"}))
+        assert "error" in result
+        assert "executor read-only mode" in result["error"]
+        assert not dispatch_called
+
+    def test_executor_allows_read_tools(self, monkeypatch):
+        monkeypatch.setenv("HERMES_NODE_ROLE", "executor")
+        monkeypatch.setattr("model_tools.registry.dispatch", lambda *a, **kw: json.dumps({"ok": True}))
+
+        result = json.loads(handle_function_call("web_search", {"q": "test"}))
+        assert result == {"ok": True}
+
+
 # =========================================================================
 # Legacy toolset map
 # =========================================================================

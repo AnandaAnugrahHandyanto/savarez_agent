@@ -69,6 +69,21 @@ def test_agent_disabled_toolsets_empty_list_is_noop():
     assert _get_platform_tools(config_missing, "cli") == default
 
 
+def test_executor_role_suppresses_write_toolsets_even_when_explicit(monkeypatch):
+    monkeypatch.setenv("HERMES_NODE_ROLE", "executor")
+    config = {
+        "agent": {"execution_role": "executor"},
+        "platform_toolsets": {"cli": ["hermes-cli", "memory", "file", "web", "terminal"]},
+    }
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "web" in enabled
+    assert "terminal" in enabled
+    assert "memory" not in enabled
+    assert "file" not in enabled
+
+
 def test_get_platform_tools_uses_default_when_platform_not_configured():
     config = {}
 

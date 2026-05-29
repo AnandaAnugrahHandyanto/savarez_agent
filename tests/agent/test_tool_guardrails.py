@@ -240,6 +240,32 @@ def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_succes
         assert controller.after_call("custom_tool", {"x": 1}, "ok", failed=False).action == "allow"
 
 
+def test_executor_role_blocks_mutating_tools_but_allows_read_tools(monkeypatch):
+    monkeypatch.setenv("HERMES_NODE_ROLE", "executor")
+    controller = ToolCallGuardrailController()
+
+    blocked = controller.before_call("write_file", {"path": "/tmp/x", "content": "x"})
+    allowed = controller.before_call("web_search", {"query": "ok"})
+
+    assert blocked.action == "block"
+    assert blocked.code == "executor_read_only_block"
+    assert "canonical owner" in blocked.message
+    assert allowed.action == "allow"
+
+
+def test_executor_role_blocks_terminal_and_memory_writes(monkeypatch):
+    monkeypatch.setenv("HERMES_NODE_ROLE", "executor")
+    controller = ToolCallGuardrailController()
+
+    terminal = controller.before_call("terminal", {"command": "echo hi"})
+    memory = controller.before_call("memory", {"action": "add", "content": "x", "target": "memory"})
+
+    assert terminal.action == "block"
+    assert terminal.code == "executor_read_only_block"
+    assert memory.action == "block"
+    assert memory.code == "executor_read_only_block"
+
+
 def test_reset_for_turn_clears_bounded_guardrail_state():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(hard_stop_enabled=True, exact_failure_block_after=2, no_progress_block_after=2)

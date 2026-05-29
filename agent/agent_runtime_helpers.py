@@ -1612,6 +1612,13 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     tools. Used by the concurrent execution path; the sequential path retains
     its own inline invocation for backward-compatible display handling.
     """
+    # Last-line runtime enforcement: if the node is running in read-only
+    # executor mode, block mutating tools here too so callers cannot bypass
+    # higher-level selection filters.
+    runtime_guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
+    if not runtime_guardrail_decision.allows_execution:
+        return agent._guardrail_block_result(runtime_guardrail_decision)
+
     # Check plugin hooks for a block directive before executing anything.
     block_message: Optional[str] = None
     if not pre_tool_block_checked:

@@ -333,7 +333,35 @@ class TestShellFileOpsHelpers:
         assert file_ops._is_likely_binary("unknown", binary_content) is True
 
         # Normal text -> not binary
-        assert file_ops._is_likely_binary("unknown", "Hello world\nLine 2\n") is False
+        text_content = "hello world\n" * 100
+        assert file_ops._is_likely_binary("unknown", text_content) is False
+
+
+class TestShellFileOpsExecutorReadOnly:
+    def _make_env(self):
+        env = MagicMock()
+        env.cwd = "/tmp/test"
+        env.execute.return_value = {"output": "should not run", "returncode": 0}
+        return env
+
+    def test_write_delete_move_and_patch_blocked_in_executor_mode(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_NODE_ROLE", "executor")
+        env = self._make_env()
+        ops = ShellFileOperations(env)
+        target = str(tmp_path / "safe.txt")
+
+        write_result = ops.write_file(target, "hello")
+        delete_result = ops.delete_file(target)
+        move_result = ops.move_file(target, str(tmp_path / "elsewhere.txt"))
+        patch_result = ops.patch_replace(target, "old", "new")
+        v4a_result = ops.patch_v4a("*** Begin Patch\n*** Update File: safe.txt\n@@\n-old\n+new\n*** End Patch")
+
+        assert write_result.error and "read-only executor" in write_result.error
+        assert delete_result.error and "read-only executor" in delete_result.error
+        assert move_result.error and "read-only executor" in move_result.error
+        assert patch_result.error and "read-only executor" in patch_result.error
+        assert v4a_result.error and "read-only executor" in v4a_result.error
+        env.execute.assert_not_called()
 
     def test_is_image(self, file_ops):
         assert file_ops._is_image("photo.png") is True

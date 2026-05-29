@@ -7,6 +7,21 @@ from pathlib import Path
 from typing import Optional
 
 
+def get_node_execution_role() -> str:
+    """Return the effective node execution role from env or config."""
+    env_role = str(os.getenv("HERMES_NODE_ROLE") or os.getenv("HERMES_AGENT_EXECUTION_ROLE") or "").strip().lower()
+    if env_role:
+        return env_role
+    try:
+        from hermes_cli.config import cfg_get  # local import to avoid cycles
+        cfg_role = str(cfg_get("agent.execution_role") or "").strip().lower()
+        if cfg_role:
+            return cfg_role
+    except Exception:
+        pass
+    return ""
+
+
 def _hermes_home_path() -> Path:
     """Resolve the active HERMES_HOME (profile-aware) without circular imports."""
     try:

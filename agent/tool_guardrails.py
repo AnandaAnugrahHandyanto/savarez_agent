@@ -14,7 +14,37 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from utils import safe_json_loads
+from agent.file_safety import get_node_execution_role
 from agent.tool_result_classification import file_mutation_result_landed
+
+
+_EXECUTOR_NODE_ROLE = "executor"
+_EXECUTOR_READ_ONLY_DISALLOWED_TOOL_NAMES = frozenset(
+    {
+        "clarify",
+        "computer_use",
+        "cronjob",
+        "delegation",
+        "discord",
+        "discord_admin",
+        "file",
+        "homeassistant",
+        "image_gen",
+        "memory",
+        "messaging",
+        "moa",
+        "skills",
+        "spotify",
+        "todo",
+        "video",
+        "video_gen",
+        "write_file",
+        "patch",
+        "send_message",
+        "skill_manage",
+        "process",
+    }
+)
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset(
@@ -240,6 +270,17 @@ class ToolCallGuardrailController:
 
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
+        if get_node_execution_role() == _EXECUTOR_NODE_ROLE and tool_name in self.config.mutating_tools:
+            return ToolGuardrailDecision(
+                action="block",
+                code="executor_read_only_block",
+                message=(
+                    f"Blocked {tool_name}: the current node role is read-only executor, "
+                    "so mutating tools are disabled here. Route writes through the canonical owner instead."
+                ),
+                tool_name=tool_name,
+                signature=signature,
+            )
         if not self.config.hard_stop_enabled:
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 

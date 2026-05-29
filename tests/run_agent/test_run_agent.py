@@ -2418,6 +2418,16 @@ class TestConcurrentToolExecution:
             assert len(m["content"]) < 150_000
             assert ("Truncated" in m["content"] or "<persisted-output>" in m["content"])
 
+    def test_invoke_tool_executor_role_blocks_handle_function_call(self, agent, monkeypatch):
+        """Executor role should be blocked before dispatch reaches handle_function_call."""
+        monkeypatch.setenv("HERMES_NODE_ROLE", "executor")
+        with patch("run_agent.handle_function_call", side_effect=AssertionError("should not run")):
+            result = agent._invoke_tool("write_file", {"path": "x.txt", "content": "hi"}, "task-1")
+
+        payload = json.loads(result)
+        assert payload["guardrail"]["code"] == "executor_read_only_block"
+        assert "read-only executor" in payload["error"]
+
     def test_invoke_tool_dispatches_to_handle_function_call(self, agent):
         """_invoke_tool should route regular tools through handle_function_call."""
         with patch("run_agent.handle_function_call", return_value="result") as mock_hfc:

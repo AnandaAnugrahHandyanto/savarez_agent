@@ -38,6 +38,10 @@ class TestUserSystemdPrivateSocketPreflight:
 
 
 class TestSystemdServiceRefresh:
+    @pytest.fixture(autouse=True)
+    def _disable_user_systemd_preflight(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda *args, **kwargs: None)
+
     def test_systemd_install_repairs_outdated_unit_without_force(self, tmp_path, monkeypatch):
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")
@@ -311,6 +315,15 @@ class TestRequireServiceInstalled:
 
 
 class TestGeneratedSystemdUnits:
+    @pytest.fixture(autouse=True)
+    def _stub_system_identity(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice"),
+        )
+        monkeypatch.setattr(gateway_cli, "_hermes_home_for_target_user", lambda home: "/home/alice/.hermes")
+
     def _expected_timeout_stop_sec(self) -> str:
         timeout = int(max(60, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT) + 30)
         return f"TimeoutStopSec={timeout}"
@@ -393,6 +406,20 @@ class TestGeneratedSystemdUnits:
         # (tool subprocess kill, adapter disconnect) runs — issue #8202.
         assert self._expected_timeout_stop_sec() in unit
         assert "WantedBy=multi-user.target" in unit
+
+    def test_system_unit_includes_executor_readiness_prestart_check(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "get_node_execution_role", lambda: "executor")
+        monkeypatch.setattr(
+            gateway_cli,
+            "_get_restart_drain_timeout",
+            lambda: DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=True)
+
+        assert "ExecStartPre=" in unit
+        assert "check_two_vps_readiness.py --expect-role executor" in unit
+
 
 
 class TestGatewayStopCleanup:
@@ -737,6 +764,10 @@ class TestGatewayServiceDetection:
         assert gateway_cli._is_service_running() is False
 
 class TestGatewaySystemServiceRouting:
+    @pytest.fixture(autouse=True)
+    def _disable_user_systemd_preflight(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda *args, **kwargs: None)
+
     def test_systemd_restart_gracefully_restarts_running_service_and_waits(self, monkeypatch, capsys):
         calls = []
 
@@ -1294,6 +1325,15 @@ class TestGeneratedUnitUsesDetectedVenv:
 
 class TestGeneratedUnitIncludesLocalBin:
     """~/.local/bin must be in PATH so uvx/pipx tools are discoverable."""
+
+    @pytest.fixture(autouse=True)
+    def _stub_system_identity(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice"),
+        )
+        monkeypatch.setattr(gateway_cli, "_hermes_home_for_target_user", lambda home: "/home/alice/.hermes")
 
     def test_user_unit_includes_local_bin_in_path(self, monkeypatch):
         home = Path.home()

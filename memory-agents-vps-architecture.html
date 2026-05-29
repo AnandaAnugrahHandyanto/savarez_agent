@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Arquitetura de Memória, Agentes e VPS</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #020617;
+      --panel: #0f172a;
+      --panel2: #111827;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --grid: rgba(148, 163, 184, 0.10);
+      --cyan: #22d3ee;
+      --cyan-fill: rgba(8, 51, 68, 0.45);
+      --emerald: #34d399;
+      --emerald-fill: rgba(6, 78, 59, 0.45);
+      --violet: #a78bfa;
+      --violet-fill: rgba(76, 29, 149, 0.45);
+      --amber: #fbbf24;
+      --amber-fill: rgba(120, 53, 15, 0.30);
+      --rose: #fb7185;
+      --rose-fill: rgba(136, 19, 55, 0.42);
+      --slate: #94a3b8;
+      --slate-fill: rgba(30, 41, 59, 0.55);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'JetBrains Mono', monospace;
+      background:
+        linear-gradient(rgba(2, 6, 23, 0.88), rgba(2, 6, 23, 0.95)),
+        url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><path d="M40 0H0V40" fill="none" stroke="%231e293b" stroke-width="0.6"/></svg>');
+      color: var(--text);
+      padding: 28px;
+    }
+    .wrap {
+      max-width: 1600px;
+      margin: 0 auto;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 24px;
+      letter-spacing: -0.02em;
+    }
+    .subtitle {
+      color: var(--muted);
+      margin-top: 6px;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border: 1px solid rgba(148,163,184,0.18);
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.72);
+      color: var(--muted);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--emerald);
+      box-shadow: 0 0 18px rgba(52, 211, 153, .7);
+      animation: pulse 1.8s infinite ease-in-out;
+    }
+    @keyframes pulse {
+      0%, 100% { transform: scale(0.95); opacity: 0.75; }
+      50% { transform: scale(1.15); opacity: 1; }
+    }
+    .panel {
+      border: 1px solid rgba(148,163,184,0.18);
+      border-radius: 18px;
+      background: linear-gradient(180deg, rgba(15,23,42,0.88), rgba(2,6,23,0.72));
+      box-shadow: 0 30px 80px rgba(0, 0, 0, 0.38);
+      overflow: hidden;
+    }
+    .svg-wrap {
+      padding: 14px;
+    }
+    svg {
+      width: 100%;
+      height: auto;
+      display: block;
+      border-radius: 14px;
+    }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 16px;
+    }
+    .card {
+      background: rgba(15, 23, 42, 0.82);
+      border: 1px solid rgba(148,163,184,0.18);
+      border-radius: 16px;
+      padding: 16px;
+    }
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .card-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      box-shadow: 0 0 14px currentColor;
+    }
+    .cyan { color: var(--cyan); background: var(--cyan); }
+    .emerald { color: var(--emerald); background: var(--emerald); }
+    .violet { color: var(--violet); background: var(--violet); }
+    .card h3 { margin: 0; font-size: 13px; }
+    ul { margin: 0; padding-left: 18px; color: var(--text); }
+    li { margin: 7px 0; font-size: 11px; line-height: 1.45; color: var(--muted); }
+    .footer {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 10px;
+      text-align: right;
+      opacity: 0.85;
+    }
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-right: 14px;
+      margin-bottom: 6px;
+      font-size: 10px;
+      color: var(--muted);
+    }
+    .legend-swatch { width: 10px; height: 10px; border-radius: 3px; border: 1px solid rgba(255,255,255,0.2); }
+    @media (max-width: 1100px) { .cards { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="header">
+      <div>
+        <h1>Arquitetura: memória canônica, agentes e VPS</h1>
+        <div class="subtitle">VPS 1 como fonte da verdade; VPS 2 como execução; Tailscale como malha privada; tudo sem expor portas públicas.</div>
+      </div>
+      <div class="pill"><span class="dot"></span> tailnet privado ativo</div>
+    </div>
+
+    <div class="panel svg-wrap">
+      <svg viewBox="0 0 1600 920" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Diagrama da arquitetura de memória, agentes e VPS">
+        <defs>
+          <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+            <path d="M0,0 L12,6 L0,12 z" fill="#94a3b8"/>
+          </marker>
+          <marker id="arrowGreen" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+            <path d="M0,0 L12,6 L0,12 z" fill="#34d399"/>
+          </marker>
+          <marker id="arrowCyan" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+            <path d="M0,0 L12,6 L0,12 z" fill="#22d3ee"/>
+          </marker>
+          <marker id="arrowRose" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+            <path d="M0,0 L12,6 L0,12 z" fill="#fb7185"/>
+          </marker>
+          <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+            <feGaussianBlur stdDeviation="8" result="b"/>
+            <feMerge>
+              <feMergeNode in="b"/>
+              <feMergeNode in="SourceGraphic"/>
+            </feMerge>
+          </filter>
+        </defs>
+
+        <!-- background -->
+        <rect x="0" y="0" width="1600" height="920" fill="#020617" rx="16"/>
+
+        <!-- Tailscale private mesh -->
+        <rect x="62" y="76" width="1476" height="350" rx="18" fill="rgba(120,53,15,0.18)" stroke="#fbbf24" stroke-width="2" stroke-dasharray="10 8"/>
+        <text x="86" y="106" fill="#fbbf24" font-size="14" font-weight="700">Tailscale tailnet privado</text>
+        <text x="86" y="128" fill="#94a3b8" font-size="10">Conexão entre máquinas, sem portas públicas</text>
+
+        <!-- VPS 1 -->
+        <rect x="120" y="160" width="430" height="220" rx="18" fill="#0f172a" stroke="#a78bfa" stroke-width="2"/>
+        <rect x="126" y="166" width="418" height="208" rx="14" fill="rgba(76,29,149,0.42)" stroke="rgba(167,139,250,0.55)" stroke-width="1.4"/>
+        <text x="148" y="194" fill="#a78bfa" font-size="18" font-weight="700">VPS 1 — memória canônica</text>
+        <text x="148" y="217" fill="#cbd5e1" font-size="11">Fonte da verdade única</text>
+        <text x="148" y="246" fill="#94a3b8" font-size="10">• Postgres + API de memória</text>
+        <text x="148" y="268" fill="#94a3b8" font-size="10">• event_log append-only</text>
+        <text x="148" y="290" fill="#94a3b8" font-size="10">• facts / decisions / entities</text>
+        <text x="148" y="312" fill="#94a3b8" font-size="10">• summaries / episodes / tasks/state</text>
+        <text x="148" y="334" fill="#94a3b8" font-size="10">• sources + auditoria</text>
+        <text x="148" y="356" fill="#94a3b8" font-size="10">• acessível só pelo tailnet</text>
+
+        <!-- Agent layer -->
+        <rect x="600" y="160" width="400" height="220" rx="18" fill="#0f172a" stroke="#22d3ee" stroke-width="2"/>
+        <rect x="606" y="166" width="388" height="208" rx="14" fill="rgba(8,51,68,0.42)" stroke="rgba(34,211,238,0.55)" stroke-width="1.4"/>
+        <text x="628" y="194" fill="#22d3ee" font-size="18" font-weight="700">Agentes / Orquestrador</text>
+        <text x="628" y="217" fill="#cbd5e1" font-size="11">Decidem, coletam, verificam e executam</text>
+        <text x="628" y="246" fill="#94a3b8" font-size="10">• orchestrator</text>
+        <text x="628" y="268" fill="#94a3b8" font-size="10">• collector</text>
+        <text x="628" y="290" fill="#94a3b8" font-size="10">• verifier</text>
+        <text x="628" y="312" fill="#94a3b8" font-size="10">• executor</text>
+        <text x="628" y="334" fill="#94a3b8" font-size="10">• escreve eventos, não “verdades” soltas</text>
+        <text x="628" y="356" fill="#94a3b8" font-size="10">• consulta a VPS 1 antes de agir</text>
+
+        <!-- VPS 2 -->
+        <rect x="1080" y="160" width="430" height="220" rx="18" fill="#0f172a" stroke="#34d399" stroke-width="2"/>
+        <rect x="1086" y="166" width="418" height="208" rx="14" fill="rgba(6,78,59,0.42)" stroke="rgba(52,211,153,0.55)" stroke-width="1.4"/>
+        <text x="1108" y="194" fill="#34d399" font-size="18" font-weight="700">VPS 2 — execução / workers</text>
+        <text x="1108" y="217" fill="#cbd5e1" font-size="11">Processamento e automações</text>
+        <text x="1108" y="246" fill="#94a3b8" font-size="10">• scraping / ingestão</text>
+        <text x="1108" y="268" fill="#94a3b8" font-size="10">• jobs de longa duração</text>
+        <text x="1108" y="290" fill="#94a3b8" font-size="10">• pipelines / bots / agents</text>
+        <text x="1108" y="312" fill="#94a3b8" font-size="10">• consulta e grava via API privada</text>
+        <text x="1108" y="334" fill="#94a3b8" font-size="10">• sem lógica de verdade final</text>
+        <text x="1108" y="356" fill="#94a3b8" font-size="10">• pode cair sem perder memória</text>
+
+        <!-- Arrows between components -->
+        <path d="M550 270 C575 270, 580 270, 600 270" stroke="#22d3ee" stroke-width="3" fill="none" marker-end="url(#arrowCyan)"/>
+        <path d="M1000 270 C1025 270, 1030 270, 1080 270" stroke="#34d399" stroke-width="3" fill="none" marker-end="url(#arrowGreen)"/>
+
+        <!-- Data flow box -->
+        <rect x="174" y="448" width="1252" height="142" rx="18" fill="#0f172a" stroke="#94a3b8" stroke-width="1.6" stroke-dasharray="6 6"/>
+        <text x="202" y="478" fill="#94a3b8" font-size="14" font-weight="700">Fluxo de escrita / leitura</text>
+
+        <!-- flow nodes -->
+        <rect x="214" y="508" width="180" height="54" rx="14" fill="#111827" stroke="#22d3ee" stroke-width="1.6"/>
+        <text x="236" y="540" fill="#e2e8f0" font-size="12">1. Evento bruto entra</text>
+
+        <rect x="446" y="508" width="180" height="54" rx="14" fill="#111827" stroke="#a78bfa" stroke-width="1.6"/>
+        <text x="470" y="540" fill="#e2e8f0" font-size="12">2. event_log</text>
+
+        <rect x="678" y="508" width="180" height="54" rx="14" fill="#111827" stroke="#34d399" stroke-width="1.6"/>
+        <text x="706" y="540" fill="#e2e8f0" font-size="12">3. verifier normaliza</text>
+
+        <rect x="910" y="508" width="180" height="54" rx="14" fill="#111827" stroke="#fb7185" stroke-width="1.6"/>
+        <text x="936" y="540" fill="#e2e8f0" font-size="12">4. facts/decisions</text>
+
+        <rect x="1142" y="508" width="240" height="54" rx="14" fill="#111827" stroke="#fbbf24" stroke-width="1.6"/>
+        <text x="1168" y="540" fill="#e2e8f0" font-size="12">5. agentes leem e atuam</text>
+
+        <path d="M394 535 L446 535" stroke="#94a3b8" stroke-width="2.2" marker-end="url(#arrow)"/>
+        <path d="M626 535 L678 535" stroke="#94a3b8" stroke-width="2.2" marker-end="url(#arrow)"/>
+        <path d="M858 535 L910 535" stroke="#94a3b8" stroke-width="2.2" marker-end="url(#arrow)"/>
+        <path d="M1090 535 L1142 535" stroke="#94a3b8" stroke-width="2.2" marker-end="url(#arrow)"/>
+
+        <!-- Optional VPS 3 / backup -->
+        <rect x="390" y="646" width="820" height="182" rx="18" fill="#0f172a" stroke="#fbbf24" stroke-width="2"/>
+        <rect x="396" y="652" width="808" height="170" rx="14" fill="rgba(120,53,15,0.28)" stroke="rgba(251,191,36,0.55)" stroke-width="1.4"/>
+        <text x="420" y="682" fill="#fbbf24" font-size="18" font-weight="700">VPS 3 — opcional: observabilidade / backup / index</text>
+        <text x="420" y="706" fill="#cbd5e1" font-size="11">Não é a verdade principal; só protege, replica e acelera consulta</text>
+        <text x="420" y="736" fill="#94a3b8" font-size="10">• backups lógicos do Postgres</text>
+        <text x="420" y="758" fill="#94a3b8" font-size="10">• logs, métricas, replay e auditoria</text>
+        <text x="420" y="780" fill="#94a3b8" font-size="10">• busca semântica / indexação secundária</text>
+        <text x="420" y="802" fill="#94a3b8" font-size="10">• recuperação se a VPS 1 falhar</text>
+
+        <!-- backup / replication arrows -->
+        <path d="M335 380 C335 470, 420 590, 490 646" stroke="#fbbf24" stroke-width="3" stroke-dasharray="8 6" fill="none" marker-end="url(#arrow)"/>
+        <path d="M1255 380 C1255 470, 1160 590, 1110 646" stroke="#fbbf24" stroke-width="3" stroke-dasharray="8 6" fill="none" marker-end="url(#arrow)"/>
+
+        <!-- Legend -->
+        <rect x="72" y="852" width="1456" height="42" rx="12" fill="#0f172a" stroke="rgba(148,163,184,0.18)" stroke-width="1.2"/>
+        <text x="92" y="878" fill="#94a3b8" font-size="10" font-weight="700">Legenda:</text>
+        <g transform="translate(170, 867)">
+          <rect class="legend-swatch" x="0" y="0" width="10" height="10" fill="rgba(76,29,149,0.45)" stroke="#a78bfa"/>
+          <text x="18" y="9" fill="#94a3b8" font-size="10">VPS 1 / memória canônica</text>
+        </g>
+        <g transform="translate(390, 867)">
+          <rect class="legend-swatch" x="0" y="0" width="10" height="10" fill="rgba(8,51,68,0.45)" stroke="#22d3ee"/>
+          <text x="18" y="9" fill="#94a3b8" font-size="10">Agentes / orquestração</text>
+        </g>
+        <g transform="translate(585, 867)">
+          <rect class="legend-swatch" x="0" y="0" width="10" height="10" fill="rgba(6,78,59,0.45)" stroke="#34d399"/>
+          <text x="18" y="9" fill="#94a3b8" font-size="10">VPS 2 / execução</text>
+        </g>
+        <g transform="translate(775, 867)">
+          <rect class="legend-swatch" x="0" y="0" width="10" height="10" fill="rgba(120,53,15,0.30)" stroke="#fbbf24"/>
+          <text x="18" y="9" fill="#94a3b8" font-size="10">Tailscale / backup / rede privada</text>
+        </g>
+        <g transform="translate(1040, 867)">
+          <rect class="legend-swatch" x="0" y="0" width="10" height="10" fill="rgba(136,19,55,0.42)" stroke="#fb7185"/>
+          <text x="18" y="9" fill="#94a3b8" font-size="10">Decisões / políticas / controle</text>
+        </g>
+        <g transform="translate(1290, 867)">
+          <rect class="legend-swatch" x="0" y="0" width="10" height="10" fill="rgba(30,41,59,0.55)" stroke="#94a3b8"/>
+          <text x="18" y="9" fill="#94a3b8" font-size="10">Fluxo de leitura/escrita</text>
+        </g>
+      </svg>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-header"><span class="card-dot cyan"></span><h3>Regras centrais</h3></div>
+        <ul>
+          <li>VPS 1 é a fonte da verdade.</li>
+          <li>Event log é append-only.</li>
+          <li>Agente nunca inventa fato final sem origem.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-dot emerald"></span><h3>Operação</h3></div>
+        <ul>
+          <li>VPS 2 executa e devolve eventos.</li>
+          <li>Todo acesso interno passa pelo Tailscale.</li>
+          <li>Portas sensíveis ficam fechadas da internet pública.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-dot violet"></span><h3>Robustez</h3></div>
+        <ul>
+          <li>VPS 3 pode guardar backup, logs e índice.</li>
+          <li>Se a VPS 2 cair, a memória não perde integridade.</li>
+          <li>Se a VPS 1 falhar, há recuperação por backup e replay.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="footer">Arquivo: memory-agents-vps-architecture.html</div>
+  </div>
+</body>
+</html>
