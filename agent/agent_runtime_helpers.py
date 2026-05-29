@@ -356,6 +356,11 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
          any preceding assistant tool_call — dropped.
       2. Consecutive ``user`` messages — merged with newline separator
          so no user input is lost.
+      3. Consecutive ``assistant`` messages with ``tool_calls`` — merged
+         into a single assistant message containing all tool calls. Some
+         providers (e.g. DeepSeek v4) reject consecutive assistant tool_call
+         messages because each ``assistant(tool_calls)`` must be immediately
+         followed by ``tool`` responses. See #29148.
 
     Deliberately does NOT rewind orphan ``assistant(tool_calls)+tool``
     pairs that precede a user message — that pattern IS valid when the
@@ -429,10 +434,40 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
                 continue
         merged.append(msg)
 
+    # Pass 3: merge consecutive assistant messages with tool_calls.
+    # Some providers (e.g. DeepSeek v4) enforce strict alternation:
+    # every assistant(tool_calls) must be immediately followed by
+    # tool(response) messages before another assistant message can
+    # appear. Consecutive assistant tool_call messages — produced by
+    # certain streaming paths (Codex, event-projectors) — violate this
+    # and cause HTTP 400 on session replay.
+    merged2: List[Dict] = []
+    for msg in merged:
+        if (
+            merged2
+            and isinstance(msg, dict)
+            and msg.get("role") == "assistant"
+            and msg.get("tool_calls")
+            and isinstance(merged2[-1], dict)
+            and merged2[-1].get("role") == "assistant"
+            and merged2[-1].get("tool_calls")
+        ):
+            prev = merged2[-1]
+            prev["tool_calls"].extend(msg["tool_calls"])
+            # Keep content from whichever message has it (usually empty)
+            if not prev.get("content") and msg.get("content"):
+                prev["content"] = msg["content"]
+            # Keep finish_reason from the latest message
+            if msg.get("finish_reason"):
+                prev["finish_reason"] = msg["finish_reason"]
+            repairs += 1
+            continue
+        merged2.append(msg)
+
     if repairs > 0:
         # Rewrite in place so downstream paths (persistence, return
         # value, session DB flush) see the repaired sequence.
-        messages[:] = merged
+        messages[:] = merged2
 
     return repairs
 
