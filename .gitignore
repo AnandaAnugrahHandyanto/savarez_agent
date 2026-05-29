@@ -73,8 +73,3 @@ models-dev-upstream/
 hermes_cli/tui_dist/*
 hermes_cli/scripts/
 docs/superpowers/*
-
-# Personal/local: agent workspace artifacts (keep in ~/.openclaw/workspace)
-/*.drawio
-/bsp_architecture*.png
-/openclaw_memory_map.drawio
