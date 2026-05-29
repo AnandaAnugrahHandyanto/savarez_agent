@@ -349,14 +349,26 @@ class TestReplyToText:
         assert event.reply_to_text is None
 
     @pytest.mark.asyncio
-    async def test_reference_without_resolved(self, reply_text_adapter):
+    async def test_reference_without_resolved_fails_closed(self, reply_text_adapter):
         ref = SimpleNamespace(message_id=555, resolved=None)
         message = _make_message(reference=ref)
 
         await reply_text_adapter._handle_message(message)
 
         event = reply_text_adapter.handle_message.await_args.args[0]
-        assert event.reply_to_message_id == "555"
+        assert event.reply_to_message_id is None
+        assert event.reply_to_text is None
+
+    @pytest.mark.asyncio
+    async def test_unresolved_reference_does_not_preserve_id_for_later_bot_text_injection(self, reply_text_adapter):
+        """Unresolved replies must not leave an ID for later bot-context lookup."""
+        ref = SimpleNamespace(message_id=777, resolved=None, cached_message=None)
+        message = _make_message(reference=ref)
+
+        await reply_text_adapter._handle_message(message)
+
+        event = reply_text_adapter.handle_message.await_args.args[0]
+        assert event.reply_to_message_id is None
         assert event.reply_to_text is None
 
     @pytest.mark.asyncio

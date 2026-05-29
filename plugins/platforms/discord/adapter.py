@@ -4871,10 +4871,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 or getattr(message.reference, "resolved", None)
             )
             ref_author = getattr(ref_msg, "author", None)
-            if not getattr(ref_author, "bot", False):
+            # Fail closed for unresolved references: without the resolved/cached
+            # target we cannot know whether the reply target was bot-authored,
+            # so do not preserve an ID that a later layer could resolve into
+            # bot-authored reply context.
+            if ref_msg is not None and not getattr(ref_author, "bot", False):
                 reply_to_id = str(message.reference.message_id)
-                if ref_msg is not None:
-                    reply_to_text = getattr(ref_msg, "content", None) or None
+                reply_to_text = getattr(ref_msg, "content", None) or None
 
         event = MessageEvent(
             text=event_text,
