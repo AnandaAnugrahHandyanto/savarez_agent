@@ -133,13 +133,14 @@ projmanage task view <task_id>
 ```bash
 projmanage task update <task_id> \
   [--title "新标题"] \
-  [--desc "新描述"] \
+  [--desc "追加的描述内容"] \
   [--status todo|doing|done|blocked] \
   [--priority 1|2|3] \
   [--assignee <member_id>] \
   [--due YYYY-MM-DD] \
   [--milestone <new_milestone_id>]
 ```
+> **描述追加规则：** `--desc` 会追加到原描述末尾（用换行分隔），不是替换。
 
 ### Delete task
 ```bash
@@ -267,6 +268,14 @@ projmanage task done <task_id>   # repeat until all done
 # → output shows: "🎉 里程碑 [xxx] 已自动完成！"
 ```
 
+### Append to task description
+```bash
+# Each --desc appends to the existing description (not replaces)
+projmanage task update <task_id> --desc "第一阶段完成"
+projmanage task update <task_id> --desc "补充：需要联调"
+# Description now contains both lines
+```
+
 ### Migrate task to different milestone
 ```bash
 projmanage task update <task_id> --milestone <new_milestone_id>
@@ -330,9 +339,9 @@ Key tables: `projects`, `milestones`, `tasks`, `members`, `task_links`, `task_ev
 
 4. **Assuming `task new` accepts `--status`.** It does not. Task status is set via `task start/done/block/unblock` after creation.
 
-5. **Migrating a task to a milestone in a different project.** The FK constraint doesn't prevent cross-project assignment, but the business logic assumes milestones are per-project. Don't do this.
+5. **Assuming `task new` accepts `--status`.** It does not. Task status is set via `task start/done/block/unblock` after creation.
 
-6. **Deleting a project doesn't clean up the test data.** After `proj delete`, the DB is clean. Subsequent tests should create fresh data.
+6. **Migrating a task to a milestone in a different project.** The FK constraint doesn't prevent cross-project assignment, but the business logic assumes milestones are per-project. Don't do this.
 
 ---
 
