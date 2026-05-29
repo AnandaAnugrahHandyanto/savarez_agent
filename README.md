@@ -81,6 +81,85 @@ hermes doctor       # Diagnose any issues
 
 ---
 
+## Linear Agent App Preview
+
+Hermes can run a Linear Agent Session webhook receiver for early Linear AIG app
+testing. Configure a Linear OAuth app installation with `actor=app`, request the
+`app:assignable` and `app:mentionable` scopes, enable Agent session event
+webhooks, then point the webhook URL at `/linear/aig` on your public Hermes
+receiver.
+
+Set credentials in your shell or secret manager; do not commit them:
+
+```bash
+export HERMES_LINEAR_AIG_ACCESS_TOKEN="..."
+export HERMES_LINEAR_AIG_WEBHOOK_SECRET="..."
+export HERMES_LINEAR_AIG_HOST="0.0.0.0"
+export HERMES_LINEAR_AIG_PORT="8667"
+```
+
+Validate without starting the server:
+
+```bash
+hermes linear-aig check-config
+```
+
+Start the receiver:
+
+```bash
+hermes linear-aig serve
+```
+
+The MVP receiver validates Linear webhook signatures, acknowledges
+`AgentSessionEvent` webhooks quickly, and emits Agent Activities back to Linear.
+By default it runs in `bridge` mode, which is useful for webhook smoke tests
+because it responds transparently without starting a full Hermes task. To route
+Linear sessions through Hermes oneshot execution, set:
+
+```bash
+export HERMES_LINEAR_AIG_TASK_MODE="oneshot"
+export HERMES_LINEAR_AIG_MODEL="..."       # optional
+export HERMES_LINEAR_AIG_PROVIDER="..."    # optional
+export HERMES_LINEAR_AIG_TOOLSETS="..."    # optional comma-separated list
+```
+
+Kilo Code, MiniMax, and Windsurf can run through the same Linear AIG receiver
+using app profiles. Profiles set provider defaults where Hermes has a matching
+provider and allow separate Linear app credentials without changing code:
+
+```bash
+export HERMES_LINEAR_AIG_APP="kilocode"
+export HERMES_LINEAR_AIG_KILOCODE_ACCESS_TOKEN="..."
+export HERMES_LINEAR_AIG_KILOCODE_WEBHOOK_SECRET="..."
+export HERMES_LINEAR_AIG_KILOCODE_TASK_MODE="oneshot"
+```
+
+```bash
+export HERMES_LINEAR_AIG_APP="minimax"
+export HERMES_LINEAR_AIG_MINIMAX_ACCESS_TOKEN="..."
+export HERMES_LINEAR_AIG_MINIMAX_WEBHOOK_SECRET="..."
+export HERMES_LINEAR_AIG_MINIMAX_TASK_MODE="oneshot"
+```
+
+The MiniMax app profile uses the `minimax-oauth` provider by default. Windsurf
+has separate app credentials but no built-in provider default yet; set
+`HERMES_LINEAR_AIG_WINDSURF_PROVIDER` if you route it through a configured
+provider.
+
+```bash
+export HERMES_LINEAR_AIG_APP="windsurf"
+export HERMES_LINEAR_AIG_WINDSURF_ACCESS_TOKEN="..."
+export HERMES_LINEAR_AIG_WINDSURF_WEBHOOK_SECRET="..."
+export HERMES_LINEAR_AIG_WINDSURF_TASK_MODE="oneshot"
+export HERMES_LINEAR_AIG_WINDSURF_PROVIDER="..." # optional configured provider
+```
+
+Supported app profiles are `hermes`, `kilocode`, `minimax`, and `windsurf`.
+Generic `HERMES_LINEAR_AIG_*` values still work; app-specific values take
+precedence when `HERMES_LINEAR_AIG_APP` or `--app` is set.
+
+---
+
 ## Skip the API-key collection — Nous Portal
 
 Hermes works with whatever provider you want — that's not changing. But if you'd rather not collect five separate API keys for the model, web search, image generation, TTS, and a cloud browser, **[Nous Portal](https://portal.nousresearch.com)** covers all of them under one subscription:
