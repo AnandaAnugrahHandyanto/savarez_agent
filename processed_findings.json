@@ -442,5 +442,11 @@
     "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34942",
     "pr_number": 34942,
     "run_id": "20260529_222900"
+  },
+  "SSRF-browser_camofox.py-398": {
+    "status": "filed",
+    "pr_url": "https://github.com/NousResearch/hermes-agent/pull/34943",
+    "pr_number": 34943,
+    "run_id": "20260529_222900"
   }
 }
