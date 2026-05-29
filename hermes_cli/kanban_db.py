@@ -1756,6 +1756,7 @@ def create_task(
     idempotency_key: Optional[str] = None,
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
+    model_override: Optional[str] = None,
     max_retries: Optional[int] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
@@ -1784,6 +1785,9 @@ def create_task(
     ``kanban-worker``. Use this to pin a task to a specialist skill
     (e.g. ``skills=["translation"]`` so the worker loads the
     translation skill regardless of the profile's default config).
+
+    ``model_override`` pins the worker invocation to a specific model for
+    this task. ``None`` uses the assignee profile default.
     """
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
@@ -1801,6 +1805,8 @@ def create_task(
         branch_name = str(branch_name).strip() or None
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
+    if model_override is not None:
+        model_override = str(model_override).strip() or None
     parents = tuple(p for p in parents if p)
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
@@ -1924,8 +1930,8 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, tenant, idempotency_key, max_runtime_seconds,
-                        skills, max_retries, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, model_override, max_retries, session_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -1943,6 +1949,7 @@ def create_task(
                         idempotency_key,
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
                         json.dumps(skills_list) if skills_list is not None else None,
+                        model_override,
                         int(max_retries) if max_retries is not None else None,
                         session_id,
                     ),
@@ -1963,6 +1970,7 @@ def create_task(
                         "tenant": tenant,
                         "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,
+                        "model_override": model_override,
                     },
                 )
             return task_id
@@ -5993,10 +6001,24 @@ def _default_spawn(
         for sk in task.skills:
             if sk and sk != "kanban-worker":
                 cmd.extend(["--skills", sk])
-    if task.model_override:
-        cmd.extend(["-m", task.model_override])
     cmd.extend([
         "chat",
+    ])
+    if task.model_override:
+        # Support "provider:model" format (e.g. "deepseek:deepseek-v4-pro").
+        # When provider is specified, pass --provider so the CLI resolves
+        # credentials against the correct backend instead of falling back
+        # to the profile's default provider.
+        _mo = task.model_override
+        if ":" in _mo:
+            _prov, _mdl = _mo.split(":", 1)
+            if _prov and _mdl:
+                cmd.extend(["--provider", _prov, "-m", _mdl])
+            else:
+                cmd.extend(["-m", _mo])
+        else:
+            cmd.extend(["-m", _mo])
+    cmd.extend([
         "-q", prompt,
     ])
     # Redirect output to a per-task log under <board-root>/logs/.
