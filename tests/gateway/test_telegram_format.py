@@ -5,6 +5,7 @@ conversion pipeline), and edge cases that could produce invalid MarkdownV2
 or corrupt user-visible content.
 """
 
+import json
 import re
 import sys
 from types import SimpleNamespace
@@ -12,7 +13,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import MessageType
 
 
 # ---------------------------------------------------------------------------
@@ -39,6 +41,7 @@ from gateway.platforms.telegram import (  # noqa: E402
     TelegramAdapter,
     _escape_mdv2,
     _strip_mdv2,
+    _telegram_allowed_updates,
     _wrap_markdown_tables,
 )
 
@@ -915,10 +918,15 @@ def _guest_test_adapter(*, guest_mode=True, require_mention=True, allowed_chats=
             "guest_mode": guest_mode,
             "require_mention": require_mention,
             "allowed_chats": allowed_chats or ["-100200"],
+            "allowed_topics": [],
+            "ignored_threads": [],
+            "exclusive_bot_mentions": False,
+            "mention_patterns": [],
         },
     )
     adapter = object.__new__(TelegramAdapter)
     adapter.config = config
+    adapter.platform = Platform.TELEGRAM
     adapter._bot = SimpleNamespace(id=999, username="hermes_bot")
     adapter._mention_patterns = adapter._compile_mention_patterns()
     # PR db50af910 added a TELEGRAM_ALLOWED_USERS allowlist gate to
@@ -937,14 +945,23 @@ def _guest_group_message(text, *, chat_id=-100201, entities=None, reply_to_bot=F
         entities=entities or [],
         caption_entities=[],
         message_thread_id=None,
-        chat=SimpleNamespace(id=chat_id, type="group"),
-        from_user=SimpleNamespace(id=111),
+        message_id=321,
+        date=None,
+        guest_query_id=None,
+        chat=SimpleNamespace(id=chat_id, type="group", title="Guest chat"),
+        from_user=SimpleNamespace(id=111, full_name="Ada"),
         reply_to_message=reply_to_message,
     )
 
 
 def _guest_mention_entity(text, mention="@hermes_bot"):
     return SimpleNamespace(type="mention", offset=text.index(mention), length=len(mention))
+
+
+def test_telegram_allowed_updates_includes_guest_message():
+    allowed = _telegram_allowed_updates()
+
+    assert "guest_message" in {getattr(item, "value", item) for item in allowed}
 
 
 class TestTelegramGuestMentionGating:
@@ -1012,3 +1029,143 @@ class TestTelegramGuestMentionGating:
         message.caption_entities = [_guest_mention_entity(text)]
 
         assert adapter._should_process_message(message) is True
+
+    def test_effective_update_message_accepts_bot_api_guest_message(self):
+        """Telegram Bot API Guest Bots deliver summoned messages as update.guest_message."""
+        adapter = _guest_test_adapter()
+        guest_message = _guest_group_message("summoned as guest @hermes_bot")
+        update = SimpleNamespace(
+            effective_message=None,
+            message=None,
+            channel_post=None,
+            guest_message=guest_message,
+        )
+
+        assert adapter._effective_update_message(update) is guest_message
+
+    def test_effective_update_message_decodes_guest_message_api_kwargs(self, monkeypatch):
+        """Older PTB versions preserve unknown guest_message updates in api_kwargs."""
+        adapter = _guest_test_adapter()
+        decoded_message = _guest_group_message("summoned as guest @hermes_bot")
+
+        from gateway.platforms import telegram as telegram_module
+        monkeypatch.setattr(telegram_module.Message, "de_json", lambda raw, bot: decoded_message)
+
+        update = SimpleNamespace(
+            effective_message=None,
+            message=None,
+            channel_post=None,
+            api_kwargs={
+                "guest_message": {
+                    "message_id": 321,
+                    "date": 0,
+                    "chat": {"id": -100201, "type": "group", "title": "Guest chat"},
+                    "from": {"id": 111, "is_bot": False, "first_name": "Ada"},
+                    "text": "summoned as guest @hermes_bot",
+                    "entities": [{"type": "mention", "offset": 18, "length": 11}],
+                }
+            },
+        )
+
+        message = adapter._effective_update_message(update)
+
+        assert message is not None
+        assert message.text == "summoned as guest @hermes_bot"
+        assert message.chat.id == -100201
+
+    @pytest.mark.asyncio
+    async def test_handle_text_message_dispatches_guest_message_updates(self):
+        """Guest Bot updates should flow through the normal text-message dispatcher."""
+        adapter = _guest_test_adapter()
+        text = "summoned as guest @hermes_bot"
+        guest_message = _guest_group_message(
+            text,
+            entities=[_guest_mention_entity(text)],
+        )
+        guest_message.message_id = 321
+        update = SimpleNamespace(
+            update_id=12345,
+            effective_message=None,
+            message=None,
+            channel_post=None,
+            guest_message=guest_message,
+        )
+        adapter._ensure_forum_commands = AsyncMock()
+        adapter._enqueue_text_event = MagicMock()
+        adapter._build_message_event = MagicMock(
+            return_value=SimpleNamespace(text=text, raw_message=guest_message, message_type=None)
+        )
+        adapter._apply_telegram_group_observe_attribution = lambda event: event
+        def clean_trigger_text(text):
+            return text
+
+        adapter._clean_bot_trigger_text = clean_trigger_text
+
+        await adapter._handle_text_message(update, None)
+
+        adapter._build_message_event.assert_called_once()
+        assert adapter._build_message_event.call_args.args[0] is guest_message
+        assert adapter._build_message_event.call_args.args[1] is not None
+        assert adapter._build_message_event.call_args.kwargs == {"update_id": 12345}
+        adapter._enqueue_text_event.assert_called_once()
+
+    def test_build_message_event_preserves_guest_query_id_for_official_reply_flow(self):
+        """Official Guest Bot replies must use Message.guest_query_id with answerGuestQuery."""
+        adapter = _guest_test_adapter()
+        message = _guest_group_message("summoned as guest @hermes_bot")
+        message.guest_query_id = "guest-query-123"
+
+        event = adapter._build_message_event(message, msg_type=MessageType.TEXT, update_id=999)
+
+        assert event.source.guest_query_id == "guest-query-123"
+
+    def test_build_message_event_preserves_guest_query_id_from_api_kwargs(self):
+        """SDK-lagged Message objects keep unknown guest_query_id in api_kwargs."""
+        adapter = _guest_test_adapter()
+        message = _guest_group_message("summoned as guest @hermes_bot")
+        delattr(message, "guest_query_id")
+        message.api_kwargs = {"guest_query_id": "guest-query-raw"}
+
+        event = adapter._build_message_event(message, msg_type=MessageType.TEXT, update_id=999)
+
+        assert event.source.guest_query_id == "guest-query-raw"
+
+    def test_build_message_event_preserves_guest_query_id_from_message_to_dict(self):
+        """Some SDK paths expose unknown Guest Bot fields only via Message.to_dict()."""
+        adapter = _guest_test_adapter()
+        message = _guest_group_message("summoned as guest @hermes_bot")
+        delattr(message, "guest_query_id")
+        message.to_dict = lambda: {"guest_query_id": "guest-query-dict"}
+
+        event = adapter._build_message_event(message, msg_type=MessageType.TEXT, update_id=999)
+
+        assert event.source.guest_query_id == "guest-query-dict"
+
+    @pytest.mark.asyncio
+    async def test_send_guest_query_uses_answer_guest_query_not_send_message(self):
+        """Guest Bot responses follow Telegram's answerGuestQuery method."""
+        adapter = _guest_test_adapter()
+        bot = SimpleNamespace(
+            _post=AsyncMock(return_value={"inline_message_id": "inline-123"}),
+            send_message=AsyncMock(),
+        )
+        adapter._bot = bot
+
+        result = await adapter.send(
+            "-100201",
+            "**hi from guest mode**",
+            metadata={"telegram_guest_query_id": "guest-query-123"},
+        )
+
+        assert result.success is True
+        assert result.message_id == "inline-123"
+        bot.send_message.assert_not_called()
+        bot._post.assert_awaited_once()
+        endpoint, = bot._post.call_args.args
+        assert endpoint == "answerGuestQuery"
+        data = bot._post.call_args.kwargs["data"]
+        assert data["guest_query_id"] == "guest-query-123"
+        payload = json.loads(data["result"])
+        assert payload["type"] == "article"
+        assert payload["input_message_content"]["message_text"] == "*hi from guest mode*"
+        assert payload["input_message_content"]["parse_mode"] == "MarkdownV2"
