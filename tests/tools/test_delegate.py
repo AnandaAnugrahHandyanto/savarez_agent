@@ -2792,6 +2792,32 @@ class TestPerTaskOverrideReachesChild(unittest.TestCase):
         self.assertEqual(seen[0]["model"], "task-A-model")
         self.assertIsNone(seen[1]["model"])
 
+    def test_bad_per_task_provider_fails_whole_batch_before_building_children(self):
+        """A per-task provider that can't resolve aborts the whole call with a
+        tool_error in the up-front pre-pass — no children are built, so the
+        batch never half-runs. The valid sibling task must not be spawned."""
+        parent = _make_mock_parent(depth=0)
+
+        def fake_resolve(cfg, _parent):
+            if cfg.get("provider") == "nonexistent":
+                raise ValueError("Cannot resolve delegation provider 'nonexistent'")
+            return {"model": None, "provider": None, "base_url": None,
+                    "api_key": None, "api_mode": None, "base_url_is_explicit": False}
+
+        with patch("tools.delegate_tool._load_config", return_value={}), \
+             patch("tools.delegate_tool._resolve_delegation_credentials",
+                   side_effect=fake_resolve), \
+             patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            result = json.loads(delegate_task(
+                tasks=[{"goal": "ok"}, {"goal": "bad", "provider": "nonexistent"}],
+                parent_agent=parent))
+
+        self.assertIn("error", result)
+        self.assertIn("nonexistent", result["error"])
+        mock_build.assert_not_called()  # pre-pass aborts before construction
+        mock_run.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
