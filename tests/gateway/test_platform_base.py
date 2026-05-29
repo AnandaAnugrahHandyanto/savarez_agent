@@ -361,6 +361,27 @@ class TestExtractMedia:
         assert "[[audio_as_voice]]" not in cleaned
         assert "[[as_document]]" not in cleaned
 
+    def test_media_inside_serialized_json_not_extracted(self):
+        """MEDIA: embedded in serialized JSON/tool-result text must not be
+        treated as an outbound attachment directive.  Regression test for #34375."""
+        # Compact JSON: MEDIA: preceded by backslash-quote (\n is literal \n in JSON)
+        json_content = '{"content":"previous reply MEDIA:/Users/example/.hermes/media/generated/stale.png\\nnot an attachment"}'
+        media, cleaned = BasePlatformAdapter.extract_media(json_content)
+        assert media == [], f"Should not extract MEDIA: from JSON string, got {media}"
+
+        # Pretty-printed JSON with MEDIA: mid-line after colon
+        json_content2 = '{"result": "MEDIA:/tmp/stale.png"}'
+        media2, _ = BasePlatformAdapter.extract_media(json_content2)
+        assert media2 == [], f"Should not extract MEDIA: from JSON value, got {media2}"
+
+    def test_media_at_line_start_in_multiline_still_extracted(self):
+        """MEDIA: at the start of a line (after \n) must still be extracted
+        even when other lines contain non-MEDIA text."""
+        content = "Here is the result:\nMEDIA:/tmp/output.png"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == "/tmp/output.png"
+
 
 class TestMediaDeliveryPathValidation:
     def _patch_roots(self, monkeypatch, *roots):
