@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory, Memori, Mnemosyne"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+External memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -22,7 +22,7 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory, memori, mnemosyne
 ```
 
 ## How It Works
@@ -543,6 +543,40 @@ hermes memory setup
 
 ---
 
+### Mnemosyne
+
+Local-first, zero-cloud memory provider. Every interaction, decision, tool call, and outcome is captured to a local SQLite database with vector search, FTS5 full-text search, hybrid ranking, knowledge graph, and episodic consolidation. No API keys. No quotas. No network calls.
+
+| | |
+|---|---|
+| **Best for** | Local-first, zero-latency memory with no external dependencies |
+| **Requires** | `pip install mnemosyne-hermes` + `mnemosyne-hermes install` |
+| **Data storage** | Local SQLite (on your machine) |
+| **Cost** | Free (MIT license) |
+
+**Tools (23):** `mnemosyne_remember`, `mnemosyne_recall`, `mnemosyne_stats`, `mnemosyne_sleep`, `mnemosyne_diagnose`, `mnemosyne_export`, `mnemosyne_import`, `mnemosyne_get`, `mnemosyne_update`, `mnemosyne_forget`, `mnemosyne_invalidate`, `mnemosyne_validate`, `mnemosyne_triple_add`, `mnemosyne_triple_query`, `mnemosyne_graph_query`, `mnemosyne_graph_link`, `mnemosyne_scratchpad_write`, `mnemosyne_scratchpad_read`, `mnemosyne_scratchpad_clear`, `mnemosyne_shared_remember`, `mnemosyne_shared_recall`, `mnemosyne_shared_stats`, `mnemosyne_shared_forget`
+
+**Setup:**
+```bash
+pip install mnemosyne-hermes
+mnemosyne-hermes install
+hermes config set memory.provider mnemosyne
+```
+
+No API key needed. No cloud dependency. The provider auto-creates its database at `$HERMES_HOME/mnemosyne/`.
+
+**Key capabilities:**
+
+- **Automatic capture** — every turn, in the background, after the response is sent. Conversation, decisions, tool calls, outcomes.
+- **Hybrid search** — vector similarity + FTS5 full-text + importance scoring. All tunable per-query.
+- **Episodic consolidation** — `mnemosyne_sleep` compresses old working memories into long-term summaries so the working set stays small.
+- **Knowledge graph** — subject-predicate-object triples with BFS graph traversal. Link memories semantically.
+- **Multi-agent validation** — agents can attest, update, or invalidate each other's memories with provenance tracking.
+- **Shared surface** — compact cross-agent metadata for multi-agent workflows.
+- **23 tools** — full CRUD, search, graph, shared surface, scratchpad, import/export, diagnose, stats.
+
+---
+
 ## Provider Comparison
 
 | Provider | Storage | Cost | Tools | Dependencies | Unique Feature |
@@ -556,6 +590,7 @@ hermes memory setup
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** | Cloud | Paid | 4 | `supermemory` | Context fencing + session graph ingest + multi-container |
 | **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |
+| **Mnemosyne** | Local | Free | 23 | `mnemosyne-hermes` | 23 tools, local SQLite + vector search + knowledge graph + episodic consolidation |
 
 ## Profile Isolation
 
