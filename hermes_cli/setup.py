@@ -1693,14 +1693,28 @@ def setup_agent_settings(config: dict):
     print_info("  all     — Show every tool call with a short preview")
     print_info("  verbose — Full args, results, and debug logs")
 
-    current_mode = cfg_get(config, "display", "tool_progress", default="all")
-    mode = prompt("Tool progress mode", current_mode)
-    if mode.lower() in {"off", "new", "all", "verbose"}:
+    def _normalise_tool_progress_mode(value) -> str:
+        if value is True:
+            return "all"
+        if value is False:
+            return "off"
+        text = str(value).strip().lower()
+        if text == "true":
+            return "all"
+        if text == "false":
+            return "off"
+        return text
+
+    current_mode = _normalise_tool_progress_mode(
+        cfg_get(config, "display", "tool_progress", default="all")
+    )
+    mode = _normalise_tool_progress_mode(prompt("Tool progress mode", current_mode))
+    if mode in {"off", "new", "all", "verbose"}:
         if "display" not in config:
             config["display"] = {}
-        config["display"]["tool_progress"] = mode.lower()
+        config["display"]["tool_progress"] = mode
         save_config(config)
-        print_success(f"Tool progress set to: {mode.lower()}")
+        print_success(f"Tool progress set to: {mode}")
     else:
         print_warning(f"Unknown mode '{mode}', keeping '{current_mode}'")
 

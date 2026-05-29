@@ -76,3 +76,85 @@ def test_setup_agent_settings_prefers_config_over_stale_env(tmp_path, monkeypatc
     assert "Press Enter to keep 60." not in out
     # And the stale .env entry gets cleaned up
     assert "HERMES_MAX_ITERATIONS" in removed_keys
+
+
+def test_setup_agent_settings_normalises_true_tool_progress_default(
+    tmp_path, monkeypatch, capsys
+):
+    """Legacy boolean true should behave like canonical "all"."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    config = {
+        "agent": {"max_turns": 60},
+        "display": {"tool_progress": True},
+        "compression": {"threshold": 0.50},
+        "session_reset": {"mode": "both", "idle_minutes": 1440, "at_hour": 4},
+    }
+
+    saved_values: list[str] = []
+
+    def fake_prompt(question, default=None, password=False):
+        if question == "Max iterations":
+            return "60"
+        if question == "Tool progress mode":
+            return default
+        if question == "Compression threshold (0.5-0.95)":
+            return "0.5"
+        raise AssertionError(f"Unexpected prompt: {question}")
+
+    monkeypatch.setattr("hermes_cli.setup.prompt", fake_prompt)
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *args, **kwargs: 4)
+    monkeypatch.setattr("hermes_cli.setup.save_env_value", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.setup.remove_env_value", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "hermes_cli.setup.save_config",
+        lambda current: saved_values.append(current["display"]["tool_progress"]),
+    )
+
+    setup_agent_settings(config)
+
+    out = capsys.readouterr().out
+    assert "Tool progress set to: all" in out
+    assert config["display"]["tool_progress"] == "all"
+    assert "all" in saved_values
+
+
+def test_setup_agent_settings_normalises_false_tool_progress_default(
+    tmp_path, monkeypatch, capsys
+):
+    """Legacy boolean false should behave like canonical "off"."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    config = {
+        "agent": {"max_turns": 60},
+        "display": {"tool_progress": False},
+        "compression": {"threshold": 0.50},
+        "session_reset": {"mode": "both", "idle_minutes": 1440, "at_hour": 4},
+    }
+
+    saved_values: list[str] = []
+
+    def fake_prompt(question, default=None, password=False):
+        if question == "Max iterations":
+            return "60"
+        if question == "Tool progress mode":
+            return default
+        if question == "Compression threshold (0.5-0.95)":
+            return "0.5"
+        raise AssertionError(f"Unexpected prompt: {question}")
+
+    monkeypatch.setattr("hermes_cli.setup.prompt", fake_prompt)
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *args, **kwargs: 4)
+    monkeypatch.setattr("hermes_cli.setup.save_env_value", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.setup.remove_env_value", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "hermes_cli.setup.save_config",
+        lambda current: saved_values.append(current["display"]["tool_progress"]),
+    )
+
+    setup_agent_settings(config)
+
+    out = capsys.readouterr().out
+    assert "Tool progress set to: off" in out
+    assert config["display"]["tool_progress"] == "off"
+    assert "off" in saved_values
