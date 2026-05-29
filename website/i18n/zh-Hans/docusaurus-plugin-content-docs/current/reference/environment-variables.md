@@ -197,7 +197,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `TERMINAL_DAYTONA_IMAGE` | Daytona 沙箱镜像 |
 | `TERMINAL_TIMEOUT` | 命令超时（秒） |
 | `TERMINAL_LIFETIME_SECONDS` | 终端会话最大生命周期（秒） |
-| `TERMINAL_CWD` | 终端会话的工作目录（仅 gateway/cron；CLI 使用启动目录） |
+| `TERMINAL_CWD` | 在 `.env` 中设置时**已弃用**。请改为在 `~/.hermes/config.yaml` 中配置 `terminal.cwd`；gateway 会在运行时将该值桥接为 `TERMINAL_CWD`。CLI 始终使用启动 `hermes` 时所在的目录。 |
 | `SUDO_PASSWORD` | 无需交互提示即可使用 sudo |
 
 对于云沙箱后端，持久化以文件系统为导向。`TERMINAL_LIFETIME_SECONDS` 控制 Hermes 何时清理空闲终端会话，后续恢复可能会重新创建沙箱而非保持相同的活跃进程。
@@ -412,13 +412,13 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `API_SERVER_MODEL_NAME` | `/v1/models` 上公告的模型名称。默认为 profile 名称（默认 profile 为 `hermes-agent`）。适用于 Open WebUI 等前端需要每个连接使用不同模型名称的多用户场景。 |
 | `GATEWAY_PROXY_URL` | 将消息转发到的远程 Hermes API 服务器 URL（[代理模式](/user-guide/messaging/matrix#proxy-mode-e2ee-on-macos)）。设置后，gateway 仅处理平台 I/O——所有 agent 工作委托给远程服务器。也可通过 `config.yaml` 中的 `gateway.proxy_url` 配置。 |
 | `GATEWAY_PROXY_KEY` | 代理模式下与远程 API 服务器认证的 Bearer token。必须与远程主机上的 `API_SERVER_KEY` 一致。 |
-| `MESSAGING_CWD` | 消息模式下终端命令的工作目录（默认：`~`） |
+| `MESSAGING_CWD` | **已弃用。** 请使用 `~/.hermes/config.yaml` 中的 `terminal.cwd` 来设置 gateway / cron 的工作目录。当加载器在 `.env` 中看到此变量时会打印一次性迁移警告。 |
 | `GATEWAY_ALLOWED_USERS` | 跨所有平台允许的逗号分隔用户 ID |
 | `GATEWAY_ALLOW_ALL_USERS` | 无需白名单允许所有用户（`true`/`false`，默认：`false`） |
 
 ### Microsoft Graph（Teams 会议）
 
-用于即将推出的 Teams 会议摘要流水线的 Microsoft Graph REST 客户端的仅应用凭证。Azure 门户操作步骤和所需 API 权限详见[注册 Microsoft Graph 应用程序](/guides/microsoft-graph-app-registration)。
+用于 [Teams 会议摘要流水线](/guides/operate-teams-meeting-pipeline)（`hermes teams-pipeline` CLI + 内置的 `plugins/teams_pipeline/`）的 Microsoft Graph REST 客户端的仅应用凭证。Azure 门户操作步骤和所需 API 权限详见[注册 Microsoft Graph 应用程序](/guides/microsoft-graph-app-registration)。
 
 | 变量 | 描述 |
 |----------|-------------|

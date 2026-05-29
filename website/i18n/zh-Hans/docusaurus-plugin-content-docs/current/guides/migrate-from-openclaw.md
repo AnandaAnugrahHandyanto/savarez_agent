@@ -156,7 +156,7 @@ TTS 设置从 OpenClaw 配置的**两个**位置读取，优先级如下：
 | 浏览器无头模式 | `browser.headless` | `config.yaml` → `browser.headless` | |
 | Brave 搜索密钥 | `tools.web.search.brave.apiKey` | `.env` → `BRAVE_API_KEY` | 需要 `--migrate-secrets` |
 | Gateway 认证 token | `gateway.auth.token` | `.env` → `HERMES_GATEWAY_TOKEN` | 需要 `--migrate-secrets` |
-| 工作目录 | `agents.defaults.workspace` | `.env` → `MESSAGING_CWD` | |
+| 工作目录 | `agents.defaults.workspace` | `config.yaml` → `terminal.cwd` | 旧的 `MESSAGING_CWD` / `TERMINAL_CWD` `.env` 条目已弃用；加载器会在看到时发出警告。 |
 
 ### 已归档（无对应 Hermes 等效项）
 
