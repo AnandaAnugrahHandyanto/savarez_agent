@@ -2,6 +2,7 @@
 
 from gateway.config import Platform
 from gateway.run import (
+    _gateway_status_allowed,
     _prepare_gateway_status_message,
     _sanitize_gateway_final_response,
 )
@@ -29,6 +30,13 @@ def test_non_telegram_status_is_unchanged():
 
     assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", message) == message
     assert _prepare_gateway_status_message("local", "lifecycle", message) == message
+
+
+def test_lifecycle_status_honours_tool_progress_off_but_keeps_warnings():
+    """Context compaction lifecycle bubbles should obey per-platform quiet mode."""
+    assert _gateway_status_allowed("lifecycle", "off") is False
+    assert _gateway_status_allowed("lifecycle", "new") is True
+    assert _gateway_status_allowed("warn", "off") is True
 
 
 def test_telegram_status_sanitizes_raw_provider_security_errors():

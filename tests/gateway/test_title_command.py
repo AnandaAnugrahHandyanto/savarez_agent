@@ -277,6 +277,67 @@ class TestResetCommandWithTitle:
         assert "Custom Name" in str(result)
 
     @pytest.mark.asyncio
+    async def test_reset_command_updates_telegram_topic_binding(self):
+        """/new in a Telegram topic lane rebinds the topic to the new session."""
+        from datetime import datetime
+
+        from gateway.run import GatewayRunner
+        from gateway.session import SessionEntry, SessionSource, build_session_key
+
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
+        )
+        runner.adapters = {Platform.TELEGRAM: MagicMock(send=AsyncMock())}
+        runner._voice_mode = {}
+        runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+        runner._session_model_overrides = {}
+        runner._pending_model_notes = {}
+        runner._background_tasks = set()
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+            thread_id="10947",
+        )
+        session_key = build_session_key(source)
+        new_session_entry = SessionEntry(
+            session_key=session_key,
+            session_id="sess-new",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+        )
+        runner.session_store = MagicMock()
+        runner.session_store.get_or_create_session.return_value = new_session_entry
+        runner.session_store.reset_session.return_value = new_session_entry
+        runner.session_store._entries = {session_key: new_session_entry}
+        runner.session_store._generate_session_key.return_value = session_key
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._pending_approvals = {}
+        runner._session_db = MagicMock()
+        runner._session_db.is_telegram_topic_mode_enabled.return_value = True
+        runner._agent_cache = {}
+        runner._agent_cache_lock = None
+        runner._is_user_authorized = lambda _source: True
+        runner._format_session_info = lambda: ""
+
+        event = MessageEvent(text="/new", source=source)
+        await runner._handle_reset_command(event)
+
+        runner._session_db.bind_telegram_topic.assert_called_with(
+            chat_id="67890",
+            thread_id="10947",
+            user_id="12345",
+            session_key=session_key,
+            session_id="sess-new",
+        )
+
+    @pytest.mark.asyncio
     async def test_reset_command_duplicate_title_surfaces_warning(self):
         """/new <title> with an already-in-use title returns a warning in the reply."""
         from datetime import datetime

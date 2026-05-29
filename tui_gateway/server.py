@@ -394,10 +394,16 @@ def _status_update(sid: str, kind: str, text: str | None = None):
     body = (text if text is not None else kind).strip()
     if not body:
         return
+    event_kind = kind if text is not None else "status"
+    # Lifecycle statuses are progress chatter, including context compaction
+    # notices. Honour display.tool_progress=off for embedded/TUI consumers too,
+    # while still allowing warn/error style statuses through.
+    if str(event_kind or "").strip().lower() == "lifecycle" and not _tool_progress_enabled(sid):
+        return
     _emit(
         "status.update",
         sid,
-        {"kind": kind if text is not None else "status", "text": body},
+        {"kind": event_kind, "text": body},
     )
 
 

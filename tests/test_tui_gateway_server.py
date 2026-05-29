@@ -671,6 +671,28 @@ def test_status_callback_accepts_single_message_argument():
     )
 
 
+def test_status_callback_suppresses_lifecycle_when_tool_progress_off(monkeypatch):
+    monkeypatch.setitem(server._sessions, "sid", {"tool_progress_mode": "off"})
+    with patch("tui_gateway.server._emit") as emit:
+        cb = server._agent_cbs("sid")["status_callback"]
+        cb("lifecycle", "🗜️ Compacting context — summarizing earlier conversation so I can continue...")
+
+    emit.assert_not_called()
+
+
+def test_status_callback_keeps_warnings_when_tool_progress_off(monkeypatch):
+    monkeypatch.setitem(server._sessions, "sid", {"tool_progress_mode": "off"})
+    with patch("tui_gateway.server._emit") as emit:
+        cb = server._agent_cbs("sid")["status_callback"]
+        cb("warn", "compression failed")
+
+    emit.assert_called_once_with(
+        "status.update",
+        "sid",
+        {"kind": "warn", "text": "compression failed"},
+    )
+
+
 def test_resolve_model_uses_inference_model_env(monkeypatch):
     monkeypatch.delenv("HERMES_MODEL", raising=False)
     monkeypatch.setenv("HERMES_INFERENCE_MODEL", " anthropic/claude-sonnet-4.6\n")

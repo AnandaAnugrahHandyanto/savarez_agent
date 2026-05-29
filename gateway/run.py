@@ -319,6 +319,18 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     return text
 
 
+def _gateway_status_allowed(event_type: str, progress_mode: str) -> bool:
+    """Return whether a status callback should be delivered to chat.
+
+    ``lifecycle`` statuses are progress chatter, including context compaction
+    notices. Honour ``display.platforms.<platform>.tool_progress: off`` for
+    those, while still letting warnings through.
+    """
+    if str(event_type or "").strip().lower() != "lifecycle":
+        return True
+    return str(progress_mode or "all").strip().lower() != "off"
+
+
 async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata):
     """Route a status message through adapter.send_or_update_status when supported.
 
@@ -9636,6 +9648,18 @@ class GatewayRunner:
             new_entry = self.session_store.get_or_create_session(source, force_new=True)
             header = self._telegram_topic_new_header(source) or t("gateway.reset.header_new")
 
+        # Topic-mode Telegram DMs have a durable thread -> session binding.
+        # /new replaces the session attached to the current topic, so update
+        # that binding immediately. Otherwise the next message in the topic
+        # sees the stale binding and switch_session() resurrects the old,
+        # huge transcript, which can trigger context compaction on a supposedly
+        # fresh session.
+        if new_entry and self._is_telegram_topic_lane(source):
+            try:
+                self._record_telegram_topic_binding(source, new_entry)
+            except Exception:
+                logger.debug("Failed to update Telegram topic binding after /new", exc_info=True)
+
         # Set session title if provided with /new <title>
         _title_arg = event.get_command_args().strip()
         _title_note = ""
@@ -16744,6 +16768,15 @@ class GatewayRunner:
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
+                return
+            if not _gateway_status_allowed(event_type, progress_mode):
+                logger.debug(
+                    "status_callback suppressed by tool_progress=%s for %s/%s: %s",
+                    progress_mode,
+                    source.platform.value if source.platform else "unknown",
+                    event_type,
+                    _redact_gateway_user_facing_secrets(str(message or ""))[:160],
+                )
                 return
             prepared_message = _prepare_gateway_status_message(
                 source.platform,
