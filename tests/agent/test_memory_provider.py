@@ -790,18 +790,19 @@ class TestSetupFieldFiltering:
 
 
 class TestMemoryContextFencing:
-    """Prefetch context must be wrapped in <memory-context> fence so the model
-    does not treat recalled memory as user discourse."""
+    """Prefetch context becomes compact wiki/Honcho pointers, not raw dumps."""
 
-    def test_build_memory_context_block_wraps_content(self):
+    def test_build_memory_context_block_returns_pointers_not_fenced_dump(self):
         from agent.memory_manager import build_memory_context_block
         result = build_memory_context_block(
             "## Holographic Memory\n- [0.8] user likes dark mode"
         )
-        assert result.startswith("<memory-context>")
-        assert result.rstrip().endswith("</memory-context>")
-        assert "NOT new user input" in result
-        assert "user likes dark mode" in result
+        assert result.startswith("# Memory context pointers")
+        assert "<memory-context>" not in result
+        assert "Treat as authoritative reference data" not in result
+        assert "~/wiki/projects/*.md" in result
+        assert "honcho" in result.lower()
+        assert "user likes dark mode" not in result
 
     def test_build_memory_context_block_empty_input(self):
         from agent.memory_manager import build_memory_context_block
@@ -823,16 +824,19 @@ class TestMemoryContextFencing:
         assert "</memory-context>" not in result.lower()
         assert "datamore" in result
 
-    def test_fenced_block_separates_user_from_recall(self):
+    def test_compact_peer_card_can_be_included_without_raw_observations(self):
         from agent.memory_manager import build_memory_context_block
-        prefetch = "## Holographic Memory\n- [0.9] user is named Alice"
+        prefetch = (
+            "## User Peer Card\nName: Alice\nPrefers compact answers\n\n"
+            "## Explicit Observations\n2026-01-01 old raw observation"
+        )
         block = build_memory_context_block(prefetch)
-        user_msg = "What's the weather today?"
-        combined = user_msg + "\n\n" + block
-        fence_start = combined.index("<memory-context>")
-        fence_end = combined.index("</memory-context>")
-        assert "Alice" in combined[fence_start:fence_end]
-        assert combined.index("weather") < fence_start
+        assert "# Memory context pointers" in block
+        assert "## User Peer Card" in block
+        assert "Alice" in block
+        assert "Prefers compact answers" in block
+        assert "Explicit Observations" not in block
+        assert "old raw observation" not in block
 
 
 # ---------------------------------------------------------------------------
