@@ -2385,7 +2385,9 @@ class MediaResolveMiddleware(InboundMiddleware):
 
         try:
             file_bytes, content_type = await media_download_url(
-                fetch_url, max_size_mb=adapter.MEDIA_MAX_SIZE_MB,
+                fetch_url,
+                max_size_mb=adapter.MEDIA_MAX_SIZE_MB,
+                allow_trusted_private_hosts=bool(resource_id),
             )
         except Exception as exc:
             logger.warning(

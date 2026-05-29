@@ -29,6 +29,9 @@ from typing import Optional, Any
 
 import httpx
 
+from gateway.platforms.base import safe_url_for_log
+from tools.url_safety import is_always_blocked_url, is_safe_url
+
 logger = logging.getLogger(__name__)
 
 # ============ 常量 ============
@@ -36,6 +39,16 @@ logger = logging.getLogger(__name__)
 UPLOAD_INFO_PATH = "/api/resource/genUploadInfo"
 DEFAULT_API_DOMAIN = "yuanbao.tencent.com"
 DEFAULT_MAX_SIZE_MB = 50
+
+_TRUSTED_PRIVATE_MEDIA_HOSTS = frozenset({
+    "bot.yuanbao.tencent.com",
+    "hunyuan.tencent.com",
+    "yuanbao.tencent.com",
+})
+_TRUSTED_PRIVATE_MEDIA_SUFFIXES = (
+    ".yuanbao.tencent.com",
+    ".myqcloud.com",
+)
 
 # COS 加速域名后缀（优先使用全球加速）
 COS_USE_ACCELERATE = True
@@ -199,9 +212,55 @@ def _parse_webp_size(buf: bytes) -> Optional[dict[str, int]]:
 
 # ============ URL 下载 ============
 
+def _is_trusted_private_media_host(hostname: str) -> bool:
+    normalized = hostname.strip().lower().rstrip(".")
+    return (
+        normalized in _TRUSTED_PRIVATE_MEDIA_HOSTS
+        or any(normalized.endswith(suffix) for suffix in _TRUSTED_PRIVATE_MEDIA_SUFFIXES)
+    )
+
+
+def _is_safe_download_url(url: str, *, allow_trusted_private_hosts: bool = False) -> bool:
+    if is_safe_url(url):
+        return True
+    if not allow_trusted_private_hosts:
+        return False
+
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        return False
+
+    hostname = (parsed.hostname or "").strip().lower().rstrip(".")
+    if parsed.scheme.lower() != "https" or not _is_trusted_private_media_host(hostname):
+        return False
+    return not is_always_blocked_url(url)
+
+
+async def _guard_redirect(response, *, allow_trusted_private_hosts: bool) -> None:
+    if response.is_redirect and response.next_request:
+        redirect_url = str(response.next_request.url)
+        if not _is_safe_download_url(
+            redirect_url,
+            allow_trusted_private_hosts=allow_trusted_private_hosts,
+        ):
+            raise ValueError(
+                f"Blocked redirect to private/internal address: {safe_url_for_log(redirect_url)}"
+            )
+
+
+async def _yuanbao_ssrf_redirect_guard(response) -> None:
+    await _guard_redirect(response, allow_trusted_private_hosts=False)
+
+
+async def _trusted_yuanbao_ssrf_redirect_guard(response) -> None:
+    await _guard_redirect(response, allow_trusted_private_hosts=True)
+
+
 async def download_url(
     url: str,
     max_size_mb: int = DEFAULT_MAX_SIZE_MB,
+    allow_trusted_private_hosts: bool = False,
 ) -> tuple[bytes, str]:
     """
     下载 URL 内容，返回 (bytes, content_type)。
@@ -217,8 +276,23 @@ async def download_url(
         ValueError:  内容超过大小限制
         httpx.HTTPError: 网络/HTTP 错误
     """
+    if not _is_safe_download_url(
+        url,
+        allow_trusted_private_hosts=allow_trusted_private_hosts,
+    ):
+        raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
+
     max_bytes = max_size_mb * 1024 * 1024
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+    redirect_guard = (
+        _trusted_yuanbao_ssrf_redirect_guard
+        if allow_trusted_private_hosts
+        else _yuanbao_ssrf_redirect_guard
+    )
+    async with httpx.AsyncClient(
+        timeout=30.0,
+        follow_redirects=True,
+        event_hooks={"response": [redirect_guard]},
+    ) as client:
         # 先 HEAD 检查大小
         try:
             head = await client.head(url)
