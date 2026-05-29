@@ -15,7 +15,8 @@ Registration:
 Lifecycle (called by MemoryManager, wired in run_agent.py):
   initialize()          — connect, create resources, warm up
   system_prompt_block()  — static text for the system prompt
-  prefetch(query)        — background recall before each turn
+  prefetch(query)        — legacy formatted recall before each turn
+  prefetch_candidates(query) — optional structured recall candidates for governed injection
   sync_turn(user, asst)  — async write after each turn
   get_tool_schemas()     — tool schemas to expose to the model
   handle_tool_call()     — dispatch a tool call
@@ -91,7 +92,7 @@ class MemoryProvider(ABC):
         return ""
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Recall relevant context for the upcoming turn.
+        """Recall relevant legacy formatted context for the upcoming turn.
 
         Called before each API call. Return formatted text to inject as
         context, or empty string if nothing relevant. Implementations
@@ -103,6 +104,18 @@ class MemoryProvider(ABC):
         per-session scoping can ignore it.
         """
         return ""
+
+    def prefetch_candidates(self, query: str, *, session_id: str = "") -> List[Dict[str, Any]]:
+        """Optionally return structured recall candidates for governed injection.
+
+        Providers may override this to give Hermes core metadata for scope,
+        supersession/staleness, trust, and redaction decisions. Each candidate
+        should be a dict with at least ``content`` or ``text``; optional keys
+        include ``trust_score``, ``profile``, ``scope``, ``status``, ``tags``.
+        The default returns an empty list and preserves legacy ``prefetch``
+        compatibility.
+        """
+        return []
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Queue a background recall for the NEXT turn.

@@ -92,6 +92,19 @@ class MessagesMemoryProvider(FakeMemoryProvider):
         self.synced_turns.append((user_content, assistant_content, session_id, messages))
 
 
+class CandidateMemoryProvider(FakeMemoryProvider):
+    """Provider exposing optional structured recall candidates."""
+
+    def __init__(self, name="external", candidates=None):
+        super().__init__(name)
+        self.candidates = candidates or []
+        self.candidate_queries = []
+
+    def prefetch_candidates(self, query, *, session_id=""):
+        self.candidate_queries.append((query, session_id))
+        return list(self.candidates)
+
+
 # ---------------------------------------------------------------------------
 # MemoryProvider ABC tests
 # ---------------------------------------------------------------------------
@@ -398,6 +411,118 @@ class TestMemoryManager:
 
         result = mgr.prefetch_all("query")
         assert "external memory" in result
+
+    # -- Governed memory context injection ----------------------------------
+
+    def test_governed_prefetch_filters_scope_stale_and_secrets(self, monkeypatch):
+        monkeypatch.setenv("HERMES_PROFILE", "default")
+        mgr = MemoryManager()
+        provider = CandidateMemoryProvider(candidates=[
+            {
+                "content": "Current Hermes default profile uses governed memory injection.",
+                "profile": "default",
+                "trust_score": 0.9,
+                "tags": "current,hermes-memory",
+            },
+            {
+                "content": "Stale Hermes default profile uses raw injection.",
+                "profile": "default",
+                "trust_score": 0.95,
+                "status": "superseded",
+                "tags": "stale,hermes-memory",
+            },
+            {
+                "content": "Researcher profile uses a different memory contract.",
+                "profile": "researcher",
+                "trust_score": 0.99,
+                "tags": "current,hermes-memory",
+            },
+            {
+                "content": "Synthetic credential OPENAI_API_KEY=sk-testsecret1234567890 must not leak.",
+                "profile": "default",
+                "trust_score": 0.8,
+                "tags": "current,secret",
+            },
+        ])
+        mgr.add_provider(provider)
+
+        result = mgr.prefetch_all("what is the current Hermes memory injection contract?")
+
+        assert "governed memory injection" in result
+        assert "raw injection" not in result
+        assert "Researcher profile" not in result
+        assert "sk-testsecret" not in result
+        assert "OPENAI_API_KEY" not in result
+        assert provider.candidate_queries == [(
+            "what is the current Hermes memory injection contract?",
+            "",
+        )]
+
+    def test_governed_prefetch_uses_query_normalization_for_relevance(self, monkeypatch):
+        monkeypatch.setenv("HERMES_PROFILE", "default")
+        mgr = MemoryManager()
+        provider = CandidateMemoryProvider(candidates=[
+            {
+                "content": "Hermes memory governance suppresses stale facts before injection.",
+                "profile": "default",
+                "trust_score": 0.4,
+            },
+            {
+                "content": "Unrelated lunch preference: falafel with tahini.",
+                "profile": "default",
+                "trust_score": 0.99,
+            },
+        ])
+        mgr.add_provider(provider)
+
+        result = mgr.prefetch_all("Could you remind me what the memory governance injection rule is?")
+
+        assert "memory governance suppresses stale facts" in result
+        assert "falafel" not in result
+
+    def test_governed_prefetch_filters_scope_for_non_default_profile(self, monkeypatch):
+        monkeypatch.setenv("HERMES_PROFILE", "researcher")
+        mgr = MemoryManager()
+        provider = CandidateMemoryProvider(candidates=[
+            {
+                "content": "Default profile memory must not appear in researcher scope.",
+                "profile": "default",
+                "trust_score": 0.9,
+            },
+            {
+                "content": "Researcher profile memory contract is isolated.",
+                "profile": "researcher",
+                "trust_score": 0.7,
+            },
+        ])
+        mgr.add_provider(provider)
+
+        result = mgr.prefetch_all("what is the researcher memory contract?")
+
+        assert "Researcher profile memory contract" in result
+        assert "Default profile memory" not in result
+
+    def test_governed_prefetch_preserves_legacy_text_provider_compatibility(self):
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("external")
+        provider._prefetch_result = "## Legacy Memory\n- Existing legacy text still works."
+        mgr.add_provider(provider)
+
+        result = mgr.prefetch_all("query")
+
+        assert "Existing legacy text still works" in result
+        assert provider.prefetch_queries == ["query"]
+
+    def test_governed_candidate_failure_falls_back_to_legacy_prefetch(self):
+        mgr = MemoryManager()
+        provider = CandidateMemoryProvider()
+        provider.prefetch_candidates = MagicMock(side_effect=RuntimeError("candidate failure"))
+        provider._prefetch_result = "legacy fallback memory"
+        mgr.add_provider(provider)
+
+        result = mgr.prefetch_all("query")
+
+        assert "legacy fallback memory" in result
 
     def test_system_prompt_failure_doesnt_block(self):
         mgr = MemoryManager()
