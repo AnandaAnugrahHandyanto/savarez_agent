@@ -21,12 +21,15 @@ import {
   estimateTokensRough,
   fmtK,
   formatToolCall,
-  parseToolTrailResultLine,
   pick,
-  splitToolDuration,
   thinkingPreview,
   toolTrailLabel
 } from '../lib/text.js'
+import {
+  type ParsedToolTrailEntry,
+  parseToolTrailEntry,
+  shouldToolEntryAutoOpen
+} from '../lib/toolVisibility.js'
 import type { Theme } from '../theme.js'
 import type {
   ActiveTool,
@@ -93,6 +96,7 @@ function TreeTextRow({
   color,
   content,
   dimColor,
+  onClick,
   rails = [],
   t,
   wrap = 'wrap-trim'
@@ -101,6 +105,7 @@ function TreeTextRow({
   color: string
   content: ReactNode
   dimColor?: boolean
+  onClick?: () => void
   rails?: TreeRails
   t: Theme
   wrap?: 'truncate-end' | 'wrap' | 'wrap-trim'
@@ -117,7 +122,7 @@ function TreeTextRow({
 
   return (
     <TreeRow branch={branch} rails={rails} t={t}>
-      {text}
+      {onClick ? <Box onClick={onClick}>{text}</Box> : text}
     </TreeRow>
   )
 }
@@ -679,11 +684,70 @@ export const Thinking = memo(function Thinking({
 // ── ToolTrail ────────────────────────────────────────────────────────
 
 interface Group {
+  autoOpen?: boolean
   color: string
   content: ReactNode
   details: DetailRow[]
+  entry?: ParsedToolTrailEntry
   key: string
   label: string
+}
+
+function ToolGroupRows({
+  branch,
+  children,
+  group,
+  rails,
+  t
+}: {
+  branch: TreeBranch
+  children?: ReactNode
+  group: Group
+  rails: TreeRails
+  t: Theme
+}) {
+  const expandable = group.details.length > 0 || Boolean(children)
+  const [open, setOpen] = useState(Boolean(group.autoOpen || children))
+
+  useEffect(() => {
+    if (group.autoOpen) {
+      setOpen(true)
+    }
+  }, [group.autoOpen])
+
+  const childRails = nextTreeRails(rails, branch)
+  const icon = expandable ? (open ? '▾ ' : '▸ ') : '  '
+
+  return (
+    <Box flexDirection="column">
+      <TreeTextRow
+        branch={branch}
+        color={group.color}
+        content={
+          <>
+            <Text color={expandable ? t.color.accent : t.color.muted}>{icon}</Text>
+            <Text color={t.color.accent}>● </Text>
+            {group.content}
+          </>
+        }
+        onClick={expandable ? () => setOpen(v => !v) : undefined}
+        rails={rails}
+        t={t}
+      />
+      {open
+        ? group.details.map((detail, detailIndex) => (
+            <Detail
+              {...detail}
+              branch={detailIndex === group.details.length - 1 && !children ? 'last' : 'mid'}
+              key={detail.key}
+              rails={childRails}
+              t={t}
+            />
+          ))
+        : null}
+      {open ? children : null}
+    </Box>
+  )
 }
 
 export const ToolTrail = memo(function ToolTrail({
@@ -792,25 +856,35 @@ export const ToolTrail = memo(function ToolTrail({
   const pushDetail = (row: DetailRow) => (groups.at(-1)?.details ?? meta).push(row)
 
   for (const [i, line] of trail.entries()) {
-    const parsed = parseToolTrailResultLine(line)
+    const entry = parseToolTrailEntry(line)
 
-    if (parsed) {
+    if (entry) {
       groups.push({
-        color: parsed.mark === '✗' ? t.color.error : t.color.text,
-        content: parsed.call,
-        details: [],
+        autoOpen: shouldToolEntryAutoOpen(entry),
+        color: entry.status === 'error' ? t.color.error : t.color.text,
+        content: `${entry.call}${entry.duration}`,
+        details:
+          entry.sections.length > 0
+            ? entry.sections.map((section, sectionIndex) => ({
+                color: section.label === 'Error' ? t.color.error : t.color.muted,
+                content: `${section.label}:\n${section.text}`,
+                dimColor: section.label !== 'Error',
+                key: `tr-${i}-s-${sectionIndex}`
+              }))
+            : entry.detail
+              ? [
+                  {
+                    color: entry.status === 'error' ? t.color.error : t.color.muted,
+                    content: entry.detail,
+                    dimColor: entry.status !== 'error',
+                    key: `tr-${i}-d`
+                  }
+                ]
+              : [],
+        entry,
         key: `tr-${i}`,
-        label: parsed.call
+        label: `${entry.call}${entry.duration}`
       })
-
-      if (parsed.detail) {
-        pushDetail({
-          color: parsed.mark === '✗' ? t.color.error : t.color.muted,
-          content: parsed.detail,
-          dimColor: parsed.mark !== '✗',
-          key: `tr-${i}-d`
-        })
-      }
 
       continue
     }
@@ -901,21 +975,6 @@ export const ToolTrail = memo(function ToolTrail({
   const totalTokensLabel = tokenCount > 0 && toolTokenCount > 0 ? `~${fmtK(totalTokenCount)} total` : null
   const delegateGroups = groups.filter(g => g.label.startsWith('Delegate Task'))
   const inlineDelegateKey = hasSubagents && delegateGroups.length === 1 ? delegateGroups[0]!.key : null
-
-  const toolLabel = (group: Group) => {
-    const { duration, label } = splitToolDuration(String(group.content))
-
-    return duration ? (
-      <>
-        {label}
-        <Text color={t.color.statusFg} dim>
-          {duration}
-        </Text>
-      </>
-    ) : (
-      group.content
-    )
-  }
 
   // ── Backstop: floating alerts when every panel is hidden ─────────
   //
@@ -1075,30 +1134,9 @@ export const ToolTrail = memo(function ToolTrail({
             const hasInlineSubagents = inlineDelegateKey === group.key
 
             return (
-              <Box flexDirection="column" key={group.key}>
-                <TreeTextRow
-                  branch={branch}
-                  color={group.color}
-                  content={
-                    <>
-                      <Text color={t.color.accent}>● </Text>
-                      {toolLabel(group)}
-                    </>
-                  }
-                  rails={rails}
-                  t={t}
-                />
-                {group.details.map((detail, detailIndex) => (
-                  <Detail
-                    {...detail}
-                    branch={detailIndex === group.details.length - 1 && !hasInlineSubagents ? 'last' : 'mid'}
-                    key={detail.key}
-                    rails={childRails}
-                    t={t}
-                  />
-                ))}
+              <ToolGroupRows branch={branch} group={group} key={group.key} rails={rails} t={t}>
                 {hasInlineSubagents ? renderSubagentList(childRails) : null}
-              </Box>
+              </ToolGroupRows>
             )
           })}
         </Box>
