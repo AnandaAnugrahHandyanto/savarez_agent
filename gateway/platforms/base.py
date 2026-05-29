@@ -1090,6 +1090,7 @@ def _log_safe_path(path: str) -> str:
 
 SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf",
+    ".epub": "application/epub+zip",
     ".md": "text/markdown",
     ".txt": "text/plain",
     ".csv": "text/csv",
