@@ -6802,10 +6802,11 @@ class GatewayRunner:
         2. Explicit global ``unauthorized_dm_behavior`` in config — wins when no per-platform.
         3. When an allowlist (``PLATFORM_ALLOWED_USERS``,
            ``PLATFORM_GROUP_ALLOWED_USERS`` / ``PLATFORM_GROUP_ALLOWED_CHATS``,
-           or ``GATEWAY_ALLOWED_USERS``) is configured, default to ``"ignore"`` —
-           the allowlist signals that the owner has deliberately restricted
-           access; spamming unknown contacts with pairing codes is both noisy
-           and a potential info-leak. (#9337)
+           or ``GATEWAY_ALLOWED_USERS``) or a config-driven own-policy
+           gateway restriction is configured, default to ``"ignore"`` — the
+           operator has deliberately restricted access, so spamming unknown
+           contacts with pairing codes is both noisy and a potential
+           info-leak. (#9337)
         4. No allowlist and no explicit config → ``"pair"`` (open-gateway default).
         """
         config = getattr(self, "config", None)
@@ -6822,10 +6823,11 @@ class GatewayRunner:
             if config.unauthorized_dm_behavior != "pair":  # non-default → explicit override
                 return config.unauthorized_dm_behavior
 
-        # Config-driven dm_policy (WeCom / Weixin / Yuanbao / QQBot). An
-        # allowlist or disabled DM policy means the operator restricted access,
-        # so unauthorized DMs should be dropped silently rather than answered
-        # with a pairing code. An explicit pairing policy opts back into codes.
+        # Config-driven own-policy access control (WeCom / Weixin / Yuanbao /
+        # QQBot). Restrictive DM or group policies mean the operator narrowed
+        # access, so unauthorized DMs should be dropped silently rather than
+        # answered with a pairing code. An explicit pairing policy still opts
+        # back into codes.
         if platform and config and hasattr(config, "platforms"):
             platform_cfg = config.platforms.get(platform)
             extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
@@ -6835,6 +6837,10 @@ class GatewayRunner:
                     return "pair"
                 if dm_policy in {"allowlist", "disabled"}:
                     return "ignore"
+                if self._adapter_enforces_own_access_policy(platform):
+                    group_policy = str(extra.get("group_policy") or "").strip().lower()
+                    if group_policy in {"allowlist", "disabled"}:
+                        return "ignore"
 
         # No explicit override.  Fall back to allowlist-aware default:
         # if any allowlist is configured for this platform, silently drop
