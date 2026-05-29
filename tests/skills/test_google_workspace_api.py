@@ -302,6 +302,71 @@ def test_api_gmail_send_uses_conventional_mime_header_casing(api_module):
     assert "\nsubject: " not in raw_text
 
 
+@pytest.mark.parametrize(
+    "header_names",
+    [
+        ("from", "subject", "message-id"),
+        ("From", "Subject", "Message-ID"),
+    ],
+)
+def test_api_gmail_reply_reads_headers_case_insensitively_and_uses_conventional_mime_header_casing(
+    api_module,
+    header_names,
+):
+    from_name, subject_name, message_id_name = header_names
+    calls = []
+
+    def fake_run_gws(parts, *, params=None, body=None):
+        calls.append({"parts": parts, "params": params, "body": body})
+        if parts == ["gmail", "users", "messages", "get"]:
+            assert params == {
+                "userId": "me",
+                "id": "msg-1",
+                "format": "metadata",
+                "metadataHeaders": ["From", "Subject", "Message-ID"],
+            }
+            return {
+                "id": "msg-1",
+                "threadId": "thread-1",
+                "payload": {
+                    "headers": [
+                        {"name": from_name, "value": "sender@example.com"},
+                        {"name": subject_name, "value": "case bug"},
+                        {"name": message_id_name, "value": "<msg-1@example.com>"},
+                    ],
+                },
+            }
+
+        assert parts == ["gmail", "users", "messages", "send"]
+        assert params == {"userId": "me"}
+        return {"id": "sent-1", "threadId": "thread-1"}
+
+    api_module._run_gws = fake_run_gws
+    args = api_module.argparse.Namespace(
+        message_id="msg-1",
+        body="reply body",
+        from_header="recipient@example.com",
+        func=api_module.gmail_reply,
+    )
+
+    api_module.gmail_reply(args)
+
+    assert len(calls) == 2
+    body = calls[1]["body"]
+    assert body["threadId"] == "thread-1"
+    raw = api_module.base64.urlsafe_b64decode(body["raw"])
+    raw_text = raw.decode()
+    assert "To: sender@example.com" in raw_text
+    assert "Subject: Re: case bug" in raw_text
+    assert "From: recipient@example.com" in raw_text
+    assert "In-Reply-To: <msg-1@example.com>" in raw_text
+    assert "References: <msg-1@example.com>" in raw_text
+    assert "\nto: " not in raw_text
+    assert "\nsubject: " not in raw_text
+    assert "\nin-reply-to: " not in raw_text
+    assert "\nreferences: " not in raw_text
+
+
 def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, monkeypatch):
     token_path = api_module.TOKEN_PATH
     _write_token(token_path, token="ya29.old")
