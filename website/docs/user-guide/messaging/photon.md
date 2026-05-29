@@ -224,6 +224,13 @@ hermes gateway run -v
 hermes gateway restart
 ```
 
+For always-on local use, install the launchd service and start it:
+
+```bash
+hermes gateway install --force
+hermes gateway start
+```
+
 ## Status & troubleshooting
 
 ```bash
