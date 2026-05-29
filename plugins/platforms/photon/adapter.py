@@ -146,6 +146,8 @@ def is_connected(cfg: PlatformConfig) -> bool:
     storing them, and treating that partial state as configured makes the
     setup wizard offer to start a gateway that cannot receive Photon traffic.
     """
+    if photon_tunnel.active_home_mismatch():
+        return False
     if not validate_config(cfg) or not check_requirements():
         return False
     extra = cfg.extra or {}
@@ -391,6 +393,22 @@ class PhotonAdapter(BasePlatformAdapter):
                 "MISSING_CREDENTIALS",
                 "PHOTON_PROJECT_ID and PHOTON_PROJECT_SECRET are required. "
                 "Run: hermes photon setup",
+                retryable=False,
+            )
+            return False
+
+        mismatch = photon_tunnel.active_home_mismatch()
+        if mismatch:
+            owner_home, current_home = mismatch
+            message = (
+                "Photon is claimed by another Hermes home "
+                f"({owner_home}); this gateway is running from {current_home}. "
+                "Skipping Photon startup to avoid taking over iMessage."
+            )
+            logger.warning("[photon] %s", message)
+            self._set_fatal_error(
+                "PHOTON_HOME_MISMATCH",
+                message,
                 retryable=False,
             )
             return False

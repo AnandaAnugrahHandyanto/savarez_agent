@@ -753,6 +753,7 @@ def _cmd_status(_args: argparse.Namespace) -> int:
     else:
         registered_error = "missing Photon project credentials"
     print(f"  Hermes home         : {photon_tunnel.hermes_home()}")
+    print(f"  Photon owner        : {_active_home_status()}")
     print(f"  node binary         : {node_bin or '✗ missing (install Node 20.18.1+)'}")
     print(f"  sidecar deps        : {sidecar_status}")
     print(f"  authorized phones   : {_photon_sender_access_status()}")
@@ -1261,6 +1262,8 @@ def _register_webhook_url(
         if _webhook_secret_present():
             if not _save_public_webhook_url(url):
                 return 1
+            if not _claim_active_photon_home(project_id, url):
+                return 1
             print("✓ webhook URL already registered; keeping existing local signing secret")
             print("  Next: restart the gateway if it was already running:")
             print("        hermes gateway restart")
@@ -1316,10 +1319,25 @@ def _register_webhook_url(
         return 1
     if not _save_public_webhook_url(url):
         return 1
+    if not _claim_active_photon_home(project_id, url):
+        return 1
     print("  ✓ webhook public URL saved")
     print("  Next: restart the gateway if it was already running:")
     print("        hermes gateway restart")
     return 0
+
+
+def _claim_active_photon_home(project_id: str, webhook_url: str) -> bool:
+    try:
+        path = photon_tunnel.record_active_hermes_home(
+            project_id=project_id,
+            webhook_url=webhook_url,
+        )
+    except Exception as e:
+        print(f"could not record active Photon Hermes home: {e}", file=sys.stderr)
+        return False
+    print(f"  ✓ Photon owner recorded at {path}")
+    return True
 
 
 def _delete_matching_webhook(
@@ -1520,6 +1538,18 @@ def _format_tunnel_status(state: dict[str, Any]) -> str:
     return "✗ not started"
 
 
+def _active_home_status() -> str:
+    record = photon_tunnel.active_home_record()
+    owner = str(record.get("hermes_home") or "").strip()
+    if not owner:
+        return "not claimed"
+    mismatch = photon_tunnel.active_home_mismatch()
+    if not mismatch:
+        return "this Hermes home"
+    owner_home, current_home = mismatch
+    return f"{owner_home} (current: {current_home})"
+
+
 def _next_status_step(
     sidecar_status: str,
     tunnel_state: dict[str, Any],
@@ -1527,6 +1557,11 @@ def _next_status_step(
     registered_hooks: Optional[list] = None,
     registered_error: str = "",
 ) -> str:
+    if photon_tunnel.active_home_mismatch():
+        return (
+            "run `hermes photon quick-setup --phone "
+            f"{_PHONE_ARG_PLACEHOLDER}` from the intended Hermes home"
+        )
     project_id, project_secret = photon_auth.load_project_credentials()
     if not photon_auth.load_photon_token() and not (project_id and project_secret):
         return "hermes photon login"

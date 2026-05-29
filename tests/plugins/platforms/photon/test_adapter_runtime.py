@@ -6,8 +6,17 @@ from pathlib import Path
 import pytest
 
 from gateway.config import PlatformConfig
+from plugins.platforms.photon import cli as cli_mod
 from plugins.platforms.photon import adapter as adapter_mod
 from plugins.platforms.photon.adapter import PhotonAdapter
+
+
+@pytest.fixture(autouse=True)
+def isolate_active_home_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PHOTON_ACTIVE_HOME_FILE", str(tmp_path / "active-home.json"))
 
 
 def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
@@ -26,6 +35,74 @@ def test_active_hermes_home_label_uses_current_profile(
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     assert adapter_mod._active_hermes_home_label() == str(home)
+
+
+def test_active_home_mismatch_detects_other_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = tmp_path / "current"
+    other = tmp_path / "other"
+    monkeypatch.setenv("HERMES_HOME", str(current))
+    adapter_mod.photon_tunnel.record_active_hermes_home(
+        project_id="project",
+        webhook_url="https://example.com/photon/webhook",
+        hermes_home_value=other,
+    )
+
+    assert adapter_mod.photon_tunnel.active_home_mismatch() == (
+        str(other.resolve()),
+        str(current.resolve()),
+    )
+
+
+@pytest.mark.asyncio
+async def test_connect_skips_photon_when_another_home_owns_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = tmp_path / "current"
+    other = tmp_path / "other"
+    monkeypatch.setenv("HERMES_HOME", str(current))
+    adapter_mod.photon_tunnel.record_active_hermes_home(
+        project_id="project",
+        webhook_url="https://example.com/photon/webhook",
+        hermes_home_value=other,
+    )
+    adapter = _make_adapter(monkeypatch)
+    started: list[bool] = []
+
+    async def fake_start_webhook_server() -> None:
+        started.append(True)
+
+    monkeypatch.setattr(adapter, "_start_webhook_server", fake_start_webhook_server)
+
+    assert await adapter.connect() is False
+    assert started == []
+
+
+def test_register_existing_webhook_claims_current_home(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "current"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    url = "https://example.com/photon/webhook"
+    monkeypatch.setattr(cli_mod, "_webhook_secret_present", lambda: True)
+    monkeypatch.setattr(cli_mod, "_save_public_webhook_url", lambda _url: True)
+
+    rc = cli_mod._register_webhook_url(
+        "project-id",
+        "project-secret",
+        url,
+        existing_hooks=[{"id": "hook-id", "webhookUrl": url}],
+    )
+
+    assert rc == 0
+    record = adapter_mod.photon_tunnel.active_home_record()
+    assert record["hermes_home"] == str(home.resolve())
+    assert record["project_id"] == "project-id"
+    assert record["webhook_url"] == url
 
 
 def test_managed_tunnel_autostart_skips_user_owned_url(

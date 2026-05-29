@@ -55,6 +55,79 @@ def hermes_home() -> Path:
         return Path(os.getenv("HERMES_HOME") or "~/.hermes").expanduser()
 
 
+def _canonical_home(value: Any) -> str:
+    try:
+        return str(Path(str(value)).expanduser().resolve())
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return str(Path(str(value)).expanduser().absolute())
+
+
+def current_hermes_home_identity() -> str:
+    return _canonical_home(hermes_home())
+
+
+def _user_default_hermes_root() -> Path:
+    if os.name == "posix":
+        try:
+            import pwd
+
+            return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".hermes"
+        except Exception:
+            pass
+    return Path.home() / ".hermes"
+
+
+def active_home_path() -> Path:
+    override = os.getenv("PHOTON_ACTIVE_HOME_FILE")
+    if override:
+        return Path(override).expanduser()
+    return _user_default_hermes_root() / "photon" / "active-home.json"
+
+
+def active_home_record() -> dict[str, Any]:
+    path = active_home_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def record_active_hermes_home(
+    *,
+    project_id: str = "",
+    webhook_url: str = "",
+    hermes_home_value: Any = None,
+) -> Path:
+    path = active_home_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "hermes_home": _canonical_home(hermes_home_value or hermes_home()),
+        "project_id": str(project_id or ""),
+        "webhook_url": str(webhook_url or ""),
+        "recorded_at": int(time.time()),
+    }
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        tmp.chmod(0o600)
+    except OSError:
+        pass
+    tmp.replace(path)
+    return path
+
+
+def active_home_mismatch() -> tuple[str, str] | None:
+    owner = str(active_home_record().get("hermes_home") or "").strip()
+    if not owner:
+        return None
+    current = current_hermes_home_identity()
+    owner_identity = _canonical_home(owner)
+    if owner_identity == current:
+        return None
+    return owner_identity, current
+
+
 def state_dir() -> Path:
     return hermes_home() / "photon"
 
