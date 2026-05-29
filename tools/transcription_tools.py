@@ -1209,7 +1209,7 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
             # User-provided templates (env var) may contain shell syntax; auto-detected commands are safe for list mode.
             use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
             if use_shell:
-                subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+                subprocess.run(command, shell=False, check=True, capture_output=True, text=True)
             else:
                 subprocess.run(shlex.split(command), check=True, capture_output=True, text=True)
             
