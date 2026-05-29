@@ -17,6 +17,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -635,29 +636,67 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 )
 
         if not delivered:
-            # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
-            try:
-                result = asyncio.run(coro)
-            except RuntimeError:
-                # asyncio.run() checks for a running loop before awaiting the coroutine;
-                # when it raises, the original coro was never started — close it to
-                # prevent "coroutine was never awaited" RuntimeWarning, then retry in a
-                # fresh thread that has no running loop.
-                coro.close()
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
-                    result = future.result(timeout=30)
-            except Exception as e:
-                msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
-                logger.error("Job '%s': %s", job["id"], msg)
-                delivery_errors.append(msg)
-                continue
+            result = None
+            last_delivery_error = None
+            for attempt in range(1, _DELIVERY_RETRY_ATTEMPTS + 1):
+                # Standalone path: run the async send in a fresh event loop (safe from any thread)
+                coro = _send_to_platform(
+                    platform,
+                    pconfig,
+                    chat_id,
+                    cleaned_delivery_content,
+                    thread_id=thread_id,
+                    media_files=media_files,
+                )
+                try:
+                    result = asyncio.run(coro)
+                except RuntimeError:
+                    # asyncio.run() checks for a running loop before awaiting the coroutine;
+                    # when it raises, the original coro was never started — close it to
+                    # prevent "coroutine was never awaited" RuntimeWarning, then retry in a
+                    # fresh thread that has no running loop.
+                    coro.close()
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                        future = pool.submit(
+                            asyncio.run,
+                            _send_to_platform(
+                                platform,
+                                pconfig,
+                                chat_id,
+                                cleaned_delivery_content,
+                                thread_id=thread_id,
+                                media_files=media_files,
+                            ),
+                        )
+                        result = future.result(timeout=30)
+                except Exception as e:
+                    last_delivery_error = f"delivery to {platform_name}:{chat_id} failed: {e}"
+                else:
+                    if result and result.get("error"):
+                        last_delivery_error = f"delivery error: {result['error']}"
+                    else:
+                        last_delivery_error = None
 
-            if result and result.get("error"):
-                msg = f"delivery error: {result['error']}"
-                logger.error("Job '%s': %s", job["id"], msg)
-                delivery_errors.append(msg)
+                if last_delivery_error is None:
+                    break
+
+                if attempt >= _DELIVERY_RETRY_ATTEMPTS or not _is_retryable_delivery_error(last_delivery_error):
+                    logger.error("Job '%s': %s", job["id"], last_delivery_error)
+                    delivery_errors.append(last_delivery_error)
+                    break
+
+                delay = _DELIVERY_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+                logger.warning(
+                    "Job '%s': %s (attempt %d/%d, retrying in %.1fs)",
+                    job["id"],
+                    last_delivery_error,
+                    attempt,
+                    _DELIVERY_RETRY_ATTEMPTS,
+                    delay,
+                )
+                time.sleep(delay)
+
+            if last_delivery_error is not None:
                 continue
 
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
@@ -670,6 +709,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 _DEFAULT_SCRIPT_TIMEOUT = 120  # seconds
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
+_DELIVERY_RETRY_ATTEMPTS = 3
+_DELIVERY_RETRY_BASE_DELAY_SECONDS = 2.0
 
 
 def _get_script_timeout() -> int:
@@ -703,6 +744,31 @@ def _get_script_timeout() -> int:
         logger.debug("Failed to load cron script timeout from config: %s", exc)
 
     return _DEFAULT_SCRIPT_TIMEOUT
+
+
+def _is_retryable_delivery_error(message: str) -> bool:
+    """Return True for transient delivery failures worth retrying once or twice."""
+    text = (message or "").lower()
+    retryable_markers = (
+        "name resolution",
+        "failed to resolve",
+        "temporary failure in name resolution",
+        "nodename nor servname provided",
+        "connection reset",
+        "connection aborted",
+        "connection refused",
+        "max retries exceeded",
+        "read timed out",
+        "timed out",
+        "timeout",
+        "service unavailable",
+        "bad gateway",
+        "gateway timeout",
+        "remote end closed connection",
+        "ssl eof",
+        "eof occurred in violation of protocol",
+    )
+    return any(marker in text for marker in retryable_markers)
 
 
 def _run_job_script(script_path: str) -> tuple[bool, str]:

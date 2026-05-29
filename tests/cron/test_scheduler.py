@@ -804,6 +804,62 @@ class TestDeliverResultErrorReturns:
         assert result is not None
         assert "no delivery target" in result
 
+    def test_retries_retryable_delivery_errors_before_success(self):
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.FEISHU: pconfig}
+
+        send_mock = AsyncMock(
+            side_effect=[
+                {"error": "Feishu send failed: Failed to resolve 'open.feishu.cn'"},
+                {"success": True},
+            ]
+        )
+        job = {
+            "id": "retry-job",
+            "deliver": "origin",
+            "origin": {"platform": "feishu", "chat_id": "oc_test"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=send_mock), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("cron.scheduler.time.sleep") as sleep_mock:
+            result = _deliver_result(job, "Output.")
+
+        assert result is None
+        assert send_mock.await_count == 2
+        sleep_mock.assert_called_once()
+
+    def test_does_not_retry_non_retryable_delivery_errors(self):
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.FEISHU: pconfig}
+
+        send_mock = AsyncMock(return_value={"error": "Feishu send failed: 403 forbidden"})
+        job = {
+            "id": "hard-fail-job",
+            "deliver": "origin",
+            "origin": {"platform": "feishu", "chat_id": "oc_test"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=send_mock), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("cron.scheduler.time.sleep") as sleep_mock:
+            result = _deliver_result(job, "Output.")
+
+        assert result is not None
+        assert "403 forbidden" in result
+        assert send_mock.await_count == 1
+        sleep_mock.assert_not_called()
+
 
 class TestRunJobSessionPersistence:
     def test_run_job_passes_session_db_and_cron_platform(self, tmp_path):
