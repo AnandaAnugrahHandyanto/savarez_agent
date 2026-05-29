@@ -764,7 +764,7 @@ def fetch_endpoint_model_metadata(
                     # Try /v1/props first (current llama.cpp); fall back to /props for older builds
                     base = candidate.rstrip("/").replace("/v1", "")
                     _verify = _resolve_requests_verify()
-                    props_resp = requests.get(base + "/v1/props", headers=headers, timeout=5, verify=_verify)
+                    props_resp = requests.get(base + "/v1/props", headers=headers, timeout=5, verify=_verify)  # SSRF: add IP block check
                     if not props_resp.ok:
                         props_resp = requests.get(base + "/props", headers=headers, timeout=5, verify=_verify)  # SSRF: add IP block check
                     if props_resp.ok:
