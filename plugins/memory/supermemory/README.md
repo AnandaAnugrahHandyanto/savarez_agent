@@ -1,6 +1,6 @@
 # Supermemory Memory Provider
 
-Semantic long-term memory with profile recall, semantic search, explicit memory tools, and session-end conversation ingest.
+Semantic long-term memory with profile recall, semantic search, explicit memory tools, and full-session document ingest (one document per session) plus conversation endpoint for richer profiles.
 
 ## Requirements
 
@@ -56,16 +56,18 @@ Kebab-case names are registered for the agent; snake_case aliases remain support
 
 ## Source attribution
 
-All Supermemory API calls send `x-sm-source: hermes`. Document writes include `metadata.sm_source: hermes` so memories are attributed to the Hermes plugin in Supermemory analytics. Turn sync uses `sm_capture_mode: turn`; explicit tool saves use `sm_capture_mode: tool`.
+All Supermemory API calls send `x-sm-source: hermes`. Document writes include `metadata.sm_source: hermes` so memories are attributed to the Hermes plugin in Supermemory analytics. Session documents use `sm_capture_mode: session`; explicit tool saves use `sm_capture_mode: tool`.
 
 ## Behavior
 
 When enabled, Hermes can:
 
 - prefetch relevant memory context before each turn
-- store cleaned conversation turns after each completed response
-- ingest the full session on session end for richer graph updates
+- buffer the full conversation and write it as **one document** at session end (or on `/reset`, branch, compression, or shutdown)
+- ingest the full session to the conversations endpoint on session end for richer profile/graph updates
 - expose explicit tools for search, store, forget, and profile access
+
+The conversations ingest and the single session document are complementary: the former helps Supermemory's entity extraction and profile building; the latter gives you a clean, retrievable full transcript as one document.
 
 ## Profile-Scoped Containers
 
