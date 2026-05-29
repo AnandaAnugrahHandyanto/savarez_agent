@@ -15,11 +15,17 @@ from gateway.platforms.base import (
     utf16_len,
     _FINAL_RESPONSE_IMAGE_EXTS,
     _FINAL_RESPONSE_VIDEO_EXTS,
+    _MEDIA_REASON_ALLOWLISTED,
+    _MEDIA_REASON_NOT_ABSOLUTE,
+    _MEDIA_REASON_NOT_A_FILE,
     _MEDIA_REASON_OUTSIDE_DENIED_PREFIX,
     _MEDIA_REASON_OUTSIDE_NO_RECENCY,
     _MEDIA_REASON_OUTSIDE_STALE_MTIME,
     _MEDIA_REASON_DOES_NOT_RESOLVE,
+    _MEDIA_REASON_RECENCY_TRUSTED,
+    _MEDIA_REASON_VALIDATION_ERROR,
     _prefix_within_utf16_limit,
+    _redact_path_for_log,
     _validate_media_delivery_path_with_reason,
 )
 
@@ -839,6 +845,11 @@ class TestMediaDeliveryRejectionLogging:
             "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
             tuple(),
         )
+        # The allowlist/recency rejection taxonomy this class asserts only
+        # applies in strict mode. Since #34022 the default is denylist-only,
+        # where an outside-allowlist file is accepted (denylist-cleared)
+        # instead of being rejected for stale-mtime / no-recency.
+        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
 
     def test_filter_media_logs_redacted_path_and_reason_on_stale_mtime(self, tmp_path, monkeypatch, caplog):
         self._patch_roots_empty(monkeypatch)
@@ -947,6 +958,170 @@ class TestMediaDeliveryRejectionLogging:
         assert "FAKE LOG ENTRY" in rendered  # body still visible, just neutralised
 
 
+class TestRedactPathForLog:
+    """Direct unit coverage for ``_redact_path_for_log``.
+
+    Previously this helper was only exercised indirectly through
+    ``filter_media_delivery_paths``. The elision boundary and the
+    control-character / line-separator neutralisation are the log-injection
+    defense, so they get their own assertions here.
+    """
+
+    def test_empty_returns_empty_string(self):
+        assert _redact_path_for_log("") == ""
+
+    def test_short_path_is_not_elided(self):
+        # 3 or fewer parts ('/', 'etc', 'passwd') -> nothing to elide.
+        assert _redact_path_for_log("/etc/passwd") == "/etc/passwd"
+
+    def test_long_path_elides_intermediate_components(self):
+        out = _redact_path_for_log("/home/user/projects/sub/report.pdf")
+        assert "report.pdf" in out
+        assert "..." in out
+        assert "projects" not in out
+        assert "sub" not in out
+
+    def test_c0_control_chars_replaced(self):
+        out = _redact_path_for_log("/tmp/a/b/c/deep\n\r\x00\x1b.pdf")
+        for ch in ("\n", "\r", "\x00", "\x1b"):
+            assert ch not in out
+        assert len(out.splitlines()) == 1, out
+
+    def test_unicode_line_separators_replaced(self):
+        # NEL / LS / PS are treated as line breaks by str.splitlines() and most
+        # log aggregators, so the redactor must neutralise them too, not just
+        # the C0 range.
+        for sep in ("\u0085", "\u2028", "\u2029"):
+            evil = f"/home/user/deep/dir/evil{sep}INJECTED.pdf"
+            out = _redact_path_for_log(evil)
+            assert sep not in out, (sep, out)
+            assert len(out.splitlines()) == 1, (sep, out)
+            assert "INJECTED.pdf" in out  # filename still visible, just neutralised
+
+    def test_unprintable_fallback_for_unconstructable_input(self):
+        class _Boom:
+            def __fspath__(self):
+                raise ValueError("boom")
+
+        # Path(_Boom()).parts raises -> the guarded fallback returns a marker.
+        assert _redact_path_for_log(_Boom()) == "<unprintable>"
+
+
+class TestMediaDeliveryBatchIsolation:
+    """One unprocessable MEDIA path must not drop the whole attachment batch.
+
+    Regression for the ``~\\x00...`` cascade: ``os.path.expanduser`` raised
+    ``ValueError: embedded null byte`` before ``.resolve()`` was reached, and
+    the filter loop had no per-item guard, so a single crafted path aborted the
+    batch and silently discarded every other (legitimate) attachment.
+    """
+
+    def _patch_roots(self, monkeypatch, *roots):
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            tuple(roots),
+        )
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+
+    def test_helper_does_not_raise_on_nul_after_tilde(self):
+        resolved, reason = _validate_media_delivery_path_with_reason("~\x00/evil.pdf")
+        assert resolved is None
+        assert reason == _MEDIA_REASON_DOES_NOT_RESOLVE
+
+    def test_nul_after_tilde_path_does_not_abort_batch(self, tmp_path, monkeypatch, caplog):
+        good_dir = tmp_path / "cache"
+        good_dir.mkdir()
+        good = good_dir / "good.pdf"
+        good.write_bytes(b"%PDF-1.4")
+        self._patch_roots(monkeypatch, good_dir)
+
+        with caplog.at_level("WARNING", logger="gateway.platforms.base"):
+            out = BasePlatformAdapter.filter_media_delivery_paths(
+                [("~\x00/evil.pdf", False), (str(good), False)]
+            )
+
+        # The good file survives; the crafted path is dropped, not raised.
+        assert out == [(str(good.resolve()), False)]
+        joined = "\n".join(r.getMessage() for r in caplog.records)
+        assert _MEDIA_REASON_DOES_NOT_RESOLVE in joined, joined
+
+    def test_validator_exception_is_isolated_per_item(self, tmp_path, monkeypatch, caplog):
+        """Even an unexpected raise inside the validator drops only that item.
+
+        Exercises the defensive per-item ``try/except`` in the filter loop
+        independently of the specific NUL vector (now handled upstream).
+        """
+        good_dir = tmp_path / "cache"
+        good_dir.mkdir()
+        good = good_dir / "good.pdf"
+        good.write_bytes(b"%PDF-1.4")
+        self._patch_roots(monkeypatch, good_dir)
+
+        real = _validate_media_delivery_path_with_reason
+
+        def _boom(path):
+            if "boom" in path:
+                raise RuntimeError("synthetic validator failure")
+            return real(path)
+
+        monkeypatch.setattr(
+            "gateway.platforms.base._validate_media_delivery_path_with_reason",
+            _boom,
+        )
+
+        with caplog.at_level("WARNING", logger="gateway.platforms.base"):
+            out = BasePlatformAdapter.filter_media_delivery_paths(
+                [("/tmp/boom.pdf", False), (str(good), False)]
+            )
+
+        assert out == [(str(good.resolve()), False)]
+        joined = "\n".join(r.getMessage() for r in caplog.records)
+        assert _MEDIA_REASON_VALIDATION_ERROR in joined, joined
+
+
+class TestMediaDeliveryRejectionReasons:
+    """Log-reason coverage for reject branches the original suite skipped."""
+
+    def _patch_roots_empty(self, monkeypatch):
+        monkeypatch.setattr("gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", tuple())
+        monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+
+    def test_filter_media_logs_reason_not_absolute(self, monkeypatch, caplog):
+        self._patch_roots_empty(monkeypatch)
+        with caplog.at_level("WARNING", logger="gateway.platforms.base"):
+            out = BasePlatformAdapter.filter_media_delivery_paths([("relative/report.pdf", False)])
+        assert out == []
+        joined = "\n".join(r.getMessage() for r in caplog.records)
+        assert _MEDIA_REASON_NOT_ABSOLUTE in joined, joined
+
+    def test_filter_media_logs_reason_not_a_file(self, tmp_path, monkeypatch, caplog):
+        self._patch_roots_empty(monkeypatch)
+        a_dir = tmp_path / "subdir"
+        a_dir.mkdir()
+        with caplog.at_level("WARNING", logger="gateway.platforms.base"):
+            out = BasePlatformAdapter.filter_media_delivery_paths([(str(a_dir), False)])
+        assert out == []
+        joined = "\n".join(r.getMessage() for r in caplog.records)
+        assert _MEDIA_REASON_NOT_A_FILE in joined, joined
+
+    def test_filter_media_log_neutralises_unicode_line_separator(self, monkeypatch, caplog):
+        """A path containing U+2028 must still produce exactly one log record.
+
+        Companion to ``test_filter_media_log_neutralises_newlines_in_path`` for
+        the Unicode line-separator vector that the C0-only regex used to miss.
+        """
+        self._patch_roots_empty(monkeypatch)
+        evil = "/tmp/foo\u2028FAKE LOG ENTRY: granted access"
+        with caplog.at_level("WARNING", logger="gateway.platforms.base"):
+            out = BasePlatformAdapter.filter_media_delivery_paths([(evil, False)])
+        assert out == []
+        assert len(caplog.records) == 1
+        rendered = caplog.records[0].getMessage()
+        assert len(rendered.splitlines()) == 1, rendered
+        assert "\u2028" not in rendered
+
+
 class TestValidateMediaDeliveryPathDelegation:
     """``validate_media_delivery_path`` must agree with the reason-bearing helper.
 
@@ -972,13 +1147,39 @@ class TestValidateMediaDeliveryPathDelegation:
         rejected.write_bytes(b"%PDF-1.4")
         self._patch_roots(monkeypatch, root)
 
-        for candidate in (str(accepted), str(rejected), "", "relative.pdf", "/does/not/exist.pdf"):
+        # Recency disabled (set by _patch_roots): covers the allowlisted ACCEPT
+        # plus the reject branches empty / not-absolute / does-not-resolve /
+        # not-a-file (str(root) resolves but is a directory).
+        for candidate in (
+            str(accepted),          # allowlisted ACCEPT
+            str(root),              # resolves but is a directory -> not-a-file
+            str(rejected),          # outside allowlist, recency off -> reject
+            "",                     # empty
+            "relative.pdf",         # not-absolute
+            "/does/not/exist.pdf",  # does-not-resolve
+        ):
             public = BasePlatformAdapter.validate_media_delivery_path(candidate)
             internal_resolved, _reason = _validate_media_delivery_path_with_reason(candidate)
             assert public == internal_resolved, (
                 f"Public API drifted from reason-bearing helper for input {candidate!r}: "
                 f"public={public!r} internal={internal_resolved!r}"
             )
+
+        # Recency-trusted ACCEPT path: an outside-allowlist file fresh enough to
+        # pass recency trust must also agree between the two surfaces. This case
+        # was previously unreachable here because recency was disabled
+        # unconditionally, leaving the ACCEPT-via-recency branch unverified.
+        # Recency only gates delivery in strict mode (the default is
+        # denylist-only since #34022), so enable strict mode to reach it.
+        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "1")
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_SECONDS", "600")
+        fresh_outside = tmp_path / "fresh_report.pdf"
+        fresh_outside.write_bytes(b"%PDF-1.4")
+        public = BasePlatformAdapter.validate_media_delivery_path(str(fresh_outside))
+        internal_resolved, reason = _validate_media_delivery_path_with_reason(str(fresh_outside))
+        assert public == internal_resolved == str(fresh_outside.resolve())
+        assert reason == _MEDIA_REASON_RECENCY_TRUSTED
 
 
 class TestFinalResponseSendMessageParity:
@@ -1006,16 +1207,17 @@ class TestFinalResponseSendMessageParity:
         assert "BasePlatformAdapter.extract_media" in src
         assert "BasePlatformAdapter.filter_media_delivery_paths" in src
 
-    def test_pdf_media_tag_extracted_identically_for_both_paths(self, tmp_path, monkeypatch):
-        """Same input -> same extracted media_files whether the caller comes
-        through the final-response dispatch or the ``send_message`` tool.
+    def test_pdf_media_tag_resolves_through_shared_extraction_surface(self, tmp_path, monkeypatch):
+        """Drive the shared ``extract_media`` + ``filter_media_delivery_paths``
+        surface with a representative PDF MEDIA tag and confirm a clean resolve.
 
-        Parity is structural (both sites call ``BasePlatformAdapter.extract_media``
-        + ``filter_media_delivery_paths`` on the response body, asserted by
-        ``test_send_message_tool_imports_the_same_extraction_surface`` above).
-        This test then drives that shared extraction with a representative
-        PDF MEDIA tag and confirms a clean resolve, ensuring the staticmethod
-        surface still produces what both callers expect.
+        This does NOT prove behavioural parity on its own: it exercises the
+        shared staticmethods once, it does not invoke ``send_message_tool``.
+        The parity guarantee is structural and is asserted separately by
+        ``test_send_message_tool_imports_the_same_extraction_surface`` (both
+        call sites reach the same ``BasePlatformAdapter`` staticmethods). This
+        test guards that those staticmethods still produce what both callers
+        expect for the canonical-documents PDF case.
         """
         canonical_docs = tmp_path / ".hermes" / "cache" / "documents"
         canonical_docs.mkdir(parents=True)

@@ -1018,7 +1018,12 @@ def _path_is_within(path: Path, root: Path) -> bool:
         return False
 
 
-_REDACT_PATH_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+# Neutralised before logging so a model-emitted path cannot forge a second
+# log line. Covers C0/DEL control chars (newline, CR, NUL, ESC) AND the
+# Unicode line/paragraph separators (NEL U+0085, LS U+2028, PS U+2029) that
+# ``str.splitlines()`` and most log aggregators (Loki, Datadog) treat as line
+# breaks. The C0 range alone is not enough to keep the record on one line.
+_REDACT_PATH_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
 
 
 def _redact_path_for_log(path: str) -> str:
@@ -1035,9 +1040,10 @@ def _redact_path_for_log(path: str) -> str:
     Short absolute paths (3 or fewer ``parts`` -- e.g. ``/etc/passwd``,
     ``/tmp/leaked.pdf``) have no intermediate components to elide and are
     returned with only the control-character pass applied. Control
-    characters (newline, carriage return, NUL, etc.) are replaced with
-    ``?`` regardless of length, so a model-emitted path containing
-    embedded newlines cannot forge a fake second log line.
+    characters and Unicode line separators (newline, carriage return, NUL,
+    NEL U+0085, LS U+2028, PS U+2029, etc.) are replaced with ``?``
+    regardless of length, so a model-emitted path containing an embedded
+    line break cannot forge a fake second log line.
     """
     if not path:
         return ""
@@ -1067,6 +1073,10 @@ _MEDIA_REASON_RECENCY_TRUSTED = "recency-trusted"
 # Non-strict (default) accept: file resolved, is a regular file, and is not
 # under the credential / system-path denylist.
 _MEDIA_REASON_DENYLIST_CLEARED = "denylist-cleared"
+# Defensive catch-all for the filter loops: a path that makes the validator
+# itself raise. Should be unreachable now that expanduser is guarded, but the
+# loops log this and continue rather than dropping the whole attachment batch.
+_MEDIA_REASON_VALIDATION_ERROR = "validation-error"
 
 
 def _validate_media_delivery_path_with_reason(path: str) -> Tuple[Optional[str], str]:
@@ -1082,14 +1092,20 @@ def _validate_media_delivery_path_with_reason(path: str) -> Tuple[Optional[str],
     if not path:
         return None, _MEDIA_REASON_EMPTY
 
-    candidate = str(path).strip()
+    candidate = path.strip()
     if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in "`\"'":
         candidate = candidate[1:-1].strip()
     candidate = candidate.lstrip("`\"'").rstrip("`\"',.;:)}]")
     if not candidate:
         return None, _MEDIA_REASON_EMPTY
 
-    expanded = Path(os.path.expanduser(candidate))
+    try:
+        expanded = Path(os.path.expanduser(candidate))
+    except (OSError, RuntimeError, ValueError):
+        # os.path.expanduser raises ValueError("embedded null byte") for a
+        # ``~\x00...`` path before .resolve() is ever reached. Treat it as an
+        # unresolvable path instead of letting it crash the caller's loop.
+        return None, _MEDIA_REASON_DOES_NOT_RESOLVE
     if not expanded.is_absolute():
         return None, _MEDIA_REASON_NOT_ABSOLUTE
 
@@ -2541,7 +2557,12 @@ class BasePlatformAdapter(ABC):
         safe_media: List[Tuple[str, bool]] = []
         for media_path, is_voice in media_files or []:
             raw = str(media_path)
-            resolved, reason = _validate_media_delivery_path_with_reason(raw)
+            try:
+                resolved, reason = _validate_media_delivery_path_with_reason(raw)
+            except Exception:
+                # Never let one unprocessable path abort the whole batch and
+                # silently drop every other attachment in the response.
+                resolved, reason = None, _MEDIA_REASON_VALIDATION_ERROR
             if resolved:
                 safe_media.append((resolved, bool(is_voice)))
             else:
@@ -2562,7 +2583,11 @@ class BasePlatformAdapter(ABC):
         safe_paths: List[str] = []
         for file_path in file_paths or []:
             raw = str(file_path)
-            resolved, reason = _validate_media_delivery_path_with_reason(raw)
+            try:
+                resolved, reason = _validate_media_delivery_path_with_reason(raw)
+            except Exception:
+                # Never let one unprocessable path abort the whole batch.
+                resolved, reason = None, _MEDIA_REASON_VALIDATION_ERROR
             if resolved:
                 safe_paths.append(resolved)
             else:
@@ -3910,12 +3935,11 @@ class BasePlatformAdapter(ABC):
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
 
 
-                # Send extracted media files — route by file type. Use the
-                # module-scope partitions so the regression tests in
-                # ``tests/gateway/test_platform_base.py`` stay in sync with
-                # what production actually dispatches.
-                _VIDEO_EXTS = _FINAL_RESPONSE_VIDEO_EXTS
-                _IMAGE_EXTS = _FINAL_RESPONSE_IMAGE_EXTS
+                # Send extracted media files, route by file type using the
+                # module-scope partitions (_FINAL_RESPONSE_IMAGE_EXTS /
+                # _FINAL_RESPONSE_VIDEO_EXTS) directly, so the regression tests
+                # in ``tests/gateway/test_platform_base.py`` import the same
+                # constants production dispatches on.
 
                 # Partition images out of media_files + local_files so they
                 # can be sent as a single batch (Signal RPC). When
@@ -3928,7 +3952,7 @@ class BasePlatformAdapter(ABC):
                 _non_image_media: list = []
                 for media_path, is_voice in media_files:
                     _ext = Path(media_path).suffix.lower()
-                    if (_ext in _IMAGE_EXTS
+                    if (_ext in _FINAL_RESPONSE_IMAGE_EXTS
                             and not is_voice
                             and not force_document_attachments):
                         _image_paths.append(media_path)
@@ -3936,7 +3960,7 @@ class BasePlatformAdapter(ABC):
                         _non_image_media.append((media_path, is_voice))
                 _non_image_local: list = []
                 for file_path in local_files:
-                    if (Path(file_path).suffix.lower() in _IMAGE_EXTS
+                    if (Path(file_path).suffix.lower() in _FINAL_RESPONSE_IMAGE_EXTS
                             and not force_document_attachments):
                         _image_paths.append(file_path)
                     else:
@@ -3965,7 +3989,7 @@ class BasePlatformAdapter(ABC):
                                 audio_path=media_path,
                                 metadata=_thread_metadata,
                             )
-                        elif ext in _VIDEO_EXTS:
+                        elif ext in _FINAL_RESPONSE_VIDEO_EXTS:
                             media_result = await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=media_path,
@@ -3989,7 +4013,7 @@ class BasePlatformAdapter(ABC):
                         await asyncio.sleep(human_delay)
                     try:
                         ext = Path(file_path).suffix.lower()
-                        if ext in _VIDEO_EXTS:
+                        if ext in _FINAL_RESPONSE_VIDEO_EXTS:
                             await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=file_path,
