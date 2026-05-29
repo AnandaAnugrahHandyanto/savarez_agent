@@ -943,7 +943,7 @@ export function TextInput({
       if (k.return) {
         flushKeyBurst()
 
-        if (k.shift || k.ctrl || (isMac ? isActionMod(k) : k.meta)) {
+        if (k.shift || k.alt) {
           commit(ins(vRef.current, curRef.current, '\n'), curRef.current + 1)
         } else {
           cbSubmit.current?.(vRef.current)

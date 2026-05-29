@@ -357,16 +357,34 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       typeof navigator !== "undefined" && /Mac/i.test(navigator.platform);
 
     term.attachCustomKeyEventHandler((ev) => {
-      if (ev.type !== "keydown") return true;
+       if (ev.type !== "keydown") return true;
 
-      // Copy: Cmd+C on macOS, Ctrl+Shift+C on other platforms. Bare Ctrl+C
-      // is reserved for SIGINT to the TUI child — matches xterm / gnome-terminal /
-      // konsole / Windows Terminal. Ctrl+Shift+C only copies if a selection exists;
-      // without a selection it passes through to the TUI so agents can still
-      // react to the keypress.
-      // Paste: Cmd+Shift+V on macOS, Ctrl+Shift+V on others.
-      const copyModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
-      const pasteModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
+       // Shift+Enter: insert newline for multi-line input.
+        // xterm.js would otherwise send bare \n through onData, which the TUI
+        // treats identically to \r (Enter) and submits the message.  We intercept
+        // it here and send the modifyOther escape sequence (CSI 13;2 u) that
+        // Ink's parse-keypress recognizes as Shift+Enter — same sequence that
+        // modern terminals (Ghostty, VS Code with modifyOther, etc.) emit.
+        if (ev.shiftKey && ev.key === "Enter") {
+          const ws = wsRef.current;
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send("\u001b[13;2u");
+            ev.preventDefault();
+            return false;
+          }
+          // WS not ready — let xterm.js default handler send \n (line feed)
+          // which Ink distinguishes from \r (Enter/submit) in raw mode.
+          return true;
+        }
+
+       // Copy: Cmd+C on macOS, Ctrl+Shift+C on other platforms. Bare Ctrl+C
+       // is reserved for SIGINT to the TUI child — matches xterm / gnome-terminal /
+       // konsole / Windows Terminal. Ctrl+Shift+C only copies if a selection exists;
+       // without a selection it passes through to the TUI so agents can still
+       // react to the keystroke.
+       // Paste: Cmd+Shift+V on macOS, Ctrl+Shift+V on others.
+       const copyModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
+       const pasteModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
 
       if (copyModifier && ev.key.toLowerCase() === "c") {
         const sel = term.getSelection();

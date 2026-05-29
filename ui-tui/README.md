@@ -106,7 +106,7 @@ Current input behavior is split across `app.tsx`, `components/textInput.tsx`, an
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Enter`                         | Submit the current draft                                                                                                                                |
 | empty `Enter` twice             | If queued messages exist and the agent is busy, interrupt the current run. If queued messages exist and the agent is idle, send the next queued message |
-| `Shift+Enter` / `Alt+Enter`     | Insert a newline in the current draft                                                                                                                   |
+| `Ctrl+Shift+Enter` / `Alt+Enter` | Insert a newline in the current draft                                                                                                                   |
 | `\` + `Enter`                   | Append the line to the multiline buffer (fallback for terminals without modifier support)                                                               |
 | `Ctrl+C`                        | Interrupt active run, or clear the current draft, or exit if nothing is pending                                                                         |
 | `Ctrl+D`                        | Exit                                                                                                                                                    |
