@@ -628,11 +628,9 @@ before continuing its own loop. Isolated context + terminal session.
 - **Single:** `delegate_task(goal, context, toolsets, tier)`.
 - **Batch:** `delegate_task(tasks=[{goal, ...}, ...], tier=...)` runs children in
   parallel, capped by `delegation.max_concurrent_children` (default 3).
-- **Tier routing:** top-level `tier` is bounded to `small`, `medium`, or `large`.
-  `small` prefers `delegation_small`, `large` prefers `delegation_large`, and
-  omitted / `medium` uses `delegation` before falling back to parent inheritance.
-  Batch mode applies one top-level tier to the whole call; there is no per-task
-  tier inside `tasks[]`.
+- **Tier routing:** top-level `tier` is bounded to `small`, `medium`, or `large`,
+  with `medium` being the default. This determines which model is used and which
+  which level of reasoning.
 - **Roles:** `leaf` (default; cannot re-delegate) vs `orchestrator`
   (can spawn its own workers, bounded by `delegation.max_spawn_depth`).
 - **Not durable.** If the parent is interrupted, the child is
