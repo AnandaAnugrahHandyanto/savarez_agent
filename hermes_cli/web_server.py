@@ -3390,8 +3390,23 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     OAuth gate + single-use ``?ticket=`` is the auth at that point; the
     Host/Origin guard in :func:`_ws_host_origin_is_allowed` is what
     blocks DNS-rebinding here, not the peer IP.
+
+    Reverse-proxy opt-out (#34227): operators fronting the dashboard with
+    Caddy/Traefik/nginx/Pangolin terminate auth at the proxy layer (SSO,
+    mTLS, basic auth) and run hermes in ``--insecure`` mode. The WS
+    upgrade arrives at the dashboard from the proxy's LAN IP, not
+    loopback, so the default loopback-only check breaks every proxied
+    WS upgrade. Set ``HERMES_DASHBOARD_TRUST_PROXY=1`` (or pass
+    ``--trust-proxy`` to ``hermes dashboard``) to drop the loopback
+    check; the ``?token=<_SESSION_TOKEN>`` constant-time check in
+    :func:`_ws_auth_ok` is then the sole WS auth, same as every
+    ``/api/*`` HTTP endpoint already is in this mode.
     """
     if getattr(app.state, "auth_required", False):
+        return True
+    if getattr(app.state, "trust_proxy", False):
+        return True
+    if os.environ.get("HERMES_DASHBOARD_TRUST_PROXY", "").strip().lower() in {"1", "true", "yes"}:
         return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
