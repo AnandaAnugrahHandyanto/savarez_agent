@@ -1081,7 +1081,11 @@ class QQAdapter(BasePlatformAdapter):
 
         chat_type = parsed.get("chat_type", "")
         chat_id = parsed.get("chat_id", "")
-        if chat_type == "c2c":
+        # C2C (private) messages use chat_type="dm" in the session key
+        # built by build_session_key(), but the QQ API reports scene="c2c"
+        # for interaction events.  Accept both so approval clicks work
+        # regardless of which identifier was embedded in the button.
+        if chat_type in ("c2c", "dm"):
             return bool(chat_id) and operator == chat_id
 
         if chat_type in {"group", "guild"}:

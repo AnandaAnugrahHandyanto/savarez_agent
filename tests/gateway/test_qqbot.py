@@ -1652,6 +1652,39 @@ class TestDefaultInteractionDispatch:
         assert resolve_calls == []
 
     @pytest.mark.asyncio
+    async def test_approval_click_accepts_dm_session_key(self):
+        """Approval clicks work when the session key uses 'dm' chat_type.
+
+        ``build_session_key()`` produces ``agent:main:qqbot:dm:<openid>``
+        for C2C messages (chat_type="dm"), but the QQ API reports
+        ``chat_type=2`` (scene="c2c") for interaction events.  The
+        authorization check must accept both identifiers.
+        """
+        adapter = self._make_adapter()
+        resolve_calls = []
+
+        def fake_resolve(session_key, choice, resolve_all=False):
+            resolve_calls.append((session_key, choice, resolve_all))
+            return 1
+
+        import tools.approval
+        orig = tools.approval.resolve_gateway_approval
+        tools.approval.resolve_gateway_approval = fake_resolve
+        try:
+            from gateway.platforms.qqbot.keyboards import parse_interaction_event
+            # chat_type=2 → scene="c2c" in InteractionEvent
+            # button_data uses "dm" session key (what build_session_key produces)
+            event = parse_interaction_event({
+                "id": "i", "chat_type": 2, "user_openid": "u-dm-test",
+                "data": {"resolved": {"button_data": "approve:agent:main:qqbot:dm:u-dm-test:allow-once"}},
+            })
+            await adapter._default_interaction_dispatch(event)
+        finally:
+            tools.approval.resolve_gateway_approval = orig
+
+        assert resolve_calls == [("agent:main:qqbot:dm:u-dm-test", "once", False)]
+
+    @pytest.mark.asyncio
     async def test_update_prompt_click_writes_response_file(self, tmp_path, monkeypatch):
         """update_prompt:y click writes 'y' to ~/.hermes/.update_response."""
         adapter = self._make_adapter()
