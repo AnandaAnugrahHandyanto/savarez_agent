@@ -86,6 +86,11 @@ def test_configurable_toolsets_include_context_engine():
     assert any(ts_key == "context_engine" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
 
 
+def test_configurable_toolsets_include_save_to_spotify():
+    assert any(ts_key == "save_to_spotify" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
+    assert "save_to_spotify" in _DEFAULT_OFF_TOOLSETS
+
+
 def test_get_platform_tools_active_context_engine_is_enabled_for_explicit_config():
     config = {
         "context": {"engine": "lcm"},
