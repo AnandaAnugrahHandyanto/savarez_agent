@@ -1212,6 +1212,23 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 # not only after a later credential-rotation rebuild.
                 agent._replace_primary_openai_client(reason="fallback_timeout_apply")
 
+        try:
+            from hermes_constants import parse_reasoning_effort
+
+            fb_effort = str(fb.get("reasoning_effort") or "").strip()
+            parsed_reasoning = None
+            if fb_effort:
+                parsed_reasoning = parse_reasoning_effort(fb_effort)
+            agent.reasoning_config = parsed_reasoning
+        except Exception as _reasoning_err:
+            agent.reasoning_config = None
+            logger.debug(
+                "Could not apply fallback reasoning_effort for %s/%s: %s",
+                fb_provider,
+                fb_model,
+                _reasoning_err,
+            )
+
         # Re-evaluate prompt caching for the new provider/model
         agent._use_prompt_caching, agent._use_native_cache_layout = (
             agent._anthropic_prompt_cache_policy(

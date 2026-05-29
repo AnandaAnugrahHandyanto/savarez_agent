@@ -5,6 +5,58 @@ from __future__ import annotations
 from typing import Any
 
 
+_GPT_55_MEDIUM = {"provider": "openai-codex", "model": "gpt-5.5", "reasoning_effort": "medium"}
+_GPT_55_XHIGH = {"provider": "openai-codex", "model": "gpt-5.5", "reasoning_effort": "xhigh"}
+_MINIMAX_M27_MEDIUM = {"provider": "minimax", "model": "MiniMax-M2.7", "reasoning_effort": "medium"}
+_OPUS_48_XHIGH = {"provider": "anthropic", "model": "claude-opus-4.8", "reasoning_effort": "xhigh"}
+
+_ROLE_ALIASES = {
+    "goal": "orchestrator",
+    "planner": "orchestrator",
+    "architect": "orchestrator",
+    "architecture": "orchestrator",
+    "designer": "orchestrator",
+    "design": "orchestrator",
+    "orchestrator": "orchestrator",
+    "builder": "builder",
+    "implementer": "builder",
+    "worker": "builder",
+    "leaf": "builder",
+    "review": "review",
+    "reviewer": "review",
+    "review_pass": "review",
+    "optimization": "review",
+    "optimization_pass": "review",
+    "optimizer": "review",
+    "refactor": "review",
+    "refactoring": "review",
+    "refactoring_pass": "review",
+    "hardening": "review",
+    "hardening_pass": "review",
+    "hardener": "review",
+    "final": "final_approval",
+    "final_approval": "final_approval",
+    "approval": "final_approval",
+    "synthesis": "final_approval",
+    "final_synthesis": "final_approval",
+    "adversarial": "adversarial_review",
+    "adversarial_review": "adversarial_review",
+    "adverserial": "adversarial_review",
+    "adverserial_review": "adversarial_review",
+    "default": "default",
+    "general": "default",
+}
+
+_DEFAULT_ROLE_ROUTES = {
+    "default": {"primary": _GPT_55_MEDIUM, "fallbacks": []},
+    "orchestrator": {"primary": _OPUS_48_XHIGH, "fallbacks": [_GPT_55_XHIGH]},
+    "builder": {"primary": _MINIMAX_M27_MEDIUM, "fallbacks": [_GPT_55_MEDIUM]},
+    "review": {"primary": _GPT_55_MEDIUM, "fallbacks": [_MINIMAX_M27_MEDIUM]},
+    "final_approval": {"primary": _OPUS_48_XHIGH, "fallbacks": [_GPT_55_XHIGH]},
+    "adversarial_review": {"primary": _GPT_55_XHIGH, "fallbacks": []},
+}
+
+
 _OPUS_48_MARKERS = (
     "opus-4.8",
     "opus4.8",
@@ -87,27 +139,79 @@ def sanitize_fallback_chain(raw: Any) -> list[dict[str, Any]]:
     return chain
 
 
-def role_fallback_chain(role: str, config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    """Return the effective fallback chain for a worker role.
+def _role_key(role: str) -> str:
+    return _ROLE_ALIASES.get(str(role or "default").strip().lower(), str(role or "default").strip().lower())
 
-    Configured ``role_fallbacks.<role>`` entries win. Builder-like roles get the
-    requested deterministic recovery ladder when no explicit role override is
-    present: MiniMax M2.7 → GPT 5.5 medium → GPT 5.5 xhigh. Reviewer/hardening
-    roles use the ordinary sanitized global fallback chain unless overridden.
+
+def role_has_route(role: str, config: dict[str, Any] | None = None) -> bool:
+    """Return True when a role has an explicit/default primary or fallback route."""
+
+    config = config or {}
+    raw_key = str(role or "default").strip().lower()
+    key = _role_key(role)
+    routes = config.get("role_routes") or {}
+    if isinstance(routes, dict) and (key in routes or raw_key in routes):
+        return True
+    role_overrides = config.get("role_fallbacks") or {}
+    if isinstance(role_overrides, dict) and (key in role_overrides or raw_key in role_overrides):
+        return True
+    # Unknown roles still receive the built-in default route rather than
+    # mixing an implicit default primary with legacy credential inheritance.
+    return True
+
+
+def role_primary_route(role: str, config: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return the configured primary model/provider/reasoning route for a role.
+
+    Defaults encode John's approved ladder:
+    general=GPT-5.5 medium; goal/orchestrator/architect/designer=Opus 4.8;
+    builders=MiniMax M2.7; review/optimization/hardening=GPT-5.5 medium;
+    final approval/synthesis=Opus 4.8; adversarial review=GPT-5.5 xhigh.
+    ``role_routes.<role>.primary`` in config may override these defaults.
     """
 
     config = config or {}
-    role_key = str(role or "").strip().lower()
-    role_overrides = config.get("role_fallbacks") or {}
-    if isinstance(role_overrides, dict) and role_key in role_overrides:
-        return sanitize_fallback_chain(role_overrides.get(role_key))
+    key = _role_key(role)
+    routes = config.get("role_routes") or {}
+    if isinstance(routes, dict):
+        override = routes.get(key) or routes.get(str(role or "").strip().lower())
+        if isinstance(override, dict) and isinstance(override.get("primary"), dict):
+            entries = _iter_fallback_entries(override.get("primary"))
+            if entries:
+                return dict(entries[0])
+    default = (_DEFAULT_ROLE_ROUTES.get(key) or _DEFAULT_ROLE_ROUTES["default"])["primary"]
+    return dict(default)
 
-    if role_key in {"builder", "implementer", "worker", "optimizer", "refactor"}:
-        return sanitize_fallback_chain([
-            {"provider": "minimax", "model": "MiniMax-M2.7", "reasoning_effort": "medium"},
-            {"provider": "openai-codex", "model": "gpt-5.5", "reasoning_effort": "medium"},
-            {"provider": "openai-codex", "model": "gpt-5.5", "reasoning_effort": "xhigh"},
-        ])
+
+def role_fallback_chain(role: str, config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Return the effective fallback chain for a role.
+
+    ``role_routes.<role>.fallbacks`` wins, then legacy ``role_fallbacks.<role>``.
+    Built-in defaults deliberately exclude the primary route: builders start on
+    MiniMax and fail only to GPT-5.5 medium; review/optimization/hardening start
+    on GPT-5.5 medium and fail to MiniMax; Opus roles fail only to GPT-5.5 xhigh.
+    Adversarial review has no non-xhigh fallback by default.
+    """
+
+    config = config or {}
+    key = _role_key(role)
+    routes = config.get("role_routes") or {}
+    if isinstance(routes, dict):
+        override = routes.get(key) or routes.get(str(role or "").strip().lower())
+        if isinstance(override, dict) and "fallbacks" in override:
+            return sanitize_fallback_chain(override.get("fallbacks"))
+
+    raw_key = str(role or "").strip().lower()
+    role_overrides = config.get("role_fallbacks") or {}
+    if isinstance(role_overrides, dict):
+        if key in role_overrides:
+            return sanitize_fallback_chain(role_overrides.get(key))
+        if raw_key in role_overrides:
+            return sanitize_fallback_chain(role_overrides.get(raw_key))
+
+    route = _DEFAULT_ROLE_ROUTES.get(key)
+    if route is not None:
+        return sanitize_fallback_chain(route.get("fallbacks"))
 
     return get_fallback_chain(config)
 
