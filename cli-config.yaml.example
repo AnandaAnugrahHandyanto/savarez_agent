@@ -907,6 +907,7 @@ delegation:
   #     model: deepseek-v4-flash
   #     provider: deepseek
   #     toolsets: [terminal, file]
+  #     max_iterations: 80            # override delegation.max_iterations for this profile (default: inherited)
   #     system_prompt: |
   #       You are a focused developer. Follow TDD strictly.
   #     constraints: |
