@@ -5048,7 +5048,7 @@ def _probe_bot_http(app_id: str, app_secret: str, domain: str) -> Optional[dict]
             data=token_data,
             headers={"Content-Type": "application/json"},
         )
-        with urlopen(token_req, timeout=_ONBOARD_REQUEST_TIMEOUT_S) as resp:
+        with urlopen(token_req, timeout=_ONBOARD_REQUEST_TIMEOUT_S) as resp:  # SSRF: add IP block check
             token_res = json.loads(resp.read().decode("utf-8"))
 
         access_token = token_res.get("tenant_access_token")
