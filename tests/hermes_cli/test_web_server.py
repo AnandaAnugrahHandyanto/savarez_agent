@@ -2137,6 +2137,17 @@ class TestPtyWebSocket:
                 pass
         assert exc.value.code == 4401
 
+    def test_docker_bridge_client_requires_opt_in(self, monkeypatch):
+        from types import SimpleNamespace
+
+        fake_ws = SimpleNamespace(client=SimpleNamespace(host="172.18.0.1"))
+
+        monkeypatch.delenv("HERMES_DASHBOARD_ALLOW_DOCKER_BRIDGE", raising=False)
+        assert self.ws_module._ws_client_is_allowed(fake_ws) is False
+
+        monkeypatch.setenv("HERMES_DASHBOARD_ALLOW_DOCKER_BRIDGE", "true")
+        assert self.ws_module._ws_client_is_allowed(fake_ws) is True
+
     def test_streams_child_stdout_to_client(self, monkeypatch):
         monkeypatch.setattr(
             self.ws_module,
@@ -2445,4 +2456,3 @@ class TestDashboardPluginStaticAssetAllowlist:
         # 403 traversal-blocked OR 404 (depending on URL decode order)
         # — never 200.
         assert resp.status_code in (403, 404)
-
