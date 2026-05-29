@@ -633,7 +633,24 @@ class HindsightMemoryProvider(MemoryProvider):
             except Exception:
                 pass
         existing.update(values)
-        config_path.write_text(json.dumps(existing, indent=2))
+        import tempfile
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(config_path.parent),
+            prefix=f".{config_path.stem}_",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(existing, indent=2))
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, config_path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def post_setup(self, hermes_home: str, config: dict) -> None:
         """Custom setup wizard — installs only the deps needed for the selected mode."""
