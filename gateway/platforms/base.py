@@ -852,8 +852,9 @@ MEDIA_DELIVERY_SAFE_ROOTS = (
 # Single curated source of truth for "what counts as a deliverable file" across
 # every MEDIA: extraction site (extract_media, extract_local_files,
 # stream_consumer display-stripping, run.py tool-JSON dedup). Manually curated
-# as the union of the historical extract_media list + _LOCAL_MEDIA_EXTS,
-# intentionally EXCLUDING source/config extensions (.py .sh .ts .toml .ini .cfg
+# as the union of the historical extract_media allowlist and the bare-path
+# local-files extension tuple, intentionally EXCLUDING source/config
+# extensions (.py .sh .ts .toml .ini .cfg
 # .log) — those live in SUPPORTED_DOCUMENT_TYPES for *inbound* MIME routing
 # only; auto-delivering them outbound is a regression (see GRILME Q1).
 _DELIVERY_MEDIA_EXTS = frozenset({
@@ -3702,7 +3703,13 @@ class BasePlatformAdapter(ABC):
                 # Strip any remaining internal directives from message body (fixes #1561)
                 text_content = text_content.replace("[[audio_as_voice]]", "").strip()
                 text_content = text_content.replace("[[as_document]]", "").strip()
-                text_content = re.sub(r"MEDIA:\s*\S+", "", text_content).strip()
+                # Strip residual MEDIA: tags via the shared _MEDIA_TAG_RE (same
+                # object as extract_media / stream_consumer) instead of a blind
+                # MEDIA:\S+ — recognized tags were already removed above, so
+                # this is a defensive no-op for them; unknown-extension tags are
+                # left visible rather than silently erased (issue #32644,
+                # consistent with the streaming display path).
+                text_content = _MEDIA_TAG_RE.sub("", text_content).strip()
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
 

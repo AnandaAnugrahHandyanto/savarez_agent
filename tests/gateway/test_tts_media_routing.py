@@ -261,3 +261,26 @@ async def test_streaming_delivery_blocks_media_path_outside_allowed_roots(tmp_pa
 
     adapter.send_document.assert_not_awaited()
     adapter.send_voice.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_leaves_unknown_extension_media_tag_visible():
+    # Unknown-extension MEDIA: tags are no longer blindly stripped from the
+    # non-streaming dispatch path (issue #32644 silent-failure; now consistent
+    # with the streaming display path). Recognized tags are still removed by
+    # extract_media upstream; this guards base.py:~3705 against re-drifting back
+    # to a blind ``re.sub(r"MEDIA:\s*\S+", ...)`` that silently erased the
+    # model's only signal that it tried to deliver a (non-deliverable) file.
+    adapter = _MediaRoutingAdapter()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="text"))
+    adapter._message_handler = AsyncMock(
+        return_value="Here is your script MEDIA:/tmp/build.xyz done"
+    )
+    event = _event()
+
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    adapter.send.assert_awaited()
+    call = adapter.send.call_args
+    sent = call.kwargs.get("content") if call.kwargs.get("content") is not None else call.args[1]
+    assert "MEDIA:/tmp/build.xyz" in sent
