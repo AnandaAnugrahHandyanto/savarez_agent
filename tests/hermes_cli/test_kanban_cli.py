@@ -166,6 +166,19 @@ def test_run_slash_json_output(kanban_home):
     assert payload["status"] == "ready"
 
 
+def test_run_slash_create_with_model_override(kanban_home):
+    out = kc.run_slash(
+        "create 'model task' --assignee alice -m deepseek:deepseek-v4-pro --json"
+    )
+    payload = json.loads(out)
+    assert payload["title"] == "model task"
+    assert payload["model_override"] == "deepseek:deepseek-v4-pro"
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, payload["id"])
+    assert task.model_override == "deepseek:deepseek-v4-pro"
+
+
 def test_run_slash_dispatch_dry_run_counts(kanban_home):
     kc.run_slash("create 'a' --assignee alice")
     kc.run_slash("create 'b' --assignee bob")

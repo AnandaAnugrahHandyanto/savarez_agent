@@ -74,6 +74,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "completed_at": t.completed_at,
         "result": t.result,
         "skills": list(t.skills) if t.skills else [],
+        "model_override": t.model_override,
         "max_retries": t.max_retries,
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
@@ -332,6 +333,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "(repeatable). Appended to the built-in "
                                "kanban-worker skill. Example: "
                                "--skill translation --skill github-code-review")
+    p_create.add_argument("-m", "--model", default=None, dest="model_override",
+                          help="Per-task model override for the worker. "
+                               "Use a model name, or provider:model to also "
+                               "override provider when supported by the worker launcher.")
     p_create.add_argument("--max-retries", type=int, default=None,
                           metavar="N",
                           help="Per-task override for the consecutive-failure "
@@ -1337,6 +1342,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             idempotency_key=getattr(args, "idempotency_key", None),
             max_runtime_seconds=max_runtime,
             skills=getattr(args, "skills", None) or None,
+            model_override=getattr(args, "model_override", None),
             max_retries=max_retries,
             initial_status=getattr(args, "initial_status", "running"),
         )
