@@ -258,7 +258,7 @@ def _json_request(
 
     req = urllib.request.Request(url, data=body, headers=request_headers, method=method.upper())
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:  # SSRF: add IP block check
             payload = resp.read().decode("utf-8")
             return json.loads(payload) if payload else {}
     except urllib.error.HTTPError as exc:
