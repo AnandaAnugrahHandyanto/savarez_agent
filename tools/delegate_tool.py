@@ -1154,7 +1154,7 @@ def _build_child_agent(
     # EXCEPTION: skip the pool ONLY for a LITERAL config endpoint
     # (delegation.base_url) — there a lease/swap (_swap_credential) would
     # overwrite the configured base_url and silently redirect the child off it.
-    # Fixes #7833 / #20558. A provider-RESOLVED base_url (delegation.provider)
+    # Fixes #7833. A provider-RESOLVED base_url (delegation.provider)
     # is NOT skipped: the pool's entries carry that same provider's endpoint, so
     # a swap is legitimate same-provider key rotation, not an off-endpoint
     # redirect — keeping the pool preserves rotation for delegated providers.
