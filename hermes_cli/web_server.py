@@ -3925,12 +3925,27 @@ def mount_spa(application: FastAPI):
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(app.state, "auth_required", False))
         gated_js = "true" if gated else "false"
+        # Inject the active theme (name + full definition for user themes) so
+        # the SPA paints it before React mounts — no defaultTheme flash on a
+        # first-ever load with an empty localStorage cache. Escape the JSON's
+        # HTML-significant chars so a user theme string can't break out of the
+        # inline <script> (the YAML is local/trusted, but defence in depth).
+        theme_json = json.dumps(
+            _active_theme_bootstrap_payload(), separators=(",", ":")
+        )
+        theme_json = (
+            theme_json.replace("<", "\\u003c")
+            .replace(">", "\\u003e")
+            .replace("&", "\\u0026")
+        )
+        theme_js = f"window.__HERMES_THEME_BOOTSTRAP__={theme_json};"
         if gated:
             bootstrap_script = (
                 f"<script>"
                 f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
                 f'window.__HERMES_BASE_PATH__="{prefix}";'
                 f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
+                f"{theme_js}"
                 f"</script>"
             )
         else:
@@ -3939,6 +3954,7 @@ def mount_spa(application: FastAPI):
                 f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
                 f'window.__HERMES_BASE_PATH__="{prefix}";'
                 f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
+                f"{theme_js}"
                 f"</script>"
             )
         if prefix:
@@ -4247,6 +4263,31 @@ def _discover_user_themes() -> list:
         if normalised is not None:
             result.append(normalised)
     return result
+
+
+def _active_theme_bootstrap_payload() -> dict:
+    """Resolve the active dashboard theme for first-paint HTML injection.
+
+    Returns ``{"name": <active>, "definition": <def-or-None>}``. Built-ins
+    ship their definitions inside the JS bundle, so for those only the name
+    is needed; user themes (``~/.hermes/dashboard-themes/*.yaml``) carry their
+    full normalised definition so the SPA can paint them on the very first
+    load — before ``/api/dashboard/themes`` resolves and before any
+    localStorage cache exists. If the configured theme no longer exists, fall
+    back to ``default`` so the SPA never strands on an unknown name.
+    """
+    try:
+        config = load_config()
+        active = cfg_get(config, "dashboard", "theme", default="default")
+        builtin_names = {t["name"] for t in _BUILTIN_DASHBOARD_THEMES}
+        if active in builtin_names:
+            return {"name": active, "definition": None}
+        for theme in _discover_user_themes():
+            if theme["name"] == active:
+                return {"name": active, "definition": theme}
+        return {"name": "default", "definition": None}
+    except Exception:
+        return {"name": "default", "definition": None}
 
 
 @app.get("/api/dashboard/themes")
