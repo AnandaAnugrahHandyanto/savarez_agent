@@ -77,6 +77,7 @@ Both `provider` and `model` are **required**. If either is missing, the fallback
 | GMI Cloud | `gmi` | `GMI_API_KEY` |
 | Alibaba / DashScope | `alibaba` | `DASHSCOPE_API_KEY` |
 | Alibaba Coding Plan | `alibaba-coding-plan` | `ALIBABA_CODING_PLAN_API_KEY` (falls back to `DASHSCOPE_API_KEY`) |
+| BytePlus/VolcEngine ModelArk Coding Plan | `modelark-coding-plan` | `BYTEPLUS_API_KEY` |
 | Kimi / Moonshot (China) | `kimi-coding-cn` | `KIMI_CN_API_KEY` |
 | StepFun | `stepfun` | `STEPFUN_API_KEY` |
 | Tencent TokenHub | `tencent-tokenhub` | `TOKENHUB_API_KEY` |
