@@ -44,7 +44,7 @@ def test_find_token_span_uses_prepared_full_tokens() -> None:
 def test_find_token_span_ignores_stale_prepared_full_tokens(monkeypatch) -> None:
     monkeypatch.setattr(numba_token_span, "NUMBA_TOKEN_SPAN_AVAILABLE", True)
 
-    full_tokens = list(range(900)) + [10, 11, 12]
+    full_tokens = [10, 11, 12, 13, 14] + list(range(1000, 1900))
     stale_prepared = numba_token_span.np.asarray(
         full_tokens[:-5], dtype=numba_token_span.np.int64
     )
@@ -58,18 +58,18 @@ def test_find_token_span_ignores_stale_prepared_full_tokens(monkeypatch) -> None
 
     match = numba_token_span.find_token_span(
         full_tokens,
-        [10, 11, 12],
+        [10, 11, 12, 13, 14],
         prepared_full_tokens=stale_prepared,
     )
 
     assert match == 900
-    assert calls == [(903, 3)]
+    assert calls == [(905, 5)]
 
 
 def test_find_token_span_rejects_non_array_prepared_full_tokens(monkeypatch) -> None:
     monkeypatch.setattr(numba_token_span, "NUMBA_TOKEN_SPAN_AVAILABLE", True)
 
-    full_tokens = list(range(900)) + [10, 11, 12]
+    full_tokens = [10, 11, 12, 13, 14] + list(range(1000, 1900))
     calls = []
 
     def fake_numba(full_arr, sub_arr):
@@ -80,7 +80,7 @@ def test_find_token_span_rejects_non_array_prepared_full_tokens(monkeypatch) -> 
 
     match = numba_token_span.find_token_span(
         full_tokens,
-        [10, 11, 12],
+        [10, 11, 12, 13, 14],
         prepared_full_tokens=full_tokens,
     )
 
